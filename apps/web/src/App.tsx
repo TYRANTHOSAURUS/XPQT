@@ -3,6 +3,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { DeskLayout } from '@/layouts/desk-layout';
 import { InboxPage } from '@/pages/desk/inbox';
 import { TicketsPage } from '@/pages/desk/tickets';
+import { useTheme } from '@/hooks/use-theme';
 
 function DeskIndex() {
   return <Navigate to="/desk/inbox" replace />;
@@ -17,6 +18,9 @@ function PlaceholderPage({ title }: { title: string }) {
 }
 
 export function App() {
+  // Initialize theme from localStorage / system preference
+  useTheme();
+
   return (
     <TooltipProvider>
       <Routes>

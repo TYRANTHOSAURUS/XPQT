@@ -33,6 +33,12 @@ XPQT/
 - **Auth:** Supabase Auth (JWT). Backend validates tokens via AuthGuard.
 - **Module boundaries:** NestJS modules with explicit service exports. No module touches another module's tables directly.
 
+## Frontend Rules
+- **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
+- **Install shadcn components before using them:** `npx shadcn@latest add <component-name>`
+- **Design reference:** Linear app — clean, spacious, minimal borders, subtle color usage, properties sidebar on the right.
+- Installed components are in `apps/web/src/components/ui/`. Check there before installing duplicates.
+
 ## Spec Documents
 The full product specification and phase plans are in `/Users/x/Downloads/`:
 - `prequest_x_.md` — main product specification
