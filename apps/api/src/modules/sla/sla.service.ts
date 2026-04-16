@@ -22,6 +22,11 @@ export class SlaService {
     const now = new Date();
     const timers: Array<Record<string, unknown>> = [];
 
+    // TODO: Calculate due dates using business hours calendar when available
+    // Currently uses wall-clock time. For proper business hours calculation,
+    // load the calendar from business_hours_calendars, skip non-working hours
+    // and holidays when computing the due_at timestamp.
+
     if (policy.response_time_minutes) {
       const responseDue = new Date(now.getTime() + policy.response_time_minutes * 60_000);
       timers.push({

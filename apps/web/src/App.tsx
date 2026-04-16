@@ -27,6 +27,8 @@ import { NotificationsPage } from '@/pages/admin/notifications';
 import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
 import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
+import { ReportsPage } from '@/pages/desk/reports';
+import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
 
 export function App() {
@@ -72,8 +74,8 @@ export function App() {
             <Route index element={<Navigate to="/desk/inbox" replace />} />
             <Route path="inbox" element={<InboxPage />} />
             <Route path="tickets" element={<TicketsPage />} />
-            <Route path="approvals" element={<Navigate to="/desk/inbox" replace />} />
-            <Route path="reports" element={<Navigate to="/desk/inbox" replace />} />
+            <Route path="approvals" element={<ApprovalsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
             <Route path="settings" element={<Navigate to="/admin/request-types" replace />} />
           </Route>
 

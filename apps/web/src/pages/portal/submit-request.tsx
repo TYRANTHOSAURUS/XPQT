@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,6 +27,22 @@ interface RequestType {
   id: string;
   name: string;
   domain: string;
+  form_schema_id: string | null;
+}
+
+interface FormField {
+  id: string;
+  label: string;
+  type: string;
+  required: boolean;
+  placeholder?: string;
+  help_text?: string;
+  options?: string[];
+}
+
+interface FormSchemaEntity {
+  id: string;
+  current_version?: { definition: { fields: FormField[] } } | null;
 }
 
 export function SubmitRequestPage() {
@@ -40,11 +56,27 @@ export function SubmitRequestPage() {
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('medium');
   const [requestTypeId, setRequestTypeId] = useState('');
+  const [formFields, setFormFields] = useState<FormField[]>([]);
+  const [formData, setFormData] = useState<Record<string, string>>({});
 
   const { data: requestTypes } = useApi<RequestType[]>(
     `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
     [categoryId],
   );
+
+  // Fetch form schema when request type changes
+  useEffect(() => {
+    if (!requestTypeId || !requestTypes) { setFormFields([]); return; }
+    const rt = requestTypes.find((r) => r.id === requestTypeId);
+    if (!rt?.form_schema_id) { setFormFields([]); return; }
+    apiFetch<FormSchemaEntity>(`/config-entities/${rt.form_schema_id}`)
+      .then((entity) => {
+        const fields = entity.current_version?.definition?.fields ?? [];
+        setFormFields(fields);
+        setFormData({});
+      })
+      .catch(() => setFormFields([]));
+  }, [requestTypeId, requestTypes]);
 
   const handleSubmit = async () => {
     if (!title.trim()) return;
@@ -60,6 +92,7 @@ export function SubmitRequestPage() {
           ticket_type_id: requestTypeId || undefined,
           requester_person_id: person?.id,
           source_channel: 'portal',
+          form_data: Object.keys(formData).length > 0 ? formData : undefined,
         }),
       });
       setSubmitted(true);
@@ -158,7 +191,52 @@ export function SubmitRequestPage() {
             </Select>
           </div>
 
-          {/* TODO: Dynamic form fields based on request type's form schema */}
+          {/* Dynamic form fields from form schema */}
+          {formFields.map((field) => (
+            <div key={field.id} className="space-y-2">
+              <Label>
+                {field.label}
+                {field.required && <span className="text-destructive ml-1">*</span>}
+              </Label>
+              {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
+              {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
+                <Input
+                  type={field.type === 'datetime' ? 'datetime-local' : field.type}
+                  placeholder={field.placeholder}
+                  value={formData[field.id] ?? ''}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
+                />
+              )}
+              {field.type === 'textarea' && (
+                <Textarea
+                  placeholder={field.placeholder}
+                  value={formData[field.id] ?? ''}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
+                />
+              )}
+              {(field.type === 'dropdown' || field.type === 'multi_select') && field.options && (
+                <Select value={formData[field.id] ?? ''} onValueChange={(v) => setFormData((prev) => ({ ...prev, [field.id]: v ?? '' }))}>
+                  <SelectTrigger><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
+                  <SelectContent>
+                    {field.options.map((opt) => (
+                      <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {field.type === 'checkbox' && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={formData[field.id] === 'true'}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: String(e.target.checked) }))}
+                    className="rounded border-input"
+                  />
+                  <span className="text-sm">{field.placeholder}</span>
+                </div>
+              )}
+            </div>
+          ))}
 
           {/* Submit */}
           <div className="flex justify-end pt-2">
