@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { TicketDetail } from '@/components/desk/ticket-detail';
+import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 
 interface Ticket {
@@ -167,9 +168,12 @@ function TicketTable({
             </Button>
           </div>
         ) : (
-          <span className="ml-auto text-sm text-muted-foreground">
-            {tickets.length} ticket{tickets.length !== 1 ? 's' : ''}
-          </span>
+          <div className="ml-auto flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">
+              {tickets.length} ticket{tickets.length !== 1 ? 's' : ''}
+            </span>
+            <CreateTicketDialog />
+          </div>
         )}
       </div>
 

@@ -15,6 +15,7 @@ import { ApprovalModule } from './modules/approval/approval.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
+import { PersonModule } from './modules/person/person.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { ReportingModule } from './modules/reporting/reporting.module';
     NotificationModule,
     WorkflowModule,
     ReportingModule,
+    PersonModule,
   ],
   controllers: [HealthController],
 })

@@ -31,6 +31,7 @@ import {
   FilterIcon,
   PanelLeftOpenIcon,
   PanelLeftCloseIcon,
+  LayoutDashboardIcon,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useApi } from "@/hooks/use-api"
@@ -166,6 +167,16 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                tooltip={{ children: "Employee Portal", hidden: railExpanded }}
+                onClick={() => navigate("/portal")}
+                className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+              >
+                <LayoutDashboardIcon className="shrink-0" />
+                {railExpanded && <span>Portal</span>}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 tooltip={{ children: railExpanded ? "Collapse menu" : "Expand menu", hidden: railExpanded }}

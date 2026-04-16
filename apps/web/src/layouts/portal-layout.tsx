@@ -8,7 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Home, Ticket, CalendarDays, UserPlus, ShoppingCart, Bell, Settings, LogOut } from 'lucide-react';
+import { Home, Ticket, CalendarDays, UserPlus, ShoppingCart, Bell, Settings, LogOut, Headset } from 'lucide-react';
 
 const navItems = [
   { label: 'Home', path: '/portal', icon: Home },
@@ -56,6 +56,10 @@ export function PortalLayout() {
 
           {/* Right side */}
           <div className="ml-auto flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={() => navigate('/desk')} className="gap-2">
+              <Headset className="h-4 w-4" />
+              Service Desk
+            </Button>
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-4 w-4" />
             </Button>
