@@ -58,6 +58,18 @@ export class ServiceCatalogService {
     return data;
   }
 
+  async deleteCategory(id: string) {
+    const tenant = TenantContext.current();
+    const { error } = await this.supabase.admin
+      .from('service_catalog_categories')
+      .update({ active: false })
+      .eq('id', id)
+      .eq('tenant_id', tenant.id);
+
+    if (error) throw error;
+    return { deleted: true };
+  }
+
   async linkRequestTypeToCategory(requestTypeId: string, categoryId: string) {
     const tenant = TenantContext.current();
     const { error } = await this.supabase.admin

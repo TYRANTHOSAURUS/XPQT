@@ -47,4 +47,54 @@ export class PersonService {
     if (error) throw error;
     return data;
   }
+
+  async create(dto: {
+    first_name: string;
+    last_name: string;
+    email?: string;
+    phone?: string;
+    type: string;
+    division?: string;
+    department?: string;
+    cost_center?: string;
+    manager_person_id?: string;
+  }) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('persons')
+      .insert({ ...dto, tenant_id: tenant.id })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async update(id: string, dto: Record<string, unknown>) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('persons')
+      .update(dto)
+      .eq('id', id)
+      .eq('tenant_id', tenant.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async listByType(type?: string) {
+    const tenant = TenantContext.current();
+    let query = this.supabase.admin
+      .from('persons')
+      .select('*, manager:persons!persons_manager_person_id_fkey(id, first_name, last_name)')
+      .eq('tenant_id', tenant.id)
+      .eq('active', true)
+      .order('first_name');
+
+    if (type) query = query.eq('type', type);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data;
+  }
 }

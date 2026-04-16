@@ -12,7 +12,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Plus } from 'lucide-react';
+import { Plus, Pencil } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 
@@ -34,30 +34,54 @@ export function RoutingRulesPage() {
   const { data, loading, refetch } = useApi<RoutingRule[]>('/routing-rules', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [condField, setCondField] = useState('domain');
   const [condValue, setCondValue] = useState('');
   const [assignTeamId, setAssignTeamId] = useState('');
   const [priority, setPriority] = useState('10');
 
-  const handleCreate = async () => {
-    if (!name.trim() || !assignTeamId) return;
-    await apiFetch('/routing-rules', {
-      method: 'POST',
-      body: JSON.stringify({
-        name,
-        priority: parseInt(priority),
-        conditions: condValue ? [{ field: condField, operator: 'equals', value: condValue }] : [],
-        action_assign_team_id: assignTeamId,
-      }),
-    });
+  const resetForm = () => {
+    setEditId(null);
     setName('');
     setCondField('domain');
     setCondValue('');
     setAssignTeamId('');
     setPriority('10');
+  };
+
+  const handleSave = async () => {
+    if (!name.trim() || !assignTeamId) return;
+    const body = {
+      name,
+      priority: parseInt(priority),
+      conditions: condValue ? [{ field: condField, operator: 'equals', value: condValue }] : [],
+      action_assign_team_id: assignTeamId,
+    };
+    if (editId) {
+      await apiFetch(`/routing-rules/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+    } else {
+      await apiFetch('/routing-rules', { method: 'POST', body: JSON.stringify(body) });
+    }
+    resetForm();
     setDialogOpen(false);
     refetch();
+  };
+
+  const openEdit = (rule: RoutingRule) => {
+    setEditId(rule.id);
+    setName(rule.name);
+    setPriority(String(rule.priority));
+    const cond = rule.conditions?.[0];
+    setCondField(cond?.field ?? 'domain');
+    setCondValue(cond?.value ?? '');
+    setAssignTeamId(rule.action_assign_team_id ?? '');
+    setDialogOpen(true);
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setDialogOpen(true);
   };
 
   const getTeamName = (id: string | null) => {
@@ -72,13 +96,13 @@ export function RoutingRulesPage() {
           <h1 className="text-2xl font-bold tracking-tight">Routing Rules</h1>
           <p className="text-muted-foreground mt-1">Define how tickets are automatically assigned to teams</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger render={<Button className="gap-2" />}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
             <Plus className="h-4 w-4" /> Add Rule
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Routing Rule</DialogTitle>
+              <DialogTitle>{editId ? 'Edit' : 'Create'} Routing Rule</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 mt-2">
               <div className="space-y-2">
@@ -116,7 +140,9 @@ export function RoutingRulesPage() {
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleCreate} disabled={!name.trim() || !assignTeamId}>Create</Button>
+                <Button onClick={handleSave} disabled={!name.trim() || !assignTeamId}>
+                  {editId ? 'Save' : 'Create'}
+                </Button>
               </div>
             </div>
           </DialogContent>
@@ -131,14 +157,15 @@ export function RoutingRulesPage() {
             <TableHead className="w-[200px]">Condition</TableHead>
             <TableHead className="w-[180px]">Assign To</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
+            <TableHead className="w-[60px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
+            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
           )}
           {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No routing rules yet.</TableCell></TableRow>
+            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No routing rules yet.</TableCell></TableRow>
           )}
           {(data ?? []).map((rule) => (
             <TableRow key={rule.id}>
@@ -155,6 +182,11 @@ export function RoutingRulesPage() {
               </TableCell>
               <TableCell>{getTeamName(rule.action_assign_team_id)}</TableCell>
               <TableCell><Badge variant={rule.active ? 'default' : 'secondary'}>{rule.active ? 'Active' : 'Off'}</Badge></TableCell>
+              <TableCell>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(rule)}>
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>

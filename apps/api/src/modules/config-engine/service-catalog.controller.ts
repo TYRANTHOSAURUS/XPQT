@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
 import { ServiceCatalogService } from './service-catalog.service';
 
 @Controller('service-catalog')
@@ -23,6 +23,11 @@ export class ServiceCatalogController {
   @Patch('categories/:id')
   async updateCategory(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
     return this.catalogService.updateCategory(id, dto);
+  }
+
+  @Delete('categories/:id')
+  async deleteCategory(@Param('id') id: string) {
+    return this.catalogService.deleteCategory(id);
   }
 
   @Post('categories/:categoryId/link/:requestTypeId')

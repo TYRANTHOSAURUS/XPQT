@@ -2,6 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
+export interface CreateNotificationTemplateDto {
+  name: string;
+  event_type: string;
+  subject: string;
+  body: string;
+  channels: ('email' | 'in_app')[];
+}
+
 export interface SendNotificationDto {
   notification_type: string; // e.g. 'ticket_assigned', 'approval_requested'
   recipient_person_id?: string;
@@ -172,6 +180,115 @@ export class NotificationService {
 
     if (error) throw error;
     return { unread_count: count ?? 0 };
+  }
+
+  // ─── Notification Templates ───────────────────────────────────────────────
+
+  async listTemplates() {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('config_entities')
+      .select('*, current_version:config_versions!fk_ce_published_version(*)')
+      .eq('tenant_id', tenant.id)
+      .eq('config_type', 'notification_template')
+      .order('display_name');
+    if (error) throw error;
+    return data;
+  }
+
+  async createTemplate(dto: CreateNotificationTemplateDto) {
+    const tenant = TenantContext.current();
+    const slug = dto.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+
+    const { data: entity, error: entityError } = await this.supabase.admin
+      .from('config_entities')
+      .insert({
+        tenant_id: tenant.id,
+        config_type: 'notification_template',
+        slug,
+        display_name: dto.name,
+      })
+      .select()
+      .single();
+    if (entityError) throw entityError;
+
+    const { data: version, error: versionError } = await this.supabase.admin
+      .from('config_versions')
+      .insert({
+        config_entity_id: entity.id,
+        tenant_id: tenant.id,
+        version_number: 1,
+        status: 'published',
+        definition: {
+          event_type: dto.event_type,
+          subject: dto.subject,
+          body: dto.body,
+          channels: dto.channels,
+        },
+        published_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (versionError) throw versionError;
+
+    await this.supabase.admin
+      .from('config_entities')
+      .update({ current_published_version_id: version.id })
+      .eq('id', entity.id);
+
+    return { ...entity, current_version: version };
+  }
+
+  async updateTemplate(id: string, dto: Partial<CreateNotificationTemplateDto>) {
+    const tenant = TenantContext.current();
+
+    if (dto.name) {
+      await this.supabase.admin
+        .from('config_entities')
+        .update({ display_name: dto.name })
+        .eq('id', id)
+        .eq('tenant_id', tenant.id);
+    }
+
+    const { data: latest } = await this.supabase.admin
+      .from('config_versions')
+      .select('*')
+      .eq('config_entity_id', id)
+      .eq('tenant_id', tenant.id)
+      .order('version_number', { ascending: false })
+      .limit(1)
+      .single();
+
+    const currentDef = (latest?.definition as Record<string, unknown>) ?? {};
+    const newDef = {
+      ...currentDef,
+      ...(dto.event_type !== undefined && { event_type: dto.event_type }),
+      ...(dto.subject !== undefined && { subject: dto.subject }),
+      ...(dto.body !== undefined && { body: dto.body }),
+      ...(dto.channels !== undefined && { channels: dto.channels }),
+    };
+
+    const nextVersion = (latest?.version_number ?? 0) + 1;
+    const { data: version, error } = await this.supabase.admin
+      .from('config_versions')
+      .insert({
+        config_entity_id: id,
+        tenant_id: tenant.id,
+        version_number: nextVersion,
+        status: 'published',
+        definition: newDef,
+        published_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    await this.supabase.admin
+      .from('config_entities')
+      .update({ current_published_version_id: version.id })
+      .eq('id', id);
+
+    return version;
   }
 
   private async getEnabledChannels(

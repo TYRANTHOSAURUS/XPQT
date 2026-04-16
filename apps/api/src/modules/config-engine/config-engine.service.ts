@@ -78,6 +78,37 @@ export class ConfigEngineService {
     return { ...entity, draft_version: version };
   }
 
+  async createDraft(entityId: string, dto: UpdateConfigVersionDto) {
+    const tenant = TenantContext.current();
+
+    // Find the latest version to determine the next version number
+    const { data: latest } = await this.supabase.admin
+      .from('config_versions')
+      .select('version_number')
+      .eq('config_entity_id', entityId)
+      .eq('tenant_id', tenant.id)
+      .order('version_number', { ascending: false })
+      .limit(1)
+      .single();
+
+    const nextVersion = (latest?.version_number ?? 0) + 1;
+
+    const { data, error } = await this.supabase.admin
+      .from('config_versions')
+      .insert({
+        config_entity_id: entityId,
+        tenant_id: tenant.id,
+        version_number: nextVersion,
+        status: 'draft',
+        definition: dto.definition,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
   async updateDraft(entityId: string, dto: UpdateConfigVersionDto) {
     const tenant = TenantContext.current();
 

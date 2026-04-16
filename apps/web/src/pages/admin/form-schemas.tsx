@@ -1,0 +1,469 @@
+import { useState, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, Eye } from 'lucide-react';
+import { useApi } from '@/hooks/use-api';
+import { apiFetch } from '@/lib/api';
+
+type FieldType =
+  | 'text'
+  | 'textarea'
+  | 'number'
+  | 'date'
+  | 'datetime'
+  | 'dropdown'
+  | 'multi_select'
+  | 'checkbox'
+  | 'radio'
+  | 'file_upload'
+  | 'person_picker'
+  | 'location_picker'
+  | 'asset_picker';
+
+interface FormField {
+  id: string;
+  label: string;
+  type: FieldType;
+  required: boolean;
+  placeholder?: string;
+  help_text?: string;
+  options?: string[];
+}
+
+interface FormSchema {
+  id: string;
+  display_name: string;
+  status: string;
+  current_version?: {
+    definition: { fields: FormField[] };
+  } | null;
+}
+
+const fieldTypes: { value: FieldType; label: string }[] = [
+  { value: 'text', label: 'Short Text' },
+  { value: 'textarea', label: 'Long Text' },
+  { value: 'number', label: 'Number' },
+  { value: 'date', label: 'Date' },
+  { value: 'datetime', label: 'Date & Time' },
+  { value: 'dropdown', label: 'Dropdown' },
+  { value: 'multi_select', label: 'Multi Select' },
+  { value: 'checkbox', label: 'Checkbox' },
+  { value: 'radio', label: 'Radio' },
+  { value: 'file_upload', label: 'File Upload' },
+  { value: 'person_picker', label: 'Person Picker' },
+  { value: 'location_picker', label: 'Location Picker' },
+  { value: 'asset_picker', label: 'Asset Picker' },
+];
+
+function generateId() {
+  return `field_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function newField(): FormField {
+  return { id: generateId(), label: '', type: 'text', required: false };
+}
+
+function FieldPreview({ field }: { field: FormField }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm">
+          {field.label || <span className="text-muted-foreground italic">Unnamed field</span>}
+        </Label>
+        {field.required && <span className="text-destructive text-xs">*</span>}
+      </div>
+      {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
+      {field.type === 'text' && (
+        <Input placeholder={field.placeholder || ''} disabled className="h-8" />
+      )}
+      {field.type === 'textarea' && (
+        <Textarea placeholder={field.placeholder || ''} disabled className="h-16 resize-none" />
+      )}
+      {field.type === 'number' && (
+        <Input type="number" placeholder={field.placeholder || ''} disabled className="h-8" />
+      )}
+      {field.type === 'date' && <Input type="date" disabled className="h-8" />}
+      {field.type === 'datetime' && <Input type="datetime-local" disabled className="h-8" />}
+      {field.type === 'checkbox' && (
+        <div className="flex items-center gap-2">
+          <Checkbox disabled />
+          <span className="text-sm text-muted-foreground">{field.placeholder || 'Check this option'}</span>
+        </div>
+      )}
+      {(field.type === 'dropdown' || field.type === 'multi_select') && (
+        <Select disabled>
+          <SelectTrigger className="h-8">
+            <SelectValue placeholder={field.placeholder || 'Select...'} />
+          </SelectTrigger>
+          <SelectContent>
+            {(field.options ?? []).map((opt) => (
+              <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {field.type === 'radio' && (
+        <div className="space-y-1.5">
+          {(field.options ?? ['Option 1', 'Option 2']).map((opt, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input type="radio" disabled name={`preview_${field.id}`} />
+              <span className="text-sm text-muted-foreground">{opt}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {field.type === 'file_upload' && (
+        <div className="flex items-center gap-2 rounded-md border border-dashed border-input p-3">
+          <span className="text-sm text-muted-foreground">Drop files here or click to upload</span>
+        </div>
+      )}
+      {(field.type === 'person_picker' || field.type === 'location_picker' || field.type === 'asset_picker') && (
+        <Input
+          placeholder={field.placeholder || `Pick ${field.type.replace('_picker', '')}...`}
+          disabled
+          className="h-8"
+        />
+      )}
+    </div>
+  );
+}
+
+export function FormSchemasPage() {
+  const { data, loading, refetch } = useApi<FormSchema[]>('/config-entities?type=form_schema', []);
+
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [editingSchema, setEditingSchema] = useState<FormSchema | null>(null);
+  const [schemaName, setSchemaName] = useState('');
+  const [fields, setFields] = useState<FormField[]>([]);
+  const [editingFieldIdx, setEditingFieldIdx] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+
+  const openCreate = () => {
+    setEditingSchema(null);
+    setSchemaName('');
+    setFields([newField()]);
+    setEditingFieldIdx(0);
+    setPreviewMode(false);
+    setBuilderOpen(true);
+  };
+
+  const openEdit = (schema: FormSchema) => {
+    setEditingSchema(schema);
+    setSchemaName(schema.display_name);
+    setFields(schema.current_version?.definition?.fields ?? [newField()]);
+    setEditingFieldIdx(null);
+    setPreviewMode(false);
+    setBuilderOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!schemaName.trim()) return;
+    setSaving(true);
+    try {
+      const slug = schemaName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+      const definition = { fields };
+
+      if (editingSchema) {
+        await apiFetch(`/config-entities/${editingSchema.id}/draft`, {
+          method: 'POST',
+          body: JSON.stringify({ definition }),
+        });
+        await apiFetch(`/config-entities/${editingSchema.id}/publish`, { method: 'POST' });
+      } else {
+        const entity = await apiFetch<{ id: string }>('/config-entities', {
+          method: 'POST',
+          body: JSON.stringify({
+            config_type: 'form_schema',
+            slug,
+            display_name: schemaName,
+            definition,
+          }),
+        });
+        await apiFetch(`/config-entities/${entity.id}/publish`, { method: 'POST' });
+      }
+
+      setBuilderOpen(false);
+      refetch();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addField = () => {
+    const f = newField();
+    setFields((prev) => [...prev, f]);
+    setEditingFieldIdx(fields.length);
+  };
+
+  const removeField = (idx: number) => {
+    setFields((prev) => prev.filter((_, i) => i !== idx));
+    setEditingFieldIdx(null);
+  };
+
+  const moveField = (idx: number, dir: -1 | 1) => {
+    const next = idx + dir;
+    if (next < 0 || next >= fields.length) return;
+    setFields((prev) => {
+      const arr = [...prev];
+      [arr[idx], arr[next]] = [arr[next], arr[idx]];
+      return arr;
+    });
+    setEditingFieldIdx(next);
+  };
+
+  const updateField = useCallback((idx: number, patch: Partial<FormField>) => {
+    setFields((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  }, []);
+
+  const ef = editingFieldIdx !== null ? fields[editingFieldIdx] : null;
+  const needsOptions = ef?.type === 'dropdown' || ef?.type === 'multi_select' || ef?.type === 'radio';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Form Schemas</h1>
+          <p className="text-muted-foreground mt-1">Build custom intake forms for request types</p>
+        </div>
+        <Button className="gap-2" onClick={openCreate}>
+          <Plus className="h-4 w-4" /> New Form Schema
+        </Button>
+      </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Name</TableHead>
+            <TableHead className="w-[100px]">Fields</TableHead>
+            <TableHead className="w-[100px]">Status</TableHead>
+            <TableHead className="w-[60px]" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {loading && (
+            <TableRow>
+              <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Loading...</TableCell>
+            </TableRow>
+          )}
+          {!loading && (!data || data.length === 0) && (
+            <TableRow>
+              <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No form schemas yet.</TableCell>
+            </TableRow>
+          )}
+          {(data ?? []).map((schema) => (
+            <TableRow key={schema.id}>
+              <TableCell className="font-medium">{schema.display_name}</TableCell>
+              <TableCell className="text-muted-foreground">
+                {schema.current_version?.definition?.fields?.length ?? 0} fields
+              </TableCell>
+              <TableCell>
+                <Badge variant={schema.status === 'active' ? 'default' : 'secondary'} className="capitalize">
+                  {schema.status}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(schema)}>
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+
+      {/* Builder Dialog */}
+      <Dialog open={builderOpen} onOpenChange={setBuilderOpen}>
+        <DialogContent className="sm:max-w-[900px] h-[85vh] flex flex-col p-0">
+          <DialogHeader className="px-6 py-4 border-b shrink-0">
+            <div className="flex items-center justify-between">
+              <DialogTitle className="text-base">
+                {editingSchema ? 'Edit' : 'New'} Form Schema
+              </DialogTitle>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setPreviewMode((p) => !p)}
+                >
+                  <Eye className="h-4 w-4" />
+                  {previewMode ? 'Edit' : 'Preview'}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setBuilderOpen(false)}>
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={handleSave} disabled={!schemaName.trim() || saving}>
+                  {saving ? 'Saving...' : 'Save & Publish'}
+                </Button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <Input
+                value={schemaName}
+                onChange={(e) => setSchemaName(e.target.value)}
+                placeholder="Schema name..."
+                className="max-w-sm"
+              />
+            </div>
+          </DialogHeader>
+
+          <div className="flex flex-1 min-h-0">
+            {/* Left: field list */}
+            <div className="w-56 border-r flex flex-col shrink-0">
+              <div className="flex-1 overflow-y-auto p-3 space-y-1">
+                {fields.map((f, idx) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setEditingFieldIdx(idx)}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left group transition-colors ${
+                      editingFieldIdx === idx ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
+                    }`}
+                  >
+                    <span className="flex-1 truncate">
+                      {f.label || <span className="italic text-muted-foreground">Unnamed</span>}
+                    </span>
+                    <div className="flex opacity-0 group-hover:opacity-100 gap-0.5">
+                      <button
+                        className="p-0.5 hover:text-foreground text-muted-foreground"
+                        onClick={(e) => { e.stopPropagation(); moveField(idx, -1); }}
+                      >
+                        <ChevronUp className="h-3 w-3" />
+                      </button>
+                      <button
+                        className="p-0.5 hover:text-foreground text-muted-foreground"
+                        onClick={(e) => { e.stopPropagation(); moveField(idx, 1); }}
+                      >
+                        <ChevronDown className="h-3 w-3" />
+                      </button>
+                      <button
+                        className="p-0.5 hover:text-destructive text-muted-foreground"
+                        onClick={(e) => { e.stopPropagation(); removeField(idx); }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 border-t">
+                <Button variant="outline" size="sm" className="w-full gap-1.5" onClick={addField}>
+                  <Plus className="h-3.5 w-3.5" /> Add Field
+                </Button>
+              </div>
+            </div>
+
+            {/* Center: field editor or preview */}
+            {previewMode ? (
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="max-w-md space-y-6">
+                  <h3 className="font-medium">{schemaName || 'Form Preview'}</h3>
+                  {fields.map((f) => (
+                    <FieldPreview key={f.id} field={f} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-1 min-h-0">
+                {/* Field config */}
+                <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                  {ef === null ? (
+                    <p className="text-sm text-muted-foreground">Select a field to edit it.</p>
+                  ) : (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Label</Label>
+                        <Input
+                          value={ef.label}
+                          onChange={(e) => updateField(editingFieldIdx!, { label: e.target.value })}
+                          placeholder="Field label..."
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Field Type</Label>
+                        <Select
+                          value={ef.type}
+                          onValueChange={(v) =>
+                            updateField(editingFieldIdx!, { type: (v ?? 'text') as FieldType })
+                          }
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {fieldTypes.map((t) => (
+                              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Placeholder</Label>
+                        <Input
+                          value={ef.placeholder ?? ''}
+                          onChange={(e) => updateField(editingFieldIdx!, { placeholder: e.target.value })}
+                          placeholder="Optional placeholder..."
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Help Text</Label>
+                        <Input
+                          value={ef.help_text ?? ''}
+                          onChange={(e) => updateField(editingFieldIdx!, { help_text: e.target.value })}
+                          placeholder="Optional helper text shown below field..."
+                        />
+                      </div>
+                      {needsOptions && (
+                        <div className="space-y-2">
+                          <Label>Options (one per line)</Label>
+                          <Textarea
+                            value={(ef.options ?? []).join('\n')}
+                            onChange={(e) =>
+                              updateField(editingFieldIdx!, {
+                                options: e.target.value.split('\n').filter(Boolean),
+                              })
+                            }
+                            placeholder={'Option 1\nOption 2\nOption 3'}
+                            className="h-24 resize-none"
+                          />
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          checked={ef.required}
+                          onCheckedChange={(c) => updateField(editingFieldIdx!, { required: c === true })}
+                        />
+                        <Label>Required</Label>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Right: live preview of selected field */}
+                <div className="w-64 border-l p-5 bg-muted/20 overflow-y-auto shrink-0">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">Preview</p>
+                  {ef ? (
+                    <FieldPreview field={ef} />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Select a field to preview</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

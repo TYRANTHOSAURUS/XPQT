@@ -14,15 +14,16 @@ import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
 import { RoutingRulesPage } from '@/pages/admin/routing-rules';
+import { FormSchemasPage } from '@/pages/admin/form-schemas';
+import { UsersPage } from '@/pages/admin/users';
+import { PersonsPage } from '@/pages/admin/persons';
+import { AssetsPage } from '@/pages/admin/assets';
+import { BusinessHoursPage } from '@/pages/admin/business-hours';
+import { NotificationsPage } from '@/pages/admin/notifications';
+import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
+import { DelegationsPage } from '@/pages/admin/delegations';
+import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { useTheme } from '@/hooks/use-theme';
-
-function PlaceholderPage({ title }: { title: string }) {
-  return (
-    <div className="flex h-full items-center justify-center text-muted-foreground">
-      <p>{title} — coming soon</p>
-    </div>
-  );
-}
 
 export function App() {
   useTheme();
@@ -38,9 +39,9 @@ export function App() {
           <Route path="my-requests" element={<MyRequestsPage />} />
           <Route path="catalog/:categoryId" element={<CatalogCategoryPage />} />
           <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
-          <Route path="book" element={<PlaceholderPage title="Room Booking" />} />
-          <Route path="visitors" element={<PlaceholderPage title="Visitor Registration" />} />
-          <Route path="order" element={<PlaceholderPage title="Order Catalog" />} />
+          <Route path="book" element={<Navigate to="/portal" replace />} />
+          <Route path="visitors" element={<Navigate to="/portal" replace />} />
+          <Route path="order" element={<Navigate to="/portal" replace />} />
         </Route>
 
         {/* Service Desk */}
@@ -48,21 +49,31 @@ export function App() {
           <Route index element={<Navigate to="/desk/inbox" replace />} />
           <Route path="inbox" element={<InboxPage />} />
           <Route path="tickets" element={<TicketsPage />} />
-          <Route path="approvals" element={<PlaceholderPage title="Approvals" />} />
-          <Route path="reports" element={<PlaceholderPage title="Reports" />} />
-          <Route path="settings" element={<PlaceholderPage title="Settings" />} />
+          <Route path="approvals" element={<Navigate to="/desk/inbox" replace />} />
+          <Route path="reports" element={<Navigate to="/desk/inbox" replace />} />
+          <Route path="settings" element={<Navigate to="/admin/request-types" replace />} />
         </Route>
 
         {/* Admin */}
         <Route path="/admin" element={<AdminLayout />}>
           <Route index element={<Navigate to="/admin/request-types" replace />} />
+          {/* Config */}
           <Route path="request-types" element={<RequestTypesPage />} />
+          <Route path="form-schemas" element={<FormSchemasPage />} />
           <Route path="teams" element={<TeamsPage />} />
           <Route path="locations" element={<LocationsPage />} />
           <Route path="sla-policies" element={<SlaPoliciesPage />} />
           <Route path="routing-rules" element={<RoutingRulesPage />} />
-          <Route path="business-hours" element={<PlaceholderPage title="Business Hours" />} />
-          <Route path="notifications" element={<PlaceholderPage title="Notification Templates" />} />
+          <Route path="business-hours" element={<BusinessHoursPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
+          <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
+          {/* People */}
+          <Route path="users" element={<UsersPage />} />
+          <Route path="persons" element={<PersonsPage />} />
+          <Route path="delegations" element={<DelegationsPage />} />
+          {/* Assets */}
+          <Route path="assets" element={<AssetsPage />} />
         </Route>
       </Routes>
     </TooltipProvider>

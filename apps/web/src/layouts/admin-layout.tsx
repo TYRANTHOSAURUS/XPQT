@@ -33,16 +33,36 @@ import {
   Calendar,
   Headset,
   LayoutDashboard,
+  FormInput,
+  UserCog,
+  PersonStanding,
+  Package,
+  Tags,
+  GitBranch,
+  HandCoins,
 } from 'lucide-react';
 
 const configNav = [
   { title: 'Request Types', path: '/admin/request-types', icon: FileText },
-  { title: 'Teams', path: '/admin/teams', icon: Users },
-  { title: 'Locations', path: '/admin/locations', icon: MapPin },
+  { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
+  { title: 'Catalog Categories', path: '/admin/catalog-categories', icon: Tags },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
   { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
+  { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
+];
+
+const peopleNav = [
+  { title: 'Teams', path: '/admin/teams', icon: Users },
+  { title: 'Users & Roles', path: '/admin/users', icon: UserCog },
+  { title: 'Persons', path: '/admin/persons', icon: PersonStanding },
+  { title: 'Delegations', path: '/admin/delegations', icon: HandCoins },
+];
+
+const operationsNav = [
+  { title: 'Locations', path: '/admin/locations', icon: MapPin },
+  { title: 'Assets', path: '/admin/assets', icon: Package },
 ];
 
 const quickNav = [
@@ -58,12 +78,19 @@ const user = {
 
 const pageTitles: Record<string, string> = {
   '/admin/request-types': 'Request Types',
+  '/admin/form-schemas': 'Form Schemas',
+  '/admin/catalog-categories': 'Catalog Categories',
   '/admin/teams': 'Teams',
   '/admin/locations': 'Locations',
   '/admin/sla-policies': 'SLA Policies',
   '/admin/routing-rules': 'Routing Rules',
   '/admin/business-hours': 'Business Hours',
   '/admin/notifications': 'Notifications',
+  '/admin/workflow-templates': 'Workflow Templates',
+  '/admin/users': 'Users & Roles',
+  '/admin/persons': 'Persons',
+  '/admin/delegations': 'Delegations',
+  '/admin/assets': 'Assets',
 };
 
 export function AdminLayout() {
@@ -102,6 +129,46 @@ export function AdminLayout() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {configNav.map((item) => (
+                  <SidebarMenuItem key={item.path}>
+                    <SidebarMenuButton
+                      isActive={location.pathname.startsWith(item.path)}
+                      onClick={() => navigate(item.path)}
+                      className="cursor-pointer"
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          <SidebarGroup>
+            <SidebarGroupLabel>People</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {peopleNav.map((item) => (
+                  <SidebarMenuItem key={item.path}>
+                    <SidebarMenuButton
+                      isActive={location.pathname.startsWith(item.path)}
+                      onClick={() => navigate(item.path)}
+                      className="cursor-pointer"
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          <SidebarGroup>
+            <SidebarGroupLabel>Operations</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {operationsNav.map((item) => (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
                       isActive={location.pathname.startsWith(item.path)}

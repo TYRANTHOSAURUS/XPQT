@@ -17,6 +17,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { PersonModule } from './modules/person/person.module';
 import { TeamModule } from './modules/team/team.module';
+import { AssetModule } from './modules/asset/asset.module';
+import { BusinessHoursModule } from './modules/business-hours/business-hours.module';
+import { DelegationModule } from './modules/delegation/delegation.module';
+import { UserManagementModule } from './modules/user-management/user-management.module';
 
 @Module({
   imports: [
@@ -39,6 +43,10 @@ import { TeamModule } from './modules/team/team.module';
     ReportingModule,
     PersonModule,
     TeamModule,
+    AssetModule,
+    BusinessHoursModule,
+    DelegationModule,
+    UserManagementModule,
   ],
   controllers: [HealthController],
 })

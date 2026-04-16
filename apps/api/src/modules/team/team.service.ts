@@ -40,4 +40,38 @@ export class TeamService {
     if (error) throw error;
     return data;
   }
+
+  async listMembers(teamId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('team_members')
+      .select('*, user:users(id, email, person:persons(id, first_name, last_name))')
+      .eq('team_id', teamId)
+      .eq('tenant_id', tenant.id);
+    if (error) throw error;
+    return data;
+  }
+
+  async addMember(teamId: string, userId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('team_members')
+      .insert({ team_id: teamId, user_id: userId, tenant_id: tenant.id })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async removeMember(teamId: string, userId: string) {
+    const tenant = TenantContext.current();
+    const { error } = await this.supabase.admin
+      .from('team_members')
+      .delete()
+      .eq('team_id', teamId)
+      .eq('user_id', userId)
+      .eq('tenant_id', tenant.id);
+    if (error) throw error;
+    return { removed: true };
+  }
 }

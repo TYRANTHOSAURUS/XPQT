@@ -21,28 +21,66 @@ interface RequestType {
   name: string;
   domain: string;
   active: boolean;
-  sla_policy?: { name: string } | null;
+  sla_policy?: { id: string; name: string } | null;
+  catalog_category_id?: string | null;
+  routing_rule_id?: string | null;
+}
+
+interface SlaPolicy {
+  id: string;
+  name: string;
+}
+
+interface Category {
+  id: string;
+  name: string;
+}
+
+interface RoutingRule {
+  id: string;
+  name: string;
 }
 
 const domains = ['it', 'fm', 'workplace', 'visitor', 'catering', 'security', 'general'];
 
 export function RequestTypesPage() {
   const { data, loading, refetch } = useApi<RequestType[]>('/request-types', []);
+  const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
+  const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
+  const { data: routingRules } = useApi<RoutingRule[]>('/routing-rules', []);
+
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [domain, setDomain] = useState('general');
+  const [slaPolicyId, setSlaPolicyId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [routingRuleId, setRoutingRuleId] = useState('');
+
+  const resetForm = () => {
+    setName('');
+    setDomain('general');
+    setSlaPolicyId('');
+    setCategoryId('');
+    setRoutingRuleId('');
+    setEditId(null);
+  };
 
   const handleSave = async () => {
     if (!name.trim()) return;
+    const body = {
+      name,
+      domain,
+      sla_policy_id: slaPolicyId || undefined,
+      catalog_category_id: categoryId || undefined,
+      routing_rule_id: routingRuleId || undefined,
+    };
     if (editId) {
-      await apiFetch(`/request-types/${editId}`, { method: 'PATCH', body: JSON.stringify({ name, domain }) });
+      await apiFetch(`/request-types/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
     } else {
-      await apiFetch('/request-types', { method: 'POST', body: JSON.stringify({ name, domain }) });
+      await apiFetch('/request-types', { method: 'POST', body: JSON.stringify(body) });
     }
-    setName('');
-    setDomain('general');
-    setEditId(null);
+    resetForm();
     setDialogOpen(false);
     refetch();
   };
@@ -51,14 +89,25 @@ export function RequestTypesPage() {
     setEditId(rt.id);
     setName(rt.name);
     setDomain(rt.domain ?? 'general');
+    setSlaPolicyId(rt.sla_policy?.id ?? '');
+    setCategoryId(rt.catalog_category_id ?? '');
+    setRoutingRuleId(rt.routing_rule_id ?? '');
     setDialogOpen(true);
   };
 
   const openCreate = () => {
-    setEditId(null);
-    setName('');
-    setDomain('general');
+    resetForm();
     setDialogOpen(true);
+  };
+
+  const getCategoryName = (id: string | null | undefined) => {
+    if (!id || !categories) return '—';
+    return categories.find((c) => c.id === id)?.name ?? '—';
+  };
+
+  const getRoutingRuleName = (id: string | null | undefined) => {
+    if (!id || !routingRules) return '—';
+    return routingRules.find((r) => r.id === id)?.name ?? '—';
   };
 
   return (
@@ -72,7 +121,7 @@ export function RequestTypesPage() {
           <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
             <Plus className="h-4 w-4" /> Add Request Type
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Request Type</DialogTitle>
             </DialogHeader>
@@ -92,6 +141,42 @@ export function RequestTypesPage() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label>Service Catalog Category</Label>
+                <Select value={categoryId} onValueChange={(v) => setCategoryId(v ?? '')}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {(categories ?? []).map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Linked SLA Policy</Label>
+                <Select value={slaPolicyId} onValueChange={(v) => setSlaPolicyId(v ?? '')}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {(slas ?? []).map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Linked Routing Rule</Label>
+                <Select value={routingRuleId} onValueChange={(v) => setRoutingRuleId(v ?? '')}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {(routingRules ?? []).map((r) => (
+                      <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
                 <Button onClick={handleSave} disabled={!name.trim()}>
@@ -107,24 +192,28 @@ export function RequestTypesPage() {
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
-            <TableHead className="w-[120px]">Domain</TableHead>
-            <TableHead className="w-[120px]">SLA Policy</TableHead>
+            <TableHead className="w-[110px]">Domain</TableHead>
+            <TableHead className="w-[150px]">Category</TableHead>
+            <TableHead className="w-[150px]">SLA Policy</TableHead>
+            <TableHead className="w-[150px]">Routing Rule</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
+            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
           )}
           {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No request types yet. Create one to get started.</TableCell></TableRow>
+            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No request types yet. Create one to get started.</TableCell></TableRow>
           )}
           {(data ?? []).map((rt) => (
             <TableRow key={rt.id}>
               <TableCell className="font-medium">{rt.name}</TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.domain ?? 'general'}</Badge></TableCell>
-              <TableCell className="text-muted-foreground">{rt.sla_policy?.name ?? '—'}</TableCell>
+              <TableCell className="text-muted-foreground text-sm">{getCategoryName(rt.catalog_category_id)}</TableCell>
+              <TableCell className="text-muted-foreground text-sm">{rt.sla_policy?.name ?? '—'}</TableCell>
+              <TableCell className="text-muted-foreground text-sm">{getRoutingRuleName(rt.routing_rule_id)}</TableCell>
               <TableCell><Badge variant={rt.active ? 'default' : 'secondary'}>{rt.active ? 'Active' : 'Inactive'}</Badge></TableCell>
               <TableCell>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(rt)}>
