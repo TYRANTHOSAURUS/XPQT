@@ -10,11 +10,11 @@ export class SupabaseService implements OnModuleInit {
 
   onModuleInit() {
     const url = this.config.getOrThrow<string>('SUPABASE_URL');
-    const serviceKey = this.config.getOrThrow<string>('SUPABASE_SERVICE_ROLE_KEY');
+    const secretKey = this.config.getOrThrow<string>('SUPABASE_SECRET_KEY');
 
     // Admin client bypasses RLS — used for tenant registry operations
     // and platform-level queries only
-    this.adminClient = createClient(url, serviceKey, {
+    this.adminClient = createClient(url, secretKey, {
       auth: { persistSession: false },
     });
   }
@@ -27,9 +27,9 @@ export class SupabaseService implements OnModuleInit {
   /** Create a client scoped to a specific user's JWT — RLS enforced. */
   forUser(accessToken: string): SupabaseClient {
     const url = this.config.getOrThrow<string>('SUPABASE_URL');
-    const anonKey = this.config.getOrThrow<string>('SUPABASE_ANON_KEY');
+    const publishableKey = this.config.getOrThrow<string>('SUPABASE_PUBLISHABLE_KEY');
 
-    return createClient(url, anonKey, {
+    return createClient(url, publishableKey, {
       global: {
         headers: { Authorization: `Bearer ${accessToken}` },
       },
