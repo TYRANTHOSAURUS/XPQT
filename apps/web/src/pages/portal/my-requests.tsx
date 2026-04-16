@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -64,6 +65,7 @@ function formatDate(dateStr: string): string {
 }
 
 export function MyRequestsPage() {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState('open');
 
   const statusParam = filter === 'open'
@@ -115,7 +117,7 @@ export function MyRequestsPage() {
         {tickets.map((ticket) => {
           const status = statusLabels[ticket.status_category] ?? statusLabels.new;
           return (
-            <Card key={ticket.id} className="cursor-pointer hover:bg-accent/30 transition-colors">
+            <Card key={ticket.id} className="cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => navigate(`/portal/my-requests/${ticket.id}`)}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">

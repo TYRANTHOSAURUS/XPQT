@@ -1,5 +1,9 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { AuthProvider } from '@/providers/auth-provider';
+import { ProtectedRoute } from '@/components/auth/protected-route';
+import { LoginPage } from '@/pages/auth/login';
+import { SignUpPage } from '@/pages/auth/signup';
 import { DeskLayout } from '@/layouts/desk-layout';
 import { PortalLayout } from '@/layouts/portal-layout';
 import { AdminLayout } from '@/layouts/admin-layout';
@@ -29,53 +33,80 @@ export function App() {
   useTheme();
 
   return (
-    <TooltipProvider>
-      <Routes>
-        <Route path="/" element={<Navigate to="/portal" replace />} />
+    <AuthProvider>
+      <TooltipProvider>
+        <Routes>
+          <Route path="/" element={<Navigate to="/portal" replace />} />
 
-        {/* Employee Portal */}
-        <Route path="/portal" element={<PortalLayout />}>
-          <Route index element={<PortalHome />} />
-          <Route path="my-requests" element={<MyRequestsPage />} />
-          <Route path="catalog/:categoryId" element={<CatalogCategoryPage />} />
-          <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
-          <Route path="book" element={<Navigate to="/portal" replace />} />
-          <Route path="visitors" element={<Navigate to="/portal" replace />} />
-          <Route path="order" element={<Navigate to="/portal" replace />} />
-        </Route>
+          {/* Auth pages — no layout */}
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignUpPage />} />
 
-        {/* Service Desk */}
-        <Route path="/desk" element={<DeskLayout />}>
-          <Route index element={<Navigate to="/desk/inbox" replace />} />
-          <Route path="inbox" element={<InboxPage />} />
-          <Route path="tickets" element={<TicketsPage />} />
-          <Route path="approvals" element={<Navigate to="/desk/inbox" replace />} />
-          <Route path="reports" element={<Navigate to="/desk/inbox" replace />} />
-          <Route path="settings" element={<Navigate to="/admin/request-types" replace />} />
-        </Route>
+          {/* Employee Portal — requires auth */}
+          <Route
+            path="/portal"
+            element={
+              <ProtectedRoute>
+                <PortalLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<PortalHome />} />
+            <Route path="my-requests" element={<MyRequestsPage />} />
+            <Route path="catalog/:categoryId" element={<CatalogCategoryPage />} />
+            <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
+            <Route path="book" element={<Navigate to="/portal" replace />} />
+            <Route path="visitors" element={<Navigate to="/portal" replace />} />
+            <Route path="order" element={<Navigate to="/portal" replace />} />
+          </Route>
 
-        {/* Admin */}
-        <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<Navigate to="/admin/request-types" replace />} />
-          {/* Config */}
-          <Route path="request-types" element={<RequestTypesPage />} />
-          <Route path="form-schemas" element={<FormSchemasPage />} />
-          <Route path="teams" element={<TeamsPage />} />
-          <Route path="locations" element={<LocationsPage />} />
-          <Route path="sla-policies" element={<SlaPoliciesPage />} />
-          <Route path="routing-rules" element={<RoutingRulesPage />} />
-          <Route path="business-hours" element={<BusinessHoursPage />} />
-          <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
-          <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
-          {/* People */}
-          <Route path="users" element={<UsersPage />} />
-          <Route path="persons" element={<PersonsPage />} />
-          <Route path="delegations" element={<DelegationsPage />} />
-          {/* Assets */}
-          <Route path="assets" element={<AssetsPage />} />
-        </Route>
-      </Routes>
-    </TooltipProvider>
+          {/* Service Desk — requires auth + agent role */}
+          <Route
+            path="/desk"
+            element={
+              <ProtectedRoute requiredRole="agent">
+                <DeskLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<Navigate to="/desk/inbox" replace />} />
+            <Route path="inbox" element={<InboxPage />} />
+            <Route path="tickets" element={<TicketsPage />} />
+            <Route path="approvals" element={<Navigate to="/desk/inbox" replace />} />
+            <Route path="reports" element={<Navigate to="/desk/inbox" replace />} />
+            <Route path="settings" element={<Navigate to="/admin/request-types" replace />} />
+          </Route>
+
+          {/* Admin — requires auth + admin role */}
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<Navigate to="/admin/request-types" replace />} />
+            {/* Config */}
+            <Route path="request-types" element={<RequestTypesPage />} />
+            <Route path="form-schemas" element={<FormSchemasPage />} />
+            <Route path="teams" element={<TeamsPage />} />
+            <Route path="locations" element={<LocationsPage />} />
+            <Route path="sla-policies" element={<SlaPoliciesPage />} />
+            <Route path="routing-rules" element={<RoutingRulesPage />} />
+            <Route path="business-hours" element={<BusinessHoursPage />} />
+            <Route path="notifications" element={<NotificationsPage />} />
+            <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
+            <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
+            {/* People */}
+            <Route path="users" element={<UsersPage />} />
+            <Route path="persons" element={<PersonsPage />} />
+            <Route path="delegations" element={<DelegationsPage />} />
+            {/* Assets */}
+            <Route path="assets" element={<AssetsPage />} />
+          </Route>
+        </Routes>
+      </TooltipProvider>
+    </AuthProvider>
   );
 }

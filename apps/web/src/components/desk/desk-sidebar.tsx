@@ -53,11 +53,6 @@ const ticketViews = [
   { id: "recent", label: "Recent", icon: ClockIcon },
 ]
 
-const user = {
-  name: "Service Agent",
-  email: "agent@prequest.io",
-  avatar: "",
-}
 
 interface Ticket {
   id: string
@@ -202,7 +197,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
-          <NavUser user={user} />
+          <NavUser />
         </SidebarFooter>
       </Sidebar>
 

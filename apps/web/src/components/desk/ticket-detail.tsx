@@ -9,7 +9,6 @@ import {
   Clock,
   MapPin,
   User,
-  Users,
   AlertTriangle,
   MessageSquare,
   Send,
@@ -20,6 +19,14 @@ import {
   TagIcon,
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { apiFetch } from '@/lib/api';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface TicketData {
   id: string;
@@ -98,17 +105,20 @@ function timeAgo(dateStr: string): string {
 }
 
 export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?: () => void }) {
-  const { data: ticket, loading: ticketLoading } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
+  const { data: ticket, loading: ticketLoading, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
+  const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
+
+  const updateTicket = async (updates: Record<string, unknown>) => {
+    await apiFetch(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(updates) });
+    refetchTicket();
+  };
 
   if (ticketLoading || !ticket) {
     return <div className="flex h-full items-center justify-center text-muted-foreground">Loading...</div>;
   }
-
-  const status = statusConfig[ticket.status_category] ?? statusConfig.new;
-  const priority = priorityConfig[ticket.priority] ?? priorityConfig.medium;
 
   const handleSubmitComment = async () => {
     if (!commentText.trim()) return;
@@ -246,16 +256,52 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* Status */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Status</div>
-            <div className="text-sm font-medium flex items-center gap-2">
-              <div className={`h-2.5 w-2.5 rounded-full ${status.dotColor}`} />
-              {status.label}
-            </div>
+            <Select value={ticket.status_category} onValueChange={(v) => { if (v) updateTicket({ status_category: v, status: v }); }}>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(statusConfig).map(([key, cfg]) => (
+                  <SelectItem key={key} value={key}>
+                    <span className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${cfg.dotColor}`} /> {cfg.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Priority */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Priority</div>
-            <div className={`text-sm font-medium ${priority.color}`}>{priority.label}</div>
+            <Select value={ticket.priority} onValueChange={(v) => { if (v) updateTicket({ priority: v }); }}>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(priorityConfig).map(([key, cfg]) => (
+                  <SelectItem key={key} value={key}>
+                    <span className={cfg.color}>{cfg.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Team */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Team</div>
+            <Select value={ticket.assigned_team?.id ?? ''} onValueChange={(v) => { if (v) updateTicket({ assigned_team_id: v }); }}>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue placeholder="Unassigned" />
+              </SelectTrigger>
+              <SelectContent>
+                {(teams ?? []).map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Assignee */}
@@ -264,15 +310,6 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             <div className="text-sm flex items-center gap-2">
               <User className="h-3.5 w-3.5 text-muted-foreground" />
               {ticket.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
-            </div>
-          </div>
-
-          {/* Team */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Team</div>
-            <div className="text-sm flex items-center gap-2">
-              <Users className="h-3.5 w-3.5 text-muted-foreground" />
-              {ticket.assigned_team?.name ?? <span className="text-muted-foreground">No team</span>}
             </div>
           </div>
 

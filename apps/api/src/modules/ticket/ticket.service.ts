@@ -1,6 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { RoutingService } from '../routing/routing.service';
+import { SlaService } from '../sla/sla.service';
+import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
@@ -61,7 +64,12 @@ export interface AddActivityDto {
 
 @Injectable()
 export class TicketService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
+    private readonly slaService: SlaService,
+    @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
+  ) {}
 
   async list(filters: TicketListFilters = {}) {
     const tenant = TenantContext.current();
@@ -175,6 +183,78 @@ export class TicketService {
 
     // Log domain event
     await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
+
+    // ── Auto-routing ──────────────────────────────────────────
+    // If no team was explicitly assigned, evaluate routing rules
+    if (!data.assigned_team_id && !data.assigned_user_id) {
+      try {
+        const requestType = data.ticket_type_id
+          ? await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()
+          : null;
+
+        const routingResult = await this.routingService.evaluate({
+          ticket_type_id: data.ticket_type_id,
+          domain: requestType?.data?.domain,
+          location_id: data.location_id,
+          priority: data.priority,
+        });
+
+        if (routingResult.assigned_team_id || routingResult.assigned_user_id) {
+          const updates: Record<string, unknown> = {};
+          if (routingResult.assigned_team_id) updates.assigned_team_id = routingResult.assigned_team_id;
+          if (routingResult.assigned_user_id) updates.assigned_user_id = routingResult.assigned_user_id;
+          updates.status_category = 'assigned';
+
+          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id);
+          Object.assign(data, updates);
+
+          await this.addActivity(data.id, {
+            activity_type: 'system_event',
+            visibility: 'system',
+            metadata: { event: 'auto_routed', rule: routingResult.rule_name },
+          });
+        }
+      } catch {
+        // Routing failure should not block ticket creation
+      }
+    }
+
+    // ── Auto-SLA ──────────────────────────────────────────────
+    // Start SLA timers if the request type has a linked SLA policy
+    if (data.ticket_type_id) {
+      try {
+        const { data: requestType } = await this.supabase.admin
+          .from('request_types')
+          .select('sla_policy_id')
+          .eq('id', data.ticket_type_id)
+          .single();
+
+        if (requestType?.sla_policy_id) {
+          await this.slaService.startTimers(data.id, tenant.id, requestType.sla_policy_id);
+          await this.supabase.admin.from('tickets').update({ sla_id: requestType.sla_policy_id }).eq('id', data.id);
+        }
+      } catch {
+        // SLA failure should not block ticket creation
+      }
+    }
+
+    // ── Auto-workflow ─────────────────────────────────────────
+    // Start workflow if the request type has a linked workflow definition
+    if (data.ticket_type_id) {
+      try {
+        const { data: requestType } = await this.supabase.admin
+          .from('request_types')
+          .select('workflow_definition_id')
+          .eq('id', data.ticket_type_id)
+          .single();
+
+        if (requestType?.workflow_definition_id) {
+          await this.workflowEngine.startForTicket(data.id, requestType.workflow_definition_id);
+        }
+      } catch {
+        // Workflow failure should not block ticket creation
+      }
+    }
 
     return data;
   }

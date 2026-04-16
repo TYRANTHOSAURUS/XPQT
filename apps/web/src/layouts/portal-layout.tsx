@@ -32,6 +32,7 @@ import {
   BarChart3,
   Settings,
 } from 'lucide-react';
+import { useAuth } from '@/providers/auth-provider';
 
 const portalNav = [
   { title: 'Home', path: '/portal', icon: Home },
@@ -41,11 +42,6 @@ const portalNav = [
   { title: 'Order', path: '/portal/order', icon: ShoppingCart },
 ];
 
-// These only show if the user has the right permissions
-// TODO: check actual user roles from auth context
-const hasAgentPermission = true; // placeholder
-const hasAdminPermission = true; // placeholder
-
 const agentNav = [
   { title: 'Service Desk', path: '/desk', icon: Headset },
 ];
@@ -54,12 +50,6 @@ const adminNav = [
   { title: 'Admin', path: '/admin', icon: Settings },
   { title: 'Reports', path: '/desk/reports', icon: BarChart3 },
 ];
-
-const user = {
-  name: 'Jan de Vries',
-  email: 'jan.devries@acme.nl',
-  avatar: '',
-};
 
 const pageTitles: Record<string, string> = {
   '/portal': 'Home',
@@ -72,6 +62,11 @@ const pageTitles: Record<string, string> = {
 export function PortalLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { hasRole } = useAuth();
+
+  const hasAgentPermission = hasRole('agent');
+  const hasAdminPermission = hasRole('admin');
+
   const pageTitle = Object.entries(pageTitles).find(([path]) =>
     path === '/portal' ? location.pathname === '/portal' : location.pathname.startsWith(path)
   )?.[1] ?? 'Portal';
@@ -172,7 +167,7 @@ export function PortalLayout() {
         </SidebarContent>
 
         <SidebarFooter>
-          <NavUser user={user} />
+          <NavUser />
         </SidebarFooter>
       </Sidebar>
 

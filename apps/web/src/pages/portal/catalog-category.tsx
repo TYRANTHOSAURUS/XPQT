@@ -15,24 +15,23 @@ interface RequestType {
   domain: string;
 }
 
-const categoryNames: Record<string, string> = {
-  it: 'IT Support',
-  fm: 'Facilities',
-  workplace: 'Workplace Services',
-  visitor: 'Visitors',
-  catering: 'Catering & Orders',
-  security: 'Access & Security',
-  booking: 'Reservations',
-  general: 'General',
-};
+interface CatalogCategory {
+  id: string;
+  name: string;
+  description: string;
+}
 
 export function CatalogCategoryPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
-  const categoryName = categoryNames[categoryId ?? ''] ?? 'Services';
 
+  // Fetch category details
+  const { data: categories } = useApi<CatalogCategory[]>('/service-catalog/categories', []);
+  const category = categories?.find((c) => c.id === categoryId);
+
+  // Fetch request types linked to this category
   const { data: requestTypes, loading } = useApi<RequestType[]>(
-    `/request-types?domain=${categoryId}`,
+    categoryId ? `/service-catalog/categories/${categoryId}/request-types` : '',
     [categoryId],
   );
 
@@ -42,7 +41,7 @@ export function CatalogCategoryPage() {
         <ArrowLeft className="h-4 w-4 mr-2" /> Back to catalog
       </Button>
 
-      <h1 className="text-2xl font-bold tracking-tight mb-2">{categoryName}</h1>
+      <h1 className="text-2xl font-bold tracking-tight mb-2">{category?.name ?? 'Services'}</h1>
       <p className="text-muted-foreground mb-8">Select the type of request you'd like to submit</p>
 
       {loading && (
@@ -52,7 +51,7 @@ export function CatalogCategoryPage() {
       {!loading && (!requestTypes || requestTypes.length === 0) && (
         <div className="text-center py-12">
           <p className="text-muted-foreground mb-4">No specific request types configured for this category yet.</p>
-          <Button onClick={() => navigate(`/portal/submit/${categoryId}`)}>
+          <Button onClick={() => navigate(`/portal/submit`)}>
             <Plus className="h-4 w-4 mr-2" /> Submit a General Request
           </Button>
         </div>
@@ -63,7 +62,7 @@ export function CatalogCategoryPage() {
           <Card
             key={rt.id}
             className="cursor-pointer transition-colors hover:bg-accent/50"
-            onClick={() => navigate(`/portal/submit/${categoryId}?type=${rt.id}`)}
+            onClick={() => navigate(`/portal/submit?type=${rt.id}`)}
           >
             <CardHeader>
               <CardTitle className="text-base">{rt.name}</CardTitle>
@@ -72,10 +71,9 @@ export function CatalogCategoryPage() {
           </Card>
         ))}
 
-        {/* Always show a general option */}
         <Card
           className="cursor-pointer transition-colors hover:bg-accent/50 border-dashed"
-          onClick={() => navigate(`/portal/submit/${categoryId}`)}
+          onClick={() => navigate(`/portal/submit`)}
         >
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">

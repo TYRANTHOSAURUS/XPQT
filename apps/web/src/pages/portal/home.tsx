@@ -16,28 +16,57 @@ import {
   HelpCircle,
   Utensils,
   MapPin,
+  Package,
+  Printer,
+  Key,
+  Car,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useApi } from '@/hooks/use-api';
 
-const categories = [
-  { id: 'it', name: 'IT Support', description: 'Hardware, software, access, and account issues', icon: Monitor, color: 'text-blue-500' },
-  { id: 'fm', name: 'Facilities', description: 'Maintenance, repairs, cleaning, and building issues', icon: Wrench, color: 'text-orange-500' },
-  { id: 'workplace', name: 'Workplace Services', description: 'Room booking issues, parking, furniture, and moves', icon: MapPin, color: 'text-green-500' },
-  { id: 'visitor', name: 'Visitors', description: 'Register a visitor, request access, and badges', icon: Users, color: 'text-purple-500' },
-  { id: 'catering', name: 'Catering & Orders', description: 'Food, drinks, equipment, and supplies', icon: Utensils, color: 'text-pink-500' },
-  { id: 'security', name: 'Access & Security', description: 'Keys, badges, access requests, and security incidents', icon: ShieldCheck, color: 'text-red-500' },
-  { id: 'booking', name: 'Reservations', description: 'Book rooms, desks, and workspaces', icon: CalendarDays, color: 'text-teal-500' },
-  { id: 'general', name: 'General', description: 'Questions, feedback, and other requests', icon: HelpCircle, color: 'text-gray-500' },
-];
+interface CatalogCategory {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  display_order: number;
+}
+
+const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
+  Monitor, Wrench, MapPin, Users, CalendarDays, ShieldCheck, HelpCircle,
+  Utensils, Package, Printer, Key, Car,
+};
+
+const colorMap: Record<string, string> = {
+  Monitor: 'text-blue-500',
+  Wrench: 'text-orange-500',
+  MapPin: 'text-green-500',
+  Users: 'text-purple-500',
+  Utensils: 'text-pink-500',
+  ShieldCheck: 'text-red-500',
+  CalendarDays: 'text-teal-500',
+  HelpCircle: 'text-gray-500',
+  Package: 'text-amber-500',
+  Printer: 'text-cyan-500',
+  Key: 'text-yellow-500',
+  Car: 'text-emerald-500',
+};
 
 export function PortalHome() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const { data: dbCategories, loading } = useApi<CatalogCategory[]>('/service-catalog/categories', []);
+
+  const categories = (dbCategories ?? []).map((cat) => ({
+    ...cat,
+    IconComponent: iconMap[cat.icon] ?? HelpCircle,
+    color: colorMap[cat.icon] ?? 'text-gray-500',
+  }));
 
   const filtered = searchQuery
     ? categories.filter((c) =>
         c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.description.toLowerCase().includes(searchQuery.toLowerCase())
+        (c.description ?? '').toLowerCase().includes(searchQuery.toLowerCase())
       )
     : categories;
 
@@ -60,6 +89,10 @@ export function PortalHome() {
       </div>
 
       {/* Service catalog grid */}
+      {loading && (
+        <div className="text-center py-12 text-muted-foreground">Loading services...</div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {filtered.map((category) => (
           <Card
@@ -69,7 +102,7 @@ export function PortalHome() {
           >
             <CardHeader>
               <div className={`mb-2 ${category.color}`}>
-                <category.icon className="h-6 w-6" />
+                <category.IconComponent className="h-6 w-6" />
               </div>
               <CardTitle className="text-base">{category.name}</CardTitle>
               <CardDescription>{category.description}</CardDescription>
@@ -77,6 +110,12 @@ export function PortalHome() {
           </Card>
         ))}
       </div>
+
+      {!loading && filtered.length === 0 && (
+        <div className="text-center py-12 text-muted-foreground">
+          {searchQuery ? 'No services match your search' : 'No service categories configured yet'}
+        </div>
+      )}
     </div>
   );
 }

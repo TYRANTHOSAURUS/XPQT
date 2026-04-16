@@ -70,12 +70,6 @@ const quickNav = [
   { title: 'Service Desk', path: '/desk', icon: Headset },
 ];
 
-const user = {
-  name: 'Service Agent',
-  email: 'agent@prequest.io',
-  avatar: '',
-};
-
 const pageTitles: Record<string, string> = {
   '/admin/request-types': 'Request Types',
   '/admin/form-schemas': 'Form Schemas',
@@ -205,7 +199,7 @@ export function AdminLayout() {
         </SidebarContent>
 
         <SidebarFooter>
-          <NavUser user={user} />
+          <NavUser />
         </SidebarFooter>
       </Sidebar>
 

@@ -20,6 +20,8 @@ import {
 } from '@/components/ui/card';
 import { ArrowLeft, Send, CheckCircle } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { useAuth } from '@/providers/auth-provider';
+import { apiFetch } from '@/lib/api';
 
 interface RequestType {
   id: string;
@@ -30,6 +32,7 @@ interface RequestType {
 export function SubmitRequestPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
+  const { person } = useAuth();
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -48,15 +51,14 @@ export function SubmitRequestPage() {
     setSubmitting(true);
 
     try {
-      await fetch('/api/tickets', {
+      await apiFetch('/tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
           description,
           priority,
           ticket_type_id: requestTypeId || undefined,
-          requester_person_id: 'a0000000-0000-0000-0000-000000000001', // TODO: from auth context
+          requester_person_id: person?.id,
           source_channel: 'portal',
         }),
       });
