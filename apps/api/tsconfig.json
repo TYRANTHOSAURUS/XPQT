@@ -10,7 +10,6 @@
     "experimentalDecorators": true,
     "declaration": false,
     "declarationMap": false,
-    "incremental": true,
     "paths": {
       "@/*": ["src/*"]
     }
