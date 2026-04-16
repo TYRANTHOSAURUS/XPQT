@@ -1,98 +1,197 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { NavUser } from '@/components/nav-user';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Home, Ticket, CalendarDays, UserPlus, ShoppingCart, Bell, Settings, LogOut, Headset } from 'lucide-react';
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from '@/components/ui/sidebar';
+import { Separator } from '@/components/ui/separator';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+} from '@/components/ui/breadcrumb';
+import {
+  Home,
+  Ticket,
+  CalendarDays,
+  UserPlus,
+  ShoppingCart,
+  Headset,
+  BarChart3,
+  Settings,
+} from 'lucide-react';
 
-const navItems = [
-  { label: 'Home', path: '/portal', icon: Home },
-  { label: 'My Requests', path: '/portal/my-requests', icon: Ticket },
-  { label: 'Book a Room', path: '/portal/book', icon: CalendarDays },
-  { label: 'Invite Visitor', path: '/portal/visitors', icon: UserPlus },
-  { label: 'Order', path: '/portal/order', icon: ShoppingCart },
+const portalNav = [
+  { title: 'Home', path: '/portal', icon: Home },
+  { title: 'My Requests', path: '/portal/my-requests', icon: Ticket },
+  { title: 'Book a Room', path: '/portal/book', icon: CalendarDays },
+  { title: 'Invite Visitor', path: '/portal/visitors', icon: UserPlus },
+  { title: 'Order', path: '/portal/order', icon: ShoppingCart },
 ];
+
+// These only show if the user has the right permissions
+// TODO: check actual user roles from auth context
+const hasAgentPermission = true; // placeholder
+const hasAdminPermission = true; // placeholder
+
+const agentNav = [
+  { title: 'Service Desk', path: '/desk', icon: Headset },
+];
+
+const adminNav = [
+  { title: 'Reports', path: '/desk/reports', icon: BarChart3 },
+  { title: 'Settings', path: '/desk/settings', icon: Settings },
+];
+
+const user = {
+  name: 'Jan de Vries',
+  email: 'jan.devries@acme.nl',
+  avatar: '',
+};
+
+const pageTitles: Record<string, string> = {
+  '/portal': 'Home',
+  '/portal/my-requests': 'My Requests',
+  '/portal/book': 'Book a Room',
+  '/portal/visitors': 'Invite Visitor',
+  '/portal/order': 'Order',
+};
 
 export function PortalLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const pageTitle = Object.entries(pageTitles).find(([path]) =>
+    path === '/portal' ? location.pathname === '/portal' : location.pathname.startsWith(path)
+  )?.[1] ?? 'Portal';
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="max-w-6xl mx-auto px-6 flex h-16 items-center gap-8">
-          {/* Logo */}
-          <button onClick={() => navigate('/portal')} className="flex items-center gap-3 shrink-0">
-            <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-8 w-8" />
-            <span className="text-lg font-semibold">Prequest</span>
-          </button>
-
-          {/* Nav */}
-          <nav className="flex items-center gap-1">
-            {navItems.map((item) => {
-              const isActive = item.path === '/portal'
-                ? location.pathname === '/portal'
-                : location.pathname.startsWith(item.path);
-              return (
-                <Button
-                  key={item.path}
-                  variant={isActive ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => navigate(item.path)}
-                  className="gap-2"
-                >
-                  <item.icon className="h-4 w-4" />
-                  {item.label}
-                </Button>
-              );
-            })}
-          </nav>
-
-          {/* Right side */}
-          <div className="ml-auto flex items-center gap-3">
-            <Button variant="outline" size="sm" onClick={() => navigate('/desk')} className="gap-2">
-              <Headset className="h-4 w-4" />
-              Service Desk
-            </Button>
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="h-4 w-4" />
-            </Button>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={<Button variant="ghost" size="icon" className="rounded-full" />}
+    <SidebarProvider>
+      <Sidebar variant="inset">
+        <SidebarHeader>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                size="lg"
+                onClick={() => navigate('/portal')}
+                className="cursor-pointer"
               >
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback>JD</AvatarFallback>
-                </Avatar>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={() => navigate('/portal/my-requests')}>
-                  <Ticket className="h-4 w-4 mr-2" /> My Requests
-                </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Settings className="h-4 w-4 mr-2" /> Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
-                  <LogOut className="h-4 w-4 mr-2" /> Log out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-      </header>
+                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
+                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
+                </div>
+                <div className="grid flex-1 text-left text-sm leading-tight">
+                  <span className="truncate font-medium">Prequest</span>
+                  <span className="truncate text-xs text-muted-foreground">Employee Portal</span>
+                </div>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarHeader>
 
-      {/* Content */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        <Outlet />
-      </main>
-    </div>
+        <SidebarContent>
+          {/* Portal navigation */}
+          <SidebarGroup>
+            <SidebarGroupLabel>Portal</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {portalNav.map((item) => {
+                  const isActive = item.path === '/portal'
+                    ? location.pathname === '/portal'
+                    : location.pathname.startsWith(item.path);
+                  return (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton
+                        isActive={isActive}
+                        onClick={() => navigate(item.path)}
+                        className="cursor-pointer"
+                      >
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          {/* Agent navigation — only if has permissions */}
+          {hasAgentPermission && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {agentNav.map((item) => (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton
+                        onClick={() => navigate(item.path)}
+                        className="cursor-pointer"
+                      >
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )}
+
+          {/* Admin navigation — only if has permissions */}
+          {hasAdminPermission && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Admin</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {adminNav.map((item) => (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton
+                        onClick={() => navigate(item.path)}
+                        className="cursor-pointer"
+                      >
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )}
+        </SidebarContent>
+
+        <SidebarFooter>
+          <NavUser user={user} />
+        </SidebarFooter>
+      </Sidebar>
+
+      <SidebarInset>
+        <header className="flex h-14 shrink-0 items-center gap-2 px-6">
+          <SidebarTrigger className="-ml-2" />
+          <Separator orientation="vertical" className="mr-2 h-4" />
+          <Breadcrumb>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbPage>{pageTitle}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+        </header>
+        <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
+          <Outlet />
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
