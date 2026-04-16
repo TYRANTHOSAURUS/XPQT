@@ -11,6 +11,7 @@ XPQT/
 ├── supabase/
 │   ├── config.toml   Local Supabase config
 │   └── migrations/   Database migrations
+├── docs/             Product specification and phase plans
 └── .env              Environment variables (copy from .env.example)
 ```
 
@@ -40,7 +41,7 @@ XPQT/
 - Installed components are in `apps/web/src/components/ui/`. Check there before installing duplicates.
 
 ## Spec Documents
-The full product specification and phase plans are in `/Users/x/Downloads/`:
-- `prequest_x_.md` — main product specification
-- `prequest_build_strategy.md` — build strategy (phase UI, not architecture)
-- `prequest_phase_1.md` through `prequest_phase_4.md` — phase plans
+All in `docs/`:
+- `docs/spec.md` — main product specification (~3000 lines, comprehensive)
+- `docs/build-strategy.md` — build strategy (phase UI, not architecture)
+- `docs/phase-1.md` through `docs/phase-4.md` — phase plans with detailed scope per phase

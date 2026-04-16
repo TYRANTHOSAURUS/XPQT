@@ -1,15 +1,15 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldSeparator,
+} from '@/components/ui/field';
 import { useAuth } from '@/providers/auth-provider';
 
 export function LoginPage() {
@@ -41,81 +41,99 @@ export function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-2">
-          <img
-            src="/assets/prequest-icon-color.svg"
-            alt="Prequest"
-            className="h-12 w-12"
-          />
-          <h1 className="text-xl font-semibold tracking-tight">Prequest</h1>
+    <div className="grid min-h-svh lg:grid-cols-2">
+      {/* Left: form */}
+      <div className="flex flex-col gap-4 p-6 md:p-10">
+        <div className="flex justify-center gap-2 md:justify-start">
+          <a href="/" className="flex items-center gap-2 font-medium">
+            <div className="flex h-8 w-8 items-center justify-center">
+              <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-7 w-7" />
+            </div>
+            Prequest
+          </a>
         </div>
+        <div className="flex flex-1 items-center justify-center">
+          <div className="w-full max-w-xs">
+            <form onSubmit={handleSubmit} className={cn("flex flex-col gap-6")}>
+              <FieldGroup>
+                <div className="flex flex-col items-center gap-1 text-center">
+                  <h1 className="text-2xl font-bold">Welcome back</h1>
+                  <p className="text-sm text-balance text-muted-foreground">
+                    Sign in to your Prequest account
+                  </p>
+                </div>
 
-        <Card>
-          <CardHeader className="text-center">
-            <CardTitle className="text-lg">Sign in to your account</CardTitle>
-            <CardDescription>
-              Enter your email and password to continue
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {successMessage && (
-              <div className="mb-4 rounded-md bg-green-50 p-3 text-sm text-green-800 dark:bg-green-950 dark:text-green-200">
-                {successMessage}
-              </div>
-            )}
+                {successMessage && (
+                  <div className="rounded-md bg-green-50 p-3 text-sm text-green-800 dark:bg-green-950 dark:text-green-200">
+                    {successMessage}
+                  </div>
+                )}
 
-            {error && (
-              <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                {error}
-              </div>
-            )}
+                {error && (
+                  <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                    {error}
+                  </div>
+                )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoComplete="email"
-                  autoFocus
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
-              </div>
-
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? 'Signing in...' : 'Sign in'}
-              </Button>
+                <Field>
+                  <FieldLabel htmlFor="email">Email</FieldLabel>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="you@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    autoComplete="email"
+                    autoFocus
+                  />
+                </Field>
+                <Field>
+                  <div className="flex items-center">
+                    <FieldLabel htmlFor="password">Password</FieldLabel>
+                    <a href="#" className="ml-auto text-sm underline-offset-4 hover:underline">
+                      Forgot password?
+                    </a>
+                  </div>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    autoComplete="current-password"
+                  />
+                </Field>
+                <Field>
+                  <Button type="submit" disabled={loading} className="w-full">
+                    {loading ? 'Signing in...' : 'Sign in'}
+                  </Button>
+                </Field>
+                <FieldSeparator>Or</FieldSeparator>
+                <FieldDescription className="text-center">
+                  Don&apos;t have an account?{' '}
+                  <Link to="/signup" className="underline underline-offset-4">
+                    Sign up
+                  </Link>
+                </FieldDescription>
+              </FieldGroup>
             </form>
+          </div>
+        </div>
+      </div>
 
-            <p className="mt-4 text-center text-sm text-muted-foreground">
-              Don't have an account?{' '}
-              <Link
-                to="/signup"
-                className="font-medium text-primary underline-offset-4 hover:underline"
-              >
-                Sign up
-              </Link>
+      {/* Right: branding image */}
+      <div className="relative hidden bg-muted lg:block">
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-center px-12">
+            <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-24 w-24 mx-auto mb-8 opacity-80" />
+            <h2 className="text-3xl font-bold tracking-tight">Unified Workplace Operations</h2>
+            <p className="text-muted-foreground mt-3 text-lg max-w-md mx-auto">
+              One platform for facilities, IT service management, reservations, visitors, and more.
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </div>
   );
