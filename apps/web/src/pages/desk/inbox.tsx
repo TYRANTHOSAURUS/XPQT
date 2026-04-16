@@ -2,7 +2,7 @@ import { useSearchParams } from 'react-router-dom';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 
 export function InboxPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const ticketId = searchParams.get('ticket');
 
   if (!ticketId) {
@@ -16,5 +16,12 @@ export function InboxPage() {
     );
   }
 
-  return <TicketDetail ticketId={ticketId} />;
+  return (
+    <div className="h-full">
+      <TicketDetail
+        ticketId={ticketId}
+        onClose={() => setSearchParams({})}
+      />
+    </div>
+  );
 }
