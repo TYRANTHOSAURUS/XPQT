@@ -63,11 +63,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setPerson(matchedPerson ?? null);
 
       // Fetch user record (roles)
-      const users = await apiFetch<AppUser[]>('/users');
+      type ApiUser = {
+        id: string;
+        person_id: string;
+        role_assignments?: { role?: { name?: string } | null }[];
+      };
+      const users = await apiFetch<ApiUser[]>('/users');
       const matchedUser = users?.find(
         (u) => matchedPerson && u.person_id === matchedPerson.id,
       );
-      setAppUser(matchedUser ?? null);
+      setAppUser(
+        matchedUser
+          ? {
+              id: matchedUser.id,
+              person_id: matchedUser.person_id,
+              roles: (matchedUser.role_assignments ?? [])
+                .map((ra) => ra.role?.name)
+                .filter((name): name is string => Boolean(name)),
+            }
+          : null,
+      );
     } catch {
       // API might not be available yet or user might not have a person record
       setPerson(null);

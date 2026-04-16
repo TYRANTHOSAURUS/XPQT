@@ -12,38 +12,38 @@ Phase 1 backend builds the **complete** data model and service layer as describe
 
 ### Database schema
 All tables from the spec are created:
-- All domain objects (sections 9.1–9.23) with full field sets
-- Configuration engine tables (config_entities, config_versions)
-- Notification, audit event, and domain event tables
-- RLS policies for all tables
+- [x] All domain objects (sections 9.1–9.23) with full field sets
+- [x] Configuration engine tables (config_entities, config_versions)
+- [x] Notification, audit event, and domain event tables
+- [~] RLS policies for all tables
 
 ### Services and APIs
 All backend services are implemented:
 
 | Service | Scope |
 |---|---|
-| **Ticket service** | Full CRUD. Parent-child relationships. Status aggregation. Activity timeline (internal/external/system). Attachment handling. |
-| **Workflow engine** | Graph-based state machine. Reads workflow definition JSON. Executes all 10 node types (trigger, condition, assign, create child tasks, approval, wait for, timer, notification, update ticket, end). Branching support. Timer scheduling via pg_cron. |
-| **SLA engine** | Response + resolution timers. Pause/resume on waiting states. Business hours calculation against calendar. Breach detection. Multiple timers per ticket. Computed breach fields on ticket (sla_breached_at, sla_at_risk). |
-| **Approval engine** | Single-step, sequential multi-step, parallel multi-step. Delegation. Reminder scheduling. |
-| **Routing engine** | Rule evaluation (request type + domain + location + category → team). Manual override. |
-| **Configuration engine** | Config entity registry. Draft/publish/version lifecycle. Validation framework. Rollback. Audit logging. |
-| **Notification engine** | Event-driven dispatch. Template rendering with tokens. Email + in-app delivery. |
-| **Reservation service** | Room/desk booking. Availability checking. Recurring reservations. Linked orders. Amenity filtering. |
-| **Order & catalog service** | Cart management. Line items. Fulfillment routing per category. Asset pool availability check. Cost calculation. |
-| **Asset service** | Registry. Assignment (permanent/temporary). Pool availability. Return tracking. Assignment history. |
-| **Visitor service** | Pre-registration. Walk-in. Check-in/check-out. Host notification. |
-| **Maintenance schedule service** | Recurring schedule management. Auto-ticket generation. |
-| **Space service** | Location hierarchy CRUD. Amenity management. |
-| **Tenant service** | Registry. Provisioning. Feature flags. Branding. |
-| **Auth service** | Supabase Auth integration. Tenant resolution. JWT validation. RLS context setting. |
-| **Search service** | PostgreSQL full-text search across tickets, spaces, assets, people. |
-| **Real-time service** | Supabase Realtime subscriptions for service desk events. |
-| **Reporting service** | Ticket volume, SLA performance, resolution times queries. |
+| **Ticket service** | [~] Full CRUD. Parent-child relationships. Status aggregation. Activity timeline (internal/external/system). Attachment handling. |
+| **Workflow engine** | [~] Graph-based state machine. Reads workflow definition JSON. Executes all 10 node types (trigger, condition, assign, create child tasks, approval, wait for, timer, notification, update ticket, end). Branching support. Timer scheduling via pg_cron. |
+| **SLA engine** | [~] Response + resolution timers. Pause/resume on waiting states. Business hours calculation against calendar. Breach detection. Multiple timers per ticket. Computed breach fields on ticket (sla_breached_at, sla_at_risk). |
+| **Approval engine** | [x] Single-step, sequential multi-step, parallel multi-step. Delegation. Reminder scheduling. |
+| **Routing engine** | [x] Rule evaluation (request type + domain + location + category → team). Manual override. |
+| **Configuration engine** | [~] Config entity registry. Draft/publish/version lifecycle. Validation framework. Rollback. Audit logging. |
+| **Notification engine** | [x] Event-driven dispatch. Template rendering with tokens. Email + in-app delivery. |
+| **Reservation service** | [ ] Room/desk booking. Availability checking. Recurring reservations. Linked orders. Amenity filtering. |
+| **Order & catalog service** | [ ] Cart management. Line items. Fulfillment routing per category. Asset pool availability check. Cost calculation. |
+| **Asset service** | [x] Registry. Assignment (permanent/temporary). Pool availability. Return tracking. Assignment history. |
+| **Visitor service** | [ ] Pre-registration. Walk-in. Check-in/check-out. Host notification. |
+| **Maintenance schedule service** | [ ] Recurring schedule management. Auto-ticket generation. |
+| **Space service** | [x] Location hierarchy CRUD. Amenity management. |
+| **Tenant service** | [x] Registry. Provisioning. Feature flags. Branding. |
+| **Auth service** | [x] Supabase Auth integration. Tenant resolution. JWT validation. RLS context setting. |
+| **Search service** | [ ] PostgreSQL full-text search across tickets, spaces, assets, people. |
+| **Real-time service** | [ ] Supabase Realtime subscriptions for service desk events. |
+| **Reporting service** | [x] Ticket volume, SLA performance, resolution times queries. |
 
 ### Seed data and templates
-- Default workflow templates (linear, linear + approval, multi-task)
-- Default request types per industry (Healthcare starter, University starter, Corporate starter), including workplace service types:
+- [ ] Default workflow templates (linear, linear + approval, multi-task)
+- [ ] Default request types per industry (Healthcare starter, University starter, Corporate starter), including workplace service types:
   - IT: incident, service request, access request, equipment request
   - FM: maintenance issue, cleaning request, office move, furniture request
   - Workplace: room booking issue, parking request, key/lock request
@@ -52,12 +52,12 @@ All backend services are implemented:
   - Events: AV setup request, furniture rearrangement, event support
   - Printing: large format print request, bulk printing/copying
   - General: information request, complaint, feedback
-- Default SLA policies (standard, high-priority, critical)
-- Default routing rules per request type domain
-- Default notification templates for all event types
-- Default service catalog categories (IT Support, Facilities, Workplace Services, Access & Security, General)
-- Default business hours calendar (Mon-Fri 08:00-17:00)
-- Default catalog items for common workplace needs (coffee service, basic catering packages, standard equipment)
+- [ ] Default SLA policies (standard, high-priority, critical)
+- [ ] Default routing rules per request type domain
+- [ ] Default notification templates for all event types
+- [ ] Default service catalog categories (IT Support, Facilities, Workplace Services, Access & Security, General)
+- [ ] Default business hours calendar (Mon-Fri 08:00-17:00)
+- [ ] Default catalog items for common workplace needs (coffee service, basic catering packages, standard equipment)
 
 ---
 
@@ -68,203 +68,203 @@ Only these screens are built in Phase 1. Everything else waits for later phases.
 ### Service Desk Workspace
 
 **Ticket queue/list view (THE most important screen)**
-- Dense table/list layout
-- Columns: ID, title, status, priority, assigned team, assigned agent, location, SLA status, created date
-- Filters: status, priority, team, location, domain, SLA breach status
-- Sort by any column
-- Side-panel ticket detail (click row → detail opens alongside queue)
-- Bulk actions: assign, change status, change priority (multi-select)
-- Real-time updates: new tickets appear indicator, status changes reflect live
-- Keyboard shortcuts: navigate list, open detail, assign, change status
-- Pagination: cursor-based, fast
+- [x] Dense table/list layout
+- [~] Columns: ID, title, status, priority, assigned team, assigned agent, location, SLA status, created date
+- [ ] Filters: status, priority, team, location, domain, SLA breach status
+- [ ] Sort by any column
+- [x] Side-panel ticket detail (click row → detail opens alongside queue)
+- [~] Bulk actions: assign, change status, change priority (multi-select)
+- [ ] Real-time updates: new tickets appear indicator, status changes reflect live
+- [ ] Keyboard shortcuts: navigate list, open detail, assign, change status
+- [x] Pagination: cursor-based, fast
 
 **Ticket detail view**
-- Full ticket information (all fields from 9.8 that are populated)
-- Activity timeline with internal notes, external comments, system events
-- Add comment (toggle internal/external)
-- Attachment upload
-- Status change
-- Assignment/reassignment (team and/or agent)
-- Priority change
-- SLA timer display (response + resolution, with visual breach indicator)
-- Linked info: requester details, location context, asset (if linked)
-- Child tasks section (visible but "create child task" button NOT in Phase 1 UI — API exists though)
+- [x] Full ticket information (all fields from 9.8 that are populated)
+- [x] Activity timeline with internal notes, external comments, system events
+- [x] Add comment (toggle internal/external)
+- [ ] Attachment upload
+- [x] Status change
+- [~] Assignment/reassignment (team and/or agent)
+- [x] Priority change
+- [x] SLA timer display (response + resolution, with visual breach indicator)
+- [x] Linked info: requester details, location context, asset (if linked)
+- [~] Child tasks section (visible but "create child task" button NOT in Phase 1 UI — API exists though)
 
 **Team queue view**
-- Tickets assigned to a team but not yet claimed by an individual
-- Claim/pickup action
+- [ ] Tickets assigned to a team but not yet claimed by an individual
+- [ ] Claim/pickup action
 
 **Approval queue / worklist**
-- Dedicated view showing all pending approvals for the current user
-- Approve/reject with one click + optional comment
-- Context summary (what's being approved, who requested it, cost if applicable)
-- Mobile-optimized: large tap targets, one-tap approve/reject, works on phone
-- Shows approval chain progress for multi-step ("Step 2 of 3")
-- Delegation indicator if acting as a substitute
+- [x] Dedicated view showing all pending approvals for the current user
+- [x] Approve/reject with one click + optional comment
+- [~] Context summary (what's being approved, who requested it, cost if applicable)
+- [ ] Mobile-optimized: large tap targets, one-tap approve/reject, works on phone
+- [ ] Shows approval chain progress for multi-step ("Step 2 of 3")
+- [ ] Delegation indicator if acting as a substitute
 
 **Saved filters**
-- Save current filter combination as a named view
-- Switch between saved views quickly
-- Personal saved views per agent
+- [ ] Save current filter combination as a named view
+- [ ] Switch between saved views quickly
+- [ ] Personal saved views per agent
 
 **Inline editing**
-- Edit priority, status, and assignment directly from the queue row without opening the detail panel
-- Click a cell → dropdown/picker appears → change applied immediately
+- [ ] Edit priority, status, and assignment directly from the queue row without opening the detail panel
+- [ ] Click a cell → dropdown/picker appears → change applied immediately
 
 ### Employee Portal
 
 **Service catalog**
-- Browsable categories (from service_catalog_categories)
-- Category cards with icons and descriptions
-- Click category → see available request types
-- Search across catalog
+- [x] Browsable categories (from service_catalog_categories)
+- [x] Category cards with icons and descriptions
+- [x] Click category → see available request types
+- [x] Search across catalog
 
 **Request submission**
-- Select request type → dynamic form rendered from form schema
-- Form fields rendered by type (text, dropdown, date, person picker, location picker, etc.)
-- Conditional visibility working
-- Submit → ticket created → confirmation shown
+- [x] Select request type → dynamic form rendered from form schema
+- [x] Form fields rendered by type (text, dropdown, date, person picker, location picker, etc.)
+- [ ] Conditional visibility working
+- [x] Submit → ticket created → confirmation shown
 
 **My requests**
-- List of employee's own tickets
-- Status, last update, SLA indicator
-- Click → detail view (external comments only, no internal notes)
+- [x] List of employee's own tickets
+- [x] Status, last update, SLA indicator
+- [~] Click → detail view (external comments only, no internal notes)
 
 **My approvals**
-- Pending approvals for the current employee (e.g., line managers who approve from the portal, not the service desk)
-- One-tap approve/reject on mobile
-- Context summary for each approval
+- [ ] Pending approvals for the current employee (e.g., line managers who approve from the portal, not the service desk)
+- [ ] One-tap approve/reject on mobile
+- [ ] Context summary for each approval
 
 **Unified search bar**
-- Global search across tickets, spaces, people, and assets from one input
-- Results grouped by entity type
-- Permission-filtered (employee sees only their own tickets and public spaces; agents see more based on scope)
+- [ ] Global search across tickets, spaces, people, and assets from one input
+- [ ] Results grouped by entity type
+- [ ] Permission-filtered (employee sees only their own tickets and public spaces; agents see more based on scope)
 
 ### Admin
 
 **Request type management**
-- List of request types
-- Create/edit form: name, domain, category, linked form schema, linked workflow template, linked SLA policy, linked routing rule
-- Uses configuration engine under the hood (draft/publish) but UI is a simple form + "Save & Publish" button — the full versioning/rollback admin UI comes later
+- [x] List of request types
+- [~] Create/edit form: name, domain, category, linked form schema, linked workflow template, linked SLA policy, linked routing rule
+- [ ] Uses configuration engine under the hood (draft/publish) but UI is a simple form + "Save & Publish" button — the full versioning/rollback admin UI comes later
 
 **Form schema builder (simplified)**
-- Field list with add/remove/reorder
-- Field type selection from supported types
-- Required/optional toggle
-- Conditional visibility configuration
-- Live preview
-- Save & publish
+- [x] Field list with add/remove/reorder
+- [x] Field type selection from supported types
+- [x] Required/optional toggle
+- [ ] Conditional visibility configuration
+- [x] Live preview
+- [x] Save & publish
 
 **SLA policy management**
-- List of SLA policies
-- Create/edit: response target, resolution target, business hours calendar, pause conditions, escalation thresholds
-- Save & publish
+- [x] List of SLA policies
+- [x] Create/edit: response target, resolution target, business hours calendar, pause conditions, escalation thresholds
+- [x] Save & publish
 
 **Routing rule management**
-- List of routing rules
-- Create/edit: conditions (request type + domain + location → assign to team)
-- Save & publish
+- [x] List of routing rules
+- [x] Create/edit: conditions (request type + domain + location → assign to team)
+- [x] Save & publish
 
 **Workflow template selection**
-- List of pre-built workflow templates
-- Select a template → configure parameters (which states, which teams, which approvals, which notifications)
-- Save & publish
-- No visual builder yet — that's Phase 3
+- [x] List of pre-built workflow templates
+- [ ] Select a template → configure parameters (which states, which teams, which approvals, which notifications)
+- [x] Save & publish
+- [x] No visual builder yet — that's Phase 3
 
 **Team management**
-- Create/edit teams with name, domain scope, location scope
-- Assign users to teams
+- [x] Create/edit teams with name, domain scope, location scope
+- [x] Assign users to teams
 
 **User/role management**
-- View users (synced from Supabase Auth)
-- Assign roles with domain + location scope
+- [x] View users (synced from Supabase Auth)
+- [x] Assign roles with domain + location scope
 
 **Person management**
-- View/edit person records (employees, contractors, vendor contacts)
-- Fields: name, email, phone, division, department, cost_center, manager, type
-- Employees sync from auth; contractors/vendor contacts managed manually
-- Link person to user account where applicable
+- [x] View/edit person records (employees, contractors, vendor contacts)
+- [x] Fields: name, email, phone, division, department, cost_center, manager, type
+- [ ] Employees sync from auth; contractors/vendor contacts managed manually
+- [ ] Link person to user account where applicable
 
 **Asset registry management**
-- List assets with filters (type, role, status, location, assigned person)
-- Create/edit assets: name, type, role (fixed/personal/pooled), tag, serial number, assigned space, assigned person, purchase date, lifecycle state, external source ID
-- View assignment history per asset
-- Pooled asset management comes in Phase 3; basic registry and fixed/personal assignment here
+- [x] List assets with filters (type, role, status, location, assigned person)
+- [x] Create/edit assets: name, type, role (fixed/personal/pooled), tag, serial number, assigned space, assigned person, purchase date, lifecycle state, external source ID
+- [ ] View assignment history per asset
+- [x] Pooled asset management comes in Phase 3; basic registry and fixed/personal assignment here
 
 **Delegation management**
-- Managers can set delegation: "From [date] to [date], delegate my approvals to [person]"
-- Auto-revert after end date
-- Active delegations visible to the delegate and to admins
+- [x] Managers can set delegation: "From [date] to [date], delegate my approvals to [person]"
+- [~] Auto-revert after end date
+- [x] Active delegations visible to the delegate and to admins
 
 **Location management**
-- Create/edit site → building → floor → room/desk hierarchy
-- Set reservable flag, capacity, amenities
+- [x] Create/edit site → building → floor → room/desk hierarchy
+- [x] Set reservable flag, capacity, amenities
 
 **Business hours calendar management**
-- Create/edit calendars: name, timezone, working hours per day, holidays
+- [x] Create/edit calendars: name, timezone, working hours per day, holidays
 
 **Notification template management**
-- View default templates
-- Edit template content (token-based: {{ticket.title}}, {{assignee.name}})
-- Save & publish
+- [x] View default templates
+- [x] Edit template content (token-based: {{ticket.title}}, {{assignee.name}})
+- [x] Save & publish
 
 ### Line Manager / Department Head Views
 
 **My team's requests**
-- List of tickets submitted by or assigned to people in the manager's department
-- Filter by status, priority, team member
-- Read-only view of ticket detail (external comments + status, no internal notes)
+- [ ] List of tickets submitted by or assigned to people in the manager's department
+- [ ] Filter by status, priority, team member
+- [ ] Read-only view of ticket detail (external comments + status, no internal notes)
 
 **Departmental dashboard**
-- Ticket volume for the department
-- SLA performance for department-originated tickets
-- Pending approvals count
+- [ ] Ticket volume for the department
+- [ ] SLA performance for department-originated tickets
+- [ ] Pending approvals count
 
 ### Mobile-Optimized Screens (Phase 1)
 
 The following screens are built mobile-first from Phase 1:
 
-**Employee portal** (all screens) — mobile-first responsive design
-**Approval queue** — one-tap approve/reject on phone
-**My requests** — status tracking from phone
-**Field technician task list** — mobile-first view of assigned tasks, sorted by location. Large tap targets. Quick status updates (arrived, in progress, completed). Photo upload via camera integration. Location context per task. Create new ticket from the field ("I found an additional issue while here").
-**Service desk mobile fallback** — simplified queue view for agents checking tickets from their phone. View ticket detail, update status, reassign. Not the full dense desktop workspace, but enough to act on urgent tickets.
+[ ] **Employee portal** (all screens) — mobile-first responsive design
+[ ] **Approval queue** — one-tap approve/reject on phone
+[ ] **My requests** — status tracking from phone
+[ ] **Field technician task list** — mobile-first view of assigned tasks, sorted by location. Large tap targets. Quick status updates (arrived, in progress, completed). Photo upload via camera integration. Location context per task. Create new ticket from the field ("I found an additional issue while here").
+[ ] **Service desk mobile fallback** — simplified queue view for agents checking tickets from their phone. View ticket detail, update status, reassign. Not the full dense desktop workspace, but enough to act on urgent tickets.
 
 ### Reporting
 
 **Operational dashboard**
-- Ticket volume (open, resolved, closed) — by day/week/month
-- SLA performance (% met, % breached)
-- Average resolution time
-- Tickets by status, priority, team, location
-- Filter by date range, domain, location
+- [~] Ticket volume (open, resolved, closed) — by day/week/month
+- [x] SLA performance (% met, % breached)
+- [ ] Average resolution time
+- [x] Tickets by status, priority, team, location
+- [~] Filter by date range, domain, location
 
 ### Observability
 
-- Structured logging (JSON logs with tenant_id, user_id, request_id per log entry)
-- Workflow execution traces (log each node transition per workflow instance)
-- Scheduled job monitoring (SLA timer jobs, maintenance schedule triggers, reminder dispatches)
-- Per-tenant visibility (ability to filter logs and metrics by tenant)
-- Alerting: SLA timer job failures, notification delivery failures, workflow execution errors
+- [ ] Structured logging (JSON logs with tenant_id, user_id, request_id per log entry)
+- [ ] Workflow execution traces (log each node transition per workflow instance)
+- [ ] Scheduled job monitoring (SLA timer jobs, maintenance schedule triggers, reminder dispatches)
+- [ ] Per-tenant visibility (ability to filter logs and metrics by tenant)
+- [ ] Alerting: SLA timer job failures, notification delivery failures, workflow execution errors
 
 ### Technology Stack (Phase 1)
 
-- **Frontend:** React 19, Vite, TypeScript, Tailwind CSS
-- **Backend:** NestJS, Node.js, TypeScript
-- **Database:** Supabase-managed PostgreSQL with RLS
-- **Auth:** Supabase Auth (SSO/OIDC/SAML)
-- **Storage:** Supabase Storage (attachments, logos, documents)
-- **Real-time:** Supabase Realtime (service desk queue updates)
-- **Caching:** Redis for caching, coordination, and ephemeral state (session data, rate limiting, frequently accessed tenant config)
-- **Timers:** pg_cron for workflow timers, SLA deadline checks, maintenance schedule triggers
-- **Search:** PostgreSQL full-text search
+- [x] **Frontend:** React 19, Vite, TypeScript, Tailwind CSS
+- [x] **Backend:** NestJS, Node.js, TypeScript
+- [x] **Database:** Supabase-managed PostgreSQL with RLS
+- [x] **Auth:** Supabase Auth (SSO/OIDC/SAML)
+- [ ] **Storage:** Supabase Storage (attachments, logos, documents)
+- [ ] **Real-time:** Supabase Realtime (service desk queue updates)
+- [ ] **Caching:** Redis for caching, coordination, and ephemeral state (session data, rate limiting, frequently accessed tenant config)
+- [ ] **Timers:** pg_cron for workflow timers, SLA deadline checks, maintenance schedule triggers
+- [ ] **Search:** PostgreSQL full-text search
 
 ### Deployment Infrastructure
 
-- Containerized deployment (Docker)
-- CI/CD pipeline for automated builds and deployments
-- Kubernetes-compatible target for production (or managed container platform initially)
-- Environment separation (development, staging, production)
+- [ ] Containerized deployment (Docker)
+- [ ] CI/CD pipeline for automated builds and deployments
+- [ ] Kubernetes-compatible target for production (or managed container platform initially)
+- [ ] Environment separation (development, staging, production)
 
 ### Performance Targets
 
@@ -279,11 +279,11 @@ Phase 1 must meet these targets from day one — performance is a core different
 | Booking availability check | < 300ms (API ready, UI in Phase 2) |
 
 Achieved through:
-- Composite indexes on ticket table for common filter combinations
-- SLA breach status as computed fields (never calculated at query time)
-- Cursor-based pagination
-- Simple RLS policies referencing JWT claims directly
-- Query plan validation with EXPLAIN ANALYZE under RLS during development
+- [ ] Composite indexes on ticket table for common filter combinations
+- [x] SLA breach status as computed fields (never calculated at query time)
+- [x] Cursor-based pagination
+- [~] Simple RLS policies referencing JWT claims directly
+- [ ] Query plan validation with EXPLAIN ANALYZE under RLS during development
 
 ---
 
