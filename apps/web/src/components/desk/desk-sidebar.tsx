@@ -24,7 +24,6 @@ import {
   TicketIcon,
   CheckSquareIcon,
   BarChart3Icon,
-  Building2Icon,
   UserIcon,
   UsersIcon,
   AlertTriangleIcon,
@@ -127,8 +126,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                 className={railExpanded ? "" : "md:h-8 md:p-0"}
                 onClick={() => navigate("/desk")}
               >
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground shrink-0">
-                  <Building2Icon className="size-4" />
+                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
+                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
                 </div>
                 {railExpanded && (
                   <div className="grid flex-1 text-left text-sm leading-tight">

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { TicketDetail } from '@/components/desk/ticket-detail';
+import type { PanelImperativeHandle } from 'react-resizable-panels';
 
 interface Ticket {
   id: string;
@@ -99,6 +100,7 @@ export function TicketsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const detailPanelRef = useRef<PanelImperativeHandle>(null);
 
   const searchParam = searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : '';
   const { data, loading } = useApi<TicketListResponse>(
@@ -106,6 +108,15 @@ export function TicketsPage() {
     [searchQuery],
   );
   const tickets = data?.items ?? [];
+
+  // Expand/collapse detail panel when ticket is selected/deselected
+  useEffect(() => {
+    if (selectedTicketId) {
+      detailPanelRef.current?.resize(45);
+    } else {
+      detailPanelRef.current?.resize(0);
+    }
+  }, [selectedTicketId]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -126,7 +137,7 @@ export function TicketsPage() {
   return (
     <ResizablePanelGroup orientation="horizontal" className="h-full">
       {/* Table panel */}
-      <ResizablePanel defaultSize={selectedTicketId ? 55 : 100} minSize={40}>
+      <ResizablePanel defaultSize={100} minSize={35}>
         <div className="flex h-full flex-col">
           {/* Toolbar */}
           <div className="flex items-center gap-3 px-6 py-4 shrink-0">
@@ -262,20 +273,27 @@ export function TicketsPage() {
         </div>
       </ResizablePanel>
 
-      {/* Detail panel — push/compress, not overlay */}
-      {selectedTicketId && (
-        <>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={45} minSize={30} maxSize={60}>
-            <div className="h-full overflow-hidden border-l">
-              <TicketDetail
-                ticketId={selectedTicketId}
-                onClose={() => setSelectedTicketId(null)}
-              />
-            </div>
-          </ResizablePanel>
-        </>
-      )}
+      {/* Resize handle — always present, hidden when panel is collapsed */}
+      <ResizableHandle withHandle className={selectedTicketId ? '' : 'hidden'} />
+
+      {/* Detail panel — always rendered, size controlled imperatively */}
+      <ResizablePanel
+        panelRef={detailPanelRef}
+        defaultSize={0}
+        minSize={0}
+        maxSize={60}
+        collapsible
+        collapsedSize={0}
+      >
+        {selectedTicketId && (
+          <div className="h-full overflow-hidden">
+            <TicketDetail
+              ticketId={selectedTicketId}
+              onClose={() => setSelectedTicketId(null)}
+            />
+          </div>
+        )}
+      </ResizablePanel>
     </ResizablePanelGroup>
   );
 }
