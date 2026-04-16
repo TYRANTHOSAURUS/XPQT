@@ -4,6 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 import {
   Clock,
   MapPin,
@@ -15,6 +16,8 @@ import {
   BellOff,
   MoreHorizontal,
   Star,
+  XIcon,
+  TagIcon,
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 
@@ -94,7 +97,7 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function TicketDetail({ ticketId }: { ticketId: string }) {
+export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?: () => void }) {
   const { data: ticket, loading: ticketLoading } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const [commentText, setCommentText] = useState('');
@@ -127,7 +130,13 @@ export function TicketDetail({ ticketId }: { ticketId: string }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top actions */}
-        <div className="flex items-center justify-end gap-1 px-6 py-2 shrink-0">
+        <div className="flex items-center gap-1 px-6 py-2 shrink-0">
+          {onClose && (
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+              <XIcon className="h-4 w-4" />
+            </Button>
+          )}
+          <div className="flex-1" />
           <Button variant="ghost" size="icon" className="h-8 w-8"><Star className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><BellOff className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button>
@@ -307,6 +316,22 @@ export function TicketDetail({ ticketId }: { ticketId: string }) {
             </div>
           )}
 
+          {/* Tags */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
+              <TagIcon className="h-3 w-3" /> Labels
+            </div>
+            {ticket.tags && ticket.tags.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {ticket.tags.map((tag) => (
+                  <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
+                ))}
+              </div>
+            ) : (
+              <button className="text-sm text-muted-foreground hover:text-foreground">+ Add label</button>
+            )}
+          </div>
+
           <Separator />
 
           {/* Request type */}
@@ -314,6 +339,14 @@ export function TicketDetail({ ticketId }: { ticketId: string }) {
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Type</div>
               <div className="text-sm">{ticket.request_type.name}</div>
+            </div>
+          )}
+
+          {/* Interaction mode */}
+          {ticket.interaction_mode === 'external' && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1.5">Mode</div>
+              <Badge variant="outline" className="text-xs">External vendor</Badge>
             </div>
           )}
 
