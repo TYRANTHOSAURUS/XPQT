@@ -1,38 +1,47 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { DeskLayout } from '@/layouts/desk-layout';
+import { InboxPage } from '@/pages/desk/inbox';
+import { TicketsPage } from '@/pages/desk/tickets';
 
-function Home() {
+function DeskIndex() {
+  return <Navigate to="/desk/inbox" replace />;
+}
+
+function PlaceholderPage({ title }: { title: string }) {
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-gray-900 mb-2">Prequest</h1>
-        <p className="text-lg text-gray-600">Unified Workplace Operations Platform</p>
-        <div className="mt-8 space-x-4">
-          <a
-            href="/portal"
-            className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-          >
-            Employee Portal
-          </a>
-          <a
-            href="/desk"
-            className="inline-block px-6 py-3 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition"
-          >
-            Service Desk
-          </a>
-        </div>
-      </div>
+    <div className="flex h-screen items-center justify-center text-muted-foreground">
+      <p>{title} — coming soon</p>
     </div>
   );
 }
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      {/* Phase 1 routes */}
-      {/* <Route path="/desk/*" element={<DeskLayout />} /> */}
-      {/* <Route path="/portal/*" element={<PortalLayout />} /> */}
-      {/* <Route path="/admin/*" element={<AdminLayout />} /> */}
-    </Routes>
+    <TooltipProvider>
+      <Routes>
+        <Route path="/" element={<Navigate to="/desk" replace />} />
+
+        {/* Service Desk */}
+        <Route path="/desk" element={<DeskLayout />}>
+          <Route index element={<DeskIndex />} />
+          <Route path="inbox" element={<InboxPage />} />
+          <Route path="tickets" element={<TicketsPage />} />
+          <Route path="approvals" element={<PlaceholderPage title="Approvals" />} />
+          <Route path="reports" element={<PlaceholderPage title="Reports" />} />
+          <Route path="settings" element={<PlaceholderPage title="Settings" />} />
+        </Route>
+
+        {/* Employee Portal (Phase 1) */}
+        {/* <Route path="/portal" element={<PortalLayout />}> */}
+        {/*   ... */}
+        {/* </Route> */}
+
+        {/* Admin (Phase 1) */}
+        {/* <Route path="/admin" element={<AdminLayout />}> */}
+        {/*   ... */}
+        {/* </Route> */}
+      </Routes>
+    </TooltipProvider>
   );
 }
