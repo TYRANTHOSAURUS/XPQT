@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Clock,
   MapPin,
@@ -12,6 +12,9 @@ import {
   AlertTriangle,
   MessageSquare,
   Send,
+  BellOff,
+  MoreHorizontal,
+  Star,
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 
@@ -49,56 +52,36 @@ interface Activity {
   created_at: string;
 }
 
-const priorityConfig: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
-  critical: { label: 'Critical', variant: 'destructive' },
-  high: { label: 'High', variant: 'destructive' },
-  medium: { label: 'Medium', variant: 'default' },
-  low: { label: 'Low', variant: 'secondary' },
+const statusConfig: Record<string, { label: string; dotColor: string }> = {
+  new: { label: 'New', dotColor: 'bg-blue-500' },
+  assigned: { label: 'Assigned', dotColor: 'bg-yellow-500' },
+  in_progress: { label: 'In Progress', dotColor: 'bg-purple-500' },
+  waiting: { label: 'Waiting', dotColor: 'bg-orange-500' },
+  resolved: { label: 'Resolved', dotColor: 'bg-green-500' },
+  closed: { label: 'Closed', dotColor: 'bg-gray-400' },
 };
 
-const statusConfig: Record<string, { label: string; className: string }> = {
-  new: { label: 'New', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' },
-  assigned: { label: 'Assigned', className: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300' },
-  in_progress: { label: 'In Progress', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' },
-  waiting: { label: 'Waiting', className: 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300' },
-  resolved: { label: 'Resolved', className: 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' },
-  closed: { label: 'Closed', className: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300' },
+const priorityConfig: Record<string, { label: string; color: string }> = {
+  critical: { label: 'Critical', color: 'text-red-500' },
+  high: { label: 'High', color: 'text-orange-500' },
+  medium: { label: 'Medium', color: 'text-blue-500' },
+  low: { label: 'Low', color: 'text-muted-foreground' },
 };
 
 function SlaTimer({ dueAt, breachedAt }: { dueAt: string | null; breachedAt: string | null }) {
-  if (!dueAt) return null;
-
+  if (!dueAt) return <span className="text-sm text-muted-foreground">No SLA</span>;
   if (breachedAt) {
-    return (
-      <span className="text-xs font-medium text-red-600 dark:text-red-400 flex items-center gap-1">
-        <AlertTriangle className="h-3 w-3" /> Breached
-      </span>
-    );
+    return <span className="text-sm font-medium text-red-500 flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" /> Breached</span>;
   }
-
   const remaining = new Date(dueAt).getTime() - Date.now();
   if (remaining <= 0) {
-    return (
-      <span className="text-xs font-medium text-red-600 dark:text-red-400 flex items-center gap-1">
-        <AlertTriangle className="h-3 w-3" /> Overdue
-      </span>
-    );
+    return <span className="text-sm font-medium text-red-500 flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" /> Overdue</span>;
   }
-
   const hours = Math.floor(remaining / 3600000);
   const minutes = Math.floor((remaining % 3600000) / 60000);
   const timeStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-
-  const totalMs = new Date(dueAt).getTime() - Date.now();
-  const urgencyClass = totalMs < 3600000 ? 'text-red-600 dark:text-red-400' :
-    totalMs < 7200000 ? 'text-yellow-600 dark:text-yellow-400' :
-    'text-green-600 dark:text-green-400';
-
-  return (
-    <span className={`text-xs font-medium flex items-center gap-1 ${urgencyClass}`}>
-      <Clock className="h-3 w-3" /> {timeStr}
-    </span>
-  );
+  const urgencyClass = remaining < 3600000 ? 'text-red-500' : remaining < 7200000 ? 'text-yellow-500' : 'text-green-500';
+  return <span className={`text-sm font-medium flex items-center gap-1.5 ${urgencyClass}`}><Clock className="h-4 w-4" /> {timeStr}</span>;
 }
 
 function timeAgo(dateStr: string): string {
@@ -108,8 +91,7 @@ function timeAgo(dateStr: string): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function TicketDetail({ ticketId }: { ticketId: string }) {
@@ -127,7 +109,6 @@ export function TicketDetail({ ticketId }: { ticketId: string }) {
 
   const handleSubmitComment = async () => {
     if (!commentText.trim()) return;
-
     await fetch(`/api/tickets/${ticketId}/activities`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -137,157 +118,212 @@ export function TicketDetail({ ticketId }: { ticketId: string }) {
         content: commentText,
       }),
     });
-
     setCommentText('');
     refetchActivities();
   };
 
   return (
-    <div className="flex h-screen flex-col">
-      {/* Header */}
-      <div className="border-b p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-semibold leading-tight">{ticket.title}</h2>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${status.className}`}>
-                {status.label}
-              </span>
-              <Badge variant={priority.variant} className="text-xs">
-                {priority.label}
-              </Badge>
-              {ticket.request_type && (
-                <span className="text-xs text-muted-foreground">{ticket.request_type.name}</span>
-              )}
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            <SlaTimer dueAt={ticket.sla_resolution_due_at} breachedAt={ticket.sla_resolution_breached_at} />
-            <span className="text-xs text-muted-foreground">{timeAgo(ticket.created_at)}</span>
-          </div>
+    <div className="flex h-full">
+      {/* Main content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Top actions */}
+        <div className="flex items-center justify-end gap-1 px-6 py-2 shrink-0">
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Star className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><BellOff className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button>
         </div>
-      </div>
 
-      {/* Meta info */}
-      <div className="border-b px-4 py-3 grid grid-cols-2 gap-3 text-sm">
-        {ticket.requester && (
-          <div className="flex items-center gap-2">
-            <User className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">Requester:</span>
-            <span>{ticket.requester.first_name} {ticket.requester.last_name}</span>
-          </div>
-        )}
-        {ticket.assigned_team && (
-          <div className="flex items-center gap-2">
-            <Users className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">Team:</span>
-            <span>{ticket.assigned_team.name}</span>
-          </div>
-        )}
-        {ticket.location && (
-          <div className="flex items-center gap-2">
-            <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">Location:</span>
-            <span>{ticket.location.name}</span>
-          </div>
-        )}
-        {ticket.assigned_agent && (
-          <div className="flex items-center gap-2">
-            <User className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">Agent:</span>
-            <span>{ticket.assigned_agent.email}</span>
-          </div>
-        )}
-      </div>
+        <ScrollArea className="flex-1">
+          <div className="px-8 pb-10 max-w-3xl">
+            {/* Title */}
+            <h1 className="text-2xl font-semibold leading-tight tracking-tight">{ticket.title}</h1>
 
-      {/* Description */}
-      {ticket.description && (
-        <div className="border-b px-4 py-3">
-          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{ticket.description}</p>
-        </div>
-      )}
+            {/* Description */}
+            {ticket.description ? (
+              <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{ticket.description}</p>
+            ) : (
+              <p className="mt-5 text-[15px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">Add a description...</p>
+            )}
 
-      {/* Activity timeline */}
-      <ScrollArea className="flex-1 px-4">
-        <div className="py-3 space-y-3">
-          {(activities ?? []).map((activity) => (
-            <div key={activity.id} className="flex gap-3">
-              <div className="mt-1">
-                {activity.visibility === 'system' ? (
-                  <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center">
-                    <Clock className="h-3 w-3 text-muted-foreground" />
-                  </div>
-                ) : (
-                  <div className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-medium ${
-                    activity.visibility === 'internal'
-                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300'
-                      : 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
-                  }`}>
-                    {activity.author?.first_name?.[0] ?? '?'}
-                  </div>
-                )}
+            {/* Sub-issues placeholder */}
+            <div className="mt-10">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-sm font-medium">Sub-issues</span>
+                <span className="text-xs text-muted-foreground">0/0</span>
+                <button className="ml-auto text-xs text-muted-foreground hover:text-foreground">+</button>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  {activity.author && (
-                    <span className="text-sm font-medium">
-                      {activity.author.first_name} {activity.author.last_name}
-                    </span>
-                  )}
-                  {activity.visibility === 'internal' && (
-                    <Badge variant="outline" className="text-[10px] px-1 py-0 text-yellow-600">Internal</Badge>
-                  )}
-                  {activity.visibility === 'system' && (
-                    <span className="text-xs text-muted-foreground">System</span>
-                  )}
-                  <span className="text-xs text-muted-foreground ml-auto">{timeAgo(activity.created_at)}</span>
+              <div className="text-sm text-muted-foreground/50 py-2">No sub-issues yet</div>
+            </div>
+
+            <Separator className="my-8" />
+
+            {/* Activity */}
+            <div className="flex items-center justify-between mb-6">
+              <span className="text-sm font-medium">Activity</span>
+            </div>
+
+            <div className="space-y-6">
+              {(activities ?? []).map((activity) => (
+                <div key={activity.id} className="flex gap-4">
+                  <div className="shrink-0 mt-0.5">
+                    {activity.visibility === 'system' ? (
+                      <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
+                        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                      </div>
+                    ) : (
+                      <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ${
+                        activity.visibility === 'internal'
+                          ? 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400'
+                          : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                      }`}>
+                        {activity.author?.first_name?.[0] ?? '?'}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0 pt-0.5">
+                    <div className="flex items-center gap-2">
+                      {activity.author ? (
+                        <span className="text-sm font-medium">{activity.author.first_name} {activity.author.last_name}</span>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">System</span>
+                      )}
+                      {activity.visibility === 'internal' && (
+                        <span className="text-[11px] text-yellow-600 dark:text-yellow-400">internal</span>
+                      )}
+                      <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
+                    </div>
+                    {activity.content && (
+                      <p className="text-[15px] text-foreground/80 mt-1.5 leading-relaxed whitespace-pre-wrap">{activity.content}</p>
+                    )}
+                    {activity.metadata && activity.visibility === 'system' && (
+                      <p className="text-xs text-muted-foreground mt-1">{(activity.metadata as Record<string, unknown>).event as string}</p>
+                    )}
+                  </div>
                 </div>
-                {activity.content && (
-                  <p className="text-sm text-muted-foreground mt-0.5 whitespace-pre-wrap">{activity.content}</p>
-                )}
-                {activity.metadata && activity.visibility === 'system' && (
-                  <p className="text-xs text-muted-foreground mt-0.5 italic">
-                    {(activity.metadata as Record<string, unknown>).event as string}
-                  </p>
-                )}
+              ))}
+            </div>
+
+            {/* Comment input */}
+            <div className="mt-10">
+              <Tabs value={commentVisibility} onValueChange={(v) => setCommentVisibility(v as 'internal' | 'external')}>
+                <TabsList className="mb-3">
+                  <TabsTrigger value="internal"><MessageSquare className="h-4 w-4 mr-1.5" /> Internal note</TabsTrigger>
+                  <TabsTrigger value="external"><Send className="h-4 w-4 mr-1.5" /> Reply</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <div className="flex gap-3">
+                <Textarea
+                  className="flex-1 min-h-[80px] resize-none"
+                  placeholder={commentVisibility === 'internal' ? 'Add internal note...' : 'Reply to requester...'}
+                  rows={3}
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmitComment(); }}
+                />
+                <Button onClick={handleSubmitComment} disabled={!commentText.trim()} size="icon" className="self-end">
+                  <Send className="h-4 w-4" />
+                </Button>
               </div>
             </div>
-          ))}
-        </div>
-      </ScrollArea>
+          </div>
+        </ScrollArea>
+      </div>
 
-      <Separator />
+      {/* Properties sidebar (right) */}
+      <div className="w-[220px] shrink-0 border-l overflow-y-auto">
+        <div className="p-5 space-y-5">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Properties</div>
 
-      {/* Comment input */}
-      <div className="p-3">
-        <div className="flex items-center gap-2 mb-2">
-          <Tabs value={commentVisibility} onValueChange={(v) => setCommentVisibility(v as 'internal' | 'external')}>
-            <TabsList className="h-7">
-              <TabsTrigger value="internal" className="text-xs px-2 py-0.5">
-                <MessageSquare className="h-3 w-3 mr-1" /> Internal
-              </TabsTrigger>
-              <TabsTrigger value="external" className="text-xs px-2 py-0.5">
-                <Send className="h-3 w-3 mr-1" /> Reply
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
-        <div className="flex gap-2">
-          <textarea
-            className="flex-1 rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-ring"
-            placeholder={commentVisibility === 'internal' ? 'Add internal note...' : 'Reply to requester...'}
-            rows={2}
-            value={commentText}
-            onChange={(e) => setCommentText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                handleSubmitComment();
-              }
-            }}
-          />
-          <Button size="sm" onClick={handleSubmitComment} disabled={!commentText.trim()}>
-            <Send className="h-4 w-4" />
-          </Button>
+          {/* Status */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Status</div>
+            <div className="text-sm font-medium flex items-center gap-2">
+              <div className={`h-2.5 w-2.5 rounded-full ${status.dotColor}`} />
+              {status.label}
+            </div>
+          </div>
+
+          {/* Priority */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Priority</div>
+            <div className={`text-sm font-medium ${priority.color}`}>{priority.label}</div>
+          </div>
+
+          {/* Assignee */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Assignee</div>
+            <div className="text-sm flex items-center gap-2">
+              <User className="h-3.5 w-3.5 text-muted-foreground" />
+              {ticket.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
+            </div>
+          </div>
+
+          {/* Team */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Team</div>
+            <div className="text-sm flex items-center gap-2">
+              <Users className="h-3.5 w-3.5 text-muted-foreground" />
+              {ticket.assigned_team?.name ?? <span className="text-muted-foreground">No team</span>}
+            </div>
+          </div>
+
+          {/* SLA */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">SLA</div>
+            <SlaTimer dueAt={ticket.sla_resolution_due_at} breachedAt={ticket.sla_resolution_breached_at} />
+          </div>
+
+          <Separator />
+
+          {/* Requester */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Requester</div>
+            {ticket.requester ? (
+              <div>
+                <div className="text-sm font-medium">{ticket.requester.first_name} {ticket.requester.last_name}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{ticket.requester.email}</div>
+                {ticket.requester.department && <div className="text-xs text-muted-foreground">{ticket.requester.department}</div>}
+              </div>
+            ) : <span className="text-sm text-muted-foreground">Unknown</span>}
+          </div>
+
+          {/* Location */}
+          {ticket.location && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1.5">Location</div>
+              <div className="text-sm flex items-center gap-2">
+                <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                {ticket.location.name}
+              </div>
+            </div>
+          )}
+
+          {/* Asset */}
+          {ticket.asset && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1.5">Asset</div>
+              <div className="text-sm">{ticket.asset.name}</div>
+              <div className="text-xs text-muted-foreground">{ticket.asset.serial_number}</div>
+            </div>
+          )}
+
+          <Separator />
+
+          {/* Request type */}
+          {ticket.request_type && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1.5">Type</div>
+              <div className="text-sm">{ticket.request_type.name}</div>
+            </div>
+          )}
+
+          {/* Created */}
+          <div>
+            <div className="text-xs text-muted-foreground mb-1.5">Created</div>
+            <div className="text-sm">{new Date(ticket.created_at).toLocaleDateString('en-GB', {
+              day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+            })}</div>
+          </div>
         </div>
       </div>
     </div>
