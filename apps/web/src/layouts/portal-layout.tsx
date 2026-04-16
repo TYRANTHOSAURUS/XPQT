@@ -51,8 +51,8 @@ const agentNav = [
 ];
 
 const adminNav = [
+  { title: 'Admin', path: '/admin', icon: Settings },
   { title: 'Reports', path: '/desk/reports', icon: BarChart3 },
-  { title: 'Settings', path: '/desk/settings', icon: Settings },
 ];
 
 const user = {

@@ -16,6 +16,7 @@ import { NotificationModule } from './modules/notification/notification.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { PersonModule } from './modules/person/person.module';
+import { TeamModule } from './modules/team/team.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { PersonModule } from './modules/person/person.module';
     WorkflowModule,
     ReportingModule,
     PersonModule,
+    TeamModule,
   ],
   controllers: [HealthController],
 })
