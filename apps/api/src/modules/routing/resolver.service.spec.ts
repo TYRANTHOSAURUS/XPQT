@@ -7,6 +7,9 @@ function stubRepo(overrides: Partial<Record<string, jest.Mock>> = {}) {
     loadAsset: jest.fn().mockResolvedValue(null),
     locationChain: jest.fn().mockResolvedValue([]),
     locationTeam: jest.fn().mockResolvedValue(null),
+    spaceGroupTeam: jest.fn().mockResolvedValue(null),
+    domainChain: jest.fn(async (_tenantId: string, domain: string) => (domain ? [domain] : [])),
+    loadRoutingRules: jest.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -191,6 +194,87 @@ describe('ResolverService', () => {
       const d = await svc.resolve(ctx({ request_type_id: 'rt4', domain: 'it' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'it-team' });
       expect(d.chosen_by).toBe('request_type_default');
+    });
+  });
+
+  describe('routing_rules pre-step', () => {
+    it('first matching active rule wins before any other logic', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([
+          {
+            id: 'r1', name: 'VIP', priority: 100,
+            conditions: [{ field: 'priority', operator: 'equals', value: 'urgent' }],
+            action_assign_team_id: 'vip-team', action_assign_user_id: null,
+          },
+        ]),
+        loadRequestType: jest.fn().mockResolvedValue({
+          id: 'rt', domain: 'fm', fulfillment_strategy: 'fixed',
+          default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
+        }),
+      });
+      const svc = new ResolverService(repo as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 'urgent' }));
+      expect(d.chosen_by).toBe('rule');
+      expect(d.rule_id).toBe('r1');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'vip-team' });
+    });
+
+    it('rules with no match fall through to the resolver chain', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([
+          {
+            id: 'r1', name: 'VIP', priority: 100,
+            conditions: [{ field: 'priority', operator: 'equals', value: 'urgent' }],
+            action_assign_team_id: 'vip-team', action_assign_user_id: null,
+          },
+        ]),
+        loadRequestType: jest.fn().mockResolvedValue({
+          id: 'rt', domain: 'fm', fulfillment_strategy: 'fixed',
+          default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
+        }),
+      });
+      const svc = new ResolverService(repo as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 'medium' }));
+      expect(d.chosen_by).toBe('request_type_default');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'normal-team' });
+    });
+  });
+
+  describe('space group expansion', () => {
+    it('matches space_group_team when no per-space row exists', async () => {
+      const repo = stubRepo({
+        loadRequestType: jest.fn().mockResolvedValue({
+          id: 'rt', domain: 'fm', fulfillment_strategy: 'location',
+          default_team_id: null, default_vendor_id: null, asset_type_filter: [],
+        }),
+        locationChain: jest.fn().mockResolvedValue(['locB']),
+        locationTeam: jest.fn().mockResolvedValue(null),
+        spaceGroupTeam: jest.fn(async (sid: string, dom: string) =>
+          sid === 'locB' && dom === 'fm' ? { team_id: 'fm-shared', vendor_id: null } : null),
+      });
+      const svc = new ResolverService(repo as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', location_id: 'locB', domain: 'fm' }));
+      expect(d.chosen_by).toBe('space_group_team');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'fm-shared' });
+    });
+  });
+
+  describe('domain fallback', () => {
+    it('falls back to parent domain when exact domain has no team at any scope', async () => {
+      const repo = stubRepo({
+        loadRequestType: jest.fn().mockResolvedValue({
+          id: 'rt', domain: 'doors', fulfillment_strategy: 'location',
+          default_team_id: null, default_vendor_id: null, asset_type_filter: [],
+        }),
+        locationChain: jest.fn().mockResolvedValue(['locC', 'region-west']),
+        domainChain: jest.fn().mockResolvedValue(['doors', 'fm']),
+        locationTeam: jest.fn(async (sid: string, dom: string) =>
+          sid === 'region-west' && dom === 'fm' ? { team_id: 'region-west-fm', vendor_id: null } : null),
+      });
+      const svc = new ResolverService(repo as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', location_id: 'locC', domain: 'doors' }));
+      expect(d.chosen_by).toBe('domain_fallback');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'region-west-fm' });
     });
   });
 });
