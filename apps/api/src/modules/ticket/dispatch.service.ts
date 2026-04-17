@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
@@ -22,7 +22,7 @@ export interface DispatchDto {
 export class DispatchService {
   constructor(
     private readonly supabase: SupabaseService,
-    @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
+    private readonly tickets: TicketService,
     private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
   ) {}
@@ -39,6 +39,10 @@ export class DispatchService {
     const parent = await this.tickets.getById(parentId) as Record<string, unknown>;
     if (parent.ticket_kind === 'work_order') {
       throw new BadRequestException('cannot dispatch from a work_order; dispatch from the parent case');
+    }
+
+    if (parent.status_category === 'pending_approval') {
+      throw new BadRequestException('cannot dispatch while parent is pending approval');
     }
 
     const ticketTypeId = dto.ticket_type_id ?? (parent.ticket_type_id as string | null);

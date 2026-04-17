@@ -14,7 +14,6 @@ export type ChosenBy =
   | 'space_group_team'
   | 'domain_fallback'
   | 'request_type_default'
-  | 'domain_default'
   | 'unassigned';
 
 export interface ResolverContext {

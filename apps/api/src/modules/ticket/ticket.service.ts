@@ -715,7 +715,7 @@ export class TicketService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('tickets')
-      .select('id, title, status, status_category, priority, assigned_team_id, assigned_user_id, interaction_mode, created_at, resolved_at')
+      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)
       .order('created_at');
