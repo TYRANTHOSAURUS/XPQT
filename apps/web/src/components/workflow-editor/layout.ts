@@ -1,4 +1,5 @@
 import dagre from 'dagre';
+import { Position } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 
 const NODE_WIDTH = 200;
@@ -19,8 +20,8 @@ export function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
     return {
       ...n,
       position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - NODE_HEIGHT / 2 },
-      targetPosition: 'left' as const,
-      sourcePosition: 'right' as const,
+      targetPosition: Position.Left,
+      sourcePosition: Position.Right,
     };
   });
 }
