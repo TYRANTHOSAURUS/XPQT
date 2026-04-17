@@ -20,10 +20,14 @@ import {
   AddActivityDto,
   ReassignDto,
 } from './ticket.service';
+import { DispatchService, DispatchDto } from './dispatch.service';
 
 @Controller('tickets')
 export class TicketController {
-  constructor(private readonly ticketService: TicketService) {}
+  constructor(
+    private readonly ticketService: TicketService,
+    private readonly dispatchService: DispatchService,
+  ) {}
 
   @Get()
   async list(
@@ -79,6 +83,11 @@ export class TicketController {
   @Post(':id/reassign')
   async reassign(@Param('id') id: string, @Body() dto: ReassignDto) {
     return this.ticketService.reassign(id, dto);
+  }
+
+  @Post(':id/dispatch')
+  async dispatch(@Param('id') id: string, @Body() dto: DispatchDto) {
+    return this.dispatchService.dispatch(id, dto);
   }
 
   @Get(':id/activities')
