@@ -23,14 +23,20 @@ export class DispatchService {
   constructor(
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
-    @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
+    private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
   ) {}
 
   async dispatch(parentId: string, dto: DispatchDto) {
     const tenant = TenantContext.current();
-    const parent = (await this.tickets.getById(parentId)) as Record<string, unknown>;
-    if (!parent) throw new BadRequestException(`parent ${parentId} not found`);
+
+    // Fix 5: validate title
+    if (!dto.title?.trim()) {
+      throw new BadRequestException('dispatch requires a non-empty title');
+    }
+
+    // Fix 2: getById throws NotFoundException on miss — no null guard needed
+    const parent = await this.tickets.getById(parentId) as Record<string, unknown>;
     if (parent.ticket_kind === 'work_order') {
       throw new BadRequestException('cannot dispatch from a work_order; dispatch from the parent case');
     }
@@ -40,6 +46,12 @@ export class DispatchService {
     const assetId = dto.asset_id ?? (parent.asset_id as string | null);
     const priority = dto.priority ?? ((parent.priority as string | null) ?? 'medium');
 
+    // Fix 3: single consolidated request-type load
+    const rtCfg = ticketTypeId
+      ? await this.loadRequestTypeConfig(ticketTypeId)
+      : { domain: null, sla_policy_id: null };
+
+    // Fix 3: include sla_id in initial insert row
     const row: Record<string, unknown> = {
       tenant_id: tenant.id,
       parent_ticket_id: parentId,
@@ -57,11 +69,13 @@ export class DispatchService {
       assigned_team_id: dto.assigned_team_id ?? null,
       assigned_user_id: dto.assigned_user_id ?? null,
       assigned_vendor_id: dto.assigned_vendor_id ?? null,
+      sla_id: rtCfg.sla_policy_id,
     };
 
+    // Fix 1: single evaluate call, store result for reuse
     let routingCtx: Parameters<RoutingService['evaluate']>[0] | null = null;
+    let routingEvaluation: Awaited<ReturnType<RoutingService['evaluate']>> | null = null;
     if (!row.assigned_team_id && !row.assigned_user_id && !row.assigned_vendor_id && ticketTypeId) {
-      const rtCfg = await this.loadRequestTypeDomain(ticketTypeId);
       routingCtx = {
         tenant_id: tenant.id,
         ticket_id: 'pending',
@@ -71,11 +85,11 @@ export class DispatchService {
         asset_id: assetId,
         location_id: locationId,
       };
-      const evaluation = await this.routingService.evaluate(routingCtx);
-      if (evaluation.target) {
-        if (evaluation.target.kind === 'team') row.assigned_team_id = evaluation.target.team_id;
-        if (evaluation.target.kind === 'user') row.assigned_user_id = evaluation.target.user_id;
-        if (evaluation.target.kind === 'vendor') row.assigned_vendor_id = evaluation.target.vendor_id;
+      routingEvaluation = await this.routingService.evaluate(routingCtx);
+      if (routingEvaluation.target) {
+        if (routingEvaluation.target.kind === 'team') row.assigned_team_id = routingEvaluation.target.team_id;
+        if (routingEvaluation.target.kind === 'user') row.assigned_user_id = routingEvaluation.target.user_id;
+        if (routingEvaluation.target.kind === 'vendor') row.assigned_vendor_id = routingEvaluation.target.vendor_id;
         row.status_category = 'assigned';
       }
     } else if (row.assigned_team_id || row.assigned_user_id || row.assigned_vendor_id) {
@@ -90,52 +104,45 @@ export class DispatchService {
     if (error) throw error;
     const child = inserted as Record<string, unknown>;
 
-    if (routingCtx) {
-      routingCtx.ticket_id = child.id as string;
-      const evaluation = await this.routingService.evaluate(routingCtx);
-      await this.routingService.recordDecision(child.id as string, routingCtx, evaluation);
-    }
-
-    if (ticketTypeId) {
-      const cfg = await this.loadRequestTypeSla(ticketTypeId);
-      if (cfg.sla_policy_id) {
-        await this.slaService.startTimers(child.id as string, tenant.id, cfg.sla_policy_id);
-        await this.supabase.admin.from('tickets')
-          .update({ sla_id: cfg.sla_policy_id })
-          .eq('id', child.id as string);
+    // Fix 4: post-insert side effects wrapped — child exists, don't crash on automation failure
+    try {
+      // Fix 1: reuse stored evaluation — no second DB call
+      if (routingCtx && routingEvaluation) {
+        routingCtx.ticket_id = child.id as string;
+        await this.routingService.recordDecision(child.id as string, routingCtx, routingEvaluation);
       }
-    }
 
-    await this.tickets.addActivity(parentId, {
-      activity_type: 'system_event',
-      visibility: 'system',
-      metadata: {
-        event: 'dispatched',
-        child_id: child.id,
-        assigned_team_id: row.assigned_team_id,
-        assigned_user_id: row.assigned_user_id,
-        assigned_vendor_id: row.assigned_vendor_id,
-      },
-    });
+      // Fix 3: sla_id already in insert; just start timers
+      if (rtCfg.sla_policy_id) {
+        await this.slaService.startTimers(child.id as string, tenant.id, rtCfg.sla_policy_id);
+      }
+
+      await this.tickets.addActivity(parentId, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: {
+          event: 'dispatched',
+          child_id: child.id,
+          assigned_team_id: row.assigned_team_id,
+          assigned_user_id: row.assigned_user_id,
+          assigned_vendor_id: row.assigned_vendor_id,
+        },
+      });
+    } catch (err) {
+      console.error('[dispatch] post-insert automation failed', err);
+    }
 
     return child;
   }
 
-  private async loadRequestTypeDomain(id: string): Promise<{ domain: string | null }> {
+  // Fix 3: consolidated single request-type loader
+  private async loadRequestTypeConfig(id: string): Promise<{ domain: string | null; sla_policy_id: string | null }> {
     const { data } = await this.supabase.admin
       .from('request_types')
-      .select('domain')
+      .select('domain, sla_policy_id')
       .eq('id', id)
-      .single();
-    return { domain: (data as { domain: string | null } | null)?.domain ?? null };
-  }
-
-  private async loadRequestTypeSla(id: string): Promise<{ sla_policy_id: string | null }> {
-    const { data } = await this.supabase.admin
-      .from('request_types')
-      .select('sla_policy_id')
-      .eq('id', id)
-      .single();
-    return { sla_policy_id: (data as { sla_policy_id: string | null } | null)?.sla_policy_id ?? null };
+      .maybeSingle();
+    const d = data as { domain: string | null; sla_policy_id: string | null } | null;
+    return { domain: d?.domain ?? null, sla_policy_id: d?.sla_policy_id ?? null };
   }
 }

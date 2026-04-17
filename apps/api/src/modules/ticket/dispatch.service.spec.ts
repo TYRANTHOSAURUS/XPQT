@@ -51,16 +51,14 @@ function makeDeps(parent: ParentRow) {
                 }),
               };
             },
-            update: (_row: Record<string, unknown>) => ({
-              eq: () => ({ error: null }),
-            }),
+            // Fix 7: update stub removed — no longer called after Fix 3 folds sla_id into insert
           } as unknown;
         }
         if (table === 'request_types') {
           return {
             select: () => ({
               eq: () => ({
-                single: async () => ({ data: { domain: 'fm', sla_policy_id: 'sla-1' }, error: null }),
+                maybeSingle: async () => ({ data: { domain: 'fm', sla_policy_id: 'sla-1' }, error: null }),
               }),
             }),
           } as unknown;
@@ -156,5 +154,32 @@ describe('DispatchService', () => {
     expect(inserted.map((c) => c.assigned_vendor_id)).toEqual(['glazier', 'supplier', 'janitorial']);
     expect(inserted.every((c) => c.parent_ticket_id === parent.id)).toBe(true);
     expect(inserted.every((c) => c.ticket_kind === 'work_order')).toBe(true);
+  });
+
+  // Fix 7 / new test: sla_id must be in initial insert row (Fix 3)
+  it('includes sla_id in the initial insert row', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, inserted } = makeDeps(parent);
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: 'v1' });
+    expect(inserted[0].sla_id).toBe('sla-1');
+  });
+
+  // Fix 5 / new test: empty title must be rejected
+  it('rejects an empty title', async () => {
+    const parent = makeParent();
+    const deps = makeDeps(parent);
+    const svc = new DispatchService(
+      deps.supabase as never,
+      deps.ticketService as never,
+      deps.routingService as never,
+      deps.slaService as never,
+    );
+    await expect(svc.dispatch(parent.id, { title: '   ' })).rejects.toThrow(/title/);
   });
 });
