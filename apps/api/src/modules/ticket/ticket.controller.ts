@@ -29,6 +29,7 @@ export class TicketController {
   async list(
     @Query('status_category') statusCategory?: string,
     @Query('priority') priority?: string,
+    @Query('kind') ticketKind?: 'case' | 'work_order',
     @Query('assigned_team_id') assignedTeamId?: string,
     @Query('assigned_user_id') assignedUserId?: string,
     @Query('location_id') locationId?: string,
@@ -42,6 +43,7 @@ export class TicketController {
     return this.ticketService.list({
       status_category: statusCategory,
       priority,
+      ticket_kind: ticketKind,
       assigned_team_id: assignedTeamId,
       assigned_user_id: assignedUserId,
       location_id: locationId,
