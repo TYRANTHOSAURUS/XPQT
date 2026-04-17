@@ -199,6 +199,7 @@ export class WorkflowEngineService {
               await this.supabase.admin.from('tickets').insert({
                 tenant_id: tenant.id,
                 parent_ticket_id: ticketId,
+                ticket_kind: 'work_order',
                 title: task.title,
                 description: task.description,
                 assigned_team_id: task.assigned_team_id,

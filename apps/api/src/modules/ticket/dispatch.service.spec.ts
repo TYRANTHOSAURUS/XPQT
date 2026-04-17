@@ -9,6 +9,7 @@ type ParentRow = {
   priority: string;
   title: string;
   ticket_kind: string;
+  status_category: string;
   requester_person_id: string | null;
 };
 
@@ -22,6 +23,7 @@ function makeParent(over: Partial<ParentRow> = {}): ParentRow {
     priority: 'medium',
     title: 'Broken window',
     ticket_kind: 'case',
+    status_category: 'assigned',
     requester_person_id: 'person-1',
     ...over,
   };
@@ -136,6 +138,19 @@ describe('DispatchService', () => {
       deps.slaService as never,
     );
     await expect(svc.dispatch(parent.id, { title: 'x' })).rejects.toThrow(/work_order/);
+  });
+
+  it('rejects dispatch on a ticket in pending_approval status', async () => {
+    const parent = makeParent({ ticket_kind: 'case' });
+    (parent as unknown as { status_category: string }).status_category = 'pending_approval';
+    const deps = makeDeps(parent);
+    const svc = new DispatchService(
+      deps.supabase as never,
+      deps.ticketService as never,
+      deps.routingService as never,
+      deps.slaService as never,
+    );
+    await expect(svc.dispatch(parent.id, { title: 'x' })).rejects.toThrow(/pending approval/);
   });
 
   it('supports multiple children on one parent (broken-window scenario)', async () => {
