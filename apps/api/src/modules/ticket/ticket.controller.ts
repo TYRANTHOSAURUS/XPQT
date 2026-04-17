@@ -60,6 +60,11 @@ export class TicketController {
     });
   }
 
+  @Get('tags')
+  async listTags() {
+    return this.ticketService.listDistinctTags();
+  }
+
   @Get(':id')
   async getById(@Param('id') id: string) {
     return this.ticketService.getById(id);

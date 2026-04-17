@@ -151,6 +151,15 @@ export class TicketService {
     };
   }
 
+  async listDistinctTags(): Promise<string[]> {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.rpc('tickets_distinct_tags', {
+      tenant: tenant.id,
+    });
+    if (error) throw error;
+    return (data ?? []).map((row: { tag: string }) => row.tag);
+  }
+
   async getById(id: string) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
