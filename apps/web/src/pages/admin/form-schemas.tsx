@@ -15,36 +15,18 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, Eye } from 'lucide-react';
+import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, Eye, Link2 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-
-type FieldType =
-  | 'text'
-  | 'textarea'
-  | 'number'
-  | 'date'
-  | 'datetime'
-  | 'dropdown'
-  | 'multi_select'
-  | 'checkbox'
-  | 'radio'
-  | 'file_upload'
-  | 'person_picker'
-  | 'location_picker'
-  | 'asset_picker';
-
-interface FormField {
-  id: string;
-  label: string;
-  type: FieldType;
-  required: boolean;
-  placeholder?: string;
-  help_text?: string;
-  options?: string[];
-}
+import type { FieldType, FormField } from '@/components/admin/form-builder/premade-fields';
+import { PREMADE_FIELDS, premadeFieldToForm } from '@/components/admin/form-builder/premade-fields';
+import { BOUND_FIELD_LABELS } from '@prequest/shared';
 
 interface FormSchema {
   id: string;
@@ -217,6 +199,12 @@ export function FormSchemasPage() {
     setEditingFieldIdx(fields.length);
   };
 
+  const addPremadeField = (def: typeof PREMADE_FIELDS[number]) => {
+    const field = premadeFieldToForm(def, generateId());
+    setFields((prev) => [...prev, field]);
+    setEditingFieldIdx(fields.length);
+  };
+
   const removeField = (idx: number) => {
     setFields((prev) => prev.filter((_, i) => i !== idx));
     setEditingFieldIdx(null);
@@ -336,7 +324,8 @@ export function FormSchemasPage() {
                       editingFieldIdx === idx ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
                     }`}
                   >
-                    <span className="flex-1 truncate">
+                    <span className="flex-1 truncate flex items-center gap-1.5">
+                      {f.bound_to && <Link2 className="h-3 w-3 text-muted-foreground shrink-0" />}
                       {f.label || <span className="italic text-muted-foreground">Unnamed</span>}
                     </span>
                     <div className="flex opacity-0 group-hover:opacity-100 gap-0.5">
@@ -372,9 +361,28 @@ export function FormSchemasPage() {
                 ))}
               </div>
               <div className="p-3 border-t">
-                <Button variant="outline" size="sm" className="w-full gap-1.5" onClick={addField}>
-                  <Plus className="h-3.5 w-3.5" /> Add Field
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="w-full gap-1.5" />}>
+                    <Plus className="h-3.5 w-3.5" /> Add Field
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-72" align="start">
+                    <DropdownMenuLabel className="text-xs uppercase tracking-wide text-muted-foreground">Premade</DropdownMenuLabel>
+                    {PREMADE_FIELDS.map((def) => (
+                      <DropdownMenuItem key={def.key} onSelect={() => addPremadeField(def)} className="flex-col items-start gap-0.5">
+                        <span className="flex items-center gap-1.5 font-medium">
+                          {def.bound_to && <Link2 className="h-3 w-3 text-muted-foreground" />}
+                          {def.label}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{def.description}</span>
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs uppercase tracking-wide text-muted-foreground">Custom</DropdownMenuLabel>
+                    <DropdownMenuItem onSelect={addField}>
+                      <Plus className="h-3.5 w-3.5 mr-2" /> Blank field
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
 
@@ -405,12 +413,20 @@ export function FormSchemasPage() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label>Field Type</Label>
+                        <div className="flex items-center justify-between">
+                          <Label>Field Type</Label>
+                          {ef.bound_to && (
+                            <Badge variant="secondary" className="gap-1 font-normal">
+                              <Link2 className="h-3 w-3" /> {BOUND_FIELD_LABELS[ef.bound_to]}
+                            </Badge>
+                          )}
+                        </div>
                         <Select
                           value={ef.type}
                           onValueChange={(v) =>
                             updateField(editingFieldIdx!, { type: (v ?? 'text') as FieldType })
                           }
+                          disabled={!!ef.bound_to}
                         >
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -419,6 +435,11 @@ export function FormSchemasPage() {
                             ))}
                           </SelectContent>
                         </Select>
+                        {ef.bound_to && (
+                          <p className="text-xs text-muted-foreground">
+                            Field type is locked because this field writes to a ticket column.
+                          </p>
+                        )}
                       </div>
                       <div className="space-y-2">
                         <Label>Placeholder</Label>
