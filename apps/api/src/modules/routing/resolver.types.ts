@@ -11,6 +11,8 @@ export type ChosenBy =
   | 'asset_type_default'
   | 'location_team'
   | 'parent_location_team'
+  | 'space_group_team'
+  | 'domain_fallback'
   | 'request_type_default'
   | 'domain_default'
   | 'unassigned';
@@ -27,6 +29,7 @@ export interface ResolverContext {
     request_type?: LoadedRequestType | null;
     asset?: LoadedAsset | null;
     location_chain?: string[];
+    domain_chain?: string[];
   };
 }
 
@@ -52,6 +55,20 @@ export interface LoadedAsset {
   };
 }
 
+export interface RoutingRuleRecord {
+  id: string;
+  name: string;
+  priority: number;
+  conditions: Array<{ field: string; operator: string; value: unknown }>;
+  action_assign_team_id: string | null;
+  action_assign_user_id: string | null;
+}
+
+export interface LocationTeamHit {
+  team_id: string | null;
+  vendor_id: string | null;
+}
+
 export interface TraceEntry {
   step: ChosenBy;
   matched: boolean;
@@ -64,5 +81,6 @@ export interface ResolverDecision {
   chosen_by: ChosenBy;
   strategy: FulfillmentShape | 'rule';
   rule_id?: string | null;
+  rule_name?: string | null;
   trace: TraceEntry[];
 }
