@@ -41,6 +41,14 @@ export class RequestTypeService {
     form_schema_id?: string;
     workflow_definition_id?: string;
     sla_policy_id?: string;
+    fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
+    requires_asset?: boolean;
+    asset_required?: boolean;
+    asset_type_filter?: string[];
+    requires_location?: boolean;
+    location_required?: boolean;
+    default_team_id?: string | null;
+    default_vendor_id?: string | null;
   }) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
