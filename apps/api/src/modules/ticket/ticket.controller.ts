@@ -29,6 +29,17 @@ export class TicketController {
     private readonly dispatchService: DispatchService,
   ) {}
 
+  @Get('inbox')
+  async getInbox(
+    @Req() request: Request,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ticketService.getInbox(
+      this.extractAccessToken(request.headers.authorization),
+      limit ? parseInt(limit, 10) : undefined,
+    );
+  }
+
   @Get()
   async list(
     @Query('status_category') statusCategory?: string,
