@@ -37,8 +37,6 @@ export interface PremadeFieldDef {
 }
 
 export const PREMADE_FIELDS: PremadeFieldDef[] = [
-  { key: 'affected_asset',    label: 'Affected Asset',        type: 'asset_picker',    required: false, bound_to: 'asset_id',    description: 'Links the ticket to an asset' },
-  { key: 'affected_location', label: 'Affected Location',     type: 'location_picker', required: true,  bound_to: 'location_id', description: 'Links the ticket to a location' },
   { key: 'affected_person',   label: 'Affected Person',       type: 'person_picker',   required: false,                          description: 'A person other than the requester' },
   { key: 'preferred_date',    label: 'Preferred Date / Time', type: 'datetime',        required: true,                           description: 'When the requester wants this done' },
   { key: 'impact',            label: 'Impact',                type: 'dropdown',        required: true,  options: ['Low','Medium','High'], bound_to: 'impact',  description: 'Business impact — populates the ticket column' },
