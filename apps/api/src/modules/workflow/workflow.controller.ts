@@ -58,4 +58,14 @@ export class WorkflowController {
   async getInstancesForTicket(@Param('ticketId') ticketId: string) {
     return this.workflowService.getInstancesForTicket(ticketId);
   }
+
+  @Get('instances/:id')
+  async getInstance(@Param('id') id: string) {
+    return this.workflowService.getInstance(id);
+  }
+
+  @Get('instances/:id/events')
+  async listInstanceEvents(@Param('id') id: string) {
+    return this.workflowService.listInstanceEvents(id);
+  }
 }

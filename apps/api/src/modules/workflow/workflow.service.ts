@@ -138,6 +138,30 @@ export class WorkflowService {
     return data;
   }
 
+  async getInstance(instanceId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('*, definition:workflow_definitions(*)')
+      .eq('id', instanceId)
+      .eq('tenant_id', tenant.id)
+      .single();
+    if (error || !data) throw new NotFoundException('Instance not found');
+    return data;
+  }
+
+  async listInstanceEvents(instanceId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('workflow_instance_events')
+      .select('*')
+      .eq('workflow_instance_id', instanceId)
+      .eq('tenant_id', tenant.id)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data;
+  }
+
   private regenerateNodeIds(graph: Graph): Graph {
     const idMap = new Map<string, string>();
     const nodes = graph.nodes.map((n) => {
