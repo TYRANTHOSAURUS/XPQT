@@ -10,6 +10,7 @@ import { Inspector } from '@/components/workflow-editor/inspector';
 import { Toolbar } from '@/components/workflow-editor/toolbar';
 import { useKeyboardShortcuts } from '@/components/workflow-editor/use-keyboard-shortcuts';
 import { validate } from '@/components/workflow-editor/validation';
+import { SimulatePanel } from '@/components/workflow-editor/simulate-panel';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 
@@ -17,7 +18,7 @@ export function WorkflowEditorPage() {
   const { id = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: wf, loading, refetch } = useWorkflow(id);
-  const { saveGraph, publish, unpublish } = useWorkflowMutations(id);
+  const { saveGraph, publish, unpublish, simulate } = useWorkflowMutations(id);
 
   const setGraph = useGraphStore((s) => s.setGraph);
   const toJSON = useGraphStore((s) => s.toJSON);
@@ -27,6 +28,7 @@ export function WorkflowEditorPage() {
 
   const [saving, setSaving] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
+  const [simOpen, setSimOpen] = useState(false);
 
   useEffect(() => {
     if (wf) setGraph(wf.graph_definition ?? { nodes: [], edges: [] });
@@ -90,7 +92,7 @@ export function WorkflowEditorPage() {
         onSave={handleSave}
         onPublish={handlePublish}
         onUnpublish={handleUnpublish}
-        onSimulate={() => toast.message('Simulate — wired in Phase C')}
+        onSimulate={() => setSimOpen(true)}
         onValidate={() => setErrorsOpen(true)}
       />
       <div className="flex-1 min-h-0 flex">
@@ -102,6 +104,18 @@ export function WorkflowEditorPage() {
         </div>
         <Inspector readOnly={readOnly} />
       </div>
+
+      <SimulatePanel
+        open={simOpen}
+        onOpenChange={setSimOpen}
+        onRun={async (ticket) => {
+          if (useGraphStore.getState().dirty) {
+            await saveGraph(toJSON());
+            markSaved();
+          }
+          return simulate(ticket);
+        }}
+      />
 
       <Dialog open={errorsOpen} onOpenChange={setErrorsOpen}>
         <DialogContent>
