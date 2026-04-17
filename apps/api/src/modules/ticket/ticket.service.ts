@@ -4,6 +4,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
+import { ApprovalService } from '../approval/approval.service';
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
@@ -69,6 +70,7 @@ export class TicketService {
     @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
+    @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
   ) {}
 
   async list(filters: TicketListFilters = {}) {
@@ -184,32 +186,122 @@ export class TicketService {
     // Log domain event
     await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
 
+    // Load full request-type config once — used by approval gate + automation
+    const requestTypeCfg = data.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
+          .eq('id', data.ticket_type_id)
+          .single()).data
+      : null;
+
+    // ── Approval gate ─────────────────────────────────────────
+    // When the request type requires approval, park the ticket in
+    // pending_approval and create an approval request. Routing/SLA/workflow
+    // happen once approval is granted (see onApprovalDecision).
+    if (requestTypeCfg?.requires_approval &&
+        (requestTypeCfg.approval_approver_person_id || requestTypeCfg.approval_approver_team_id)) {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'awaiting_approval', status_category: 'pending_approval' })
+        .eq('id', data.id);
+      data.status = 'awaiting_approval';
+      data.status_category = 'pending_approval';
+
+      await this.approvalService.createSingleStep({
+        target_entity_type: 'ticket',
+        target_entity_id: data.id,
+        approver_person_id: requestTypeCfg.approval_approver_person_id as string | undefined,
+        approver_team_id: requestTypeCfg.approval_approver_team_id as string | undefined,
+      });
+
+      await this.addActivity(data.id, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_requested' },
+      });
+
+      return data;
+    }
+
+    // Normal path: routing → SLA → workflow
+    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg);
+    return data;
+  }
+
+  /**
+   * Called by approval flow after a ticket's approval request is resolved.
+   * Runs routing/SLA/workflow on approval; marks ticket cancelled on rejection.
+   */
+  async onApprovalDecision(ticketId: string, outcome: 'approved' | 'rejected') {
+    const tenant = TenantContext.current();
+    const ticket = await this.getById(ticketId);
+    if (ticket.status_category !== 'pending_approval') return;
+
+    if (outcome === 'rejected') {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'rejected', status_category: 'closed', closed_at: new Date().toISOString() })
+        .eq('id', ticketId);
+      await this.addActivity(ticketId, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_rejected' },
+      });
+      return;
+    }
+
+    // Approved — move out of pending_approval and run automation
+    await this.supabase.admin
+      .from('tickets')
+      .update({ status: 'new', status_category: 'new' })
+      .eq('id', ticketId);
+    const ticketRecord = await this.getById(ticketId);
+
+    await this.addActivity(ticketId, {
+      activity_type: 'system_event',
+      visibility: 'system',
+      metadata: { event: 'approval_approved' },
+    });
+
+    const cfg = ticketRecord.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id')
+          .eq('id', ticketRecord.ticket_type_id)
+          .single()).data
+      : null;
+
+    await this.runPostCreateAutomation(ticketRecord as Record<string, unknown>, tenant.id, cfg);
+  }
+
+  private async runPostCreateAutomation(
+    data: Record<string, unknown>,
+    tenantId: string,
+    requestTypeCfg: Record<string, unknown> | null,
+  ) {
     // ── Auto-routing ──────────────────────────────────────────
     if (!data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
-        const requestType = data.ticket_type_id
-          ? (await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()).data
-          : null;
-
         let effectiveLocation = data.location_id as string | null;
         if (!effectiveLocation && data.asset_id) {
           const { data: asset } = await this.supabase.admin
-            .from('assets').select('assigned_space_id').eq('id', data.asset_id).single();
+            .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
           effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
         }
 
         const evalCtx = {
-          tenant_id: tenant.id,
-          ticket_id: data.id,
-          request_type_id: data.ticket_type_id ?? null,
-          domain: (requestType?.domain as string | null) ?? null,
-          priority: data.priority,
-          asset_id: data.asset_id ?? null,
+          tenant_id: tenantId,
+          ticket_id: data.id as string,
+          request_type_id: (data.ticket_type_id as string | null) ?? null,
+          domain: (requestTypeCfg?.domain as string | null) ?? null,
+          priority: data.priority as string | null,
+          asset_id: (data.asset_id as string | null) ?? null,
           location_id: effectiveLocation,
         };
 
         const result = await this.routingService.evaluate(evalCtx);
-        await this.routingService.recordDecision(data.id, evalCtx, result);
+        await this.routingService.recordDecision(data.id as string, evalCtx, result);
 
         if (result.target) {
           const updates: Record<string, unknown> = { status_category: 'assigned' };
@@ -218,10 +310,10 @@ export class TicketService {
           if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
           if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
 
-          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id);
+          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id as string);
           Object.assign(data, updates);
 
-          await this.addActivity(data.id, {
+          await this.addActivity(data.id as string, {
             activity_type: 'system_event',
             visibility: 'system',
             metadata: {
@@ -238,37 +330,19 @@ export class TicketService {
     }
 
     // ── Auto-SLA ──────────────────────────────────────────────
-    // Start SLA timers if the request type has a linked SLA policy
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.sla_policy_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('sla_policy_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.sla_policy_id) {
-          await this.slaService.startTimers(data.id, tenant.id, requestType.sla_policy_id);
-          await this.supabase.admin.from('tickets').update({ sla_id: requestType.sla_policy_id }).eq('id', data.id);
-        }
+        await this.slaService.startTimers(data.id as string, tenantId, requestTypeCfg.sla_policy_id as string);
+        await this.supabase.admin.from('tickets').update({ sla_id: requestTypeCfg.sla_policy_id }).eq('id', data.id as string);
       } catch {
         // SLA failure should not block ticket creation
       }
     }
 
     // ── Auto-workflow ─────────────────────────────────────────
-    // Start workflow if the request type has a linked workflow definition
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.workflow_definition_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('workflow_definition_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.workflow_definition_id) {
-          await this.workflowEngine.startForTicket(data.id, requestType.workflow_definition_id);
-        }
+        await this.workflowEngine.startForTicket(data.id as string, requestTypeCfg.workflow_definition_id as string);
       } catch {
         // Workflow failure should not block ticket creation
       }

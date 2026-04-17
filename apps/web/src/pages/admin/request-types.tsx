@@ -34,6 +34,9 @@ interface RequestType {
   requires_location?: boolean;
   location_required?: boolean;
   default_team_id?: string | null;
+  requires_approval?: boolean;
+  approval_approver_team_id?: string | null;
+  approval_approver_person_id?: string | null;
 }
 
 interface SlaPolicy {
@@ -79,6 +82,8 @@ export function RequestTypesPage() {
   const [locationRequired, setLocationRequired] = useState(false);
   const [defaultTeamId, setDefaultTeamId] = useState('');
   const [assetTypeFilter, setAssetTypeFilter] = useState('');
+  const [requiresApproval, setRequiresApproval] = useState(false);
+  const [approvalApproverTeamId, setApprovalApproverTeamId] = useState('');
 
   const resetForm = () => {
     setName('');
@@ -93,6 +98,8 @@ export function RequestTypesPage() {
     setLocationRequired(false);
     setDefaultTeamId('');
     setAssetTypeFilter('');
+    setRequiresApproval(false);
+    setApprovalApproverTeamId('');
     setEditId(null);
   };
 
@@ -112,6 +119,8 @@ export function RequestTypesPage() {
       default_team_id: defaultTeamId || null,
       asset_type_filter: assetTypeFilter
         .split(',').map((s) => s.trim()).filter(Boolean),
+      requires_approval: requiresApproval,
+      approval_approver_team_id: requiresApproval ? (approvalApproverTeamId || null) : null,
     };
     if (editId) {
       await apiFetch(`/request-types/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
@@ -137,6 +146,8 @@ export function RequestTypesPage() {
     setLocationRequired(!!rt.location_required);
     setDefaultTeamId(rt.default_team_id ?? '');
     setAssetTypeFilter((rt.asset_type_filter ?? []).join(', '));
+    setRequiresApproval(!!rt.requires_approval);
+    setApprovalApproverTeamId(rt.approval_approver_team_id ?? '');
     setDialogOpen(true);
   };
 
@@ -315,6 +326,42 @@ export function RequestTypesPage() {
                     Used when the resolver chain finds no asset/location match.
                   </p>
                 </div>
+              </div>
+
+              {/* ── Approval section ──────────────────────────── */}
+              <div className="space-y-3 border-t pt-4">
+                <div>
+                  <h3 className="font-medium">Approval gate</h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Require a manager or team to approve the ticket before it starts routing.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={requiresApproval}
+                    onCheckedChange={(v) => {
+                      setRequiresApproval(!!v);
+                      if (!v) setApprovalApproverTeamId('');
+                    }}
+                  />
+                  Require approval before routing
+                </label>
+                {requiresApproval && (
+                  <div className="space-y-2">
+                    <Label>Approver team</Label>
+                    <Select value={approvalApproverTeamId} onValueChange={(v) => setApprovalApproverTeamId(v ?? '')}>
+                      <SelectTrigger><SelectValue placeholder="Pick a team…" /></SelectTrigger>
+                      <SelectContent>
+                        {(teams ?? []).map((t) => (
+                          <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Any member of the approver team may approve.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-3 pt-2">

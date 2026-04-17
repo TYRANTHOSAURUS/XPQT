@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { TicketService } from '../ticket/ticket.service';
 
 export interface CreateApprovalDto {
   target_entity_type: string;
@@ -19,7 +20,10 @@ export interface RespondDto {
 
 @Injectable()
 export class ApprovalService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
+  ) {}
 
   /**
    * Get pending approvals for a specific person (their approval queue).
@@ -204,6 +208,16 @@ export class ApprovalService {
     // For sequential chains: if approved, check if next step should activate
     if (dto.status === 'approved' && approval.approval_chain_id) {
       await this.advanceChain(approval.approval_chain_id, approval.step_number);
+    }
+
+    // Notify the target entity when its approval is resolved.
+    // For single-step approvals on tickets, this unblocks routing/SLA/workflow.
+    if (approval.target_entity_type === 'ticket' && !approval.approval_chain_id && !approval.parallel_group) {
+      try {
+        await this.ticketService.onApprovalDecision(approval.target_entity_id, dto.status);
+      } catch (err) {
+        console.error('[approval] ticket notification failed', err);
+      }
     }
 
     return data;

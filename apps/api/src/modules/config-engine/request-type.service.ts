@@ -49,6 +49,9 @@ export class RequestTypeService {
     location_required?: boolean;
     default_team_id?: string | null;
     default_vendor_id?: string | null;
+    requires_approval?: boolean;
+    approval_approver_team_id?: string | null;
+    approval_approver_person_id?: string | null;
   }) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
