@@ -13,6 +13,9 @@ function repo(over: Partial<Record<string, jest.Mock>> = {}) {
     loadAsset: jest.fn().mockResolvedValue(null),
     locationChain: jest.fn().mockResolvedValue([]),
     locationTeam: jest.fn().mockResolvedValue(null),
+    spaceGroupTeam: jest.fn().mockResolvedValue(null),
+    domainChain: jest.fn(async (_t: string, d: string) => (d ? [d] : [])),
+    loadRoutingRules: jest.fn().mockResolvedValue([]),
     ...over,
   };
 }

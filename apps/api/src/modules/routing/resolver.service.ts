@@ -7,7 +7,6 @@ import {
   LocationTeamHit,
   ResolverContext,
   ResolverDecision,
-  RoutingRuleRecord,
   TraceEntry,
 } from './resolver.types';
 
