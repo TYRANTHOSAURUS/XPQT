@@ -64,8 +64,6 @@ create unique index if not exists uniq_location_teams_group_domain
   on public.location_teams (space_group_id, domain)
   where space_group_id is not null;
 
-create index if not exists idx_location_teams_group_domain
-  on public.location_teams (space_group_id, domain);
 
 -- ── 3. Domain hierarchy ───────────────────────────────────────
 -- Admin-managed parent chain for domains: "doors" → "fm" means a request with
@@ -76,6 +74,7 @@ create table if not exists public.domain_parents (
   domain text not null,
   parent_domain text not null,
   created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
   unique (tenant_id, domain),
   check (domain <> parent_domain)
 );
@@ -84,7 +83,8 @@ alter table public.domain_parents enable row level security;
 create policy "tenant_isolation" on public.domain_parents
   using (tenant_id = public.current_tenant_id());
 
-create index if not exists idx_domain_parents_tenant on public.domain_parents (tenant_id);
+create trigger set_domain_parents_updated_at before update on public.domain_parents
+  for each row execute function public.set_updated_at();
 
 -- ── 4. Parent-status rollup trigger ───────────────────────────
 -- When a work_order's status_category changes, recompute the parent case:
@@ -123,15 +123,19 @@ begin
   where parent_ticket_id = new.parent_ticket_id
     and ticket_kind = 'work_order';
 
+  any_in_progress := coalesce(any_in_progress, false);
+  any_open        := coalesce(any_open, false);
+
   if any_in_progress then
-    update public.tickets set status_category = 'in_progress'
-    where id = new.parent_ticket_id and status_category <> 'in_progress'
-      and status_category not in ('resolved', 'closed');
-  elsif any_open then
-    update public.tickets set status_category = 'assigned'
+    update public.tickets
+    set status_category = 'in_progress'
     where id = new.parent_ticket_id
-      and status_category in ('new')
-      and status_category not in ('resolved', 'closed');
+      and status_category not in ('in_progress', 'resolved', 'closed');
+  elsif any_open then
+    update public.tickets
+    set status_category = 'assigned'
+    where id = new.parent_ticket_id
+      and status_category not in ('assigned', 'in_progress', 'resolved', 'closed');
   else
     update public.tickets
     set status_category = 'resolved',
