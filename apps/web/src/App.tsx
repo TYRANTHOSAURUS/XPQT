@@ -30,6 +30,7 @@ import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
 import { WorkflowInstancePage } from '@/pages/admin/workflow-instance';
+import { WebhooksPage } from '@/pages/admin/webhooks';
 import { VendorsPage } from '@/pages/admin/vendors';
 import { VendorMenusPage } from '@/pages/admin/vendor-menus';
 import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
@@ -109,6 +110,7 @@ export function App() {
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
+            <Route path="webhooks" element={<WebhooksPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />

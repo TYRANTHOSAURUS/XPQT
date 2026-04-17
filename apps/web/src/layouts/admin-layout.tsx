@@ -39,6 +39,7 @@ import {
   PersonStanding,
   Package,
   GitBranch,
+  Webhook,
   HandCoins,
   ListTree,
   Store,
@@ -54,6 +55,7 @@ const configNav = [
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
   { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
+  { title: 'Webhooks', path: '/admin/webhooks', icon: Webhook },
 ];
 
 const peopleNav = [
@@ -86,6 +88,7 @@ const pageTitles: Record<string, string> = {
   '/admin/business-hours': 'Business Hours',
   '/admin/notifications': 'Notifications',
   '/admin/workflow-templates': 'Workflow Templates',
+  '/admin/webhooks': 'Webhooks',
   '/admin/users': 'Users & Roles',
   '/admin/persons': 'Persons',
   '/admin/delegations': 'Delegations',
