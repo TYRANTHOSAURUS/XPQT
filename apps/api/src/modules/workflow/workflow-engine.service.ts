@@ -290,9 +290,104 @@ export class WorkflowEngineService {
         break;
       }
 
+      case 'http_request': {
+        const method = (node.config.method as string) ?? 'POST';
+        const url = node.config.url as string;
+        const headers = (node.config.headers as Record<string, string>) ?? {};
+        const bodyTemplate = (node.config.body as string) ?? '';
+        const saveAs = (node.config.save_response_as as string) ?? '';
+
+        // Load ticket/context for template substitution
+        let ticket: Record<string, unknown> | null = null;
+        if (ctx?.dryRun) {
+          ticket = ctx.simulatedTicket ?? {};
+        } else {
+          const { data } = await this.supabase.admin.from('tickets').select('*').eq('id', ticketId).single();
+          ticket = data;
+        }
+
+        const substitutedUrl = this.substituteTemplate(url, { ticket });
+        const substitutedHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(headers)) {
+          substitutedHeaders[k] = this.substituteTemplate(v, { ticket });
+        }
+        const substitutedBody = this.substituteTemplate(bodyTemplate, { ticket });
+
+        if (ctx?.dryRun) {
+          await this.emit(instanceId, 'node_entered', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { dry_run_would_call: { method, url: substitutedUrl } },
+          }, ctx);
+          await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+          break;
+        }
+
+        try {
+          const init: RequestInit = {
+            method,
+            headers: { 'Content-Type': 'application/json', ...substitutedHeaders },
+            signal: AbortSignal.timeout(20000),
+          };
+          if (method !== 'GET' && method !== 'DELETE' && substitutedBody) {
+            init.body = substitutedBody;
+          }
+          const res = await fetch(substitutedUrl, init);
+          let parsed: unknown = null;
+          const text = await res.text();
+          try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+
+          await this.emit(instanceId, 'node_entered', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { status: res.status, ok: res.ok, url: substitutedUrl, method },
+          });
+
+          if (saveAs) {
+            const { data: inst } = await this.supabase.admin
+              .from('workflow_instances')
+              .select('context')
+              .eq('id', instanceId)
+              .single();
+            const newCtx = { ...(inst?.context ?? {}), [saveAs]: parsed };
+            await this.supabase.admin
+              .from('workflow_instances')
+              .update({ context: newCtx })
+              .eq('id', instanceId);
+          }
+        } catch (err) {
+          await this.emit(instanceId, 'instance_failed', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { error: err instanceof Error ? err.message : 'HTTP request failed', url: substitutedUrl },
+          });
+          // Continue the workflow anyway — the failure is recorded. Alternative: halt.
+        }
+
+        await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+        break;
+      }
+
       default:
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
     }
+  }
+
+  /**
+   * Replace `{{ticket.field}}` style tokens with values from `vars`.
+   * Supports nested paths (`{{ticket.nested.field}}`) and context (`{{context.key}}`).
+   */
+  private substituteTemplate(tpl: string, vars: Record<string, unknown>): string {
+    if (!tpl) return tpl;
+    return tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
+      const parts = path.split('.');
+      let cur: unknown = vars;
+      for (const p of parts) {
+        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
+          cur = (cur as Record<string, unknown>)[p];
+        } else {
+          return '';
+        }
+      }
+      return cur == null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+    });
   }
 
   async resume(instanceId: string, edgeCondition?: string) {

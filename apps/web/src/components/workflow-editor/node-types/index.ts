@@ -1,6 +1,6 @@
 import {
   Play, Square, UserPlus, CheckSquare, Bell, GitBranch,
-  Edit3, ListTree, Pause, Clock,
+  Edit3, ListTree, Pause, Clock, Globe,
 } from 'lucide-react';
 import type { NodeType } from '../types';
 
@@ -67,6 +67,12 @@ export const NODE_TYPES: Record<NodeType, NodeTypeMeta> = {
     type: 'timer', label: 'Timer', description: 'Pause for N minutes',
     icon: Clock, colorClass: 'border-rose-500 bg-rose-500/10 text-rose-700 dark:text-rose-400',
     defaultConfig: { delay_minutes: 60 }, outgoingEdges: 'single',
+  },
+  http_request: {
+    type: 'http_request', label: 'HTTP Request', description: 'Call an external API (outbound)',
+    icon: Globe, colorClass: 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-400',
+    defaultConfig: { method: 'POST', url: '', headers: {}, body: '', save_response_as: '' },
+    outgoingEdges: 'single',
   },
 };
 

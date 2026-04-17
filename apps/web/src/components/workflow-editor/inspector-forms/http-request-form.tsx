@@ -1,0 +1,121 @@
+import type { WorkflowNode } from '../types';
+import { useGraphStore } from '../graph-store';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Plus, Trash2 } from 'lucide-react';
+
+type Headers = Record<string, string>;
+
+export function HttpRequestForm({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) {
+  const update = useGraphStore((s) => s.updateNodeConfig);
+  const c = node.config as {
+    method?: string;
+    url?: string;
+    headers?: Headers;
+    body?: string;
+    save_response_as?: string;
+  };
+  const headers = c.headers ?? {};
+  const headerEntries = Object.entries(headers);
+
+  const updateHeader = (oldKey: string, newKey: string, value: string) => {
+    const next: Headers = {};
+    for (const [k, v] of headerEntries) {
+      if (k === oldKey) {
+        if (newKey) next[newKey] = value;
+      } else {
+        next[k] = v;
+      }
+    }
+    update(node.id, { headers: next });
+  };
+
+  const addHeader = () => update(node.id, { headers: { ...headers, '': '' } });
+  const removeHeader = (key: string) => {
+    const next = { ...headers };
+    delete next[key];
+    update(node.id, { headers: next });
+  };
+
+  return (
+    <div className="grid gap-3">
+      <div className="grid gap-1.5">
+        <Label className="text-xs">Method</Label>
+        <Select value={c.method ?? 'POST'} onValueChange={(v) => update(node.id, { method: v ?? 'POST' })} disabled={readOnly}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => (
+              <SelectItem key={m} value={m}>{m}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">URL</Label>
+        <Input
+          value={c.url ?? ''}
+          onChange={(e) => update(node.id, { url: e.target.value })}
+          placeholder="https://api.example.com/notify"
+          disabled={readOnly}
+        />
+        <p className="text-[10px] text-muted-foreground">Supports <code>{'{{ticket.field}}'}</code> substitution.</p>
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">Headers</Label>
+        {headerEntries.map(([k, v], i) => (
+          <div key={i} className="flex gap-1">
+            <Input
+              value={k}
+              placeholder="Header"
+              onChange={(e) => updateHeader(k, e.target.value, v)}
+              disabled={readOnly}
+              className="flex-1"
+            />
+            <Input
+              value={v}
+              placeholder="Value"
+              onChange={(e) => updateHeader(k, k, e.target.value)}
+              disabled={readOnly}
+              className="flex-1"
+            />
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => removeHeader(k)} disabled={readOnly}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ))}
+        <Button variant="outline" size="sm" onClick={addHeader} disabled={readOnly} className="gap-1">
+          <Plus className="h-3.5 w-3.5" /> Add header
+        </Button>
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">Body (JSON or text)</Label>
+        <Textarea
+          value={c.body ?? ''}
+          onChange={(e) => update(node.id, { body: e.target.value })}
+          rows={6}
+          className="font-mono text-xs"
+          placeholder={'{\n  "title": "{{ticket.title}}"\n}'}
+          disabled={readOnly}
+        />
+        <p className="text-[10px] text-muted-foreground">Ignored for GET. Supports <code>{'{{ticket.field}}'}</code>.</p>
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">Save response as (optional)</Label>
+        <Input
+          value={c.save_response_as ?? ''}
+          onChange={(e) => update(node.id, { save_response_as: e.target.value })}
+          placeholder="e.g. external_ticket"
+          disabled={readOnly}
+        />
+        <p className="text-[10px] text-muted-foreground">Stores the parsed JSON response at <code>context.&lt;key&gt;</code> for later nodes.</p>
+      </div>
+    </div>
+  );
+}

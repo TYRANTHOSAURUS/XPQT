@@ -11,6 +11,7 @@ import { UpdateTicketForm } from './inspector-forms/update-ticket-form';
 import { CreateChildTasksForm } from './inspector-forms/create-child-tasks-form';
 import { WaitForForm } from './inspector-forms/wait-for-form';
 import { TimerForm } from './inspector-forms/timer-form';
+import { HttpRequestForm } from './inspector-forms/http-request-form';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -72,5 +73,6 @@ function FormFor({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) 
     case 'create_child_tasks': return <CreateChildTasksForm node={node} readOnly={readOnly} />;
     case 'wait_for': return <WaitForForm node={node} readOnly={readOnly} />;
     case 'timer': return <TimerForm node={node} readOnly={readOnly} />;
+    case 'http_request': return <HttpRequestForm node={node} readOnly={readOnly} />;
   }
 }

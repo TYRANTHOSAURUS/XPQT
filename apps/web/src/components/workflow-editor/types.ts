@@ -1,6 +1,7 @@
 export type NodeType =
   | 'trigger' | 'end' | 'assign' | 'approval' | 'notification'
-  | 'condition' | 'update_ticket' | 'create_child_tasks' | 'wait_for' | 'timer';
+  | 'condition' | 'update_ticket' | 'create_child_tasks' | 'wait_for' | 'timer'
+  | 'http_request';
 
 export interface WorkflowNode {
   id: string;
