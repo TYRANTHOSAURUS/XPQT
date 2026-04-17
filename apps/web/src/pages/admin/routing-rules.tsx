@@ -7,14 +7,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface RoutingRule {
   id: string;
@@ -58,14 +60,20 @@ export function RoutingRulesPage() {
       conditions: condValue ? [{ field: condField, operator: 'equals', value: condValue }] : [],
       action_assign_team_id: assignTeamId,
     };
-    if (editId) {
-      await apiFetch(`/routing-rules/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/routing-rules', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/routing-rules/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Routing rule updated');
+      } else {
+        await apiFetch('/routing-rules', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Routing rule created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save routing rule');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (rule: RoutingRule) => {
@@ -103,17 +111,18 @@ export function RoutingRulesPage() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Routing Rule</DialogTitle>
+              <DialogDescription>Define how tickets are automatically assigned to teams.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2">
-              <div className="space-y-2">
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
                 <Label>Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. FM tickets to FM team..." />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Priority (higher = checked first)</Label>
                 <Input type="number" value={priority} onChange={(e) => setPriority(e.target.value)} />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Condition</Label>
                 <div className="grid grid-cols-2 gap-2">
                   <Select value={condField} onValueChange={(v) => setCondField(v ?? 'domain')}>
@@ -127,7 +136,7 @@ export function RoutingRulesPage() {
                   <Input value={condValue} onChange={(e) => setCondValue(e.target.value)} placeholder="equals..." />
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Assign to Team</Label>
                 <Select value={assignTeamId} onValueChange={(v) => setAssignTeamId(v ?? '')}>
                   <SelectTrigger><SelectValue placeholder="Select team..." /></SelectTrigger>
@@ -138,13 +147,13 @@ export function RoutingRulesPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim() || !assignTeamId}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim() || !assignTeamId}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -161,12 +170,8 @@ export function RoutingRulesPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No routing rules yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={6} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No routing rules yet." />}
           {(data ?? []).map((rule) => (
             <TableRow key={rule.id}>
               <TableCell className="font-mono">{rule.priority}</TableCell>

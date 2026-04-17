@@ -1,13 +1,14 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useRef } from 'react';
 import ReactFlow, {
   Background, Controls, MiniMap,
-  type Node, type Edge, type Connection, type NodeTypes,
+  type Node, type Edge, type Connection, type NodeTypes, type OnSelectionChangeParams,
 } from 'reactflow';
 import { useGraphStore } from './graph-store';
 import { applyDagreLayout } from './layout';
 import { validate } from './validation';
 import { WorkflowNodeCard } from './workflow-node';
 import { summarizeNode } from './node-summary';
+import { useEditorContextMenu } from './context-menu';
 
 const nodeTypes: NodeTypes = { workflow: WorkflowNodeCard };
 
@@ -23,6 +24,13 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
   const setSelection = useGraphStore((s) => s.setSelection);
   const connect = useGraphStore((s) => s.connect);
   const disconnect = useGraphStore((s) => s.disconnect);
+  const deleteNodes = useGraphStore((s) => s.deleteNodes);
+  const setNodePosition = useGraphStore((s) => s.setNodePosition);
+
+  const selectedIdsRef = useRef<string[]>([]);
+  selectedIdsRef.current = selectedIds;
+
+  const { paneHandler, nodeHandler, menu } = useEditorContextMenu({ disabled: readOnly });
 
   const validationErrors = useMemo(() => validate({ nodes, edges }), [nodes, edges]);
   const invalidIds = useMemo(() => new Set(validationErrors.map((e) => e.nodeId).filter(Boolean) as string[]), [validationErrors]);
@@ -44,7 +52,7 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
       raw,
       edges.map((e, i) => ({ id: `e_${i}`, source: e.from, target: e.to })),
     );
-  }, [nodes, edges, invalidIds, selectedIds, runtime]);
+  }, [nodes, edges, invalidIds, runtime, selectedIds]);
 
   const rfEdges: Edge[] = useMemo(
     () => edges.map((e, i) => ({
@@ -64,25 +72,54 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
     connect(c.source, c.target, c.sourceHandle ?? undefined);
   }, [connect]);
 
+  const handleSelectionChange = useCallback(({ nodes: selNodes }: OnSelectionChangeParams) => {
+    const next = selNodes.map((n) => n.id);
+    const cur = selectedIdsRef.current;
+    if (next.length === cur.length && next.every((id, i) => id === cur[i])) return;
+    setSelection(next);
+  }, [setSelection]);
+
+  const handleEdgesDelete = useCallback((es: Edge[]) => {
+    for (const e of es) {
+      disconnect(e.source, e.target, (e.sourceHandle as string | undefined) ?? undefined);
+    }
+  }, [disconnect]);
+
+  const handleNodesDelete = useCallback((deleted: Node[]) => {
+    deleteNodes(deleted.map((n) => n.id));
+  }, [deleteNodes]);
+
+  const handleNodeDragStop = useCallback((_: unknown, node: Node) => {
+    setNodePosition(node.id, node.position);
+  }, [setNodePosition]);
+
   return (
-    <ReactFlow
-      nodes={rfNodes}
-      edges={rfEdges}
-      nodeTypes={nodeTypes}
-      onConnect={handleConnect}
-      onEdgesDelete={(es) => es.forEach((e) => disconnect(e.source, e.target, (e.sourceHandle as string | undefined) ?? undefined))}
-      onSelectionChange={({ nodes: selNodes }) => setSelection(selNodes.map((n) => n.id))}
-      nodesDraggable={false}
-      nodesConnectable={!readOnly}
-      elementsSelectable={!readOnly}
-      edgesUpdatable={!readOnly}
-      fitView
-      fitViewOptions={{ padding: 0.2 }}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background gap={16} />
-      <Controls showInteractive={false} />
-      <MiniMap pannable zoomable />
-    </ReactFlow>
+    <>
+      <ReactFlow
+        nodes={rfNodes}
+        edges={rfEdges}
+        nodeTypes={nodeTypes}
+        onConnect={handleConnect}
+        onEdgesDelete={handleEdgesDelete}
+        onNodesDelete={handleNodesDelete}
+        onNodeDragStop={handleNodeDragStop}
+        onSelectionChange={handleSelectionChange}
+        onPaneContextMenu={paneHandler}
+        onNodeContextMenu={nodeHandler}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        elementsSelectable={!readOnly}
+        edgesUpdatable={!readOnly}
+        deleteKeyCode={['Delete', 'Backspace']}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background gap={16} />
+        <Controls showInteractive={false} />
+        <MiniMap pannable zoomable />
+      </ReactFlow>
+      {menu}
+    </>
   );
 }

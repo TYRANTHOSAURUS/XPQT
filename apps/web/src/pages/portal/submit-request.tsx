@@ -1,9 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -19,6 +23,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { ArrowLeft, Send, CheckCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
@@ -45,26 +50,41 @@ interface FormSchemaEntity {
   current_version?: { definition: { fields: FormField[] } } | null;
 }
 
+const submitSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(200, 'Title is too long'),
+  description: z.string().max(5000, 'Description is too long').optional(),
+  priority: z.enum(['low', 'medium', 'high', 'critical']),
+  requestTypeId: z.string().optional(),
+});
+
+type SubmitFormValues = z.infer<typeof submitSchema>;
+
 export function SubmitRequestPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
   const { person } = useAuth();
   const [submitted, setSubmitted] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState('medium');
-  const [requestTypeId, setRequestTypeId] = useState('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [formData, setFormData] = useState<Record<string, string>>({});
+
+  const {
+    control,
+    handleSubmit,
+    watch,
+    register,
+    formState: { errors, isSubmitting },
+  } = useForm<SubmitFormValues>({
+    resolver: zodResolver(submitSchema),
+    defaultValues: { title: '', description: '', priority: 'medium', requestTypeId: '' },
+  });
+
+  const requestTypeId = watch('requestTypeId');
 
   const { data: requestTypes } = useApi<RequestType[]>(
     `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
     [categoryId],
   );
 
-  // Fetch form schema when request type changes
   useEffect(() => {
     if (!requestTypeId || !requestTypes) { setFormFields([]); return; }
     const rt = requestTypes.find((r) => r.id === requestTypeId);
@@ -78,28 +98,32 @@ export function SubmitRequestPage() {
       .catch(() => setFormFields([]));
   }, [requestTypeId, requestTypes]);
 
-  const handleSubmit = async () => {
-    if (!title.trim()) return;
-    setSubmitting(true);
+  const onSubmit = async (values: SubmitFormValues) => {
+    const missingRequired = formFields
+      .filter((f) => f.required)
+      .find((f) => !formData[f.id]?.toString().trim());
+    if (missingRequired) {
+      toast.error(`"${missingRequired.label}" is required`);
+      return;
+    }
 
     try {
       await apiFetch('/tickets', {
         method: 'POST',
         body: JSON.stringify({
-          title,
-          description,
-          priority,
-          ticket_type_id: requestTypeId || undefined,
+          title: values.title,
+          description: values.description,
+          priority: values.priority,
+          ticket_type_id: values.requestTypeId || undefined,
           requester_person_id: person?.id,
           source_channel: 'portal',
           form_data: Object.keys(formData).length > 0 ? formData : undefined,
         }),
       });
+      toast.success('Request submitted');
       setSubmitted(true);
-    } catch {
-      // TODO: error handling
-    } finally {
-      setSubmitting(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to submit request');
     }
   };
 
@@ -134,117 +158,137 @@ export function SubmitRequestPage() {
           <CardTitle>Submit a Request</CardTitle>
           <CardDescription>Describe your issue or request and we'll route it to the right team</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Request type */}
-          {requestTypes && requestTypes.length > 0 && (
-            <div className="space-y-2">
-              <Label htmlFor="request-type">Request Type</Label>
-              <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a request type..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {requestTypes.map((rt) => (
-                    <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        <CardContent>
+          <form onSubmit={handleSubmit(onSubmit)} className="grid gap-4">
+            {requestTypes && requestTypes.length > 0 && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="request-type">Request Type</Label>
+                <Controller
+                  control={control}
+                  name="requestTypeId"
+                  render={({ field }) => (
+                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v ?? '')}>
+                      <SelectTrigger id="request-type">
+                        <SelectValue placeholder="Select a request type..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {requestTypes.map((rt) => (
+                          <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+            )}
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="title">Title</Label>
+              <Input
+                id="title"
+                placeholder="Brief summary of your request..."
+                aria-invalid={!!errors.title}
+                {...register('title')}
+              />
+              {errors.title && (
+                <p className="text-xs text-destructive">{errors.title.message}</p>
+              )}
             </div>
-          )}
 
-          {/* Title */}
-          <div className="space-y-2">
-            <Label htmlFor="title">Title</Label>
-            <Input
-              id="title"
-              placeholder="Brief summary of your request..."
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </div>
-
-          {/* Description */}
-          <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              placeholder="Provide details about your request..."
-              className="min-h-[120px]"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </div>
-
-          {/* Priority */}
-          <div className="space-y-2">
-            <Label htmlFor="priority">Priority</Label>
-            <Select value={priority} onValueChange={(v) => setPriority(v ?? 'medium')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="low">Low — not urgent</SelectItem>
-                <SelectItem value="medium">Medium — normal priority</SelectItem>
-                <SelectItem value="high">High — needs attention soon</SelectItem>
-                <SelectItem value="critical">Critical — blocking my work</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Dynamic form fields from form schema */}
-          {formFields.map((field) => (
-            <div key={field.id} className="space-y-2">
-              <Label>
-                {field.label}
-                {field.required && <span className="text-destructive ml-1">*</span>}
-              </Label>
-              {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
-              {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
-                <Input
-                  type={field.type === 'datetime' ? 'datetime-local' : field.type}
-                  placeholder={field.placeholder}
-                  value={formData[field.id] ?? ''}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
-                />
+            <div className="grid gap-1.5">
+              <Label htmlFor="description">Description</Label>
+              <Textarea
+                id="description"
+                placeholder="Provide details about your request..."
+                className="min-h-[120px]"
+                aria-invalid={!!errors.description}
+                {...register('description')}
+              />
+              {errors.description && (
+                <p className="text-xs text-destructive">{errors.description.message}</p>
               )}
-              {field.type === 'textarea' && (
-                <Textarea
-                  placeholder={field.placeholder}
-                  value={formData[field.id] ?? ''}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
-                />
-              )}
-              {(field.type === 'dropdown' || field.type === 'multi_select') && field.options && (
-                <Select value={formData[field.id] ?? ''} onValueChange={(v) => setFormData((prev) => ({ ...prev, [field.id]: v ?? '' }))}>
-                  <SelectTrigger><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
-                  <SelectContent>
-                    {field.options.map((opt) => (
-                      <SelectItem key={opt} value={opt}>{opt}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              {field.type === 'checkbox' && (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData[field.id] === 'true'}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: String(e.target.checked) }))}
-                    className="rounded border-input"
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="priority">Priority</Label>
+              <Controller
+                control={control}
+                name="priority"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'medium') as SubmitFormValues['priority'])}>
+                    <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low — not urgent</SelectItem>
+                      <SelectItem value="medium">Medium — normal priority</SelectItem>
+                      <SelectItem value="high">High — needs attention soon</SelectItem>
+                      <SelectItem value="critical">Critical — blocking my work</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+
+            {formFields.map((field) => (
+              <div key={field.id} className="grid gap-1.5">
+                <Label htmlFor={`dyn-${field.id}`}>
+                  {field.label}
+                  {field.required && <span className="text-destructive ml-1">*</span>}
+                </Label>
+                {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
+                {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
+                  <Input
+                    id={`dyn-${field.id}`}
+                    type={field.type === 'datetime' ? 'datetime-local' : field.type}
+                    placeholder={field.placeholder}
+                    value={formData[field.id] ?? ''}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
                   />
-                  <span className="text-sm">{field.placeholder}</span>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+                {field.type === 'textarea' && (
+                  <Textarea
+                    id={`dyn-${field.id}`}
+                    placeholder={field.placeholder}
+                    value={formData[field.id] ?? ''}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
+                  />
+                )}
+                {(field.type === 'dropdown' || field.type === 'multi_select') && field.options && (
+                  <Select
+                    value={formData[field.id] ?? ''}
+                    onValueChange={(v) => setFormData((prev) => ({ ...prev, [field.id]: v ?? '' }))}
+                  >
+                    <SelectTrigger id={`dyn-${field.id}`}><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
+                    <SelectContent>
+                      {field.options.map((opt) => (
+                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {field.type === 'checkbox' && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id={`dyn-${field.id}`}
+                      checked={formData[field.id] === 'true'}
+                      onCheckedChange={(checked) =>
+                        setFormData((prev) => ({ ...prev, [field.id]: String(checked === true) }))
+                      }
+                    />
+                    <Label htmlFor={`dyn-${field.id}`} className="text-sm font-normal cursor-pointer">
+                      {field.placeholder}
+                    </Label>
+                  </div>
+                )}
+              </div>
+            ))}
 
-          {/* Submit */}
-          <div className="flex justify-end pt-2">
-            <Button onClick={handleSubmit} disabled={!title.trim() || submitting}>
-              <Send className="h-4 w-4 mr-2" />
-              {submitting ? 'Submitting...' : 'Submit Request'}
-            </Button>
-          </div>
+            <div className="flex justify-end pt-2">
+              <Button type="submit" disabled={isSubmitting}>
+                <Send className="h-4 w-4 mr-2" />
+                {isSubmitting ? 'Submitting...' : 'Submit Request'}
+              </Button>
+            </div>
+          </form>
         </CardContent>
       </Card>
     </div>

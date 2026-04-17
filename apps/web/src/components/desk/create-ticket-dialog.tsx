@@ -7,6 +7,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -18,16 +19,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, Send, Search } from 'lucide-react';
+import { Plus, Send } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
-
-interface Person {
-  id: string;
-  first_name: string;
-  last_name: string;
-  email: string;
-  department: string;
-}
+import { PersonCombobox, type Person } from '@/components/person-combobox';
 
 interface RequestType {
   id: string;
@@ -39,7 +34,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const [requesterSearch, setRequesterSearch] = useState('');
+  const [requesterId, setRequesterId] = useState('');
   const [selectedRequester, setSelectedRequester] = useState<Person | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -49,18 +44,12 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
 
   const { data: requestTypes } = useApi<RequestType[]>('/request-types', []);
 
-  // Simple person search — in production this would be a proper API search endpoint
-  const { data: persons } = useApi<Person[]>(
-    requesterSearch.length >= 2 ? `/persons?search=${encodeURIComponent(requesterSearch)}` : '',
-    [requesterSearch],
-  );
-
   const handleSubmit = async () => {
-    if (!title.trim() || !selectedRequester) return;
+    if (!title.trim() || !requesterId) return;
     setSubmitting(true);
 
     try {
-      await fetch('/api/tickets', {
+      const res = await fetch('/api/tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,21 +57,27 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           description,
           priority,
           ticket_type_id: requestTypeId || undefined,
-          requester_person_id: selectedRequester.id,
+          requester_person_id: requesterId,
           source_channel: sourceChannel,
         }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || `Request failed: ${res.status}`);
+      }
 
-      // Reset form
       setTitle('');
       setDescription('');
       setPriority('medium');
       setRequestTypeId('');
       setSelectedRequester(null);
-      setRequesterSearch('');
+      setRequesterId('');
       setSourceChannel('phone');
       setOpen(false);
       onCreated?.();
+      toast.success('Ticket created');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create ticket');
     } finally {
       setSubmitting(false);
     }
@@ -99,57 +94,27 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           <DialogDescription>Create a ticket on behalf of an employee</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 mt-2">
-          {/* Requester picker */}
-          <div className="space-y-2">
+        <div className="grid gap-3">
+          <div className="grid gap-1.5">
             <Label>Requester</Label>
-            {selectedRequester ? (
-              <div className="flex items-center justify-between p-3 rounded-md border bg-muted/30">
-                <div>
-                  <span className="font-medium">{selectedRequester.first_name} {selectedRequester.last_name}</span>
-                  <span className="text-sm text-muted-foreground ml-2">{selectedRequester.email}</span>
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => { setSelectedRequester(null); setRequesterSearch(''); }}>
-                  Change
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search by name or email..."
-                    className="pl-9"
-                    value={requesterSearch}
-                    onChange={(e) => setRequesterSearch(e.target.value)}
-                  />
-                </div>
-                {persons && persons.length > 0 && (
-                  <div className="border rounded-md max-h-40 overflow-auto">
-                    {persons.map((person) => (
-                      <button
-                        key={person.id}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors"
-                        onClick={() => { setSelectedRequester(person); setRequesterSearch(''); }}
-                      >
-                        <span className="font-medium">{person.first_name} {person.last_name}</span>
-                        <span className="text-muted-foreground ml-2">{person.email}</span>
-                        {person.department && <span className="text-muted-foreground ml-1">· {person.department}</span>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+            <PersonCombobox
+              value={requesterId}
+              onChange={setRequesterId}
+              onSelect={setSelectedRequester}
+              placeholder="Search by name or email..."
+            />
+            {selectedRequester && (
+              <p className="text-xs text-muted-foreground">
+                {selectedRequester.email}
+                {selectedRequester.department ? ` · ${selectedRequester.department}` : ''}
+              </p>
             )}
           </div>
 
-          {/* Source channel */}
-          <div className="space-y-2">
-            <Label>Source</Label>
+          <div className="grid gap-1.5">
+            <Label htmlFor="new-ticket-source">Source</Label>
             <Select value={sourceChannel} onValueChange={(v) => setSourceChannel(v ?? 'phone')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+              <SelectTrigger id="new-ticket-source"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="phone">Phone call</SelectItem>
                 <SelectItem value="email">Email</SelectItem>
@@ -159,14 +124,11 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
             </Select>
           </div>
 
-          {/* Request type */}
           {requestTypes && requestTypes.length > 0 && (
-            <div className="space-y-2">
-              <Label>Request Type</Label>
+            <div className="grid gap-1.5">
+              <Label htmlFor="new-ticket-type">Request Type</Label>
               <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select type..." />
-                </SelectTrigger>
+                <SelectTrigger id="new-ticket-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
                 <SelectContent>
                   {requestTypes.map((rt) => (
                     <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
@@ -176,20 +138,20 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
             </div>
           )}
 
-          {/* Title */}
-          <div className="space-y-2">
-            <Label>Title</Label>
+          <div className="grid gap-1.5">
+            <Label htmlFor="new-ticket-title">Title</Label>
             <Input
+              id="new-ticket-title"
               placeholder="Brief summary..."
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
           </div>
 
-          {/* Description */}
-          <div className="space-y-2">
-            <Label>Description</Label>
+          <div className="grid gap-1.5">
+            <Label htmlFor="new-ticket-description">Description</Label>
             <Textarea
+              id="new-ticket-description"
               placeholder="Details from the employee..."
               className="min-h-[100px]"
               value={description}
@@ -197,13 +159,10 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
             />
           </div>
 
-          {/* Priority */}
-          <div className="space-y-2">
-            <Label>Priority</Label>
+          <div className="grid gap-1.5">
+            <Label htmlFor="new-ticket-priority">Priority</Label>
             <Select value={priority} onValueChange={(v) => setPriority(v ?? 'medium')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+              <SelectTrigger id="new-ticket-priority"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="low">Low</SelectItem>
                 <SelectItem value="medium">Medium</SelectItem>
@@ -212,16 +171,15 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
               </SelectContent>
             </Select>
           </div>
-
-          {/* Submit */}
-          <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={handleSubmit} disabled={!title.trim() || !selectedRequester || submitting}>
-              <Send className="h-4 w-4 mr-2" />
-              {submitting ? 'Creating...' : 'Create Ticket'}
-            </Button>
-          </div>
         </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={!title.trim() || !requesterId || submitting}>
+            <Send className="h-4 w-4 mr-2" />
+            {submitting ? 'Creating...' : 'Create Ticket'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

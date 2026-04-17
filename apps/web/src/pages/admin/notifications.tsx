@@ -9,14 +9,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, Mail, Bell } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface NotificationTemplate {
   id: string;
@@ -87,14 +89,20 @@ export function NotificationsPage() {
       body,
       channels: getChannels(),
     };
-    if (editId) {
-      await apiFetch(`/notification-templates/${editId}`, { method: 'PATCH', body: JSON.stringify(dto) });
-    } else {
-      await apiFetch('/notification-templates', { method: 'POST', body: JSON.stringify(dto) });
+    try {
+      if (editId) {
+        await apiFetch(`/notification-templates/${editId}`, { method: 'PATCH', body: JSON.stringify(dto) });
+        toast.success('Notification template updated');
+      } else {
+        await apiFetch('/notification-templates', { method: 'POST', body: JSON.stringify(dto) });
+        toast.success('Notification template created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save notification template');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (tmpl: NotificationTemplate) => {
@@ -130,13 +138,14 @@ export function NotificationsPage() {
           <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Notification Template</DialogTitle>
+              <DialogDescription>Configure the message sent when this event fires.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
+            <div className="grid gap-3 max-h-[72vh] overflow-y-auto pr-1">
+              <div className="grid gap-1.5">
                 <Label>Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ticket Assigned Notification" />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Event Type</Label>
                 <Select value={eventType} onValueChange={(v) => setEventType(v ?? 'ticket_created')}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -147,7 +156,7 @@ export function NotificationsPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Subject</Label>
                 <Input
                   value={subject}
@@ -158,7 +167,7 @@ export function NotificationsPage() {
                   Use tokens like {'{{ticket.title}}'}
                 </p>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Body</Label>
                 <Textarea
                   value={body}
@@ -170,7 +179,7 @@ export function NotificationsPage() {
                   Available tokens: {AVAILABLE_TOKENS.join(', ')}
                 </p>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Channels</Label>
                 <div className="flex gap-4">
                   <div className="flex items-center gap-1.5">
@@ -193,13 +202,13 @@ export function NotificationsPage() {
                   </div>
                 </div>
               </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -214,12 +223,8 @@ export function NotificationsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No notification templates yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={4} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={4} message="No notification templates yet." />}
           {(data ?? []).map((tmpl) => (
             <TableRow key={tmpl.id}>
               <TableCell className="font-medium">{tmpl.name}</TableCell>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -7,15 +7,19 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { PersonCombobox } from '@/components/person-combobox';
+import { SpaceSelect, type Space } from '@/components/space-select';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface AssetType {
   id: string;
@@ -27,12 +31,6 @@ interface Person {
   first_name: string;
   last_name: string;
   email: string | null;
-}
-
-interface Space {
-  id: string;
-  name: string;
-  type: string;
 }
 
 interface Asset {
@@ -66,136 +64,6 @@ const roleVariant: Record<string, 'default' | 'secondary' | 'outline'> = {
   personal: 'secondary',
   pooled: 'outline',
 };
-
-function PersonPicker({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-}) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Person[]>([]);
-  const [open, setOpen] = useState(false);
-  const [displayName, setDisplayName] = useState('');
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!value) {
-      setDisplayName('');
-      return;
-    }
-    apiFetch<Person[]>('/persons').then((persons) => {
-      const p = persons.find((x) => x.id === value);
-      if (p) setDisplayName(`${p.first_name} ${p.last_name}`);
-    }).catch(() => {});
-  }, [value]);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleSearch = (q: string) => {
-    setQuery(q);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!q.trim()) {
-      setResults([]);
-      setOpen(false);
-      return;
-    }
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const data = await apiFetch<Person[]>(`/persons?search=${encodeURIComponent(q)}`);
-        setResults(data);
-        setOpen(true);
-      } catch {
-        setResults([]);
-      }
-    }, 300);
-  };
-
-  const handleSelect = (person: Person) => {
-    onChange(person.id);
-    setDisplayName(`${person.first_name} ${person.last_name}`);
-    setQuery('');
-    setResults([]);
-    setOpen(false);
-  };
-
-  const handleClear = () => {
-    onChange('');
-    setDisplayName('');
-    setQuery('');
-    setResults([]);
-    setOpen(false);
-  };
-
-  return (
-    <div className="relative" ref={containerRef}>
-      {value && displayName ? (
-        <div className="flex items-center gap-2">
-          <div className="flex-1 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm h-8 flex items-center">
-            {displayName}
-          </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleClear}>
-            &times;
-          </Button>
-        </div>
-      ) : (
-        <Input
-          value={query}
-          onChange={(e) => handleSearch(e.target.value)}
-          placeholder="Search persons..."
-          onFocus={() => { if (results.length > 0) setOpen(true); }}
-        />
-      )}
-      {open && results.length > 0 && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg bg-popover shadow-md ring-1 ring-foreground/10 max-h-48 overflow-y-auto">
-          {results.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
-              onClick={() => handleSelect(p)}
-            >
-              {p.first_name} {p.last_name}
-              {p.email && <span className="text-muted-foreground ml-2">{p.email}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SpacePicker({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-}) {
-  const { data: spaces } = useApi<Space[]>('/spaces', []);
-
-  return (
-    <Select value={value} onValueChange={(v) => onChange(v ?? '')}>
-      <SelectTrigger><SelectValue placeholder="No location" /></SelectTrigger>
-      <SelectContent>
-        <SelectItem value="">No location</SelectItem>
-        {(spaces ?? []).map((s) => (
-          <SelectItem key={s.id} value={s.id}>{s.name} ({s.type})</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
 
 export function AssetsPage() {
   const [roleFilter, setRoleFilter] = useState('all');
@@ -247,14 +115,19 @@ export function AssetsPage() {
       assigned_space_id: assignedSpaceId || undefined,
       purchase_date: purchaseDate || undefined,
     };
-    if (editId) {
-      await apiFetch(`/assets/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/assets', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/assets/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+      } else {
+        await apiFetch('/assets', { method: 'POST', body: JSON.stringify(body) });
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+      toast.success(editId ? 'Asset updated' : 'Asset created');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save asset');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (asset: Asset) => {
@@ -298,20 +171,23 @@ export function AssetsPage() {
           <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
             <Plus className="h-4 w-4" /> Add Asset
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[540px]">
+          <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Add'} Asset</DialogTitle>
+              <DialogDescription>
+                {editId ? 'Update asset details and assignment.' : 'Register a new asset and optionally assign it.'}
+              </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[70vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. MacBook Pro 14-inch" />
+            <div className="grid gap-3 max-h-[65vh] overflow-y-auto pr-1">
+              <div className="grid gap-1.5">
+                <Label htmlFor="asset-name">Name</Label>
+                <Input id="asset-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. MacBook Pro 14-inch" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Asset Type</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-type">Asset Type</Label>
                   <Select value={assetTypeId} onValueChange={(v) => setAssetTypeId(v ?? '')}>
-                    <SelectTrigger><SelectValue placeholder="Select type..." /></SelectTrigger>
+                    <SelectTrigger id="asset-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
                     <SelectContent>
                       {(assetTypes ?? []).map((t) => (
                         <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
@@ -319,10 +195,10 @@ export function AssetsPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <Label>Role</Label>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-role">Role</Label>
                   <Select value={assetRole} onValueChange={(v) => setAssetRole(v ?? 'fixed')}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="asset-role"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {assetRoles.map((r) => (
                         <SelectItem key={r} value={r} className="capitalize">{r}</SelectItem>
@@ -331,21 +207,21 @@ export function AssetsPage() {
                   </Select>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Tag</Label>
-                  <Input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Asset tag" />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-tag">Tag</Label>
+                  <Input id="asset-tag" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Asset tag" />
                 </div>
-                <div className="space-y-2">
-                  <Label>Serial Number</Label>
-                  <Input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="SN123..." />
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-serial">Serial Number</Label>
+                  <Input id="asset-serial" value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="SN123..." />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Status</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-status">Status</Label>
                   <Select value={status} onValueChange={(v) => setStatus(v ?? 'available')}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="asset-status"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {statusOptions.map((s) => (
                         <SelectItem key={s} value={s} className="capitalize">{s.replace('_', ' ')}</SelectItem>
@@ -353,10 +229,10 @@ export function AssetsPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <Label>Lifecycle State</Label>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="asset-lifecycle">Lifecycle State</Label>
                   <Select value={lifecycleState} onValueChange={(v) => setLifecycleState(v ?? 'active')}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="asset-lifecycle"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {lifecycleOptions.map((s) => (
                         <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
@@ -365,25 +241,25 @@ export function AssetsPage() {
                   </Select>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Assigned To (Person)</Label>
-                <PersonPicker value={assignedPersonId} onChange={setAssignedPersonId} />
+                <PersonCombobox value={assignedPersonId} onChange={setAssignedPersonId} placeholder="Search persons..." />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Assigned Location</Label>
-                <SpacePicker value={assignedSpaceId} onChange={setAssignedSpaceId} />
+                <SpaceSelect value={assignedSpaceId} onChange={setAssignedSpaceId} placeholder="No location" />
               </div>
-              <div className="space-y-2">
-                <Label>Purchase Date</Label>
-                <Input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim() || !assetTypeId}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
+              <div className="grid gap-1.5">
+                <Label htmlFor="asset-purchase">Purchase Date</Label>
+                <Input id="asset-purchase" type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
               </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim() || !assetTypeId}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -410,12 +286,8 @@ export function AssetsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No assets found.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={7} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No assets found." />}
           {(data ?? []).map((asset) => (
             <TableRow key={asset.id}>
               <TableCell className="font-medium">{asset.name}</TableCell>

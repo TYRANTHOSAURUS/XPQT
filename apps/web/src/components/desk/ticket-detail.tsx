@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -6,11 +6,23 @@ import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Clock,
   MapPin,
   User,
   AlertTriangle,
+  Download,
+  FileText,
+  Paperclip,
   MessageSquare,
   Send,
   BellOff,
@@ -28,6 +40,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Spinner } from '@/components/ui/spinner';
+import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface TicketData {
   id: string;
@@ -58,9 +73,30 @@ interface Activity {
   activity_type: string;
   visibility: string;
   content: string;
+  attachments?: Array<{
+    name: string;
+    url?: string;
+    path?: string;
+    size: number;
+    type: string;
+  }>;
   author?: { first_name: string; last_name: string };
   metadata: Record<string, unknown> | null;
   created_at: string;
+}
+
+interface MentionPerson {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email?: string | null;
+  department?: string | null;
+}
+
+interface MentionMatch {
+  start: number;
+  end: number;
+  query: string;
 }
 
 const statusConfig: Record<string, { label: string; dotColor: string }> = {
@@ -78,6 +114,8 @@ const priorityConfig: Record<string, { label: string; color: string }> = {
   medium: { label: 'Medium', color: 'text-blue-500' },
   low: { label: 'Low', color: 'text-muted-foreground' },
 };
+
+const MAX_MENTION_RESULTS = 8;
 
 function SlaTimer({ dueAt, breachedAt }: { dueAt: string | null; breachedAt: string | null }) {
   if (!dueAt) return <span className="text-sm text-muted-foreground">No SLA</span>;
@@ -105,36 +143,209 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${Math.round(bytes / 1024 / 102.4) / 10} MB`;
+}
+
+function isImageAttachment(attachment: NonNullable<Activity['attachments']>[number]): boolean {
+  if (attachment.type?.startsWith('image/')) return true;
+  return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(attachment.name);
+}
+
+function getActiveMention(text: string, caret: number): MentionMatch | null {
+  const beforeCaret = text.slice(0, caret);
+  const mentionStart = beforeCaret.lastIndexOf('@');
+  if (mentionStart === -1) return null;
+
+  const previousChar = mentionStart === 0 ? '' : beforeCaret[mentionStart - 1];
+  if (previousChar && !/[\s([{"']/.test(previousChar)) return null;
+
+  const query = beforeCaret.slice(mentionStart + 1);
+  if (/\s/.test(query)) return null;
+
+  return { start: mentionStart, end: caret, query };
+}
+
+function getPersonLabel(person: MentionPerson): string {
+  return `${person.first_name} ${person.last_name}`.trim();
+}
+
+function getPersonInitials(person: MentionPerson): string {
+  return `${person.first_name[0] ?? ''}${person.last_name[0] ?? ''}`.toUpperCase() || '?';
+}
+
+function filterMentionPeople(people: MentionPerson[], query: string): MentionPerson[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return people.slice(0, MAX_MENTION_RESULTS);
+
+  return people
+    .filter((person) => {
+      const fullName = getPersonLabel(person).toLowerCase();
+      return (
+        fullName.includes(normalizedQuery) ||
+        person.email?.toLowerCase().includes(normalizedQuery) ||
+        person.department?.toLowerCase().includes(normalizedQuery)
+      );
+    })
+    .slice(0, MAX_MENTION_RESULTS);
+}
+
 export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?: () => void }) {
   const { data: ticket, loading: ticketLoading, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
+  const { data: people } = useApi<MentionPerson[]>('/persons', []);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
+  const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
+  const [mentionResults, setMentionResults] = useState<MentionPerson[]>([]);
+  const [mentionLoading, setMentionLoading] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const updateTicket = async (updates: Record<string, unknown>) => {
     await apiFetch(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(updates) });
     refetchTicket();
   };
 
-  if (ticketLoading || !ticket) {
-    return <div className="flex h-full items-center justify-center text-muted-foreground">Loading...</div>;
-  }
-
   const handleSubmitComment = async () => {
-    if (!commentText.trim()) return;
-    await fetch(`/api/tickets/${ticketId}/activities`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        activity_type: commentVisibility === 'internal' ? 'internal_note' : 'external_comment',
-        visibility: commentVisibility,
-        content: commentText,
-      }),
-    });
-    setCommentText('');
-    refetchActivities();
+    const trimmedComment = commentText.trim();
+    if (!trimmedComment && attachmentFiles.length === 0) return;
+
+    setSubmittingComment(true);
+    try {
+      let attachments: Activity['attachments'] = [];
+
+      if (attachmentFiles.length > 0) {
+        const formData = new FormData();
+        attachmentFiles.forEach((file) => formData.append('files', file));
+
+        attachments = await apiFetch<Activity['attachments']>(`/tickets/${ticketId}/attachments`, {
+          method: 'POST',
+          body: formData,
+        });
+      }
+
+      await apiFetch(`/tickets/${ticketId}/activities`, {
+        method: 'POST',
+        body: JSON.stringify({
+          activity_type: commentVisibility === 'internal' ? 'internal_note' : 'external_comment',
+          visibility: commentVisibility,
+          content: trimmedComment || undefined,
+          attachments,
+        }),
+      });
+
+      setCommentText('');
+      setAttachmentFiles([]);
+      if (attachmentInputRef.current) attachmentInputRef.current.value = '';
+      closeMentionMenu();
+      refetchActivities();
+      toast.success(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to send comment');
+    } finally {
+      setSubmittingComment(false);
+    }
   };
+
+  const closeMentionMenu = () => {
+    if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
+    setMentionMatch(null);
+    setMentionResults([]);
+    setMentionLoading(false);
+    setMentionIndex(0);
+  };
+
+  const syncMentionMatch = (text: string, caret: number | null) => {
+    if (caret === null) {
+      closeMentionMenu();
+      return;
+    }
+
+    const nextMatch = getActiveMention(text, caret);
+    if (!nextMatch) {
+      closeMentionMenu();
+      return;
+    }
+
+    setMentionMatch(nextMatch);
+  };
+
+  const selectMention = (person: MentionPerson) => {
+    if (!mentionMatch) return;
+
+    const mentionLabel = `@${getPersonLabel(person)}`;
+    const nextText =
+      commentText.slice(0, mentionMatch.start) +
+      `${mentionLabel} ` +
+      commentText.slice(mentionMatch.end);
+    const nextCaret = mentionMatch.start + mentionLabel.length + 1;
+
+    setCommentText(nextText);
+    closeMentionMenu();
+
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
+  useEffect(() => {
+    if (!mentionMatch) return;
+
+    if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
+
+    const localResults = filterMentionPeople(people ?? [], mentionMatch.query);
+    if (mentionMatch.query.trim().length < 2) {
+      setMentionLoading(false);
+      setMentionResults(localResults);
+      setMentionIndex(0);
+      return;
+    }
+
+    setMentionLoading(true);
+    mentionSearchRef.current = setTimeout(() => {
+      apiFetch<MentionPerson[]>(`/persons?search=${encodeURIComponent(mentionMatch.query)}`)
+        .then((results) => {
+          setMentionResults(results.slice(0, MAX_MENTION_RESULTS));
+          setMentionIndex(0);
+        })
+        .catch(() => {
+          setMentionResults(localResults);
+          setMentionIndex(0);
+        })
+        .finally(() => setMentionLoading(false));
+    }, 180);
+
+    return () => {
+      if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
+    };
+  }, [mentionMatch, people]);
+
+  useEffect(() => {
+    if (mentionIndex < mentionResults.length) return;
+    setMentionIndex(0);
+  }, [mentionIndex, mentionResults.length]);
+
+  const mentionOpen = Boolean(mentionMatch);
+  const canSubmitComment = Boolean(commentText.trim() || attachmentFiles.length > 0) && !submittingComment;
+
+  if (ticketLoading || !ticket) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Spinner className="size-6 text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full">
@@ -154,7 +365,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="px-8 pb-10 max-w-3xl">
+          <div className="px-20 pb-10">
             {/* Title */}
             <h1 className="text-2xl font-semibold leading-tight tracking-tight">{ticket.title}</h1>
 
@@ -170,7 +381,9 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm font-medium">Sub-issues</span>
                 <span className="text-xs text-muted-foreground">0/0</span>
-                <button className="ml-auto text-xs text-muted-foreground hover:text-foreground">+</button>
+                <Button variant="ghost" size="icon" className="ml-auto h-6 w-6 text-muted-foreground">
+                  <span className="text-xs">+</span>
+                </Button>
               </div>
               <div className="text-sm text-muted-foreground/50 py-2">No sub-issues yet</div>
             </div>
@@ -212,8 +425,84 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                       )}
                       <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
                     </div>
-                    {activity.content && (
-                      <p className="text-[15px] text-foreground/80 mt-1.5 leading-relaxed whitespace-pre-wrap">{activity.content}</p>
+                    {activity.visibility !== 'system' && (activity.content || (activity.attachments?.length ?? 0) > 0) ? (
+                      <div className="mt-2 overflow-hidden rounded-2xl border border-border/70 bg-card/80">
+                        {activity.content && (
+                          <div className="px-4 py-3">
+                            <p className="text-[15px] leading-relaxed text-foreground/85 whitespace-pre-wrap">{activity.content}</p>
+                          </div>
+                        )}
+                        {activity.attachments && activity.attachments.length > 0 && (
+                          <div className={cn('grid gap-2 p-2', activity.content && 'border-t border-border/60')}>
+                            {activity.attachments.map((attachment) => {
+                              const key = `${activity.id}-${attachment.path ?? attachment.url ?? attachment.name}`;
+                              const imageAttachment = isImageAttachment(attachment) && attachment.url;
+
+                              if (imageAttachment) {
+                                return (
+                                  <a
+                                    key={key}
+                                    href={attachment.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="group overflow-hidden rounded-xl border border-border/70 bg-muted/20 transition-colors hover:bg-muted/40"
+                                  >
+                                    <img
+                                      src={attachment.url}
+                                      alt={attachment.name}
+                                      loading="lazy"
+                                      className="max-h-80 w-full bg-muted/40 object-cover"
+                                    />
+                                    <div className="flex items-center justify-between gap-3 px-3 py-2">
+                                      <div className="min-w-0">
+                                        <div className="truncate text-sm font-medium">{attachment.name}</div>
+                                        <div className="text-xs text-muted-foreground">{formatFileSize(attachment.size)}</div>
+                                      </div>
+                                      <Download className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+                                    </div>
+                                  </a>
+                                );
+                              }
+
+                              const attachmentContent = (
+                                <>
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                                    <FileText className="h-4 w-4 text-muted-foreground" />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-medium">{attachment.name}</div>
+                                    <div className="text-xs text-muted-foreground">{formatFileSize(attachment.size)}</div>
+                                  </div>
+                                  {attachment.url && <Download className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                                </>
+                              );
+
+                              return attachment.url ? (
+                                <a
+                                  key={key}
+                                  href={attachment.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 transition-colors hover:bg-muted/40"
+                                >
+                                  {attachmentContent}
+                                </a>
+                              ) : (
+                                <div
+                                  key={key}
+                                  className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3 py-2"
+                                >
+                                  {attachmentContent}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      activity.content && (
+                        <p className="text-[15px] text-foreground/80 mt-1.5 leading-relaxed whitespace-pre-wrap">{activity.content}</p>
+                      )
                     )}
                     {activity.metadata && activity.visibility === 'system' && (
                       <p className="text-xs text-muted-foreground mt-1">{(activity.metadata as Record<string, unknown>).event as string}</p>
@@ -231,18 +520,171 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                   <TabsTrigger value="external"><Send className="h-4 w-4 mr-1.5" /> Reply</TabsTrigger>
                 </TabsList>
               </Tabs>
-              <div className="flex gap-3">
-                <Textarea
-                  className="flex-1 min-h-[80px] resize-none"
-                  placeholder={commentVisibility === 'internal' ? 'Add internal note...' : 'Reply to requester...'}
-                  rows={3}
-                  value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmitComment(); }}
-                />
-                <Button onClick={handleSubmitComment} disabled={!commentText.trim()} size="icon" className="self-end">
-                  <Send className="h-4 w-4" />
-                </Button>
+              <div className="rounded-xl border border-border/70 bg-card/70 transition-shadow focus-within:shadow-md">
+                <Popover open={mentionOpen} onOpenChange={(open) => { if (!open) closeMentionMenu(); }}>
+                  <div className="relative">
+                    <PopoverTrigger
+                      render={<div aria-hidden="true" className="pointer-events-none absolute left-4 top-4 size-px opacity-0" />}
+                    />
+                    <Textarea
+                      ref={textareaRef}
+                      className="min-h-[116px] resize-none border-0 bg-transparent px-4 py-3 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+                      placeholder={commentVisibility === 'internal' ? 'Add internal note... Use @ to mention someone.' : 'Reply to requester...'}
+                      rows={4}
+                      value={commentText}
+                      onChange={(e) => {
+                        const nextText = e.target.value;
+                        setCommentText(nextText);
+                        syncMentionMatch(nextText, e.target.selectionStart);
+                      }}
+                      onSelect={(e) => syncMentionMatch(commentText, e.currentTarget.selectionStart)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          handleSubmitComment();
+                          return;
+                        }
+
+                        if (!mentionOpen) return;
+
+                        if (e.key === 'ArrowDown' && mentionResults.length > 0) {
+                          e.preventDefault();
+                          setMentionIndex((current) => (current + 1) % mentionResults.length);
+                          return;
+                        }
+
+                        if (e.key === 'ArrowUp' && mentionResults.length > 0) {
+                          e.preventDefault();
+                          setMentionIndex((current) => (current - 1 + mentionResults.length) % mentionResults.length);
+                          return;
+                        }
+
+                        if ((e.key === 'Enter' || e.key === 'Tab') && mentionResults[mentionIndex]) {
+                          e.preventDefault();
+                          selectMention(mentionResults[mentionIndex]);
+                          return;
+                        }
+
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          closeMentionMenu();
+                        }
+                      }}
+                    />
+                  </div>
+                  <PopoverContent
+                    className="w-[340px] gap-0 rounded-xl border border-border/70 bg-popover p-1 shadow-lg"
+                    align="start"
+                    sideOffset={8}
+                  >
+                    <Command shouldFilter={false} className="rounded-lg bg-transparent p-0">
+                      <CommandList className="max-h-64">
+                        {mentionLoading && (
+                          <div className="flex items-center justify-center py-6">
+                            <Spinner />
+                          </div>
+                        )}
+                        {!mentionLoading && mentionResults.length === 0 && (
+                          <CommandEmpty className="py-4 text-left text-xs text-muted-foreground">
+                            No people found.
+                          </CommandEmpty>
+                        )}
+                        {!mentionLoading && mentionResults.length > 0 && (
+                          <CommandGroup heading={mentionMatch?.query ? 'People' : 'Suggested'} className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.08em]">
+                            {mentionResults.map((person, index) => (
+                              <CommandItem
+                                key={person.id}
+                                value={`${getPersonLabel(person)} ${person.email ?? ''}`}
+                                className={cn(
+                                  'mx-1 h-7 gap-2.5 rounded-sm px-2 text-sm',
+                                  index === mentionIndex && 'bg-accent text-accent-foreground',
+                                )}
+                                onMouseEnter={() => setMentionIndex(index)}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onSelect={() => selectMention(person)}
+                              >
+                                <Avatar size="sm" className="size-5">
+                                  <AvatarFallback className="text-[10px]">{getPersonInitials(person)}</AvatarFallback>
+                                </Avatar>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate font-medium">{getPersonLabel(person)}</div>
+                                </div>
+                                <div className="truncate text-[11px] text-muted-foreground">
+                                  {person.email ?? person.department ?? 'Person'}
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                {attachmentFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2 px-3 pb-2">
+                    {attachmentFiles.map((file, index) => (
+                      <div
+                        key={`${file.name}-${file.size}-${index}`}
+                        className="inline-flex items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs"
+                      >
+                        <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="max-w-[220px] truncate font-medium">{file.name}</span>
+                        <span className="text-muted-foreground">{formatFileSize(file.size)}</span>
+                        <button
+                          type="button"
+                          className="text-muted-foreground transition-colors hover:text-foreground"
+                          onClick={() => {
+                            setAttachmentFiles((current) => current.filter((_, currentIndex) => currentIndex !== index));
+                            if (attachmentInputRef.current && attachmentFiles.length === 1) {
+                              attachmentInputRef.current.value = '';
+                            }
+                          }}
+                          aria-label={`Remove ${file.name}`}
+                        >
+                          <XIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center justify-between px-3 py-2">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>Type @ to mention teammates.</span>
+                    <span className="hidden sm:inline">Tab selects.</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={attachmentInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        const nextFiles = Array.from(e.target.files ?? []);
+                        if (nextFiles.length === 0) return;
+
+                        setAttachmentFiles((current) => {
+                          const existing = new Set(current.map((file) => `${file.name}-${file.size}-${file.lastModified}`));
+                          const uniqueNext = nextFiles.filter(
+                            (file) => !existing.has(`${file.name}-${file.size}-${file.lastModified}`),
+                          );
+                          return [...current, ...uniqueNext];
+                        });
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-lg"
+                      onClick={() => attachmentInputRef.current?.click()}
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                    </Button>
+                    <span className="hidden text-[11px] text-muted-foreground sm:inline">Cmd+Enter to send</span>
+                    <Button onClick={handleSubmitComment} disabled={!canSubmitComment} size="icon" className="h-8 w-8 rounded-lg">
+                      {submittingComment ? <Spinner className="h-3.5 w-3.5" /> : <Send className="h-3.5 w-3.5" />}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -250,7 +692,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
       </div>
 
       {/* Properties sidebar (right) */}
-      <div className="w-[220px] shrink-0 border-l overflow-y-auto">
+      <div className="w-[320px] shrink-0 border-l overflow-y-auto">
         <div className="p-5 space-y-5">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Properties</div>
 
@@ -366,7 +808,9 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 ))}
               </div>
             ) : (
-              <button className="text-sm text-muted-foreground hover:text-foreground">+ Add label</button>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground justify-start font-normal">
+                + Add label
+              </Button>
             )}
           </div>
 

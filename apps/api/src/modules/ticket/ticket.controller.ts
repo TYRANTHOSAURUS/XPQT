@@ -1,4 +1,18 @@
-import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import type { Request } from 'express';
 import {
   TicketService,
   CreateTicketDto,
@@ -68,12 +82,43 @@ export class TicketController {
   }
 
   @Post(':id/activities')
-  async addActivity(@Param('id') id: string, @Body() dto: AddActivityDto) {
-    return this.ticketService.addActivity(id, dto);
+  async addActivity(
+    @Param('id') id: string,
+    @Body() dto: AddActivityDto,
+    @Req() request: Request,
+  ) {
+    return this.ticketService.addActivity(
+      id,
+      dto,
+      this.extractAccessToken(request.headers.authorization),
+    );
+  }
+
+  @Post(':id/attachments')
+  @UseInterceptors(FilesInterceptor('files', 10))
+  async uploadAttachments(
+    @Param('id') id: string,
+    @UploadedFiles() files: Array<{
+      originalname: string;
+      mimetype: string;
+      size: number;
+      buffer: Buffer;
+    }>,
+  ) {
+    if (!files?.length) {
+      throw new BadRequestException('No files uploaded');
+    }
+
+    return this.ticketService.uploadActivityAttachments(id, files);
   }
 
   @Get(':id/children')
   async getChildTasks(@Param('id') id: string) {
     return this.ticketService.getChildTasks(id);
+  }
+
+  private extractAccessToken(authorization?: string) {
+    if (!authorization?.startsWith('Bearer ')) return undefined;
+    return authorization.slice(7);
   }
 }

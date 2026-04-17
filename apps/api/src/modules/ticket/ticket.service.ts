@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
@@ -58,12 +59,24 @@ export interface AddActivityDto {
   author_person_id?: string;
   visibility: string;
   content?: string;
-  attachments?: Array<{ name: string; url: string; size: number; type: string }>;
+  attachments?: Array<{ name: string; url?: string; path?: string; size: number; type: string }>;
   metadata?: Record<string, unknown>;
 }
 
+interface StoredAttachment {
+  name: string;
+  url?: string;
+  path?: string;
+  size: number;
+  type: string;
+}
+
+const TICKET_ATTACHMENT_BUCKET = 'ticket-attachments';
+
 @Injectable()
 export class TicketService {
+  private attachmentBucketReady = false;
+
   constructor(
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
@@ -344,11 +357,42 @@ export class TicketService {
 
     const { data, error } = await query;
     if (error) throw error;
-    return data;
+    if (!data) return [];
+
+    const signedActivities = await Promise.all(
+      data.map(async (activity) => {
+        const attachments = Array.isArray(activity.attachments)
+          ? await Promise.all(
+              (activity.attachments as StoredAttachment[]).map(async (attachment) => {
+                if (!attachment.path || attachment.url) return attachment;
+
+                const { data: signed, error: signedError } = await this.supabase.admin.storage
+                  .from(TICKET_ATTACHMENT_BUCKET)
+                  .createSignedUrl(attachment.path, 60 * 60);
+
+                if (signedError || !signed?.signedUrl) return attachment;
+
+                return {
+                  ...attachment,
+                  url: signed.signedUrl,
+                };
+              }),
+            )
+          : [];
+
+        return {
+          ...activity,
+          attachments,
+        };
+      }),
+    );
+
+    return signedActivities;
   }
 
-  async addActivity(ticketId: string, dto: AddActivityDto) {
+  async addActivity(ticketId: string, dto: AddActivityDto, accessToken?: string) {
     const tenant = TenantContext.current();
+    const authorPersonId = await this.resolveAuthorPersonId(dto.author_person_id, accessToken);
 
     const { data, error } = await this.supabase.admin
       .from('ticket_activities')
@@ -356,7 +400,7 @@ export class TicketService {
         tenant_id: tenant.id,
         ticket_id: ticketId,
         activity_type: dto.activity_type,
-        author_person_id: dto.author_person_id,
+        author_person_id: authorPersonId,
         visibility: dto.visibility,
         content: dto.content,
         attachments: dto.attachments ?? [],
@@ -367,6 +411,41 @@ export class TicketService {
 
     if (error) throw error;
     return data;
+  }
+
+  async uploadActivityAttachments(ticketId: string, files: Array<{
+    originalname: string;
+    mimetype: string;
+    size: number;
+    buffer: Buffer;
+  }>) {
+    const tenant = TenantContext.current();
+    await this.ensureAttachmentBucket();
+
+    const uploads = await Promise.all(
+      files.map(async (file) => {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${tenant.id}/tickets/${ticketId}/${randomUUID()}-${safeName}`;
+
+        const { error } = await this.supabase.admin.storage
+          .from(TICKET_ATTACHMENT_BUCKET)
+          .upload(path, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false,
+          });
+
+        if (error) throw error;
+
+        return {
+          name: file.originalname,
+          path,
+          size: file.size,
+          type: file.mimetype,
+        };
+      }),
+    );
+
+    return uploads;
   }
 
   async getChildTasks(parentTicketId: string) {
@@ -407,5 +486,46 @@ export class TicketService {
         entity_id: entityId,
         payload,
       });
+  }
+
+  private async ensureAttachmentBucket() {
+    if (this.attachmentBucketReady) return;
+
+    const { data: buckets, error } = await this.supabase.admin.storage.listBuckets();
+    if (error) throw error;
+
+    const exists = buckets?.some((bucket) => bucket.name === TICKET_ATTACHMENT_BUCKET);
+    if (!exists) {
+      const { error: createError } = await this.supabase.admin.storage.createBucket(
+        TICKET_ATTACHMENT_BUCKET,
+        {
+          public: false,
+          fileSizeLimit: '20MB',
+        },
+      );
+
+      if (createError && !createError.message.toLowerCase().includes('already')) {
+        throw createError;
+      }
+    }
+
+    this.attachmentBucketReady = true;
+  }
+
+  private async resolveAuthorPersonId(explicitAuthorPersonId?: string, accessToken?: string) {
+    if (!accessToken) return explicitAuthorPersonId;
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.auth.getUser(accessToken);
+    if (error || !data.user?.email) return explicitAuthorPersonId;
+
+    const { data: person } = await this.supabase.admin
+      .from('persons')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .ilike('email', data.user.email)
+      .maybeSingle();
+
+    return person?.id ?? explicitAuthorPersonId;
   }
 }

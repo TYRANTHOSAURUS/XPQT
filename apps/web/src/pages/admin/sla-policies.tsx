@@ -8,14 +8,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface EscalationThreshold {
   at_percent: number;
@@ -112,14 +114,20 @@ export function SlaPoliciesPage() {
       pause_on_waiting_reasons: pauseReasons,
       escalation_thresholds: escalations,
     };
-    if (editId) {
-      await apiFetch(`/sla-policies/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/sla-policies', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/sla-policies/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('SLA policy updated');
+      } else {
+        await apiFetch('/sla-policies', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('SLA policy created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save SLA policy');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (policy: SlaPolicy) => {
@@ -157,23 +165,24 @@ export function SlaPoliciesPage() {
           <DialogContent className="sm:max-w-[560px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} SLA Policy</DialogTitle>
+              <DialogDescription>Define response and resolution time targets for this policy.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[70vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
+            <div className="grid gap-3 max-h-[70vh] overflow-y-auto pr-1">
+              <div className="grid gap-1.5">
                 <Label>Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Standard, High Priority, Critical..." />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+                <div className="grid gap-1.5">
                   <Label>Response target (hours)</Label>
                   <Input type="number" step="0.5" value={responseHours} onChange={(e) => setResponseHours(e.target.value)} placeholder="e.g. 4" />
                 </div>
-                <div className="space-y-2">
+                <div className="grid gap-1.5">
                   <Label>Resolution target (hours)</Label>
                   <Input type="number" step="0.5" value={resolutionHours} onChange={(e) => setResolutionHours(e.target.value)} placeholder="e.g. 24" />
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Business Hours Calendar</Label>
                 <Select value={calendarId} onValueChange={(v) => setCalendarId(v ?? '')}>
                   <SelectTrigger><SelectValue placeholder="None (always on)" /></SelectTrigger>
@@ -185,7 +194,7 @@ export function SlaPoliciesPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Pause conditions</Label>
                 <div className="space-y-2">
                   {pauseReasonOptions.map((opt) => (
@@ -199,7 +208,7 @@ export function SlaPoliciesPage() {
                   ))}
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Escalation Thresholds</Label>
                 {escalations.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No escalation thresholds.</p>
@@ -237,13 +246,13 @@ export function SlaPoliciesPage() {
                   <Button variant="outline" size="sm" onClick={addEscalation}>Add</Button>
                 </div>
               </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -260,12 +269,8 @@ export function SlaPoliciesPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No SLA policies yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={6} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No SLA policies yet." />}
           {(data ?? []).map((policy) => (
             <TableRow key={policy.id}>
               <TableCell className="font-medium">{policy.name}</TableCell>

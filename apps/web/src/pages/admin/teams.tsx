@@ -8,14 +8,17 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, X, UserPlus } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { SpaceSelect } from '@/components/space-select';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Team {
   id: string;
@@ -61,8 +64,6 @@ export function TeamsPage() {
   const [membersLoading, setMembersLoading] = useState(false);
   const [addUserId, setAddUserId] = useState('');
 
-  const locationOptions = (spaces ?? []).filter((s) => ['site', 'building'].includes(s.type));
-
   const resetForm = () => {
     setName('');
     setDomainScope('all');
@@ -91,14 +92,20 @@ export function TeamsPage() {
       domain_scope: domainScope === 'all' ? null : domainScope,
       location_scope: locationScope || null,
     };
-    if (editId) {
-      await apiFetch(`/teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/teams', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Team updated');
+      } else {
+        await apiFetch('/teams', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Team created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save team');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = async (team: Team) => {
@@ -117,18 +124,28 @@ export function TeamsPage() {
 
   const handleAddMember = async () => {
     if (!editId || !addUserId) return;
-    await apiFetch(`/teams/${editId}/members`, {
-      method: 'POST',
-      body: JSON.stringify({ user_id: addUserId }),
-    });
-    setAddUserId('');
-    await loadMembers(editId);
+    try {
+      await apiFetch(`/teams/${editId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: addUserId }),
+      });
+      toast.success('Member added');
+      setAddUserId('');
+      await loadMembers(editId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add member');
+    }
   };
 
   const handleRemoveMember = async (userId: string) => {
     if (!editId) return;
-    await apiFetch(`/teams/${editId}/members/${userId}`, { method: 'DELETE' });
-    await loadMembers(editId);
+    try {
+      await apiFetch(`/teams/${editId}/members/${userId}`, { method: 'DELETE' });
+      toast.success('Member removed');
+      await loadMembers(editId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to remove member');
+    }
   };
 
   const getMemberName = (member: TeamMember) => {
@@ -159,13 +176,14 @@ export function TeamsPage() {
           <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Team</DialogTitle>
+              <DialogDescription>Manage assignment groups and members for ticket routing.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2">
-              <div className="space-y-2">
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
                 <Label>Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. FM Team Amsterdam, IT Service Desk..." />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Domain Scope</Label>
                 <Select value={domainScope} onValueChange={(v) => setDomainScope(v ?? 'all')}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -176,17 +194,15 @@ export function TeamsPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Location Scope</Label>
-                <Select value={locationScope} onValueChange={(v) => setLocationScope(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="All locations" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">All locations</SelectItem>
-                    {locationOptions.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>{s.name} ({s.type})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SpaceSelect
+                  value={locationScope}
+                  onChange={setLocationScope}
+                  typeFilter={['site', 'building']}
+                  placeholder="All locations"
+                  emptyLabel="All locations"
+                />
               </div>
 
               {editId && (
@@ -233,14 +249,13 @@ export function TeamsPage() {
                   </div>
                 </>
               )}
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -256,12 +271,8 @@ export function TeamsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No teams yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={5} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={5} message="No teams yet." />}
           {(data ?? []).map((team) => (
             <TableRow key={team.id}>
               <TableCell className="font-medium">{team.name}</TableCell>

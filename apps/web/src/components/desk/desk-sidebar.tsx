@@ -3,6 +3,7 @@
 import * as React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { NavUser } from "@/components/nav-user"
+import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 import { Label } from "@/components/ui/label"
 import {
   Sidebar,
@@ -116,25 +117,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
         className={`${railExpanded ? 'w-[180px]!' : 'w-[calc(var(--sidebar-width-icon)+1px)]!'} border-r transition-[width] duration-200`}
       >
         <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="lg"
-                className={railExpanded ? "" : "md:h-8 md:p-0"}
-                onClick={() => navigate("/desk")}
-              >
-                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
-                </div>
-                {railExpanded && (
-                  <div className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-medium">Prequest</span>
-                    <span className="truncate text-xs">Service Desk</span>
-                  </div>
-                )}
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <WorkspaceSwitcher current="desk" collapsed={!railExpanded} />
         </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
@@ -223,30 +206,33 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                       No tickets yet
                     </div>
                   )}
-                  {tickets.map((ticket) => (
-                    <button
-                      key={ticket.id}
-                      onClick={() => navigate(`/desk/inbox?ticket=${ticket.id}`)}
-                      className="flex items-start gap-3 px-4 py-3 text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground w-full text-left overflow-hidden"
-                    >
-                      <div className={`mt-1.5 h-2.5 w-2.5 rounded-full shrink-0 ${priorityDot[ticket.priority] ?? "bg-gray-300"}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium truncate">{ticket.title}</span>
-                          <span className="ml-auto text-xs text-muted-foreground shrink-0">
-                            {timeAgo(ticket.created_at)}
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground truncate block mt-0.5">
-                          {ticket.requester
-                            ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
-                            : "Unknown"}
-                          {" · "}
-                          {ticket.status_category.replace("_", " ")}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
+                  <SidebarMenu>
+                    {tickets.map((ticket) => (
+                      <SidebarMenuItem key={ticket.id}>
+                        <SidebarMenuButton
+                          onClick={() => navigate(`/desk/inbox?ticket=${ticket.id}`)}
+                          className="h-auto items-start gap-3 px-4 py-3 text-sm overflow-hidden"
+                        >
+                          <div className={`mt-1.5 h-2.5 w-2.5 rounded-full shrink-0 ${priorityDot[ticket.priority] ?? "bg-gray-300"}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium truncate">{ticket.title}</span>
+                              <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                                {timeAgo(ticket.created_at)}
+                              </span>
+                            </div>
+                            <span className="text-xs text-muted-foreground truncate block mt-0.5">
+                              {ticket.requester
+                                ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
+                                : "Unknown"}
+                              {" · "}
+                              {ticket.status_category.replace("_", " ")}
+                            </span>
+                          </div>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
             </SidebarContent>
@@ -280,19 +266,23 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                   <div>
                     <p className="text-xs font-medium mb-2">Status</p>
                     {["new", "assigned", "in_progress", "waiting", "resolved"].map((s) => (
-                      <label key={s} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                      <div key={s} className="flex items-center gap-2.5 py-1.5">
                         <Checkbox id={`status-${s}`} />
-                        <span className="text-sm capitalize">{s.replace("_", " ")}</span>
-                      </label>
+                        <Label htmlFor={`status-${s}`} className="text-sm capitalize font-normal cursor-pointer">
+                          {s.replace("_", " ")}
+                        </Label>
+                      </div>
                     ))}
                   </div>
                   <div>
                     <p className="text-xs font-medium mb-2">Priority</p>
                     {["critical", "high", "medium", "low"].map((p) => (
-                      <label key={p} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                      <div key={p} className="flex items-center gap-2.5 py-1.5">
                         <Checkbox id={`priority-${p}`} />
-                        <span className="text-sm capitalize">{p}</span>
-                      </label>
+                        <Label htmlFor={`priority-${p}`} className="text-sm capitalize font-normal cursor-pointer">
+                          {p}
+                        </Label>
+                      </div>
                     ))}
                   </div>
                 </SidebarGroupContent>

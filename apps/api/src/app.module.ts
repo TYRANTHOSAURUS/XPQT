@@ -21,6 +21,8 @@ import { AssetModule } from './modules/asset/asset.module';
 import { BusinessHoursModule } from './modules/business-hours/business-hours.module';
 import { DelegationModule } from './modules/delegation/delegation.module';
 import { UserManagementModule } from './modules/user-management/user-management.module';
+import { VendorModule } from './modules/vendor/vendor.module';
+import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
 
 @Module({
   imports: [
@@ -47,6 +49,8 @@ import { UserManagementModule } from './modules/user-management/user-management.
     BusinessHoursModule,
     DelegationModule,
     UserManagementModule,
+    VendorModule,
+    CatalogMenuModule,
   ],
   controllers: [HealthController],
 })

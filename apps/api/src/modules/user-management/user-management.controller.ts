@@ -4,6 +4,7 @@ import {
   CreateRoleDto,
   CreateRoleAssignmentDto,
   CreatePersonDto,
+  CreateUserDto,
 } from './user-management.service';
 
 @Controller('users')
@@ -13,6 +14,11 @@ export class UsersController {
   @Get()
   async list() {
     return this.service.listUsers();
+  }
+
+  @Post()
+  async create(@Body() dto: CreateUserDto) {
+    return this.service.createUser(dto);
   }
 
   @Get(':id')

@@ -25,6 +25,7 @@ export function WorkflowEditorPage() {
   const markSaved = useGraphStore((s) => s.markSaved);
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
+  const dirty = useGraphStore((s) => s.dirty);
 
   const [saving, setSaving] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
@@ -35,6 +36,23 @@ export function WorkflowEditorPage() {
   }, [wf, setGraph]);
 
   const readOnly = wf?.status === 'published';
+
+  // Autosave: debounce 2s after last change
+  useEffect(() => {
+    if (!dirty || readOnly) return;
+    const t = setTimeout(() => {
+      saveGraph(toJSON()).then(() => markSaved()).catch(() => { /* user can still manually save */ });
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [nodes, edges, dirty, readOnly, saveGraph, toJSON, markSaved]);
+
+  // Warn on unload if there are unsaved changes
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   const handleSave = async () => {
     setSaving(true);

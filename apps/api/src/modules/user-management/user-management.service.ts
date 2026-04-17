@@ -2,10 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
+export type RoleType = 'admin' | 'agent' | 'employee';
+
 export interface CreateRoleDto {
   name: string;
   description?: string;
   permissions?: string[];
+  type?: RoleType;
 }
 
 export interface CreateRoleAssignmentDto {
@@ -13,6 +16,13 @@ export interface CreateRoleAssignmentDto {
   role_id: string;
   domain_scope?: string[];
   location_scope?: string[];
+}
+
+export interface CreateUserDto {
+  person_id: string;
+  email: string;
+  username?: string;
+  status?: string;
 }
 
 export interface CreatePersonDto {
@@ -33,6 +43,37 @@ export class UserManagementService {
 
   // ─── Users ───────────────────────────────────────────────────────────────
 
+  async createUser(dto: CreateUserDto) {
+    const tenant = TenantContext.current();
+
+    // Best-effort: link to Supabase Auth account if one exists for this email
+    let auth_uid: string | null = null;
+    try {
+      const { data: list } = await this.supabase.admin.auth.admin.listUsers();
+      const authUser = list?.users?.find(
+        (u) => u.email?.toLowerCase() === dto.email.toLowerCase(),
+      );
+      auth_uid = authUser?.id ?? null;
+    } catch {
+      // listUsers requires service role; ignore and proceed without linkage
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .insert({
+        tenant_id: tenant.id,
+        person_id: dto.person_id,
+        email: dto.email,
+        username: dto.username ?? null,
+        status: dto.status ?? 'active',
+        auth_uid,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
   async listUsers() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -42,7 +83,7 @@ export class UserManagementService {
         person:persons(id, first_name, last_name, email, department, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
-          role:roles(id, name)
+          role:roles(id, name, type)
         )
       `)
       .eq('tenant_id', tenant.id)
@@ -60,7 +101,7 @@ export class UserManagementService {
         person:persons(id, first_name, last_name, email, department, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
-          role:roles(id, name)
+          role:roles(id, name, type)
         )
       `)
       .eq('id', id)
@@ -87,7 +128,7 @@ export class UserManagementService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('user_role_assignments')
-      .select('*, role:roles(id, name, description)')
+      .select('*, role:roles(id, name, description, type)')
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
     if (error) throw error;

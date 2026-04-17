@@ -10,6 +10,7 @@ import {
   FieldLabel,
   FieldSeparator,
 } from '@/components/ui/field';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/providers/auth-provider';
 
 export function LoginPage() {
@@ -45,12 +46,12 @@ export function LoginPage() {
       {/* Left: form */}
       <div className="flex flex-col gap-4 p-6 md:p-10">
         <div className="flex justify-center gap-2 md:justify-start">
-          <a href="/" className="flex items-center gap-2 font-medium">
+          <Link to="/" className="flex items-center gap-2 font-medium">
             <div className="flex h-8 w-8 items-center justify-center">
               <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-7 w-7" />
             </div>
             Prequest
-          </a>
+          </Link>
         </div>
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-xs">
@@ -64,15 +65,15 @@ export function LoginPage() {
                 </div>
 
                 {successMessage && (
-                  <div className="rounded-md bg-green-50 p-3 text-sm text-green-800 dark:bg-green-950 dark:text-green-200">
-                    {successMessage}
-                  </div>
+                  <Alert>
+                    <AlertDescription>{successMessage}</AlertDescription>
+                  </Alert>
                 )}
 
                 {error && (
-                  <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                    {error}
-                  </div>
+                  <Alert variant="destructive">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
                 )}
 
                 <Field>
@@ -91,9 +92,9 @@ export function LoginPage() {
                 <Field>
                   <div className="flex items-center">
                     <FieldLabel htmlFor="password">Password</FieldLabel>
-                    <a href="#" className="ml-auto text-sm underline-offset-4 hover:underline">
+                    <Button type="button" variant="link" className="ml-auto h-auto p-0 text-sm font-normal">
                       Forgot password?
-                    </a>
+                    </Button>
                   </div>
                   <Input
                     id="password"

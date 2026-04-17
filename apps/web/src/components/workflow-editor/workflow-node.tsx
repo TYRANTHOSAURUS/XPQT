@@ -20,11 +20,11 @@ export function WorkflowNodeCard({ data, selected }: NodeProps<NodeData>) {
   return (
     <div
       className={cn(
-        'relative rounded-lg border-2 bg-white shadow-sm w-[200px] transition-all',
+        'relative rounded-lg border-2 bg-card text-card-foreground shadow-sm w-[200px] transition-all',
         meta.colorClass,
-        selected && 'ring-2 ring-offset-2 ring-zinc-900',
+        selected && 'ring-2 ring-offset-2 ring-offset-background ring-foreground',
         data.invalid && 'border-red-500',
-        data.runtime === 'current' && 'ring-2 ring-offset-2 ring-emerald-500 animate-pulse',
+        data.runtime === 'current' && 'ring-2 ring-offset-2 ring-offset-background ring-emerald-500 animate-pulse',
         data.runtime === 'visited' && 'opacity-80',
         data.runtime === 'upcoming' && 'opacity-40',
       )}
@@ -44,16 +44,16 @@ export function WorkflowNodeCard({ data, selected }: NodeProps<NodeData>) {
         <>
           <Handle id="true" type="source" position={Position.Right} style={{ top: '35%' }} />
           <Handle id="false" type="source" position={Position.Right} style={{ top: '65%' }} />
-          <div className="absolute -right-10 top-[30%] text-[10px] text-emerald-600 font-medium">true</div>
-          <div className="absolute -right-10 top-[60%] text-[10px] text-red-600 font-medium">false</div>
+          <div className="absolute -right-10 top-[30%] text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">true</div>
+          <div className="absolute -right-10 top-[60%] text-[10px] text-red-600 dark:text-red-400 font-medium">false</div>
         </>
       )}
       {showApprovedRejected && (
         <>
           <Handle id="approved" type="source" position={Position.Right} style={{ top: '35%' }} />
           <Handle id="rejected" type="source" position={Position.Right} style={{ top: '65%' }} />
-          <div className="absolute -right-14 top-[30%] text-[10px] text-emerald-600 font-medium">approved</div>
-          <div className="absolute -right-14 top-[60%] text-[10px] text-red-600 font-medium">rejected</div>
+          <div className="absolute -right-14 top-[30%] text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">approved</div>
+          <div className="absolute -right-14 top-[60%] text-[10px] text-red-600 dark:text-red-400 font-medium">rejected</div>
         </>
       )}
     </div>

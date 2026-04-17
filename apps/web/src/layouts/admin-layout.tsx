@@ -1,5 +1,6 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
+import { WorkspaceSwitcher } from '@/components/workspace-switcher';
 import {
   Sidebar,
   SidebarContent,
@@ -37,15 +38,17 @@ import {
   UserCog,
   PersonStanding,
   Package,
-  Tags,
   GitBranch,
   HandCoins,
+  ListTree,
+  Store,
+  BookOpen,
 } from 'lucide-react';
 
 const configNav = [
+  { title: 'Catalog Hierarchy', path: '/admin/catalog-hierarchy', icon: ListTree },
   { title: 'Request Types', path: '/admin/request-types', icon: FileText },
   { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
-  { title: 'Catalog Categories', path: '/admin/catalog-categories', icon: Tags },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
   { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
@@ -63,6 +66,8 @@ const peopleNav = [
 const operationsNav = [
   { title: 'Locations', path: '/admin/locations', icon: MapPin },
   { title: 'Assets', path: '/admin/assets', icon: Package },
+  { title: 'Vendors', path: '/admin/vendors', icon: Store },
+  { title: 'Vendor Menus', path: '/admin/vendor-menus', icon: BookOpen },
 ];
 
 const quickNav = [
@@ -71,9 +76,9 @@ const quickNav = [
 ];
 
 const pageTitles: Record<string, string> = {
+  '/admin/catalog-hierarchy': 'Catalog Hierarchy',
   '/admin/request-types': 'Request Types',
   '/admin/form-schemas': 'Form Schemas',
-  '/admin/catalog-categories': 'Catalog Categories',
   '/admin/teams': 'Teams',
   '/admin/locations': 'Locations',
   '/admin/sla-policies': 'SLA Policies',
@@ -85,6 +90,8 @@ const pageTitles: Record<string, string> = {
   '/admin/persons': 'Persons',
   '/admin/delegations': 'Delegations',
   '/admin/assets': 'Assets',
+  '/admin/vendors': 'Vendors',
+  '/admin/vendor-menus': 'Vendor Menus',
 };
 
 export function AdminLayout() {
@@ -98,23 +105,7 @@ export function AdminLayout() {
     <SidebarProvider>
       <Sidebar variant="inset">
         <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="lg"
-                onClick={() => navigate('/admin/request-types')}
-                className="cursor-pointer"
-              >
-                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Prequest</span>
-                  <span className="truncate text-xs text-muted-foreground">Admin</span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <WorkspaceSwitcher current="admin" />
         </SidebarHeader>
 
         <SidebarContent>

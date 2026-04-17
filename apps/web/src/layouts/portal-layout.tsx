@@ -1,5 +1,6 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
+import { WorkspaceSwitcher } from '@/components/workspace-switcher';
 import {
   Sidebar,
   SidebarContent,
@@ -75,23 +76,7 @@ export function PortalLayout() {
     <SidebarProvider>
       <Sidebar variant="inset">
         <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="lg"
-                onClick={() => navigate('/portal')}
-                className="cursor-pointer"
-              >
-                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Prequest</span>
-                  <span className="truncate text-xs text-muted-foreground">Employee Portal</span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <WorkspaceSwitcher current="portal" />
         </SidebarHeader>
 
         <SidebarContent>

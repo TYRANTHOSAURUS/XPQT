@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/card';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { Spinner } from '@/components/ui/spinner';
 
 interface RequestType {
   id: string;
@@ -45,7 +46,9 @@ export function CatalogCategoryPage() {
       <p className="text-muted-foreground mb-8">Select the type of request you'd like to submit</p>
 
       {loading && (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
+        <div className="flex items-center justify-center py-12">
+          <Spinner className="size-6 text-muted-foreground" />
+        </div>
       )}
 
       {!loading && (!requestTypes || requestTypes.length === 0) && (

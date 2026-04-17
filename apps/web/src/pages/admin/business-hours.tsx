@@ -8,14 +8,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 type DayKey = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
 
@@ -124,14 +126,20 @@ export function BusinessHoursPage() {
   const handleSave = async () => {
     if (!name.trim()) return;
     const body = { name, time_zone: timezone, working_hours: workingHours, holidays };
-    if (editId) {
-      await apiFetch(`/business-hours/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/business-hours', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/business-hours/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Calendar updated');
+      } else {
+        await apiFetch('/business-hours', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Calendar created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save calendar');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (cal: BusinessHoursCalendar) => {
@@ -165,13 +173,14 @@ export function BusinessHoursPage() {
           <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Business Hours Calendar</DialogTitle>
+              <DialogDescription>Define working hours and holidays used by SLA policies.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
+            <div className="grid gap-3 max-h-[72vh] overflow-y-auto pr-1">
+              <div className="grid gap-1.5">
                 <Label>Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Standard Office Hours" />
               </div>
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Timezone</Label>
                 <Select value={timezone} onValueChange={(v) => setTimezone(v ?? 'UTC')}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -183,7 +192,7 @@ export function BusinessHoursPage() {
                 </Select>
               </div>
 
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Working Hours</Label>
                 <div className="space-y-2">
                   {DAYS.map(({ key, label }) => {
@@ -224,7 +233,7 @@ export function BusinessHoursPage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="grid gap-1.5">
                 <Label>Holidays</Label>
                 {holidays.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No holidays added.</p>
@@ -256,14 +265,13 @@ export function BusinessHoursPage() {
                   <Button variant="outline" size="sm" onClick={addHoliday}>Add</Button>
                 </div>
               </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
             </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -278,12 +286,8 @@ export function BusinessHoursPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No calendars yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={4} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={4} message="No calendars yet." />}
           {(data ?? []).map((cal) => (
             <TableRow key={cal.id}>
               <TableCell>

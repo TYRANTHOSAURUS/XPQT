@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Toaster } from 'sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Toaster } from '@/components/ui/sonner';
 import { AuthProvider } from '@/providers/auth-provider';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { LoginPage } from '@/pages/auth/login';
@@ -25,11 +25,14 @@ import { PersonsPage } from '@/pages/admin/persons';
 import { AssetsPage } from '@/pages/admin/assets';
 import { BusinessHoursPage } from '@/pages/admin/business-hours';
 import { NotificationsPage } from '@/pages/admin/notifications';
-import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
+import { CatalogHierarchyPage } from '@/pages/admin/catalog-hierarchy';
 import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
 import { WorkflowInstancePage } from '@/pages/admin/workflow-instance';
+import { VendorsPage } from '@/pages/admin/vendors';
+import { VendorMenusPage } from '@/pages/admin/vendor-menus';
+import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
@@ -102,7 +105,7 @@ export function App() {
             <Route path="routing-rules" element={<RoutingRulesPage />} />
             <Route path="business-hours" element={<BusinessHoursPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
-            <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
+            <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
@@ -112,6 +115,10 @@ export function App() {
             <Route path="delegations" element={<DelegationsPage />} />
             {/* Assets */}
             <Route path="assets" element={<AssetsPage />} />
+            {/* Vendors */}
+            <Route path="vendors" element={<VendorsPage />} />
+            <Route path="vendor-menus" element={<VendorMenusPage />} />
+            <Route path="vendor-menus/:id" element={<VendorMenuDetailPage />} />
           </Route>
         </Routes>
       </TooltipProvider>

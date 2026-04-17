@@ -18,10 +18,12 @@ interface Person {
   email: string;
 }
 
+export type RoleType = 'admin' | 'agent' | 'employee';
+
 interface AppUser {
   id: string;
   person_id: string;
-  roles: string[];
+  roles: { name: string; type: RoleType }[];
 }
 
 interface AuthContextType {
@@ -66,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       type ApiUser = {
         id: string;
         person_id: string;
-        role_assignments?: { role?: { name?: string } | null }[];
+        role_assignments?: { role?: { name?: string; type?: string } | null }[];
       };
       const users = await apiFetch<ApiUser[]>('/users');
       const matchedUser = users?.find(
@@ -78,8 +80,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               id: matchedUser.id,
               person_id: matchedUser.person_id,
               roles: (matchedUser.role_assignments ?? [])
-                .map((ra) => ra.role?.name)
-                .filter((name): name is string => Boolean(name)),
+                .map((ra) => ra.role)
+                .filter((r): r is { name: string; type: string } => Boolean(r?.name))
+                .map((r) => ({
+                  name: r.name,
+                  type: (r.type === 'admin' || r.type === 'agent' ? r.type : 'employee') as RoleType,
+                })),
             }
           : null,
       );
@@ -137,7 +143,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hasRole = useCallback(
     (role: string): boolean => {
       if (!appUser?.roles) return false;
-      return appUser.roles.includes(role);
+      // `role` is a role type: 'admin' | 'agent' | 'employee'.
+      // Admin is a superset of agent for access gating.
+      if (role === 'agent') return appUser.roles.some((r) => r.type === 'agent' || r.type === 'admin');
+      return appUser.roles.some((r) => r.type === role);
     },
     [appUser],
   );

@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
 
@@ -82,9 +83,9 @@ export function SignUpPage() {
           </CardHeader>
           <CardContent>
             {error && (
-              <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                {error}
-              </div>
+              <Alert variant="destructive" className="mb-4">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
