@@ -10,8 +10,16 @@ export class AssetController {
     @Query('role') role?: string,
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Query('asset_type_ids') assetTypeIds?: string,
+    @Query('space_id') spaceId?: string,
   ) {
-    return this.assetService.list({ asset_role: role, status, search });
+    return this.assetService.list({
+      asset_role: role,
+      status,
+      search,
+      asset_type_ids: assetTypeIds ? assetTypeIds.split(',').filter(Boolean) : undefined,
+      space_id: spaceId,
+    });
   }
 
   @Get(':id')
