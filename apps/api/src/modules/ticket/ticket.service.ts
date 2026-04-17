@@ -185,25 +185,38 @@ export class TicketService {
     await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
 
     // ── Auto-routing ──────────────────────────────────────────
-    // If no team was explicitly assigned, evaluate routing rules
-    if (!data.assigned_team_id && !data.assigned_user_id) {
+    if (!data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
         const requestType = data.ticket_type_id
-          ? await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()
+          ? (await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()).data
           : null;
 
-        const routingResult = await this.routingService.evaluate({
-          ticket_type_id: data.ticket_type_id,
-          domain: requestType?.data?.domain,
-          location_id: data.location_id,
-          priority: data.priority,
-        });
+        let effectiveLocation = data.location_id as string | null;
+        if (!effectiveLocation && data.asset_id) {
+          const { data: asset } = await this.supabase.admin
+            .from('assets').select('assigned_space_id').eq('id', data.asset_id).single();
+          effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+        }
 
-        if (routingResult.assigned_team_id || routingResult.assigned_user_id) {
-          const updates: Record<string, unknown> = {};
-          if (routingResult.assigned_team_id) updates.assigned_team_id = routingResult.assigned_team_id;
-          if (routingResult.assigned_user_id) updates.assigned_user_id = routingResult.assigned_user_id;
-          updates.status_category = 'assigned';
+        const evalCtx = {
+          tenant_id: tenant.id,
+          ticket_id: data.id,
+          request_type_id: data.ticket_type_id ?? null,
+          domain: (requestType?.domain as string | null) ?? null,
+          priority: data.priority,
+          asset_id: data.asset_id ?? null,
+          location_id: effectiveLocation,
+        };
+
+        const result = await this.routingService.evaluate(evalCtx);
+        await this.routingService.recordDecision(data.id, evalCtx, result);
+
+        if (result.target) {
+          const updates: Record<string, unknown> = { status_category: 'assigned' };
+          if (result.target.kind === 'team') updates.assigned_team_id = result.target.team_id;
+          if (result.target.kind === 'user') updates.assigned_user_id = result.target.user_id;
+          if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
+          if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
 
           await this.supabase.admin.from('tickets').update(updates).eq('id', data.id);
           Object.assign(data, updates);
@@ -211,11 +224,16 @@ export class TicketService {
           await this.addActivity(data.id, {
             activity_type: 'system_event',
             visibility: 'system',
-            metadata: { event: 'auto_routed', rule: routingResult.rule_name },
+            metadata: {
+              event: 'auto_routed',
+              chosen_by: result.chosen_by,
+              strategy: result.strategy,
+              rule: result.rule_name,
+            },
           });
         }
-      } catch {
-        // Routing failure should not block ticket creation
+      } catch (err) {
+        console.error('[routing] evaluate failed', err);
       }
     }
 
