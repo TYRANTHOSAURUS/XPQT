@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,7 +14,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Plus, Send } from 'lucide-react';
+import { Plus, Send, Pencil, Copy } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 
@@ -41,6 +43,7 @@ function formatDate(iso: string | null) {
 }
 
 export function WorkflowTemplatesPage() {
+  const navigate = useNavigate();
   const { data, loading, refetch } = useApi<WorkflowTemplate[]>('/workflows', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -55,22 +58,45 @@ export function WorkflowTemplatesPage() {
 
   const handleCreate = async () => {
     if (!name.trim()) return;
-    await apiFetch('/workflows', {
-      method: 'POST',
-      body: JSON.stringify({ name, entity_type: entityType }),
-    });
-    resetForm();
-    setDialogOpen(false);
-    refetch();
+    try {
+      const created = await apiFetch<{ id: string }>('/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name, entity_type: entityType }),
+      });
+      resetForm();
+      setDialogOpen(false);
+      toast.success('Workflow created');
+      refetch();
+      navigate(`/admin/workflow-templates/${created.id}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Create failed');
+    }
   };
 
   const handlePublish = async (id: string) => {
     setPublishing(id);
     try {
       await apiFetch(`/workflows/${id}/publish`, { method: 'POST' });
+      toast.success('Published');
       refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Publish failed');
     } finally {
       setPublishing(null);
+    }
+  };
+
+  const handleClone = async (id: string) => {
+    try {
+      const newWf = await apiFetch<{ id: string }>(`/workflows/${id}/clone`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      toast.success('Cloned');
+      refetch();
+      navigate(`/admin/workflow-templates/${newWf.id}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Clone failed');
     }
   };
 
@@ -118,10 +144,6 @@ export function WorkflowTemplatesPage() {
         </Dialog>
       </div>
 
-      <div className="rounded-md border border-dashed border-input bg-muted/30 px-4 py-3 mb-6 text-sm text-muted-foreground">
-        Visual workflow builder coming in Phase 3. For now, manage workflow templates here.
-      </div>
-
       <Table>
         <TableHeader>
           <TableRow>
@@ -130,7 +152,7 @@ export function WorkflowTemplatesPage() {
             <TableHead className="w-[80px]">Version</TableHead>
             <TableHead className="w-[100px]">Status</TableHead>
             <TableHead className="w-[180px]">Published At</TableHead>
-            <TableHead className="w-[120px]" />
+            <TableHead className="w-[180px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -154,18 +176,31 @@ export function WorkflowTemplatesPage() {
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">{formatDate(wf.published_at)}</TableCell>
               <TableCell>
-                {wf.status === 'draft' && (
+                <div className="flex items-center gap-1">
                   <Button
                     variant="outline"
                     size="sm"
                     className="gap-1.5 h-7"
-                    onClick={() => handlePublish(wf.id)}
-                    disabled={publishing === wf.id}
+                    onClick={() => navigate(`/admin/workflow-templates/${wf.id}`)}
                   >
-                    <Send className="h-3.5 w-3.5" />
-                    {publishing === wf.id ? 'Publishing...' : 'Publish'}
+                    <Pencil className="h-3.5 w-3.5" /> {wf.status === 'draft' ? 'Edit' : 'View'}
                   </Button>
-                )}
+                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleClone(wf.id)} title="Clone">
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                  {wf.status === 'draft' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5 h-7"
+                      onClick={() => handlePublish(wf.id)}
+                      disabled={publishing === wf.id}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      {publishing === wf.id ? 'Publishing...' : 'Publish'}
+                    </Button>
+                  )}
+                </div>
               </TableCell>
             </TableRow>
           ))}

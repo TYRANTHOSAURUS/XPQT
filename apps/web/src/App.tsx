@@ -28,6 +28,7 @@ import { NotificationsPage } from '@/pages/admin/notifications';
 import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
 import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
+import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
@@ -102,6 +103,7 @@ export function App() {
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
+            <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />
