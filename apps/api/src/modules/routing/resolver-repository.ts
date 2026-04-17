@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { LoadedAsset, LoadedRequestType } from './resolver.types';
+import {
+  LoadedAsset,
+  LoadedRequestType,
+  LocationTeamHit,
+  RoutingRuleRecord,
+} from './resolver.types';
 
 @Injectable()
 export class ResolverRepository {
@@ -45,16 +50,59 @@ export class ResolverRepository {
     return chain;
   }
 
-  async locationTeam(
-    spaceId: string,
-    domain: string,
-  ): Promise<{ team_id: string | null; vendor_id: string | null } | null> {
+  async locationTeam(spaceId: string, domain: string): Promise<LocationTeamHit | null> {
     const { data } = await this.supabase.admin
       .from('location_teams')
       .select('team_id, vendor_id')
       .eq('space_id', spaceId)
       .eq('domain', domain)
       .maybeSingle();
-    return data as { team_id: string | null; vendor_id: string | null } | null;
+    return (data as LocationTeamHit | null) ?? null;
+  }
+
+  async spaceGroupTeam(spaceId: string, domain: string): Promise<LocationTeamHit | null> {
+    const { data: memberships } = await this.supabase.admin
+      .from('space_group_members')
+      .select('space_group_id')
+      .eq('space_id', spaceId);
+    const groupIds = (memberships ?? []).map((m) => (m as { space_group_id: string }).space_group_id);
+    if (groupIds.length === 0) return null;
+
+    const { data } = await this.supabase.admin
+      .from('location_teams')
+      .select('team_id, vendor_id')
+      .in('space_group_id', groupIds)
+      .eq('domain', domain)
+      .limit(1)
+      .maybeSingle();
+    return (data as LocationTeamHit | null) ?? null;
+  }
+
+  async domainChain(tenantId: string, domain: string): Promise<string[]> {
+    const chain: string[] = [domain];
+    let current = domain;
+    for (let i = 0; i < 10; i++) {
+      const { data } = await this.supabase.admin
+        .from('domain_parents')
+        .select('parent_domain')
+        .eq('tenant_id', tenantId)
+        .eq('domain', current)
+        .maybeSingle();
+      const parent = (data as { parent_domain: string } | null)?.parent_domain;
+      if (!parent || chain.includes(parent)) break;
+      chain.push(parent);
+      current = parent;
+    }
+    return chain;
+  }
+
+  async loadRoutingRules(tenantId: string): Promise<RoutingRuleRecord[]> {
+    const { data } = await this.supabase.admin
+      .from('routing_rules')
+      .select('id, name, priority, conditions, action_assign_team_id, action_assign_user_id')
+      .eq('tenant_id', tenantId)
+      .eq('active', true)
+      .order('priority', { ascending: false });
+    return (data as RoutingRuleRecord[] | null) ?? [];
   }
 }
