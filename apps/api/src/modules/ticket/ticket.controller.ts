@@ -18,6 +18,7 @@ import {
   CreateTicketDto,
   UpdateTicketDto,
   AddActivityDto,
+  ReassignDto,
 } from './ticket.service';
 
 @Controller('tickets')
@@ -71,6 +72,11 @@ export class TicketController {
   @Patch('bulk/update')
   async bulkUpdate(@Body() body: { ids: string[]; updates: UpdateTicketDto }) {
     return this.ticketService.bulkUpdate(body.ids, body.updates);
+  }
+
+  @Post(':id/reassign')
+  async reassign(@Param('id') id: string, @Body() dto: ReassignDto) {
+    return this.ticketService.reassign(id, dto);
   }
 
   @Get(':id/activities')

@@ -17,6 +17,8 @@ interface RequestType {
   sla_policy?: { id: string; name: string } | null;
   catalog_category_id?: string | null;
   routing_rule_id?: string | null;
+  fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
+  requires_approval?: boolean;
 }
 
 interface Category { id: string; name: string }
@@ -73,21 +75,26 @@ export function RequestTypesPage() {
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
-            <TableHead className="w-[110px]">Domain</TableHead>
-            <TableHead className="w-[150px]">Category</TableHead>
-            <TableHead className="w-[150px]">SLA Policy</TableHead>
-            <TableHead className="w-[150px]">Routing Rule</TableHead>
+            <TableHead className="w-[100px]">Domain</TableHead>
+            <TableHead className="w-[110px]">Strategy</TableHead>
+            <TableHead className="w-[130px]">Category</TableHead>
+            <TableHead className="w-[130px]">SLA Policy</TableHead>
+            <TableHead className="w-[130px]">Routing Rule</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && <TableLoading cols={7} />}
-          {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No request types yet. Create one to get started." />}
+          {loading && <TableLoading cols={8} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={8} message="No request types yet. Create one to get started." />}
           {(data ?? []).map((rt) => (
             <TableRow key={rt.id}>
-              <TableCell className="font-medium">{rt.name}</TableCell>
+              <TableCell className="font-medium">
+                {rt.name}
+                {rt.requires_approval && <Badge variant="outline" className="ml-2 text-xs">approval</Badge>}
+              </TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.domain ?? 'general'}</Badge></TableCell>
+              <TableCell><Badge variant="outline" className="capitalize">{rt.fulfillment_strategy ?? 'fixed'}</Badge></TableCell>
               <TableCell className="text-muted-foreground text-sm">{getCategoryName(rt.catalog_category_id)}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{rt.sla_policy?.name ?? '—'}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{getRoutingRuleName(rt.routing_rule_id)}</TableCell>

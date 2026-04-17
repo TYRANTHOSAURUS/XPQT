@@ -27,7 +27,13 @@ export interface UpdateSpaceDto {
 export class SpaceService {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async list(filters?: { type?: string; parent_id?: string; reservable?: boolean }) {
+  async list(filters?: {
+    type?: string;
+    types?: string[];
+    parent_id?: string;
+    reservable?: boolean;
+    search?: string;
+  }) {
     const tenant = TenantContext.current();
     let query = this.supabase.admin
       .from('spaces')
@@ -36,8 +42,10 @@ export class SpaceService {
       .order('name');
 
     if (filters?.type) query = query.eq('type', filters.type);
+    if (filters?.types?.length) query = query.in('type', filters.types);
     if (filters?.parent_id) query = query.eq('parent_id', filters.parent_id);
     if (filters?.reservable !== undefined) query = query.eq('reservable', filters.reservable);
+    if (filters?.search) query = query.ilike('name', `%${filters.search}%`);
 
     const { data, error } = await query;
     if (error) throw error;

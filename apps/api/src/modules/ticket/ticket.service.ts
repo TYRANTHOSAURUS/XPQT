@@ -5,6 +5,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
+import { ApprovalService } from '../approval/approval.service';
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
@@ -33,11 +34,21 @@ export interface UpdateTicketDto {
   priority?: string;
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
   tags?: string[];
   watchers?: string[];
   cost?: number | null;
   satisfaction_rating?: number | null;
   satisfaction_comment?: string | null;
+}
+
+export interface ReassignDto {
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+  reason: string;
+  rerun_resolver?: boolean;
+  actor_person_id?: string;
 }
 
 export interface TicketListFilters {
@@ -82,6 +93,7 @@ export class TicketService {
     @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
+    @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
   ) {}
 
   async list(filters: TicketListFilters = {}) {
@@ -197,73 +209,163 @@ export class TicketService {
     // Log domain event
     await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
 
+    // Load full request-type config once — used by approval gate + automation
+    const requestTypeCfg = data.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
+          .eq('id', data.ticket_type_id)
+          .single()).data
+      : null;
+
+    // ── Approval gate ─────────────────────────────────────────
+    // When the request type requires approval, park the ticket in
+    // pending_approval and create an approval request. Routing/SLA/workflow
+    // happen once approval is granted (see onApprovalDecision).
+    if (requestTypeCfg?.requires_approval &&
+        (requestTypeCfg.approval_approver_person_id || requestTypeCfg.approval_approver_team_id)) {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'awaiting_approval', status_category: 'pending_approval' })
+        .eq('id', data.id);
+      data.status = 'awaiting_approval';
+      data.status_category = 'pending_approval';
+
+      await this.approvalService.createSingleStep({
+        target_entity_type: 'ticket',
+        target_entity_id: data.id,
+        approver_person_id: requestTypeCfg.approval_approver_person_id as string | undefined,
+        approver_team_id: requestTypeCfg.approval_approver_team_id as string | undefined,
+      });
+
+      await this.addActivity(data.id, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_requested' },
+      });
+
+      return data;
+    }
+
+    // Normal path: routing → SLA → workflow
+    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg);
+    return data;
+  }
+
+  /**
+   * Called by approval flow after a ticket's approval request is resolved.
+   * Runs routing/SLA/workflow on approval; marks ticket cancelled on rejection.
+   */
+  async onApprovalDecision(ticketId: string, outcome: 'approved' | 'rejected') {
+    const tenant = TenantContext.current();
+    const ticket = await this.getById(ticketId);
+    if (ticket.status_category !== 'pending_approval') return;
+
+    if (outcome === 'rejected') {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'rejected', status_category: 'closed', closed_at: new Date().toISOString() })
+        .eq('id', ticketId);
+      await this.addActivity(ticketId, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_rejected' },
+      });
+      return;
+    }
+
+    // Approved — move out of pending_approval and run automation
+    await this.supabase.admin
+      .from('tickets')
+      .update({ status: 'new', status_category: 'new' })
+      .eq('id', ticketId);
+    const ticketRecord = await this.getById(ticketId);
+
+    await this.addActivity(ticketId, {
+      activity_type: 'system_event',
+      visibility: 'system',
+      metadata: { event: 'approval_approved' },
+    });
+
+    const cfg = ticketRecord.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id')
+          .eq('id', ticketRecord.ticket_type_id)
+          .single()).data
+      : null;
+
+    await this.runPostCreateAutomation(ticketRecord as Record<string, unknown>, tenant.id, cfg);
+  }
+
+  private async runPostCreateAutomation(
+    data: Record<string, unknown>,
+    tenantId: string,
+    requestTypeCfg: Record<string, unknown> | null,
+  ) {
     // ── Auto-routing ──────────────────────────────────────────
-    // If no team was explicitly assigned, evaluate routing rules
-    if (!data.assigned_team_id && !data.assigned_user_id) {
+    if (!data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
-        const requestType = data.ticket_type_id
-          ? await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()
-          : null;
+        let effectiveLocation = data.location_id as string | null;
+        if (!effectiveLocation && data.asset_id) {
+          const { data: asset } = await this.supabase.admin
+            .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
+          effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+        }
 
-        const routingResult = await this.routingService.evaluate({
-          ticket_type_id: data.ticket_type_id,
-          domain: requestType?.data?.domain,
-          location_id: data.location_id,
-          priority: data.priority,
-        });
+        const evalCtx = {
+          tenant_id: tenantId,
+          ticket_id: data.id as string,
+          request_type_id: (data.ticket_type_id as string | null) ?? null,
+          domain: (requestTypeCfg?.domain as string | null) ?? null,
+          priority: data.priority as string | null,
+          asset_id: (data.asset_id as string | null) ?? null,
+          location_id: effectiveLocation,
+        };
 
-        if (routingResult.assigned_team_id || routingResult.assigned_user_id) {
-          const updates: Record<string, unknown> = {};
-          if (routingResult.assigned_team_id) updates.assigned_team_id = routingResult.assigned_team_id;
-          if (routingResult.assigned_user_id) updates.assigned_user_id = routingResult.assigned_user_id;
-          updates.status_category = 'assigned';
+        const result = await this.routingService.evaluate(evalCtx);
+        await this.routingService.recordDecision(data.id as string, evalCtx, result);
 
-          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id);
+        if (result.target) {
+          const updates: Record<string, unknown> = { status_category: 'assigned' };
+          if (result.target.kind === 'team') updates.assigned_team_id = result.target.team_id;
+          if (result.target.kind === 'user') updates.assigned_user_id = result.target.user_id;
+          if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
+          if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
+
+          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id as string);
           Object.assign(data, updates);
 
-          await this.addActivity(data.id, {
+          await this.addActivity(data.id as string, {
             activity_type: 'system_event',
             visibility: 'system',
-            metadata: { event: 'auto_routed', rule: routingResult.rule_name },
+            metadata: {
+              event: 'auto_routed',
+              chosen_by: result.chosen_by,
+              strategy: result.strategy,
+              rule: result.rule_name,
+            },
           });
         }
-      } catch {
-        // Routing failure should not block ticket creation
+      } catch (err) {
+        console.error('[routing] evaluate failed', err);
       }
     }
 
     // ── Auto-SLA ──────────────────────────────────────────────
-    // Start SLA timers if the request type has a linked SLA policy
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.sla_policy_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('sla_policy_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.sla_policy_id) {
-          await this.slaService.startTimers(data.id, tenant.id, requestType.sla_policy_id);
-          await this.supabase.admin.from('tickets').update({ sla_id: requestType.sla_policy_id }).eq('id', data.id);
-        }
+        await this.slaService.startTimers(data.id as string, tenantId, requestTypeCfg.sla_policy_id as string);
+        await this.supabase.admin.from('tickets').update({ sla_id: requestTypeCfg.sla_policy_id }).eq('id', data.id as string);
       } catch {
         // SLA failure should not block ticket creation
       }
     }
 
     // ── Auto-workflow ─────────────────────────────────────────
-    // Start workflow if the request type has a linked workflow definition
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.workflow_definition_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('workflow_definition_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.workflow_definition_id) {
-          await this.workflowEngine.startForTicket(data.id, requestType.workflow_definition_id);
-        }
+        await this.workflowEngine.startForTicket(data.id as string, requestTypeCfg.workflow_definition_id as string);
       } catch {
         // Workflow failure should not block ticket creation
       }
@@ -308,6 +410,15 @@ export class TicketService {
 
     if (error) throw error;
 
+    // ── SLA pause/resume on waiting-state transitions ──────────
+    if (changes.status_category || changes.waiting_reason) {
+      try {
+        await this.applyWaitingStateTransition(id, tenant.id, current, data);
+      } catch (err) {
+        console.error('[sla] pause/resume failed', err);
+      }
+    }
+
     // Log changes as system events
     if (changes.status_category) {
       await this.addActivity(id, {
@@ -335,6 +446,153 @@ export class TicketService {
     }
 
     return data;
+  }
+
+  /**
+   * Explicitly reassign a ticket with a reason. Distinct from plain `update`
+   * so we can record a routing_decisions trace row and keep the reason visible
+   * in the timeline.
+   */
+  async reassign(id: string, dto: ReassignDto) {
+    const tenant = TenantContext.current();
+    const current = await this.getById(id);
+
+    if (!dto.reason?.trim()) {
+      throw new Error('reassignment reason is required');
+    }
+
+    const prev = {
+      team: current.assigned_team_id as string | null,
+      user: current.assigned_user_id as string | null,
+      vendor: current.assigned_vendor_id as string | null,
+    };
+
+    let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
+    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
+    let strategy: string = 'manual';
+    let trace: Array<Record<string, unknown>> = [
+      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+    ];
+
+    if (dto.rerun_resolver) {
+      // Clear current assignment and let the resolver pick fresh
+      await this.supabase.admin
+        .from('tickets')
+        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
+        .eq('id', id);
+
+      const rtCfg = current.ticket_type_id
+        ? (await this.supabase.admin
+            .from('request_types')
+            .select('domain')
+            .eq('id', current.ticket_type_id)
+            .single()).data
+        : null;
+
+      let effectiveLocation = current.location_id as string | null;
+      if (!effectiveLocation && current.asset_id) {
+        const { data: asset } = await this.supabase.admin
+          .from('assets').select('assigned_space_id').eq('id', current.asset_id as string).single();
+        effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+      }
+
+      const evalCtx = {
+        tenant_id: tenant.id,
+        ticket_id: id,
+        request_type_id: (current.ticket_type_id as string | null) ?? null,
+        domain: (rtCfg?.domain as string | null) ?? null,
+        priority: current.priority as string | null,
+        asset_id: (current.asset_id as string | null) ?? null,
+        location_id: effectiveLocation,
+      };
+      const result = await this.routingService.evaluate(evalCtx);
+      await this.routingService.recordDecision(id, evalCtx, result);
+      if (result.target) {
+        if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
+        else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
+        else if (result.target.kind === 'vendor') nextTarget = { kind: 'vendor', id: result.target.vendor_id };
+      }
+      chosenBy = 'rerun_resolver';
+      strategy = result.strategy;
+      trace = [
+        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+        ...(result.trace as unknown as Array<Record<string, unknown>>),
+      ];
+    } else {
+      if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+      else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+      else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+    }
+
+    const updates: Record<string, unknown> = {
+      assigned_team_id: null,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: nextTarget ? 'assigned' : 'new',
+    };
+    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
+    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
+    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+
+    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
+
+    await this.supabase.admin.from('routing_decisions').insert({
+      tenant_id: tenant.id,
+      ticket_id: id,
+      strategy,
+      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+      chosen_by: chosenBy,
+      trace,
+      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
+    });
+
+    await this.addActivity(id, {
+      activity_type: 'system_event',
+      author_person_id: dto.actor_person_id,
+      visibility: 'internal',
+      content: dto.reason,
+      metadata: {
+        event: 'reassigned',
+        previous: prev,
+        next: nextTarget,
+        mode: chosenBy,
+      },
+    });
+
+    return this.getById(id);
+  }
+
+  private async applyWaitingStateTransition(
+    ticketId: string,
+    tenantId: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+  ) {
+    const slaPolicyId = (after.sla_id ?? before.sla_id) as string | null;
+    if (!slaPolicyId) return;
+
+    const { data: policy } = await this.supabase.admin
+      .from('sla_policies')
+      .select('pause_on_waiting_reasons')
+      .eq('id', slaPolicyId)
+      .maybeSingle();
+
+    const pauseReasons = (policy?.pause_on_waiting_reasons as string[] | null) ?? [];
+    const shouldPause = (t: Record<string, unknown>) =>
+      t.status_category === 'waiting' &&
+      !!t.waiting_reason &&
+      pauseReasons.includes(t.waiting_reason as string);
+
+    const wasPaused = shouldPause(before);
+    const isPaused = shouldPause(after);
+
+    if (!wasPaused && isPaused) {
+      await this.slaService.pauseTimers(ticketId, tenantId);
+    } else if (wasPaused && !isPaused) {
+      await this.slaService.resumeTimers(ticketId, tenantId);
+    }
   }
 
   async getActivities(ticketId: string, visibility?: string) {

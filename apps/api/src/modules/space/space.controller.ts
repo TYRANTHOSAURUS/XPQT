@@ -8,13 +8,17 @@ export class SpaceController {
   @Get()
   async list(
     @Query('type') type?: string,
+    @Query('types') types?: string,
     @Query('parent_id') parentId?: string,
     @Query('reservable') reservable?: string,
+    @Query('search') search?: string,
   ) {
     return this.spaceService.list({
       type,
+      types: types ? types.split(',').filter(Boolean) : undefined,
       parent_id: parentId,
       reservable: reservable === 'true' ? true : reservable === 'false' ? false : undefined,
+      search,
     });
   }
 

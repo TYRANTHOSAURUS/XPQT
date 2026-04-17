@@ -1,10 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { BusinessHoursService, BusinessHoursCalendar } from './business-hours.service';
 
 @Injectable()
 export class SlaService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly businessHours: BusinessHoursService,
+  ) {}
 
   /**
    * Start SLA timers when a ticket is created.
@@ -19,16 +23,12 @@ export class SlaService {
 
     if (policyError || !policy) return;
 
+    const calendar = await this.loadCalendar(policy.business_hours_calendar_id as string | null);
     const now = new Date();
     const timers: Array<Record<string, unknown>> = [];
 
-    // TODO: Calculate due dates using business hours calendar when available
-    // Currently uses wall-clock time. For proper business hours calculation,
-    // load the calendar from business_hours_calendars, skip non-working hours
-    // and holidays when computing the due_at timestamp.
-
     if (policy.response_time_minutes) {
-      const responseDue = new Date(now.getTime() + policy.response_time_minutes * 60_000);
+      const responseDue = this.businessHours.addBusinessMinutes(calendar, now, policy.response_time_minutes);
       timers.push({
         tenant_id: tenantId,
         ticket_id: ticketId,
@@ -39,7 +39,6 @@ export class SlaService {
         business_hours_calendar_id: policy.business_hours_calendar_id,
       });
 
-      // Update computed fields on the ticket
       await this.supabase.admin
         .from('tickets')
         .update({ sla_response_due_at: responseDue.toISOString() })
@@ -47,7 +46,7 @@ export class SlaService {
     }
 
     if (policy.resolution_time_minutes) {
-      const resolutionDue = new Date(now.getTime() + policy.resolution_time_minutes * 60_000);
+      const resolutionDue = this.businessHours.addBusinessMinutes(calendar, now, policy.resolution_time_minutes);
       timers.push({
         tenant_id: tenantId,
         ticket_id: ticketId,
@@ -67,6 +66,16 @@ export class SlaService {
     if (timers.length > 0) {
       await this.supabase.admin.from('sla_timers').insert(timers);
     }
+  }
+
+  private async loadCalendar(calendarId: string | null): Promise<BusinessHoursCalendar | null> {
+    if (!calendarId) return null;
+    const { data } = await this.supabase.admin
+      .from('business_hours_calendars')
+      .select('time_zone, working_hours, holidays')
+      .eq('id', calendarId)
+      .maybeSingle();
+    return (data as BusinessHoursCalendar | null) ?? null;
   }
 
   /**
@@ -91,11 +100,12 @@ export class SlaService {
 
   /**
    * Resume SLA timers when a ticket leaves a waiting state.
+   * Shifts due_at by the business minutes that elapsed during the pause
+   * (so if the pause happened entirely outside working hours, due_at doesn't move).
    */
   async resumeTimers(ticketId: string, tenantId: string) {
     const now = new Date();
 
-    // Get paused timers to calculate paused duration
     const { data: timers } = await this.supabase.admin
       .from('sla_timers')
       .select('*')
@@ -105,13 +115,15 @@ export class SlaService {
       .is('completed_at', null);
 
     for (const timer of timers ?? []) {
+      const calendar = await this.loadCalendar(timer.business_hours_calendar_id as string | null);
       const pausedAt = new Date(timer.paused_at);
-      const pausedMinutes = Math.floor((now.getTime() - pausedAt.getTime()) / 60_000);
-      const newTotalPaused = (timer.total_paused_minutes ?? 0) + pausedMinutes;
+      const businessMinutesPaused = this.businessHours.businessMinutesBetween(calendar, pausedAt, now);
+      const newTotalPaused = (timer.total_paused_minutes ?? 0) + businessMinutesPaused;
 
-      // Extend due_at by the paused duration
       const currentDue = new Date(timer.due_at);
-      const newDue = new Date(currentDue.getTime() + pausedMinutes * 60_000);
+      const newDue = businessMinutesPaused > 0
+        ? this.businessHours.addBusinessMinutes(calendar, currentDue, businessMinutesPaused)
+        : currentDue;
 
       await this.supabase.admin
         .from('sla_timers')

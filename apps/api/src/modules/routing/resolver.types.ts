@@ -1,0 +1,68 @@
+export type FulfillmentShape = 'asset' | 'location' | 'fixed' | 'auto';
+
+export type AssignmentTarget =
+  | { kind: 'team'; team_id: string }
+  | { kind: 'user'; user_id: string }
+  | { kind: 'vendor'; vendor_id: string };
+
+export type ChosenBy =
+  | 'rule'
+  | 'asset_override'
+  | 'asset_type_default'
+  | 'location_team'
+  | 'parent_location_team'
+  | 'request_type_default'
+  | 'domain_default'
+  | 'unassigned';
+
+export interface ResolverContext {
+  tenant_id: string;
+  ticket_id: string;
+  request_type_id: string | null;
+  domain: string | null;
+  priority: string | null;
+  asset_id: string | null;
+  location_id: string | null;
+  loaded?: {
+    request_type?: LoadedRequestType | null;
+    asset?: LoadedAsset | null;
+    location_chain?: string[];
+  };
+}
+
+export interface LoadedRequestType {
+  id: string;
+  domain: string | null;
+  fulfillment_strategy: FulfillmentShape;
+  default_team_id: string | null;
+  default_vendor_id: string | null;
+  asset_type_filter: string[];
+}
+
+export interface LoadedAsset {
+  id: string;
+  asset_type_id: string;
+  assigned_space_id: string | null;
+  override_team_id: string | null;
+  override_vendor_id: string | null;
+  type: {
+    id: string;
+    default_team_id: string | null;
+    default_vendor_id: string | null;
+  };
+}
+
+export interface TraceEntry {
+  step: ChosenBy;
+  matched: boolean;
+  reason: string;
+  target: AssignmentTarget | null;
+}
+
+export interface ResolverDecision {
+  target: AssignmentTarget | null;
+  chosen_by: ChosenBy;
+  strategy: FulfillmentShape | 'rule';
+  rule_id?: string | null;
+  trace: TraceEntry[];
+}
