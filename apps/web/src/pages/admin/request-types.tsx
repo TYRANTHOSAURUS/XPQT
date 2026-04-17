@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -16,6 +17,8 @@ import { Plus, Pencil } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 
+type FulfillmentStrategy = 'asset' | 'location' | 'fixed' | 'auto';
+
 interface RequestType {
   id: string;
   name: string;
@@ -24,6 +27,13 @@ interface RequestType {
   sla_policy?: { id: string; name: string } | null;
   catalog_category_id?: string | null;
   routing_rule_id?: string | null;
+  fulfillment_strategy?: FulfillmentStrategy;
+  requires_asset?: boolean;
+  asset_required?: boolean;
+  asset_type_filter?: string[];
+  requires_location?: boolean;
+  location_required?: boolean;
+  default_team_id?: string | null;
 }
 
 interface SlaPolicy {
@@ -41,6 +51,11 @@ interface RoutingRule {
   name: string;
 }
 
+interface Team {
+  id: string;
+  name: string;
+}
+
 const domains = ['it', 'fm', 'workplace', 'visitor', 'catering', 'security', 'general'];
 
 export function RequestTypesPage() {
@@ -48,6 +63,7 @@ export function RequestTypesPage() {
   const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
   const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
   const { data: routingRules } = useApi<RoutingRule[]>('/routing-rules', []);
+  const { data: teams } = useApi<Team[]>('/teams', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -56,6 +72,13 @@ export function RequestTypesPage() {
   const [slaPolicyId, setSlaPolicyId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [routingRuleId, setRoutingRuleId] = useState('');
+  const [fulfillmentStrategy, setFulfillmentStrategy] = useState<FulfillmentStrategy>('fixed');
+  const [requiresAsset, setRequiresAsset] = useState(false);
+  const [assetRequired, setAssetRequired] = useState(false);
+  const [requiresLocation, setRequiresLocation] = useState(false);
+  const [locationRequired, setLocationRequired] = useState(false);
+  const [defaultTeamId, setDefaultTeamId] = useState('');
+  const [assetTypeFilter, setAssetTypeFilter] = useState('');
 
   const resetForm = () => {
     setName('');
@@ -63,6 +86,13 @@ export function RequestTypesPage() {
     setSlaPolicyId('');
     setCategoryId('');
     setRoutingRuleId('');
+    setFulfillmentStrategy('fixed');
+    setRequiresAsset(false);
+    setAssetRequired(false);
+    setRequiresLocation(false);
+    setLocationRequired(false);
+    setDefaultTeamId('');
+    setAssetTypeFilter('');
     setEditId(null);
   };
 
@@ -74,6 +104,14 @@ export function RequestTypesPage() {
       sla_policy_id: slaPolicyId || undefined,
       catalog_category_id: categoryId || undefined,
       routing_rule_id: routingRuleId || undefined,
+      fulfillment_strategy: fulfillmentStrategy,
+      requires_asset: requiresAsset,
+      asset_required: assetRequired,
+      requires_location: requiresLocation,
+      location_required: locationRequired,
+      default_team_id: defaultTeamId || null,
+      asset_type_filter: assetTypeFilter
+        .split(',').map((s) => s.trim()).filter(Boolean),
     };
     if (editId) {
       await apiFetch(`/request-types/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
@@ -92,6 +130,13 @@ export function RequestTypesPage() {
     setSlaPolicyId(rt.sla_policy?.id ?? '');
     setCategoryId(rt.catalog_category_id ?? '');
     setRoutingRuleId(rt.routing_rule_id ?? '');
+    setFulfillmentStrategy(rt.fulfillment_strategy ?? 'fixed');
+    setRequiresAsset(!!rt.requires_asset);
+    setAssetRequired(!!rt.asset_required);
+    setRequiresLocation(!!rt.requires_location);
+    setLocationRequired(!!rt.location_required);
+    setDefaultTeamId(rt.default_team_id ?? '');
+    setAssetTypeFilter((rt.asset_type_filter ?? []).join(', '));
     setDialogOpen(true);
   };
 
@@ -105,11 +150,6 @@ export function RequestTypesPage() {
     return categories.find((c) => c.id === id)?.name ?? '—';
   };
 
-  const getRoutingRuleName = (id: string | null | undefined) => {
-    if (!id || !routingRules) return '—';
-    return routingRules.find((r) => r.id === id)?.name ?? '—';
-  };
-
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -121,7 +161,7 @@ export function RequestTypesPage() {
           <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
             <Plus className="h-4 w-4" /> Add Request Type
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[520px]">
+          <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Request Type</DialogTitle>
             </DialogHeader>
@@ -166,7 +206,7 @@ export function RequestTypesPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Linked Routing Rule</Label>
+                <Label>Linked Routing Rule (override)</Label>
                 <Select value={routingRuleId} onValueChange={(v) => setRoutingRuleId(v ?? '')}>
                   <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
                   <SelectContent>
@@ -177,6 +217,106 @@ export function RequestTypesPage() {
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* ── Fulfillment section ─────────────────────────── */}
+              <div className="space-y-4 border-t pt-4">
+                <div>
+                  <h3 className="font-medium">Fulfillment</h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    How tickets of this type get routed to a team.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Strategy</Label>
+                  <Select
+                    value={fulfillmentStrategy}
+                    onValueChange={(v) => setFulfillmentStrategy((v ?? 'fixed') as FulfillmentStrategy)}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fixed">Fixed team (no context needed)</SelectItem>
+                      <SelectItem value="asset">Asset-based (e.g. elevator, printer)</SelectItem>
+                      <SelectItem value="location">Location-based (e.g. cleaning)</SelectItem>
+                      <SelectItem value="auto">Auto — try asset then location</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center gap-6">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={requiresAsset}
+                        onCheckedChange={(v) => {
+                          setRequiresAsset(!!v);
+                          if (!v) setAssetRequired(false);
+                        }}
+                      />
+                      Show asset picker
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={assetRequired}
+                        onCheckedChange={(v) => setAssetRequired(!!v)}
+                        disabled={!requiresAsset}
+                      />
+                      Asset required
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={requiresLocation}
+                        onCheckedChange={(v) => {
+                          setRequiresLocation(!!v);
+                          if (!v) setLocationRequired(false);
+                        }}
+                      />
+                      Show location picker
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={locationRequired}
+                        onCheckedChange={(v) => setLocationRequired(!!v)}
+                        disabled={!requiresLocation}
+                      />
+                      Location required
+                    </label>
+                  </div>
+                </div>
+
+                {requiresAsset && (
+                  <div className="space-y-2">
+                    <Label>Asset type filter</Label>
+                    <Input
+                      value={assetTypeFilter}
+                      onChange={(e) => setAssetTypeFilter(e.target.value)}
+                      placeholder="Comma-separated asset type IDs (leave blank for any)"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Restricts the asset picker to assets of these types.
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label>Default fallback team</Label>
+                  <Select value={defaultTeamId} onValueChange={(v) => setDefaultTeamId(v ?? '')}>
+                    <SelectTrigger><SelectValue placeholder="None — leave unassigned" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">None</SelectItem>
+                      {(teams ?? []).map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Used when the resolver chain finds no asset/location match.
+                  </p>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-3 pt-2">
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
                 <Button onClick={handleSave} disabled={!name.trim()}>
@@ -192,10 +332,10 @@ export function RequestTypesPage() {
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
-            <TableHead className="w-[110px]">Domain</TableHead>
-            <TableHead className="w-[150px]">Category</TableHead>
-            <TableHead className="w-[150px]">SLA Policy</TableHead>
-            <TableHead className="w-[150px]">Routing Rule</TableHead>
+            <TableHead className="w-[100px]">Domain</TableHead>
+            <TableHead className="w-[110px]">Strategy</TableHead>
+            <TableHead className="w-[130px]">Category</TableHead>
+            <TableHead className="w-[130px]">SLA Policy</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
@@ -211,9 +351,9 @@ export function RequestTypesPage() {
             <TableRow key={rt.id}>
               <TableCell className="font-medium">{rt.name}</TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.domain ?? 'general'}</Badge></TableCell>
+              <TableCell><Badge variant="outline" className="capitalize">{rt.fulfillment_strategy ?? 'fixed'}</Badge></TableCell>
               <TableCell className="text-muted-foreground text-sm">{getCategoryName(rt.catalog_category_id)}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{rt.sla_policy?.name ?? '—'}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{getRoutingRuleName(rt.routing_rule_id)}</TableCell>
               <TableCell><Badge variant={rt.active ? 'default' : 'secondary'}>{rt.active ? 'Active' : 'Inactive'}</Badge></TableCell>
               <TableCell>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(rt)}>
@@ -224,6 +364,7 @@ export function RequestTypesPage() {
           ))}
         </TableBody>
       </Table>
+
     </div>
   );
 }
