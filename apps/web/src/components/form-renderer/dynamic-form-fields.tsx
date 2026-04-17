@@ -11,6 +11,14 @@ import { LocationCombobox } from '@/components/location-combobox';
 import { AssetCombobox } from '@/components/asset-combobox';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function asStringArr(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
 interface DynamicFormFieldsProps {
   fields: FormField[];
   values: Record<string, unknown>;
@@ -38,8 +46,15 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
                 id={id}
                 type={field.type === 'datetime' ? 'datetime-local' : field.type}
                 placeholder={field.placeholder}
-                value={(value as string) ?? ''}
-                onChange={(e) => onChange(field.id, e.target.value)}
+                value={asString(value)}
+                onChange={(e) => {
+                  if (field.type === 'number') {
+                    const raw = e.target.value;
+                    onChange(field.id, raw === '' ? '' : Number(raw));
+                  } else {
+                    onChange(field.id, e.target.value);
+                  }
+                }}
               />
             )}
 
@@ -48,13 +63,13 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
                 id={id}
                 placeholder={field.placeholder}
                 className="min-h-[80px]"
-                value={(value as string) ?? ''}
+                value={asString(value)}
                 onChange={(e) => onChange(field.id, e.target.value)}
               />
             )}
 
             {field.type === 'dropdown' && (
-              <Select value={(value as string) ?? ''} onValueChange={(v) => onChange(field.id, v ?? '')}>
+              <Select value={asString(value)} onValueChange={(v) => onChange(field.id, v ?? '')}>
                 <SelectTrigger id={id}><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
                 <SelectContent>
                   {(field.options ?? []).map((opt) => (
@@ -67,7 +82,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
             {field.type === 'multi_select' && (
               <div className="grid gap-1.5 rounded-md border p-2">
                 {(field.options ?? []).map((opt) => {
-                  const arr = Array.isArray(value) ? (value as string[]) : [];
+                  const arr = asStringArr(value);
                   const checked = arr.includes(opt);
                   return (
                     <div key={opt} className="flex items-center gap-2">
@@ -101,7 +116,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
 
             {field.type === 'radio' && (
               <RadioGroup
-                value={(value as string) ?? ''}
+                value={asString(value)}
                 onValueChange={(v) => onChange(field.id, v ?? '')}
                 className="gap-1.5"
               >
@@ -122,7 +137,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
 
             {field.type === 'person_picker' && (
               <PersonCombobox
-                value={(value as string) ?? ''}
+                value={asString(value)}
                 onChange={(v) => onChange(field.id, v)}
                 placeholder={field.placeholder ?? 'Select person...'}
               />
@@ -130,7 +145,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
 
             {field.type === 'location_picker' && (
               <LocationCombobox
-                value={(value as string) ?? null}
+                value={typeof value === 'string' && value ? value : null}
                 onChange={(spaceId) => onChange(field.id, spaceId ?? '')}
                 placeholder={field.placeholder}
               />
@@ -138,7 +153,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
 
             {field.type === 'asset_picker' && (
               <AssetCombobox
-                value={(value as string) ?? null}
+                value={typeof value === 'string' && value ? value : null}
                 onChange={(assetId) => onChange(field.id, assetId ?? '')}
                 placeholder={field.placeholder}
               />
