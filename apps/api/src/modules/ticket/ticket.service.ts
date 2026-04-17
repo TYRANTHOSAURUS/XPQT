@@ -33,11 +33,21 @@ export interface UpdateTicketDto {
   priority?: string;
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
   tags?: string[];
   watchers?: string[];
   cost?: number | null;
   satisfaction_rating?: number | null;
   satisfaction_comment?: string | null;
+}
+
+export interface ReassignDto {
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+  reason: string;
+  rerun_resolver?: boolean;
+  actor_person_id?: string;
 }
 
 export interface TicketListFilters {
@@ -423,6 +433,122 @@ export class TicketService {
     }
 
     return data;
+  }
+
+  /**
+   * Explicitly reassign a ticket with a reason. Distinct from plain `update`
+   * so we can record a routing_decisions trace row and keep the reason visible
+   * in the timeline.
+   */
+  async reassign(id: string, dto: ReassignDto) {
+    const tenant = TenantContext.current();
+    const current = await this.getById(id);
+
+    if (!dto.reason?.trim()) {
+      throw new Error('reassignment reason is required');
+    }
+
+    const prev = {
+      team: current.assigned_team_id as string | null,
+      user: current.assigned_user_id as string | null,
+      vendor: current.assigned_vendor_id as string | null,
+    };
+
+    let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
+    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
+    let strategy: string = 'manual';
+    let trace: Array<Record<string, unknown>> = [
+      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+    ];
+
+    if (dto.rerun_resolver) {
+      // Clear current assignment and let the resolver pick fresh
+      await this.supabase.admin
+        .from('tickets')
+        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
+        .eq('id', id);
+
+      const rtCfg = current.ticket_type_id
+        ? (await this.supabase.admin
+            .from('request_types')
+            .select('domain')
+            .eq('id', current.ticket_type_id)
+            .single()).data
+        : null;
+
+      let effectiveLocation = current.location_id as string | null;
+      if (!effectiveLocation && current.asset_id) {
+        const { data: asset } = await this.supabase.admin
+          .from('assets').select('assigned_space_id').eq('id', current.asset_id as string).single();
+        effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+      }
+
+      const evalCtx = {
+        tenant_id: tenant.id,
+        ticket_id: id,
+        request_type_id: (current.ticket_type_id as string | null) ?? null,
+        domain: (rtCfg?.domain as string | null) ?? null,
+        priority: current.priority as string | null,
+        asset_id: (current.asset_id as string | null) ?? null,
+        location_id: effectiveLocation,
+      };
+      const result = await this.routingService.evaluate(evalCtx);
+      await this.routingService.recordDecision(id, evalCtx, result);
+      if (result.target) {
+        if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
+        else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
+        else if (result.target.kind === 'vendor') nextTarget = { kind: 'vendor', id: result.target.vendor_id };
+      }
+      chosenBy = 'rerun_resolver';
+      strategy = result.strategy;
+      trace = [
+        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+        ...(result.trace as unknown as Array<Record<string, unknown>>),
+      ];
+    } else {
+      if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+      else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+      else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+    }
+
+    const updates: Record<string, unknown> = {
+      assigned_team_id: null,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: nextTarget ? 'assigned' : 'new',
+    };
+    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
+    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
+    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+
+    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
+
+    await this.supabase.admin.from('routing_decisions').insert({
+      tenant_id: tenant.id,
+      ticket_id: id,
+      strategy,
+      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+      chosen_by: chosenBy,
+      trace,
+      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
+    });
+
+    await this.addActivity(id, {
+      activity_type: 'system_event',
+      author_person_id: dto.actor_person_id,
+      visibility: 'internal',
+      content: dto.reason,
+      metadata: {
+        event: 'reassigned',
+        previous: prev,
+        next: nextTarget,
+        mode: chosenBy,
+      },
+    });
+
+    return this.getById(id);
   }
 
   private async applyWaitingStateTransition(
