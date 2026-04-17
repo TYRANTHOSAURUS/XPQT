@@ -1,10 +1,19 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { WorkflowValidatorService } from './workflow-validator.service';
+
+interface Graph {
+  nodes: Array<{ id: string; type: string; config: Record<string, unknown>; position?: { x: number; y: number } }>;
+  edges: Array<{ from: string; to: string; condition?: string }>;
+}
 
 @Injectable()
 export class WorkflowService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly validator: WorkflowValidatorService,
+  ) {}
 
   async list() {
     const tenant = TenantContext.current();
@@ -31,7 +40,7 @@ export class WorkflowService {
     return data;
   }
 
-  async create(dto: { name: string; entity_type?: string; graph_definition: Record<string, unknown> }) {
+  async create(dto: { name: string; entity_type?: string; graph_definition?: Record<string, unknown> }) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('workflow_definitions')
@@ -39,7 +48,7 @@ export class WorkflowService {
         tenant_id: tenant.id,
         name: dto.name,
         entity_type: dto.entity_type ?? 'ticket',
-        graph_definition: dto.graph_definition,
+        graph_definition: dto.graph_definition ?? { nodes: [], edges: [] },
         status: 'draft',
         version: 1,
       })
@@ -67,6 +76,11 @@ export class WorkflowService {
 
   async publish(id: string) {
     const tenant = TenantContext.current();
+    const wf = await this.getById(id);
+    const result = this.validator.validate((wf.graph_definition ?? { nodes: [], edges: [] }) as Graph);
+    if (!result.ok) {
+      throw new BadRequestException({ message: 'Workflow is invalid', errors: result.errors });
+    }
     const { data, error } = await this.supabase.admin
       .from('workflow_definitions')
       .update({ status: 'published', published_at: new Date().toISOString() })
@@ -75,6 +89,39 @@ export class WorkflowService {
       .select()
       .single();
 
+    if (error) throw error;
+    return data;
+  }
+
+  async unpublish(id: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('workflow_definitions')
+      .update({ status: 'draft', published_at: null })
+      .eq('id', id)
+      .eq('tenant_id', tenant.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async clone(id: string, name?: string) {
+    const tenant = TenantContext.current();
+    const original = await this.getById(id);
+    const newGraph = this.regenerateNodeIds((original.graph_definition ?? { nodes: [], edges: [] }) as Graph);
+    const { data, error } = await this.supabase.admin
+      .from('workflow_definitions')
+      .insert({
+        tenant_id: tenant.id,
+        name: name ?? `${original.name} (copy)`,
+        entity_type: original.entity_type,
+        graph_definition: newGraph,
+        status: 'draft',
+        version: 1,
+      })
+      .select()
+      .single();
     if (error) throw error;
     return data;
   }
@@ -89,5 +136,16 @@ export class WorkflowService {
 
     if (error) throw error;
     return data;
+  }
+
+  private regenerateNodeIds(graph: Graph): Graph {
+    const idMap = new Map<string, string>();
+    const nodes = graph.nodes.map((n) => {
+      const newId = `n_${Math.random().toString(36).slice(2, 10)}`;
+      idMap.set(n.id, newId);
+      return { ...n, id: newId };
+    });
+    const edges = graph.edges.map((e) => ({ ...e, from: idMap.get(e.from) ?? e.from, to: idMap.get(e.to) ?? e.to }));
+    return { nodes, edges };
   }
 }

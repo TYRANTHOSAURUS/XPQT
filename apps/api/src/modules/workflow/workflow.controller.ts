@@ -34,6 +34,16 @@ export class WorkflowController {
     return this.workflowService.publish(id);
   }
 
+  @Post(':id/unpublish')
+  async unpublish(@Param('id') id: string) {
+    return this.workflowService.unpublish(id);
+  }
+
+  @Post(':id/clone')
+  async clone(@Param('id') id: string, @Body() dto?: { name?: string }) {
+    return this.workflowService.clone(id, dto?.name);
+  }
+
   @Post(':id/start/:ticketId')
   async startForTicket(@Param('id') id: string, @Param('ticketId') ticketId: string) {
     return this.engineService.startForTicket(ticketId, id);
