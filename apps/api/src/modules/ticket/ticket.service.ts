@@ -10,6 +10,7 @@ import { ApprovalService } from '../approval/approval.service';
 export interface CreateTicketDto {
   ticket_type_id?: string;
   parent_ticket_id?: string;
+  ticket_kind?: 'case' | 'work_order';
   title: string;
   description?: string;
   priority?: string;
@@ -54,6 +55,7 @@ export interface ReassignDto {
 export interface TicketListFilters {
   status_category?: string;
   priority?: string;
+  ticket_kind?: 'case' | 'work_order';
   assigned_team_id?: string;
   assigned_user_id?: string;
   location_id?: string;
@@ -116,6 +118,7 @@ export class TicketService {
     // Apply filters
     if (filters.status_category) query = query.eq('status_category', filters.status_category);
     if (filters.priority) query = query.eq('priority', filters.priority);
+    if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
     if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);
     if (filters.location_id) query = query.eq('location_id', filters.location_id);
@@ -178,6 +181,7 @@ export class TicketService {
         tenant_id: tenant.id,
         ticket_type_id: dto.ticket_type_id,
         parent_ticket_id: dto.parent_ticket_id,
+        ticket_kind: dto.ticket_kind ?? 'case',
         title: dto.title,
         description: dto.description,
         priority: dto.priority ?? 'medium',
@@ -304,7 +308,8 @@ export class TicketService {
     requestTypeCfg: Record<string, unknown> | null,
   ) {
     // ── Auto-routing ──────────────────────────────────────────
-    if (!data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
+    const isWorkOrder = data.ticket_kind === 'work_order';
+    if (!isWorkOrder && !data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
         let effectiveLocation = data.location_id as string | null;
         if (!effectiveLocation && data.asset_id) {
