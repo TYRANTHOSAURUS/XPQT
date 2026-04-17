@@ -1,12 +1,14 @@
 import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
 import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
+import { WorkflowSimulatorService } from './workflow-simulator.service';
 
 @Controller('workflows')
 export class WorkflowController {
   constructor(
     private readonly workflowService: WorkflowService,
     private readonly engineService: WorkflowEngineService,
+    private readonly simulatorService: WorkflowSimulatorService,
   ) {}
 
   @Get()
@@ -42,6 +44,11 @@ export class WorkflowController {
   @Post(':id/clone')
   async clone(@Param('id') id: string, @Body() dto?: { name?: string }) {
     return this.workflowService.clone(id, dto?.name);
+  }
+
+  @Post(':id/simulate')
+  async simulate(@Param('id') id: string, @Body() dto: { ticket?: Record<string, unknown> }) {
+    return this.simulatorService.simulate(id, dto?.ticket ?? {});
   }
 
   @Post(':id/start/:ticketId')
