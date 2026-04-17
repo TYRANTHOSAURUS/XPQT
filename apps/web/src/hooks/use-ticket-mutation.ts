@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/providers/auth-provider';
@@ -45,14 +45,30 @@ const ASSIGNMENT_FIELD: Record<AssignmentKind, keyof UpdateTicketPayload> = {
   vendor: 'assigned_vendor_id',
 };
 
+const FIELD_LABELS: Partial<Record<keyof UpdateTicketPayload, string>> = {
+  title: 'title',
+  description: 'description',
+  status: 'status',
+  status_category: 'status',
+  waiting_reason: 'waiting reason',
+  priority: 'priority',
+  assigned_team_id: 'team',
+  assigned_user_id: 'assignee',
+  assigned_vendor_id: 'vendor',
+  tags: 'labels',
+  watchers: 'watchers',
+  cost: 'cost',
+};
+
+const humanFieldLabel = (field: string): string =>
+  FIELD_LABELS[field as keyof UpdateTicketPayload] ?? field;
+
 export function useTicketMutation({ ticketId, refetch, onOptimistic, onError }: UseTicketMutationArgs) {
   const { person } = useAuth();
-  const [pending, setPending] = useState(false);
 
   const patch = useCallback(
     async (updates: Partial<UpdateTicketPayload>) => {
       onOptimistic(updates);
-      setPending(true);
       try {
         await apiFetch(`/tickets/${ticketId}`, {
           method: 'PATCH',
@@ -64,10 +80,8 @@ export function useTicketMutation({ ticketId, refetch, onOptimistic, onError }: 
         onOptimistic(null);
         const error = err instanceof Error ? err : new Error('Update failed');
         const field = Object.keys(updates)[0] ?? 'field';
-        toast.error(`Failed to update ${field}: ${error.message}`);
+        toast.error(`Failed to update ${humanFieldLabel(field)}: ${error.message}`);
         onError?.(field, error);
-      } finally {
-        setPending(false);
       }
     },
     [ticketId, onOptimistic, onError, refetch],
@@ -96,7 +110,6 @@ export function useTicketMutation({ ticketId, refetch, onOptimistic, onError }: 
 
       const overlay: Partial<UpdateTicketPayload> = { [field]: target.id } as Partial<UpdateTicketPayload>;
       onOptimistic(overlay);
-      setPending(true);
       try {
         await apiFetch(`/tickets/${ticketId}/reassign`, {
           method: 'POST',
@@ -112,14 +125,12 @@ export function useTicketMutation({ ticketId, refetch, onOptimistic, onError }: 
       } catch (err) {
         onOptimistic(null);
         const error = err instanceof Error ? err : new Error('Reassignment failed');
-        toast.error(`Failed to reassign: ${error.message}`);
+        toast.error(`Failed to reassign ${target.kind}: ${error.message}`);
         onError?.(field, error);
-      } finally {
-        setPending(false);
       }
     },
     [patch, ticketId, person, onOptimistic, onError, refetch],
   );
 
-  return { patch, updateAssignment, pending };
+  return { patch, updateAssignment };
 }
