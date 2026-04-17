@@ -365,7 +365,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="px-20 pb-10">
+          <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
             {/* Title */}
             <h1 className="text-2xl font-semibold leading-tight tracking-tight">{ticket.title}</h1>
 
