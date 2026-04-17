@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -387,6 +388,9 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             </div>
           )}
 
+          {/* Workflow */}
+          <WorkflowSection ticketId={ticketId} />
+
           {/* Created */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Created</div>
@@ -396,6 +400,34 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface TicketInstance {
+  id: string;
+  status: string;
+  current_node_id: string | null;
+  workflow_definition_id: string;
+}
+
+function WorkflowSection({ ticketId }: { ticketId: string }) {
+  const { data: instances } = useApi<TicketInstance[]>(`/workflows/instances/ticket/${ticketId}`, [ticketId]);
+  const first = instances?.[0];
+  if (!first) return null;
+
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground mb-1.5">Workflow</div>
+      <Link
+        to={`/admin/workflow-templates/instances/${first.id}`}
+        className="text-sm hover:underline flex items-center gap-2"
+      >
+        <Badge variant={first.status === 'completed' ? 'default' : first.status === 'waiting' ? 'secondary' : 'outline'} className="capitalize text-[10px]">
+          {first.status}
+        </Badge>
+        <span className="text-xs text-muted-foreground">View →</span>
+      </Link>
     </div>
   );
 }
