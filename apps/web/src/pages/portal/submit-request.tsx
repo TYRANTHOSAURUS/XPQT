@@ -22,12 +22,20 @@ import { ArrowLeft, Send, CheckCircle } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
+import { AssetCombobox } from '@/components/asset-combobox';
+import { LocationCombobox } from '@/components/location-combobox';
 
 interface RequestType {
   id: string;
   name: string;
   domain: string;
   form_schema_id: string | null;
+  fulfillment_strategy: 'asset' | 'location' | 'fixed' | 'auto';
+  requires_asset: boolean;
+  asset_required: boolean;
+  asset_type_filter: string[];
+  requires_location: boolean;
+  location_required: boolean;
 }
 
 interface FormField {
@@ -58,11 +66,15 @@ export function SubmitRequestPage() {
   const [requestTypeId, setRequestTypeId] = useState('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [formData, setFormData] = useState<Record<string, string>>({});
+  const [assetId, setAssetId] = useState<string | null>(null);
+  const [locationId, setLocationId] = useState<string | null>(null);
 
   const { data: requestTypes } = useApi<RequestType[]>(
     `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
     [categoryId],
   );
+
+  const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
 
   // Fetch form schema when request type changes
   useEffect(() => {
@@ -80,6 +92,8 @@ export function SubmitRequestPage() {
 
   const handleSubmit = async () => {
     if (!title.trim()) return;
+    if (selectedRT?.asset_required && !assetId) return;
+    if (selectedRT?.location_required && !locationId) return;
     setSubmitting(true);
 
     try {
@@ -92,6 +106,8 @@ export function SubmitRequestPage() {
           ticket_type_id: requestTypeId || undefined,
           requester_person_id: person?.id,
           source_channel: 'portal',
+          asset_id: assetId ?? undefined,
+          location_id: locationId ?? undefined,
           form_data: Object.keys(formData).length > 0 ? formData : undefined,
         }),
       });
@@ -149,6 +165,35 @@ export function SubmitRequestPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {/* Asset picker (conditional) */}
+          {selectedRT?.requires_asset && (
+            <div className="space-y-2">
+              <Label>
+                Asset
+                {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
+              </Label>
+              <AssetCombobox
+                value={assetId}
+                onChange={(id, asset) => {
+                  setAssetId(id);
+                  if (asset?.assigned_space_id) setLocationId(asset.assigned_space_id);
+                }}
+                assetTypeFilter={selectedRT.asset_type_filter}
+              />
+            </div>
+          )}
+
+          {/* Location picker (conditional) */}
+          {selectedRT?.requires_location && (
+            <div className="space-y-2">
+              <Label>
+                Location
+                {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
+              </Label>
+              <LocationCombobox value={locationId} onChange={setLocationId} />
             </div>
           )}
 

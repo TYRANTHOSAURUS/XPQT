@@ -20,6 +20,8 @@ import {
 } from '@/components/ui/select';
 import { Plus, Send, Search } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { AssetCombobox } from '@/components/asset-combobox';
+import { LocationCombobox } from '@/components/location-combobox';
 
 interface Person {
   id: string;
@@ -33,6 +35,12 @@ interface RequestType {
   id: string;
   name: string;
   domain: string;
+  fulfillment_strategy: 'asset' | 'location' | 'fixed' | 'auto';
+  requires_asset: boolean;
+  asset_required: boolean;
+  asset_type_filter: string[];
+  requires_location: boolean;
+  location_required: boolean;
 }
 
 export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
@@ -46,8 +54,11 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const [priority, setPriority] = useState('medium');
   const [requestTypeId, setRequestTypeId] = useState('');
   const [sourceChannel, setSourceChannel] = useState('phone');
+  const [assetId, setAssetId] = useState<string | null>(null);
+  const [locationId, setLocationId] = useState<string | null>(null);
 
   const { data: requestTypes } = useApi<RequestType[]>('/request-types', []);
+  const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
 
   // Simple person search — in production this would be a proper API search endpoint
   const { data: persons } = useApi<Person[]>(
@@ -57,6 +68,8 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
 
   const handleSubmit = async () => {
     if (!title.trim() || !selectedRequester) return;
+    if (selectedRT?.asset_required && !assetId) return;
+    if (selectedRT?.location_required && !locationId) return;
     setSubmitting(true);
 
     try {
@@ -70,6 +83,8 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           ticket_type_id: requestTypeId || undefined,
           requester_person_id: selectedRequester.id,
           source_channel: sourceChannel,
+          asset_id: assetId ?? undefined,
+          location_id: locationId ?? undefined,
         }),
       });
 
@@ -81,6 +96,8 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
       setSelectedRequester(null);
       setRequesterSearch('');
       setSourceChannel('phone');
+      setAssetId(null);
+      setLocationId(null);
       setOpen(false);
       onCreated?.();
     } finally {
@@ -173,6 +190,35 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {/* Asset picker (conditional) */}
+          {selectedRT?.requires_asset && (
+            <div className="space-y-2">
+              <Label>
+                Asset
+                {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
+              </Label>
+              <AssetCombobox
+                value={assetId}
+                onChange={(id, asset) => {
+                  setAssetId(id);
+                  if (asset?.assigned_space_id) setLocationId(asset.assigned_space_id);
+                }}
+                assetTypeFilter={selectedRT.asset_type_filter}
+              />
+            </div>
+          )}
+
+          {/* Location picker (conditional) */}
+          {selectedRT?.requires_location && (
+            <div className="space-y-2">
+              <Label>
+                Location
+                {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
+              </Label>
+              <LocationCombobox value={locationId} onChange={setLocationId} />
             </div>
           )}
 
