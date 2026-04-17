@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { Toaster } from 'sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AuthProvider } from '@/providers/auth-provider';
 import { ProtectedRoute } from '@/components/auth/protected-route';
@@ -37,6 +38,7 @@ export function App() {
   return (
     <AuthProvider>
       <TooltipProvider>
+        <Toaster position="top-right" richColors />
         <Routes>
           <Route path="/" element={<Navigate to="/portal" replace />} />
 

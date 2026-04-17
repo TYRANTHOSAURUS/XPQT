@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '@/lib/api';
 
-interface UseApiResult<T> {
+export interface UseApiResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
