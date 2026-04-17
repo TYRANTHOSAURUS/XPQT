@@ -34,6 +34,22 @@ XPQT/
 - **Auth:** Supabase Auth (JWT). Backend validates tokens via AuthGuard.
 - **Module boundaries:** NestJS modules with explicit service exports. No module touches another module's tables directly.
 
+## Routing model
+Ticket assignment is a two-layer system:
+1. **Overrides:** admin-defined `routing_rules` (first match wins) — used when a specific situation needs to bypass the default resolver.
+2. **Resolver chain:** `ResolverService` (`apps/api/src/modules/routing/resolver.service.ts`) picks an assignee based on the request type's `fulfillment_strategy`:
+   - `asset` → asset's `override_team_id` → asset type's `default_team_id` → request type's `default_team_id` → unassigned
+   - `location` → `location_teams(space, domain)` → walk parent spaces → request type's `default_team_id` → unassigned
+   - `auto` → asset first, location second, then fallbacks
+   - `fixed` → request type's `default_team_id` → unassigned
+
+Every decision is persisted to `routing_decisions` with a full trace. To debug "why did my ticket land on team X?":
+```sql
+select chosen_by, strategy, trace from routing_decisions where ticket_id = '…';
+```
+
+Vendors are first-class assignees alongside teams and users — see `tickets.assigned_vendor_id`, `asset_types.default_vendor_id`, `location_teams.vendor_id`.
+
 ## Frontend Rules
 - **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
 - **Install shadcn components before using them:** `npx shadcn@latest add <component-name>`
