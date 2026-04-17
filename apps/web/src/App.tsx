@@ -29,6 +29,7 @@ import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
 import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
+import { WorkflowInstancePage } from '@/pages/admin/workflow-instance';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
@@ -104,6 +105,7 @@ export function App() {
             <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
+            <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />
