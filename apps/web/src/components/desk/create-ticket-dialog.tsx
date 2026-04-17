@@ -1,7 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -12,6 +11,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select,
   SelectContent,
@@ -25,6 +30,10 @@ import { useApi } from '@/hooks/use-api';
 import { PersonCombobox, type Person } from '@/components/person-combobox';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
+import { apiFetch } from '@/lib/api';
+import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
+import { splitFormData, validateRequired } from '@/lib/form-submission';
+import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
 interface RequestType {
   id: string;
@@ -36,6 +45,12 @@ interface RequestType {
   asset_type_filter: string[];
   requires_location: boolean;
   location_required: boolean;
+  form_schema_id?: string | null;
+}
+
+interface FormSchemaEntity {
+  id: string;
+  current_version?: { definition: { fields: FormField[] } } | null;
 }
 
 export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
@@ -51,16 +66,38 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const [sourceChannel, setSourceChannel] = useState('phone');
   const [assetId, setAssetId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
+  const [formFields, setFormFields] = useState<FormField[]>([]);
+  const [formValues, setFormValues] = useState<Record<string, unknown>>({});
 
   const { data: requestTypes } = useApi<RequestType[]>('/request-types', []);
   const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
+
+  useEffect(() => {
+    if (!requestTypeId || !requestTypes) { setFormFields([]); setFormValues({}); return; }
+    const rt = requestTypes.find((r) => r.id === requestTypeId);
+    if (!rt?.form_schema_id) { setFormFields([]); setFormValues({}); return; }
+    let cancelled = false;
+    apiFetch<FormSchemaEntity>(`/config-entities/${rt.form_schema_id}`)
+      .then((entity) => {
+        if (cancelled) return;
+        setFormFields(entity.current_version?.definition?.fields ?? []);
+        setFormValues({});
+      })
+      .catch(() => { if (!cancelled) setFormFields([]); });
+    return () => { cancelled = true; };
+  }, [requestTypeId, requestTypes]);
 
   const handleSubmit = async () => {
     if (!title.trim() || !requesterId) return;
     if (selectedRT?.asset_required && !assetId) return;
     if (selectedRT?.location_required && !locationId) return;
+    const missing = validateRequired(formFields, formValues);
+    if (missing) {
+      toast.error(`"${missing.label}" is required`);
+      return;
+    }
+    const { bound, form_data } = splitFormData(formFields, formValues);
     setSubmitting(true);
-
     try {
       const res = await fetch('/api/tickets', {
         method: 'POST',
@@ -74,22 +111,18 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           source_channel: sourceChannel,
           asset_id: assetId ?? undefined,
           location_id: locationId ?? undefined,
+          ...bound,
+          form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message || `Request failed: ${res.status}`);
       }
-
-      setTitle('');
-      setDescription('');
-      setPriority('medium');
-      setRequestTypeId('');
-      setSelectedRequester(null);
-      setRequesterId('');
-      setSourceChannel('phone');
-      setAssetId(null);
-      setLocationId(null);
+      setTitle(''); setDescription(''); setPriority('medium');
+      setRequestTypeId(''); setSelectedRequester(null); setRequesterId('');
+      setSourceChannel('phone'); setAssetId(null); setLocationId(null);
+      setFormFields([]); setFormValues({});
       setOpen(false);
       onCreated?.();
       toast.success('Ticket created');
@@ -111,9 +144,9 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           <DialogDescription>Create a ticket on behalf of an employee</DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3">
-          <div className="grid gap-1.5">
-            <Label>Requester</Label>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="new-ticket-requester">Requester</FieldLabel>
             <PersonCombobox
               value={requesterId}
               onChange={setRequesterId}
@@ -121,15 +154,15 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
               placeholder="Search by name or email..."
             />
             {selectedRequester && (
-              <p className="text-xs text-muted-foreground">
+              <FieldDescription>
                 {selectedRequester.email}
                 {selectedRequester.department ? ` · ${selectedRequester.department}` : ''}
-              </p>
+              </FieldDescription>
             )}
-          </div>
+          </Field>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-ticket-source">Source</Label>
+          <Field>
+            <FieldLabel htmlFor="new-ticket-source">Source</FieldLabel>
             <Select value={sourceChannel} onValueChange={(v) => setSourceChannel(v ?? 'phone')}>
               <SelectTrigger id="new-ticket-source"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -139,11 +172,11 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
                 <SelectItem value="portal">Portal</SelectItem>
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
           {requestTypes && requestTypes.length > 0 && (
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-ticket-type">Request Type</Label>
+            <Field>
+              <FieldLabel htmlFor="new-ticket-type">Request Type</FieldLabel>
               <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
                 <SelectTrigger id="new-ticket-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
                 <SelectContent>
@@ -152,16 +185,15 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
           )}
 
-          {/* Asset picker (conditional) */}
           {selectedRT?.requires_asset && (
-            <div className="grid gap-1.5">
-              <Label>
+            <Field>
+              <FieldLabel htmlFor="new-ticket-asset">
                 Asset
                 {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
-              </Label>
+              </FieldLabel>
               <AssetCombobox
                 value={assetId}
                 onChange={(id, asset) => {
@@ -170,32 +202,31 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
                 }}
                 assetTypeFilter={selectedRT.asset_type_filter}
               />
-            </div>
+            </Field>
           )}
 
-          {/* Location picker (conditional) */}
           {selectedRT?.requires_location && (
-            <div className="grid gap-1.5">
-              <Label>
+            <Field>
+              <FieldLabel htmlFor="new-ticket-location">
                 Location
                 {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
-              </Label>
+              </FieldLabel>
               <LocationCombobox value={locationId} onChange={setLocationId} />
-            </div>
+            </Field>
           )}
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-ticket-title">Title</Label>
+          <Field>
+            <FieldLabel htmlFor="new-ticket-title">Title</FieldLabel>
             <Input
               id="new-ticket-title"
               placeholder="Brief summary..."
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
-          </div>
+          </Field>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-ticket-description">Description</Label>
+          <Field>
+            <FieldLabel htmlFor="new-ticket-description">Description</FieldLabel>
             <Textarea
               id="new-ticket-description"
               placeholder="Details from the employee..."
@@ -203,10 +234,10 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
-          </div>
+          </Field>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="new-ticket-priority">Priority</Label>
+          <Field>
+            <FieldLabel htmlFor="new-ticket-priority">Priority</FieldLabel>
             <Select value={priority} onValueChange={(v) => setPriority(v ?? 'medium')}>
               <SelectTrigger id="new-ticket-priority"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -216,8 +247,14 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
                 <SelectItem value="critical">Critical</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-        </div>
+          </Field>
+
+          <DynamicFormFields
+            fields={formFields}
+            values={formValues}
+            onChange={(id, v) => setFormValues((prev) => ({ ...prev, [id]: v }))}
+          />
+        </FieldGroup>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
