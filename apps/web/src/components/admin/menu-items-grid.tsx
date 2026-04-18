@@ -2,7 +2,11 @@ import { useMemo, useState } from 'react';
 import { Percent, Trash2, Plus, Clipboard, X, Euro } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
@@ -460,15 +464,18 @@ function PasteItemsDialog({
             Names are matched against the catalog.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <Label className="text-xs">Paste here</Label>
-          <Textarea
-            value={raw}
-            onChange={(e) => setRaw(e.target.value)}
-            rows={6}
-            className="font-mono text-xs"
-            placeholder={'Can of Cola\t2.50\nCappuccino\t3.75\tper_item\t24\nPastry Box (12 pcs)\t32\tflat_rate\t48'}
-          />
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="paste-items" className="text-xs">Paste here</FieldLabel>
+            <Textarea
+              id="paste-items"
+              value={raw}
+              onChange={(e) => setRaw(e.target.value)}
+              rows={6}
+              className="font-mono text-xs"
+              placeholder={'Can of Cola\t2.50\nCappuccino\t3.75\tper_item\t24\nPastry Box (12 pcs)\t32\tflat_rate\t48'}
+            />
+          </Field>
           {parsedPreview.length > 0 && (
             <div className="rounded-md border p-2 text-xs">
               <div className="font-medium mb-1">Preview ({parsedPreview.length} rows)</div>
@@ -484,7 +491,7 @@ function PasteItemsDialog({
               </div>
             </div>
           )}
-        </div>
+        </FieldGroup>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleImport} disabled={busy || !parsedPreview.length}>

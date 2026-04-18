@@ -6,8 +6,12 @@ import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select,
   SelectContent,
@@ -27,6 +31,9 @@ import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
+import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
+import { splitFormData, validateRequired } from '@/lib/form-submission';
+import type { FormField } from '@/components/admin/form-builder/premade-fields';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
 
@@ -41,16 +48,6 @@ interface RequestType {
   asset_type_filter?: string[];
   requires_location?: boolean;
   location_required?: boolean;
-}
-
-interface FormField {
-  id: string;
-  label: string;
-  type: string;
-  required: boolean;
-  placeholder?: string;
-  help_text?: string;
-  options?: string[];
 }
 
 interface FormSchemaEntity {
@@ -73,7 +70,7 @@ export function SubmitRequestPage() {
   const { person } = useAuth();
   const [submitted, setSubmitted] = useState(false);
   const [formFields, setFormFields] = useState<FormField[]>([]);
-  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, unknown>>({});
   const [assetId, setAssetId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
 
@@ -105,17 +102,15 @@ export function SubmitRequestPage() {
       .then((entity) => {
         const fields = entity.current_version?.definition?.fields ?? [];
         setFormFields(fields);
-        setFormData({});
+        setValues({});
       })
       .catch(() => setFormFields([]));
   }, [requestTypeId, requestTypes]);
 
-  const onSubmit = async (values: SubmitFormValues) => {
-    const missingRequired = formFields
-      .filter((f) => f.required)
-      .find((f) => !formData[f.id]?.toString().trim());
-    if (missingRequired) {
-      toast.error(`"${missingRequired.label}" is required`);
+  const onSubmit = async (formValues: SubmitFormValues) => {
+    const missing = validateRequired(formFields, values);
+    if (missing) {
+      toast.error(`"${missing.label}" is required`);
       return;
     }
     if (selectedRT?.asset_required && !assetId) {
@@ -127,19 +122,22 @@ export function SubmitRequestPage() {
       return;
     }
 
+    const { bound, form_data } = splitFormData(formFields, values);
+
     try {
       await apiFetch('/tickets', {
         method: 'POST',
         body: JSON.stringify({
-          title: values.title,
-          description: values.description,
-          priority: values.priority,
-          ticket_type_id: values.requestTypeId || undefined,
+          title: formValues.title,
+          description: formValues.description,
+          priority: formValues.priority,
+          ticket_type_id: formValues.requestTypeId || undefined,
           requester_person_id: person?.id,
           source_channel: 'portal',
           asset_id: assetId ?? undefined,
           location_id: locationId ?? undefined,
-          form_data: Object.keys(formData).length > 0 ? formData : undefined,
+          ...bound,
+          form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
       });
       toast.success('Request submitted');
@@ -181,162 +179,112 @@ export function SubmitRequestPage() {
           <CardDescription>Describe your issue or request and we'll route it to the right team</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="grid gap-4">
-            {requestTypes && requestTypes.length > 0 && (
-              <div className="grid gap-1.5">
-                <Label htmlFor="request-type">Request Type</Label>
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <FieldGroup>
+              {requestTypes && requestTypes.length > 0 && (
+                <Field>
+                  <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
+                  <Controller
+                    control={control}
+                    name="requestTypeId"
+                    render={({ field }) => (
+                      <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v ?? '')}>
+                        <SelectTrigger id="request-type">
+                          <SelectValue placeholder="Select a request type..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {requestTypes.map((rt) => (
+                            <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+              )}
+
+              {selectedRT?.requires_asset && (
+                <Field>
+                  <FieldLabel htmlFor="portal-asset">
+                    Asset
+                    {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
+                  </FieldLabel>
+                  <AssetCombobox
+                    value={assetId}
+                    onChange={(id, asset) => {
+                      setAssetId(id);
+                      if (asset?.assigned_space_id) setLocationId(asset.assigned_space_id);
+                    }}
+                    assetTypeFilter={selectedRT.asset_type_filter ?? []}
+                  />
+                </Field>
+              )}
+
+              {selectedRT?.requires_location && (
+                <Field>
+                  <FieldLabel htmlFor="portal-location">
+                    Location
+                    {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
+                  </FieldLabel>
+                  <LocationCombobox value={locationId} onChange={setLocationId} />
+                </Field>
+              )}
+
+              <Field>
+                <FieldLabel htmlFor="title">Title</FieldLabel>
+                <Input
+                  id="title"
+                  placeholder="Brief summary of your request..."
+                  aria-invalid={!!errors.title}
+                  {...register('title')}
+                />
+                {errors.title && <FieldError>{errors.title.message}</FieldError>}
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="description">Description</FieldLabel>
+                <Textarea
+                  id="description"
+                  placeholder="Provide details about your request..."
+                  className="min-h-[120px]"
+                  aria-invalid={!!errors.description}
+                  {...register('description')}
+                />
+                {errors.description && <FieldError>{errors.description.message}</FieldError>}
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="priority">Priority</FieldLabel>
                 <Controller
                   control={control}
-                  name="requestTypeId"
+                  name="priority"
                   render={({ field }) => (
-                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v ?? '')}>
-                      <SelectTrigger id="request-type">
-                        <SelectValue placeholder="Select a request type..." />
-                      </SelectTrigger>
+                    <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'medium') as SubmitFormValues['priority'])}>
+                      <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {requestTypes.map((rt) => (
-                          <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
-                        ))}
+                        <SelectItem value="low">Low — not urgent</SelectItem>
+                        <SelectItem value="medium">Medium — normal priority</SelectItem>
+                        <SelectItem value="high">High — needs attention soon</SelectItem>
+                        <SelectItem value="critical">Critical — blocking my work</SelectItem>
                       </SelectContent>
                     </Select>
                   )}
                 />
-              </div>
-            )}
+              </Field>
 
-            {selectedRT?.requires_asset && (
-              <div className="grid gap-1.5">
-                <Label>
-                  Asset
-                  {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
-                </Label>
-                <AssetCombobox
-                  value={assetId}
-                  onChange={(id, asset) => {
-                    setAssetId(id);
-                    if (asset?.assigned_space_id) setLocationId(asset.assigned_space_id);
-                  }}
-                  assetTypeFilter={selectedRT.asset_type_filter ?? []}
-                />
-              </div>
-            )}
-
-            {selectedRT?.requires_location && (
-              <div className="grid gap-1.5">
-                <Label>
-                  Location
-                  {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
-                </Label>
-                <LocationCombobox value={locationId} onChange={setLocationId} />
-              </div>
-            )}
-
-            <div className="grid gap-1.5">
-              <Label htmlFor="title">Title</Label>
-              <Input
-                id="title"
-                placeholder="Brief summary of your request..."
-                aria-invalid={!!errors.title}
-                {...register('title')}
+              <DynamicFormFields
+                fields={formFields}
+                values={values}
+                onChange={(id, v) => setValues((prev) => ({ ...prev, [id]: v }))}
               />
-              {errors.title && (
-                <p className="text-xs text-destructive">{errors.title.message}</p>
-              )}
-            </div>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="description">Description</Label>
-              <Textarea
-                id="description"
-                placeholder="Provide details about your request..."
-                className="min-h-[120px]"
-                aria-invalid={!!errors.description}
-                {...register('description')}
-              />
-              {errors.description && (
-                <p className="text-xs text-destructive">{errors.description.message}</p>
-              )}
-            </div>
-
-            <div className="grid gap-1.5">
-              <Label htmlFor="priority">Priority</Label>
-              <Controller
-                control={control}
-                name="priority"
-                render={({ field }) => (
-                  <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'medium') as SubmitFormValues['priority'])}>
-                    <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Low — not urgent</SelectItem>
-                      <SelectItem value="medium">Medium — normal priority</SelectItem>
-                      <SelectItem value="high">High — needs attention soon</SelectItem>
-                      <SelectItem value="critical">Critical — blocking my work</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </div>
-
-            {formFields.map((field) => (
-              <div key={field.id} className="grid gap-1.5">
-                <Label htmlFor={`dyn-${field.id}`}>
-                  {field.label}
-                  {field.required && <span className="text-destructive ml-1">*</span>}
-                </Label>
-                {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
-                {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
-                  <Input
-                    id={`dyn-${field.id}`}
-                    type={field.type === 'datetime' ? 'datetime-local' : field.type}
-                    placeholder={field.placeholder}
-                    value={formData[field.id] ?? ''}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
-                  />
-                )}
-                {field.type === 'textarea' && (
-                  <Textarea
-                    id={`dyn-${field.id}`}
-                    placeholder={field.placeholder}
-                    value={formData[field.id] ?? ''}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
-                  />
-                )}
-                {(field.type === 'dropdown' || field.type === 'multi_select') && field.options && (
-                  <Select
-                    value={formData[field.id] ?? ''}
-                    onValueChange={(v) => setFormData((prev) => ({ ...prev, [field.id]: v ?? '' }))}
-                  >
-                    <SelectTrigger id={`dyn-${field.id}`}><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
-                    <SelectContent>
-                      {field.options.map((opt) => (
-                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                {field.type === 'checkbox' && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id={`dyn-${field.id}`}
-                      checked={formData[field.id] === 'true'}
-                      onCheckedChange={(checked) =>
-                        setFormData((prev) => ({ ...prev, [field.id]: String(checked === true) }))
-                      }
-                    />
-                    <Label htmlFor={`dyn-${field.id}`} className="text-sm font-normal cursor-pointer">
-                      {field.placeholder}
-                    </Label>
-                  </div>
-                )}
+              <div className="flex justify-end pt-2">
+                <Button type="submit" disabled={isSubmitting}>
+                  <Send className="h-4 w-4 mr-2" />
+                  {isSubmitting ? 'Submitting...' : 'Submit Request'}
+                </Button>
               </div>
-            ))}
-
-            <div className="flex justify-end pt-2">
-              <Button type="submit" disabled={isSubmitting}>
-                <Send className="h-4 w-4 mr-2" />
-                {isSubmitting ? 'Submitting...' : 'Submit Request'}
-              </Button>
-            </div>
+            </FieldGroup>
           </form>
         </CardContent>
       </Card>

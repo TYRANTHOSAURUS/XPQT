@@ -5,6 +5,7 @@ import { HistoryTimeline, type InstanceEvent } from '@/components/workflow-edito
 import type { WorkflowGraph } from '@/components/workflow-editor/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 
 interface Instance {
   id: string;
@@ -21,7 +22,24 @@ export function WorkflowInstancePage() {
   const { data: instance, loading } = useApi<Instance>(`/workflows/instances/${id}`, [id]);
   const { data: events } = useApi<InstanceEvent[]>(`/workflows/instances/${id}/events`, [id]);
 
-  if (loading || !instance) return <div className="p-6 text-muted-foreground">Loading…</div>;
+  if (loading || !instance) return (
+    <div className="flex flex-col h-[calc(100vh-64px)]">
+      <div className="border-b px-4 py-2 flex items-center gap-3">
+        <Skeleton className="h-6 w-24" />
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-5 w-16" />
+      </div>
+      <div className="flex-1 grid grid-cols-[1fr_320px] min-h-0">
+        <Skeleton className="m-4" />
+        <aside className="border-l p-4 space-y-3">
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </aside>
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">

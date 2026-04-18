@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -9,6 +8,12 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
@@ -142,26 +147,44 @@ export function DelegationsPage() {
                 Cover approvals while someone is out of office. The delegate will act on behalf of the delegator during the selected period.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label>Delegator (who is away)</Label>
-                <PersonCombobox value={delegatorId} onChange={setDelegatorId} placeholder="Search delegator..." />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Delegate (who will approve)</Label>
-                <PersonCombobox value={delegateId} onChange={setDelegateId} placeholder="Search delegate..." />
-              </div>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="delegation-delegator">Delegator (who is away)</FieldLabel>
+                <PersonCombobox
+                  value={delegatorId}
+                  onChange={setDelegatorId}
+                  placeholder="Search delegator..."
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="delegation-delegate">Delegate (who will approve)</FieldLabel>
+                <PersonCombobox
+                  value={delegateId}
+                  onChange={setDelegateId}
+                  placeholder="Search delegate..."
+                />
+              </Field>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="delegation-starts">Starts At</Label>
-                  <Input id="delegation-starts" type="date" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="delegation-ends">Ends At</Label>
-                  <Input id="delegation-ends" type="date" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="delegation-starts">Starts At</FieldLabel>
+                  <Input
+                    id="delegation-starts"
+                    type="date"
+                    value={startsAt}
+                    onChange={(e) => setStartsAt(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="delegation-ends">Ends At</FieldLabel>
+                  <Input
+                    id="delegation-ends"
+                    type="date"
+                    value={endsAt}
+                    onChange={(e) => setEndsAt(e.target.value)}
+                  />
+                </Field>
               </div>
-            </div>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button
@@ -202,15 +225,21 @@ export function DelegationsPage() {
                 </TableCell>
                 <TableCell>
                   {status !== 'expired' && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => handleDeactivate(d.id)}
-                      title="Deactivate"
-                    >
-                      <Ban className="h-4 w-4" />
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleDeactivate(d.id)}
+                          />
+                        }
+                      >
+                        <Ban className="h-4 w-4" />
+                      </TooltipTrigger>
+                      <TooltipContent>Deactivate</TooltipContent>
+                    </Tooltip>
                   )}
                 </TableCell>
               </TableRow>

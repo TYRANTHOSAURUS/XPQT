@@ -15,6 +15,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
+import { useAuth } from '@/providers/auth-provider';
 
 interface Ticket {
   id: string;
@@ -66,6 +67,7 @@ function formatDate(dateStr: string): string {
 
 export function MyRequestsPage() {
   const navigate = useNavigate();
+  const { person } = useAuth();
   const [filter, setFilter] = useState('open');
 
   const statusParam = filter === 'open'
@@ -73,12 +75,13 @@ export function MyRequestsPage() {
     : filter === 'closed'
     ? '&status_category=resolved&status_category=closed'
     : '';
+  const requesterParam = person?.id ? `&requester_person_id=${person.id}` : '';
 
   const { data, loading } = useApi<TicketListResponse>(
-    `/tickets?parent_ticket_id=null${statusParam}`,
-    [filter],
+    `/tickets?parent_ticket_id=null${statusParam}${requesterParam}`,
+    [filter, person?.id],
   );
-  const tickets = data?.items ?? [];
+  const tickets = person?.id ? (data?.items ?? []) : [];
 
   return (
     <div>

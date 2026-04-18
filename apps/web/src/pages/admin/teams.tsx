@@ -1,15 +1,23 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
+import { PersonAvatar } from '@/components/person-avatar';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -178,24 +186,31 @@ export function TeamsPage() {
               <DialogTitle>{editId ? 'Edit' : 'Create'} Team</DialogTitle>
               <DialogDescription>Manage assignment groups and members for ticket routing.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. FM Team Amsterdam, IT Service Desk..." />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Domain Scope</Label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="team-name">Name</FieldLabel>
+                <Input
+                  id="team-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. FM Team Amsterdam, IT Service Desk..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-domain-scope">Domain Scope</FieldLabel>
                 <Select value={domainScope} onValueChange={(v) => setDomainScope(v ?? 'all')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="team-domain-scope"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {domains.map((d) => (
                       <SelectItem key={d} value={d}>{d === 'all' ? 'All domains' : d.charAt(0).toUpperCase() + d.slice(1)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Location Scope</Label>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-location-scope">Location Scope</FieldLabel>
                 <SpaceSelect
                   value={locationScope}
                   onChange={setLocationScope}
@@ -203,22 +218,32 @@ export function TeamsPage() {
                   placeholder="All locations"
                   emptyLabel="All locations"
                 />
-              </div>
+              </Field>
 
               {editId && (
                 <>
-                  <Separator />
-                  <div className="space-y-3">
-                    <Label className="text-sm font-medium">Team Members</Label>
+                  <FieldSeparator />
+                  <FieldSet>
+                    <FieldLegend variant="label">Team Members</FieldLegend>
                     {membersLoading ? (
-                      <p className="text-sm text-muted-foreground">Loading members...</p>
+                      <FieldDescription>Loading members...</FieldDescription>
                     ) : members.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No members yet.</p>
+                      <FieldDescription>No members yet.</FieldDescription>
                     ) : (
                       <div className="space-y-1">
                         {members.map((member) => (
                           <div key={member.id} className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/40 text-sm">
-                            <span>{getMemberName(member)}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <PersonAvatar
+                                size="sm"
+                                person={{
+                                  first_name: member.user?.person?.first_name,
+                                  last_name: member.user?.person?.last_name,
+                                  email: member.user?.email,
+                                }}
+                              />
+                              <span className="truncate">{getMemberName(member)}</span>
+                            </div>
                             <Button
                               variant="ghost"
                               size="icon"
@@ -246,10 +271,10 @@ export function TeamsPage() {
                         <UserPlus className="h-4 w-4" />
                       </Button>
                     </div>
-                  </div>
+                  </FieldSet>
                 </>
               )}
-            </div>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!name.trim()}>

@@ -53,8 +53,8 @@ export interface ReassignDto {
 }
 
 export interface TicketListFilters {
-  status_category?: string;
-  priority?: string;
+  status_category?: string | string[];
+  priority?: string | string[];
   ticket_kind?: 'case' | 'work_order';
   assigned_team_id?: string;
   assigned_user_id?: string;
@@ -84,7 +84,42 @@ interface StoredAttachment {
   type: string;
 }
 
+type InboxReason = 'mentioned' | 'assigned_to_me' | 'my_team' | 'watching';
+
+interface InboxActivityPreview {
+  id: string;
+  content: string | null;
+  created_at: string;
+  visibility: string;
+  attachments: StoredAttachment[];
+  author?: { first_name: string; last_name: string } | null;
+}
+
+interface InboxActorContext {
+  userId: string;
+  personId: string;
+  email?: string | null;
+  fullName: string;
+}
+
+interface InboxTicketRow {
+  id: string;
+  title: string;
+  status_category: string;
+  priority: string;
+  created_at: string;
+  requester?: { first_name: string; last_name: string };
+  assigned_team?: { id: string; name: string };
+  assigned_agent?: { id: string; email: string };
+}
+
 const TICKET_ATTACHMENT_BUCKET = 'ticket-attachments';
+const INBOX_REASON_PRIORITY: Record<InboxReason, number> = {
+  mentioned: 4,
+  assigned_to_me: 3,
+  my_team: 2,
+  watching: 1,
+};
 
 @Injectable()
 export class TicketService {
@@ -116,8 +151,14 @@ export class TicketService {
       .limit(limit);
 
     // Apply filters
-    if (filters.status_category) query = query.eq('status_category', filters.status_category);
-    if (filters.priority) query = query.eq('priority', filters.priority);
+    if (filters.status_category) {
+      const vals = Array.isArray(filters.status_category) ? filters.status_category : [filters.status_category];
+      query = vals.length === 1 ? query.eq('status_category', vals[0]) : query.in('status_category', vals);
+    }
+    if (filters.priority) {
+      const vals = Array.isArray(filters.priority) ? filters.priority : [filters.priority];
+      query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
+    }
     if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
     if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);
@@ -151,6 +192,164 @@ export class TicketService {
     };
   }
 
+  async getInbox(accessToken?: string, limit = 50) {
+    const actor = await this.resolveInboxActor(accessToken);
+    if (!actor?.personId) {
+      return { items: [] };
+    }
+
+    const tenant = TenantContext.current();
+    const cappedLimit = Math.min(limit, 100);
+    const teamIds = actor.userId
+      ? await this.listActorTeamIds(actor.userId)
+      : [];
+
+    const mentionRefsPromise = actor.fullName
+      ? this.supabase.admin
+          .from('ticket_activities')
+          .select('ticket_id')
+          .eq('tenant_id', tenant.id)
+          .in('activity_type', ['internal_note', 'external_comment'])
+          .in('visibility', ['internal', 'external'])
+          .ilike('content', `%@${actor.fullName}%`)
+          .order('created_at', { ascending: false })
+          .limit(200)
+      : Promise.resolve({ data: [] as Array<{ ticket_id: string }>, error: null });
+
+    const [assignedTickets, teamTickets, watchingTickets, mentionRefs] = await Promise.all([
+      actor.userId
+        ? this.fetchInboxTickets((query) => query.eq('assigned_user_id', actor.userId))
+        : Promise.resolve([] as InboxTicketRow[]),
+      teamIds.length > 0
+        ? this.fetchInboxTickets((query) => query.in('assigned_team_id', teamIds))
+        : Promise.resolve([] as InboxTicketRow[]),
+      this.fetchInboxTickets((query) => query.contains('watchers', [actor.personId])),
+      mentionRefsPromise,
+    ]);
+
+    const ticketMap = new Map<string, { ticket: InboxTicketRow; reasons: Set<InboxReason> }>();
+    const addTicket = (ticket: InboxTicketRow, reason: InboxReason) => {
+      const existing = ticketMap.get(ticket.id);
+      if (existing) {
+        existing.reasons.add(reason);
+        return;
+      }
+
+      ticketMap.set(ticket.id, {
+        ticket,
+        reasons: new Set([reason]),
+      });
+    };
+
+    assignedTickets.forEach((ticket) => addTicket(ticket, 'assigned_to_me'));
+    teamTickets.forEach((ticket) => addTicket(ticket, 'my_team'));
+    watchingTickets.forEach((ticket) => addTicket(ticket, 'watching'));
+
+    const mentionTicketIds = Array.from(
+      new Set((mentionRefs.data ?? []).map((row) => row.ticket_id as string).filter(Boolean)),
+    );
+    const missingMentionIds = mentionTicketIds.filter((id) => !ticketMap.has(id));
+    const mentionTickets = missingMentionIds.length > 0
+      ? await this.fetchInboxTickets((query) => query.in('id', missingMentionIds))
+      : [];
+    mentionTickets.forEach((ticket) => addTicket(ticket, 'mentioned'));
+    mentionTicketIds.forEach((id) => {
+      const existing = ticketMap.get(id);
+      if (existing) existing.reasons.add('mentioned');
+    });
+
+    const candidateIds = Array.from(ticketMap.keys());
+    if (candidateIds.length === 0) {
+      return { items: [] };
+    }
+
+    const { data: activityRows, error: activityError } = await this.supabase.admin
+      .from('ticket_activities')
+      .select(`
+        id,
+        ticket_id,
+        visibility,
+        content,
+        attachments,
+        created_at,
+        author:persons!ticket_activities_author_person_id_fkey(first_name, last_name)
+      `)
+      .eq('tenant_id', tenant.id)
+      .in('activity_type', ['internal_note', 'external_comment'])
+      .in('ticket_id', candidateIds)
+      .in('visibility', ['internal', 'external'])
+      .order('created_at', { ascending: false });
+
+    if (activityError) throw activityError;
+
+    const latestByTicket = new Map<string, InboxActivityPreview>();
+    for (const row of activityRows ?? []) {
+      const ticketId = row.ticket_id as string;
+      const entry = ticketMap.get(ticketId);
+
+      if (entry && this.contentMentionsActor((row.content as string | null) ?? null, actor)) {
+        entry.reasons.add('mentioned');
+      }
+
+      if (latestByTicket.has(ticketId)) continue;
+
+      latestByTicket.set(ticketId, {
+        id: row.id as string,
+        content: (row.content as string | null) ?? null,
+        created_at: row.created_at as string,
+        visibility: row.visibility as string,
+        attachments: Array.isArray(row.attachments) ? (row.attachments as StoredAttachment[]) : [],
+        author: this.pickSingle(
+          row.author as
+            | { first_name: string; last_name: string }
+            | Array<{ first_name: string; last_name: string }>
+            | null,
+        ),
+      });
+    }
+
+    const items = candidateIds
+      .map((id) => {
+        const entry = ticketMap.get(id);
+        if (!entry) return null;
+
+        const latestActivity = latestByTicket.get(id) ?? null;
+        const orderedReasons = Array.from(entry.reasons).sort(
+          (a, b) => INBOX_REASON_PRIORITY[b] - INBOX_REASON_PRIORITY[a],
+        );
+
+        return {
+          ...entry.ticket,
+          inbox_reason: orderedReasons[0],
+          inbox_reasons: orderedReasons,
+          latest_activity: latestActivity,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((a, b) => {
+        const reasonDiff =
+          INBOX_REASON_PRIORITY[b.inbox_reason as InboxReason] -
+          INBOX_REASON_PRIORITY[a.inbox_reason as InboxReason];
+        if (reasonDiff !== 0) return reasonDiff;
+
+        const aTime = a.latest_activity?.created_at ?? a.created_at;
+        const bTime = b.latest_activity?.created_at ?? b.created_at;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      })
+      .slice(0, cappedLimit);
+
+    return { items };
+  }
+
+  async listDistinctTags(): Promise<string[]> {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.rpc('tickets_distinct_tags', {
+      tenant: tenant.id,
+    });
+    if (error) throw error;
+    return (data ?? []).map((row: { tag: string }) => row.tag);
+  }
+
   async getById(id: string) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -162,6 +361,7 @@ export class TicketService {
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
         assigned_agent:users!tickets_assigned_user_id_fkey(id, email),
+        assigned_vendor:vendors!tickets_assigned_vendor_id_fkey(id, name),
         request_type:request_types!tickets_ticket_type_id_fkey(id, name, domain)
       `)
       .eq('id', id)
@@ -773,6 +973,149 @@ export class TicketService {
     }
 
     this.attachmentBucketReady = true;
+  }
+
+  private pickSingle<T>(value?: T | T[] | null): T | null {
+    if (Array.isArray(value)) return value[0] ?? null;
+    return value ?? null;
+  }
+
+  private contentMentionsActor(content: string | null | undefined, actor: InboxActorContext) {
+    if (!content) return false;
+
+    const aliases = [
+      actor.fullName,
+      actor.email,
+      actor.email?.split('@')[0] ?? null,
+    ]
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    return aliases.some((alias) => {
+      const escapedAlias = alias
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\s+/g, '\\s+');
+      const mentionPattern = new RegExp(
+        `(^|[\\s([{"'])@${escapedAlias}(?=$|[\\s),.:;!?\\]}'"])`,
+        'i',
+      );
+
+      return mentionPattern.test(content);
+    });
+  }
+
+  private async fetchInboxTickets(
+    applyFilters: (query: any) => any,
+  ) {
+    const tenant = TenantContext.current();
+    let query = this.supabase.admin
+      .from('tickets')
+      .select(`
+        id,
+        title,
+        status_category,
+        priority,
+        created_at,
+        requester:persons!tickets_requester_person_id_fkey(first_name, last_name),
+        assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email)
+      `)
+      .eq('tenant_id', tenant.id);
+
+    query = applyFilters(query);
+
+    const { data, error } = await query.limit(200);
+    if (error) throw error;
+
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      title: row.title as string,
+      status_category: row.status_category as string,
+      priority: row.priority as string,
+      created_at: row.created_at as string,
+      requester: this.pickSingle(
+        row.requester as
+          | { first_name: string; last_name: string }
+          | Array<{ first_name: string; last_name: string }>
+          | null,
+      ) ?? undefined,
+      assigned_team: this.pickSingle(
+        row.assigned_team as
+          | { id: string; name: string }
+          | Array<{ id: string; name: string }>
+          | null,
+      ) ?? undefined,
+      assigned_agent: this.pickSingle(
+        row.assigned_agent as
+          | { id: string; email: string }
+          | Array<{ id: string; email: string }>
+          | null,
+      ) ?? undefined,
+    })) satisfies InboxTicketRow[];
+  }
+
+  private async listActorTeamIds(userId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('team_members')
+      .select('team_id')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+    return (data ?? []).map((row) => row.team_id as string);
+  }
+
+  private async resolveInboxActor(accessToken?: string): Promise<InboxActorContext | null> {
+    if (!accessToken) return null;
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.auth.getUser(accessToken);
+    if (error || !data.user) return null;
+
+    let userQuery = await this.supabase.admin
+      .from('users')
+      .select('id, person_id, email, person:persons!users_person_id_fkey(id, first_name, last_name, email)')
+      .eq('tenant_id', tenant.id)
+      .eq('auth_uid', data.user.id)
+      .maybeSingle();
+
+    if (!userQuery.data && data.user.email) {
+      userQuery = await this.supabase.admin
+        .from('users')
+        .select('id, person_id, email, person:persons!users_person_id_fkey(id, first_name, last_name, email)')
+        .eq('tenant_id', tenant.id)
+        .ilike('email', data.user.email)
+        .maybeSingle();
+    }
+
+    if (userQuery.error || !userQuery.data) return null;
+
+    const person = this.pickSingle(
+      userQuery.data.person as
+        | {
+            id: string;
+            first_name: string;
+            last_name: string;
+            email?: string | null;
+          }
+        | Array<{
+            id: string;
+            first_name: string;
+            last_name: string;
+            email?: string | null;
+          }>
+        | null,
+    );
+
+    if (!person?.id) return null;
+
+    return {
+      userId: userQuery.data.id as string,
+      personId: person.id,
+      email: person.email ?? (userQuery.data.email as string | null) ?? data.user.email ?? null,
+      fullName: `${person.first_name} ${person.last_name}`.trim(),
+    };
   }
 
   private async resolveAuthorPersonId(explicitAuthorPersonId?: string, accessToken?: string) {

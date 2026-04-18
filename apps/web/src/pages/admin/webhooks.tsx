@@ -4,7 +4,6 @@ import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -14,8 +13,21 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 import { Plus, Copy, RotateCw, Trash2, Power, PowerOff } from 'lucide-react';
 
 interface Webhook {
@@ -104,8 +116,11 @@ export function WebhooksPage() {
     }
   };
 
+  const [pendingAction, setPendingAction] = useState<
+    { kind: 'rotate' | 'delete'; id: string } | null
+  >(null);
+
   const rotate = async (id: string) => {
-    if (!confirm('Rotating the token invalidates the current URL. Continue?')) return;
     try {
       await apiFetch(`/workflow-webhooks/${id}/rotate-token`, { method: 'POST' });
       toast.success('Token rotated');
@@ -116,7 +131,6 @@ export function WebhooksPage() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm('Delete this webhook? This cannot be undone.')) return;
     try {
       await apiFetch(`/workflow-webhooks/${id}`, { method: 'DELETE' });
       toast.success('Deleted');
@@ -143,45 +157,57 @@ export function WebhooksPage() {
             <DialogHeader>
               <DialogTitle>Create Webhook</DialogTitle>
             </DialogHeader>
-            <div className="grid gap-3 mt-2">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Zendesk issue → incident" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Workflow</Label>
+            <FieldGroup className="mt-2">
+              <Field>
+                <FieldLabel htmlFor="webhook-name">Name</FieldLabel>
+                <Input
+                  id="webhook-name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="e.g. Zendesk issue → incident"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="webhook-workflow">Workflow</FieldLabel>
                 <Select value={form.workflow_id} onValueChange={(v) => setForm({ ...form, workflow_id: v ?? '' })}>
-                  <SelectTrigger><SelectValue placeholder="Select a workflow" /></SelectTrigger>
+                  <SelectTrigger id="webhook-workflow"><SelectValue placeholder="Select a workflow" /></SelectTrigger>
                   <SelectContent>
                     {(workflows ?? []).map((wf) => (
                       <SelectItem key={wf.id} value={wf.id}>{wf.name} ({wf.status})</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Ticket defaults (JSON)</Label>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="webhook-defaults">Ticket defaults (JSON)</FieldLabel>
                 <Textarea
+                  id="webhook-defaults"
                   value={form.ticket_defaults}
                   onChange={(e) => setForm({ ...form, ticket_defaults: e.target.value })}
                   rows={4}
                   className="font-mono text-xs"
                   placeholder='{ "priority": "medium", "interaction_mode": "internal" }'
                 />
-                <p className="text-[10px] text-muted-foreground">Fixed values applied to every ticket created from this webhook.</p>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Field mapping (JSON — ticket field → JSONPath in payload)</Label>
+                <FieldDescription>Fixed values applied to every ticket created from this webhook.</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="webhook-mapping">Field mapping (JSON — ticket field → JSONPath in payload)</FieldLabel>
                 <Textarea
+                  id="webhook-mapping"
                   value={form.field_mapping}
                   onChange={(e) => setForm({ ...form, field_mapping: e.target.value })}
                   rows={6}
                   className="font-mono text-xs"
                   placeholder='{\n  "title": "$.issue.title",\n  "description": "$.issue.body"\n}'
                 />
-                <p className="text-[10px] text-muted-foreground">Supports <code>$.foo.bar</code> and <code>$.items[0].name</code>.</p>
-              </div>
-            </div>
+                <FieldDescription>
+                  Supports <code>$.foo.bar</code> and <code>$.items[0].name</code>.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleCreate} disabled={!form.name.trim() || !form.workflow_id}>Create</Button>
@@ -202,12 +228,8 @@ export function WebhooksPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No webhooks yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={6} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No webhooks yet." />}
           {(data ?? []).map((wh) => (
             <TableRow key={wh.id}>
               <TableCell className="font-medium">{wh.name}</TableCell>
@@ -225,21 +247,80 @@ export function WebhooksPage() {
               <TableCell className="text-muted-foreground text-sm">{formatDate(wh.last_received_at)}</TableCell>
               <TableCell>
                 <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => toggleActive(wh)} title={wh.active ? 'Disable' : 'Enable'}>
-                    {wh.active ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => rotate(wh.id)} title="Rotate token">
-                    <RotateCw className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-red-600" onClick={() => remove(wh.id)} title="Delete">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => toggleActive(wh)}
+                        />
+                      }
+                    >
+                      {wh.active ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+                    </TooltipTrigger>
+                    <TooltipContent>{wh.active ? 'Disable' : 'Enable'}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => setPendingAction({ kind: 'rotate', id: wh.id })}
+                        />
+                      }
+                    >
+                      <RotateCw className="h-3.5 w-3.5" />
+                    </TooltipTrigger>
+                    <TooltipContent>Rotate token</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-red-600"
+                          onClick={() => setPendingAction({ kind: 'delete', id: wh.id })}
+                        />
+                      }
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </TooltipTrigger>
+                    <TooltipContent>Delete</TooltipContent>
+                  </Tooltip>
                 </div>
               </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+
+      <ConfirmDialog
+        open={pendingAction?.kind === 'rotate'}
+        onOpenChange={(open) => { if (!open) setPendingAction(null); }}
+        title="Rotate webhook token"
+        description="Rotating the token invalidates the current URL. Continue?"
+        confirmLabel="Rotate"
+        onConfirm={async () => {
+          if (pendingAction?.kind === 'rotate') await rotate(pendingAction.id);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingAction?.kind === 'delete'}
+        onOpenChange={(open) => { if (!open) setPendingAction(null); }}
+        title="Delete webhook"
+        description="This cannot be undone."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          if (pendingAction?.kind === 'delete') await remove(pendingAction.id);
+        }}
+      />
     </div>
   );
 }

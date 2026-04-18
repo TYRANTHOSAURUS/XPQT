@@ -4,6 +4,7 @@ import * as React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { NavUser } from "@/components/nav-user"
 import { WorkspaceSwitcher } from "@/components/workspace-switcher"
+import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import {
   Sidebar,
@@ -54,20 +55,37 @@ const ticketViews = [
   { id: "recent", label: "Recent", icon: ClockIcon },
 ]
 
+type InboxReason = "mentioned" | "assigned_to_me" | "my_team" | "watching"
 
-interface Ticket {
+interface InboxAttachment {
+  name: string
+  size: number
+  type: string
+}
+
+interface InboxActivity {
+  id: string
+  created_at: string
+  content: string | null
+  visibility: string
+  attachments: InboxAttachment[]
+  author?: { first_name: string; last_name: string } | null
+}
+
+interface InboxTicket {
   id: string
   title: string
   status_category: string
   priority: string
   requester?: { first_name: string; last_name: string }
   created_at: string
-  sla_at_risk: boolean
+  inbox_reason: InboxReason
+  inbox_reasons: InboxReason[]
+  latest_activity?: InboxActivity | null
 }
 
-interface TicketListResponse {
-  items: Ticket[]
-  next_cursor: string | null
+interface InboxResponse {
+  items: InboxTicket[]
 }
 
 const priorityDot: Record<string, string> = {
@@ -75,6 +93,13 @@ const priorityDot: Record<string, string> = {
   high: "bg-orange-400",
   medium: "bg-blue-400",
   low: "bg-gray-300",
+}
+
+const inboxReasonLabel: Record<InboxReason, string> = {
+  mentioned: "Mentioned",
+  assigned_to_me: "Assigned",
+  my_team: "Team",
+  watching: "Watching",
 }
 
 function timeAgo(dateStr: string): string {
@@ -87,6 +112,32 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hours / 24)}d`
 }
 
+function personLabel(person?: { first_name: string; last_name: string } | null): string | null {
+  if (!person) return null
+
+  const fullName = `${person.first_name} ${person.last_name}`.trim()
+  return fullName || null
+}
+
+function inboxPreview(ticket: InboxTicket): string {
+  const content = ticket.latest_activity?.content?.trim()
+  if (content) return content.replace(/\s+/g, " ")
+
+  const attachments = ticket.latest_activity?.attachments ?? []
+  if (attachments.length === 1) return `Attached ${attachments[0].name}`
+  if (attachments.length > 1) return `Attached ${attachments.length} files`
+
+  return "No messages yet"
+}
+
+function inboxPoster(ticket: InboxTicket): string {
+  return (
+    personLabel(ticket.latest_activity?.author ?? null) ??
+    personLabel(ticket.requester) ??
+    "Unknown"
+  )
+}
+
 export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -95,14 +146,28 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
   const activePage = navItems.find((item) => location.pathname.startsWith(item.path))
   const [activeNav, setActiveNav] = React.useState(activePage ?? navItems[0])
   const [railExpanded, setRailExpanded] = React.useState(false)
+  const [inboxSearch, setInboxSearch] = React.useState("")
 
-  const isInboxPage = activeNav.path === "/desk/inbox"
+  React.useEffect(() => {
+    if (activePage) setActiveNav(activePage)
+  }, [activePage])
 
-  const { data: ticketData } = useApi<TicketListResponse>(
-    "/tickets?parent_ticket_id=null&limit=20",
-    [],
-  )
-  const tickets = ticketData?.items ?? []
+  const isInboxPage = location.pathname.startsWith("/desk/inbox")
+
+  const { data: inboxData } = useApi<InboxResponse>("/tickets/inbox?limit=20", [])
+  const inboxTickets = inboxData?.items ?? []
+  const filteredInboxTickets = inboxTickets.filter((ticket) => {
+    const query = inboxSearch.trim().toLowerCase()
+    if (!query) return true
+
+    return [
+      ticket.title,
+      inboxPreview(ticket),
+      inboxPoster(ticket),
+      inboxReasonLabel[ticket.inbox_reason],
+      personLabel(ticket.requester) ?? "",
+    ].some((value) => value.toLowerCase().includes(query))
+  })
 
   return (
     <Sidebar
@@ -196,42 +261,53 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                   <Switch className="shadow-none" />
                 </Label>
               </div>
-              <SidebarInput placeholder="Search tickets..." />
+              <SidebarInput
+                placeholder="Search inbox..."
+                value={inboxSearch}
+                onChange={(event) => setInboxSearch(event.target.value)}
+              />
             </SidebarHeader>
             <SidebarContent>
               <SidebarGroup className="px-0">
                 <SidebarGroupContent>
-                  {tickets.length === 0 && (
+                  {filteredInboxTickets.length === 0 && (
                     <div className="p-6 text-sm text-muted-foreground text-center">
-                      No tickets yet
+                      {inboxTickets.length === 0 ? "No relevant tickets" : "No matching tickets"}
                     </div>
                   )}
                   <SidebarMenu>
-                    {tickets.map((ticket) => (
-                      <SidebarMenuItem key={ticket.id}>
-                        <SidebarMenuButton
-                          onClick={() => navigate(`/desk/inbox?ticket=${ticket.id}`)}
-                          className="h-auto items-start gap-3 px-4 py-3 text-sm overflow-hidden"
-                        >
-                          <div className={`mt-1.5 h-2.5 w-2.5 rounded-full shrink-0 ${priorityDot[ticket.priority] ?? "bg-gray-300"}`} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium truncate">{ticket.title}</span>
-                              <span className="ml-auto text-xs text-muted-foreground shrink-0">
-                                {timeAgo(ticket.created_at)}
-                              </span>
+                    {filteredInboxTickets.map((ticket) => {
+                      const preview = inboxPreview(ticket)
+                      const poster = inboxPoster(ticket)
+                      const previewTime = ticket.latest_activity?.created_at ?? ticket.created_at
+
+                      return (
+                        <SidebarMenuItem key={ticket.id}>
+                          <SidebarMenuButton
+                            onClick={() => navigate(`/desk/inbox?ticket=${ticket.id}`)}
+                            className="h-auto items-start gap-3 px-4 py-3 text-sm overflow-hidden"
+                          >
+                            <div className={`mt-1.5 h-2.5 w-2.5 rounded-full shrink-0 ${priorityDot[ticket.priority] ?? "bg-gray-300"}`} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start gap-2">
+                                <span className="line-clamp-2 flex-1 font-medium leading-5">{preview}</span>
+                                <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                                  {timeAgo(previewTime)}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex items-center justify-between gap-2">
+                                <span className="line-clamp-1 text-xs text-muted-foreground">
+                                  {poster}
+                                </span>
+                                <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px] font-medium">
+                                  {inboxReasonLabel[ticket.inbox_reason]}
+                                </Badge>
+                              </div>
                             </div>
-                            <span className="text-xs text-muted-foreground truncate block mt-0.5">
-                              {ticket.requester
-                                ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
-                                : "Unknown"}
-                              {" · "}
-                              {ticket.status_category.replace("_", " ")}
-                            </span>
-                          </div>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      )
+                    })}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>

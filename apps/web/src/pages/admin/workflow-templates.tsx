@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -12,8 +11,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Send, Pencil, Copy } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
@@ -118,27 +123,28 @@ export function WorkflowTemplatesPage() {
               <DialogTitle>Create Workflow</DialogTitle>
               <DialogDescription>Define a new workflow template for request processing.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="wf-name">Name</FieldLabel>
                 <Input
+                  id="wf-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. IT Incident Workflow"
                 />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Entity Type</Label>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="wf-entity-type">Entity Type</FieldLabel>
                 <Select value={entityType} onValueChange={(v) => setEntityType(v ?? 'ticket')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="wf-entity-type"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {entityTypes.map((et) => (
                       <SelectItem key={et.value} value={et.value}>{et.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
+              </Field>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleCreate} disabled={!name.trim()}>Create</Button>
@@ -184,9 +190,21 @@ export function WorkflowTemplatesPage() {
                   >
                     <Pencil className="h-3.5 w-3.5" /> {wf.status === 'draft' ? 'Edit' : 'View'}
                   </Button>
-                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => handleClone(wf.id)} title="Clone">
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => handleClone(wf.id)}
+                        />
+                      }
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </TooltipTrigger>
+                    <TooltipContent>Clone</TooltipContent>
+                  </Tooltip>
                   {wf.status === 'draft' && (
                     <Button
                       variant="outline"

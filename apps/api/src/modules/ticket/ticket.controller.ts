@@ -29,10 +29,21 @@ export class TicketController {
     private readonly dispatchService: DispatchService,
   ) {}
 
+  @Get('inbox')
+  async getInbox(
+    @Req() request: Request,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ticketService.getInbox(
+      this.extractAccessToken(request.headers.authorization),
+      limit ? parseInt(limit, 10) : undefined,
+    );
+  }
+
   @Get()
   async list(
-    @Query('status_category') statusCategory?: string,
-    @Query('priority') priority?: string,
+    @Query('status_category') statusCategory?: string | string[],
+    @Query('priority') priority?: string | string[],
     @Query('kind') ticketKind?: 'case' | 'work_order',
     @Query('assigned_team_id') assignedTeamId?: string,
     @Query('assigned_user_id') assignedUserId?: string,
@@ -58,6 +69,11 @@ export class TicketController {
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
+  }
+
+  @Get('tags')
+  async listTags() {
+    return this.ticketService.listDistinctTags();
   }
 
   @Get(':id')

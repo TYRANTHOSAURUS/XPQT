@@ -30,6 +30,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 
@@ -209,37 +210,55 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay }
 
       <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {item.kind === 'category' && onAddChild && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => onAddChild(item.id)}
-            title="Add child"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => onAddChild(item.id)}
+                />
+              }
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </TooltipTrigger>
+            <TooltipContent>Add child</TooltipContent>
+          </Tooltip>
         )}
         {onEdit && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => onEdit(item)}
-            title="Edit"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => onEdit(item)}
+                />
+              }
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </TooltipTrigger>
+            <TooltipContent>Edit</TooltipContent>
+          </Tooltip>
         )}
         {onDelete && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7 text-destructive hover:text-destructive"
-            onClick={() => onDelete(item)}
-            title="Delete"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 text-destructive hover:text-destructive"
+                  onClick={() => onDelete(item)}
+                />
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </TooltipTrigger>
+            <TooltipContent>Delete</TooltipContent>
+          </Tooltip>
         )}
       </div>
     </div>

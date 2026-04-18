@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -11,8 +10,17 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
@@ -167,25 +175,47 @@ export function SlaPoliciesPage() {
               <DialogTitle>{editId ? 'Edit' : 'Create'} SLA Policy</DialogTitle>
               <DialogDescription>Define response and resolution time targets for this policy.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3 max-h-[70vh] overflow-y-auto pr-1">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Standard, High Priority, Critical..." />
-              </div>
+            <ScrollArea className="max-h-[70vh] pr-3">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="sla-name">Name</FieldLabel>
+                <Input
+                  id="sla-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Standard, High Priority, Critical..."
+                />
+              </Field>
+
               <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label>Response target (hours)</Label>
-                  <Input type="number" step="0.5" value={responseHours} onChange={(e) => setResponseHours(e.target.value)} placeholder="e.g. 4" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Resolution target (hours)</Label>
-                  <Input type="number" step="0.5" value={resolutionHours} onChange={(e) => setResolutionHours(e.target.value)} placeholder="e.g. 24" />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="sla-response">Response target (hours)</FieldLabel>
+                  <Input
+                    id="sla-response"
+                    type="number"
+                    step="0.5"
+                    value={responseHours}
+                    onChange={(e) => setResponseHours(e.target.value)}
+                    placeholder="e.g. 4"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="sla-resolution">Resolution target (hours)</FieldLabel>
+                  <Input
+                    id="sla-resolution"
+                    type="number"
+                    step="0.5"
+                    value={resolutionHours}
+                    onChange={(e) => setResolutionHours(e.target.value)}
+                    placeholder="e.g. 24"
+                  />
+                </Field>
               </div>
-              <div className="grid gap-1.5">
-                <Label>Business Hours Calendar</Label>
+
+              <Field>
+                <FieldLabel htmlFor="sla-calendar">Business Hours Calendar</FieldLabel>
                 <Select value={calendarId} onValueChange={(v) => setCalendarId(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="None (always on)" /></SelectTrigger>
+                  <SelectTrigger id="sla-calendar"><SelectValue placeholder="None (always on)" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">None (always on)</SelectItem>
                     {(calendars ?? []).map((c) => (
@@ -193,25 +223,30 @@ export function SlaPoliciesPage() {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Pause conditions</Label>
-                <div className="space-y-2">
+              </Field>
+
+              <FieldSet>
+                <FieldLegend variant="label">Pause conditions</FieldLegend>
+                <FieldGroup data-slot="checkbox-group">
                   {pauseReasonOptions.map((opt) => (
-                    <div key={opt.value} className="flex items-center gap-2">
+                    <Field key={opt.value} orientation="horizontal">
                       <Checkbox
+                        id={`sla-pause-${opt.value}`}
                         checked={pauseReasons.includes(opt.value)}
                         onCheckedChange={() => togglePauseReason(opt.value)}
                       />
-                      <Label className="font-normal">{opt.label}</Label>
-                    </div>
+                      <FieldLabel htmlFor={`sla-pause-${opt.value}`} className="font-normal">
+                        {opt.label}
+                      </FieldLabel>
+                    </Field>
                   ))}
-                </div>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Escalation Thresholds</Label>
+                </FieldGroup>
+              </FieldSet>
+
+              <FieldSet>
+                <FieldLegend variant="label">Escalation Thresholds</FieldLegend>
                 {escalations.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No escalation thresholds.</p>
+                  <FieldDescription>No escalation thresholds.</FieldDescription>
                 ) : (
                   <div className="space-y-1">
                     {escalations.map((e, i) => (
@@ -225,28 +260,41 @@ export function SlaPoliciesPage() {
                   </div>
                 )}
                 <div className="flex gap-2 items-end pt-1">
-                  <div className="space-y-1 w-20">
-                    <Label className="text-xs">At %</Label>
-                    <Input type="number" value={newEscPercent} onChange={(e) => setNewEscPercent(e.target.value)} className="h-8 text-sm" />
-                  </div>
-                  <div className="space-y-1 w-28">
-                    <Label className="text-xs">Action</Label>
+                  <Field className="w-20">
+                    <FieldLabel htmlFor="sla-esc-percent" className="text-xs">At %</FieldLabel>
+                    <Input
+                      id="sla-esc-percent"
+                      type="number"
+                      value={newEscPercent}
+                      onChange={(e) => setNewEscPercent(e.target.value)}
+                      className="h-8 text-sm"
+                    />
+                  </Field>
+                  <Field className="w-28">
+                    <FieldLabel htmlFor="sla-esc-action" className="text-xs">Action</FieldLabel>
                     <Select value={newEscAction} onValueChange={(v) => setNewEscAction((v ?? 'notify') as 'notify' | 'escalate')}>
-                      <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+                      <SelectTrigger id="sla-esc-action" className="h-8 text-sm"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="notify">Notify</SelectItem>
                         <SelectItem value="escalate">Escalate</SelectItem>
                       </SelectContent>
                     </Select>
-                  </div>
-                  <div className="space-y-1 flex-1">
-                    <Label className="text-xs">Notify (email/name)</Label>
-                    <Input value={newEscNotify} onChange={(e) => setNewEscNotify(e.target.value)} className="h-8 text-sm" placeholder="optional" />
-                  </div>
+                  </Field>
+                  <Field className="flex-1">
+                    <FieldLabel htmlFor="sla-esc-notify" className="text-xs">Notify (email/name)</FieldLabel>
+                    <Input
+                      id="sla-esc-notify"
+                      value={newEscNotify}
+                      onChange={(e) => setNewEscNotify(e.target.value)}
+                      className="h-8 text-sm"
+                      placeholder="optional"
+                    />
+                  </Field>
                   <Button variant="outline" size="sm" onClick={addEscalation}>Add</Button>
                 </div>
-              </div>
-            </div>
+              </FieldSet>
+            </FieldGroup>
+            </ScrollArea>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!name.trim()}>

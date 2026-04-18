@@ -13,7 +13,11 @@ import { WaitForForm } from './inspector-forms/wait-for-form';
 import { TimerForm } from './inspector-forms/timer-form';
 import { HttpRequestForm } from './inspector-forms/http-request-form';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 
 export function Inspector({ readOnly = false }: { readOnly?: boolean }) {
   const selectedIds = useGraphStore((s) => s.selectedIds);
@@ -46,15 +50,18 @@ export function Inspector({ readOnly = false }: { readOnly?: boolean }) {
         <div className="font-semibold">{meta.label}</div>
       </div>
 
-      <div className="grid gap-1.5 mb-3">
-        <Label className="text-xs">Label (optional)</Label>
-        <Input
-          value={(selected.config.label as string) ?? ''}
-          onChange={(e) => renameNode(selected.id, e.target.value)}
-          placeholder={meta.label}
-          disabled={readOnly}
-        />
-      </div>
+      <FieldGroup className="mb-3">
+        <Field>
+          <FieldLabel htmlFor="inspector-node-label" className="text-xs">Label (optional)</FieldLabel>
+          <Input
+            id="inspector-node-label"
+            value={(selected.config.label as string) ?? ''}
+            onChange={(e) => renameNode(selected.id, e.target.value)}
+            placeholder={meta.label}
+            disabled={readOnly}
+          />
+        </Field>
+      </FieldGroup>
 
       <FormFor node={selected} readOnly={readOnly} />
     </aside>

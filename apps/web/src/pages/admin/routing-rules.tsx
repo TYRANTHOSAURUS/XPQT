@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -9,6 +8,11 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -113,41 +117,58 @@ export function RoutingRulesPage() {
               <DialogTitle>{editId ? 'Edit' : 'Create'} Routing Rule</DialogTitle>
               <DialogDescription>Define how tickets are automatically assigned to teams.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. FM tickets to FM team..." />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Priority (higher = checked first)</Label>
-                <Input type="number" value={priority} onChange={(e) => setPriority(e.target.value)} />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Condition</Label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="rule-name">Name</FieldLabel>
+                <Input
+                  id="rule-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. FM tickets to FM team..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="rule-priority">Priority (higher = checked first)</FieldLabel>
+                <Input
+                  id="rule-priority"
+                  type="number"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="rule-cond-field">Condition</FieldLabel>
                 <div className="grid grid-cols-2 gap-2">
                   <Select value={condField} onValueChange={(v) => setCondField(v ?? 'domain')}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="rule-cond-field"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="domain">Domain</SelectItem>
                       <SelectItem value="priority">Priority</SelectItem>
                       <SelectItem value="location_id">Location</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input value={condValue} onChange={(e) => setCondValue(e.target.value)} placeholder="equals..." />
+                  <Input
+                    value={condValue}
+                    onChange={(e) => setCondValue(e.target.value)}
+                    placeholder="equals..."
+                  />
                 </div>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Assign to Team</Label>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="rule-team">Assign to Team</FieldLabel>
                 <Select value={assignTeamId} onValueChange={(v) => setAssignTeamId(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="Select team..." /></SelectTrigger>
+                  <SelectTrigger id="rule-team"><SelectValue placeholder="Select team..." /></SelectTrigger>
                   <SelectContent>
                     {(teams ?? []).map((team) => (
                       <SelectItem key={team.id} value={team.id}>{team.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
+              </Field>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!name.trim() || !assignTeamId}>

@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Copy, Loader2 } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { Separator } from '@/components/ui/separator';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldSeparator,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -21,6 +26,16 @@ import { MenuItemsGrid, MenuItemRow } from '@/components/admin/menu-items-grid';
 import { MENU_STATUS_VARIANT, MenuStatus, humanize } from '@/lib/menu-constants';
 import { ServiceTypeSelect } from '@/components/service-type-select';
 import { EditableText, EditableDate } from '@/components/editable-field';
+import { EmptyState } from '@/components/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
 
 interface Vendor { id: string; name: string; active: boolean }
 interface Menu {
@@ -55,19 +70,36 @@ export function VendorMenuDetailPage() {
 
   if (menuLoading && !menu) {
     return (
-      <div className="flex items-center justify-center py-20 text-muted-foreground">
-        <Loader2 className="h-5 w-5 animate-spin mr-2" /> Loading menu...
+      <div>
+        <Skeleton className="h-5 w-48 mb-4" />
+        <div className="flex items-center gap-3 mb-6">
+          <Skeleton className="h-8 w-72" />
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="ml-auto h-8 w-24" />
+        </div>
+        <div className="grid grid-cols-[320px_1fr] gap-6 items-start">
+          <div className="space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+          <Skeleton className="h-96 w-full" />
+        </div>
       </div>
     );
   }
   if (!menu) {
     return (
-      <div className="text-center py-20">
-        <p className="text-muted-foreground mb-4">Menu not found.</p>
-        <Button variant="outline" onClick={() => navigate('/admin/vendor-menus')}>
-          Back to menus
-        </Button>
-      </div>
+      <EmptyState
+        size="hero"
+        title="Menu not found"
+        description="This menu may have been deleted or you don't have access to it."
+        action={
+          <Button variant="outline" onClick={() => navigate('/admin/vendor-menus')}>
+            Back to menus
+          </Button>
+        }
+      />
     );
   }
 
@@ -82,11 +114,20 @@ export function VendorMenuDetailPage() {
 
   return (
     <div>
+      <Breadcrumb className="mb-4">
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink render={<Link to="/admin/vendor-menus" />}>Vendor Menus</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{menu.name}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/admin/vendor-menus')}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
         <div className="flex-1 min-w-0">
           <EditableText
             value={menu.name}
@@ -113,96 +154,99 @@ export function VendorMenuDetailPage() {
 
       <div className="grid grid-cols-[320px_1fr] gap-6 items-start">
         {/* Metadata panel */}
-        <div className="space-y-4 sticky top-2">
-          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="sticky top-2">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-4">
             Properties
           </h2>
 
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Vendor</Label>
-            <Select
-              value={menu.vendor_id}
-              onValueChange={(v) => v && v !== menu.vendor_id && patch({ vendor_id: v })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {(vendors ?? []).filter((v) => v.active).map((v) => (
-                  <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="menu-vendor" className="text-xs">Vendor</FieldLabel>
+              <Select
+                value={menu.vendor_id}
+                onValueChange={(v) => v && v !== menu.vendor_id && patch({ vendor_id: v })}
+              >
+                <SelectTrigger id="menu-vendor"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(vendors ?? []).filter((v) => v.active).map((v) => (
+                    <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
 
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Service type</Label>
-            <ServiceTypeSelect
-              value={menu.service_type}
-              onChange={(v) => v && v !== menu.service_type && patch({ service_type: v })}
-            />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Building scope</Label>
-            <SpaceSelect
-              value={menu.space_id ?? ''}
-              onChange={(v) => patch({ space_id: v || null })}
-              typeFilter={['site', 'building']}
-              emptyLabel="All buildings vendor serves"
-              placeholder="All buildings vendor serves"
-            />
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Building-specific menus override the vendor default for that building only.
-            </p>
-          </div>
-
-          <Separator />
-
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Status</Label>
-            <Select
-              value={menu.status}
-              onValueChange={(v) => v && v !== menu.status && patch({ status: v as MenuStatus })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="published">Published</SelectItem>
-                <SelectItem value="archived">Archived</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Effective from</Label>
-              <EditableDate
-                value={menu.effective_from}
-                onCommit={(v) => patch({ effective_from: v })}
+            <Field>
+              <FieldLabel htmlFor="menu-service-type" className="text-xs">Service type</FieldLabel>
+              <ServiceTypeSelect
+                value={menu.service_type}
+                onChange={(v) => v && v !== menu.service_type && patch({ service_type: v })}
               />
-            </div>
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Effective until</Label>
-              <EditableDate
-                value={menu.effective_until ?? ''}
-                onCommit={(v) => patch({ effective_until: v || null })}
-                placeholder="Open-ended"
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="menu-building-scope" className="text-xs">Building scope</FieldLabel>
+              <SpaceSelect
+                value={menu.space_id ?? ''}
+                onChange={(v) => patch({ space_id: v || null })}
+                typeFilter={['site', 'building']}
+                emptyLabel="All buildings vendor serves"
+                placeholder="All buildings vendor serves"
               />
+              <FieldDescription>
+                Building-specific menus override the vendor default for that building only.
+              </FieldDescription>
+            </Field>
+
+            <FieldSeparator />
+
+            <Field>
+              <FieldLabel htmlFor="menu-status" className="text-xs">Status</FieldLabel>
+              <Select
+                value={menu.status}
+                onValueChange={(v) => v && v !== menu.status && patch({ status: v as MenuStatus })}
+              >
+                <SelectTrigger id="menu-status"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="published">Published</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel htmlFor="menu-effective-from" className="text-xs">Effective from</FieldLabel>
+                <EditableDate
+                  value={menu.effective_from}
+                  onCommit={(v) => patch({ effective_from: v })}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="menu-effective-until" className="text-xs">Effective until</FieldLabel>
+                <EditableDate
+                  value={menu.effective_until ?? ''}
+                  onCommit={(v) => patch({ effective_until: v || null })}
+                  placeholder="Open-ended"
+                />
+              </Field>
             </div>
-          </div>
 
-          <Separator />
+            <FieldSeparator />
 
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Description</Label>
-            <Textarea
-              defaultValue={menu.description ?? ''}
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if ((v || null) !== menu.description) patch({ description: v || null });
-              }}
-              rows={3}
-            />
-          </div>
+            <Field>
+              <FieldLabel htmlFor="menu-description" className="text-xs">Description</FieldLabel>
+              <Textarea
+                id="menu-description"
+                defaultValue={menu.description ?? ''}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if ((v || null) !== menu.description) patch({ description: v || null });
+                }}
+                rows={3}
+              />
+            </Field>
+          </FieldGroup>
         </div>
 
         {/* Items grid */}
@@ -301,36 +345,62 @@ function DuplicateMenuDialog({
             Optional price adjustment applies to every copied item.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3">
-          <div className="grid gap-1.5">
-            <Label>New menu name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="dup-menu-name">New menu name</FieldLabel>
+            <Input id="dup-menu-name" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5">
-              <Label>Effective from</Label>
-              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Effective until</Label>
-              <Input type="date" value={until} onChange={(e) => setUntil(e.target.value)} placeholder="Open-ended" />
-            </div>
+            <Field>
+              <FieldLabel htmlFor="dup-menu-from">Effective from</FieldLabel>
+              <Input
+                id="dup-menu-from"
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="dup-menu-until">Effective until</FieldLabel>
+              <Input
+                id="dup-menu-until"
+                type="date"
+                value={until}
+                onChange={(e) => setUntil(e.target.value)}
+                placeholder="Open-ended"
+              />
+            </Field>
           </div>
-          <Separator />
-          <div className="grid gap-1.5">
-            <Label>Price adjustment (optional)</Label>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1">
-                <Input type="number" step="0.1" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="% change" />
-                <span className="text-[11px] text-muted-foreground">e.g. 5 = +5%, -2.5 = -2.5%</span>
-              </div>
-              <div className="grid gap-1">
-                <Input type="number" step="0.01" value={flat} onChange={(e) => setFlat(e.target.value)} placeholder="flat € change" />
-                <span className="text-[11px] text-muted-foreground">Applied after %</span>
-              </div>
-            </div>
+
+          <FieldSeparator />
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field>
+              <FieldLabel htmlFor="dup-menu-pct">Price adjustment %</FieldLabel>
+              <Input
+                id="dup-menu-pct"
+                type="number"
+                step="0.1"
+                value={pct}
+                onChange={(e) => setPct(e.target.value)}
+                placeholder="% change"
+              />
+              <FieldDescription>e.g. 5 = +5%, -2.5 = -2.5%</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="dup-menu-flat">Flat price adjustment</FieldLabel>
+              <Input
+                id="dup-menu-flat"
+                type="number"
+                step="0.01"
+                value={flat}
+                onChange={(e) => setFlat(e.target.value)}
+                placeholder="flat € change"
+              />
+              <FieldDescription>Applied after %</FieldDescription>
+            </Field>
           </div>
-        </div>
+        </FieldGroup>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || !from}>

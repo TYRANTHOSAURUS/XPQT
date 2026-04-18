@@ -7,7 +7,6 @@ import {
 import { RequestTypeDialog } from '@/components/admin/request-type-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -17,6 +16,11 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select,
   SelectContent,
@@ -195,29 +199,31 @@ export function CatalogHierarchyPage() {
               {form.parentId ? 'Nested under the selected parent.' : 'Top-level catalog section.'}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label>Name</Label>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="cat-name">Name</FieldLabel>
               <Input
+                id="cat-name"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 placeholder="e.g. IT Services, Facilities..."
                 autoFocus
               />
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Description</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="cat-description">Description</FieldLabel>
               <Textarea
+                id="cat-description"
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                 placeholder="Shown under the name in the portal"
                 className="h-20 resize-none"
               />
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Icon</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="cat-icon">Icon</FieldLabel>
               <Select value={form.icon} onValueChange={(v) => setForm((f) => ({ ...f, icon: v ?? '' }))}>
-                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                <SelectTrigger id="cat-icon"><SelectValue placeholder="None" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="">None</SelectItem>
                   {iconOptions.map((i) => (
@@ -225,8 +231,8 @@ export function CatalogHierarchyPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-          </div>
+            </Field>
+          </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={!form.name.trim()}>

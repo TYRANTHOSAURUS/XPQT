@@ -6,7 +6,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { PersonAvatar } from '@/components/person-avatar';
 import {
   Command,
   CommandEmpty,
@@ -33,6 +33,12 @@ import {
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
+import { InlineProperty } from '@/components/desk/inline-property';
+import { EntityPicker } from '@/components/desk/editors/entity-picker';
+import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
+import { NumberEditor } from '@/components/desk/editors/number-editor';
+import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
 import {
   Select,
   SelectContent,
@@ -43,6 +49,20 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import type { FormField } from '@/components/admin/form-builder/premade-fields';
+
+function formatFormValue(field: FormField | undefined, value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  if (field?.type === 'checkbox') return value === true || value === 'true' ? 'Yes' : 'No';
+  if (field?.type === 'date') {
+    try { return new Date(String(value)).toLocaleDateString(); } catch { return String(value); }
+  }
+  if (field?.type === 'datetime') {
+    try { return new Date(String(value)).toLocaleString(); } catch { return String(value); }
+  }
+  return String(value);
+}
 
 interface TicketData {
   id: string;
@@ -66,6 +86,10 @@ interface TicketData {
   assigned_team?: { id: string; name: string };
   assigned_agent?: { id: string; email: string };
   request_type?: { id: string; name: string; domain: string };
+  form_data?: Record<string, unknown> | null;
+  cost?: number | null;
+  watchers?: string[];
+  assigned_vendor?: { id: string; name: string } | null;
 }
 
 interface Activity {
@@ -91,6 +115,18 @@ interface MentionPerson {
   last_name: string;
   email?: string | null;
   department?: string | null;
+}
+
+interface UserOption {
+  id: string;
+  email: string;
+  person?: { first_name?: string; last_name?: string } | null;
+}
+
+interface VendorOption {
+  id: string;
+  name: string;
+  active?: boolean;
 }
 
 interface MentionMatch {
@@ -172,10 +208,6 @@ function getPersonLabel(person: MentionPerson): string {
   return `${person.first_name} ${person.last_name}`.trim();
 }
 
-function getPersonInitials(person: MentionPerson): string {
-  return `${person.first_name[0] ?? ''}${person.last_name[0] ?? ''}`.toUpperCase() || '?';
-}
-
 function filterMentionPeople(people: MentionPerson[], query: string): MentionPerson[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return people.slice(0, MAX_MENTION_RESULTS);
@@ -197,6 +229,10 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
+  const { data: users } = useApi<UserOption[]>('/users', []);
+  const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
+  const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
+  const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
   const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
@@ -209,10 +245,16 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const updateTicket = async (updates: Record<string, unknown>) => {
-    await apiFetch(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(updates) });
-    refetchTicket();
-  };
+  const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
+  const { patch, updateAssignment } = useTicketMutation({
+    ticketId,
+    refetch: refetchTicket,
+    onOptimistic: setOverlay,
+  });
+
+  const displayedTicket = ticket && overlay
+    ? ({ ...ticket, ...overlay } as TicketData)
+    : ticket;
 
   const handleSubmitComment = async () => {
     const trimmedComment = commentText.trim();
@@ -300,6 +342,25 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   };
 
   useEffect(() => {
+    const rtId = ticket?.request_type?.id;
+    if (!rtId) { setSchemaFields([]); return; }
+    let cancelled = false;
+    apiFetch<{ form_schema_id?: string | null }>(`/request-types/${rtId}`)
+      .then((rt) => {
+        if (cancelled || !rt.form_schema_id) { setSchemaFields([]); return null; }
+        return apiFetch<{ current_version?: { definition: { fields: FormField[] } } | null }>(
+          `/config-entities/${rt.form_schema_id}`,
+        );
+      })
+      .then((entity) => {
+        if (cancelled || !entity) return;
+        setSchemaFields(entity.current_version?.definition?.fields ?? []);
+      })
+      .catch(() => { if (!cancelled) setSchemaFields([]); });
+    return () => { cancelled = true; };
+  }, [ticket?.request_type?.id]);
+
+  useEffect(() => {
     if (!mentionMatch) return;
 
     if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
@@ -365,15 +426,51 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="px-20 pb-10">
+          <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
             {/* Title */}
-            <h1 className="text-2xl font-semibold leading-tight tracking-tight">{ticket.title}</h1>
+            <InlineTextEditor
+              value={displayedTicket!.title}
+              placeholder="Untitled"
+              singleLine
+              onSave={(next) => { if (next) patch({ title: next }); }}
+              renderView={(v) => <h1 className="text-2xl font-semibold leading-tight tracking-tight">{v || 'Untitled'}</h1>}
+              editorClassName="text-2xl font-semibold leading-tight tracking-tight border-0 shadow-none focus-visible:ring-0 px-0"
+              viewClassName="rounded-md"
+            />
 
             {/* Description */}
-            {ticket.description ? (
-              <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{ticket.description}</p>
-            ) : (
-              <p className="mt-5 text-[15px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">Add a description...</p>
+            <div className="mt-5">
+              <InlineTextEditor
+                value={displayedTicket!.description ?? ''}
+                placeholder="Add a description..."
+                onSave={(next) => patch({ description: next })}
+                renderView={(v) => v
+                  ? <p className="text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{v}</p>
+                  : <p className="text-[15px] text-muted-foreground/60">Add a description...</p>}
+                editorClassName="text-[15px] leading-relaxed min-h-[80px]"
+              />
+            </div>
+
+            {displayedTicket?.form_data && Object.keys(displayedTicket.form_data).length > 0 && (
+              <div className="mt-8 space-y-3">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Custom Fields</h3>
+                <div className="grid gap-3 rounded-md border p-4 bg-muted/20">
+                  {Object.entries(displayedTicket.form_data).map(([key, value]) => {
+                    const field = schemaFields.find((f) => f.id === key);
+                    const label = field?.label ?? key;
+                    const archived = !field;
+                    return (
+                      <div key={key} className="grid grid-cols-[180px_1fr] gap-2 text-sm">
+                        <span className="text-muted-foreground">
+                          {label}
+                          {archived && <span className="ml-2 text-xs italic">(archived)</span>}
+                        </span>
+                        <span>{formatFormValue(field, value)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             {/* Sub-issues placeholder */}
@@ -602,9 +699,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                                 onMouseDown={(e) => e.preventDefault()}
                                 onSelect={() => selectMention(person)}
                               >
-                                <Avatar size="sm" className="size-5">
-                                  <AvatarFallback className="text-[10px]">{getPersonInitials(person)}</AvatarFallback>
-                                </Avatar>
+                                <PersonAvatar size="sm" className="size-5" person={person} />
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate font-medium">{getPersonLabel(person)}</div>
                                 </div>
@@ -696,13 +791,12 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         <div className="p-5 space-y-5">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Properties</div>
 
-          {/* Status */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Status</div>
-            <Select value={ticket.status_category} onValueChange={(v) => { if (v) updateTicket({ status_category: v, status: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue />
-              </SelectTrigger>
+          <InlineProperty label="Status">
+            <Select
+              value={displayedTicket!.status_category}
+              onValueChange={(v) => { if (v) patch({ status_category: v, status: v }); }}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(statusConfig).map(([key, cfg]) => (
                   <SelectItem key={key} value={key}>
@@ -713,15 +807,14 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </InlineProperty>
 
-          {/* Priority */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Priority</div>
-            <Select value={ticket.priority} onValueChange={(v) => { if (v) updateTicket({ priority: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue />
-              </SelectTrigger>
+          <InlineProperty label="Priority">
+            <Select
+              value={displayedTicket!.priority}
+              onValueChange={(v) => { if (v) patch({ priority: v }); }}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(priorityConfig).map(([key, cfg]) => (
                   <SelectItem key={key} value={key}>
@@ -730,36 +823,68 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </InlineProperty>
 
-          {/* Team */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Team</div>
-            <Select value={ticket.assigned_team?.id ?? ''} onValueChange={(v) => { if (v) updateTicket({ assigned_team_id: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue placeholder="Unassigned" />
-              </SelectTrigger>
-              <SelectContent>
-                {(teams ?? []).map((t) => (
-                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {displayedTicket!.status_category === 'waiting' && (
+            <InlineProperty label="Waiting reason">
+              <Select
+                value={displayedTicket!.waiting_reason ?? ''}
+                onValueChange={(v) => patch({ waiting_reason: v || null })}
+              >
+                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select reason" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="requester">Awaiting requester</SelectItem>
+                  <SelectItem value="vendor">Awaiting vendor</SelectItem>
+                  <SelectItem value="approval">Awaiting approval</SelectItem>
+                  <SelectItem value="scheduled_work">Scheduled work</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </InlineProperty>
+          )}
 
-          {/* Assignee */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Assignee</div>
-            <div className="text-sm flex items-center gap-2">
-              <User className="h-3.5 w-3.5 text-muted-foreground" />
-              {ticket.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
-            </div>
-          </div>
+          <InlineProperty label="Team">
+            <EntityPicker
+              value={displayedTicket!.assigned_team?.id ?? null}
+              options={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+              placeholder="team"
+              clearLabel="Clear team"
+              onChange={(option) => {
+                updateAssignment({
+                  kind: 'team',
+                  id: option?.id ?? null,
+                  nextLabel: option?.label ?? null,
+                  previousLabel: displayedTicket!.assigned_team?.name ?? null,
+                });
+              }}
+            />
+          </InlineProperty>
+
+          <InlineProperty label="Assignee" icon={<User className="h-3 w-3 text-muted-foreground" />}>
+            <EntityPicker
+              value={displayedTicket!.assigned_agent?.id ?? null}
+              options={(users ?? []).map((u) => ({
+                id: u.id,
+                label: u.person ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email : u.email,
+                sublabel: u.email,
+              }))}
+              placeholder="assignee"
+              clearLabel="Clear assignee"
+              onChange={(option) => {
+                updateAssignment({
+                  kind: 'user',
+                  id: option?.id ?? null,
+                  nextLabel: option?.label ?? null,
+                  previousLabel: displayedTicket!.assigned_agent?.email ?? null,
+                });
+              }}
+            />
+          </InlineProperty>
 
           {/* SLA */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">SLA</div>
-            <SlaTimer dueAt={ticket.sla_resolution_due_at} breachedAt={ticket.sla_resolution_breached_at} />
+            <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
           </div>
 
           <Separator />
@@ -767,69 +892,97 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* Requester */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Requester</div>
-            {ticket.requester ? (
+            {displayedTicket!.requester ? (
               <div>
-                <div className="text-sm font-medium">{ticket.requester.first_name} {ticket.requester.last_name}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">{ticket.requester.email}</div>
-                {ticket.requester.department && <div className="text-xs text-muted-foreground">{ticket.requester.department}</div>}
+                <div className="text-sm font-medium">{displayedTicket!.requester.first_name} {displayedTicket!.requester.last_name}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{displayedTicket!.requester.email}</div>
+                {displayedTicket!.requester.department && <div className="text-xs text-muted-foreground">{displayedTicket!.requester.department}</div>}
               </div>
             ) : <span className="text-sm text-muted-foreground">Unknown</span>}
           </div>
 
           {/* Location */}
-          {ticket.location && (
+          {displayedTicket!.location && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Location</div>
               <div className="text-sm flex items-center gap-2">
                 <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-                {ticket.location.name}
+                {displayedTicket!.location.name}
               </div>
             </div>
           )}
 
           {/* Asset */}
-          {ticket.asset && (
+          {displayedTicket!.asset && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Asset</div>
-              <div className="text-sm">{ticket.asset.name}</div>
-              <div className="text-xs text-muted-foreground">{ticket.asset.serial_number}</div>
+              <div className="text-sm">{displayedTicket!.asset.name}</div>
+              <div className="text-xs text-muted-foreground">{displayedTicket!.asset.serial_number}</div>
             </div>
           )}
 
-          {/* Tags */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
-              <TagIcon className="h-3 w-3" /> Labels
-            </div>
-            {ticket.tags && ticket.tags.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {ticket.tags.map((tag) => (
-                  <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
-                ))}
-              </div>
-            ) : (
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground justify-start font-normal">
-                + Add label
-              </Button>
-            )}
-          </div>
+          <InlineProperty label="Labels" icon={<TagIcon className="h-3 w-3" />}>
+            <MultiSelectPicker
+              values={displayedTicket!.tags ?? []}
+              options={(tagSuggestions ?? []).map((t) => ({ id: t, label: t }))}
+              placeholder="label"
+              allowCreate
+              onChange={(next) => patch({ tags: next })}
+            />
+          </InlineProperty>
+
+          <InlineProperty label="Watchers">
+            <MultiSelectPicker
+              values={displayedTicket!.watchers ?? []}
+              options={(people ?? []).map((p) => ({
+                id: p.id,
+                label: `${p.first_name} ${p.last_name}`.trim(),
+                sublabel: p.email ?? null,
+              }))}
+              placeholder="watcher"
+              onChange={(next) => patch({ watchers: next })}
+            />
+          </InlineProperty>
+
+          <InlineProperty label="Cost">
+            <NumberEditor
+              value={displayedTicket!.cost ?? null}
+              placeholder="cost"
+              prefix="$"
+              formatDisplay={(v) => v == null ? '' : `$${v.toFixed(2)}`}
+              onChange={(next) => patch({ cost: next })}
+            />
+          </InlineProperty>
 
           <Separator />
 
           {/* Request type */}
-          {ticket.request_type && (
+          {displayedTicket!.request_type && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Type</div>
-              <div className="text-sm">{ticket.request_type.name}</div>
+              <div className="text-sm">{displayedTicket!.request_type.name}</div>
             </div>
           )}
 
-          {/* Interaction mode */}
-          {ticket.interaction_mode === 'external' && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1.5">Mode</div>
-              <Badge variant="outline" className="text-xs">External vendor</Badge>
-            </div>
+          {displayedTicket!.interaction_mode === 'external' && (
+            <InlineProperty label="Vendor">
+              <EntityPicker
+                value={displayedTicket!.assigned_vendor?.id ?? null}
+                options={(vendors ?? [])
+                  .filter((v) => v.active !== false)
+                  .map((v) => ({ id: v.id, label: v.name }))}
+                placeholder="vendor"
+                clearLabel="Clear vendor"
+                onChange={(option) => {
+                  updateAssignment({
+                    kind: 'vendor',
+                    id: option?.id ?? null,
+                    nextLabel: option?.label ?? null,
+                    previousLabel: displayedTicket!.assigned_vendor?.name ?? null,
+                  });
+                }}
+              />
+            </InlineProperty>
           )}
 
           {/* Workflow */}
@@ -838,7 +991,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* Created */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Created</div>
-            <div className="text-sm">{new Date(ticket.created_at).toLocaleDateString('en-GB', {
+            <div className="text-sm">{new Date(displayedTicket!.created_at).toLocaleDateString('en-GB', {
               day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
             })}</div>
           </div>
