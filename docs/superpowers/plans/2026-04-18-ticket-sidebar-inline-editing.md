@@ -9,7 +9,7 @@
 **Tech Stack:** React 19 + Vite + TypeScript + Tailwind, shadcn/ui primitives (Popover, Command, Select, Textarea, Input, Button, Badge), NestJS + Supabase + Jest (backend), Sonner (toasts). No new frontend test infra — UI verification is browser smoke-tests per project convention in `CLAUDE.md`. Backend tests use the existing Jest setup (see `apps/api/src/modules/ticket/dispatch.service.spec.ts` as a reference pattern).
 
 **Spec:** `docs/superpowers/specs/2026-04-18-ticket-sidebar-inline-editing-design.md`
-**Related reference:** `docs/routing.md` (explains PATCH vs `/reassign`, why Location/Asset/Request type stay read-only).
+**Related reference:** `docs/assignments-routing-fulfillment.md` (explains PATCH vs `/reassign`, why Location/Asset/Request type stay read-only — see §8a and §8b).
 
 ---
 
@@ -1348,7 +1348,7 @@ If the project already has a canonical list of waiting reasons in a shared const
 
 Change a ticket to status `waiting` → the Waiting reason row appears. Pick a reason → verify via dev-tools network panel that it posts to `PATCH /tickets/:id`. Set cost via the number editor; verify persistence with `select cost from tickets where id = '<id>'`.
 
-Also verify SLA pause: pick a waiting reason that is included in the SLA policy's `pause_on_waiting_reasons` (see `docs/routing.md`) — the `sla_paused` flag on the ticket should flip to true. This exercises the existing pause logic, not new code, but it's worth confirming the UI path doesn't break it.
+Also verify SLA pause: pick a waiting reason that is included in the SLA policy's `pause_on_waiting_reasons` (see `docs/assignments-routing-fulfillment.md` §7) — the `sla_paused` flag on the ticket should flip to true. This exercises the existing pause logic, not new code, but it's worth confirming the UI path doesn't break it.
 
 - [ ] **Step 4: Commit**
 
@@ -1500,7 +1500,7 @@ Mirror each bullet to `docs/superpowers/specs/2026-04-18-ticket-sidebar-inline-e
 
 ## Out of scope (explicitly deferred — do NOT do these)
 
-- Location, Asset, Request type, Requester editing. These need a "rescope" backend flow — tracked in `docs/routing.md` → Known gaps.
+- Location, Asset, Request type, Requester editing. These need a "rescope" backend flow — tracked in `docs/assignments-routing-fulfillment.md` §8b and §13.
 - Single-letter keyboard hotkeys (`A` / `L` / `P` / `S` / `T`). Stretch goal from the spec, explicitly optional. Do not ship unless every other task is done and it's a half-hour add.
 - Mobile / narrow-viewport sidebar behavior.
 - Satisfaction rating/comment editors.

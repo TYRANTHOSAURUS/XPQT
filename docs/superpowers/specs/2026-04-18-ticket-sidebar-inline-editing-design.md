@@ -1,7 +1,7 @@
 # Ticket Sidebar — Linear-Style Inline Editing
 
 **Status:** design approved 2026-04-18, pending implementation plan.
-**Related:** `docs/routing.md` (SLA on reassignment, rescope gaps).
+**Related:** `docs/assignments-routing-fulfillment.md` (SLA on reassignment §7, rescope gaps §8b and §13).
 
 ## Problem
 
@@ -17,7 +17,7 @@ The backend already accepts most of what we need via `PATCH /tickets/:id` (`Upda
 
 ## Non-goals
 
-- Changing `location_id`, `asset_id`, `ticket_type_id`, or `requester_person_id`. These would re-trigger routing (and for request type, SLA/workflow). A "rescope" feature with its own endpoint is tracked in `docs/routing.md` → Known gaps. Not part of this work.
+- Changing `location_id`, `asset_id`, `ticket_type_id`, or `requester_person_id`. These would re-trigger routing (and for request type, SLA/workflow). A "rescope" feature with its own endpoint is tracked in `docs/assignments-routing-fulfillment.md` §8b and §13. Not part of this work.
 - Mobile/narrow-viewport sidebar behavior. Today's sidebar is fixed-width 320px; a responsive sheet variant is a separate feature.
 - Satisfaction rating/comment editors. Those are part of a post-resolution requester survey flow, not an agent sidebar concern.
 - Sub-issues section (lines 379–388) is a placeholder and out of scope here.
@@ -74,7 +74,7 @@ Unset fields render `+ Add {label}` in muted color. Hover fades to `bg-accent/30
 
 - **SLA timer, Created timestamp, Workflow badge** — derived/computed
 - **Requester** — effectively ticket identity
-- **Location, Asset, Request type** — would re-trigger routing/SLA/workflow (see `docs/routing.md`)
+- **Location, Asset, Request type** — would re-trigger routing/SLA/workflow (see `docs/assignments-routing-fulfillment.md` §8b)
 - **Satisfaction fields** — belong to a different flow
 
 ### Dead code removed

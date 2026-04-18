@@ -76,6 +76,18 @@ A single request type can therefore say: *"This is a `doors` request. Route by l
 
 Every step appends a `TraceEntry` to the decision's trace — whether it matched or not — so debugging later is always possible.
 
+### 3.0 When the resolver runs
+
+| Trigger | Where | Notes |
+|---|---|---|
+| Ticket create | `TicketService.runPostCreateAutomation` | Skipped if `ticket_kind = 'work_order'` or if the ticket already has an assignee in the DTO. |
+| Approval granted | `TicketService.onApprovalDecision('approved')` | Delegates to `runPostCreateAutomation`. |
+| Manual reassign with rerun | `TicketService.reassign({ rerun_resolver: true })` | Clears current assignment, re-evaluates, records a new `routing_decisions` row. |
+| Workflow-spawned child | `WorkflowEngineService.create_child_tasks` → `DispatchService.dispatch` | Goes through the full resolver + SLA + audit pipeline, same as manual dispatch. |
+| Manual dispatch | `DispatchService.dispatch` (called by `POST /tickets/:id/dispatch`) | Runs when the DTO doesn't supply an assignee. |
+
+The resolver does **not** run on generic `PATCH /tickets/:id`. Changing priority, status, tags, watchers, cost, etc. does not re-route.
+
 ### 3.1 Routing rules pre-step
 
 Loads all active `routing_rules` for the tenant, ordered by `priority DESC`. For each rule, checks its `conditions[]` against the resolver context:
@@ -247,6 +259,16 @@ Attached at ticket creation (for cases) and at dispatch (for work orders). Both 
 
 Importantly: the case and its work orders have **independent SLA timers** — two different clocks to two different audiences.
 
+### SLA on reassignment
+
+**Nothing changes on SLA when an assignee is reassigned** — via silent PATCH or `POST /tickets/:id/reassign`, manual or rerun mode. `due_at`, `sla_response_due_at`, `sla_resolution_due_at`, `sla_at_risk`, and breach timestamps all persist unchanged.
+
+This is intentional and matches standard ITSM behavior: SLA is a promise to the requester, not to the assignee. Shuffling ownership internally does not reset the customer clock. If a ticket sat on the wrong team for three hours before reassignment, the new team inherits whatever's left of the window.
+
+SLA pause/resume fires **only** on `status_category` or `waiting_reason` changes (`applyWaitingStateTransition` in `ticket.service.ts`). The per-minute `checkBreaches` cron in `sla.service.ts` is team-agnostic — it only looks at `due_at` and `paused` flags.
+
+**Edge case worth knowing:** the business-hours calendar is attached to the **SLA policy** (`sla_policies.business_hours_calendar_id`), not the team. A 9–5 team and a 24/7 team working the same policy share the same business-minute calculation. There is no per-team calendar override today. If that matters for a product decision, it's a schema change.
+
 ---
 
 ## 8. Approval gates
@@ -255,6 +277,60 @@ A case can sit in `status_category = 'pending_approval'` while an approver weigh
 
 - `DispatchService.dispatch` **refuses** — you cannot spawn work orders until the approval is settled. This prevents the rollup trigger from flipping the parent away from `pending_approval` prematurely.
 - The resolver still runs at case creation; assignment itself is not blocked, only dispatch.
+
+---
+
+## 8a. Changing an assignee — audited paths
+
+Two endpoints can change a ticket's assignee. They differ in audit trail, not in effect.
+
+### Silent `PATCH /tickets/:id`
+
+`UpdateTicketDto` accepts `assigned_team_id`, `assigned_user_id`, `assigned_vendor_id`. On change:
+- Writes the ticket row.
+- Posts a `system_event` activity (`assignment_changed`) and a `domain_events` row (`ticket_assigned`).
+- **Does not** write a `routing_decisions` row.
+- **Does not** require a reason.
+
+Use when: bulk tooling, background jobs, trusted system actions where a reason is meaningless.
+
+### Audited `POST /tickets/:id/reassign`
+
+`ReassignDto` requires a `reason` string. Two modes:
+
+- **Manual** (`rerun_resolver: false | undefined`): caller supplies the target assignee directly. Clears previous assignment, sets the new one.
+- **Rerun resolver** (`rerun_resolver: true`): clears assignment, re-invokes `ResolverService.resolve()` with the current `{location, asset, request_type, priority, domain}` (falls back to `asset.assigned_space_id` if `location_id` is null).
+
+Either mode:
+- Writes a `routing_decisions` row with `chosen_by: 'manual_reassign'` or `'rerun_resolver'`. In rerun mode, the resolver's own trace is appended after a `manual_reassign` step so both the human reason and the machine decision are captured.
+- Posts an **internal-visibility** activity (not `system_event`) with the reason in the `content` field — it shows up in the ticket timeline as a note.
+
+Use when: a human is making the call and the reason matters for audit / ops review.
+
+### Frontend behavior (today)
+
+The desk sidebar's `useTicketMutation` hook (`apps/web/src/hooks/use-ticket-mutation.ts`) uses a tiered approach:
+
+- **First-time assignment** (no previous assignee) → silent `PATCH`. No audit row — there's no previous state to explain.
+- **Reassignment** (replacing an existing assignee) → `POST /tickets/:id/reassign` with a synthesized reason (`"Reassigned <kind> from X to Y by <actor> via ticket sidebar"`). Audit row captured.
+
+This mirrors the intent of the endpoints: PATCH for initial state, reassign for state changes.
+
+## 8b. Scope fields — not editable today
+
+`UpdateTicketDto` deliberately omits `location_id`, `asset_id`, `ticket_type_id`, `requester_person_id`. There is no endpoint to change any of them on an existing ticket. Changing them would have cascading effects:
+
+| Field | Cascade if changed |
+|---|---|
+| `location_id` | Resolver result changes (location chain differs). SLA/workflow unaffected. |
+| `asset_id` | Resolver result changes (asset override path differs). SLA/workflow unaffected. |
+| `ticket_type_id` | Resolver **and** SLA **and** workflow all tied to request type. SLA policy, workflow definition, approval gate, fulfillment strategy all change. High-impact. |
+| `requester_person_id` | No resolver impact but changes who receives external notifications. Probably should not be mutable — effectively recreating the ticket. |
+
+Until a scope-rerouting flow is built, these fields remain read-only in the UI. If/when we build it:
+
+- New endpoint (probably `POST /tickets/:id/rescope`) that accepts the new field(s) + a reason, re-runs the resolver, and for `ticket_type_id` changes, restarts SLA timers and potentially the workflow instance.
+- `routing_decisions` row with `chosen_by: 'rescope'` so the audit trail explains why the assignee changed.
 
 ---
 
@@ -375,12 +451,16 @@ API: `GET /tickets/:id/children` returns the same shape including `ticket_kind` 
 
 ---
 
-## 13. What's intentionally **not** solved here
+## 13. What's intentionally not solved here
 
 - **Visibility scoping** — `GET /tickets` returns everything in the tenant. Per-user / per-team / per-location visibility belongs in its own plan (list-endpoint filters + RLS tightening).
-- **Vendor assignment via routing rules** — schema doesn't carry a vendor action column yet.
+- **Vendor assignment via routing rules** — schema doesn't carry a vendor action column yet (`action_assign_vendor_id` is absent).
 - **Auto-dispatch on request type** — no declarative "this request type always spawns a child WO to Vendor X." Dispatches are manual or workflow-driven today.
 - **Case status re-open on child reopen** — rollup never moves a parent out of `resolved` or `closed`. Intentional; a human decides.
+- **Scope-rerouting endpoint** — see §8b. No `POST /tickets/:id/rescope` exists.
+- **Workflow impact on request-type change** — if/when rescoping lands, must decide whether in-flight workflow instances are terminated and restarted or migrated.
+- **Bulk update does not re-route or audit.** `PATCH /tickets/bulk/update` accepts the same DTO as single update — silent. Audited bulk reassign would need a `/tickets/bulk/reassign` wrapping `/reassign`.
+- **Overrides are not re-evaluated on ticket updates.** If an admin adds a `routing_rules` row that would have matched an existing ticket, the existing ticket is unaffected until someone calls `/reassign` with `rerun_resolver: true`. This is intentional — know it when debugging "why didn't my new rule fire."
 
 ---
 
@@ -423,3 +503,12 @@ Trigger list:
 - Any migration that adds or alters: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`.
 
 Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-capable rules, visibility scoping) — entry in Section 13 should move from "not solved" to a new detailed section.
+
+---
+
+## 16. Resolved gaps
+
+Move items here with a date when a gap from §13 is closed. Keeps the doc honest about what was once broken and when it was fixed.
+
+- **2026-04-18 — Sidebar reassign now audits.** The desk sidebar's `useTicketMutation.updateAssignment` hook now calls `POST /tickets/:id/reassign` (with a synthesized reason) whenever an existing assignee is replaced. First-time assignment still uses silent `PATCH`. `routing_decisions` captures every sidebar reassignment going forward.
+- **2026-04-18 — Workflow-spawned children reach parity with manual dispatch.** `WorkflowEngineService.create_child_tasks` now calls `DispatchService.dispatch` per task. Children receive SLA timer start, a `routing_decisions` row, and a `dispatched` parent activity — same as manual dispatch via `POST /tickets/:id/dispatch`.
