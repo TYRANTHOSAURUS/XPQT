@@ -22,7 +22,7 @@ export interface EntityPickerProps {
   value: string | null;
   /** All selectable options. For small lists we filter client-side; for large lists pass `onSearch`. */
   options: EntityOption[];
-  /** Label shown in the trigger when nothing is selected. */
+  /** Noun used in the empty-state affordance and search input (e.g. "team" → "+ Add team"). */
   placeholder?: string;
   /** What to render inside the trigger when a value IS selected. Defaults to the matched option's label. */
   renderValue?: (option: EntityOption | null) => ReactNode;
@@ -49,7 +49,7 @@ const defaultFilter = (option: EntityOption, query: string) => {
 export function EntityPicker({
   value,
   options,
-  placeholder = 'Select…',
+  placeholder = 'item',
   renderValue,
   clearLabel,
   filter = defaultFilter,
@@ -78,11 +78,11 @@ export function EntityPicker({
           />
         }
       >
-        {renderValue ? renderValue(selected) : selected?.label ?? `+ ${placeholder}`}
+        {renderValue ? renderValue(selected) : selected?.label ?? `+ Add ${placeholder}`}
       </PopoverTrigger>
       <PopoverContent className="p-1" align="start" style={contentWidth ? { width: contentWidth } : undefined}>
         <Command shouldFilter={false}>
-          <CommandInput placeholder={placeholder} value={query} onValueChange={setQuery} />
+          <CommandInput placeholder={`Search ${placeholder}…`} value={query} onValueChange={setQuery} />
           <CommandList>
             <CommandEmpty className="py-4 text-center text-xs text-muted-foreground">
               No results.

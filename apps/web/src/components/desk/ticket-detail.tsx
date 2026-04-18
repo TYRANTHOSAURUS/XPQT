@@ -953,7 +953,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           <InlineProperty label="Cost">
             <NumberEditor
               value={displayedTicket!.cost ?? null}
-              placeholder="Add cost"
+              placeholder="cost"
               prefix="$"
               formatDisplay={(v) => v == null ? '' : `$${v.toFixed(2)}`}
               onChange={(next) => patch({ cost: next })}

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 export interface NumberEditorProps {
   value: number | null;
+  /** Noun used in the empty-state affordance and input placeholder (e.g. "cost" → "+ Add cost"). */
   placeholder?: string;
   /** Prefix rendered inside the input (e.g. "$"). */
   prefix?: string;
@@ -17,7 +18,7 @@ export interface NumberEditorProps {
 
 export function NumberEditor({
   value,
-  placeholder = 'Add value',
+  placeholder = 'value',
   prefix,
   formatDisplay,
   onChange,
@@ -66,7 +67,7 @@ export function NumberEditor({
         }
       >
         {value == null
-          ? `+ ${placeholder}`
+          ? `+ Add ${placeholder}`
           : formatDisplay
             ? formatDisplay(value)
             : `${prefix ?? ''}${value}`}

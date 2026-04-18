@@ -22,6 +22,7 @@ export interface MultiSelectOption {
 export interface MultiSelectPickerProps {
   values: string[];
   options: MultiSelectOption[];
+  /** Noun used in the empty-state affordance and search input (e.g. "label" → "+ Add label"). */
   placeholder?: string;
   /** When true, typing a query that doesn't match any option shows "Create \"…\"". */
   allowCreate?: boolean;
@@ -34,7 +35,7 @@ export interface MultiSelectPickerProps {
 export function MultiSelectPicker({
   values,
   options,
-  placeholder = 'Select…',
+  placeholder = 'item',
   allowCreate = false,
   renderPills = true,
   onChange,
@@ -101,7 +102,7 @@ export function MultiSelectPicker({
         }
       >
         {values.length === 0 ? (
-          <span>+ {placeholder}</span>
+          <span>+ Add {placeholder}</span>
         ) : renderPills ? (
           <div className="flex flex-wrap gap-1">
             {selectedLabels.map((s) => (
@@ -123,7 +124,7 @@ export function MultiSelectPicker({
       <PopoverContent className="p-1 w-[280px]" align="start">
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder={placeholder}
+            placeholder={`Search ${placeholder}…`}
             value={query}
             onValueChange={setQuery}
             onKeyDown={(e) => {
