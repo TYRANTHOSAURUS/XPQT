@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { DispatchService } from '../ticket/dispatch.service';
 
 interface WorkflowNode {
   id: string;
@@ -37,7 +38,10 @@ export interface WorkflowRunContext {
 
 @Injectable()
 export class WorkflowEngineService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    @Inject(forwardRef(() => DispatchService)) private readonly dispatchService: DispatchService,
+  ) {}
 
   async startForTicket(ticketId: string, workflowDefinitionId: string) {
     const tenant = TenantContext.current();
@@ -189,28 +193,19 @@ export class WorkflowEngineService {
             payload: { dry_run_would_create: tasks?.length ?? 0 },
           }, ctx);
         } else if (tasks && tenant) {
-          const { data: parentTicket } = await this.supabase.admin
-            .from('tickets')
-            .select('tenant_id, requester_person_id, location_id')
-            .eq('id', ticketId)
-            .single();
-          if (parentTicket) {
-            for (const task of tasks) {
-              await this.supabase.admin.from('tickets').insert({
-                tenant_id: tenant.id,
-                parent_ticket_id: ticketId,
-                ticket_kind: 'work_order',
-                title: task.title,
+          for (let i = 0; i < tasks.length; i++) {
+            const task = tasks[i];
+            const title = task.title?.trim() || `Subtask ${i + 1}`;
+            try {
+              await this.dispatchService.dispatch(ticketId, {
+                title,
                 description: task.description,
                 assigned_team_id: task.assigned_team_id,
-                interaction_mode: task.interaction_mode ?? 'internal',
-                priority: task.priority ?? 'medium',
-                requester_person_id: parentTicket.requester_person_id,
-                location_id: parentTicket.location_id,
-                status: 'new',
-                status_category: 'new',
-                source_channel: 'workflow',
+                priority: task.priority,
+                interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
               });
+            } catch (err) {
+              console.error('[workflow] create_child_tasks: dispatch failed', err);
             }
           }
         }
