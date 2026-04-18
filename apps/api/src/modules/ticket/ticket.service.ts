@@ -53,8 +53,8 @@ export interface ReassignDto {
 }
 
 export interface TicketListFilters {
-  status_category?: string;
-  priority?: string;
+  status_category?: string | string[];
+  priority?: string | string[];
   ticket_kind?: 'case' | 'work_order';
   assigned_team_id?: string;
   assigned_user_id?: string;
@@ -151,8 +151,14 @@ export class TicketService {
       .limit(limit);
 
     // Apply filters
-    if (filters.status_category) query = query.eq('status_category', filters.status_category);
-    if (filters.priority) query = query.eq('priority', filters.priority);
+    if (filters.status_category) {
+      const vals = Array.isArray(filters.status_category) ? filters.status_category : [filters.status_category];
+      query = vals.length === 1 ? query.eq('status_category', vals[0]) : query.in('status_category', vals);
+    }
+    if (filters.priority) {
+      const vals = Array.isArray(filters.priority) ? filters.priority : [filters.priority];
+      query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
+    }
     if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
     if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);

@@ -42,8 +42,8 @@ export class TicketController {
 
   @Get()
   async list(
-    @Query('status_category') statusCategory?: string,
-    @Query('priority') priority?: string,
+    @Query('status_category') statusCategory?: string | string[],
+    @Query('priority') priority?: string | string[],
     @Query('kind') ticketKind?: 'case' | 'work_order',
     @Query('assigned_team_id') assignedTeamId?: string,
     @Query('assigned_user_id') assignedUserId?: string,
