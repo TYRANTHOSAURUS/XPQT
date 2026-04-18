@@ -38,6 +38,7 @@ import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
+import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
 import {
   Select,
   SelectContent,
@@ -85,7 +86,6 @@ interface TicketData {
   assigned_team?: { id: string; name: string };
   assigned_agent?: { id: string; email: string };
   request_type?: { id: string; name: string; domain: string };
-  ticket_type_id?: string | null;
   form_data?: Record<string, unknown> | null;
   cost?: number | null;
   watchers?: string[];
@@ -432,14 +432,28 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         <ScrollArea className="flex-1">
           <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
             {/* Title */}
-            <h1 className="text-2xl font-semibold leading-tight tracking-tight">{displayedTicket!.title}</h1>
+            <InlineTextEditor
+              value={displayedTicket!.title}
+              placeholder="Untitled"
+              singleLine
+              onSave={(next) => { if (next) patch({ title: next }); }}
+              renderView={(v) => <h1 className="text-2xl font-semibold leading-tight tracking-tight">{v || 'Untitled'}</h1>}
+              editorClassName="text-2xl font-semibold leading-tight tracking-tight border-0 shadow-none focus-visible:ring-0 px-0"
+              viewClassName="rounded-md"
+            />
 
             {/* Description */}
-            {displayedTicket!.description ? (
-              <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{displayedTicket!.description}</p>
-            ) : (
-              <p className="mt-5 text-[15px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">Add a description...</p>
-            )}
+            <div className="mt-5">
+              <InlineTextEditor
+                value={displayedTicket!.description ?? ''}
+                placeholder="Add a description..."
+                onSave={(next) => patch({ description: next })}
+                renderView={(v) => v
+                  ? <p className="text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{v}</p>
+                  : <p className="text-[15px] text-muted-foreground/60">Add a description...</p>}
+                editorClassName="text-[15px] leading-relaxed min-h-[80px]"
+              />
+            </div>
 
             {displayedTicket?.form_data && Object.keys(displayedTicket.form_data).length > 0 && (
               <div className="mt-8 space-y-3">
