@@ -55,21 +55,34 @@ XPQT/
 - **Auth:** Supabase Auth (JWT). Backend validates tokens via AuthGuard.
 - **Module boundaries:** NestJS modules with explicit service exports. No module touches another module's tables directly.
 
-## Routing model
-Ticket assignment is a two-layer system:
-1. **Overrides:** admin-defined `routing_rules` (first match wins) — used when a specific situation needs to bypass the default resolver.
-2. **Resolver chain:** `ResolverService` (`apps/api/src/modules/routing/resolver.service.ts`) picks an assignee based on the request type's `fulfillment_strategy`:
-   - `asset` → asset's `override_team_id` → asset type's `default_team_id` → request type's `default_team_id` → unassigned
-   - `location` → `location_teams(space, domain)` → walk parent spaces → request type's `default_team_id` → unassigned
-   - `auto` → asset first, location second, then fallbacks
-   - `fixed` → request type's `default_team_id` → unassigned
+## Assignments, Routing & Fulfillment
 
-Every decision is persisted to `routing_decisions` with a full trace. To debug "why did my ticket land on team X?":
-```sql
-select chosen_by, strategy, trace from routing_decisions where ticket_id = '…';
-```
+**Full reference:** [`docs/assignments-routing-fulfillment.md`](docs/assignments-routing-fulfillment.md). Read it before changing any routing, dispatch, SLA, or case/work-order behavior.
 
-Vendors are first-class assignees alongside teams and users — see `tickets.assigned_vendor_id`, `asset_types.default_vendor_id`, `location_teams.vendor_id`.
+Quick mental model — four orthogonal axes, keep them separate:
+1. **Routing** (scope + request type) — `ResolverService` + `routing_rules`.
+2. **Ownership** — parent case's `assigned_team_id` (the service desk).
+3. **Execution** — child work orders' assignees (user or vendor). Created via `DispatchService` / `POST /tickets/:id/dispatch`.
+4. **Visibility** — query-layer filters (not yet implemented; planned separately).
+
+Resolver order (first match wins): routing rules → asset branch → location branch (with space-group + domain-parent fallback) → request-type default → unassigned. Every decision is persisted to `routing_decisions` with a full trace. Vendors are first-class assignees alongside teams and users.
+
+### MANDATORY: keep the reference doc in sync
+
+**If a change touches any of the files or tables below, update `docs/assignments-routing-fulfillment.md` in the SAME commit/PR.** The doc is the operational contract for this subsystem — silent drift is how routing bugs hide.
+
+Trigger files:
+- `apps/api/src/modules/routing/**`
+- `apps/api/src/modules/ticket/dispatch.service.ts`
+- `apps/api/src/modules/ticket/ticket.service.ts` (`runPostCreateAutomation`, create/list DTOs, `getChildTasks`, reassignment)
+- `apps/api/src/modules/ticket/ticket.controller.ts` (routing-adjacent endpoints)
+- `apps/api/src/modules/sla/**`
+- `apps/api/src/modules/approval/**` (anything affecting `pending_approval` semantics)
+- `apps/api/src/modules/workflow/workflow-engine.service.ts` (especially `create_child_tasks`)
+
+Trigger migrations — any add/alter of: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`.
+
+When the doc and code disagree, fix the doc first, then align the code to the corrected doc.
 
 ## Frontend Rules
 - **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
