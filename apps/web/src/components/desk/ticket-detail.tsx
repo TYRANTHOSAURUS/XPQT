@@ -46,6 +46,20 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import type { FormField } from '@/components/admin/form-builder/premade-fields';
+
+function formatFormValue(field: FormField | undefined, value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  if (field?.type === 'checkbox') return value === true || value === 'true' ? 'Yes' : 'No';
+  if (field?.type === 'date') {
+    try { return new Date(String(value)).toLocaleDateString(); } catch { return String(value); }
+  }
+  if (field?.type === 'datetime') {
+    try { return new Date(String(value)).toLocaleString(); } catch { return String(value); }
+  }
+  return String(value);
+}
 
 interface TicketData {
   id: string;
@@ -69,6 +83,8 @@ interface TicketData {
   assigned_team?: { id: string; name: string };
   assigned_agent?: { id: string; email: string };
   request_type?: { id: string; name: string; domain: string };
+  ticket_type_id?: string | null;
+  form_data?: Record<string, unknown> | null;
   cost?: number | null;
   watchers?: string[];
   assigned_vendor?: { id: string; name: string } | null;
@@ -217,6 +233,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
   const { data: users } = useApi<UserOption[]>('/users', []);
   const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
+  const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
   const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
@@ -326,6 +343,25 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   };
 
   useEffect(() => {
+    const rtId = ticket?.request_type?.id;
+    if (!rtId) { setSchemaFields([]); return; }
+    let cancelled = false;
+    apiFetch<{ form_schema_id?: string | null }>(`/request-types/${rtId}`)
+      .then((rt) => {
+        if (cancelled || !rt.form_schema_id) { setSchemaFields([]); return null; }
+        return apiFetch<{ current_version?: { definition: { fields: FormField[] } } | null }>(
+          `/config-entities/${rt.form_schema_id}`,
+        );
+      })
+      .then((entity) => {
+        if (cancelled || !entity) return;
+        setSchemaFields(entity.current_version?.definition?.fields ?? []);
+      })
+      .catch(() => { if (!cancelled) setSchemaFields([]); });
+    return () => { cancelled = true; };
+  }, [ticket?.request_type?.id]);
+
+  useEffect(() => {
     if (!mentionMatch) return;
 
     if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
@@ -400,6 +436,28 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
               <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{displayedTicket!.description}</p>
             ) : (
               <p className="mt-5 text-[15px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">Add a description...</p>
+            )}
+
+            {displayedTicket?.form_data && Object.keys(displayedTicket.form_data).length > 0 && (
+              <div className="mt-8 space-y-3">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Custom Fields</h3>
+                <div className="grid gap-3 rounded-md border p-4 bg-muted/20">
+                  {Object.entries(displayedTicket.form_data).map(([key, value]) => {
+                    const field = schemaFields.find((f) => f.id === key);
+                    const label = field?.label ?? key;
+                    const archived = !field;
+                    return (
+                      <div key={key} className="grid grid-cols-[180px_1fr] gap-2 text-sm">
+                        <span className="text-muted-foreground">
+                          {label}
+                          {archived && <span className="ml-2 text-xs italic">(archived)</span>}
+                        </span>
+                        <span>{formatFormValue(field, value)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             {/* Sub-issues placeholder */}
