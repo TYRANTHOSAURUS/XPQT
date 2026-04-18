@@ -36,6 +36,7 @@ import { apiFetch } from '@/lib/api';
 import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
+import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import {
   Select,
   SelectContent,
@@ -233,6 +234,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
   const { data: users } = useApi<UserOption[]>('/users', []);
   const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
+  const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
   const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
@@ -892,23 +894,28 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             </div>
           )}
 
-          {/* Tags */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
-              <TagIcon className="h-3 w-3" /> Labels
-            </div>
-            {displayedTicket!.tags && displayedTicket!.tags.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {displayedTicket!.tags.map((tag) => (
-                  <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
-                ))}
-              </div>
-            ) : (
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-muted-foreground justify-start font-normal">
-                + Add label
-              </Button>
-            )}
-          </div>
+          <InlineProperty label="Labels" icon={<TagIcon className="h-3 w-3" />}>
+            <MultiSelectPicker
+              values={displayedTicket!.tags ?? []}
+              options={(tagSuggestions ?? []).map((t) => ({ id: t, label: t }))}
+              placeholder="label"
+              allowCreate
+              onChange={(next) => patch({ tags: next })}
+            />
+          </InlineProperty>
+
+          <InlineProperty label="Watchers">
+            <MultiSelectPicker
+              values={displayedTicket!.watchers ?? []}
+              options={(people ?? []).map((p) => ({
+                id: p.id,
+                label: `${p.first_name} ${p.last_name}`.trim(),
+                sublabel: p.email ?? null,
+              }))}
+              placeholder="watcher"
+              onChange={(next) => patch({ watchers: next })}
+            />
+          </InlineProperty>
 
           <Separator />
 
