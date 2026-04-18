@@ -37,6 +37,7 @@ import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutat
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
+import { NumberEditor } from '@/components/desk/editors/number-editor';
 import {
   Select,
   SelectContent,
@@ -816,6 +817,24 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             </Select>
           </InlineProperty>
 
+          {displayedTicket!.status_category === 'waiting' && (
+            <InlineProperty label="Waiting reason">
+              <Select
+                value={displayedTicket!.waiting_reason ?? ''}
+                onValueChange={(v) => patch({ waiting_reason: v || null })}
+              >
+                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Select reason" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="requester">Awaiting requester</SelectItem>
+                  <SelectItem value="vendor">Awaiting vendor</SelectItem>
+                  <SelectItem value="approval">Awaiting approval</SelectItem>
+                  <SelectItem value="scheduled_work">Scheduled work</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </InlineProperty>
+          )}
+
           <InlineProperty label="Team">
             <EntityPicker
               value={displayedTicket!.assigned_team?.id ?? null}
@@ -914,6 +933,16 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
               }))}
               placeholder="watcher"
               onChange={(next) => patch({ watchers: next })}
+            />
+          </InlineProperty>
+
+          <InlineProperty label="Cost">
+            <NumberEditor
+              value={displayedTicket!.cost ?? null}
+              placeholder="Add cost"
+              prefix="$"
+              formatDisplay={(v) => v == null ? '' : `$${v.toFixed(2)}`}
+              onChange={(next) => patch({ cost: next })}
             />
           </InlineProperty>
 
