@@ -36,6 +36,9 @@ import { apiFetch } from '@/lib/api';
 import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
+import { ParentCaseRibbon } from '@/components/desk/parent-case-ribbon';
+import { WorkOrdersSection } from '@/components/desk/work-orders-section';
+import { AddWorkOrderDialog } from '@/components/desk/add-work-order-dialog';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
 import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
@@ -66,6 +69,8 @@ function formatFormValue(field: FormField | undefined, value: unknown): string {
 
 interface TicketData {
   id: string;
+  ticket_kind: 'case' | 'work_order';
+  parent_ticket_id: string | null;
   title: string;
   description: string;
   status: string;
@@ -244,6 +249,9 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const [addWorkOrderOpen, setAddWorkOrderOpen] = useState(false);
+  const [workOrdersNonce, setWorkOrdersNonce] = useState(0);
 
   const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
   const { patch, updateAssignment } = useTicketMutation({
@@ -427,6 +435,10 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
 
         <ScrollArea className="flex-1">
           <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
+            {displayedTicket?.ticket_kind === 'work_order' && displayedTicket.parent_ticket_id && (
+              <ParentCaseRibbon parentId={displayedTicket.parent_ticket_id} />
+            )}
+
             {/* Title */}
             <InlineTextEditor
               value={displayedTicket!.title}
@@ -608,6 +620,36 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 </div>
               ))}
             </div>
+
+            {displayedTicket?.ticket_kind === 'case' && (
+              <WorkOrdersSection
+                parentId={displayedTicket.id}
+                onAddClick={() => setAddWorkOrderOpen(true)}
+                refreshNonce={workOrdersNonce}
+              />
+            )}
+
+            {displayedTicket?.ticket_kind === 'case' && (
+              <AddWorkOrderDialog
+                open={addWorkOrderOpen}
+                onOpenChange={setAddWorkOrderOpen}
+                parentId={displayedTicket.id}
+                parentPriority={displayedTicket.priority ?? 'medium'}
+                teamOptions={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+                userOptions={(users ?? []).map((u) => ({
+                  id: u.id,
+                  label: u.person
+                    ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email
+                    : u.email,
+                  sublabel: u.email,
+                }))}
+                vendorOptions={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
+                onDispatched={() => {
+                  setWorkOrdersNonce((n) => n + 1);
+                  refetchTicket();
+                }}
+              />
+            )}
 
             {/* Comment input */}
             <div className="mt-10">
