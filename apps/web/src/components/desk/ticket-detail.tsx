@@ -33,6 +33,9 @@ import {
 } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
+import { InlineProperty } from '@/components/desk/inline-property';
+import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import {
   Select,
   SelectContent,
@@ -66,6 +69,9 @@ interface TicketData {
   assigned_team?: { id: string; name: string };
   assigned_agent?: { id: string; email: string };
   request_type?: { id: string; name: string; domain: string };
+  cost?: number | null;
+  watchers?: string[];
+  assigned_vendor?: { id: string; name: string } | null;
 }
 
 interface Activity {
@@ -209,10 +215,16 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const updateTicket = async (updates: Record<string, unknown>) => {
-    await apiFetch(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(updates) });
-    refetchTicket();
-  };
+  const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
+  const { patch, updateAssignment } = useTicketMutation({
+    ticketId,
+    refetch: refetchTicket,
+    onOptimistic: setOverlay,
+  });
+
+  const displayedTicket = ticket && overlay
+    ? ({ ...ticket, ...overlay } as TicketData)
+    : ticket;
 
   const handleSubmitComment = async () => {
     const trimmedComment = commentText.trim();
@@ -367,11 +379,11 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         <ScrollArea className="flex-1">
           <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
             {/* Title */}
-            <h1 className="text-2xl font-semibold leading-tight tracking-tight">{ticket.title}</h1>
+            <h1 className="text-2xl font-semibold leading-tight tracking-tight">{displayedTicket!.title}</h1>
 
             {/* Description */}
-            {ticket.description ? (
-              <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{ticket.description}</p>
+            {displayedTicket!.description ? (
+              <p className="mt-5 text-[15px] leading-relaxed text-foreground/80 whitespace-pre-wrap">{displayedTicket!.description}</p>
             ) : (
               <p className="mt-5 text-[15px] text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">Add a description...</p>
             )}
@@ -696,13 +708,12 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
         <div className="p-5 space-y-5">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Properties</div>
 
-          {/* Status */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Status</div>
-            <Select value={ticket.status_category} onValueChange={(v) => { if (v) updateTicket({ status_category: v, status: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue />
-              </SelectTrigger>
+          <InlineProperty label="Status">
+            <Select
+              value={displayedTicket!.status_category}
+              onValueChange={(v) => { if (v) patch({ status_category: v, status: v }); }}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(statusConfig).map(([key, cfg]) => (
                   <SelectItem key={key} value={key}>
@@ -713,15 +724,14 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </InlineProperty>
 
-          {/* Priority */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Priority</div>
-            <Select value={ticket.priority} onValueChange={(v) => { if (v) updateTicket({ priority: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue />
-              </SelectTrigger>
+          <InlineProperty label="Priority">
+            <Select
+              value={displayedTicket!.priority}
+              onValueChange={(v) => { if (v) patch({ priority: v }); }}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(priorityConfig).map(([key, cfg]) => (
                   <SelectItem key={key} value={key}>
@@ -730,36 +740,38 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </InlineProperty>
 
-          {/* Team */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Team</div>
-            <Select value={ticket.assigned_team?.id ?? ''} onValueChange={(v) => { if (v) updateTicket({ assigned_team_id: v }); }}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue placeholder="Unassigned" />
-              </SelectTrigger>
-              <SelectContent>
-                {(teams ?? []).map((t) => (
-                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <InlineProperty label="Team">
+            <EntityPicker
+              value={displayedTicket!.assigned_team?.id ?? null}
+              options={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+              placeholder="team"
+              clearLabel="Clear team"
+              onChange={(option) => {
+                updateAssignment({
+                  kind: 'team',
+                  id: option?.id ?? null,
+                  nextLabel: option?.label ?? null,
+                  previousLabel: displayedTicket!.assigned_team?.name ?? null,
+                });
+              }}
+            />
+          </InlineProperty>
 
           {/* Assignee */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Assignee</div>
             <div className="text-sm flex items-center gap-2">
               <User className="h-3.5 w-3.5 text-muted-foreground" />
-              {ticket.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
+              {displayedTicket!.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
             </div>
           </div>
 
           {/* SLA */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">SLA</div>
-            <SlaTimer dueAt={ticket.sla_resolution_due_at} breachedAt={ticket.sla_resolution_breached_at} />
+            <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
           </div>
 
           <Separator />
@@ -767,32 +779,32 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* Requester */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Requester</div>
-            {ticket.requester ? (
+            {displayedTicket!.requester ? (
               <div>
-                <div className="text-sm font-medium">{ticket.requester.first_name} {ticket.requester.last_name}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">{ticket.requester.email}</div>
-                {ticket.requester.department && <div className="text-xs text-muted-foreground">{ticket.requester.department}</div>}
+                <div className="text-sm font-medium">{displayedTicket!.requester.first_name} {displayedTicket!.requester.last_name}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{displayedTicket!.requester.email}</div>
+                {displayedTicket!.requester.department && <div className="text-xs text-muted-foreground">{displayedTicket!.requester.department}</div>}
               </div>
             ) : <span className="text-sm text-muted-foreground">Unknown</span>}
           </div>
 
           {/* Location */}
-          {ticket.location && (
+          {displayedTicket!.location && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Location</div>
               <div className="text-sm flex items-center gap-2">
                 <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-                {ticket.location.name}
+                {displayedTicket!.location.name}
               </div>
             </div>
           )}
 
           {/* Asset */}
-          {ticket.asset && (
+          {displayedTicket!.asset && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Asset</div>
-              <div className="text-sm">{ticket.asset.name}</div>
-              <div className="text-xs text-muted-foreground">{ticket.asset.serial_number}</div>
+              <div className="text-sm">{displayedTicket!.asset.name}</div>
+              <div className="text-xs text-muted-foreground">{displayedTicket!.asset.serial_number}</div>
             </div>
           )}
 
@@ -801,9 +813,9 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             <div className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
               <TagIcon className="h-3 w-3" /> Labels
             </div>
-            {ticket.tags && ticket.tags.length > 0 ? (
+            {displayedTicket!.tags && displayedTicket!.tags.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
-                {ticket.tags.map((tag) => (
+                {displayedTicket!.tags.map((tag) => (
                   <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
                 ))}
               </div>
@@ -817,15 +829,15 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           <Separator />
 
           {/* Request type */}
-          {ticket.request_type && (
+          {displayedTicket!.request_type && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Type</div>
-              <div className="text-sm">{ticket.request_type.name}</div>
+              <div className="text-sm">{displayedTicket!.request_type.name}</div>
             </div>
           )}
 
           {/* Interaction mode */}
-          {ticket.interaction_mode === 'external' && (
+          {displayedTicket!.interaction_mode === 'external' && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Mode</div>
               <Badge variant="outline" className="text-xs">External vendor</Badge>
@@ -838,7 +850,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* Created */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Created</div>
-            <div className="text-sm">{new Date(ticket.created_at).toLocaleDateString('en-GB', {
+            <div className="text-sm">{new Date(displayedTicket!.created_at).toLocaleDateString('en-GB', {
               day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
             })}</div>
           </div>
