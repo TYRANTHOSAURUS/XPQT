@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -23,6 +31,7 @@ interface RequestType {
   sla_policy?: { id: string; name: string } | null;
   catalog_category_id?: string | null;
   routing_rule_id?: string | null;
+  form_schema_id?: string | null;
   fulfillment_strategy?: FulfillmentStrategy;
   requires_asset?: boolean;
   asset_required?: boolean;
@@ -38,6 +47,7 @@ interface SlaPolicy { id: string; name: string }
 interface Category { id: string; name: string }
 interface RoutingRule { id: string; name: string }
 interface Team { id: string; name: string }
+interface FormSchemaListItem { id: string; display_name: string }
 
 const domains = ['it', 'fm', 'workplace', 'visitor', 'catering', 'security', 'general'];
 
@@ -59,6 +69,7 @@ export function RequestTypeDialog({
   const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
   const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
   const { data: routingRules } = useApi<RoutingRule[]>('/routing-rules', []);
+  const { data: formSchemas } = useApi<FormSchemaListItem[]>('/config-entities?type=form_schema', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
 
   const [name, setName] = useState('');
@@ -66,6 +77,7 @@ export function RequestTypeDialog({
   const [slaPolicyId, setSlaPolicyId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [routingRuleId, setRoutingRuleId] = useState('');
+  const [formSchemaId, setFormSchemaId] = useState('');
   const [fulfillmentStrategy, setFulfillmentStrategy] = useState<FulfillmentStrategy>('fixed');
   const [requiresAsset, setRequiresAsset] = useState(false);
   const [assetRequired, setAssetRequired] = useState(false);
@@ -85,6 +97,7 @@ export function RequestTypeDialog({
       setSlaPolicyId('');
       setCategoryId(defaultCategoryId ?? '');
       setRoutingRuleId('');
+      setFormSchemaId('');
       setFulfillmentStrategy('fixed');
       setRequiresAsset(false);
       setAssetRequired(false);
@@ -106,6 +119,7 @@ export function RequestTypeDialog({
         setSlaPolicyId(rt.sla_policy?.id ?? '');
         setCategoryId(rt.catalog_category_id ?? '');
         setRoutingRuleId(rt.routing_rule_id ?? '');
+        setFormSchemaId(rt.form_schema_id ?? '');
         setFulfillmentStrategy(rt.fulfillment_strategy ?? 'fixed');
         setRequiresAsset(!!rt.requires_asset);
         setAssetRequired(!!rt.asset_required);
@@ -132,6 +146,7 @@ export function RequestTypeDialog({
       sla_policy_id: slaPolicyId || undefined,
       catalog_category_id: categoryId || undefined,
       routing_rule_id: routingRuleId || undefined,
+      form_schema_id: formSchemaId || undefined,
       fulfillment_strategy: fulfillmentStrategy,
       requires_asset: requiresAsset,
       asset_required: assetRequired,
@@ -167,26 +182,33 @@ export function RequestTypeDialog({
           <DialogTitle>{editingId ? 'Edit' : 'Create'} Request Type</DialogTitle>
           <DialogDescription>Define the types of requests employees can submit.</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3">
-          <div className="grid gap-1.5">
-            <Label>Name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. IT Incident, Cleaning Request..." />
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Domain</Label>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="rt-name">Name</FieldLabel>
+            <Input
+              id="rt-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. IT Incident, Cleaning Request..."
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="rt-domain">Domain</FieldLabel>
             <Select value={domain} onValueChange={(v) => setDomain(v ?? 'general')}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger id="rt-domain"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {domains.map((d) => (
                   <SelectItem key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Service Catalog Category</Label>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="rt-category">Service Catalog Category</FieldLabel>
             <Select value={categoryId} onValueChange={(v) => setCategoryId(v ?? '')}>
-              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectTrigger id="rt-category"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="">None</SelectItem>
                 {(categories ?? []).map((c) => (
@@ -194,11 +216,25 @@ export function RequestTypeDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Linked SLA Policy</Label>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="rt-form-schema">Linked Form Schema</FieldLabel>
+            <Select value={formSchemaId} onValueChange={(v) => setFormSchemaId(v ?? '')}>
+              <SelectTrigger id="rt-form-schema"><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">None (only standard fields)</SelectItem>
+                {(formSchemas ?? []).map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.display_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="rt-sla">Linked SLA Policy</FieldLabel>
             <Select value={slaPolicyId} onValueChange={(v) => setSlaPolicyId(v ?? '')}>
-              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectTrigger id="rt-sla"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="">None</SelectItem>
                 {(slas ?? []).map((s) => (
@@ -206,11 +242,12 @@ export function RequestTypeDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Linked Routing Rule (override)</Label>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="rt-routing-rule">Linked Routing Rule (override)</FieldLabel>
             <Select value={routingRuleId} onValueChange={(v) => setRoutingRuleId(v ?? '')}>
-              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectTrigger id="rt-routing-rule"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="">None</SelectItem>
                 {(routingRules ?? []).map((r) => (
@@ -218,131 +255,148 @@ export function RequestTypeDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
-          {/* ── Fulfillment section ─────────────────────────── */}
-          <div className="grid gap-3 border-t pt-4">
-            <div>
-              <h3 className="font-medium text-sm">Fulfillment</h3>
-              <p className="text-xs text-muted-foreground mt-1">
-                How tickets of this type get routed to a team.
-              </p>
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Strategy</Label>
-              <Select
-                value={fulfillmentStrategy}
-                onValueChange={(v) => setFulfillmentStrategy((v ?? 'fixed') as FulfillmentStrategy)}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="fixed">Fixed team (no context needed)</SelectItem>
-                  <SelectItem value="asset">Asset-based (e.g. elevator, printer)</SelectItem>
-                  <SelectItem value="location">Location-based (e.g. cleaning)</SelectItem>
-                  <SelectItem value="auto">Auto — try asset then location</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center gap-6">
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={requiresAsset}
-                  onCheckedChange={(v) => {
-                    setRequiresAsset(!!v);
-                    if (!v) setAssetRequired(false);
-                  }}
-                />
-                Show asset picker
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={assetRequired}
-                  onCheckedChange={(v) => setAssetRequired(!!v)}
-                  disabled={!requiresAsset}
-                />
-                Asset required
-              </label>
-            </div>
-            <div className="flex items-center gap-6">
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={requiresLocation}
-                  onCheckedChange={(v) => {
-                    setRequiresLocation(!!v);
-                    if (!v) setLocationRequired(false);
-                  }}
-                />
-                Show location picker
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={locationRequired}
-                  onCheckedChange={(v) => setLocationRequired(!!v)}
-                  disabled={!requiresLocation}
-                />
-                Location required
-              </label>
-            </div>
-            {requiresAsset && (
-              <div className="grid gap-1.5">
-                <Label>Asset type filter</Label>
-                <Input
-                  value={assetTypeFilter}
-                  onChange={(e) => setAssetTypeFilter(e.target.value)}
-                  placeholder="Comma-separated asset type IDs (leave blank for any)"
-                />
-              </div>
-            )}
-            <div className="grid gap-1.5">
-              <Label>Default fallback team</Label>
-              <Select value={defaultTeamId} onValueChange={(v) => setDefaultTeamId(v ?? '')}>
-                <SelectTrigger><SelectValue placeholder="None — leave unassigned" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">None</SelectItem>
-                  {(teams ?? []).map((t) => (
-                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Used when the resolver chain finds no asset/location match.
-              </p>
-            </div>
-          </div>
+          <FieldSeparator />
 
-          {/* ── Approval section ────────────────────────────── */}
-          <div className="grid gap-3 border-t pt-4">
-            <div>
-              <h3 className="font-medium text-sm">Approval gate</h3>
-              <p className="text-xs text-muted-foreground mt-1">
-                Require a manager or team to approve the ticket before it starts routing.
-              </p>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={requiresApproval}
-                onCheckedChange={(v) => {
-                  setRequiresApproval(!!v);
-                  if (!v) setApprovalApproverTeamId('');
-                }}
-              />
-              Require approval before routing
-            </label>
-            {requiresApproval && (
-              <div className="grid gap-1.5">
-                <Label>Approver team</Label>
-                <Select value={approvalApproverTeamId} onValueChange={(v) => setApprovalApproverTeamId(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="Pick a team…" /></SelectTrigger>
+          <FieldSet>
+            <FieldLegend>Fulfillment</FieldLegend>
+            <FieldDescription>How tickets of this type get routed to a team.</FieldDescription>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="rt-strategy">Strategy</FieldLabel>
+                <Select
+                  value={fulfillmentStrategy}
+                  onValueChange={(v) => setFulfillmentStrategy((v ?? 'fixed') as FulfillmentStrategy)}
+                >
+                  <SelectTrigger id="rt-strategy"><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="fixed">Fixed team (no context needed)</SelectItem>
+                    <SelectItem value="asset">Asset-based (e.g. elevator, printer)</SelectItem>
+                    <SelectItem value="location">Location-based (e.g. cleaning)</SelectItem>
+                    <SelectItem value="auto">Auto — try asset then location</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="rt-requires-asset"
+                    checked={requiresAsset}
+                    onCheckedChange={(v) => {
+                      setRequiresAsset(!!v);
+                      if (!v) setAssetRequired(false);
+                    }}
+                  />
+                  <FieldLabel htmlFor="rt-requires-asset" className="font-normal">
+                    Show asset picker
+                  </FieldLabel>
+                </Field>
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="rt-asset-required"
+                    checked={assetRequired}
+                    onCheckedChange={(v) => setAssetRequired(!!v)}
+                    disabled={!requiresAsset}
+                  />
+                  <FieldLabel htmlFor="rt-asset-required" className="font-normal">
+                    Asset required
+                  </FieldLabel>
+                </Field>
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="rt-requires-location"
+                    checked={requiresLocation}
+                    onCheckedChange={(v) => {
+                      setRequiresLocation(!!v);
+                      if (!v) setLocationRequired(false);
+                    }}
+                  />
+                  <FieldLabel htmlFor="rt-requires-location" className="font-normal">
+                    Show location picker
+                  </FieldLabel>
+                </Field>
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="rt-location-required"
+                    checked={locationRequired}
+                    onCheckedChange={(v) => setLocationRequired(!!v)}
+                    disabled={!requiresLocation}
+                  />
+                  <FieldLabel htmlFor="rt-location-required" className="font-normal">
+                    Location required
+                  </FieldLabel>
+                </Field>
+              </div>
+
+              {requiresAsset && (
+                <Field>
+                  <FieldLabel htmlFor="rt-asset-filter">Asset type filter</FieldLabel>
+                  <Input
+                    id="rt-asset-filter"
+                    value={assetTypeFilter}
+                    onChange={(e) => setAssetTypeFilter(e.target.value)}
+                    placeholder="Comma-separated asset type IDs (leave blank for any)"
+                  />
+                </Field>
+              )}
+
+              <Field>
+                <FieldLabel htmlFor="rt-default-team">Default fallback team</FieldLabel>
+                <Select value={defaultTeamId} onValueChange={(v) => setDefaultTeamId(v ?? '')}>
+                  <SelectTrigger id="rt-default-team"><SelectValue placeholder="None — leave unassigned" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
                     {(teams ?? []).map((t) => (
                       <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            )}
-          </div>
-        </div>
+                <FieldDescription>
+                  Used when the resolver chain finds no asset/location match.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+          </FieldSet>
+
+          <FieldSeparator />
+
+          <FieldSet>
+            <FieldLegend>Approval gate</FieldLegend>
+            <FieldDescription>
+              Require a manager or team to approve the ticket before it starts routing.
+            </FieldDescription>
+            <FieldGroup>
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="rt-requires-approval"
+                  checked={requiresApproval}
+                  onCheckedChange={(v) => {
+                    setRequiresApproval(!!v);
+                    if (!v) setApprovalApproverTeamId('');
+                  }}
+                />
+                <FieldLabel htmlFor="rt-requires-approval" className="font-normal">
+                  Require approval before routing
+                </FieldLabel>
+              </Field>
+              {requiresApproval && (
+                <Field>
+                  <FieldLabel htmlFor="rt-approver-team">Approver team</FieldLabel>
+                  <Select value={approvalApproverTeamId} onValueChange={(v) => setApprovalApproverTeamId(v ?? '')}>
+                    <SelectTrigger id="rt-approver-team"><SelectValue placeholder="Pick a team…" /></SelectTrigger>
+                    <SelectContent>
+                      {(teams ?? []).map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
+            </FieldGroup>
+          </FieldSet>
+        </FieldGroup>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleSave} disabled={!name.trim() || saving}>
