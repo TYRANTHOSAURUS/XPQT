@@ -4,7 +4,6 @@ import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -12,6 +11,11 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -216,38 +220,48 @@ function CreateMenuDialog({
           Minimal setup — you'll add items on the next screen.
         </DialogDescription>
       </DialogHeader>
-      <div className="grid gap-3">
+      <FieldGroup>
         <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-1.5">
-            <Label>Vendor</Label>
+          <Field>
+            <FieldLabel htmlFor="new-menu-vendor">Vendor</FieldLabel>
             <Select value={vendorId} onValueChange={(v) => setVendorId(v ?? '')}>
-              <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+              <SelectTrigger id="new-menu-vendor"><SelectValue placeholder="Select..." /></SelectTrigger>
               <SelectContent>
                 {vendors.filter((v) => v.active).map((v) => (
                   <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Service type</Label>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="new-menu-service-type">Service type</FieldLabel>
             <ServiceTypeSelect
               value={serviceType}
               onChange={(v) => setServiceType(v || 'catering')}
             />
-          </div>
+          </Field>
         </div>
-        <div className="grid gap-1.5">
-          <Label>Menu name</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Spring 2026 Lunch" />
-        </div>
+        <Field>
+          <FieldLabel htmlFor="new-menu-name">Menu name</FieldLabel>
+          <Input
+            id="new-menu-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Spring 2026 Lunch"
+          />
+        </Field>
         <div className="grid grid-cols-2 gap-3">
-          <div className="grid gap-1.5">
-            <Label>Effective from</Label>
-            <Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} />
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Building (optional)</Label>
+          <Field>
+            <FieldLabel htmlFor="new-menu-from">Effective from</FieldLabel>
+            <Input
+              id="new-menu-from"
+              type="date"
+              value={effectiveFrom}
+              onChange={(e) => setEffectiveFrom(e.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="new-menu-building">Building (optional)</FieldLabel>
             <SpaceSelect
               value={spaceId}
               onChange={setSpaceId}
@@ -255,9 +269,9 @@ function CreateMenuDialog({
               emptyLabel="All buildings"
               placeholder="All buildings"
             />
-          </div>
+          </Field>
         </div>
-      </div>
+      </FieldGroup>
       <DialogFooter>
         <Button onClick={submit} disabled={busy || !vendorId || !name || !effectiveFrom}>
           Create & edit

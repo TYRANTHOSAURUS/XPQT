@@ -1,8 +1,4 @@
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar"
+import { PersonAvatar } from "@/components/person-avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,9 +42,9 @@ export function NavUser() {
     ? `${person.first_name} ${person.last_name}`
     : user?.email ?? "User"
   const displayEmail = user?.email ?? ""
-  const initials = person
-    ? `${person.first_name[0] ?? ""}${person.last_name[0] ?? ""}`.toUpperCase()
-    : (user?.email?.[0] ?? "U").toUpperCase()
+  const avatarPerson = person
+    ? { first_name: person.first_name, last_name: person.last_name, email: user?.email }
+    : { email: user?.email };
 
   const handleSignOut = async () => {
     await signOut()
@@ -67,12 +63,7 @@ export function NavUser() {
               />
             }
           >
-            <Avatar className="h-8 w-8 rounded-lg">
-              <AvatarImage src="" alt={displayName} />
-              <AvatarFallback className="rounded-lg">
-                {initials}
-              </AvatarFallback>
-            </Avatar>
+            <PersonAvatar person={avatarPerson} alt={displayName} className="rounded-lg" />
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{displayName}</span>
               <span className="truncate text-xs">{displayEmail}</span>
@@ -88,12 +79,7 @@ export function NavUser() {
             <DropdownMenuGroup>
               <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                  <Avatar className="h-8 w-8 rounded-lg">
-                    <AvatarImage src="" alt={displayName} />
-                    <AvatarFallback className="rounded-lg">
-                      {initials}
-                    </AvatarFallback>
-                  </Avatar>
+                  <PersonAvatar person={avatarPerson} alt={displayName} className="rounded-lg" />
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-medium">{displayName}</span>
                     <span className="truncate text-xs">{displayEmail}</span>

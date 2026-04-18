@@ -1,9 +1,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -12,8 +10,18 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Plus, Pencil, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
@@ -197,33 +205,51 @@ export function VendorsPage() {
                 Define the vendor and the buildings they serve. Menus are managed separately.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3 max-h-[70vh] overflow-auto">
-              <div className="grid gap-1.5">
-                <Label>Name</Label>
+            <FieldGroup className="max-h-[70vh] overflow-auto">
+              <Field>
+                <FieldLabel htmlFor="vendor-name">Name</FieldLabel>
                 <Input
+                  id="vendor-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Compass Catering, Riedel AV Rentals"
                 />
-              </div>
+              </Field>
+
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label>Contact email</Label>
-                  <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Contact phone</Label>
-                  <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="vendor-email">Contact email</FieldLabel>
+                  <Input
+                    id="vendor-email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    type="email"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="vendor-phone">Contact phone</FieldLabel>
+                  <Input
+                    id="vendor-phone"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                  />
+                </Field>
               </div>
-              <div className="grid gap-1.5">
-                <Label>Website</Label>
-                <Input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://..." />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Owning internal team</Label>
+
+              <Field>
+                <FieldLabel htmlFor="vendor-website">Website</FieldLabel>
+                <Input
+                  id="vendor-website"
+                  value={website}
+                  onChange={(e) => setWebsite(e.target.value)}
+                  placeholder="https://..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="vendor-team">Owning internal team</FieldLabel>
                 <Select value={owningTeamId} onValueChange={(v) => setOwningTeamId(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="None — unassigned" /></SelectTrigger>
+                  <SelectTrigger id="vendor-team"><SelectValue placeholder="None — unassigned" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">Unassigned</SelectItem>
                     {(teams ?? []).map((t) => (
@@ -231,39 +257,44 @@ export function VendorsPage() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
+                <FieldDescription>
                   Internal team that owns this vendor relationship (comms, contracts, escalations).
-                </p>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Notes</Label>
-                <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Status</Label>
-                <Select value={active ? 'active' : 'inactive'} onValueChange={(v) => setActive(v === 'active')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                </FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="vendor-notes">Notes</FieldLabel>
+                <Textarea
+                  id="vendor-notes"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                />
+              </Field>
+
+              <Field orientation="horizontal">
+                <Switch
+                  id="vendor-status"
+                  checked={active}
+                  onCheckedChange={(v) => setActive(v === true)}
+                />
+                <FieldLabel htmlFor="vendor-status" className="font-normal">
+                  Active
+                </FieldLabel>
+              </Field>
 
               {editId && (
                 <>
-                  <Separator />
-                  <div className="space-y-3">
-                    <div>
-                      <Label className="text-sm font-medium">Service areas</Label>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Which buildings this vendor serves, for which service type.
-                      </p>
-                    </div>
+                  <FieldSeparator />
+                  <FieldSet>
+                    <FieldLegend variant="label">Service areas</FieldLegend>
+                    <FieldDescription>
+                      Which buildings this vendor serves, for which service type.
+                    </FieldDescription>
                     {areasLoading ? (
-                      <p className="text-sm text-muted-foreground">Loading...</p>
+                      <FieldDescription>Loading...</FieldDescription>
                     ) : serviceAreas.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No service areas yet.</p>
+                      <FieldDescription>No service areas yet.</FieldDescription>
                     ) : (
                       <div className="space-y-1">
                         {serviceAreas.map((area) => (
@@ -293,8 +324,8 @@ export function VendorsPage() {
                       </div>
                     )}
                     <div className="grid grid-cols-[1fr_160px_80px_auto] gap-2 items-end">
-                      <div className="grid gap-1">
-                        <Label className="text-xs">Building</Label>
+                      <Field>
+                        <FieldLabel htmlFor="vendor-area-building" className="text-xs">Building</FieldLabel>
                         <SpaceSelect
                           value={newAreaSpaceId}
                           onChange={setNewAreaSpaceId}
@@ -302,22 +333,23 @@ export function VendorsPage() {
                           emptyLabel={null}
                           placeholder="Select..."
                         />
-                      </div>
-                      <div className="grid gap-1">
-                        <Label className="text-xs">Service type</Label>
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="vendor-area-service-type" className="text-xs">Service type</FieldLabel>
                         <ServiceTypeSelect
                           value={newAreaServiceType}
                           onChange={(v) => setNewAreaServiceType(v || 'catering')}
                         />
-                      </div>
-                      <div className="grid gap-1">
-                        <Label className="text-xs">Priority</Label>
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="vendor-area-priority" className="text-xs">Priority</FieldLabel>
                         <Input
+                          id="vendor-area-priority"
                           type="number"
                           value={newAreaPriority}
                           onChange={(e) => setNewAreaPriority(e.target.value)}
                         />
-                      </div>
+                      </Field>
                       <Button
                         variant="outline"
                         size="icon"
@@ -327,10 +359,10 @@ export function VendorsPage() {
                         <Plus className="h-4 w-4" />
                       </Button>
                     </div>
-                  </div>
+                  </FieldSet>
                 </>
               )}
-            </div>
+            </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!name.trim()}>

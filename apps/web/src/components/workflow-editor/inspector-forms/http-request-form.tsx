@@ -1,7 +1,14 @@
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+  FieldLegend,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -41,32 +48,37 @@ export function HttpRequestForm({ node, readOnly }: { node: WorkflowNode; readOn
   };
 
   return (
-    <div className="grid gap-3">
-      <div className="grid gap-1.5">
-        <Label className="text-xs">Method</Label>
-        <Select value={c.method ?? 'POST'} onValueChange={(v) => update(node.id, { method: v ?? 'POST' })} disabled={readOnly}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
+    <FieldGroup>
+      <Field>
+        <FieldLabel htmlFor={`http-${node.id}-method`} className="text-xs">Method</FieldLabel>
+        <Select
+          value={c.method ?? 'POST'}
+          onValueChange={(v) => update(node.id, { method: v ?? 'POST' })}
+          disabled={readOnly}
+        >
+          <SelectTrigger id={`http-${node.id}-method`}><SelectValue /></SelectTrigger>
           <SelectContent>
             {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => (
               <SelectItem key={m} value={m}>{m}</SelectItem>
             ))}
           </SelectContent>
         </Select>
-      </div>
+      </Field>
 
-      <div className="grid gap-1.5">
-        <Label className="text-xs">URL</Label>
+      <Field>
+        <FieldLabel htmlFor={`http-${node.id}-url`} className="text-xs">URL</FieldLabel>
         <Input
+          id={`http-${node.id}-url`}
           value={c.url ?? ''}
           onChange={(e) => update(node.id, { url: e.target.value })}
           placeholder="https://api.example.com/notify"
           disabled={readOnly}
         />
-        <p className="text-[10px] text-muted-foreground">Supports <code>{'{{ticket.field}}'}</code> substitution.</p>
-      </div>
+        <FieldDescription>Supports <code>{'{{ticket.field}}'}</code> substitution.</FieldDescription>
+      </Field>
 
-      <div className="grid gap-1.5">
-        <Label className="text-xs">Headers</Label>
+      <FieldSet>
+        <FieldLegend variant="label" className="text-xs">Headers</FieldLegend>
         {headerEntries.map(([k, v], i) => (
           <div key={i} className="flex gap-1">
             <Input
@@ -88,14 +100,15 @@ export function HttpRequestForm({ node, readOnly }: { node: WorkflowNode; readOn
             </Button>
           </div>
         ))}
-        <Button variant="outline" size="sm" onClick={addHeader} disabled={readOnly} className="gap-1">
+        <Button variant="outline" size="sm" onClick={addHeader} disabled={readOnly} className="gap-1 w-fit">
           <Plus className="h-3.5 w-3.5" /> Add header
         </Button>
-      </div>
+      </FieldSet>
 
-      <div className="grid gap-1.5">
-        <Label className="text-xs">Body (JSON or text)</Label>
+      <Field>
+        <FieldLabel htmlFor={`http-${node.id}-body`} className="text-xs">Body (JSON or text)</FieldLabel>
         <Textarea
+          id={`http-${node.id}-body`}
           value={c.body ?? ''}
           onChange={(e) => update(node.id, { body: e.target.value })}
           rows={6}
@@ -103,19 +116,26 @@ export function HttpRequestForm({ node, readOnly }: { node: WorkflowNode; readOn
           placeholder={'{\n  "title": "{{ticket.title}}"\n}'}
           disabled={readOnly}
         />
-        <p className="text-[10px] text-muted-foreground">Ignored for GET. Supports <code>{'{{ticket.field}}'}</code>.</p>
-      </div>
+        <FieldDescription>
+          Ignored for GET. Supports <code>{'{{ticket.field}}'}</code>.
+        </FieldDescription>
+      </Field>
 
-      <div className="grid gap-1.5">
-        <Label className="text-xs">Save response as (optional)</Label>
+      <Field>
+        <FieldLabel htmlFor={`http-${node.id}-save`} className="text-xs">
+          Save response as (optional)
+        </FieldLabel>
         <Input
+          id={`http-${node.id}-save`}
           value={c.save_response_as ?? ''}
           onChange={(e) => update(node.id, { save_response_as: e.target.value })}
           placeholder="e.g. external_ticket"
           disabled={readOnly}
         />
-        <p className="text-[10px] text-muted-foreground">Stores the parsed JSON response at <code>context.&lt;key&gt;</code> for later nodes.</p>
-      </div>
-    </div>
+        <FieldDescription>
+          Stores the parsed JSON response at <code>context.&lt;key&gt;</code> for later nodes.
+        </FieldDescription>
+      </Field>
+    </FieldGroup>
   );
 }

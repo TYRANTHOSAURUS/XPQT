@@ -78,6 +78,22 @@ Vendors are first-class assignees alongside teams and users — see `tickets.ass
 - Installed components are in `apps/web/src/components/ui/`. Check there before installing duplicates.
 - **Make components reusable/generic by default.** Before writing an inline block of JSX or a page-local helper component, ask: will this pattern be used in more than one place? If yes (or plausibly yes), extract it into `apps/web/src/components/` as a prop-driven, domain-parameterized component — not a one-off. If you spot duplicated JSX across two or more files, stop and consolidate into a shared component instead of copying it a third time. Exceptions only for truly page-specific, non-reusable markup.
 
+### Form composition (mandatory)
+
+Every form — dialog, sheet, drawer, page-level, inspector panel — must be built from the shadcn Field primitives in `apps/web/src/components/ui/field.tsx`. Never hand-roll form layout with `<div className="grid gap-1.5">` + `<Label>` + `<Input>`. That pattern looks almost right in isolation but breaks consistency across the app (mismatched gaps, SelectTrigger `w-fit` collapsing to content width, ad-hoc helper text sizes, sections separated by raw `border-t`).
+
+**The rules:**
+- Wrap the whole form body in `<FieldGroup>`. Nothing else sets the vertical rhythm between fields — not `grid gap-3`, not `space-y-4`.
+- Each label + control pair is a `<Field>` with `<FieldLabel htmlFor="…">`. The `id`/`htmlFor` pair is required, not optional.
+- Helper text under a control is `<FieldDescription>`, never a bespoke `<p className="text-xs text-muted-foreground">`.
+- Inline validation errors use `<FieldError>` — do not replace with toasts for field-level problems.
+- Group related fields with `<FieldSet>` + `<FieldLegend>` (+ optional `<FieldDescription>` under the legend). Separate sections with `<FieldSeparator>`. Do not use `border-t pt-4` + a bare `<h3>` as a fake section header.
+- Checkbox and radio rows use `<Field orientation="horizontal">` with the control as the first child and `<FieldLabel className="font-normal" htmlFor="…">` as the second. Do not wrap a `<Checkbox>` inside a raw `<label>`.
+- Never pass `className="w-full"` to a `SelectTrigger` to force its width. The Field vertical variant already stretches children via `*:w-full`; if a Select is too narrow, the fix is to wrap it in `<Field>`, not to patch the trigger.
+- Reference the canonical shape in the shadcn Field docs (query via `context7` for "shadcn field") and the existing migrated examples in `apps/web/src/components/desk/create-ticket-dialog.tsx` and `apps/web/src/components/admin/request-type-dialog.tsx`.
+
+Before writing any new form or touching an existing one, confirm it follows the above. If you find a form that doesn't, migrate it rather than copying its pattern.
+
 ## Spec Documents
 All in `docs/`:
 - `docs/spec.md` — main product specification (~3000 lines, comprehensive)

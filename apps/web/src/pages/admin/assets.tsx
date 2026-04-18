@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -10,8 +9,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
@@ -178,14 +183,21 @@ export function AssetsPage() {
                 {editId ? 'Update asset details and assignment.' : 'Register a new asset and optionally assign it.'}
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3 max-h-[65vh] overflow-y-auto pr-1">
-              <div className="grid gap-1.5">
-                <Label htmlFor="asset-name">Name</Label>
-                <Input id="asset-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. MacBook Pro 14-inch" />
-              </div>
+            <ScrollArea className="max-h-[65vh] pr-3">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="asset-name">Name</FieldLabel>
+                <Input
+                  id="asset-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. MacBook Pro 14-inch"
+                />
+              </Field>
+
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-type">Asset Type</Label>
+                <Field>
+                  <FieldLabel htmlFor="asset-type">Asset Type</FieldLabel>
                   <Select value={assetTypeId} onValueChange={(v) => setAssetTypeId(v ?? '')}>
                     <SelectTrigger id="asset-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
                     <SelectContent>
@@ -194,9 +206,9 @@ export function AssetsPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-role">Role</Label>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="asset-role">Role</FieldLabel>
                   <Select value={assetRole} onValueChange={(v) => setAssetRole(v ?? 'fixed')}>
                     <SelectTrigger id="asset-role"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -205,21 +217,33 @@ export function AssetsPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </Field>
               </div>
+
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-tag">Tag</Label>
-                  <Input id="asset-tag" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="Asset tag" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-serial">Serial Number</Label>
-                  <Input id="asset-serial" value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="SN123..." />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="asset-tag">Tag</FieldLabel>
+                  <Input
+                    id="asset-tag"
+                    value={tag}
+                    onChange={(e) => setTag(e.target.value)}
+                    placeholder="Asset tag"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="asset-serial">Serial Number</FieldLabel>
+                  <Input
+                    id="asset-serial"
+                    value={serialNumber}
+                    onChange={(e) => setSerialNumber(e.target.value)}
+                    placeholder="SN123..."
+                  />
+                </Field>
               </div>
+
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-status">Status</Label>
+                <Field>
+                  <FieldLabel htmlFor="asset-status">Status</FieldLabel>
                   <Select value={status} onValueChange={(v) => setStatus(v ?? 'available')}>
                     <SelectTrigger id="asset-status"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -228,9 +252,9 @@ export function AssetsPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="asset-lifecycle">Lifecycle State</Label>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="asset-lifecycle">Lifecycle State</FieldLabel>
                   <Select value={lifecycleState} onValueChange={(v) => setLifecycleState(v ?? 'active')}>
                     <SelectTrigger id="asset-lifecycle"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -239,21 +263,38 @@ export function AssetsPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </Field>
               </div>
-              <div className="grid gap-1.5">
-                <Label>Assigned To (Person)</Label>
-                <PersonCombobox value={assignedPersonId} onChange={setAssignedPersonId} placeholder="Search persons..." />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Assigned Location</Label>
-                <SpaceSelect value={assignedSpaceId} onChange={setAssignedSpaceId} placeholder="No location" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="asset-purchase">Purchase Date</Label>
-                <Input id="asset-purchase" type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
-              </div>
-            </div>
+
+              <Field>
+                <FieldLabel htmlFor="asset-assigned-person">Assigned To (Person)</FieldLabel>
+                <PersonCombobox
+                  value={assignedPersonId}
+                  onChange={setAssignedPersonId}
+                  placeholder="Search persons..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="asset-assigned-location">Assigned Location</FieldLabel>
+                <SpaceSelect
+                  value={assignedSpaceId}
+                  onChange={setAssignedSpaceId}
+                  placeholder="No location"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="asset-purchase">Purchase Date</FieldLabel>
+                <Input
+                  id="asset-purchase"
+                  type="date"
+                  value={purchaseDate}
+                  onChange={(e) => setPurchaseDate(e.target.value)}
+                />
+              </Field>
+            </FieldGroup>
+            </ScrollArea>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!name.trim() || !assetTypeId}>

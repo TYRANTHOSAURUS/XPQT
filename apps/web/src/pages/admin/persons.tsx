@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -10,8 +9,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
 import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
@@ -150,62 +155,104 @@ export function PersonsPage() {
               <DialogTitle>{editId ? 'Edit' : 'Add'} Person</DialogTitle>
               <DialogDescription>Manage employee, contractor, and vendor contact records.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-3 max-h-[70vh] overflow-y-auto pr-1">
+            <ScrollArea className="max-h-[70vh] pr-3">
+            <FieldGroup>
               <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label>First Name</Label>
-                  <Input value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Jane" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Last Name</Label>
-                  <Input value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Smith" />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="person-first-name">First Name</FieldLabel>
+                  <Input
+                    id="person-first-name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="Jane"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="person-last-name">Last Name</FieldLabel>
+                  <Input
+                    id="person-last-name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="Smith"
+                  />
+                </Field>
               </div>
+
               <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1.5">
-                  <Label>Email</Label>
-                  <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@company.com" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Phone</Label>
-                  <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="person-email">Email</FieldLabel>
+                  <Input
+                    id="person-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="jane@company.com"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="person-phone">Phone</FieldLabel>
+                  <Input
+                    id="person-phone"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+1 555 000 0000"
+                  />
+                </Field>
               </div>
-              <div className="grid gap-1.5">
-                <Label>Type</Label>
+
+              <Field>
+                <FieldLabel htmlFor="person-type">Type</FieldLabel>
                 <Select value={type} onValueChange={(v) => setType(v ?? 'employee')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="person-type"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {personTypes.map((t) => (
                       <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
+
               <div className="grid grid-cols-3 gap-3">
-                <div className="grid gap-1.5">
-                  <Label>Division</Label>
-                  <Input value={division} onChange={(e) => setDivision(e.target.value)} placeholder="e.g. Engineering" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Department</Label>
-                  <Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="e.g. IT" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label>Cost Center</Label>
-                  <Input value={costCenter} onChange={(e) => setCostCenter(e.target.value)} placeholder="e.g. CC-100" />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="person-division">Division</FieldLabel>
+                  <Input
+                    id="person-division"
+                    value={division}
+                    onChange={(e) => setDivision(e.target.value)}
+                    placeholder="e.g. Engineering"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="person-department">Department</FieldLabel>
+                  <Input
+                    id="person-department"
+                    value={department}
+                    onChange={(e) => setDepartment(e.target.value)}
+                    placeholder="e.g. IT"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="person-cost-center">Cost Center</FieldLabel>
+                  <Input
+                    id="person-cost-center"
+                    value={costCenter}
+                    onChange={(e) => setCostCenter(e.target.value)}
+                    placeholder="e.g. CC-100"
+                  />
+                </Field>
               </div>
-              <div className="grid gap-1.5">
-                <Label>Manager</Label>
+
+              <Field>
+                <FieldLabel htmlFor="person-manager">Manager</FieldLabel>
                 <PersonCombobox
                   value={managerId}
                   onChange={setManagerId}
                   excludeId={editId}
                   placeholder="Select manager..."
                 />
-              </div>
-            </div>
+              </Field>
+            </FieldGroup>
+            </ScrollArea>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
               <Button onClick={handleSave} disabled={!firstName.trim() || !lastName.trim()}>

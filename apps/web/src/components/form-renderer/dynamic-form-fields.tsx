@@ -1,7 +1,14 @@
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -33,13 +40,85 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
       {fields.map((field) => {
         const id = `dyn-${field.id}`;
         const value = values[field.id];
+
+        if (field.type === 'multi_select') {
+          const arr = asStringArr(value);
+          return (
+            <FieldSet key={field.id}>
+              <FieldLegend variant="label">
+                {field.label}
+                {field.required && <span className="text-destructive ml-1">*</span>}
+              </FieldLegend>
+              {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
+              <FieldGroup data-slot="checkbox-group" className="rounded-md border p-2">
+                {(field.options ?? []).map((opt) => {
+                  const checked = arr.includes(opt);
+                  return (
+                    <Field key={opt} orientation="horizontal">
+                      <Checkbox
+                        id={`${id}-${opt}`}
+                        checked={checked}
+                        onCheckedChange={(c) => {
+                          const next = c === true ? [...arr, opt] : arr.filter((x) => x !== opt);
+                          onChange(field.id, next);
+                        }}
+                      />
+                      <FieldLabel htmlFor={`${id}-${opt}`} className="font-normal">{opt}</FieldLabel>
+                    </Field>
+                  );
+                })}
+              </FieldGroup>
+            </FieldSet>
+          );
+        }
+
+        if (field.type === 'checkbox') {
+          return (
+            <Field key={field.id} orientation="horizontal">
+              <Checkbox
+                id={id}
+                checked={value === true || value === 'true'}
+                onCheckedChange={(c) => onChange(field.id, c === true)}
+              />
+              <FieldLabel htmlFor={id} className="font-normal">
+                {field.label}
+                {field.required && <span className="text-destructive ml-1">*</span>}
+              </FieldLabel>
+              {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
+            </Field>
+          );
+        }
+
+        if (field.type === 'radio') {
+          return (
+            <FieldSet key={field.id}>
+              <FieldLegend variant="label">
+                {field.label}
+                {field.required && <span className="text-destructive ml-1">*</span>}
+              </FieldLegend>
+              {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
+              <RadioGroup
+                value={asString(value)}
+                onValueChange={(v) => onChange(field.id, v ?? '')}
+                className="gap-1.5"
+              >
+                {(field.options ?? []).map((opt) => (
+                  <Field key={opt} orientation="horizontal">
+                    <RadioGroupItem value={opt} id={`${id}-${opt}`} />
+                    <FieldLabel htmlFor={`${id}-${opt}`} className="font-normal">{opt}</FieldLabel>
+                  </Field>
+                ))}
+              </RadioGroup>
+            </FieldSet>
+          );
+        }
+
         return (
-          <div key={field.id} className="grid gap-1.5">
-            <Label htmlFor={id}>
+          <Field key={field.id}>
+            <FieldLabel htmlFor={id}>
               {field.label}
               {field.required && <span className="text-destructive ml-1">*</span>}
-            </Label>
-            {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
+            </FieldLabel>
 
             {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
               <Input
@@ -79,56 +158,6 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
               </Select>
             )}
 
-            {field.type === 'multi_select' && (
-              <div className="grid gap-1.5 rounded-md border p-2">
-                {(field.options ?? []).map((opt) => {
-                  const arr = asStringArr(value);
-                  const checked = arr.includes(opt);
-                  return (
-                    <div key={opt} className="flex items-center gap-2">
-                      <Checkbox
-                        id={`${id}-${opt}`}
-                        checked={checked}
-                        onCheckedChange={(c) => {
-                          const next = c === true ? [...arr, opt] : arr.filter((x) => x !== opt);
-                          onChange(field.id, next);
-                        }}
-                      />
-                      <Label htmlFor={`${id}-${opt}`} className="text-sm font-normal cursor-pointer">{opt}</Label>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {field.type === 'checkbox' && (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id={id}
-                  checked={value === true || value === 'true'}
-                  onCheckedChange={(c) => onChange(field.id, c === true)}
-                />
-                <Label htmlFor={id} className="text-sm font-normal cursor-pointer">
-                  {field.placeholder}
-                </Label>
-              </div>
-            )}
-
-            {field.type === 'radio' && (
-              <RadioGroup
-                value={asString(value)}
-                onValueChange={(v) => onChange(field.id, v ?? '')}
-                className="gap-1.5"
-              >
-                {(field.options ?? []).map((opt) => (
-                  <div key={opt} className="flex items-center gap-2">
-                    <RadioGroupItem value={opt} id={`${id}-${opt}`} />
-                    <Label htmlFor={`${id}-${opt}`} className="text-sm font-normal cursor-pointer">{opt}</Label>
-                  </div>
-                ))}
-              </RadioGroup>
-            )}
-
             {field.type === 'file_upload' && (
               <div className="flex items-center gap-2 rounded-md border border-dashed border-input p-3">
                 <span className="text-sm text-muted-foreground">File attachments — coming soon</span>
@@ -158,7 +187,9 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
                 placeholder={field.placeholder}
               />
             )}
-          </div>
+
+            {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
+          </Field>
         );
       })}
     </>

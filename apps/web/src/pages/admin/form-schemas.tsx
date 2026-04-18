@@ -6,6 +6,12 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
@@ -403,18 +409,20 @@ export function FormSchemasPage() {
                   {ef === null ? (
                     <p className="text-sm text-muted-foreground">Select a field to edit it.</p>
                   ) : (
-                    <>
-                      <div className="space-y-2">
-                        <Label>Label</Label>
+                    <FieldGroup>
+                      <Field>
+                        <FieldLabel htmlFor="fb-label">Label</FieldLabel>
                         <Input
+                          id="fb-label"
                           value={ef.label}
                           onChange={(e) => updateField(editingFieldIdx!, { label: e.target.value })}
                           placeholder="Field label..."
                         />
-                      </div>
-                      <div className="space-y-2">
+                      </Field>
+
+                      <Field>
                         <div className="flex items-center justify-between">
-                          <Label>Field Type</Label>
+                          <FieldLabel htmlFor="fb-type">Field Type</FieldLabel>
                           {ef.bound_to && (
                             <Badge variant="secondary" className="gap-1 font-normal">
                               <Link2 className="h-3 w-3" /> {BOUND_FIELD_LABELS[ef.bound_to]}
@@ -428,7 +436,7 @@ export function FormSchemasPage() {
                           }
                           disabled={!!ef.bound_to}
                         >
-                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectTrigger id="fb-type"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {fieldTypes.map((t) => (
                               <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
@@ -436,31 +444,37 @@ export function FormSchemasPage() {
                           </SelectContent>
                         </Select>
                         {ef.bound_to && (
-                          <p className="text-xs text-muted-foreground">
+                          <FieldDescription>
                             Field type is locked because this field writes to a ticket column.
-                          </p>
+                          </FieldDescription>
                         )}
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Placeholder</Label>
+                      </Field>
+
+                      <Field>
+                        <FieldLabel htmlFor="fb-placeholder">Placeholder</FieldLabel>
                         <Input
+                          id="fb-placeholder"
                           value={ef.placeholder ?? ''}
                           onChange={(e) => updateField(editingFieldIdx!, { placeholder: e.target.value })}
                           placeholder="Optional placeholder..."
                         />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Help Text</Label>
+                      </Field>
+
+                      <Field>
+                        <FieldLabel htmlFor="fb-help">Help Text</FieldLabel>
                         <Input
+                          id="fb-help"
                           value={ef.help_text ?? ''}
                           onChange={(e) => updateField(editingFieldIdx!, { help_text: e.target.value })}
                           placeholder="Optional helper text shown below field..."
                         />
-                      </div>
+                      </Field>
+
                       {needsOptions && (
-                        <div className="space-y-2">
-                          <Label>Options (one per line)</Label>
+                        <Field>
+                          <FieldLabel htmlFor="fb-options">Options (one per line)</FieldLabel>
                           <Textarea
+                            id="fb-options"
                             value={(ef.options ?? []).join('\n')}
                             onChange={(e) =>
                               updateField(editingFieldIdx!, {
@@ -470,16 +484,18 @@ export function FormSchemasPage() {
                             placeholder={'Option 1\nOption 2\nOption 3'}
                             className="h-24 resize-none"
                           />
-                        </div>
+                        </Field>
                       )}
-                      <div className="flex items-center gap-2">
+
+                      <Field orientation="horizontal">
                         <Checkbox
+                          id="fb-required"
                           checked={ef.required}
                           onCheckedChange={(c) => updateField(editingFieldIdx!, { required: c === true })}
                         />
-                        <Label>Required</Label>
-                      </div>
-                    </>
+                        <FieldLabel htmlFor="fb-required" className="font-normal">Required</FieldLabel>
+                      </Field>
+                    </FieldGroup>
                   )}
                 </div>
 

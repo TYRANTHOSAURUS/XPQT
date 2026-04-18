@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -10,6 +9,15 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -357,9 +365,9 @@ export function UsersPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-user-person">Person</Label>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="new-user-person">Person</FieldLabel>
               <Select value={newUserPersonId} onValueChange={(v) => handlePersonPick(v ?? '')}>
                 <SelectTrigger id="new-user-person">
                   <SelectValue placeholder="Select person..." />
@@ -377,10 +385,10 @@ export function UsersPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-user-email">Email</Label>
+            <Field>
+              <FieldLabel htmlFor="new-user-email">Email</FieldLabel>
               <Input
                 id="new-user-email"
                 value={newUserEmail}
@@ -388,22 +396,22 @@ export function UsersPage() {
                 placeholder="user@company.com"
                 type="email"
               />
-            </div>
+            </Field>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-user-username">
+            <Field>
+              <FieldLabel htmlFor="new-user-username">
                 Username <span className="text-muted-foreground font-normal">(optional)</span>
-              </Label>
+              </FieldLabel>
               <Input
                 id="new-user-username"
                 value={newUserUsername}
                 onChange={(e) => setNewUserUsername(e.target.value)}
                 placeholder="e.g. jsmith"
               />
-            </div>
+            </Field>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-user-status">Status</Label>
+            <Field>
+              <FieldLabel htmlFor="new-user-status">Status</FieldLabel>
               <Select value={newUserStatus} onValueChange={(v) => setNewUserStatus(v ?? 'active')}>
                 <SelectTrigger id="new-user-status"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -412,12 +420,10 @@ export function UsersPage() {
                   <SelectItem value="suspended">Suspended</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
 
-            {createUserError && (
-              <p className="text-sm text-destructive">{createUserError}</p>
-            )}
-          </div>
+            {createUserError && <FieldError>{createUserError}</FieldError>}
+          </FieldGroup>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateUserOpen(false)}>Cancel</Button>
@@ -440,13 +446,18 @@ export function UsersPage() {
               Roles group permissions. Assign roles to users to grant access across domains and locations.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="role-name">Name</Label>
-              <Input id="role-name" value={roleName} onChange={(e) => setRoleName(e.target.value)} placeholder="e.g. Admin, Service Desk, FM Approver..." />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="role-type">Type</Label>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="role-name">Name</FieldLabel>
+              <Input
+                id="role-name"
+                value={roleName}
+                onChange={(e) => setRoleName(e.target.value)}
+                placeholder="e.g. Admin, Service Desk, FM Approver..."
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="role-type">Type</FieldLabel>
               <Select value={roleType} onValueChange={(v) => setRoleType((v as RoleType) ?? 'employee')}>
                 <SelectTrigger id="role-type"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -460,13 +471,18 @@ export function UsersPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">Type controls which areas of the app this role unlocks.</p>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="role-desc">Description</Label>
-              <Input id="role-desc" value={roleDesc} onChange={(e) => setRoleDesc(e.target.value)} placeholder="Optional description..." />
-            </div>
-          </div>
+              <FieldDescription>Type controls which areas of the app this role unlocks.</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="role-desc">Description</FieldLabel>
+              <Input
+                id="role-desc"
+                value={roleDesc}
+                onChange={(e) => setRoleDesc(e.target.value)}
+                placeholder="Optional description..."
+              />
+            </Field>
+          </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRoleDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSaveRole} disabled={!roleName.trim()}>
@@ -485,9 +501,9 @@ export function UsersPage() {
               Scope a role to specific domains and locations. Leave scopes empty to grant everywhere.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="assign-user">User</Label>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="assign-user">User</FieldLabel>
               <Select value={assignUserId} onValueChange={(v) => setAssignUserId(v ?? '')}>
                 <SelectTrigger id="assign-user"><SelectValue placeholder="Select user..." /></SelectTrigger>
                 <SelectContent>
@@ -496,9 +512,9 @@ export function UsersPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="assign-role">Role</Label>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="assign-role">Role</FieldLabel>
               <Select value={assignRoleId} onValueChange={(v) => setAssignRoleId(v ?? '')}>
                 <SelectTrigger id="assign-role"><SelectValue placeholder="Select role..." /></SelectTrigger>
                 <SelectContent>
@@ -507,39 +523,52 @@ export function UsersPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label className="text-sm">Domain Scope <span className="text-muted-foreground font-normal">(leave empty for all)</span></Label>
-              <div className="grid grid-cols-3 gap-2">
+            </Field>
+
+            <FieldSet>
+              <FieldLegend variant="label">
+                Domain Scope <span className="text-muted-foreground font-normal">(leave empty for all)</span>
+              </FieldLegend>
+              <FieldGroup data-slot="checkbox-group" className="grid grid-cols-3 gap-2">
                 {domains.map((d) => (
-                  <div key={d} className="flex items-center gap-1.5">
+                  <Field key={d} orientation="horizontal">
                     <Checkbox
                       id={`assign-domain-${d}`}
                       checked={assignDomains.includes(d)}
                       onCheckedChange={() => toggleDomain(d)}
                     />
-                    <Label htmlFor={`assign-domain-${d}`} className="font-normal capitalize text-sm cursor-pointer">{d}</Label>
-                  </div>
+                    <FieldLabel htmlFor={`assign-domain-${d}`} className="font-normal capitalize">
+                      {d}
+                    </FieldLabel>
+                  </Field>
                 ))}
-              </div>
-            </div>
-            <div className="grid gap-1.5">
-              <Label className="text-sm">Location Scope <span className="text-muted-foreground font-normal">(leave empty for all)</span></Label>
-              <div className="space-y-1.5">
-                {locationOptions.map((s) => (
-                  <div key={s.id} className="flex items-center gap-1.5">
-                    <Checkbox
-                      id={`assign-loc-${s.id}`}
-                      checked={assignLocations.includes(s.id)}
-                      onCheckedChange={() => toggleLocation(s.id)}
-                    />
-                    <Label htmlFor={`assign-loc-${s.id}`} className="font-normal text-sm cursor-pointer">{s.name} ({s.type})</Label>
-                  </div>
-                ))}
-                {locationOptions.length === 0 && <p className="text-sm text-muted-foreground">No sites or buildings configured.</p>}
-              </div>
-            </div>
-          </div>
+              </FieldGroup>
+            </FieldSet>
+
+            <FieldSet>
+              <FieldLegend variant="label">
+                Location Scope <span className="text-muted-foreground font-normal">(leave empty for all)</span>
+              </FieldLegend>
+              {locationOptions.length === 0 ? (
+                <FieldDescription>No sites or buildings configured.</FieldDescription>
+              ) : (
+                <FieldGroup data-slot="checkbox-group">
+                  {locationOptions.map((s) => (
+                    <Field key={s.id} orientation="horizontal">
+                      <Checkbox
+                        id={`assign-loc-${s.id}`}
+                        checked={assignLocations.includes(s.id)}
+                        onCheckedChange={() => toggleLocation(s.id)}
+                      />
+                      <FieldLabel htmlFor={`assign-loc-${s.id}`} className="font-normal">
+                        {s.name} ({s.type})
+                      </FieldLabel>
+                    </Field>
+                  ))}
+                </FieldGroup>
+              )}
+            </FieldSet>
+          </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleAssignRole} disabled={!assignRoleId}>Assign</Button>

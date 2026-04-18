@@ -6,7 +6,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { PersonAvatar } from '@/components/person-avatar';
 import {
   Command,
   CommandEmpty,
@@ -206,10 +206,6 @@ function getActiveMention(text: string, caret: number): MentionMatch | null {
 
 function getPersonLabel(person: MentionPerson): string {
   return `${person.first_name} ${person.last_name}`.trim();
-}
-
-function getPersonInitials(person: MentionPerson): string {
-  return `${person.first_name[0] ?? ''}${person.last_name[0] ?? ''}`.toUpperCase() || '?';
 }
 
 function filterMentionPeople(people: MentionPerson[], query: string): MentionPerson[] {
@@ -703,9 +699,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                                 onMouseDown={(e) => e.preventDefault()}
                                 onSelect={() => selectMention(person)}
                               >
-                                <Avatar size="sm" className="size-5">
-                                  <AvatarFallback className="text-[10px]">{getPersonInitials(person)}</AvatarFallback>
-                                </Avatar>
+                                <PersonAvatar size="sm" className="size-5" person={person} />
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate font-medium">{getPersonLabel(person)}</div>
                                 </div>
