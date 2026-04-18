@@ -355,6 +355,7 @@ export class TicketService {
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
         assigned_agent:users!tickets_assigned_user_id_fkey(id, email),
+        assigned_vendor:vendors!tickets_assigned_vendor_id_fkey(id, name),
         request_type:request_types!tickets_ticket_type_id_fkey(id, name, domain)
       `)
       .eq('id', id)

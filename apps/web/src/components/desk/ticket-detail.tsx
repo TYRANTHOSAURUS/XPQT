@@ -99,6 +99,18 @@ interface MentionPerson {
   department?: string | null;
 }
 
+interface UserOption {
+  id: string;
+  email: string;
+  person?: { first_name?: string; last_name?: string } | null;
+}
+
+interface VendorOption {
+  id: string;
+  name: string;
+  active?: boolean;
+}
+
 interface MentionMatch {
   start: number;
   end: number;
@@ -203,6 +215,8 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
+  const { data: users } = useApi<UserOption[]>('/users', []);
+  const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
   const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
@@ -759,14 +773,26 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             />
           </InlineProperty>
 
-          {/* Assignee */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">Assignee</div>
-            <div className="text-sm flex items-center gap-2">
-              <User className="h-3.5 w-3.5 text-muted-foreground" />
-              {displayedTicket!.assigned_agent?.email ?? <span className="text-muted-foreground">Unassigned</span>}
-            </div>
-          </div>
+          <InlineProperty label="Assignee" icon={<User className="h-3 w-3 text-muted-foreground" />}>
+            <EntityPicker
+              value={displayedTicket!.assigned_agent?.id ?? null}
+              options={(users ?? []).map((u) => ({
+                id: u.id,
+                label: u.person ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email : u.email,
+                sublabel: u.email,
+              }))}
+              placeholder="assignee"
+              clearLabel="Clear assignee"
+              onChange={(option) => {
+                updateAssignment({
+                  kind: 'user',
+                  id: option?.id ?? null,
+                  nextLabel: option?.label ?? null,
+                  previousLabel: displayedTicket!.assigned_agent?.email ?? null,
+                });
+              }}
+            />
+          </InlineProperty>
 
           {/* SLA */}
           <div>
@@ -836,12 +862,25 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             </div>
           )}
 
-          {/* Interaction mode */}
           {displayedTicket!.interaction_mode === 'external' && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1.5">Mode</div>
-              <Badge variant="outline" className="text-xs">External vendor</Badge>
-            </div>
+            <InlineProperty label="Vendor">
+              <EntityPicker
+                value={displayedTicket!.assigned_vendor?.id ?? null}
+                options={(vendors ?? [])
+                  .filter((v) => v.active !== false)
+                  .map((v) => ({ id: v.id, label: v.name }))}
+                placeholder="vendor"
+                clearLabel="Clear vendor"
+                onChange={(option) => {
+                  updateAssignment({
+                    kind: 'vendor',
+                    id: option?.id ?? null,
+                    nextLabel: option?.label ?? null,
+                    previousLabel: displayedTicket!.assigned_vendor?.name ?? null,
+                  });
+                }}
+              />
+            </InlineProperty>
           )}
 
           {/* Workflow */}
