@@ -146,7 +146,7 @@ export class TicketController {
   }
 
   @Get(':id/children')
-  async getChildTasks(@Param('id') id: string) {
+  async children(@Param('id') id: string) {
     return this.ticketService.getChildTasks(id);
   }
 
