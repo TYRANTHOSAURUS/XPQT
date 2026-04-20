@@ -27,14 +27,20 @@ export class RoutingService {
   ) {}
 
   /**
-   * Evaluate routing for a ticket. The evaluator wraps both the legacy
-   * ResolverService and the v2 engines under `routing_v2_mode` — this method
-   * transparently dispatches to whichever path the tenant's flag selects.
+   * Compute a routing decision WITHOUT persisting it. The evaluator wraps
+   * both the legacy ResolverService and the v2 engines under `routing_v2_mode`
+   * — this method transparently dispatches to whichever path the tenant's
+   * flag selects.
    *
    * Callers pass `hook` to distinguish the parent-case owner decision from
    * the child-work-order dispatch decision. TicketService (parent create +
    * reassignment) passes `'case_owner'`; DispatchService passes
    * `'child_dispatch'`. Default is `'case_owner'` for historical callers.
+   *
+   * Callers who want the decision written to `routing_decisions` must also
+   * call `recordDecision()`. Preview flows (reclassify, dry-run automation)
+   * intentionally omit that call so the decision trace doesn't pollute the
+   * audit history until the user confirms.
    */
   async evaluate(context: ResolverContext, hook: RoutingHook = 'case_owner'): Promise<RoutingEvaluation> {
     const decision =
@@ -51,6 +57,11 @@ export class RoutingService {
     };
   }
 
+  /**
+   * Persist a previously computed evaluation to `routing_decisions`.
+   * Each call inserts a new row — routing history is append-only so
+   * callers can see the full decision trail per ticket.
+   */
   async recordDecision(ticketId: string, context: ResolverContext, evaluation: RoutingEvaluation) {
     const tenant = TenantContext.current();
     await this.supabase.admin.from('routing_decisions').insert({
