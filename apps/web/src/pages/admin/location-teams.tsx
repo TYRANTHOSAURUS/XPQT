@@ -16,6 +16,7 @@ import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { LegacyRoutingPageBanner } from '@/components/admin/routing-studio/legacy-page-banner';
 
 interface LocationTeam {
   id: string;
@@ -135,6 +136,7 @@ export function LocationTeamsPage() {
 
   return (
     <div>
+      <LegacyRoutingPageBanner tab="coverage" />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Location Teams</h1>

@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
+import { LegacyRoutingPageBanner } from '@/components/admin/routing-studio/legacy-page-banner';
 
 interface RoutingRule {
   id: string;
@@ -103,6 +104,7 @@ export function RoutingRulesPage() {
 
   return (
     <div>
+      <LegacyRoutingPageBanner tab="simulator" />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Routing Rules</h1>

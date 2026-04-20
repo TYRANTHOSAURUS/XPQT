@@ -13,6 +13,7 @@ import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { LegacyRoutingPageBanner } from '@/components/admin/routing-studio/legacy-page-banner';
 
 interface DomainParent {
   id: string;
@@ -59,6 +60,7 @@ export function DomainParentsPage() {
 
   return (
     <div>
+      <LegacyRoutingPageBanner tab="coverage" />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Domain Hierarchy</h1>

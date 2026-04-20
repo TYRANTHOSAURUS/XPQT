@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle } from 'lucide-react';
 import { EditCellDialog, type EditCellInput } from './edit-cell-dialog';
+import { Link } from 'react-router-dom';
 
 type CoverageChosenBy =
   | 'direct'
@@ -192,6 +193,15 @@ export function CoverageMatrix() {
       </div>
 
       <Legend />
+
+      {/* Cross-links to legacy editors until Rules/Groups/Fallbacks tabs land */}
+      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+        <span>Editors:</span>
+        <Link to="/admin/routing-rules" className="text-primary hover:underline">Routing rules →</Link>
+        <Link to="/admin/location-teams" className="text-primary hover:underline">Location teams →</Link>
+        <Link to="/admin/space-groups" className="text-primary hover:underline">Space groups →</Link>
+        <Link to="/admin/domain-parents" className="text-primary hover:underline">Domain fallbacks →</Link>
+      </div>
 
       <EditCellDialog
         input={editCell}

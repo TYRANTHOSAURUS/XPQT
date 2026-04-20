@@ -16,6 +16,7 @@ import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { LegacyRoutingPageBanner } from '@/components/admin/routing-studio/legacy-page-banner';
 
 interface SpaceOption { id: string; name: string; type?: string }
 
@@ -127,6 +128,7 @@ export function SpaceGroupsPage() {
 
   return (
     <div>
+      <LegacyRoutingPageBanner tab="coverage" />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Space Groups</h1>
