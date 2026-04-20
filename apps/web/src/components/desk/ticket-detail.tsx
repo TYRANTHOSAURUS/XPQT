@@ -37,8 +37,8 @@ import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutat
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { ParentCaseRibbon } from '@/components/desk/parent-case-ribbon';
-import { WorkOrdersSection } from '@/components/desk/work-orders-section';
-import { AddWorkOrderDialog } from '@/components/desk/add-work-order-dialog';
+import { SubIssuesSection } from '@/components/desk/sub-issues-section';
+import { AddSubIssueDialog } from '@/components/desk/add-sub-issue-dialog';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
 import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
@@ -503,17 +503,16 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
               </div>
             )}
 
-            {/* Sub-issues placeholder */}
-            <div className="mt-10">
-              <div className="flex items-center gap-3 mb-3">
-                <span className="text-sm font-medium">Sub-issues</span>
-                <span className="text-xs text-muted-foreground">0/0</span>
-                <Button variant="ghost" size="icon" className="ml-auto h-6 w-6 text-muted-foreground">
-                  <span className="text-xs">+</span>
-                </Button>
-              </div>
-              <div className="text-sm text-muted-foreground/50 py-2">No sub-issues yet</div>
-            </div>
+            {displayedTicket?.ticket_kind === 'case' && (
+              <SubIssuesSection
+                parentId={displayedTicket.id}
+                onAddClick={() => setAddWorkOrderOpen(true)}
+                refreshNonce={workOrdersNonce}
+                teams={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+                users={users ?? []}
+                vendors={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
+              />
+            )}
 
             <Separator className="my-8" />
 
@@ -640,15 +639,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
             </div>
 
             {displayedTicket?.ticket_kind === 'case' && (
-              <WorkOrdersSection
-                parentId={displayedTicket.id}
-                onAddClick={() => setAddWorkOrderOpen(true)}
-                refreshNonce={workOrdersNonce}
-              />
-            )}
-
-            {displayedTicket?.ticket_kind === 'case' && (
-              <AddWorkOrderDialog
+              <AddSubIssueDialog
                 open={addWorkOrderOpen}
                 onOpenChange={setAddWorkOrderOpen}
                 parentId={displayedTicket.id}
