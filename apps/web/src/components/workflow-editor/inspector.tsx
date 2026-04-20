@@ -33,7 +33,11 @@ export function Inspector({ readOnly = false }: { readOnly?: boolean }) {
       <aside className="w-[300px] border-l bg-muted/30 p-4 overflow-auto shrink-0">
         <div className="text-xs font-semibold uppercase text-muted-foreground mb-2">Inspector</div>
         <p className="text-sm text-muted-foreground">
-          {selectedIds.length > 1 ? `${selectedIds.length} nodes selected` : 'Select a node to edit its configuration.'}
+          {selectedIds.length > 1
+            ? `${selectedIds.length} nodes selected`
+            : readOnly
+              ? 'Select a node to view its configuration.'
+              : 'Select a node to edit its configuration.'}
         </p>
       </aside>
     );
@@ -45,6 +49,9 @@ export function Inspector({ readOnly = false }: { readOnly?: boolean }) {
   return (
     <aside className="w-[300px] border-l bg-muted/30 p-4 overflow-auto shrink-0">
       <div className="text-xs font-semibold uppercase text-muted-foreground mb-2">Inspector</div>
+      {readOnly && (
+        <p className="text-xs text-muted-foreground mb-3">Read-only — unpublish to edit.</p>
+      )}
       <div className="flex items-center gap-2 mb-3">
         <Icon className="h-4 w-4" />
         <div className="font-semibold">{meta.label}</div>

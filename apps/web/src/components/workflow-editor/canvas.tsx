@@ -108,9 +108,8 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
         onNodeContextMenu={nodeHandler}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
-        elementsSelectable={!readOnly}
         edgesUpdatable={!readOnly}
-        deleteKeyCode={['Delete', 'Backspace']}
+        deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
