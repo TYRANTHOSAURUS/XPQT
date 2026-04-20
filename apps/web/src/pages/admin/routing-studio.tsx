@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RoutingSimulator } from '@/components/admin/routing-studio/simulator';
@@ -23,7 +23,14 @@ function coerceTab(value: string | null): TabId {
 
 export function RoutingStudioPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tab, setTabState] = useState<TabId>(() => coerceTab(searchParams.get('tab')));
+  const urlTab = coerceTab(searchParams.get('tab'));
+  const [tab, setTabState] = useState<TabId>(urlTab);
+
+  // Sync state when the URL changes externally (redirect landings, back/forward nav).
+  useEffect(() => {
+    if (urlTab !== tab) setTabState(urlTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTab]);
 
   const setTab = (next: TabId) => {
     setTabState(next);
@@ -60,10 +67,6 @@ export function RoutingStudioPage() {
           <RoutingRulesEditor compact />
         </TabsContent>
 
-        <TabsContent value="audit">
-          <RoutingAuditTab />
-        </TabsContent>
-
         <TabsContent value="coverage">
           <CoverageMatrix />
         </TabsContent>
@@ -78,6 +81,10 @@ export function RoutingStudioPage() {
 
         <TabsContent value="fallbacks">
           <DomainFallbacksEditor compact />
+        </TabsContent>
+
+        <TabsContent value="audit">
+          <RoutingAuditTab />
         </TabsContent>
       </Tabs>
     </div>
