@@ -184,7 +184,14 @@ export class WorkflowEngineService {
 
       case 'create_child_tasks': {
         const tasks = node.config.tasks as Array<{
-          title: string; description?: string; assigned_team_id?: string; interaction_mode?: string; priority?: string;
+          title: string;
+          description?: string;
+          assigned_team_id?: string;
+          assigned_user_id?: string;
+          assigned_vendor_id?: string;
+          interaction_mode?: string;
+          priority?: string;
+          sla_policy_id?: string | null;
         }> | undefined;
 
         if (ctx?.dryRun) {
@@ -201,8 +208,15 @@ export class WorkflowEngineService {
                 title,
                 description: task.description,
                 assigned_team_id: task.assigned_team_id,
+                assigned_user_id: task.assigned_user_id,
+                assigned_vendor_id: task.assigned_vendor_id,
                 priority: task.priority,
                 interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
+                // Pass through ONLY if the task explicitly set the field. `undefined` falls through
+                // to DispatchService.resolveChildSla; explicit `null` means "No SLA".
+                ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
+                  ? { sla_id: task.sla_policy_id ?? null }
+                  : {}),
               }, '__system__');
             } catch (err) {
               console.error('[workflow] create_child_tasks: dispatch failed', err);
