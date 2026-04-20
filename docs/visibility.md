@@ -73,7 +73,7 @@ Internal service-to-service calls (workflow engine, approvals, resolver callback
 - **Reporting service.** `reporting.service.ts` queries tenant-wide for dashboard counts. Admin-facing; not yet filtered.
 - **Bulk updates.** `PATCH /tickets/bulk/update` doesn't call `assertVisible`. Rare and typically admin — follow-up.
 - **Search endpoint.** Not yet built; when added, use `getVisibleIds`.
-- **Vendor portal (Phase 4).** The vendor path in `ticket_visibility_ids` is wired but dormant until a vendor-user provisioning flow exists.
+- **Vendor-participant path (Phase 4).** Currently returns no rows. The schema doesn't link a person to their specific vendor; Phase 4 will formalize. Users with `persons.external_source='vendor'` must rely on team membership or role scope for now.
 - **RLS defense-in-depth.** Possible Phase 2 addition. The tenant-isolation RLS stays; a per-user visibility RLS policy can be added later that calls `ticket_visibility_ids` from a `SECURITY DEFINER` function.
 - **Per-activity visibility.** `ticket_activities.visibility` (internal/external/system) is a separate concern and remains unchanged.
 
