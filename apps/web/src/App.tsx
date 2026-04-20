@@ -37,9 +37,11 @@ import { WebhooksPage } from '@/pages/admin/webhooks';
 import { VendorsPage } from '@/pages/admin/vendors';
 import { VendorMenusPage } from '@/pages/admin/vendor-menus';
 import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
+import { RoutingStudioPage } from '@/pages/admin/routing-studio';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
+import { features } from '@/lib/features';
 
 export function App() {
   useTheme();
@@ -127,6 +129,10 @@ export function App() {
             <Route path="vendors" element={<VendorsPage />} />
             <Route path="vendor-menus" element={<VendorMenusPage />} />
             <Route path="vendor-menus/:id" element={<VendorMenuDetailPage />} />
+            {/* Routing Studio (feature-flagged, phase 1: additive only) */}
+            {features.routingStudio && (
+              <Route path="routing-studio" element={<RoutingStudioPage />} />
+            )}
           </Route>
         </Routes>
       </TooltipProvider>

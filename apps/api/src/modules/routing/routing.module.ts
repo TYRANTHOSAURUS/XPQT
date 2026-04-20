@@ -6,14 +6,17 @@ import { RoutingRuleController } from './routing.controller';
 import { LocationTeamsController } from './location-teams.controller';
 import { SpaceGroupsController } from './space-groups.controller';
 import { DomainParentsController } from './domain-parents.controller';
+import { RoutingSimulatorController } from './simulator.controller';
+import { RoutingSimulatorService } from './simulator.service';
 
 @Module({
-  providers: [RoutingService, ResolverService, ResolverRepository],
+  providers: [RoutingService, ResolverService, ResolverRepository, RoutingSimulatorService],
   controllers: [
     RoutingRuleController,
     LocationTeamsController,
     SpaceGroupsController,
     DomainParentsController,
+    RoutingSimulatorController,
   ],
   exports: [RoutingService],
 })

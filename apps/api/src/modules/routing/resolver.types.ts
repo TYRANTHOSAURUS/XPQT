@@ -24,6 +24,8 @@ export interface ResolverContext {
   priority: string | null;
   asset_id: string | null;
   location_id: string | null;
+  /** Rule ids to skip during the pre-step. Used by the simulator's "disable rule" affordance. */
+  excluded_rule_ids?: string[];
   loaded?: {
     request_type?: LoadedRequestType | null;
     asset?: LoadedAsset | null;
