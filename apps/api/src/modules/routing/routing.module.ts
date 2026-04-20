@@ -8,9 +8,16 @@ import { SpaceGroupsController } from './space-groups.controller';
 import { DomainParentsController } from './domain-parents.controller';
 import { RoutingSimulatorController } from './simulator.controller';
 import { RoutingSimulatorService } from './simulator.service';
+import { RoutingAuditService } from './audit.service';
 
 @Module({
-  providers: [RoutingService, ResolverService, ResolverRepository, RoutingSimulatorService],
+  providers: [
+    RoutingService,
+    ResolverService,
+    ResolverRepository,
+    RoutingSimulatorService,
+    RoutingAuditService,
+  ],
   controllers: [
     RoutingRuleController,
     LocationTeamsController,

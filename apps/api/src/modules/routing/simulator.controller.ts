@@ -1,5 +1,7 @@
-import { BadRequestException, Body, Controller, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
+import { DecisionRow, RoutingAuditService } from './audit.service';
+import { ChosenBy } from './resolver.types';
 
 /**
  * Routing Studio simulator — dry-run, admin-only.
@@ -9,7 +11,10 @@ import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simu
  */
 @Controller('routing/studio')
 export class RoutingSimulatorController {
-  constructor(private readonly simulator: RoutingSimulatorService) {}
+  constructor(
+    private readonly simulator: RoutingSimulatorService,
+    private readonly audit: RoutingAuditService,
+  ) {}
 
   @Post('simulate')
   async simulate(@Body() body: SimulateRequestBody): Promise<SimulatorResult> {
@@ -28,6 +33,23 @@ export class RoutingSimulatorController {
       disabled_rule_ids: Array.isArray(body.disabled_rule_ids) ? body.disabled_rule_ids : undefined,
     };
     return this.simulator.simulate(input);
+  }
+
+  @Get('decisions')
+  async listDecisions(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('chosen_by') chosenBy?: string,
+    @Query('ticket_id') ticketId?: string,
+    @Query('since') since?: string,
+  ): Promise<{ rows: DecisionRow[]; total: number }> {
+    return this.audit.listDecisions({
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      offset: offset ? Number.parseInt(offset, 10) : undefined,
+      chosen_by: chosenBy as ChosenBy | undefined,
+      ticket_id: ticketId,
+      since,
+    });
   }
 }
 
