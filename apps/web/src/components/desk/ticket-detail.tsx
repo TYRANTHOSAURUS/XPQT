@@ -39,6 +39,7 @@ import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TicketMetaRow } from '@/components/desk/ticket-meta-row';
 import { SubIssuesSection } from '@/components/desk/sub-issues-section';
 import { AddSubIssueDialog } from '@/components/desk/add-sub-issue-dialog';
+import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
 import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
@@ -470,7 +471,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               ticketId={displayedTicket!.id}
               ticketKind={displayedTicket!.ticket_kind}
               parentTicketId={displayedTicket!.parent_ticket_id}
+              priority={displayedTicket!.priority}
               requestType={displayedTicket!.request_type ?? null}
+              requester={displayedTicket!.requester ?? null}
+              location={displayedTicket!.location ?? null}
               onOpenTicket={onOpenTicket}
             />
 
@@ -658,6 +662,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                     ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email
                     : u.email,
                   sublabel: u.email,
+                  leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
                 }))}
                 vendorOptions={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
                 onDispatched={() => {
@@ -925,6 +930,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 id: u.id,
                 label: u.person ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email : u.email,
                 sublabel: u.email,
+                leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
               }))}
               placeholder="assignee"
               clearLabel="Clear assignee"
@@ -963,6 +969,8 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
             </div>
           </div>
+
+          <TicketSlaEscalations ticketId={displayedTicket!.id} />
 
           <Separator />
 
@@ -1015,6 +1023,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 id: p.id,
                 label: `${p.first_name} ${p.last_name}`.trim(),
                 sublabel: p.email ?? null,
+                leading: <PersonAvatar size="sm" person={p} />,
               }))}
               placeholder="watcher"
               onChange={(next) => patch({ watchers: next })}
