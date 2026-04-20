@@ -21,16 +21,23 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
+import { SlaThresholdRow, isThresholdValid } from '@/components/admin/sla-threshold-row';
 
-interface EscalationThreshold {
+export type ThresholdTimerScope = 'response' | 'resolution' | 'both';
+export type ThresholdAction = 'notify' | 'escalate';
+export type ThresholdTargetType = 'user' | 'team' | 'manager_of_requester';
+
+export interface EscalationThreshold {
   at_percent: number;
-  action: 'notify' | 'escalate';
-  notify: string;
+  timer_type: ThresholdTimerScope;
+  action: ThresholdAction;
+  target_type: ThresholdTargetType;
+  target_id: string | null;
 }
 
 interface SlaPolicy {
@@ -76,9 +83,6 @@ export function SlaPoliciesPage() {
   const [calendarId, setCalendarId] = useState('');
   const [pauseReasons, setPauseReasons] = useState<string[]>(['requester', 'vendor', 'scheduled_work']);
   const [escalations, setEscalations] = useState<EscalationThreshold[]>([]);
-  const [newEscPercent, setNewEscPercent] = useState('80');
-  const [newEscAction, setNewEscAction] = useState<'notify' | 'escalate'>('notify');
-  const [newEscNotify, setNewEscNotify] = useState('');
 
   const resetForm = () => {
     setName('');
@@ -87,9 +91,6 @@ export function SlaPoliciesPage() {
     setCalendarId('');
     setPauseReasons(['requester', 'vendor', 'scheduled_work']);
     setEscalations([]);
-    setNewEscPercent('80');
-    setNewEscAction('notify');
-    setNewEscNotify('');
     setEditId(null);
   };
 
@@ -97,19 +98,25 @@ export function SlaPoliciesPage() {
     setPauseReasons((prev) => prev.includes(val) ? prev.filter((r) => r !== val) : [...prev, val]);
   };
 
-  const addEscalation = () => {
-    const pct = parseInt(newEscPercent);
-    if (!pct || pct < 1 || pct > 200) return;
+  const addThreshold = () => {
     setEscalations((prev) => [
       ...prev,
-      { at_percent: pct, action: newEscAction, notify: newEscNotify },
-    ].sort((a, b) => a.at_percent - b.at_percent));
-    setNewEscPercent('80');
-    setNewEscNotify('');
+      {
+        at_percent: 100,
+        timer_type: 'resolution',
+        action: 'notify',
+        target_type: 'user',
+        target_id: null,
+      },
+    ]);
   };
 
-  const removeEscalation = (idx: number) => {
-    setEscalations((prev) => prev.filter((_, i) => i !== idx));
+  const updateThreshold = (index: number, next: EscalationThreshold) => {
+    setEscalations((prev) => prev.map((t, i) => (i === index ? next : t)));
+  };
+
+  const removeThreshold = (index: number) => {
+    setEscalations((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleSave = async () => {
@@ -245,59 +252,38 @@ export function SlaPoliciesPage() {
 
               <FieldSet>
                 <FieldLegend variant="label">Escalation Thresholds</FieldLegend>
+                <FieldDescription>
+                  Fire actions when an SLA timer reaches a percent of its target.
+                </FieldDescription>
                 {escalations.length === 0 ? (
-                  <FieldDescription>No escalation thresholds.</FieldDescription>
+                  <FieldDescription>
+                    No thresholds yet. Click Add threshold to notify or reassign when a ticket nears or misses its SLA.
+                  </FieldDescription>
                 ) : (
-                  <div className="space-y-1">
-                    {escalations.map((e, i) => (
-                      <div key={i} className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/40 text-sm">
-                        <span>At {e.at_percent}% → <span className="capitalize">{e.action}</span>{e.notify ? ` ${e.notify}` : ''}</span>
-                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeEscalation(i)}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
+                  <div className="space-y-2">
+                    {escalations.map((t, i) => (
+                      <SlaThresholdRow
+                        key={i}
+                        index={i}
+                        value={t}
+                        onChange={(next) => updateThreshold(i, next)}
+                        onRemove={() => removeThreshold(i)}
+                      />
                     ))}
                   </div>
                 )}
-                <div className="flex gap-2 items-end pt-1">
-                  <Field className="w-20">
-                    <FieldLabel htmlFor="sla-esc-percent" className="text-xs">At %</FieldLabel>
-                    <Input
-                      id="sla-esc-percent"
-                      type="number"
-                      value={newEscPercent}
-                      onChange={(e) => setNewEscPercent(e.target.value)}
-                      className="h-8 text-sm"
-                    />
-                  </Field>
-                  <Field className="w-28">
-                    <FieldLabel htmlFor="sla-esc-action" className="text-xs">Action</FieldLabel>
-                    <Select value={newEscAction} onValueChange={(v) => setNewEscAction((v ?? 'notify') as 'notify' | 'escalate')}>
-                      <SelectTrigger id="sla-esc-action" className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="notify">Notify</SelectItem>
-                        <SelectItem value="escalate">Escalate</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field className="flex-1">
-                    <FieldLabel htmlFor="sla-esc-notify" className="text-xs">Notify (email/name)</FieldLabel>
-                    <Input
-                      id="sla-esc-notify"
-                      value={newEscNotify}
-                      onChange={(e) => setNewEscNotify(e.target.value)}
-                      className="h-8 text-sm"
-                      placeholder="optional"
-                    />
-                  </Field>
-                  <Button variant="outline" size="sm" onClick={addEscalation}>Add</Button>
-                </div>
+                <Button variant="outline" size="sm" className="self-start mt-1" onClick={addThreshold}>
+                  + Add threshold
+                </Button>
               </FieldSet>
             </FieldGroup>
             </ScrollArea>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleSave} disabled={!name.trim()}>
+              <Button
+                onClick={handleSave}
+                disabled={!name.trim() || !escalations.every(isThresholdValid)}
+              >
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
