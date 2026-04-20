@@ -16,7 +16,7 @@
 
 **New files**
 
-- `supabase/migrations/00037_sla_threshold_crossings.sql` — crossings table + indexes + partial index on `sla_timers` + one-time legacy-threshold migration.
+- `supabase/migrations/00038_sla_threshold_crossings.sql` — crossings table + indexes + partial index on `sla_timers` + one-time legacy-threshold migration.
 - `apps/api/src/modules/sla/sla-threshold.types.ts` — shared TypeScript interfaces (`EscalationThreshold`, `SlaThresholdCrossing`, `TimerType`).
 - `apps/api/src/modules/sla/sla-threshold.helpers.ts` — pure functions (`percentElapsed`, `selectApplicableThresholds`) extracted for easy unit testing.
 - `apps/api/src/modules/sla/sla-threshold.helpers.spec.ts` — Jest tests for the helpers.
@@ -38,7 +38,7 @@
 ## Task 1: DB migration — crossings table, indexes, legacy cleanup
 
 **Files:**
-- Create: `supabase/migrations/00037_sla_threshold_crossings.sql`
+- Create: `supabase/migrations/00038_sla_threshold_crossings.sql`
 
 - [ ] **Step 1: Write the migration file**
 
@@ -92,7 +92,7 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply migration locally**
 
 Run: `pnpm db:reset 2>&1 | tail -5`
-Expected: `Applying migration 00037_sla_threshold_crossings.sql...` and no errors.
+Expected: `Applying migration 00038_sla_threshold_crossings.sql...` and no errors.
 
 - [ ] **Step 3: Verify table and index exist**
 
@@ -106,13 +106,13 @@ Expected: table definition with the 12 columns and the `(sla_timer_id, at_percen
 
 Per `CLAUDE.md`: "Always confirm with the user before running `pnpm db:push` or `supabase db push`."
 Ask: "Migration applied locally and verified. Push to remote Supabase now?"
-On approval, run: `PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00037_sla_threshold_crossings.sql`
+On approval, run: `PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00038_sla_threshold_crossings.sql`
 Do NOT push without explicit user go-ahead.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/00037_sla_threshold_crossings.sql
+git add supabase/migrations/00038_sla_threshold_crossings.sql
 git commit -m "feat(sla): add sla_threshold_crossings table for escalation audit"
 ```
 
