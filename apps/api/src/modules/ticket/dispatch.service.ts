@@ -4,7 +4,6 @@ import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
-import { TicketVisibilityService } from './ticket-visibility.service';
 
 export interface DispatchDto {
   title: string;
@@ -17,6 +16,11 @@ export interface DispatchDto {
   ticket_type_id?: string;
   asset_id?: string;
   location_id?: string;
+  /**
+   * Executor's SLA policy. `undefined` = fall through to vendor/team defaults.
+   * Explicit `null` = "No SLA" — dispatch with no SLA timers running.
+   */
+  sla_id?: string | null;
 }
 
 @Injectable()
@@ -26,23 +30,16 @@ export class DispatchService {
     @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
     private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
-    private readonly visibility: TicketVisibilityService,
   ) {}
 
-  async dispatch(parentId: string, dto: DispatchDto, actorAuthUid: string) {
+  async dispatch(parentId: string, dto: DispatchDto) {
     const tenant = TenantContext.current();
 
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertVisible(parentId, ctx, 'write');
-    }
-
-    // Fix 5: validate title
     if (!dto.title?.trim()) {
       throw new BadRequestException('dispatch requires a non-empty title');
     }
 
-    // Fix 2: getById throws NotFoundException on miss — no null guard needed
+    // getById throws NotFoundException on miss — no null guard needed
     const parent = await this.tickets.getById(parentId, SYSTEM_ACTOR) as Record<string, unknown>;
     if (parent.ticket_kind === 'work_order') {
       throw new BadRequestException('cannot dispatch from a work_order; dispatch from the parent case');
@@ -57,12 +54,12 @@ export class DispatchService {
     const assetId = dto.asset_id ?? (parent.asset_id as string | null);
     const priority = dto.priority ?? ((parent.priority as string | null) ?? 'medium');
 
-    // Fix 3: single consolidated request-type load
+    // Load request type for routing domain only (NOT for SLA — child SLAs are independent).
     const rtCfg = ticketTypeId
       ? await this.loadRequestTypeConfig(ticketTypeId)
-      : { domain: null, sla_policy_id: null };
+      : { domain: null };
 
-    // Fix 3: include sla_id in initial insert row
+    // Build the row WITHOUT sla_id — resolved after routing fills in assignees.
     const row: Record<string, unknown> = {
       tenant_id: tenant.id,
       parent_ticket_id: parentId,
@@ -80,10 +77,10 @@ export class DispatchService {
       assigned_team_id: dto.assigned_team_id ?? null,
       assigned_user_id: dto.assigned_user_id ?? null,
       assigned_vendor_id: dto.assigned_vendor_id ?? null,
-      sla_id: rtCfg.sla_policy_id,
+      sla_id: null, // placeholder; resolveChildSla overwrites if it finds one
     };
 
-    // Fix 1: single evaluate call, store result for reuse
+    // Routing fills in assignees if none were passed.
     let routingCtx: Parameters<RoutingService['evaluate']>[0] | null = null;
     let routingEvaluation: Awaited<ReturnType<RoutingService['evaluate']>> | null = null;
     if (!row.assigned_team_id && !row.assigned_user_id && !row.assigned_vendor_id && ticketTypeId) {
@@ -107,6 +104,10 @@ export class DispatchService {
       row.status_category = 'assigned';
     }
 
+    // Resolve child SLA based on (now finalised) assignees + dto override.
+    const resolvedSlaId = await this.resolveChildSla(dto, row);
+    row.sla_id = resolvedSlaId;
+
     const { data: inserted, error } = await this.supabase.admin
       .from('tickets')
       .insert(row)
@@ -115,17 +116,15 @@ export class DispatchService {
     if (error) throw error;
     const child = inserted as Record<string, unknown>;
 
-    // Fix 4: post-insert side effects wrapped — child exists, don't crash on automation failure
+    // Post-insert side effects.
     try {
-      // Fix 1: reuse stored evaluation — no second DB call
       if (routingCtx && routingEvaluation) {
         routingCtx.ticket_id = child.id as string;
         await this.routingService.recordDecision(child.id as string, routingCtx, routingEvaluation);
       }
 
-      // Fix 3: sla_id already in insert; just start timers
-      if (rtCfg.sla_policy_id) {
-        await this.slaService.startTimers(child.id as string, tenant.id, rtCfg.sla_policy_id);
+      if (resolvedSlaId) {
+        await this.slaService.startTimers(child.id as string, tenant.id, resolvedSlaId);
       }
 
       await this.tickets.addActivity(parentId, {
@@ -137,6 +136,7 @@ export class DispatchService {
           assigned_team_id: row.assigned_team_id,
           assigned_user_id: row.assigned_user_id,
           assigned_vendor_id: row.assigned_vendor_id,
+          sla_id: resolvedSlaId,
         },
       }, undefined, SYSTEM_ACTOR);
     } catch (err) {
@@ -146,14 +146,69 @@ export class DispatchService {
     return child;
   }
 
-  // Fix 3: consolidated single request-type loader
-  private async loadRequestTypeConfig(id: string): Promise<{ domain: string | null; sla_policy_id: string | null }> {
+  /**
+   * Resolve which sla_policy_id to attach to a child work order.
+   * Order: explicit dto.sla_id → vendor default → team default → user.team default → null.
+   * `dto.sla_id === null` is a deliberate "No SLA" choice and short-circuits.
+   */
+  private async resolveChildSla(
+    dto: DispatchDto,
+    row: Record<string, unknown>,
+  ): Promise<string | null> {
+    if (dto.sla_id !== undefined) return dto.sla_id; // explicit (string | null)
+
+    const vendorId = row.assigned_vendor_id as string | null;
+    if (vendorId) {
+      const { data } = await this.supabase.admin
+        .from('vendors')
+        .select('default_sla_policy_id')
+        .eq('id', vendorId)
+        .maybeSingle();
+      const id = (data as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
+      if (id) return id;
+    }
+
+    const teamId = row.assigned_team_id as string | null;
+    if (teamId) {
+      const { data } = await this.supabase.admin
+        .from('teams')
+        .select('default_sla_policy_id')
+        .eq('id', teamId)
+        .maybeSingle();
+      const id = (data as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
+      if (id) return id;
+    }
+
+    const userId = row.assigned_user_id as string | null;
+    if (userId) {
+      const { data: user } = await this.supabase.admin
+        .from('users')
+        .select('team_id')
+        .eq('id', userId)
+        .maybeSingle();
+      const userTeamId = (user as { team_id: string | null } | null)?.team_id;
+      if (userTeamId) {
+        const { data: team } = await this.supabase.admin
+          .from('teams')
+          .select('default_sla_policy_id')
+          .eq('id', userTeamId)
+          .maybeSingle();
+        const id = (team as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
+        if (id) return id;
+      }
+    }
+
+    return null;
+  }
+
+  // Consolidated single request-type loader — domain only (SLA resolved separately via resolveChildSla)
+  private async loadRequestTypeConfig(id: string): Promise<{ domain: string | null }> {
     const { data } = await this.supabase.admin
       .from('request_types')
-      .select('domain, sla_policy_id')
+      .select('domain')
       .eq('id', id)
       .maybeSingle();
-    const d = data as { domain: string | null; sla_policy_id: string | null } | null;
-    return { domain: d?.domain ?? null, sla_policy_id: d?.sla_policy_id ?? null };
+    const d = data as { domain: string | null } | null;
+    return { domain: d?.domain ?? null };
   }
 }
