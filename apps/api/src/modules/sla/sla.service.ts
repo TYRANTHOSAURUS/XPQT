@@ -3,7 +3,6 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { BusinessHoursService, BusinessHoursCalendar } from './business-hours.service';
 import { NotificationService } from '../notification/notification.service';
-import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
 import type {
   EscalationThreshold,
   SlaTimerRow,
@@ -20,7 +19,6 @@ export class SlaService {
     private readonly supabase: SupabaseService,
     private readonly businessHours: BusinessHoursService,
     private readonly notifications: NotificationService,
-    private readonly visibility: TicketVisibilityService,
   ) {}
 
   /**
@@ -668,5 +666,55 @@ export class SlaService {
         // Keep going — one bad ticket does not starve the batch.
       }
     }
+  }
+
+  /**
+   * List threshold crossings for a ticket, ordered newest first, with the target's
+   * resolved display name joined in. Intended for the ticket-detail escalations panel.
+   */
+  async listCrossingsForTicket(ticketId: string) {
+    const { data: rows, error } = await this.supabase.admin
+      .from('sla_threshold_crossings')
+      .select('id, fired_at, timer_type, at_percent, action, target_type, target_id, notification_id')
+      .eq('ticket_id', ticketId)
+      .order('fired_at', { ascending: false });
+    if (error) throw error;
+
+    // Resolve target display names in two batched lookups (persons + teams).
+    const personIds = (rows ?? [])
+      .filter((r) => r.target_type === 'user' || r.target_type === 'manager_of_requester')
+      .map((r) => r.target_id)
+      .filter((x): x is string => !!x);
+    const teamIds = (rows ?? [])
+      .filter((r) => r.target_type === 'team')
+      .map((r) => r.target_id)
+      .filter((x): x is string => !!x);
+
+    const personNames = new Map<string, string>();
+    if (personIds.length > 0) {
+      const { data } = await this.supabase.admin
+        .from('persons')
+        .select('id, first_name, last_name')
+        .in('id', personIds);
+      for (const p of data ?? []) {
+        const name = `${(p.first_name as string) ?? ''} ${(p.last_name as string) ?? ''}`.trim() || 'person';
+        personNames.set(p.id as string, name);
+      }
+    }
+    const teamNames = new Map<string, string>();
+    if (teamIds.length > 0) {
+      const { data } = await this.supabase.admin
+        .from('teams')
+        .select('id, name')
+        .in('id', teamIds);
+      for (const t of data ?? []) teamNames.set(t.id as string, (t.name as string) ?? 'team');
+    }
+
+    return (rows ?? []).map((r) => ({
+      ...r,
+      target_name: r.target_id
+        ? (r.target_type === 'team' ? teamNames.get(r.target_id as string) : personNames.get(r.target_id as string)) ?? null
+        : null,
+    }));
   }
 }
