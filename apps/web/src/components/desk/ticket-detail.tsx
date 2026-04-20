@@ -36,7 +36,7 @@ import { apiFetch } from '@/lib/api';
 import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
-import { ParentCaseRibbon } from '@/components/desk/parent-case-ribbon';
+import { TicketMetaRow } from '@/components/desk/ticket-meta-row';
 import { SubIssuesSection } from '@/components/desk/sub-issues-section';
 import { AddSubIssueDialog } from '@/components/desk/add-sub-issue-dialog';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
@@ -455,10 +455,6 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
 
         <ScrollArea className="flex-1">
           <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
-            {displayedTicket?.ticket_kind === 'work_order' && displayedTicket.parent_ticket_id && (
-              <ParentCaseRibbon parentId={displayedTicket.parent_ticket_id} />
-            )}
-
             {/* Title */}
             <InlineTextEditor
               value={displayedTicket!.title}
@@ -468,6 +464,14 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               renderView={(v) => <h1 className="text-2xl font-semibold leading-tight tracking-tight">{v || 'Untitled'}</h1>}
               editorClassName="text-2xl font-semibold leading-tight tracking-tight border-0 shadow-none focus-visible:ring-0 px-0"
               viewClassName="rounded-md"
+            />
+
+            <TicketMetaRow
+              ticketId={displayedTicket!.id}
+              ticketKind={displayedTicket!.ticket_kind}
+              parentTicketId={displayedTicket!.parent_ticket_id}
+              requestType={displayedTicket!.request_type ?? null}
+              onOpenTicket={onOpenTicket}
             />
 
             {/* Description */}
