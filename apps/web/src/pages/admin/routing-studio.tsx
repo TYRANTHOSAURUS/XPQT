@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RoutingSimulator } from '@/components/admin/routing-studio/simulator';
 import { RoutingAuditTab } from '@/components/admin/routing-studio/audit-tab';
+import { CoverageMatrix } from '@/components/admin/routing-studio/coverage-matrix';
 
 type TabId = 'simulator' | 'audit' | 'coverage';
 
@@ -21,9 +22,7 @@ export function RoutingStudioPage() {
         <TabsList>
           <TabsTrigger value="simulator">Simulator</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
-          <TabsTrigger value="coverage" disabled>
-            Coverage <span className="ml-1 text-xs text-muted-foreground">(soon)</span>
-          </TabsTrigger>
+          <TabsTrigger value="coverage">Coverage</TabsTrigger>
         </TabsList>
 
         <TabsContent value="simulator">
@@ -35,10 +34,7 @@ export function RoutingStudioPage() {
         </TabsContent>
 
         <TabsContent value="coverage">
-          {/* Placeholder until C3 lands */}
-          <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-            Coverage matrix ships in the next checkpoint.
-          </div>
+          <CoverageMatrix />
         </TabsContent>
       </Tabs>
     </div>

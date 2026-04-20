@@ -9,6 +9,7 @@ import { DomainParentsController } from './domain-parents.controller';
 import { RoutingSimulatorController } from './simulator.controller';
 import { RoutingSimulatorService } from './simulator.service';
 import { RoutingAuditService } from './audit.service';
+import { RoutingCoverageService } from './coverage.service';
 
 @Module({
   providers: [
@@ -17,6 +18,7 @@ import { RoutingAuditService } from './audit.service';
     ResolverRepository,
     RoutingSimulatorService,
     RoutingAuditService,
+    RoutingCoverageService,
   ],
   controllers: [
     RoutingRuleController,

@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
 import { DecisionRow, RoutingAuditService } from './audit.service';
+import { CoverageResponse, RoutingCoverageService } from './coverage.service';
 import { ChosenBy } from './resolver.types';
 
 /**
@@ -14,6 +15,7 @@ export class RoutingSimulatorController {
   constructor(
     private readonly simulator: RoutingSimulatorService,
     private readonly audit: RoutingAuditService,
+    private readonly coverage: RoutingCoverageService,
   ) {}
 
   @Post('simulate')
@@ -49,6 +51,19 @@ export class RoutingSimulatorController {
       chosen_by: chosenBy as ChosenBy | undefined,
       ticket_id: ticketId,
       since,
+    });
+  }
+
+  @Get('coverage')
+  async coverageMatrix(
+    @Query('space_root_id') spaceRootId?: string,
+    @Query('domains') domainsCsv?: string,
+    @Query('max_cells') maxCells?: string,
+  ): Promise<CoverageResponse> {
+    return this.coverage.getCoverage({
+      space_root_id: spaceRootId,
+      domains: domainsCsv ? domainsCsv.split(',').map((d) => d.trim()).filter(Boolean) : undefined,
+      max_cells: maxCells ? Number.parseInt(maxCells, 10) : undefined,
     });
   }
 }
