@@ -3,7 +3,7 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
-import { TicketService } from './ticket.service';
+import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 
 export interface DispatchDto {
   title: string;
@@ -36,7 +36,7 @@ export class DispatchService {
     }
 
     // Fix 2: getById throws NotFoundException on miss — no null guard needed
-    const parent = await this.tickets.getById(parentId) as Record<string, unknown>;
+    const parent = await this.tickets.getById(parentId, SYSTEM_ACTOR) as Record<string, unknown>;
     if (parent.ticket_kind === 'work_order') {
       throw new BadRequestException('cannot dispatch from a work_order; dispatch from the parent case');
     }
@@ -131,7 +131,7 @@ export class DispatchService {
           assigned_user_id: row.assigned_user_id,
           assigned_vendor_id: row.assigned_vendor_id,
         },
-      });
+      }, undefined, SYSTEM_ACTOR);
     } catch (err) {
       console.error('[dispatch] post-insert automation failed', err);
     }

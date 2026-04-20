@@ -1,11 +1,12 @@
 import { Test } from '@nestjs/testing';
-import { TicketService } from './ticket.service';
+import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext, TenantInfo } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { ApprovalService } from '../approval/approval.service';
+import { TicketVisibilityService } from './ticket-visibility.service';
 
 describe('TicketService.listDistinctTags', () => {
   const tenantAId = '00000000-0000-0000-0000-00000000000a';
@@ -32,6 +33,7 @@ describe('TicketService.listDistinctTags', () => {
         { provide: SlaService, useValue: {} },
         { provide: WorkflowEngineService, useValue: {} },
         { provide: ApprovalService, useValue: {} },
+        { provide: TicketVisibilityService, useValue: {} },
       ],
     }).compile();
 
@@ -43,7 +45,7 @@ describe('TicketService.listDistinctTags', () => {
 
     const result = await TenantContext.run(
       makeTenant(tenantAId, 'a'),
-      () => service.listDistinctTags(),
+      () => service.listDistinctTags(SYSTEM_ACTOR),
     );
 
     expect(result).toEqual(['billing', 'hvac', 'urgent']);
@@ -53,7 +55,7 @@ describe('TicketService.listDistinctTags', () => {
   it('passes the current tenant id — never leaks across tenants', async () => {
     rpcMock.mockResolvedValue({ data: [], error: null });
 
-    await TenantContext.run(makeTenant(tenantBId, 'b'), () => service.listDistinctTags());
+    await TenantContext.run(makeTenant(tenantBId, 'b'), () => service.listDistinctTags(SYSTEM_ACTOR));
 
     expect(rpcMock).toHaveBeenCalledWith('tickets_distinct_tags', { tenant: tenantBId });
   });
@@ -63,7 +65,7 @@ describe('TicketService.listDistinctTags', () => {
 
     const result = await TenantContext.run(
       makeTenant(tenantAId, 'a'),
-      () => service.listDistinctTags(),
+      () => service.listDistinctTags(SYSTEM_ACTOR),
     );
 
     expect(result).toEqual([]);
@@ -73,7 +75,7 @@ describe('TicketService.listDistinctTags', () => {
     rpcMock.mockResolvedValue({ data: null, error: { message: 'boom' } });
 
     await expect(
-      TenantContext.run(makeTenant(tenantAId, 'a'), () => service.listDistinctTags()),
+      TenantContext.run(makeTenant(tenantAId, 'a'), () => service.listDistinctTags(SYSTEM_ACTOR)),
     ).rejects.toBeTruthy();
   });
 });

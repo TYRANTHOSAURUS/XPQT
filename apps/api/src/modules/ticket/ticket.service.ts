@@ -6,6 +6,9 @@ import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { ApprovalService } from '../approval/approval.service';
+import { TicketVisibilityService } from './ticket-visibility.service';
+
+export const SYSTEM_ACTOR = '__system__';
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
@@ -131,9 +134,10 @@ export class TicketService {
     private readonly slaService: SlaService,
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
     @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
-  async list(filters: TicketListFilters = {}) {
+  async list(filters: TicketListFilters = {}, actorAuthUid: string) {
     const tenant = TenantContext.current();
     const limit = Math.min(filters.limit ?? 50, 100);
 
@@ -149,6 +153,14 @@ export class TicketService {
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false })
       .limit(limit);
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      const ids = await this.visibility.getVisibleIds(ctx);
+      if (ids !== null) {
+        query = query.in('id', ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000']);
+      }
+    }
 
     // Apply filters
     if (filters.status_category) {
@@ -341,8 +353,31 @@ export class TicketService {
     return { items };
   }
 
-  async listDistinctTags(): Promise<string[]> {
+  async listDistinctTags(actorAuthUid: string): Promise<string[]> {
     const tenant = TenantContext.current();
+    // Tags are derived from visible tickets only — apply the same read filter
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      const ids = await this.visibility.getVisibleIds(ctx);
+      if (ids !== null) {
+        // Query tags only from visible tickets
+        const visibleIds = ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'];
+        const { data, error } = await this.supabase.admin
+          .from('tickets')
+          .select('tags')
+          .eq('tenant_id', tenant.id)
+          .in('id', visibleIds)
+          .not('tags', 'is', null);
+        if (error) throw error;
+        const tagSet = new Set<string>();
+        for (const row of data ?? []) {
+          if (Array.isArray(row.tags)) {
+            for (const t of row.tags as string[]) tagSet.add(t);
+          }
+        }
+        return Array.from(tagSet).sort();
+      }
+    }
     const { data, error } = await this.supabase.admin.rpc('tickets_distinct_tags', {
       tenant: tenant.id,
     });
@@ -350,8 +385,14 @@ export class TicketService {
     return (data ?? []).map((row: { tag: string }) => row.tag);
   }
 
-  async getById(id: string) {
+  async getById(id: string, actorAuthUid: string) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'read');
+    }
+
     const { data, error } = await this.supabase.admin
       .from('tickets')
       .select(`
@@ -462,7 +503,7 @@ export class TicketService {
    */
   async onApprovalDecision(ticketId: string, outcome: 'approved' | 'rejected') {
     const tenant = TenantContext.current();
-    const ticket = await this.getById(ticketId);
+    const ticket = await this.getById(ticketId, SYSTEM_ACTOR);
     if (ticket.status_category !== 'pending_approval') return;
 
     if (outcome === 'rejected') {
@@ -483,7 +524,7 @@ export class TicketService {
       .from('tickets')
       .update({ status: 'new', status_category: 'new' })
       .eq('id', ticketId);
-    const ticketRecord = await this.getById(ticketId);
+    const ticketRecord = await this.getById(ticketId, SYSTEM_ACTOR);
 
     await this.addActivity(ticketId, {
       activity_type: 'system_event',
@@ -579,11 +620,16 @@ export class TicketService {
     return data;
   }
 
-  async update(id: string, dto: UpdateTicketDto) {
+  async update(id: string, dto: UpdateTicketDto, actorAuthUid: string) {
     const tenant = TenantContext.current();
 
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'write');
+    }
+
     // Get current state for change tracking
-    const current = await this.getById(id);
+    const current = await this.getById(id, SYSTEM_ACTOR);
 
     const updateData: Record<string, unknown> = {};
     const changes: Record<string, { from: unknown; to: unknown }> = {};
@@ -658,9 +704,15 @@ export class TicketService {
    * so we can record a routing_decisions trace row and keep the reason visible
    * in the timeline.
    */
-  async reassign(id: string, dto: ReassignDto) {
+  async reassign(id: string, dto: ReassignDto, actorAuthUid: string) {
     const tenant = TenantContext.current();
-    const current = await this.getById(id);
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'write');
+    }
+
+    const current = await this.getById(id, SYSTEM_ACTOR);
 
     if (!dto.reason?.trim()) {
       throw new Error('reassignment reason is required');
@@ -766,7 +818,7 @@ export class TicketService {
       },
     });
 
-    return this.getById(id);
+    return this.getById(id, SYSTEM_ACTOR);
   }
 
   private async applyWaitingStateTransition(
@@ -853,8 +905,14 @@ export class TicketService {
     return signedActivities;
   }
 
-  async addActivity(ticketId: string, dto: AddActivityDto, accessToken?: string) {
+  async addActivity(ticketId: string, dto: AddActivityDto, accessToken?: string, actorAuthUid: string = SYSTEM_ACTOR) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'write');
+    }
+
     const authorPersonId = await this.resolveAuthorPersonId(dto.author_person_id, accessToken);
 
     const { data, error } = await this.supabase.admin
@@ -881,8 +939,14 @@ export class TicketService {
     mimetype: string;
     size: number;
     buffer: Buffer;
-  }>) {
+  }>, actorAuthUid: string = SYSTEM_ACTOR) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'write');
+    }
+
     await this.ensureAttachmentBucket();
 
     const uploads = await Promise.all(
@@ -911,8 +975,28 @@ export class TicketService {
     return uploads;
   }
 
-  async getChildTasks(parentTicketId: string) {
+  async getChildTasks(parentTicketId: string, actorAuthUid: string) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      // Gate on visibility of the parent
+      await this.visibility.assertVisible(parentTicketId, ctx, 'read');
+      // Also narrow the children to visible set
+      const visibleIds = await this.visibility.getVisibleIds(ctx);
+      let q = this.supabase.admin
+        .from('tickets')
+        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
+        .eq('parent_ticket_id', parentTicketId)
+        .eq('tenant_id', tenant.id);
+      if (visibleIds !== null) {
+        q = q.in('id', visibleIds.length > 0 ? visibleIds : ['00000000-0000-0000-0000-000000000000']);
+      }
+      const { data, error } = await q.order('created_at');
+      if (error) throw error;
+      return data;
+    }
+
     const { data, error } = await this.supabase.admin
       .from('tickets')
       .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')

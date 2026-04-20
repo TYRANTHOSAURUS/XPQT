@@ -10,6 +10,7 @@ import {
   Req,
   UploadedFiles,
   UseInterceptors,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
@@ -42,6 +43,7 @@ export class TicketController {
 
   @Get()
   async list(
+    @Req() request: Request,
     @Query('status_category') statusCategory?: string | string[],
     @Query('priority') priority?: string | string[],
     @Query('kind') ticketKind?: 'case' | 'work_order',
@@ -55,6 +57,8 @@ export class TicketController {
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.ticketService.list({
       status_category: statusCategory,
       priority,
@@ -68,27 +72,35 @@ export class TicketController {
       search,
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
-    });
+    }, actorAuthUid);
   }
 
   @Get('tags')
-  async listTags() {
-    return this.ticketService.listDistinctTags();
+  async listTags(@Req() request: Request) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.listDistinctTags(actorAuthUid);
   }
 
   @Get(':id')
-  async getById(@Param('id') id: string) {
-    return this.ticketService.getById(id);
+  async getById(@Req() request: Request, @Param('id') id: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.getById(id, actorAuthUid);
   }
 
   @Post()
-  async create(@Body() dto: CreateTicketDto) {
+  async create(@Req() request: Request, @Body() dto: CreateTicketDto) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.ticketService.create(dto);
   }
 
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdateTicketDto) {
-    return this.ticketService.update(id, dto);
+  async update(@Req() request: Request, @Param('id') id: string, @Body() dto: UpdateTicketDto) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.update(id, dto, actorAuthUid);
   }
 
   @Patch('bulk/update')
@@ -97,12 +109,16 @@ export class TicketController {
   }
 
   @Post(':id/reassign')
-  async reassign(@Param('id') id: string, @Body() dto: ReassignDto) {
-    return this.ticketService.reassign(id, dto);
+  async reassign(@Req() request: Request, @Param('id') id: string, @Body() dto: ReassignDto) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.reassign(id, dto, actorAuthUid);
   }
 
   @Post(':id/dispatch')
-  async dispatch(@Param('id') id: string, @Body() dto: DispatchDto) {
+  async dispatch(@Req() request: Request, @Param('id') id: string, @Body() dto: DispatchDto) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.dispatchService.dispatch(id, dto);
   }
 
@@ -120,16 +136,20 @@ export class TicketController {
     @Body() dto: AddActivityDto,
     @Req() request: Request,
   ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.ticketService.addActivity(
       id,
       dto,
       this.extractAccessToken(request.headers.authorization),
+      actorAuthUid,
     );
   }
 
   @Post(':id/attachments')
   @UseInterceptors(FilesInterceptor('files', 10))
   async uploadAttachments(
+    @Req() request: Request,
     @Param('id') id: string,
     @UploadedFiles() files: Array<{
       originalname: string;
@@ -138,16 +158,20 @@ export class TicketController {
       buffer: Buffer;
     }>,
   ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     if (!files?.length) {
       throw new BadRequestException('No files uploaded');
     }
 
-    return this.ticketService.uploadActivityAttachments(id, files);
+    return this.ticketService.uploadActivityAttachments(id, files, actorAuthUid);
   }
 
   @Get(':id/children')
-  async children(@Param('id') id: string) {
-    return this.ticketService.getChildTasks(id);
+  async children(@Req() request: Request, @Param('id') id: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.getChildTasks(id, actorAuthUid);
   }
 
   private extractAccessToken(authorization?: string) {
