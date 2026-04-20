@@ -123,15 +123,18 @@ export class TicketController {
   async dispatch(@Req() request: Request, @Param('id') id: string, @Body() dto: DispatchDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    return this.dispatchService.dispatch(id, dto);
+    return this.dispatchService.dispatch(id, dto, actorAuthUid);
   }
 
   @Get(':id/activities')
   async getActivities(
+    @Req() request: Request,
     @Param('id') id: string,
     @Query('visibility') visibility?: string,
   ) {
-    return this.ticketService.getActivities(id, visibility);
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.getActivities(id, visibility, actorAuthUid);
   }
 
   @Post(':id/activities')

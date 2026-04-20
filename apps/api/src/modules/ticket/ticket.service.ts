@@ -852,8 +852,12 @@ export class TicketService {
     }
   }
 
-  async getActivities(ticketId: string, visibility?: string) {
+  async getActivities(ticketId: string, visibility: string | undefined, actorAuthUid: string) {
     const tenant = TenantContext.current();
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'read');
+    }
 
     let query = this.supabase.admin
       .from('ticket_activities')
