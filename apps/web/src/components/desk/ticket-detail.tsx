@@ -230,7 +230,7 @@ function filterMentionPeople(people: MentionPerson[], query: string): MentionPer
 }
 
 export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?: () => void }) {
-  const { data: ticket, loading: ticketLoading, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
+  const { data: ticket, loading: ticketLoading, error: ticketError, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
@@ -409,6 +409,24 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const canSubmitComment = Boolean(commentText.trim() || attachmentFiles.length > 0) && !submittingComment;
 
   if (ticketLoading || !ticket) {
+    if (ticketError) {
+      const isForbidden = /403|forbidden/i.test(ticketError);
+      return (
+        <div className="flex h-full items-center justify-center">
+          <div className="p-6 max-w-[480px] mx-auto text-center">
+            <h2 className="text-lg font-semibold mb-2">
+              {isForbidden ? 'You do not have access to this ticket' : 'Failed to load ticket'}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {isForbidden
+                ? "Your role does not include this ticket. Contact an admin if you believe this is a mistake."
+                : ticketError}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex h-full items-center justify-center">
         <Spinner className="size-6 text-muted-foreground" />
