@@ -172,6 +172,33 @@ export class SlaService {
   }
 
   /**
+   * Stop existing timers and start fresh ones from a new policy.
+   * Used when a child ticket's sla_id is reassigned (parent cases keep SLA on reassign).
+   * If `newSlaPolicyId` is null, only stops existing timers (effectively "switch to No SLA").
+   */
+  async restartTimers(ticketId: string, tenantId: string, newSlaPolicyId: string | null) {
+    await this.completeTimers(ticketId, tenantId);
+
+    // Clear ticket-level SLA computed fields. startTimers will re-set them if a policy is provided.
+    await this.supabase.admin
+      .from('tickets')
+      .update({
+        sla_response_due_at: null,
+        sla_resolution_due_at: null,
+        sla_response_breached_at: null,
+        sla_resolution_breached_at: null,
+        sla_at_risk: false,
+        sla_paused: false,
+        sla_paused_at: null,
+      })
+      .eq('id', ticketId);
+
+    if (newSlaPolicyId) {
+      await this.startTimers(ticketId, tenantId, newSlaPolicyId);
+    }
+  }
+
+  /**
    * Scheduled job: check for SLA breaches every minute.
    * Updates ticket computed fields for fast queue queries.
    */

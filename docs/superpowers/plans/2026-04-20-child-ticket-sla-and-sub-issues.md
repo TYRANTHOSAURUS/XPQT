@@ -41,7 +41,7 @@ Tasks are ordered by dependency. Backend (Tasks 1–6) must precede UI (Tasks 7�
 ## Task 1: Migration — vendor/team default SLA columns
 
 **Files:**
-- Create: `supabase/migrations/00035_child_ticket_sla_defaults.sql`
+- Create: `supabase/migrations/00036_child_ticket_sla_defaults.sql`
 
 **Context:**
 - Both columns are nullable. No backfill needed: `null` means "no default; user must pick or accept No-SLA at dispatch."
@@ -49,10 +49,10 @@ Tasks are ordered by dependency. Backend (Tasks 1–6) must precede UI (Tasks 7�
 
 - [ ] **Step 1.1: Create the migration file**
 
-Create `supabase/migrations/00035_child_ticket_sla_defaults.sql`:
+Create `supabase/migrations/00036_child_ticket_sla_defaults.sql`:
 
 ```sql
--- 00035_child_ticket_sla_defaults.sql
+-- 00036_child_ticket_sla_defaults.sql
 -- Adds nullable default SLA policy columns to vendors and teams.
 -- Used by DispatchService.resolveChildSla as fallback when no explicit
 -- sla_id is supplied at child-ticket dispatch.
@@ -70,18 +70,18 @@ notify pgrst, 'reload schema';
 - [ ] **Step 1.2: Validate locally**
 
 Run: `pnpm db:reset`
-Expected: clean exit, all migrations apply including 00035. If anything fails, fix the SQL and re-run.
+Expected: clean exit, all migrations apply including 00036. If anything fails, fix the SQL and re-run.
 
 - [ ] **Step 1.3: Confirm before remote push**
 
-Ask the user: *"Migration `00035_child_ticket_sla_defaults.sql` validated locally. Push to remote (`pnpm db:push` or psql fallback)?"*
+Ask the user: *"Migration `00036_child_ticket_sla_defaults.sql` validated locally. Push to remote (`pnpm db:push` or psql fallback)?"*
 
 If yes, run `pnpm db:push`. If `db:push` fails per the known CLI auth issue documented in `CLAUDE.md`, fall back to:
 
 ```bash
 PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
   -v ON_ERROR_STOP=1 \
-  -f supabase/migrations/00035_child_ticket_sla_defaults.sql
+  -f supabase/migrations/00036_child_ticket_sla_defaults.sql
 ```
 
 Then trigger a schema cache reload via the running API (any successful request) or:
@@ -94,7 +94,7 @@ PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.s
 - [ ] **Step 1.4: Commit**
 
 ```bash
-git add supabase/migrations/00035_child_ticket_sla_defaults.sql
+git add supabase/migrations/00036_child_ticket_sla_defaults.sql
 git commit -m "feat(db): add default_sla_policy_id to vendors and teams"
 ```
 
@@ -2395,8 +2395,8 @@ If both `assigned_vendor_id` and `assigned_team_id` are set, the **vendor** defa
 **Same rule for both layers: SLA does not change on assignee reassignment.** Cases and children both keep `sla_id` and timer state across silent PATCH or `POST /tickets/:id/reassign`. To change a child's SLA the user must explicitly pick a new policy in the child's properties sidebar — that action calls `SlaService.restartTimers`, which stops existing `sla_timers` rows and starts new ones.
 
 `request_types.sla_policy_id` is, after this change, **only** the case policy. Schema:
-- `vendors.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00035`.
-- `teams.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00035`.
+- `vendors.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00036`.
+- `teams.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00036`.
 ```
 
 (Then the existing paragraph about pause/resume timers and the `pause_on_waiting_reasons` field continues unchanged.)
@@ -2418,7 +2418,7 @@ Workflows that programmatically close cases must close their children first; oth
 Find the changelog section at the bottom of the file (where the "2026-04-18 — Workflow-spawned children reach parity..." entry lives). Add at the top of the list:
 
 ```markdown
-- **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that's the *case* policy). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team → none. New schema in `00035`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill. Cases gain a close guard that refuses `resolved`/`closed` while open children exist.
+- **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that's the *case* policy). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team → none. New schema in `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill. Cases gain a close guard that refuses `resolved`/`closed` while open children exist.
 ```
 
 - [ ] **Step 14.4: Commit**

@@ -14,6 +14,9 @@ export interface WorkOrderRow {
   interaction_mode: string;
   created_at: string;
   resolved_at: string | null;
+  sla_id: string | null;
+  sla_resolution_due_at: string | null;
+  sla_resolution_breached_at: string | null;
 }
 
 export interface DispatchDto {
@@ -24,6 +27,11 @@ export interface DispatchDto {
   assigned_vendor_id?: string;
   priority?: string;
   interaction_mode?: 'internal' | 'external';
+  /**
+   * Executor SLA. `undefined` falls through to vendor/team defaults server-side.
+   * Explicit `null` is "No SLA" — the server skips timer creation.
+   */
+  sla_id?: string | null;
 }
 
 export interface UseWorkOrdersResult {

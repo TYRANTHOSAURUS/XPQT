@@ -29,8 +29,16 @@ function makeParent(over: Partial<ParentRow> = {}): ParentRow {
   };
 }
 
-function makeDeps(parent: ParentRow) {
+function makeDeps(
+  parent: ParentRow,
+  defaults: {
+    vendors?: Record<string, { default_sla_policy_id: string | null }>;
+    teams?: Record<string, { default_sla_policy_id: string | null }>;
+    users?: Record<string, { team_id: string | null }>;
+  } = {},
+) {
   const inserted: Array<Record<string, unknown>> = [];
+  const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const activities: Array<Record<string, unknown>> = [];
 
   const ticketService = {
@@ -53,7 +61,12 @@ function makeDeps(parent: ParentRow) {
                 }),
               };
             },
-            // Fix 7: update stub removed — no longer called after Fix 3 folds sla_id into insert
+            update: (patch: Record<string, unknown>) => ({
+              eq: (_col: string, id: string) => {
+                updates.push({ id, patch });
+                return { select: () => ({ single: async () => ({ data: patch, error: null }) }) };
+              },
+            }),
           } as unknown;
         }
         if (table === 'request_types') {
@@ -61,6 +74,42 @@ function makeDeps(parent: ParentRow) {
             select: () => ({
               eq: () => ({
                 maybeSingle: async () => ({ data: { domain: 'fm', sla_policy_id: 'sla-1' }, error: null }),
+              }),
+            }),
+          } as unknown;
+        }
+        if (table === 'vendors') {
+          return {
+            select: () => ({
+              eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.vendors?.[id] ?? null, error: null }),
+                }),
+                maybeSingle: async () => ({ data: defaults.vendors?.[id] ?? null, error: null }),
+              }),
+            }),
+          } as unknown;
+        }
+        if (table === 'teams') {
+          return {
+            select: () => ({
+              eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.teams?.[id] ?? null, error: null }),
+                }),
+                maybeSingle: async () => ({ data: defaults.teams?.[id] ?? null, error: null }),
+              }),
+            }),
+          } as unknown;
+        }
+        if (table === 'users') {
+          return {
+            select: () => ({
+              eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.users?.[id] ?? null, error: null }),
+                }),
+                maybeSingle: async () => ({ data: defaults.users?.[id] ?? null, error: null }),
               }),
             }),
           } as unknown;
@@ -80,12 +129,13 @@ function makeDeps(parent: ParentRow) {
   };
 
   const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
+
   const visibilityService = {
     loadContext: jest.fn().mockResolvedValue({}),
     assertVisible: jest.fn().mockResolvedValue(undefined),
   };
 
-  return { ticketService, supabase, routingService, slaService, visibilityService, inserted, activities };
+  return { ticketService, supabase, routingService, slaService, visibilityService, inserted, updates, activities };
 }
 
 describe('DispatchService', () => {
@@ -116,7 +166,7 @@ describe('DispatchService', () => {
     expect(inserted[0].ticket_type_id).toBe(parent.ticket_type_id);
     expect(inserted[0].priority).toBe(parent.priority);
     expect(inserted[0].assigned_vendor_id).toBe('vendor-X');
-    expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', 'sla-1');
+    expect(slaService.startTimers).not.toHaveBeenCalled();
   });
 
   it('runs resolver when no assignee given in DTO', async () => {
@@ -180,8 +230,7 @@ describe('DispatchService', () => {
     expect(inserted.every((c) => c.ticket_kind === 'work_order')).toBe(true);
   });
 
-  // Fix 7 / new test: sla_id must be in initial insert row (Fix 3)
-  it('includes sla_id in the initial insert row', async () => {
+  it('does NOT inherit sla_id from request_type (parent-vs-child SLA separation)', async () => {
     const parent = makeParent();
     const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
     const svc = new DispatchService(
@@ -191,8 +240,11 @@ describe('DispatchService', () => {
       slaService as never,
       visibilityService as never,
     );
+    // request_types mock returns sla_policy_id: 'sla-1' — that's the parent's desk SLA.
+    // Child must NOT pick it up unless explicitly passed in DTO.
     await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: 'v1' }, '__system__');
-    expect(inserted[0].sla_id).toBe('sla-1');
+    expect(inserted[0].sla_id).toBeNull();
+    expect(slaService.startTimers).not.toHaveBeenCalled();
   });
 
   // Fix 5 / new test: empty title must be rejected
@@ -207,5 +259,129 @@ describe('DispatchService', () => {
       deps.visibilityService as never,
     );
     await expect(svc.dispatch(parent.id, { title: '   ' }, '__system__')).rejects.toThrow(/title/);
+  });
+
+  it('uses dto.sla_id when provided explicitly', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: 't1', sla_id: 'sla-explicit' }, '__system__');
+    expect(inserted[0].sla_id).toBe('sla-explicit');
+    expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', 'sla-explicit');
+  });
+
+  it('treats dto.sla_id === null as explicit "No SLA"', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent, {
+      vendors: { 'v1': { default_sla_policy_id: 'sla-vendor' } }, // would otherwise apply
+    });
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: 'v1', sla_id: null }, '__system__');
+    expect(inserted[0].sla_id).toBeNull();
+    expect(slaService.startTimers).not.toHaveBeenCalled();
+  });
+
+  it('falls back to vendor default_sla_policy_id', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent, {
+      vendors: { 'v1': { default_sla_policy_id: 'sla-vendor' } },
+    });
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: 'v1' }, '__system__');
+    expect(inserted[0].sla_id).toBe('sla-vendor');
+    expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', 'sla-vendor');
+  });
+
+  it('falls back to team default_sla_policy_id when no vendor', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent, {
+      teams: { 't1': { default_sla_policy_id: 'sla-team' } },
+    });
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    // override routing so no vendor is assigned
+    routingService.evaluate.mockResolvedValueOnce({
+      target: { kind: 'team', team_id: 't1' },
+      chosen_by: 'request_type_default', rule_id: null, rule_name: null, strategy: 'fixed', trace: [],
+    });
+    await svc.dispatch(parent.id, { title: 'x' }, '__system__');
+    expect(inserted[0].sla_id).toBe('sla-team');
+    expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', 'sla-team');
+  });
+
+  it('vendor default beats team default when both assignees set', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent, {
+      vendors: { 'v1': { default_sla_policy_id: 'sla-vendor' } },
+      teams: { 't1': { default_sla_policy_id: 'sla-team' } },
+    });
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: 't1', assigned_vendor_id: 'v1' }, '__system__');
+    expect(inserted[0].sla_id).toBe('sla-vendor');
+  });
+
+  it('falls back through user → user.team → team default', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent, {
+      users: { 'u1': { team_id: 'tA' } },
+      teams: { 'tA': { default_sla_policy_id: 'sla-userteam' } },
+    });
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    await svc.dispatch(parent.id, { title: 'x', assigned_user_id: 'u1' }, '__system__');
+    expect(inserted[0].sla_id).toBe('sla-userteam');
+  });
+
+  it('resolves to null sla_id when no defaults available', async () => {
+    const parent = makeParent();
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
+    const svc = new DispatchService(
+      supabase as never,
+      ticketService as never,
+      routingService as never,
+      slaService as never,
+      visibilityService as never,
+    );
+    routingService.evaluate.mockResolvedValueOnce({
+      target: { kind: 'team', team_id: 't1' },
+      chosen_by: 'request_type_default', rule_id: null, rule_name: null, strategy: 'fixed', trace: [],
+    });
+    await svc.dispatch(parent.id, { title: 'x' }, '__system__');
+    expect(inserted[0].sla_id).toBeNull();
+    expect(slaService.startTimers).not.toHaveBeenCalled();
   });
 });

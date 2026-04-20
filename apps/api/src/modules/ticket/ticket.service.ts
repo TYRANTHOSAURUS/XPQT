@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -44,6 +44,13 @@ export interface UpdateTicketDto {
   cost?: number | null;
   satisfaction_rating?: number | null;
   satisfaction_comment?: string | null;
+  /**
+   * Reassigns the executor SLA on a child work order. Refused on parent cases
+   * (parent SLA is locked on reassign per docs §SLA-on-reassignment).
+   * Triggers SlaService.restartTimers which stops existing timers and starts new ones.
+   * Pass `null` to clear the SLA (no timers will run).
+   */
+  sla_id?: string | null;
 }
 
 export interface ReassignDto {
@@ -631,6 +638,30 @@ export class TicketService {
     // Get current state for change tracking
     const current = await this.getById(id, SYSTEM_ACTOR);
 
+    // SLA reassignment is work-order-only; parent case SLA is locked on reassign.
+    if (dto.sla_id !== undefined && (current as Record<string, unknown>).ticket_kind === 'case') {
+      throw new BadRequestException('cannot change sla_id on a case; parent SLA is locked');
+    }
+
+    // Parent close guard: a case cannot move to resolved/closed while children are open.
+    if (
+      (dto.status_category === 'resolved' || dto.status_category === 'closed') &&
+      (current as Record<string, unknown>).ticket_kind === 'case'
+    ) {
+      const { data: openChildren } = await this.supabase.admin
+        .from('tickets')
+        .select('id')
+        .eq('parent_ticket_id', id)
+        .eq('tenant_id', tenant.id)
+        .not('status_category', 'in', '(resolved,closed)');
+      const childIds = (openChildren ?? []).map((c: { id: string }) => c.id);
+      if (childIds.length > 0) {
+        throw new BadRequestException(
+          `cannot close case while children are open: ${childIds.join(', ')}`,
+        );
+      }
+    }
+
     const updateData: Record<string, unknown> = {};
     const changes: Record<string, { from: unknown; to: unknown }> = {};
 
@@ -667,6 +698,24 @@ export class TicketService {
         await this.applyWaitingStateTransition(id, tenant.id, current, data);
       } catch (err) {
         console.error('[sla] pause/resume failed', err);
+      }
+    }
+
+    // ── SLA policy change on a child: stop old timers, start fresh ones ──────
+    if (changes.sla_id) {
+      try {
+        await this.slaService.restartTimers(id, tenant.id, changes.sla_id.to as string | null);
+        await this.addActivity(id, {
+          activity_type: 'system_event',
+          visibility: 'system',
+          metadata: {
+            event: 'sla_changed',
+            from_sla_id: changes.sla_id.from,
+            to_sla_id: changes.sla_id.to,
+          },
+        });
+      } catch (err) {
+        console.error('[sla] restart on sla_id change failed', err);
       }
     }
 
@@ -990,7 +1039,7 @@ export class TicketService {
       const visibleIds = await this.visibility.getVisibleIds(ctx);
       let q = this.supabase.admin
         .from('tickets')
-        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
+        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
         .eq('parent_ticket_id', parentTicketId)
         .eq('tenant_id', tenant.id);
       if (visibleIds !== null) {
@@ -1003,7 +1052,7 @@ export class TicketService {
 
     const { data, error } = await this.supabase.admin
       .from('tickets')
-      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
+      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)
       .order('created_at');

@@ -46,6 +46,7 @@ interface Vendor {
   owning_team_id: string | null;
   owning_team?: Team | null;
   active: boolean;
+  default_sla_policy_id: string | null;
 }
 
 interface ServiceArea {
@@ -61,6 +62,7 @@ interface ServiceArea {
 export function VendorsPage() {
   const { data: vendors, loading, refetch } = useApi<Vendor[]>('/vendors', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
+  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export function VendorsPage() {
   const [notes, setNotes] = useState('');
   const [owningTeamId, setOwningTeamId] = useState('');
   const [active, setActive] = useState(true);
+  const [defaultSlaPolicyId, setDefaultSlaPolicyId] = useState<string>('');
 
   // Service areas (only shown when editing)
   const [serviceAreas, setServiceAreas] = useState<ServiceArea[]>([]);
@@ -88,6 +91,7 @@ export function VendorsPage() {
     setNotes('');
     setOwningTeamId('');
     setActive(true);
+    setDefaultSlaPolicyId('');
     setServiceAreas([]);
     setNewAreaSpaceId('');
     setNewAreaServiceType('catering');
@@ -116,6 +120,7 @@ export function VendorsPage() {
       notes: notes || null,
       owning_team_id: owningTeamId || null,
       active,
+      default_sla_policy_id: defaultSlaPolicyId || null,
     };
     try {
       if (editId) {
@@ -142,6 +147,7 @@ export function VendorsPage() {
     setNotes(vendor.notes ?? '');
     setOwningTeamId(vendor.owning_team_id ?? '');
     setActive(vendor.active);
+    setDefaultSlaPolicyId(vendor.default_sla_policy_id ?? '');
     setDialogOpen(true);
     await loadAreas(vendor.id);
   };
@@ -281,6 +287,22 @@ export function VendorsPage() {
                 <FieldLabel htmlFor="vendor-status" className="font-normal">
                   Active
                 </FieldLabel>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="vendor-default-sla">Default SLA policy</FieldLabel>
+                <Select value={defaultSlaPolicyId} onValueChange={(v) => setDefaultSlaPolicyId(v ?? '')}>
+                  <SelectTrigger id="vendor-default-sla"><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {(slaPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Falls back to this when a sub-issue is dispatched to this vendor without an explicit SLA pick.
+                </FieldDescription>
               </Field>
 
               {editId && (

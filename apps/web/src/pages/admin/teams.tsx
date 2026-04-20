@@ -34,6 +34,7 @@ interface Team {
   domain_scope: string | null;
   location_scope: string | null;
   active: boolean;
+  default_sla_policy_id: string | null;
 }
 
 interface Space {
@@ -60,12 +61,14 @@ export function TeamsPage() {
   const { data, loading, refetch } = useApi<Team[]>('/teams', []);
   const { data: spaces } = useApi<Space[]>('/spaces', []);
   const { data: users } = useApi<User[]>('/users', []);
+  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [domainScope, setDomainScope] = useState('all');
   const [locationScope, setLocationScope] = useState('');
+  const [defaultSlaPolicyId, setDefaultSlaPolicyId] = useState<string>('');
 
   // Members sub-section (only shown when editing)
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -76,6 +79,7 @@ export function TeamsPage() {
     setName('');
     setDomainScope('all');
     setLocationScope('');
+    setDefaultSlaPolicyId('');
     setEditId(null);
     setMembers([]);
     setAddUserId('');
@@ -99,6 +103,7 @@ export function TeamsPage() {
       name,
       domain_scope: domainScope === 'all' ? null : domainScope,
       location_scope: locationScope || null,
+      default_sla_policy_id: defaultSlaPolicyId || null,
     };
     try {
       if (editId) {
@@ -121,6 +126,7 @@ export function TeamsPage() {
     setName(team.name);
     setDomainScope(team.domain_scope ?? 'all');
     setLocationScope(team.location_scope ?? '');
+    setDefaultSlaPolicyId(team.default_sla_policy_id ?? '');
     setDialogOpen(true);
     await loadMembers(team.id);
   };
@@ -218,6 +224,22 @@ export function TeamsPage() {
                   placeholder="All locations"
                   emptyLabel="All locations"
                 />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-default-sla">Default SLA policy</FieldLabel>
+                <Select value={defaultSlaPolicyId} onValueChange={(v) => setDefaultSlaPolicyId(v ?? '')}>
+                  <SelectTrigger id="team-default-sla"><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {(slaPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Falls back to this when a sub-issue is dispatched to this team (or to a user on this team) without an explicit SLA pick.
+                </FieldDescription>
               </Field>
 
               {editId && (
