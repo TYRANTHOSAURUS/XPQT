@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -214,6 +214,74 @@ export class RoutingCoverageService {
     // Sort by path so hierarchy renders naturally.
     withDepth.sort((a, b) => a.path.join('/').localeCompare(b.path.join('/')));
     return withDepth;
+  }
+
+  /**
+   * Upsert or clear the location_teams row for a (space, domain) cell.
+   * Wraps existing CRUD so the matrix can do one-click edits.
+   */
+  async setCell(input: {
+    space_id: string;
+    domain: string;
+    assignee: { kind: 'team' | 'vendor'; id: string } | null;
+  }): Promise<{ deleted: boolean; row?: unknown }> {
+    const tenant = TenantContext.current();
+    if (!input.space_id) throw new BadRequestException('space_id required');
+    if (!input.domain?.trim()) throw new BadRequestException('domain required');
+
+    const domain = input.domain.trim();
+
+    const { data: existing, error: findErr } = await this.supabase.admin
+      .from('location_teams')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('space_id', input.space_id)
+      .eq('domain', domain)
+      .maybeSingle();
+    if (findErr) throw new BadRequestException(findErr.message);
+
+    // Clear case
+    if (!input.assignee) {
+      if (!existing) return { deleted: true };
+      const { error } = await this.supabase.admin
+        .from('location_teams')
+        .delete()
+        .eq('id', (existing as { id: string }).id)
+        .eq('tenant_id', tenant.id);
+      if (error) throw new BadRequestException(error.message);
+      return { deleted: true };
+    }
+
+    const patch: Record<string, unknown> = {
+      tenant_id: tenant.id,
+      space_id: input.space_id,
+      space_group_id: null,
+      domain,
+      team_id: input.assignee.kind === 'team' ? input.assignee.id : null,
+      vendor_id: input.assignee.kind === 'vendor' ? input.assignee.id : null,
+    };
+
+    if (existing) {
+      const { data, error } = await this.supabase.admin
+        .from('location_teams')
+        .update({
+          team_id: patch.team_id,
+          vendor_id: patch.vendor_id,
+        })
+        .eq('id', (existing as { id: string }).id)
+        .eq('tenant_id', tenant.id)
+        .select()
+        .single();
+      if (error) throw new BadRequestException(error.message);
+      return { deleted: false, row: data };
+    }
+    const { data, error } = await this.supabase.admin
+      .from('location_teams')
+      .insert(patch)
+      .select()
+      .single();
+    if (error) throw new BadRequestException(error.message);
+    return { deleted: false, row: data };
   }
 
   private async fetchNames(

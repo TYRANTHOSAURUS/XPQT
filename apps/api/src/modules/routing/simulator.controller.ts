@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, Put, Query } from '@nestjs/common';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
 import { DecisionRow, RoutingAuditService } from './audit.service';
 import { CoverageResponse, RoutingCoverageService } from './coverage.service';
@@ -66,6 +66,29 @@ export class RoutingSimulatorController {
       max_cells: maxCells ? Number.parseInt(maxCells, 10) : undefined,
     });
   }
+
+  @Put('coverage/cell')
+  async setCoverageCell(@Body() body: SetCellRequestBody) {
+    if (!body || typeof body !== 'object') throw new BadRequestException('Body required');
+    if (!body.space_id || !body.domain) {
+      throw new BadRequestException('space_id and domain are required');
+    }
+    const assignee =
+      body.assignee && body.assignee.kind && body.assignee.id
+        ? { kind: body.assignee.kind, id: body.assignee.id }
+        : null;
+    return this.coverage.setCell({
+      space_id: body.space_id,
+      domain: body.domain,
+      assignee,
+    });
+  }
+}
+
+interface SetCellRequestBody {
+  space_id: string;
+  domain: string;
+  assignee: { kind: 'team' | 'vendor'; id: string } | null;
 }
 
 interface SimulateRequestBody {

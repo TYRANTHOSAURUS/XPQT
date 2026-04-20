@@ -7,6 +7,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle } from 'lucide-react';
+import { EditCellDialog, type EditCellInput } from './edit-cell-dialog';
 
 type CoverageChosenBy =
   | 'direct'
@@ -47,8 +48,13 @@ type Filter = 'all' | 'gaps' | 'explicit';
 
 export function CoverageMatrix() {
   const [filter, setFilter] = useState<Filter>('all');
+  const [editCell, setEditCell] = useState<EditCellInput | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
-  const { data, loading, error } = useApi<CoverageResponse>('/routing/studio/coverage', []);
+  const { data, loading, error } = useApi<CoverageResponse>(
+    `/routing/studio/coverage?_=${reloadNonce}`,
+    [reloadNonce],
+  );
 
   const cellIndex = useMemo(() => {
     const map = new Map<string, CoverageCell>();
@@ -155,9 +161,27 @@ export function CoverageMatrix() {
                 </th>
                 {data.domains.map((d) => {
                   const cell = cellIndex.get(`${space.id}::${d}`);
+                  const onClick = () => {
+                    setEditCell({
+                      space_id: space.id,
+                      space_name: space.path.join(' / '),
+                      domain: d,
+                      current_target_kind: cell?.target_kind ?? null,
+                      current_target_id: cell?.target_id ?? null,
+                      current_target_name: cell?.target_name ?? null,
+                      is_inherited:
+                        !!cell && cell.chosen_by !== 'direct' && cell.chosen_by !== 'uncovered',
+                    });
+                  };
                   return (
                     <td key={d} className="border-b px-3 py-1.5">
-                      <Cell cell={cell} />
+                      <button
+                        type="button"
+                        className="rounded hover:bg-accent"
+                        onClick={onClick}
+                      >
+                        <Cell cell={cell} />
+                      </button>
                     </td>
                   );
                 })}
@@ -168,6 +192,13 @@ export function CoverageMatrix() {
       </div>
 
       <Legend />
+
+      <EditCellDialog
+        input={editCell}
+        open={!!editCell}
+        onOpenChange={(open) => { if (!open) setEditCell(null); }}
+        onSaved={() => setReloadNonce((n) => n + 1)}
+      />
     </div>
   );
 }
