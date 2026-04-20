@@ -80,8 +80,12 @@ function makeDeps(parent: ParentRow) {
   };
 
   const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
+  const visibilityService = {
+    loadContext: jest.fn().mockResolvedValue({}),
+    assertVisible: jest.fn().mockResolvedValue(undefined),
+  };
 
-  return { ticketService, supabase, routingService, slaService, inserted, activities };
+  return { ticketService, supabase, routingService, slaService, visibilityService, inserted, activities };
 }
 
 describe('DispatchService', () => {
@@ -95,15 +99,16 @@ describe('DispatchService', () => {
 
   it('creates a child work_order with parent context copied', async () => {
     const parent = makeParent();
-    const { ticketService, supabase, routingService, slaService, inserted } = makeDeps(parent);
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
     const svc = new DispatchService(
       supabase as never,
       ticketService as never,
       routingService as never,
       slaService as never,
+      visibilityService as never,
     );
     const dto: DispatchDto = { title: 'Install replacement glass', assigned_vendor_id: 'vendor-X' };
-    const child = await svc.dispatch(parent.id, dto);
+    const child = await svc.dispatch(parent.id, dto, '__system__');
 
     expect(child.parent_ticket_id).toBe(parent.id);
     expect(child.ticket_kind).toBe('work_order');
@@ -116,14 +121,15 @@ describe('DispatchService', () => {
 
   it('runs resolver when no assignee given in DTO', async () => {
     const parent = makeParent();
-    const { ticketService, supabase, routingService, slaService, inserted } = makeDeps(parent);
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
     const svc = new DispatchService(
       supabase as never,
       ticketService as never,
       routingService as never,
       slaService as never,
+      visibilityService as never,
     );
-    await svc.dispatch(parent.id, { title: 'Investigate' });
+    await svc.dispatch(parent.id, { title: 'Investigate' }, '__system__');
     expect(routingService.evaluate).toHaveBeenCalled();
     expect(inserted[0].assigned_vendor_id).toBe('vendor-X');
   });
@@ -136,8 +142,9 @@ describe('DispatchService', () => {
       deps.ticketService as never,
       deps.routingService as never,
       deps.slaService as never,
+      deps.visibilityService as never,
     );
-    await expect(svc.dispatch(parent.id, { title: 'x' })).rejects.toThrow(/work_order/);
+    await expect(svc.dispatch(parent.id, { title: 'x' }, '__system__')).rejects.toThrow(/work_order/);
   });
 
   it('rejects dispatch on a ticket in pending_approval status', async () => {
@@ -149,22 +156,24 @@ describe('DispatchService', () => {
       deps.ticketService as never,
       deps.routingService as never,
       deps.slaService as never,
+      deps.visibilityService as never,
     );
-    await expect(svc.dispatch(parent.id, { title: 'x' })).rejects.toThrow(/pending approval/);
+    await expect(svc.dispatch(parent.id, { title: 'x' }, '__system__')).rejects.toThrow(/pending approval/);
   });
 
   it('supports multiple children on one parent (broken-window scenario)', async () => {
     const parent = makeParent({ title: 'Broken window in Building A' });
-    const { ticketService, supabase, routingService, slaService, inserted } = makeDeps(parent);
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
     const svc = new DispatchService(
       supabase as never,
       ticketService as never,
       routingService as never,
       slaService as never,
+      visibilityService as never,
     );
-    await svc.dispatch(parent.id, { title: 'Replace window pane', assigned_vendor_id: 'glazier' });
-    await svc.dispatch(parent.id, { title: 'Buy replacement glass', assigned_vendor_id: 'supplier' });
-    await svc.dispatch(parent.id, { title: 'Clean up debris', assigned_vendor_id: 'janitorial' });
+    await svc.dispatch(parent.id, { title: 'Replace window pane', assigned_vendor_id: 'glazier' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'Buy replacement glass', assigned_vendor_id: 'supplier' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'Clean up debris', assigned_vendor_id: 'janitorial' }, '__system__');
     expect(inserted).toHaveLength(3);
     expect(inserted.map((c) => c.assigned_vendor_id)).toEqual(['glazier', 'supplier', 'janitorial']);
     expect(inserted.every((c) => c.parent_ticket_id === parent.id)).toBe(true);
@@ -174,14 +183,15 @@ describe('DispatchService', () => {
   // Fix 7 / new test: sla_id must be in initial insert row (Fix 3)
   it('includes sla_id in the initial insert row', async () => {
     const parent = makeParent();
-    const { ticketService, supabase, routingService, slaService, inserted } = makeDeps(parent);
+    const { ticketService, supabase, routingService, slaService, visibilityService, inserted } = makeDeps(parent);
     const svc = new DispatchService(
       supabase as never,
       ticketService as never,
       routingService as never,
       slaService as never,
+      visibilityService as never,
     );
-    await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: 'v1' });
+    await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: 'v1' }, '__system__');
     expect(inserted[0].sla_id).toBe('sla-1');
   });
 
@@ -194,7 +204,8 @@ describe('DispatchService', () => {
       deps.ticketService as never,
       deps.routingService as never,
       deps.slaService as never,
+      deps.visibilityService as never,
     );
-    await expect(svc.dispatch(parent.id, { title: '   ' })).rejects.toThrow(/title/);
+    await expect(svc.dispatch(parent.id, { title: '   ' }, '__system__')).rejects.toThrow(/title/);
   });
 });

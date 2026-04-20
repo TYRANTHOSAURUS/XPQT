@@ -203,7 +203,7 @@ export class WorkflowEngineService {
                 assigned_team_id: task.assigned_team_id,
                 priority: task.priority,
                 interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
-              });
+              }, '__system__');
             } catch (err) {
               console.error('[workflow] create_child_tasks: dispatch failed', err);
             }

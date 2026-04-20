@@ -4,6 +4,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
+import { TicketVisibilityService } from './ticket-visibility.service';
 
 export interface DispatchDto {
   title: string;
@@ -25,10 +26,16 @@ export class DispatchService {
     @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
     private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
-  async dispatch(parentId: string, dto: DispatchDto) {
+  async dispatch(parentId: string, dto: DispatchDto, actorAuthUid: string) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(parentId, ctx, 'write');
+    }
 
     // Fix 5: validate title
     if (!dto.title?.trim()) {

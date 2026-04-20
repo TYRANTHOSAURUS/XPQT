@@ -5,7 +5,7 @@ function makeDeps() {
   const dispatchCalls: Array<{ parentId: string; dto: Record<string, unknown> }> = [];
 
   const dispatchService = {
-    dispatch: jest.fn(async (parentId: string, dto: Record<string, unknown>) => {
+    dispatch: jest.fn(async (parentId: string, dto: Record<string, unknown>, _actorAuthUid: string) => {
       dispatchCalls.push({ parentId, dto });
       return { id: `child-${dispatchCalls.length}` };
     }),
