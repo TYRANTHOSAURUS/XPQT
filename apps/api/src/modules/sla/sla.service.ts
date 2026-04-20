@@ -2,12 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { BusinessHoursService, BusinessHoursCalendar } from './business-hours.service';
+import { NotificationService } from '../notification/notification.service';
+import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
+import type { EscalationThreshold } from './sla-threshold.types';
 
 @Injectable()
 export class SlaService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly businessHours: BusinessHoursService,
+    private readonly notifications: NotificationService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
   /**
@@ -282,5 +287,40 @@ export class SlaService {
 
     if (error) throw error;
     return data;
+  }
+
+  /**
+   * Resolve an escalation-threshold target to either a `persons.id` or a `teams.id`.
+   * Returns null for `manager_of_requester` when the requester has no manager — the
+   * caller should record a `skipped_no_manager` crossing and move on.
+   */
+  private async resolveTarget(
+    threshold: EscalationThreshold,
+    ticketId: string,
+  ): Promise<{ personId?: string; teamId?: string } | null> {
+    if (threshold.target_type === 'user' && threshold.target_id) {
+      return { personId: threshold.target_id };
+    }
+    if (threshold.target_type === 'team' && threshold.target_id) {
+      return { teamId: threshold.target_id };
+    }
+    if (threshold.target_type === 'manager_of_requester') {
+      const { data: ticket } = await this.supabase.admin
+        .from('tickets')
+        .select('requester_person_id')
+        .eq('id', ticketId)
+        .single();
+      const requesterId = ticket?.requester_person_id as string | null;
+      if (!requesterId) return null;
+      const { data: requester } = await this.supabase.admin
+        .from('persons')
+        .select('manager_person_id')
+        .eq('id', requesterId)
+        .single();
+      const managerId = requester?.manager_person_id as string | null;
+      if (!managerId) return null;
+      return { personId: managerId };
+    }
+    return null;
   }
 }
