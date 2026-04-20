@@ -164,12 +164,15 @@ export class DispatchService {
   ): Promise<string | null> {
     if (dto.sla_id !== undefined) return dto.sla_id; // explicit (string | null)
 
+    const tenantId = TenantContext.current().id;
+
     const vendorId = row.assigned_vendor_id as string | null;
     if (vendorId) {
       const { data } = await this.supabase.admin
         .from('vendors')
         .select('default_sla_policy_id')
         .eq('id', vendorId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       const id = (data as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
       if (id) return id;
@@ -181,6 +184,7 @@ export class DispatchService {
         .from('teams')
         .select('default_sla_policy_id')
         .eq('id', teamId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       const id = (data as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
       if (id) return id;
@@ -192,6 +196,7 @@ export class DispatchService {
         .from('users')
         .select('team_id')
         .eq('id', userId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       const userTeamId = (user as { team_id: string | null } | null)?.team_id;
       if (userTeamId) {
@@ -199,6 +204,7 @@ export class DispatchService {
           .from('teams')
           .select('default_sla_policy_id')
           .eq('id', userTeamId)
+          .eq('tenant_id', tenantId)
           .maybeSingle();
         const id = (team as { default_sla_policy_id: string | null } | null)?.default_sla_policy_id;
         if (id) return id;

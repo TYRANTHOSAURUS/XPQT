@@ -82,6 +82,9 @@ function makeDeps(
           return {
             select: () => ({
               eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.vendors?.[id] ?? null, error: null }),
+                }),
                 maybeSingle: async () => ({ data: defaults.vendors?.[id] ?? null, error: null }),
               }),
             }),
@@ -91,6 +94,9 @@ function makeDeps(
           return {
             select: () => ({
               eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.teams?.[id] ?? null, error: null }),
+                }),
                 maybeSingle: async () => ({ data: defaults.teams?.[id] ?? null, error: null }),
               }),
             }),
@@ -100,6 +106,9 @@ function makeDeps(
           return {
             select: () => ({
               eq: (_col: string, id: string) => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: defaults.users?.[id] ?? null, error: null }),
+                }),
                 maybeSingle: async () => ({ data: defaults.users?.[id] ?? null, error: null }),
               }),
             }),

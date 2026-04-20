@@ -1039,7 +1039,7 @@ export class TicketService {
       const visibleIds = await this.visibility.getVisibleIds(ctx);
       let q = this.supabase.admin
         .from('tickets')
-        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
+        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
         .eq('parent_ticket_id', parentTicketId)
         .eq('tenant_id', tenant.id);
       if (visibleIds !== null) {
@@ -1052,7 +1052,7 @@ export class TicketService {
 
     const { data, error } = await this.supabase.admin
       .from('tickets')
-      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at')
+      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)
       .order('created_at');

@@ -40,7 +40,7 @@ Keep four axes separate in your head. Mixing them is how ticketing systems turn 
 | `RoutingService` (same folder) | Façade: calls the resolver, writes `routing_decisions`. Not where logic lives. |
 | `TicketService.runPostCreateAutomation` | Auto-routes a **newly created case** when no assignee was passed in the DTO. Skips for work orders. |
 | `DispatchService` (`apps/api/src/modules/ticket/dispatch.service.ts`) | Creates a child **work order** from a parent case. Copies context, optionally runs the resolver, starts SLA timers, logs a `dispatched` activity on the parent. |
-| `SlaService` (`apps/api/src/modules/sla/...`) | Starts, pauses, and breaches SLA timers based on the request type's `sla_policy_id`. |
+| `SlaService` (`apps/api/src/modules/sla/...`) | Starts, pauses, restarts, and breaches SLA timers. Receives an already-resolved policy ID from its callers (`TicketService` for cases, `DispatchService.resolveChildSla` for children). |
 
 ---
 
@@ -53,7 +53,7 @@ Every operational decision derives from the ticket's request type. Key columns:
 | `domain` | Which `location_teams(space, domain)` rows are candidates. Also the seed of the **domain fallback chain**. |
 | `fulfillment_strategy` | Which branches of the resolver are active: `fixed` \| `asset` \| `location` \| `auto`. |
 | `default_team_id` / `default_vendor_id` | Terminal fallback assignee when every other branch misses. |
-| `sla_policy_id` | SLA applied on ticket creation (and on dispatch-created work orders). |
+| `sla_policy_id` | SLA applied on **case** creation. **Never** consulted for child work orders — children resolve their own SLA via `DispatchService.resolveChildSla` (see §7). |
 | `workflow_definition_id` | Workflow that orchestrates approvals, notifications, sub-task fan-out. |
 | `form_schema_id` | Form fields on the requester-facing portal. |
 | `requires_asset` / `requires_location` (+ `_required`) | Portal form gates. |
