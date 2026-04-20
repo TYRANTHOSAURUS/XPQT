@@ -70,7 +70,7 @@ notify pgrst, 'reload schema';
 - [ ] **Step 1.2: Validate locally**
 
 Run: `pnpm db:reset`
-Expected: clean exit, all migrations apply including 00035. If anything fails, fix the SQL and re-run.
+Expected: clean exit, all migrations apply including 00036. If anything fails, fix the SQL and re-run.
 
 - [ ] **Step 1.3: Confirm before remote push**
 
@@ -2395,8 +2395,8 @@ If both `assigned_vendor_id` and `assigned_team_id` are set, the **vendor** defa
 **Same rule for both layers: SLA does not change on assignee reassignment.** Cases and children both keep `sla_id` and timer state across silent PATCH or `POST /tickets/:id/reassign`. To change a child's SLA the user must explicitly pick a new policy in the child's properties sidebar — that action calls `SlaService.restartTimers`, which stops existing `sla_timers` rows and starts new ones.
 
 `request_types.sla_policy_id` is, after this change, **only** the case policy. Schema:
-- `vendors.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00035`.
-- `teams.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00035`.
+- `vendors.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00036`.
+- `teams.default_sla_policy_id` (nullable, FK `sla_policies(id)`) — added in `00036`.
 ```
 
 (Then the existing paragraph about pause/resume timers and the `pause_on_waiting_reasons` field continues unchanged.)
@@ -2418,7 +2418,7 @@ Workflows that programmatically close cases must close their children first; oth
 Find the changelog section at the bottom of the file (where the "2026-04-18 — Workflow-spawned children reach parity..." entry lives). Add at the top of the list:
 
 ```markdown
-- **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that's the *case* policy). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team → none. New schema in `00035`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill. Cases gain a close guard that refuses `resolved`/`closed` while open children exist.
+- **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that's the *case* policy). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team → none. New schema in `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill. Cases gain a close guard that refuses `resolved`/`closed` while open children exist.
 ```
 
 - [ ] **Step 14.4: Commit**

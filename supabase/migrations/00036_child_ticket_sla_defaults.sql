@@ -4,10 +4,10 @@
 -- sla_id is supplied at child-ticket dispatch.
 
 alter table vendors
-  add column default_sla_policy_id uuid references sla_policies(id);
+  add column default_sla_policy_id uuid references public.sla_policies(id);
 
 alter table teams
-  add column default_sla_policy_id uuid references sla_policies(id);
+  add column default_sla_policy_id uuid references public.sla_policies(id);
 
 -- Help PostgREST cache pick up the new columns immediately on reload.
 notify pgrst, 'reload schema';
