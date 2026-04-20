@@ -19,6 +19,9 @@ import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
 import { RoutingRulesPage } from '@/pages/admin/routing-rules';
+import { LocationTeamsPage } from '@/pages/admin/location-teams';
+import { SpaceGroupsPage } from '@/pages/admin/space-groups';
+import { DomainParentsPage } from '@/pages/admin/domain-parents';
 import { FormSchemasPage } from '@/pages/admin/form-schemas';
 import { UsersPage } from '@/pages/admin/users';
 import { PersonsPage } from '@/pages/admin/persons';
@@ -104,6 +107,9 @@ export function App() {
             <Route path="locations" element={<LocationsPage />} />
             <Route path="sla-policies" element={<SlaPoliciesPage />} />
             <Route path="routing-rules" element={<RoutingRulesPage />} />
+            <Route path="location-teams" element={<LocationTeamsPage />} />
+            <Route path="space-groups" element={<SpaceGroupsPage />} />
+            <Route path="domain-parents" element={<DomainParentsPage />} />
             <Route path="business-hours" element={<BusinessHoursPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />

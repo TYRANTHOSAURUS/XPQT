@@ -44,6 +44,8 @@ import {
   ListTree,
   Store,
   BookOpen,
+  Network,
+  Layers,
 } from 'lucide-react';
 
 const configNav = [
@@ -52,6 +54,9 @@ const configNav = [
   { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
   { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
+  { title: 'Location Teams', path: '/admin/location-teams', icon: MapPin },
+  { title: 'Space Groups', path: '/admin/space-groups', icon: Layers },
+  { title: 'Domain Hierarchy', path: '/admin/domain-parents', icon: Network },
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
   { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
@@ -85,6 +90,9 @@ const pageTitles: Record<string, string> = {
   '/admin/locations': 'Locations',
   '/admin/sla-policies': 'SLA Policies',
   '/admin/routing-rules': 'Routing Rules',
+  '/admin/location-teams': 'Location Teams',
+  '/admin/space-groups': 'Space Groups',
+  '/admin/domain-parents': 'Domain Hierarchy',
   '/admin/business-hours': 'Business Hours',
   '/admin/notifications': 'Notifications',
   '/admin/workflow-templates': 'Workflow Templates',
