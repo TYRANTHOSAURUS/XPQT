@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
@@ -22,7 +22,7 @@ export interface DispatchDto {
 export class DispatchService {
   constructor(
     private readonly supabase: SupabaseService,
-    private readonly tickets: TicketService,
+    @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
     private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
   ) {}
