@@ -179,6 +179,64 @@ export class TicketVisibilityService {
     throw new ForbiddenException('Ticket not accessible');
   }
 
+  /**
+   * Explains why a user can (or cannot) see a specific ticket.
+   * Used by the /visibility-trace endpoint for support debugging.
+   */
+  async trace(ticketId: string, ctx: VisibilityContext): Promise<{
+    user_id: string;
+    ticket_id: string;
+    visible: boolean;
+    matched_paths: string[];
+    readonly_role: boolean;
+    has_read_all: boolean;
+    has_write_all: boolean;
+  }> {
+    const paths: string[] = [];
+    if (ctx.has_read_all) paths.push('read_all');
+
+    const row = await this.loadTicketRow(ticketId, ctx.tenant_id);
+    if (!row) {
+      return {
+        user_id: ctx.user_id, ticket_id: ticketId,
+        visible: ctx.has_read_all, matched_paths: paths, readonly_role: false,
+        has_read_all: ctx.has_read_all, has_write_all: ctx.has_write_all,
+      };
+    }
+
+    if (ctx.person_id && row.requester_person_id === ctx.person_id) paths.push('requester');
+    if (row.assigned_user_id === ctx.user_id) paths.push('assignee');
+    if (ctx.person_id && (row.watchers ?? []).includes(ctx.person_id)) paths.push('watcher');
+    if (ctx.vendor_id && row.assigned_vendor_id === ctx.vendor_id) paths.push('vendor');
+    if (row.assigned_team_id && ctx.team_ids.includes(row.assigned_team_id)) paths.push('team');
+
+    let readonlyRole = false;
+    ctx.role_assignments.forEach((role, idx) => {
+      const domainOk =
+        role.domain_scope.length === 0 ||
+        (row.domain != null && role.domain_scope.includes(row.domain));
+      const locationOk =
+        role.location_scope_closure.length === 0 ||
+        row.location_id == null ||
+        role.location_scope_closure.includes(row.location_id);
+      if (domainOk && locationOk) {
+        paths.push(`role[${idx}]${role.read_only_cross_domain ? ':readonly' : ''}`);
+        if (role.read_only_cross_domain) readonlyRole = true;
+      }
+    });
+
+    const visible = paths.length > 0 || ctx.has_read_all;
+    return {
+      user_id: ctx.user_id,
+      ticket_id: ticketId,
+      visible,
+      matched_paths: paths,
+      readonly_role: readonlyRole,
+      has_read_all: ctx.has_read_all,
+      has_write_all: ctx.has_write_all,
+    };
+  }
+
   private async loadTicketRow(ticketId: string, tenantId: string): Promise<TicketForVisibility | null> {
     const { data } = await (this.supabase.admin
       .from('tickets')

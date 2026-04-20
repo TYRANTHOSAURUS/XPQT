@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -22,12 +23,15 @@ import {
   ReassignDto,
 } from './ticket.service';
 import { DispatchService, DispatchDto } from './dispatch.service';
+import { TicketVisibilityService } from './ticket-visibility.service';
+import { TenantContext } from '../../common/tenant-context';
 
 @Controller('tickets')
 export class TicketController {
   constructor(
     private readonly ticketService: TicketService,
     private readonly dispatchService: DispatchService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
   @Get('inbox')
@@ -172,6 +176,18 @@ export class TicketController {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.ticketService.getChildTasks(id, actorAuthUid);
+  }
+
+  @Get(':id/visibility-trace')
+  async visibilityTrace(@Req() request: Request, @Param('id') id: string) {
+    const tenant = TenantContext.current();
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+    if (!ctx.has_read_all) {
+      throw new ForbiddenException('visibility-trace requires tickets:read_all');
+    }
+    return this.visibility.trace(id, ctx);
   }
 
   private extractAccessToken(authorization?: string) {

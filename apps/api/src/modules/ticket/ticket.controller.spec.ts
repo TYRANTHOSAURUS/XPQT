@@ -8,8 +8,9 @@ describe('TicketController.children', () => {
       ]),
     } as unknown as import('./ticket.service').TicketService;
     const dispatchService = {} as unknown as import('./dispatch.service').DispatchService;
+    const visibilityService = {} as unknown as import('./ticket-visibility.service').TicketVisibilityService;
 
-    const controller = new TicketController(ticketService, dispatchService);
+    const controller = new TicketController(ticketService, dispatchService, visibilityService);
     const request = { user: { id: 'auth-123' } } as unknown as import('express').Request;
     const result = await controller.children(request, 'parent-1');
 
