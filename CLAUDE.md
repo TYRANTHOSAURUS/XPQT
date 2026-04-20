@@ -84,6 +84,22 @@ Trigger migrations — any add/alter of: `tickets`, `request_types`, `routing_ru
 
 When the doc and code disagree, fix the doc first, then align the code to the corrected doc.
 
+## Ticket Visibility
+
+**Full reference:** [`docs/visibility.md`](docs/visibility.md). Read it before changing any read/write path on tickets.
+
+Three-tier model: **Participants** (requester · assignee · watcher · vendor) · **Operators** (team member · role domain + location scope) · **Overrides** (`tickets:read_all` / `tickets:write_all` permissions on `roles.permissions`). Enforced at the API layer via `TicketVisibilityService` (`loadContext` + `getVisibleIds` + `assertVisible`). The canonical SQL predicate is `public.ticket_visibility_ids(user_id, tenant_id)`.
+
+### MANDATORY: keep the reference doc in sync
+
+Same rule as the assignments/routing doc — **touch visibility code or its dependent tables, update `docs/visibility.md` in the same PR.** Trigger files:
+
+- `apps/api/src/modules/ticket/ticket-visibility.service.ts`
+- `apps/api/src/modules/ticket/ticket.service.ts` (read/write method signatures or gates)
+- `apps/api/src/modules/ticket/ticket.controller.ts` (req.user.id routing)
+- Any migration altering `ticket_visibility_ids`, `expand_space_closure`, `user_has_permission`, or the tickets columns they reference (`requester_person_id`, `assigned_user_id`, `assigned_team_id`, `assigned_vendor_id`, `watchers`, `location_id`).
+- Any migration changing `users`, `user_role_assignments`, `team_members`, `roles.permissions`, or `spaces.parent_id`.
+
 ## Frontend Rules
 - **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
 - **Install shadcn components before using them:** `npx shadcn@latest add <component-name>`
