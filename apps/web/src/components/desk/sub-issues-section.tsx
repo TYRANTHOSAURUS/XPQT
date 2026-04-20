@@ -24,6 +24,12 @@ interface SubIssuesSectionProps {
   teams: AssigneeOption[];
   users: UserOption[];
   vendors: AssigneeOption[];
+  /**
+   * Invoked when a sub-issue row is clicked. If provided, used instead of router navigation —
+   * lets parents that manage ticket selection via state (e.g. the desk TicketsPage panel)
+   * open the row inline rather than navigate to a URL that may not be routed.
+   */
+  onOpenTicket?: (id: string) => void;
 }
 
 const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'outline'> = {
@@ -108,8 +114,13 @@ export function SubIssuesSection({
   teams,
   users,
   vendors,
+  onOpenTicket,
 }: SubIssuesSectionProps) {
   const navigate = useNavigate();
+  const openRow = (id: string) => {
+    if (onOpenTicket) onOpenTicket(id);
+    else navigate(`/desk/tickets/${id}`);
+  };
   const { data, loading, error, refetch } = useWorkOrders(parentId);
   const [lastNonce, setLastNonce] = useState(refreshNonce);
   if (refreshNonce !== lastNonce) {
@@ -154,7 +165,7 @@ export function SubIssuesSection({
               <li
                 key={row.id}
                 className="flex items-center gap-3 px-3 py-2 hover:bg-muted/50 cursor-pointer"
-                onClick={() => navigate(`/desk/tickets/${row.id}`)}
+                onClick={() => openRow(row.id)}
               >
                 <span
                   className={cn('h-2 w-2 rounded-full shrink-0', PRIORITY_DOT[row.priority] ?? 'bg-muted-foreground/40')}

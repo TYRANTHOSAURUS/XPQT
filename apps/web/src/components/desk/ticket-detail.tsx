@@ -230,7 +230,7 @@ function filterMentionPeople(people: MentionPerson[], query: string): MentionPer
     .slice(0, MAX_MENTION_RESULTS);
 }
 
-export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?: () => void }) {
+export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: string; onClose?: () => void; onOpenTicket?: (id: string) => void }) {
   const { data: ticket, loading: ticketLoading, error: ticketError, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
   const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
@@ -513,6 +513,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
                 teams={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
                 users={users ?? []}
                 vendors={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
+                onOpenTicket={onOpenTicket}
               />
             )}
 
