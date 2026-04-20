@@ -79,6 +79,7 @@ interface TicketData {
   waiting_reason: string | null;
   interaction_mode: string;
   tags: string[];
+  sla_id: string | null;
   sla_at_risk: boolean;
   sla_response_due_at: string | null;
   sla_resolution_due_at: string | null;
@@ -237,6 +238,7 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
   const { data: users } = useApi<UserOption[]>('/users', []);
   const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
   const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
+  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
   const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
@@ -935,7 +937,26 @@ export function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose?
           {/* SLA */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">SLA</div>
-            <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
+            {displayedTicket!.ticket_kind === 'work_order' ? (
+              <Select
+                value={displayedTicket!.sla_id ?? '__none__'}
+                onValueChange={(v) => {
+                  const next = v === '__none__' ? null : v;
+                  if (next !== displayedTicket!.sla_id) patch({ sla_id: next } as Partial<UpdateTicketPayload>);
+                }}
+              >
+                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="No SLA" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No SLA</SelectItem>
+                  {(slaPolicies ?? []).map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <div className={displayedTicket!.ticket_kind === 'work_order' ? 'mt-2' : ''}>
+              <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
+            </div>
           </div>
 
           <Separator />

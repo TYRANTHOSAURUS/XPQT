@@ -16,6 +16,7 @@ export interface UpdateTicketPayload {
   tags?: string[];
   watchers?: string[];
   cost?: number | null;
+  sla_id?: string | null;
 }
 
 export type AssignmentKind = 'team' | 'user' | 'vendor';
@@ -58,6 +59,7 @@ const FIELD_LABELS: Partial<Record<keyof UpdateTicketPayload, string>> = {
   tags: 'labels',
   watchers: 'watchers',
   cost: 'cost',
+  sla_id: 'SLA policy',
 };
 
 const humanFieldLabel = (field: string): string =>
