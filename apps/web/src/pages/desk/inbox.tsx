@@ -21,6 +21,7 @@ export function InboxPage() {
       <TicketDetail
         ticketId={ticketId}
         onClose={() => setSearchParams({})}
+        onOpenTicket={(id) => setSearchParams({ ticket: id })}
       />
     </div>
   );
