@@ -1,7 +1,9 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
+import { AuthGuard } from './modules/auth/auth.guard';
 import { SupabaseModule } from './common/supabase/supabase.module';
 import { HealthController } from './health.controller';
 import { TenantModule } from './modules/tenant/tenant.module';
@@ -53,6 +55,11 @@ import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
     CatalogMenuModule,
   ],
   controllers: [HealthController],
+  providers: [
+    // Secure by default: every route requires a valid Supabase Bearer token.
+    // Opt out with @Public() on the specific handler or controller.
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

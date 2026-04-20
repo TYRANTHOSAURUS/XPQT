@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { WorkflowWebhookService } from './workflow-webhook.service';
+import { Public } from '../auth/public.decorator';
 
 /**
  * Tenant-scoped admin CRUD for workflow webhooks.
@@ -52,6 +53,7 @@ export class WorkflowWebhookController {
  * Registered at the root so we can exclude it from TenantMiddleware in app.module.
  */
 @Controller('webhooks')
+@Public()
 export class WorkflowWebhookReceiveController {
   constructor(private readonly svc: WorkflowWebhookService) {}
 
