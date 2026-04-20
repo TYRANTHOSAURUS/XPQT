@@ -101,12 +101,30 @@ export class SlaService {
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenantId)
       .eq('paused', false)
-      .is('completed_at', null);
+      .is('completed_at', null)
+      .is('stopped_at', null);
 
     await this.supabase.admin
       .from('tickets')
       .update({ sla_paused: true, sla_paused_at: now.toISOString() })
       .eq('id', ticketId);
+  }
+
+  /**
+   * Stop all active SLA timers for a ticket (distinct from pause and from
+   * breach-completion). Used by reclassification and any future "tear down
+   * old SLA" flow. Sets stopped_at + stopped_reason so historical reports
+   * can show "timer ran for N minutes before being stopped."
+   */
+  async stopTimers(ticketId: string, tenantId: string, reason: string) {
+    const now = new Date().toISOString();
+    await this.supabase.admin
+      .from('sla_timers')
+      .update({ stopped_at: now, stopped_reason: reason })
+      .eq('ticket_id', ticketId)
+      .eq('tenant_id', tenantId)
+      .is('stopped_at', null)
+      .is('completed_at', null);
   }
 
   /**
@@ -123,7 +141,8 @@ export class SlaService {
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenantId)
       .eq('paused', true)
-      .is('completed_at', null);
+      .is('completed_at', null)
+      .is('stopped_at', null);
 
     for (const timer of timers ?? []) {
       const calendar = await this.loadCalendar(timer.business_hours_calendar_id as string | null);
@@ -153,7 +172,8 @@ export class SlaService {
       .select('timer_type, due_at')
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenantId)
-      .is('completed_at', null);
+      .is('completed_at', null)
+      .is('stopped_at', null);
 
     const updates: Record<string, unknown> = { sla_paused: false, sla_paused_at: null };
     for (const t of activeTimers ?? []) {
@@ -175,7 +195,8 @@ export class SlaService {
       .update({ completed_at: now.toISOString() })
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenantId)
-      .is('completed_at', null);
+      .is('completed_at', null)
+      .is('stopped_at', null);
 
     if (timerType) query = query.eq('timer_type', timerType);
 
@@ -224,6 +245,7 @@ export class SlaService {
       .eq('breached', false)
       .eq('paused', false)
       .is('completed_at', null)
+      .is('stopped_at', null)
       .lt('due_at', now.toISOString())
       .limit(100);
 
@@ -261,6 +283,7 @@ export class SlaService {
       .eq('breached', false)
       .eq('paused', false)
       .is('completed_at', null)
+      .is('stopped_at', null)
       .gt('due_at', now.toISOString())
       .limit(200);
 
@@ -605,6 +628,7 @@ export class SlaService {
       .eq('breached', false)
       .eq('paused', false)
       .is('completed_at', null)
+      .is('stopped_at', null)
       .order('due_at', { ascending: true })
       .limit(500);
 
