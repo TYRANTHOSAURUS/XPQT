@@ -245,29 +245,70 @@ This means: service desk sees the parent case move from `new` → `assigned` whe
 
 Workflows with a `create_child_tasks` node also insert `ticket_kind = 'work_order'` rows. This ensures the rollup trigger fires and clients that filter `?kind=case` get clean case lists.
 
+### 6.7 Parent close guard
+
+A case cannot move to `status_category = 'resolved'` or `'closed'` while it has any child with `status_category` not in (`resolved`, `closed`). `TicketService.update` enforces this and returns `400 Bad Request` with the open child IDs listed in the message. Children continue to roll up into the parent via the existing `rollup_parent_status()` trigger — that's the intended path for a parent to move state, not a direct user close while vendor work is still open.
+
+Workflows or background jobs that programmatically close cases must close children first; the guard will refuse otherwise.
+
 ---
 
 ## 7. SLA timers
 
-Attached at ticket creation (for cases) and at dispatch (for work orders). Both paths:
+**Two SLAs, two clocks, two audiences.**
 
-1. Read `request_types.sla_policy_id` once.
-2. Insert the ticket with `sla_id = sla_policy_id`.
-3. Call `SlaService.startTimers(ticketId, tenantId, slaPolicyId)` to open `sla_timers` rows for `response` and `resolution` timers, each with their own `target_minutes`, `due_at`, `business_hours_calendar_id`.
+| | Case (`ticket_kind = 'case'`) | Child (`ticket_kind = 'work_order'`) |
+|---|---|---|
+| Audience | Requester (employee) | Service desk |
+| Promised by | Service desk team | Executor (vendor or internal team) |
+| Source of `sla_id` | `request_types.sla_policy_id` | Resolution order below — **never** `request_types.sla_policy_id` |
+| Set when | Case is created | Child is dispatched (manual or workflow) |
+| Mutable when | Locked on reassign | Editable in the child's properties sidebar (timers restart) |
+
+### Case SLA — from `request_types.sla_policy_id`
+
+Attached at case creation. `TicketService.runPostCreateAutomation` reads `request_types.sla_policy_id` and calls `SlaService.startTimers(caseId, tenantId, slaPolicyId)` to open `sla_timers` rows for `response` and `resolution` timers, each with their own `target_minutes`, `due_at`, `business_hours_calendar_id`. Locked on reassign per the rule below.
+
+### Child SLA — resolution order at dispatch
+
+When a child is created (manual `POST /tickets/:id/dispatch` or workflow `create_child_tasks`), `DispatchService.resolveChildSla(dto, row)` picks the policy, first match wins:
+
+1. **Explicit:** `dto.sla_id` was supplied (manual UI pick, or workflow node's per-task `sla_policy_id`). Pass `null` explicitly to mean "No SLA — no timer runs".
+2. **Vendor default:** `assigned_vendor_id` → `vendors.default_sla_policy_id`.
+3. **Team default:** `assigned_team_id` → `teams.default_sla_policy_id`.
+4. **User's team default:** `assigned_user_id` → that user's `team_id` → `teams.default_sla_policy_id`.
+5. **None.** `sla_id = null`. No `sla_timers` rows are created. UI surfaces this state as "No SLA".
+
+If both `assigned_vendor_id` and `assigned_team_id` are set on the child row, the **vendor** default wins (vendor SLA is contractual; team default is internal convention).
+
+Resolution runs after routing fills in assignees, so routing-derived assignees produce the same default behavior as manual ones.
+
+`request_types.sla_policy_id` is **never** consulted for children — it is exclusively the case's policy.
+
+### SLA on reassignment (both layers)
+
+**Nothing changes on SLA when an assignee is reassigned** — via silent PATCH or `POST /tickets/:id/reassign`, manual or rerun mode. `due_at`, `sla_response_due_at`, `sla_resolution_due_at`, `sla_at_risk`, and breach timestamps all persist unchanged on both parent cases and children.
+
+This is intentional and matches standard ITSM behavior: SLA is a promise to the requester (for cases) or to the service desk (for children), not to the specific assignee. Shuffling ownership does not reset the clock.
+
+### Changing a child's SLA policy
+
+To change a child's `sla_id` after dispatch: PATCH the child with `{ sla_id: '<new-policy-id>' | null }`. `TicketService.update`:
+- Refuses the change on cases (`ticket_kind = 'case'` → `BadRequestException`).
+- For children: calls `SlaService.restartTimers(ticketId, tenantId, newSlaPolicyId)`, which stops existing `sla_timers`, clears computed breach/due fields on `tickets`, and starts new timers from the new policy. Logs a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
+
+### Shared mechanics
 
 `sla_policies.pause_on_waiting_reasons` controls which `tickets.waiting_reason` values pause the clock. `sla_policies.escalation_thresholds` trigger notifications at % elapsed.
-
-Importantly: the case and its work orders have **independent SLA timers** — two different clocks to two different audiences.
-
-### SLA on reassignment
-
-**Nothing changes on SLA when an assignee is reassigned** — via silent PATCH or `POST /tickets/:id/reassign`, manual or rerun mode. `due_at`, `sla_response_due_at`, `sla_resolution_due_at`, `sla_at_risk`, and breach timestamps all persist unchanged.
-
-This is intentional and matches standard ITSM behavior: SLA is a promise to the requester, not to the assignee. Shuffling ownership internally does not reset the customer clock. If a ticket sat on the wrong team for three hours before reassignment, the new team inherits whatever's left of the window.
 
 SLA pause/resume fires **only** on `status_category` or `waiting_reason` changes (`applyWaitingStateTransition` in `ticket.service.ts`). The per-minute `checkBreaches` cron in `sla.service.ts` is team-agnostic — it only looks at `due_at` and `paused` flags.
 
 **Edge case worth knowing:** the business-hours calendar is attached to the **SLA policy** (`sla_policies.business_hours_calendar_id`), not the team. A 9–5 team and a 24/7 team working the same policy share the same business-minute calculation. There is no per-team calendar override today. If that matters for a product decision, it's a schema change.
+
+### Schema additions (migration `00036`)
+
+- `vendors.default_sla_policy_id uuid references public.sla_policies(id)` — nullable, no backfill.
+- `teams.default_sla_policy_id uuid references public.sla_policies(id)` — nullable, no backfill.
 
 ---
 
@@ -510,5 +551,6 @@ Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-c
 
 Move items here with a date when a gap from §13 is closed. Keeps the doc honest about what was once broken and when it was fixed.
 
+- **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that was the *case* policy bleeding into child rows). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team default → none. New schema in migration `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill, future dispatches are correct. Cases also gain a close guard that refuses `resolved`/`closed` while any child is still open, and children's `sla_id` is now editable post-dispatch via `PATCH /tickets/:id` which calls `SlaService.restartTimers`. Workflow `create_child_tasks` node now forwards per-task `sla_policy_id` through to dispatch.
 - **2026-04-18 — Sidebar reassign now audits.** The desk sidebar's `useTicketMutation.updateAssignment` hook now calls `POST /tickets/:id/reassign` (with a synthesized reason) whenever an existing assignee is replaced. First-time assignment still uses silent `PATCH`. `routing_decisions` captures every sidebar reassignment going forward.
 - **2026-04-18 — Workflow-spawned children reach parity with manual dispatch.** `WorkflowEngineService.create_child_tasks` now calls `DispatchService.dispatch` per task. Children receive SLA timer start, a `routing_decisions` row, and a `dispatched` parent activity — same as manual dispatch via `POST /tickets/:id/dispatch`.
