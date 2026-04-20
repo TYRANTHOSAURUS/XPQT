@@ -43,6 +43,34 @@ export class WorkflowEngineService {
     @Inject(forwardRef(() => DispatchService)) private readonly dispatchService: DispatchService,
   ) {}
 
+  /**
+   * Cancel any active workflow_instances for a ticket. Idempotent —
+   * safe to call when no active instance exists. Used by reclassification
+   * (via the reclassify_ticket RPC which performs the same operation in-txn)
+   * and available for any future "cancel workflow" admin action.
+   */
+  async cancelInstanceForTicket(
+    ticketId: string,
+    tenantId: string,
+    reason: string,
+    actorUserId: string | null,
+  ): Promise<string[]> {
+    const { data } = await this.supabase.admin
+      .from('workflow_instances')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_reason: reason,
+        cancelled_by: actorUserId,
+      })
+      .eq('ticket_id', ticketId)
+      .eq('tenant_id', tenantId)
+      .in('status', ['active', 'waiting'])
+      .select('id');
+
+    return (data ?? []).map((row: { id: string }) => row.id);
+  }
+
   async startForTicket(ticketId: string, workflowDefinitionId: string) {
     const tenant = TenantContext.current();
 

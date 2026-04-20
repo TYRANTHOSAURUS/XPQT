@@ -138,3 +138,47 @@ describe('WorkflowEngineService.create_child_tasks', () => {
     logSpy.mockRestore();
   });
 });
+
+describe('WorkflowEngineService.cancelInstanceForTicket', () => {
+  it('cancels active/waiting instances and returns their ids', async () => {
+    const captured: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];
+
+    const supabase = {
+      admin: {
+        from: (table: string) => {
+          expect(table).toBe('workflow_instances');
+          return {
+            update: (patch: Record<string, unknown>) => ({
+              eq: (c1: string, v1: unknown) => ({
+                eq: (c2: string, v2: unknown) => ({
+                  in: (c3: string, v3: unknown[]) => ({
+                    select: (_cols: string) => {
+                      captured.push({ patch, filters: { [c1]: v1, [c2]: v2, [c3]: v3 } });
+                      return Promise.resolve({
+                        data: [{ id: 'wi-1' }, { id: 'wi-2' }],
+                        error: null,
+                      });
+                    },
+                  }),
+                }),
+              }),
+            }),
+          };
+        },
+      },
+    };
+
+    const svc = new WorkflowEngineService(supabase as never, {} as never);
+    const ids = await svc.cancelInstanceForTicket('t1', 'ten1', 'reclassified', 'user-1');
+
+    expect(ids).toEqual(['wi-1', 'wi-2']);
+    expect(captured[0].patch.status).toBe('cancelled');
+    expect(captured[0].patch.cancelled_reason).toBe('reclassified');
+    expect(captured[0].patch.cancelled_by).toBe('user-1');
+    expect(captured[0].filters).toMatchObject({
+      ticket_id: 't1',
+      tenant_id: 'ten1',
+      status: ['active', 'waiting'],
+    });
+  });
+});
