@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Clock, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { PersonAvatar } from '@/components/person-avatar';
 import { useWorkOrders, WorkOrderRow } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
@@ -144,7 +145,22 @@ export function SubIssuesSection({
         </Button>
       </header>
 
-      {loading && <p className="text-sm text-muted-foreground py-2">Loading…</p>}
+      {loading && data.length === 0 && !error && (
+        <ul className="divide-y rounded-md border" aria-busy="true" aria-label="Loading sub-issues">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li key={i} className="flex items-center gap-3 px-3 py-2">
+              <Skeleton className="h-2 w-2 rounded-full" />
+              <Skeleton className={cn('h-3 flex-1', i === 0 ? 'max-w-[60%]' : i === 1 ? 'max-w-[75%]' : 'max-w-[45%]')} />
+              <span className="flex items-center gap-1.5">
+                <Skeleton className="size-4 rounded-full" />
+                <Skeleton className="h-3 w-20" />
+              </span>
+              <Skeleton className="h-3 w-14" />
+              <Skeleton className="h-5 w-16 rounded-md" />
+            </li>
+          ))}
+        </ul>
+      )}
 
       {error && !loading && (
         <div className="text-sm text-destructive flex items-center gap-2 py-2">
@@ -157,7 +173,7 @@ export function SubIssuesSection({
         <p className="text-sm text-muted-foreground/60 py-2">No sub-issues yet</p>
       )}
 
-      {!loading && !error && data.length > 0 && (
+      {!error && data.length > 0 && (
         <ul className="divide-y rounded-md border">
           {data.map((row) => {
             const { label: assignee, person } = assigneeLabel(row, teams, users, vendors);
