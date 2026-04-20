@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -74,15 +74,19 @@ export function SubmitRequestPage() {
   const [assetId, setAssetId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
 
+  const [searchParams] = useSearchParams();
+  const preselectedType = searchParams.get('type') ?? '';
+
   const {
     control,
     handleSubmit,
     watch,
     register,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<SubmitFormValues>({
     resolver: zodResolver(submitSchema),
-    defaultValues: { title: '', description: '', priority: 'medium', requestTypeId: '' },
+    defaultValues: { title: '', description: '', priority: 'medium', requestTypeId: preselectedType },
   });
 
   const requestTypeId = watch('requestTypeId');
@@ -91,6 +95,15 @@ export function SubmitRequestPage() {
     `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
     [categoryId],
   );
+
+  // Reflect a newly-arrived ?type=<id> query param (e.g. navigating between
+  // catalog cards without unmounting this page) into the form state.
+  useEffect(() => {
+    if (preselectedType && preselectedType !== requestTypeId) {
+      setValue('requestTypeId', preselectedType);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preselectedType]);
 
   const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
 
