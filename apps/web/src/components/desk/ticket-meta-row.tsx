@@ -1,21 +1,38 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CornerDownRight } from 'lucide-react';
+import { CornerDownRight, History, MapPin, Tag, User } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { useWorkOrders } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface TicketMetaRowProps {
   ticketId: string;
   ticketKind: 'case' | 'work_order';
   parentTicketId: string | null;
+  priority: string;
   requestType?: { id: string; name: string; domain: string } | null;
+  requester?: { first_name: string; last_name: string } | null;
+  location?: { name: string } | null;
+  reclassifiedAt?: string | null;
+  reclassifiedReason?: string | null;
   className?: string;
   /**
    * When provided, the "Sub-issue of <parent>" link calls this instead of navigating.
    * Lets the desk TicketsPage swap the detail panel inline rather than going to an unrouted URL.
    */
   onOpenTicket?: (id: string) => void;
+}
+
+function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 const DOMAIN_TONE: Record<string, string> = {
@@ -26,6 +43,14 @@ const DOMAIN_TONE: Record<string, string> = {
   security: 'bg-red-500',
   legal: 'bg-violet-500',
   procurement: 'bg-orange-500',
+};
+
+const PRIORITY_TONE: Record<string, { dot: string; label: string }> = {
+  critical: { dot: 'bg-red-500', label: 'Critical' },
+  high: { dot: 'bg-orange-500', label: 'High' },
+  medium: { dot: 'bg-blue-500', label: 'Medium' },
+  low: { dot: 'bg-muted-foreground/40', label: 'Low' },
+  urgent: { dot: 'bg-red-500', label: 'Urgent' },
 };
 
 function DomainDot({ domain }: { domain: string }) {
@@ -78,7 +103,12 @@ export function TicketMetaRow({
   ticketId,
   ticketKind,
   parentTicketId,
+  priority,
   requestType,
+  requester,
+  location,
+  reclassifiedAt,
+  reclassifiedReason,
   className,
   onOpenTicket,
 }: TicketMetaRowProps) {
@@ -114,14 +144,50 @@ export function TicketMetaRow({
     );
   }
 
-  if (requestType) {
+  const priorityCfg = PRIORITY_TONE[priority] ?? { dot: 'bg-muted-foreground/40', label: priority };
+  items.push(
+    <span key="priority" className="inline-flex items-center gap-1.5 text-muted-foreground">
+      <span className={cn('h-1.5 w-1.5 rounded-full', priorityCfg.dot)} aria-hidden="true" />
+      <span className="text-foreground/90">{priorityCfg.label}</span>
+    </span>,
+  );
+
+  items.push(
+    <span key="type" className="inline-flex items-center gap-1.5 text-muted-foreground">
+      {requestType ? (
+        <>
+          <DomainDot domain={requestType.domain} />
+          <span className="text-foreground/90">{requestType.name}</span>
+          <span className="uppercase tracking-wide text-[10px] text-muted-foreground/70">
+            {requestType.domain}
+          </span>
+        </>
+      ) : (
+        <>
+          <Tag className="h-3 w-3" />
+          <span className="italic">No type</span>
+        </>
+      )}
+    </span>,
+  );
+
+  if (requester) {
+    const name = `${requester.first_name} ${requester.last_name}`.trim();
+    if (name) {
+      items.push(
+        <span key="requester" className="inline-flex items-center gap-1.5 text-muted-foreground">
+          <User className="h-3 w-3" />
+          <span className="text-foreground/90 truncate max-w-[160px]">{name}</span>
+        </span>,
+      );
+    }
+  }
+
+  if (location?.name) {
     items.push(
-      <span key="type" className="inline-flex items-center gap-1.5 text-muted-foreground">
-        <DomainDot domain={requestType.domain} />
-        <span className="text-foreground/90">{requestType.name}</span>
-        <span className="uppercase tracking-wide text-[10px] text-muted-foreground/70">
-          {requestType.domain}
-        </span>
+      <span key="location" className="inline-flex items-center gap-1.5 text-muted-foreground">
+        <MapPin className="h-3 w-3" />
+        <span className="text-foreground/90 truncate max-w-[160px]">{location.name}</span>
       </span>,
     );
   }
@@ -129,6 +195,26 @@ export function TicketMetaRow({
   if (ticketKind === 'case') {
     items.push(
       <SubIssueProgress key="progress" parentId={ticketId} />,
+    );
+  }
+
+  if (reclassifiedAt) {
+    items.push(
+      <Tooltip key="reclassified">
+        <TooltipTrigger
+          className="inline-flex items-center gap-1.5 text-muted-foreground cursor-help bg-transparent border-0 p-0"
+          render={(props) => (
+            <span {...props}>
+              <History className="h-3 w-3" />
+              <span className="text-foreground/80">Reclassified {formatRelative(reclassifiedAt)}</span>
+            </span>
+          )}
+        />
+        <TooltipContent className="max-w-xs">
+          <p className="text-xs font-medium mb-1">Reason</p>
+          <p className="text-xs">{reclassifiedReason || '(no reason)'}</p>
+        </TooltipContent>
+      </Tooltip>,
     );
   }
 

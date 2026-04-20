@@ -39,6 +39,13 @@ import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TicketMetaRow } from '@/components/desk/ticket-meta-row';
 import { SubIssuesSection } from '@/components/desk/sub-issues-section';
 import { AddSubIssueDialog } from '@/components/desk/add-sub-issue-dialog';
+import { ReclassifyTicketDialog } from '@/components/desk/reclassify-ticket-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
@@ -97,6 +104,9 @@ interface TicketData {
   cost?: number | null;
   watchers?: string[];
   assigned_vendor?: { id: string; name: string } | null;
+  reclassified_at?: string | null;
+  reclassified_reason?: string | null;
+  reclassified_from_id?: string | null;
 }
 
 interface Activity {
@@ -240,6 +250,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
   const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
   const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
+  const { data: requestTypes } = useApi<Array<{ id: string; name: string; active: boolean }>>('/request-types', []);
   const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
@@ -255,6 +266,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
 
   const [addWorkOrderOpen, setAddWorkOrderOpen] = useState(false);
   const [workOrdersNonce, setWorkOrdersNonce] = useState(0);
+  const [reclassifyOpen, setReclassifyOpen] = useState(false);
 
   const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
   const { patch, updateAssignment } = useTicketMutation({
@@ -451,7 +463,28 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           <div className="flex-1" />
           <Button variant="ghost" size="icon" className="h-8 w-8"><Star className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><BellOff className="h-4 w-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={(props) => (
+                <Button {...props} variant="ghost" size="icon" className="h-8 w-8">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              )}
+            />
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem
+                disabled={
+                  !displayedTicket
+                  || displayedTicket.ticket_kind !== 'case'
+                  || displayedTicket.status_category === 'closed'
+                  || displayedTicket.status_category === 'resolved'
+                }
+                onClick={() => setReclassifyOpen(true)}
+              >
+                Change request type
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <ScrollArea className="flex-1">
@@ -475,6 +508,8 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               requestType={displayedTicket!.request_type ?? null}
               requester={displayedTicket!.requester ?? null}
               location={displayedTicket!.location ?? null}
+              reclassifiedAt={displayedTicket!.reclassified_at ?? null}
+              reclassifiedReason={displayedTicket!.reclassified_reason ?? null}
               onOpenTicket={onOpenTicket}
             />
 
@@ -668,6 +703,23 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 onDispatched={() => {
                   setWorkOrdersNonce((n) => n + 1);
                   refetchTicket();
+                }}
+              />
+            )}
+
+            {displayedTicket?.ticket_kind === 'case' && (
+              <ReclassifyTicketDialog
+                open={reclassifyOpen}
+                onOpenChange={setReclassifyOpen}
+                ticketId={displayedTicket.id}
+                currentRequestType={displayedTicket.request_type ?? null}
+                availableRequestTypes={(requestTypes ?? [])
+                  .filter((rt) => rt.active)
+                  .map((rt) => ({ id: rt.id, name: rt.name }))}
+                onReclassified={() => {
+                  setWorkOrdersNonce((n) => n + 1);
+                  refetchTicket();
+                  refetchActivities();
                 }}
               />
             )}
