@@ -108,10 +108,43 @@ export function App() {
             <Route path="teams" element={<TeamsPage />} />
             <Route path="locations" element={<LocationsPage />} />
             <Route path="sla-policies" element={<SlaPoliciesPage />} />
-            <Route path="routing-rules" element={<RoutingRulesPage />} />
-            <Route path="location-teams" element={<LocationTeamsPage />} />
-            <Route path="space-groups" element={<SpaceGroupsPage />} />
-            <Route path="domain-parents" element={<DomainParentsPage />} />
+            {/*
+             * Legacy routing admin paths. When the Routing Studio flag is on, we
+             * redirect these to the unified Studio. Flag-off keeps the old pages
+             * reachable so rollback is a single env-var flip.
+             */}
+            <Route
+              path="routing-rules"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=rules" replace />
+                  : <RoutingRulesPage />
+              }
+            />
+            <Route
+              path="location-teams"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=mappings" replace />
+                  : <LocationTeamsPage />
+              }
+            />
+            <Route
+              path="space-groups"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=groups" replace />
+                  : <SpaceGroupsPage />
+              }
+            />
+            <Route
+              path="domain-parents"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=fallbacks" replace />
+                  : <DomainParentsPage />
+              }
+            />
             <Route path="business-hours" element={<BusinessHoursPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />

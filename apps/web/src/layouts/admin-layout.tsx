@@ -50,6 +50,13 @@ import {
 } from 'lucide-react';
 import { features } from '@/lib/features';
 
+const legacyRoutingNav = [
+  { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
+  { title: 'Location Teams', path: '/admin/location-teams', icon: MapPin },
+  { title: 'Space Groups', path: '/admin/space-groups', icon: Layers },
+  { title: 'Domain Hierarchy', path: '/admin/domain-parents', icon: Network },
+];
+
 const configNav = [
   { title: 'Catalog Hierarchy', path: '/admin/catalog-hierarchy', icon: ListTree },
   { title: 'Request Types', path: '/admin/request-types', icon: FileText },
@@ -57,11 +64,7 @@ const configNav = [
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
   ...(features.routingStudio
     ? [{ title: 'Routing Studio', path: '/admin/routing-studio', icon: Compass }]
-    : []),
-  { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
-  { title: 'Location Teams', path: '/admin/location-teams', icon: MapPin },
-  { title: 'Space Groups', path: '/admin/space-groups', icon: Layers },
-  { title: 'Domain Hierarchy', path: '/admin/domain-parents', icon: Network },
+    : legacyRoutingNav),
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
   { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },

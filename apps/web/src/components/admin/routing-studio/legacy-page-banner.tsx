@@ -8,7 +8,11 @@ import { features } from '@/lib/features';
  * the legacy pages still own the full CRUD editors until their Studio
  * counterparts land.
  */
-export function LegacyRoutingPageBanner({ tab }: { tab: 'simulator' | 'audit' | 'coverage' }) {
+export function LegacyRoutingPageBanner({
+  tab,
+}: {
+  tab: 'simulator' | 'audit' | 'coverage' | 'mappings' | 'rules' | 'groups' | 'fallbacks';
+}) {
   if (!features.routingStudio) return null;
   return (
     <div className="mb-4 flex items-center gap-3 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm">
