@@ -12,6 +12,12 @@ This document is the operational reference for **who can see which tickets** in 
 
 A user can read a ticket if **any** tier matches. Can write if participant or (non-readonly operator) or write-all.
 
+## 2a. How a user enters each tier
+
+- **Participants** — becomes the `requester_person_id`, gets dispatched as `assigned_user_id` / `assigned_vendor_id`, is added to `watchers` manually, OR is the previous user-assignee on a reclassified ticket (reclassify automatically promotes the previous user-assignee to the watchers array — this is a non-manual path into the Participants tier). See `docs/assignments-routing-fulfillment.md` §12a.
+- **Operators** — is a `team_members` row on the ticket's `assigned_team_id`, OR has a `user_role_assignments` row whose `domain_scope` + `location_scope` covers the ticket.
+- **Overrides** — has a role whose `permissions` jsonb contains `tickets:read_all` / `tickets:write_all`.
+
 ## 2. Core entities
 
 | Table / column | Role |
@@ -84,5 +90,6 @@ Update this document in the same PR as any change to:
 - `apps/api/src/modules/ticket/ticket-visibility.service.ts`
 - `apps/api/src/modules/ticket/ticket.service.ts` (read/write methods or their signatures)
 - `apps/api/src/modules/ticket/ticket.controller.ts` (routing of `req.user.id` into the service)
+- `apps/api/src/modules/ticket/reclassify.service.ts` — because reclassify mutates `watchers` (Participants tier).
 - Any migration that alters: `ticket_visibility_ids`, `expand_space_closure`, `user_has_permission`, `users`, `user_role_assignments`, `team_members`, `roles`, or the tickets columns used by the predicate.
 - New permission strings on `roles.permissions`.

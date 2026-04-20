@@ -492,6 +492,33 @@ API: `GET /tickets/:id/children` returns the same shape including `ticket_kind` 
 
 ---
 
+## 12a. Reclassification — changing a ticket's request type in place
+
+An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/reclassify` (with a required preview at `/reclassify/preview`). This is a distinct operation from `PATCH /tickets/:id` — `ticket_type_id` is deliberately NOT in `UpdateTicketDto` because the change cascades through all four axes of the routing model.
+
+**What happens when a reclassify executes** (all steps in a single transactional RPC, `reclassify_ticket`):
+
+1. **Routing** — `RoutingService.evaluate()` runs against the new request type's context. The new team / user / vendor replace the current assignment.
+2. **Ownership** — previous user-assignee (if any) is promoted to the ticket's `watchers` array so they retain visibility. Vendors and teams are not added as watchers (not supported by the watcher model). If new routing keeps the same assignee, no watcher is added.
+3. **Execution** — every non-terminal child work order is closed (`status_category='closed'`, `close_reason="Parent ticket reclassified: <reason>"`, `closed_by`, `closed_at`). The existing workflow instance is cancelled (`workflow_instances.status='cancelled'` + `cancelled_reason`). Active SLA timers are stopped (`stopped_at`, `stopped_reason`).
+4. **Visibility** — see §2b in `docs/visibility.md`: promotion-to-watcher is a new path for entering the Participants tier.
+
+**Post-RPC, best-effort side effects** (outside the atomic block so transient failures don't roll back a successful reclassify):
+- `SlaService.startTimers` on the new policy.
+- `WorkflowEngineService.startForTicket` on the new definition (which may itself spawn new child WOs via `create_child_tasks`).
+- `RoutingService.recordDecision` appending a new `routing_decisions` row for traceability.
+
+**Rejected paths:** reclassifying a child work order (reclassify the parent instead), reclassifying a closed/resolved ticket, reclassifying to the same type, reclassifying to an inactive type, concurrent reclassifies on the same ticket (advisory lock → 409).
+
+**Audit:** one `ticket_type_changed` domain event on the parent, one `workflow_cancelled` event if applicable, one `ticket_closed` event per closed child with `closed_by_reclassify: true` flagged in the payload.
+
+**Relevant files:**
+- `apps/api/src/modules/ticket/reclassify.service.ts` — orchestrator (`computeImpact` + `execute`)
+- `apps/api/src/modules/ticket/reclassify.controller.ts` — `/preview` and execute endpoints
+- `supabase/migrations/00039_reclassify_support.sql` — columns + `reclassify_ticket` RPC
+
+---
+
 ## 13. What's intentionally not solved here
 
 - **Visibility scoping** — `GET /tickets` returns everything in the tenant. Per-user / per-team / per-location visibility belongs in its own plan (list-endpoint filters + RLS tightening).
@@ -499,9 +526,9 @@ API: `GET /tickets/:id/children` returns the same shape including `ticket_kind` 
 - **Auto-dispatch on request type** — no declarative "this request type always spawns a child WO to Vendor X." Dispatches are manual or workflow-driven today.
 - **Case status re-open on child reopen** — rollup never moves a parent out of `resolved` or `closed`. Intentional; a human decides.
 - **Scope-rerouting endpoint** — see §8b. No `POST /tickets/:id/rescope` exists.
-- **Workflow impact on request-type change** — if/when rescoping lands, must decide whether in-flight workflow instances are terminated and restarted or migrated.
 - **Bulk update does not re-route or audit.** `PATCH /tickets/bulk/update` accepts the same DTO as single update — silent. Audited bulk reassign would need a `/tickets/bulk/reassign` wrapping `/reassign`.
 - **Overrides are not re-evaluated on ticket updates.** If an admin adds a `routing_rules` row that would have matched an existing ticket, the existing ticket is unaffected until someone calls `/reassign` with `rerun_resolver: true`. This is intentional — know it when debugging "why didn't my new rule fire."
+- **Bulk reclassify / undo reclassify** — reclassify is per-ticket in v1; no bulk endpoint, no one-click undo (agent can reclassify back manually; audit records both events).
 
 ---
 
@@ -540,8 +567,9 @@ Trigger list:
 - `apps/api/src/modules/ticket/ticket.controller.ts` — adding, removing, or changing routing-adjacent endpoints.
 - `apps/api/src/modules/sla/` — SLA attachment, timer start, pause/breach logic.
 - `apps/api/src/modules/approval/` — anything that changes the `pending_approval` state semantics.
-- `apps/api/src/modules/workflow/workflow-engine.service.ts` — especially the `create_child_tasks` node and anything that inserts `tickets` rows.
-- Any migration that adds or alters: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`.
+- `apps/api/src/modules/workflow/workflow-engine.service.ts` — especially the `create_child_tasks` node, anything that inserts `tickets` rows, and `cancelInstanceForTicket`.
+- `apps/api/src/modules/ticket/reclassify.service.ts` or `reclassify.controller.ts` — the whole reclassification surface is routing-adjacent (see §12a).
+- Any migration that adds or alters: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`, `workflow_instances`.
 
 Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-capable rules, visibility scoping) — entry in Section 13 should move from "not solved" to a new detailed section.
 
@@ -551,6 +579,7 @@ Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-c
 
 Move items here with a date when a gap from §13 is closed. Keeps the doc honest about what was once broken and when it was fixed.
 
+- **2026-04-21 — Reclassify existing ticket.** Previously, a ticket's `request_type_id` was effectively immutable after creation — changing it required closing and re-creating the ticket. Now `POST /tickets/:id/reclassify` (with `/preview` counterpart) allows an agent to change the request type in place; all four axes cascade correctly per §12a. Atomic RPC `reclassify_ticket` in migration `00039`.
 - **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that was the *case* policy bleeding into child rows). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team default → none. New schema in migration `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill, future dispatches are correct. Cases also gain a close guard that refuses `resolved`/`closed` while any child is still open, and children's `sla_id` is now editable post-dispatch via `PATCH /tickets/:id` which calls `SlaService.restartTimers`. Workflow `create_child_tasks` node now forwards per-task `sla_policy_id` through to dispatch.
 - **2026-04-18 — Sidebar reassign now audits.** The desk sidebar's `useTicketMutation.updateAssignment` hook now calls `POST /tickets/:id/reassign` (with a synthesized reason) whenever an existing assignee is replaced. First-time assignment still uses silent `PATCH`. `routing_decisions` captures every sidebar reassignment going forward.
 - **2026-04-18 — Workflow-spawned children reach parity with manual dispatch.** `WorkflowEngineService.create_child_tasks` now calls `DispatchService.dispatch` per task. Children receive SLA timer start, a `routing_decisions` row, and a `dispatched` parent activity — same as manual dispatch via `POST /tickets/:id/dispatch`.
