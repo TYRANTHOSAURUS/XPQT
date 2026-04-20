@@ -11,7 +11,7 @@ import { ApprovalModule } from '../approval/approval.module';
 @Module({
   imports: [
     RoutingModule,
-    SlaModule,
+    forwardRef(() => SlaModule),
     forwardRef(() => WorkflowModule),
     forwardRef(() => ApprovalModule),
   ],
