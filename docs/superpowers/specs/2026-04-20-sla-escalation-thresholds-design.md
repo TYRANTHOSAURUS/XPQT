@@ -128,7 +128,7 @@ Accept the new `escalation_thresholds` shape. Validation is added to `SlaPolicyC
 - If `target_type === 'manager_of_requester'` → `target_id` must be null; else 400.
 - Duplicate `(at_percent, timer_type)` within the array is 400.
 
-### 5.2 `GET /tickets/:id/sla-crossings`
+### 5.2 `GET /sla/tickets/:ticketId/crossings`
 
 New endpoint. Returns `sla_threshold_crossings` for the ticket, ordered by `fired_at desc`. Each row is enriched with the target's resolved name (joined via `persons.full_name` / `teams.name` depending on `target_type`). Tenant-scoped. Visibility check via `TicketVisibilityService.assertVisible`.
 

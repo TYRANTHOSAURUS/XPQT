@@ -498,6 +498,13 @@ export class SlaService {
    * Fire a single threshold for a single timer. Writes a crossing row (idempotency
    * anchor), sends notifications, and — for `escalate` — reassigns the ticket.
    * Swallows `23505` (unique_violation) so racing cron ticks are safe.
+   *
+   * Not atomic. Write order: reassign → activity → notify → crossing → event.
+   * If the crossing insert fails after a notification has been sent, the next tick
+   * will retry the whole path and may duplicate the notification. `applyReassignment`
+   * is no-op on retry (already-matching state returns changed=false), so the activity
+   * entry is not re-written. The duplication window is rare and the alternative
+   * (distributed transactions across Supabase) is not justified at this scale.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
