@@ -11,6 +11,8 @@ import type {
   ThresholdTargetType,
   RecordedAction,
 } from './sla-threshold.types';
+import { crossingKey } from './sla-threshold.types';
+import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
 
 @Injectable()
 export class SlaService {
@@ -279,6 +281,9 @@ export class SlaService {
           .eq('sla_at_risk', false); // only update if not already flagged
       }
     }
+
+    // Threshold-crossing pass — fires notify/escalate actions.
+    await this.processThresholds(now);
   }
 
   /**
@@ -582,5 +587,86 @@ export class SlaService {
       target_id: resolved.personId ?? resolved.teamId,
       reassigned,
     });
+  }
+
+  /**
+   * Threshold pass — runs after breach + at-risk detection in the minute cron.
+   * Bounded to 500 active timers per tick to protect the cron; overflow picks up next tick.
+   */
+  private async processThresholds(now: Date) {
+    const { data: timers } = await this.supabase.admin
+      .from('sla_timers')
+      .select('id, tenant_id, ticket_id, sla_policy_id, timer_type, target_minutes, started_at, due_at, total_paused_minutes')
+      .eq('breached', false)
+      .eq('paused', false)
+      .is('completed_at', null)
+      .order('due_at', { ascending: true })
+      .limit(500);
+
+    const timerRows = (timers ?? []) as SlaTimerRow[];
+    if (timerRows.length === 0) return;
+
+    // Load distinct policies used by this batch in one query.
+    const policyIds = Array.from(new Set(timerRows.map((t) => t.sla_policy_id)));
+    const { data: policies } = await this.supabase.admin
+      .from('sla_policies')
+      .select('id, escalation_thresholds')
+      .in('id', policyIds);
+    const thresholdsByPolicy = new Map<string, EscalationThreshold[]>();
+    for (const p of policies ?? []) {
+      const raw = (p.escalation_thresholds as EscalationThreshold[] | null) ?? [];
+      thresholdsByPolicy.set(p.id as string, raw);
+    }
+
+    // Load existing crossings for this batch in one query.
+    const timerIds = timerRows.map((t) => t.id);
+    const { data: crossings } = await this.supabase.admin
+      .from('sla_threshold_crossings')
+      .select('sla_timer_id, at_percent, timer_type')
+      .in('sla_timer_id', timerIds);
+    const firedKeys = new Set<string>(
+      (crossings ?? []).map((c) =>
+        crossingKey({
+          sla_timer_id: c.sla_timer_id as string,
+          at_percent: c.at_percent as number,
+          timer_type: c.timer_type as TimerType,
+        }),
+      ),
+    );
+
+    for (const timer of timerRows) {
+      try {
+        const thresholds = thresholdsByPolicy.get(timer.sla_policy_id) ?? [];
+        if (thresholds.length === 0) continue;
+        const percent = percentElapsed(timer, now);
+        const applicable = selectApplicableThresholds({
+          percent,
+          timerType: timer.timer_type,
+          timerId: timer.id,
+          thresholds,
+          firedKeys,
+        });
+        // Fire in ascending percent order so "80 notify" always precedes "100 escalate".
+        applicable.sort((a, b) => a.at_percent - b.at_percent);
+        for (const threshold of applicable) {
+          await this.fireThreshold(timer, threshold);
+          // Track in-memory so a single tick doesn't try to fire the same key twice
+          // across iterations (e.g. across `both`-scoped thresholds).
+          firedKeys.add(
+            crossingKey({
+              sla_timer_id: timer.id,
+              at_percent: threshold.at_percent,
+              timer_type: timer.timer_type,
+            }),
+          );
+        }
+      } catch (err) {
+        await this.emitEvent(timer.tenant_id, timer.ticket_id, 'sla_threshold_fire_failed', {
+          timer_id: timer.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Keep going — one bad ticket does not starve the batch.
+      }
+    }
   }
 }
