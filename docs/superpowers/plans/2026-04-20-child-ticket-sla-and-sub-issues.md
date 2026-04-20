@@ -41,7 +41,7 @@ Tasks are ordered by dependency. Backend (Tasks 1–6) must precede UI (Tasks 7�
 ## Task 1: Migration — vendor/team default SLA columns
 
 **Files:**
-- Create: `supabase/migrations/00035_child_ticket_sla_defaults.sql`
+- Create: `supabase/migrations/00036_child_ticket_sla_defaults.sql`
 
 **Context:**
 - Both columns are nullable. No backfill needed: `null` means "no default; user must pick or accept No-SLA at dispatch."
@@ -49,10 +49,10 @@ Tasks are ordered by dependency. Backend (Tasks 1–6) must precede UI (Tasks 7�
 
 - [ ] **Step 1.1: Create the migration file**
 
-Create `supabase/migrations/00035_child_ticket_sla_defaults.sql`:
+Create `supabase/migrations/00036_child_ticket_sla_defaults.sql`:
 
 ```sql
--- 00035_child_ticket_sla_defaults.sql
+-- 00036_child_ticket_sla_defaults.sql
 -- Adds nullable default SLA policy columns to vendors and teams.
 -- Used by DispatchService.resolveChildSla as fallback when no explicit
 -- sla_id is supplied at child-ticket dispatch.
@@ -72,14 +72,29 @@ notify pgrst, 'reload schema';
 Run: `pnpm db:reset`
 Expected: clean exit, all migrations apply including 00035. If anything fails, fix the SQL and re-run.
 
-- [ ] **Step 1.3: SKIP remote push in this run**
+- [ ] **Step 1.3: Confirm before remote push**
 
-Per the user's policy for this execution, **do not run `pnpm db:push`**. The user will push to the remote Supabase project manually after the implementation is reviewed. This means the running dev app (which talks to the remote DB) will return `PGRST205` ("Could not find the table X in the schema cache") for vendor/team SLA defaults until the user pushes — that's expected. Local `pnpm db:reset` is the validation gate for this task.
+Ask the user: *"Migration `00036_child_ticket_sla_defaults.sql` validated locally. Push to remote (`pnpm db:push` or psql fallback)?"*
+
+If yes, run `pnpm db:push`. If `db:push` fails per the known CLI auth issue documented in `CLAUDE.md`, fall back to:
+
+```bash
+PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+  -v ON_ERROR_STOP=1 \
+  -f supabase/migrations/00036_child_ticket_sla_defaults.sql
+```
+
+Then trigger a schema cache reload via the running API (any successful request) or:
+
+```bash
+PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+  -c "notify pgrst, 'reload schema';"
+```
 
 - [ ] **Step 1.4: Commit**
 
 ```bash
-git add supabase/migrations/00035_child_ticket_sla_defaults.sql
+git add supabase/migrations/00036_child_ticket_sla_defaults.sql
 git commit -m "feat(db): add default_sla_policy_id to vendors and teams"
 ```
 
