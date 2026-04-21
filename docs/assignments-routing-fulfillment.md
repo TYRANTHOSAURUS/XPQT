@@ -580,6 +580,17 @@ The Routing Studio improvement plan (`docs/routing-studio-improvement-plan-2026-
 In addition to the triggers in §15, update this document when any of the following change:
 
 - `apps/api/src/modules/routing/routing-evaluator.service.ts` — the dual-run seam.
+- `apps/api/src/modules/routing/policy-store.service.ts` — config-engine-backed policy storage.
+- `apps/api/src/modules/routing/domain-registry.service.ts` — `public.domains` CRUD.
 - Any migration altering `public.domains`, `public.routing_dualrun_logs`, or the `case_owner_policy` / `child_dispatch_policy` / `domain_registry` / `space_levels` shape stored in `config_versions.definition`.
 - `tenants.feature_flags.routing_v2_mode` semantics (add modes, change progression).
 - `packages/shared/src/types/routing.ts` — it's the cross-workstream contract.
+- `packages/shared/src/validators/routing.ts` — the runtime zod schemas. Changing a schema without bumping `schema_version` is a breaking change.
+
+## 19. Routing v2 policy storage (Workstream A)
+
+Workstream A added the service layer to author and publish policies on top of the config engine, without any HTTP or runtime call sites.
+
+- **`PolicyStoreService`** (`apps/api/src/modules/routing/policy-store.service.ts`) — CRUD + publish lifecycle for `case_owner_policy`, `child_dispatch_policy`, `domain_registry`, and `space_levels` entities. Every mutation validates the definition against the zod schemas in `@prequest/shared` before touching the database. `createEntity` → `createDraftVersion` → `publishVersion` mirrors the request-type / workflow / SLA lifecycle. `getPublishedDefinition` is what downstream engines call at ticket-create time once Workstreams B/C/D wire them in.
+- **`DomainRegistryService`** (`apps/api/src/modules/routing/domain-registry.service.ts`) — CRUD for `public.domains`. Keys are normalized to lowercase and validated against `[a-z0-9][a-z0-9_-]*`. Parent re-parenting does a recursive walk (`MAX_PARENT_WALK = 20`) to reject transitive cycles before they hit the DB. `deactivate` is a soft delete (`active = false`) — hard delete would null-out every `domain_id` FK that ever referenced the row.
+- Both services are registered and exported from `RoutingModule`. Not wired to HTTP yet (Workstream E's studio UI opens the first call sites).

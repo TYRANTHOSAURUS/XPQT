@@ -224,8 +224,8 @@ describe('PolicyStoreService', () => {
 
     await svc.publishVersion({ tenant_id: TENANT, version_id: VERSION });
 
-    const ver = sb._tables.config_versions.find((v: any) => v.id === VERSION);
-    const ent = sb._tables.config_entities.find((e: any) => e.id === ENTITY);
+    const ver = sb._tables.config_versions.find((v: any) => v.id === VERSION)!;
+    const ent = sb._tables.config_entities.find((e: any) => e.id === ENTITY)!;
     expect(ver.status).toBe('published');
     expect(ver.published_at).toBeTruthy();
     expect(ent.current_published_version_id).toBe(VERSION);
