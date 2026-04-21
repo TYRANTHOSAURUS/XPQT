@@ -9,7 +9,7 @@ import { SpaceGroupsEditor } from '@/components/admin/routing-studio/space-group
 import { RoutingRulesEditor } from '@/components/admin/routing-studio/routing-rules-editor';
 import { LocationTeamsEditor } from '@/components/admin/routing-studio/location-teams-editor';
 import { RoutingStudioOverview } from '@/components/admin/routing-studio/overview-tab';
-import { ResolverPipelineStrip, type PipelineStep } from '@/components/admin/routing-studio/resolver-pipeline-strip';
+import { ResolverPipelineStrip } from '@/components/admin/routing-studio/resolver-pipeline-strip';
 
 type TabId = 'overview' | 'simulator' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks';
 
@@ -22,14 +22,6 @@ function coerceTab(value: string | null): TabId {
     ? (value as TabId)
     : 'overview';
 }
-
-const STEP_TO_TAB: Record<PipelineStep, TabId> = {
-  rules: 'rules',
-  asset: 'mappings',
-  coverage: 'coverage',
-  defaults: 'rules',
-  unassigned: 'audit',
-};
 
 export function RoutingStudioPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -57,7 +49,7 @@ export function RoutingStudioPage() {
         </p>
       </div>
 
-      <ResolverPipelineStrip onStepClick={(step) => setTab(STEP_TO_TAB[step])} />
+      <ResolverPipelineStrip onTabClick={(t) => setTab(t)} />
 
       <Tabs value={tab} onValueChange={(v) => setTab(coerceTab(v))}>
         <TabsList>
