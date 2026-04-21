@@ -8,11 +8,14 @@ import {
   Circle,
   ArrowRight,
 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { useApi } from '@/hooks/use-api';
 
 interface Team { id: string }
 interface RequestType {
   id: string;
+  name: string;
+  domain: string | null;
   default_team_id: string | null;
   default_vendor_id: string | null;
   case_owner_policy_entity_id: string | null;
@@ -152,6 +155,12 @@ export function RoutingStudioOverview({ onOpenTab }: Props) {
         </p>
       </section>
 
+      {/* v2 adoption by domain */}
+      <V2CoverageByDomain
+        requestTypes={requestTypes ?? []}
+        onOpenTab={onOpenTab}
+      />
+
       {/* Start-here checklist */}
       <section>
         <h2 className="mb-2 text-sm font-medium uppercase text-muted-foreground">
@@ -239,6 +248,98 @@ export function RoutingStudioOverview({ onOpenTab }: Props) {
         </dl>
       </section>
     </div>
+  );
+}
+
+/**
+ * Compact at-a-glance view of v2 policy coverage grouped by domain. Shows
+ * how many request types in each domain have case-owner and child-dispatch
+ * policies attached. Pairs with the dualrun audit tab — if every row here
+ * is green and the dualrun log shows target_match=true for a week, the
+ * tenant is ready to flip to `v2_only` mode.
+ */
+function V2CoverageByDomain({
+  requestTypes,
+  onOpenTab,
+}: {
+  requestTypes: RequestType[];
+  onOpenTab: (tab: string) => void;
+}) {
+  const byDomain = new Map<string, RequestType[]>();
+  for (const rt of requestTypes) {
+    const key = rt.domain ?? '(no domain)';
+    const list = byDomain.get(key) ?? [];
+    list.push(rt);
+    byDomain.set(key, list);
+  }
+  const domains = Array.from(byDomain.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  if (domains.length === 0) return null;
+
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-medium uppercase text-muted-foreground">
+        v2 policy coverage
+      </h2>
+      <div className="rounded-md border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/30 text-xs uppercase text-muted-foreground">
+              <th className="px-3 py-2 text-left font-medium">Domain</th>
+              <th className="px-3 py-2 text-right font-medium">Request types</th>
+              <th className="px-3 py-2 text-right font-medium">Case ownership</th>
+              <th className="px-3 py-2 text-right font-medium">Child dispatch</th>
+            </tr>
+          </thead>
+          <tbody>
+            {domains.map(([domain, rts]) => {
+              const caseCount = rts.filter((rt) => rt.case_owner_policy_entity_id).length;
+              const dispatchCount = rts.filter((rt) => rt.child_dispatch_policy_entity_id).length;
+              return (
+                <tr key={domain} className="border-b last:border-b-0">
+                  <td className="px-3 py-2">
+                    <code className="text-xs">{domain}</code>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">{rts.length}</td>
+                  <td className="px-3 py-2 text-right">
+                    <CoveragePill done={caseCount} total={rts.length} onClick={() => onOpenTab('case-ownership')} />
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <CoveragePill done={dispatchCount} total={rts.length} onClick={() => onOpenTab('child-dispatch')} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Green = every request type in the domain has a policy attached. Amber = partial. Grey = none.
+        Click a pill to jump to the editor.
+      </p>
+    </section>
+  );
+}
+
+function CoveragePill({ done, total, onClick }: { done: number; total: number; onClick: () => void }) {
+  const variant = done === 0 ? 'secondary' : done === total ? 'outline' : 'outline';
+  const tone =
+    done === 0
+      ? 'text-muted-foreground'
+      : done === total
+        ? 'border-emerald-600 text-emerald-700'
+        : 'border-amber-600 text-amber-700';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex"
+      aria-label={`${done} of ${total} attached`}
+    >
+      <Badge variant={variant} className={tone}>
+        {done}/{total}
+      </Badge>
+    </button>
   );
 }
 
