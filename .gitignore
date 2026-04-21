@@ -43,3 +43,4 @@ coverage/
 dist-node/
 .superpowers/
 .worktrees/
+.vercel
