@@ -7,6 +7,8 @@ import { LocationTeamsController } from './location-teams.controller';
 import { SpaceGroupsController } from './space-groups.controller';
 import { DomainParentsController } from './domain-parents.controller';
 import { RoutingSimulatorController } from './simulator.controller';
+import { RoutingPoliciesController } from './policies.controller';
+import { RoutingDomainsController } from './domains.controller';
 import { RoutingSimulatorService } from './simulator.service';
 import { RoutingAuditService } from './audit.service';
 import { RoutingCoverageService } from './coverage.service';
@@ -40,6 +42,8 @@ import { ChildExecutionResolverService } from './child-execution-resolver.servic
     SpaceGroupsController,
     DomainParentsController,
     RoutingSimulatorController,
+    RoutingPoliciesController,
+    RoutingDomainsController,
   ],
   exports: [
     RoutingService,
