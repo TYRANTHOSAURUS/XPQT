@@ -31,9 +31,27 @@ import {
   XIcon,
   TagIcon,
 } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
-import { apiFetch } from '@/lib/api';
-import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
+import { useQueryClient } from '@tanstack/react-query';
+import { ApiError } from '@/lib/api';
+import { useAuth } from '@/providers/auth-provider';
+import {
+  ticketKeys,
+  useTicketDetail,
+  useTicketActivities,
+  useTicketTagSuggestions,
+  useUpdateTicket,
+  useReassignTicket,
+  useAddActivity,
+  type UpdateTicketPayload,
+} from '@/api/tickets';
+import { useTeams } from '@/api/teams';
+import { useUsers } from '@/api/users';
+import { useVendors } from '@/api/vendors';
+import { usePersons, usePersonsSearch } from '@/api/persons';
+import { useSlaPolicies } from '@/api/sla-policies';
+import { useRequestType } from '@/api/request-types';
+import { useConfigEntity } from '@/api/config-entities';
+import { useTicketWorkflowInstances } from '@/api/workflows';
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TicketMetaRow } from '@/components/desk/ticket-meta-row';
@@ -75,40 +93,6 @@ function formatFormValue(field: FormField | undefined, value: unknown): string {
   return String(value);
 }
 
-interface TicketData {
-  id: string;
-  ticket_kind: 'case' | 'work_order';
-  parent_ticket_id: string | null;
-  title: string;
-  description: string;
-  status: string;
-  status_category: string;
-  priority: string;
-  waiting_reason: string | null;
-  interaction_mode: string;
-  tags: string[];
-  sla_id: string | null;
-  sla_at_risk: boolean;
-  sla_response_due_at: string | null;
-  sla_resolution_due_at: string | null;
-  sla_response_breached_at: string | null;
-  sla_resolution_breached_at: string | null;
-  created_at: string;
-  requester?: { id: string; first_name: string; last_name: string; email: string; department: string };
-  location?: { id: string; name: string; type: string };
-  asset?: { id: string; name: string; serial_number: string };
-  assigned_team?: { id: string; name: string };
-  assigned_agent?: { id: string; email: string };
-  request_type?: { id: string; name: string; domain: string };
-  form_data?: Record<string, unknown> | null;
-  cost?: number | null;
-  watchers?: string[];
-  assigned_vendor?: { id: string; name: string } | null;
-  reclassified_at?: string | null;
-  reclassified_reason?: string | null;
-  reclassified_from_id?: string | null;
-}
-
 interface Activity {
   id: string;
   activity_type: string;
@@ -132,18 +116,6 @@ interface MentionPerson {
   last_name: string;
   email?: string | null;
   department?: string | null;
-}
-
-interface UserOption {
-  id: string;
-  email: string;
-  person?: { first_name?: string; last_name?: string } | null;
-}
-
-interface VendorOption {
-  id: string;
-  name: string;
-  active?: boolean;
 }
 
 interface MentionMatch {
@@ -242,88 +214,114 @@ function filterMentionPeople(people: MentionPerson[], query: string): MentionPer
 }
 
 export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: string; onClose?: () => void; onOpenTicket?: (id: string) => void }) {
-  const { data: ticket, loading: ticketLoading, error: ticketError, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
-  const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
-  const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
-  const { data: people } = useApi<MentionPerson[]>('/persons', []);
-  const { data: users } = useApi<UserOption[]>('/users', []);
-  const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
-  const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
-  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
-  const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
+  const qc = useQueryClient();
+  const { person } = useAuth();
+  const {
+    data: ticket,
+    isPending: ticketPending,
+    isFetching: ticketFetching,
+    error: ticketError,
+  } = useTicketDetail(ticketId);
+  const { data: activities } = useTicketActivities(ticketId) as { data: Activity[] | undefined };
+  const refetchTicket = () => qc.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+  const refetchActivities = () => qc.invalidateQueries({ queryKey: ticketKeys.activities(ticketId) });
+  const { data: teams } = useTeams();
+  const { data: people } = usePersons() as { data: MentionPerson[] | undefined };
+  const { data: users } = useUsers();
+  const { data: vendors } = useVendors();
+  const { data: tagSuggestions } = useTicketTagSuggestions();
+  const { data: slaPolicies } = useSlaPolicies();
+  const { data: requestTypeDetail } = useRequestType(ticket?.request_type?.id ?? null);
+  const { data: configEntity } = useConfigEntity(requestTypeDetail?.form_schema_id ?? null);
+  const schemaFields = configEntity?.current_version?.definition?.fields ?? [];
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
   const [mentionMatch, setMentionMatch] = useState<MentionMatch | null>(null);
-  const [mentionResults, setMentionResults] = useState<MentionPerson[]>([]);
-  const [mentionLoading, setMentionLoading] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
-  const [submittingComment, setSubmittingComment] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const addActivity = useAddActivity(ticketId);
+  const submittingComment = addActivity.isPending;
 
   const [addWorkOrderOpen, setAddWorkOrderOpen] = useState(false);
   const [workOrdersNonce, setWorkOrdersNonce] = useState(0);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
 
-  const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
-  const { patch, updateAssignment } = useTicketMutation({
-    ticketId,
-    refetch: refetchTicket,
-    onOptimistic: setOverlay,
-  });
+  const updateTicket = useUpdateTicket(ticketId);
+  const reassignTicket = useReassignTicket(ticketId);
 
-  const displayedTicket = ticket && overlay
-    ? ({ ...ticket, ...overlay } as TicketData)
-    : ticket;
+  const patch = (updates: Partial<UpdateTicketPayload>) => {
+    updateTicket.mutate(updates as UpdateTicketPayload, {
+      onError: (err) => {
+        const field = Object.keys(updates)[0] ?? 'field';
+        toast.error(`Failed to update ${field}: ${err.message}`);
+      },
+    });
+  };
 
-  const handleSubmitComment = async () => {
+  type AssignmentTarget = {
+    kind: 'team' | 'user' | 'vendor';
+    id: string | null;
+    nextLabel: string | null;
+    previousLabel: string | null;
+  };
+
+  const updateAssignment = (target: AssignmentTarget) => {
+    const field = target.kind === 'team'
+      ? 'assigned_team_id'
+      : target.kind === 'user'
+        ? 'assigned_user_id'
+        : 'assigned_vendor_id';
+
+    // First-time assignment — silent PATCH, no routing_decisions audit needed.
+    if (target.previousLabel === null) {
+      updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
+        onError: (err) => toast.error(`Failed to assign ${target.kind}: ${err.message}`),
+      });
+      return;
+    }
+
+    // Reassignment — POST /reassign so the server records a routing_decisions row.
+    const actorName = person ? `${person.first_name} ${person.last_name}`.trim() : 'an agent';
+    const reason = `Reassigned ${target.kind} from ${target.previousLabel} to ${target.nextLabel ?? 'unassigned'} by ${actorName} via ticket sidebar`;
+
+    reassignTicket.mutate(
+      {
+        kind: target.kind,
+        id: target.id,
+        nextLabel: target.nextLabel,
+        previousLabel: target.previousLabel,
+        reason,
+        actorPersonId: person?.id,
+      },
+      { onError: (err) => toast.error(`Failed to reassign ${target.kind}: ${err.message}`) },
+    );
+  };
+
+  const displayedTicket = ticket;
+
+  const handleSubmitComment = () => {
     const trimmedComment = commentText.trim();
     if (!trimmedComment && attachmentFiles.length === 0) return;
 
-    setSubmittingComment(true);
-    try {
-      let attachments: Activity['attachments'] = [];
-
-      if (attachmentFiles.length > 0) {
-        const formData = new FormData();
-        attachmentFiles.forEach((file) => formData.append('files', file));
-
-        attachments = await apiFetch<Activity['attachments']>(`/tickets/${ticketId}/attachments`, {
-          method: 'POST',
-          body: formData,
-        });
-      }
-
-      await apiFetch(`/tickets/${ticketId}/activities`, {
-        method: 'POST',
-        body: JSON.stringify({
-          activity_type: commentVisibility === 'internal' ? 'internal_note' : 'external_comment',
-          visibility: commentVisibility,
-          content: trimmedComment || undefined,
-          attachments,
-        }),
-      });
-
-      setCommentText('');
-      setAttachmentFiles([]);
-      if (attachmentInputRef.current) attachmentInputRef.current.value = '';
-      closeMentionMenu();
-      refetchActivities();
-      toast.success(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to send comment');
-    } finally {
-      setSubmittingComment(false);
-    }
+    addActivity.mutate(
+      { content: trimmedComment, visibility: commentVisibility, files: attachmentFiles },
+      {
+        onSuccess: () => {
+          setCommentText('');
+          setAttachmentFiles([]);
+          if (attachmentInputRef.current) attachmentInputRef.current.value = '';
+          closeMentionMenu();
+          toast.success(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
   };
 
   const closeMentionMenu = () => {
-    if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
     setMentionMatch(null);
-    setMentionResults([]);
-    setMentionLoading(false);
     setMentionIndex(0);
   };
 
@@ -363,56 +361,35 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
     });
   };
 
+  // Debounce the mention query so fast typing doesn't fire a request per keystroke.
+  // mentionPending tracks the in-flight debounce window so the dropdown shows
+  // the spinner *immediately* on keystroke — otherwise stale results from the
+  // previous query would remain visible for the full 180ms window.
+  const [debouncedMentionQuery, setDebouncedMentionQuery] = useState('');
+  const [mentionPending, setMentionPending] = useState(false);
   useEffect(() => {
-    const rtId = ticket?.request_type?.id;
-    if (!rtId) { setSchemaFields([]); return; }
-    let cancelled = false;
-    apiFetch<{ form_schema_id?: string | null }>(`/request-types/${rtId}`)
-      .then((rt) => {
-        if (cancelled || !rt.form_schema_id) { setSchemaFields([]); return null; }
-        return apiFetch<{ current_version?: { definition: { fields: FormField[] } } | null }>(
-          `/config-entities/${rt.form_schema_id}`,
-        );
-      })
-      .then((entity) => {
-        if (cancelled || !entity) return;
-        setSchemaFields(entity.current_version?.definition?.fields ?? []);
-      })
-      .catch(() => { if (!cancelled) setSchemaFields([]); });
-    return () => { cancelled = true; };
-  }, [ticket?.request_type?.id]);
-
-  useEffect(() => {
-    if (!mentionMatch) return;
-
-    if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
-
-    const localResults = filterMentionPeople(people ?? [], mentionMatch.query);
-    if (mentionMatch.query.trim().length < 2) {
-      setMentionLoading(false);
-      setMentionResults(localResults);
-      setMentionIndex(0);
-      return;
-    }
-
-    setMentionLoading(true);
-    mentionSearchRef.current = setTimeout(() => {
-      apiFetch<MentionPerson[]>(`/persons?search=${encodeURIComponent(mentionMatch.query)}`)
-        .then((results) => {
-          setMentionResults(results.slice(0, MAX_MENTION_RESULTS));
-          setMentionIndex(0);
-        })
-        .catch(() => {
-          setMentionResults(localResults);
-          setMentionIndex(0);
-        })
-        .finally(() => setMentionLoading(false));
+    const q = mentionMatch?.query ?? '';
+    if (q !== debouncedMentionQuery) setMentionPending(true);
+    const t = setTimeout(() => {
+      setDebouncedMentionQuery(q);
+      setMentionPending(false);
     }, 180);
+    return () => clearTimeout(t);
+    // debouncedMentionQuery intentionally omitted — we only fire on query change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionMatch?.query]);
 
-    return () => {
-      if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
-    };
-  }, [mentionMatch, people]);
+  const { data: remoteMentionResults, isFetching: mentionRemoteFetching } = usePersonsSearch(debouncedMentionQuery);
+  const mentionLoading = mentionMatch !== null
+    && mentionMatch.query.trim().length >= 2
+    && (mentionPending || mentionRemoteFetching);
+
+  // Derive the displayed mention list: server results (when available) → local filter fallback.
+  const mentionResults: MentionPerson[] = mentionMatch === null
+    ? []
+    : mentionMatch.query.trim().length < 2
+      ? filterMentionPeople(people ?? [], mentionMatch.query)
+      : (remoteMentionResults ?? filterMentionPeople(people ?? [], mentionMatch.query)).slice(0, MAX_MENTION_RESULTS);
 
   useEffect(() => {
     if (mentionIndex < mentionResults.length) return;
@@ -422,25 +399,32 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const mentionOpen = Boolean(mentionMatch);
   const canSubmitComment = Boolean(commentText.trim() || attachmentFiles.length > 0) && !submittingComment;
 
-  if (ticketLoading || !ticket) {
-    if (ticketError) {
-      const isForbidden = /403|forbidden/i.test(ticketError);
-      return (
-        <div className="flex h-full items-center justify-center">
-          <div className="p-6 max-w-[480px] mx-auto text-center">
-            <h2 className="text-lg font-semibold mb-2">
-              {isForbidden ? 'You do not have access to this ticket' : 'Failed to load ticket'}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {isForbidden
-                ? "Your role does not include this ticket. Contact an admin if you believe this is a mistake."
-                : ticketError}
-            </p>
-          </div>
+  if (ticketError && !ticket) {
+    const isForbidden = ticketError instanceof ApiError && ticketError.status === 403;
+    const isNotFound = ticketError instanceof ApiError && ticketError.status === 404;
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="p-6 max-w-[480px] mx-auto text-center">
+          <h2 className="text-lg font-semibold mb-2">
+            {isForbidden
+              ? 'You do not have access to this ticket'
+              : isNotFound
+                ? 'Ticket not found'
+                : 'Failed to load ticket'}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {isForbidden
+              ? "Your role does not include this ticket. Contact an admin if you believe this is a mistake."
+              : isNotFound
+                ? "This ticket may have been deleted or never existed."
+                : ticketError.message}
+          </p>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
+  if (ticketPending || !ticket) {
     return (
       <div className="flex h-full items-center justify-center">
         <Spinner className="size-6 text-muted-foreground" />
@@ -451,7 +435,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   return (
     <div className="flex h-full">
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Background-refetch indicator — 2px bar, stays out of the way during optimistic saves */}
+        {ticketFetching && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary/40" />
+        )}
         {/* Top actions */}
         <div className="flex items-center gap-1 px-6 py-2 shrink-0">
           {onClose && (
@@ -1159,15 +1147,8 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   );
 }
 
-interface TicketInstance {
-  id: string;
-  status: string;
-  current_node_id: string | null;
-  workflow_definition_id: string;
-}
-
 function WorkflowSection({ ticketId }: { ticketId: string }) {
-  const { data: instances } = useApi<TicketInstance[]>(`/workflows/instances/ticket/${ticketId}`, [ticketId]);
+  const { data: instances } = useTicketWorkflowInstances(ticketId);
   const first = instances?.[0];
   if (!first) return null;
 
