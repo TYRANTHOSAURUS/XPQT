@@ -256,9 +256,7 @@ export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
           ? `${selectedRt.name} → ${primaryName ?? 'unset'}${fallbackName ? ` (fallback ${fallbackName})` : ''}`
           : `${selectedRt.name} uses location-team lookup${fallbackName ? `, fallback ${fallbackName}` : ''}`;
       toast.success(summary);
-      setSelectedRtId('');
-      setTargetId('');
-      setFallbackId('');
+      // Keep the RT + target selected for fast iterate-and-save.
       await refetchRts();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save policy');
@@ -270,13 +268,26 @@ export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
   return (
     <div className="flex flex-col gap-6">
       <section className="rounded-md border bg-card p-4">
-        <h2 className="mb-1 text-sm font-medium uppercase text-muted-foreground">
-          Attach child dispatch policy
-        </h2>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Picks the team or vendor that handles child work orders for a request type. Vendors
-          are first-class execution targets — unlike case ownership, which is team-only.
-        </p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="mb-1 text-sm font-medium uppercase text-muted-foreground">
+              Attach child dispatch policy
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Picks the team or vendor that handles child work orders for a request type.
+              Vendors are first-class execution targets — unlike case ownership, which is
+              team-only.
+            </p>
+          </div>
+          {selectedRt && (
+            <a
+              className="shrink-0 whitespace-nowrap text-sm text-primary hover:underline"
+              href={`/admin/routing-studio?tab=case-ownership&rt=${selectedRt.id}`}
+            >
+              Edit case ownership for this RT →
+            </a>
+          )}
+        </div>
 
         <FieldGroup>
           <Field>

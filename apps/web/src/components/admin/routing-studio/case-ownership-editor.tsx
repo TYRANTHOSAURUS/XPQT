@@ -261,9 +261,9 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
       toast.success(
         `${selectedRt.name} → ${teamsById.get(selectedTeamId)?.name ?? 'team'}${rowSummary}`,
       );
-      setSelectedRtId('');
-      setSelectedTeamId('');
-      setScopedRows([]);
+      // Keep the RT selected so admins can iterate (tweak + save again) without
+      // having to re-pick from the dropdown. refetchRts will reload the list
+      // and the effect picks the new "attached" state up.
       await refetchRts();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save policy');
@@ -275,13 +275,25 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
   return (
     <div className="flex flex-col gap-6">
       <section className="rounded-md border bg-card p-4">
-        <h2 className="mb-1 text-sm font-medium uppercase text-muted-foreground">
-          Attach case owner policy
-        </h2>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Picks the team that owns the parent case for a request type. Child work orders are
-          dispatched separately and can still go to vendors.
-        </p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="mb-1 text-sm font-medium uppercase text-muted-foreground">
+              Attach case owner policy
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Picks the team that owns the parent case for a request type. Child work orders are
+              dispatched separately and can still go to vendors.
+            </p>
+          </div>
+          {selectedRt && (
+            <a
+              className="shrink-0 whitespace-nowrap text-sm text-primary hover:underline"
+              href={`/admin/routing-studio?tab=child-dispatch&rt=${selectedRt.id}`}
+            >
+              Edit child dispatch for this RT →
+            </a>
+          )}
+        </div>
 
         <FieldGroup>
           <Field>
