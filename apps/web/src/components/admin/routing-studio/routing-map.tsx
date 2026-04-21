@@ -18,6 +18,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { ResolverPipelineStrip } from './resolver-pipeline-strip';
+import { RoutingModeToggle } from './routing-mode-toggle';
 
 interface RequestType {
   id: string;
@@ -154,6 +155,8 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
           </Button>
         </div>
       </header>
+
+      <RoutingModeToggle />
 
       {/* Pipeline strip lives here (and only here) so admins see the legacy
         * resolver order alongside the request-type summary table. Other tabs
