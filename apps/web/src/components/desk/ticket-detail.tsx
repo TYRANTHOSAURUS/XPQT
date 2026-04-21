@@ -250,7 +250,6 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
   const { data: tagSuggestions } = useApi<string[]>('/tickets/tags', []);
   const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
-  const { data: requestTypes } = useApi<Array<{ id: string; name: string; active: boolean }>>('/request-types', []);
   const [schemaFields, setSchemaFields] = useState<FormField[]>([]);
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
@@ -568,22 +567,29 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
             </div>
 
             <div className="space-y-6">
-              {(activities ?? []).map((activity) => (
+              {(activities ?? []).map((activity) => {
+                if (activity.visibility === 'system') {
+                  const eventText =
+                    (activity.metadata as Record<string, unknown> | null)?.event as string | undefined
+                    ?? activity.content;
+                  return (
+                    <div key={activity.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{eventText}</span>
+                      <span className="shrink-0">· {timeAgo(activity.created_at)}</span>
+                    </div>
+                  );
+                }
+                return (
                 <div key={activity.id} className="flex gap-4">
                   <div className="shrink-0 mt-0.5">
-                    {activity.visibility === 'system' ? (
-                      <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
-                        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                      </div>
-                    ) : (
-                      <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ${
-                        activity.visibility === 'internal'
-                          ? 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400'
-                          : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                      }`}>
-                        {activity.author?.first_name?.[0] ?? '?'}
-                      </div>
-                    )}
+                    <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ${
+                      activity.visibility === 'internal'
+                        ? 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400'
+                        : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                    }`}>
+                      {activity.author?.first_name?.[0] ?? '?'}
+                    </div>
                   </div>
                   <div className="flex-1 min-w-0 pt-0.5">
                     <div className="flex items-center gap-2">
@@ -597,7 +603,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                       )}
                       <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
                     </div>
-                    {activity.visibility !== 'system' && (activity.content || (activity.attachments?.length ?? 0) > 0) ? (
+                    {(activity.content || (activity.attachments?.length ?? 0) > 0) ? (
                       <div className="mt-2 overflow-hidden rounded-2xl border border-border/70 bg-card/80">
                         {activity.content && (
                           <div className="px-4 py-3">
@@ -671,17 +677,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                           </div>
                         )}
                       </div>
-                    ) : (
-                      activity.content && (
-                        <p className="text-[15px] text-foreground/80 mt-1.5 leading-relaxed whitespace-pre-wrap">{activity.content}</p>
-                      )
-                    )}
-                    {activity.metadata && activity.visibility === 'system' && (
-                      <p className="text-xs text-muted-foreground mt-1">{(activity.metadata as Record<string, unknown>).event as string}</p>
-                    )}
+                    ) : null}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {displayedTicket?.ticket_kind === 'case' && (
@@ -713,9 +713,6 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 onOpenChange={setReclassifyOpen}
                 ticketId={displayedTicket.id}
                 currentRequestType={displayedTicket.request_type ?? null}
-                availableRequestTypes={(requestTypes ?? [])
-                  .filter((rt) => rt.active)
-                  .map((rt) => ({ id: rt.id, name: rt.name }))}
                 onReclassified={() => {
                   setWorkOrdersNonce((n) => n + 1);
                   refetchTicket();
@@ -1098,7 +1095,25 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           {displayedTicket!.request_type && (
             <div>
               <div className="text-xs text-muted-foreground mb-1.5">Type</div>
-              <div className="text-sm">{displayedTicket!.request_type.name}</div>
+              {displayedTicket!.ticket_kind === 'case'
+                && displayedTicket!.status_category !== 'closed'
+                && displayedTicket!.status_category !== 'resolved' ? (
+                <button
+                  type="button"
+                  onClick={() => setReclassifyOpen(true)}
+                  title="Change request type"
+                  className="text-sm text-left w-full rounded -mx-1.5 px-1.5 py-1 hover:bg-muted transition-colors cursor-pointer"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    {displayedTicket!.request_type.name}
+                    <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                      change
+                    </span>
+                  </span>
+                </button>
+              ) : (
+                <div className="text-sm">{displayedTicket!.request_type.name}</div>
+              )}
             </div>
           )}
 

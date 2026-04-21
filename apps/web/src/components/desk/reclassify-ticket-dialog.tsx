@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -8,23 +8,17 @@ import { Button } from '@/components/ui/button';
 import {
   Field, FieldDescription, FieldError, FieldGroup, FieldLabel,
 } from '@/components/ui/field';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { RequestTypePicker } from '@/components/request-type-picker';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ReclassifyImpactPanel } from './reclassify-impact-panel';
 import { useReclassifyPreview, useReclassifyTicket } from '@/hooks/use-reclassify';
-
-interface RequestTypeOption {
-  id: string;
-  name: string;
-}
 
 interface ReclassifyTicketDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   ticketId: string;
   currentRequestType: { id: string; name: string } | null;
-  availableRequestTypes: RequestTypeOption[];
   onReclassified: () => void;
 }
 
@@ -35,18 +29,12 @@ export function ReclassifyTicketDialog({
   onOpenChange,
   ticketId,
   currentRequestType,
-  availableRequestTypes,
   onReclassified,
 }: ReclassifyTicketDialogProps) {
   const [stage, setStage] = useState<Stage>('pick');
   const [newTypeId, setNewTypeId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [ackInProgress, setAckInProgress] = useState(false);
-
-  const pickableTypes = useMemo(
-    () => availableRequestTypes.filter((t) => t.id !== currentRequestType?.id),
-    [availableRequestTypes, currentRequestType?.id],
-  );
 
   const preview = useReclassifyPreview(stage === 'preview' ? ticketId : null, newTypeId);
   const mutation = useReclassifyTicket(ticketId);
@@ -98,7 +86,7 @@ export function ReclassifyTicketDialog({
         onOpenChange(o);
       }}
     >
-      <SheetContent className="w-[540px] sm:max-w-[540px] flex flex-col gap-0">
+      <SheetContent className="w-[720px] sm:max-w-[720px] lg:w-[760px] lg:max-w-[760px] flex flex-col gap-0">
         <SheetHeader>
           <SheetTitle>
             {stage === 'pick'
@@ -125,18 +113,13 @@ export function ReclassifyTicketDialog({
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="reclassify-new-type">New request type</FieldLabel>
-                <Select value={newTypeId ?? ''} onValueChange={setNewTypeId}>
-                  <SelectTrigger id="reclassify-new-type">
-                    <SelectValue placeholder="Pick a request type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {pickableTypes.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <RequestTypePicker
+                  id="reclassify-new-type"
+                  value={newTypeId ?? ''}
+                  onChange={(id) => setNewTypeId(id || null)}
+                  excludeIds={currentRequestType ? [currentRequestType.id] : undefined}
+                  placeholder="Pick a request type"
+                />
                 <FieldDescription>
                   Switching type will reset this ticket&apos;s workflow and SLA. You&apos;ll
                   see a full impact preview before confirming.
