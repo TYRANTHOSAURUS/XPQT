@@ -7,15 +7,14 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { CheckIcon, XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PickerItemBody, type PickerOption } from './picker-item';
 
-export interface EntityOption {
-  id: string;
-  label: string;
-  sublabel?: string | null;
-}
+export type EntityOption = PickerOption;
 
 export interface EntityPickerProps {
   /** Current selection id, or null if none. */
@@ -26,7 +25,7 @@ export interface EntityPickerProps {
   placeholder?: string;
   /** What to render inside the trigger when a value IS selected. Defaults to the matched option's label. */
   renderValue?: (option: EntityOption | null) => ReactNode;
-  /** Shown as the first command item; selecting it calls onChange(null). */
+  /** Label for the clear action. Rendered as a footer button (not as a list item) and only when a value is selected. */
   clearLabel?: string | null;
   /** Optional custom filter function. Default: case-insensitive label substring match. */
   filter?: (option: EntityOption, query: string) => boolean;
@@ -80,38 +79,53 @@ export function EntityPicker({
       >
         {renderValue ? renderValue(selected) : selected?.label ?? `+ Add ${placeholder}`}
       </PopoverTrigger>
-      <PopoverContent className="p-1" align="start" style={contentWidth ? { width: contentWidth } : undefined}>
+      <PopoverContent
+        className="p-0 min-w-[260px]"
+        align="start"
+        style={contentWidth ? { width: contentWidth } : undefined}
+      >
         <Command shouldFilter={false}>
           <CommandInput placeholder={`Search ${placeholder}…`} value={query} onValueChange={setQuery} />
           <CommandList>
-            <CommandEmpty className="py-4 text-center text-xs text-muted-foreground">
+            <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
               No results.
             </CommandEmpty>
             <CommandGroup>
-              {clearLabel && (
-                <CommandItem
-                  value="__clear__"
-                  onSelect={() => { onChange(null); setOpen(false); }}
-                  className="text-muted-foreground"
-                >
-                  {clearLabel}
-                </CommandItem>
-              )}
-              {visible.map((option) => (
-                <CommandItem
-                  key={option.id}
-                  value={`${option.label} ${option.sublabel ?? ''}`}
-                  onSelect={() => { onChange(option); setOpen(false); }}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <span className="truncate">{option.label}</span>
-                  {option.sublabel && (
-                    <span className="truncate text-[11px] text-muted-foreground">{option.sublabel}</span>
-                  )}
-                </CommandItem>
-              ))}
+              {visible.map((option) => {
+                const isSelected = option.id === value;
+                return (
+                  <CommandItem
+                    key={option.id}
+                    value={`${option.label} ${option.sublabel ?? ''}`}
+                    onSelect={() => { onChange(option); setOpen(false); }}
+                    className="py-2"
+                  >
+                    <PickerItemBody
+                      leading={option.leading}
+                      label={option.label}
+                      sublabel={option.sublabel}
+                      trailing={isSelected ? <CheckIcon className="h-4 w-4 text-foreground" /> : null}
+                    />
+                  </CommandItem>
+                );
+              })}
             </CommandGroup>
           </CommandList>
+          {clearLabel && value !== null && (
+            <>
+              <CommandSeparator />
+              <div className="p-1">
+                <button
+                  type="button"
+                  onClick={() => { onChange(null); setOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                  {clearLabel}
+                </button>
+              </div>
+            </>
+          )}
         </Command>
       </PopoverContent>
     </Popover>

@@ -1,6 +1,7 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
 import { WorkspaceSwitcher } from '@/components/workspace-switcher';
+import { useAuth } from '@/providers/auth-provider';
 import {
   Sidebar,
   SidebarContent,
@@ -32,8 +33,6 @@ import {
   Route,
   Bell,
   Calendar,
-  Headset,
-  LayoutDashboard,
   FormInput,
   UserCog,
   PersonStanding,
@@ -47,6 +46,7 @@ import {
   Network,
   Layers,
   Compass,
+  ArrowLeft,
 } from 'lucide-react';
 import { features } from '@/lib/features';
 
@@ -85,10 +85,6 @@ const operationsNav = [
   { title: 'Vendor Menus', path: '/admin/vendor-menus', icon: BookOpen },
 ];
 
-const quickNav = [
-  { title: 'Portal', path: '/portal', icon: LayoutDashboard },
-  { title: 'Service Desk', path: '/desk', icon: Headset },
-];
 
 const pageTitles: Record<string, string> = {
   '/admin/catalog-hierarchy': 'Catalog Hierarchy',
@@ -117,9 +113,14 @@ const pageTitles: Record<string, string> = {
 export function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { hasRole } = useAuth();
   const pageTitle = Object.entries(pageTitles).find(([path]) =>
     location.pathname.startsWith(path)
   )?.[1] ?? 'Admin';
+
+  const backTarget = hasRole('agent')
+    ? { title: 'Back to Service Desk', path: '/desk' }
+    : { title: 'Back to Portal', path: '/portal' };
 
   return (
     <SidebarProvider>
@@ -129,6 +130,22 @@ export function AdminLayout() {
         </SidebarHeader>
 
         <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => navigate(backTarget.path)}
+                    className="cursor-pointer"
+                  >
+                    <ArrowLeft />
+                    <span>{backTarget.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
           <SidebarGroup>
             <SidebarGroupLabel>Configuration</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -189,24 +206,6 @@ export function AdminLayout() {
             </SidebarGroupContent>
           </SidebarGroup>
 
-          <SidebarGroup>
-            <SidebarGroupLabel>Navigate</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {quickNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </SidebarContent>
 
         <SidebarFooter>

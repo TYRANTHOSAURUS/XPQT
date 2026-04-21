@@ -12,12 +12,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { CheckIcon, PlusIcon, XIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PickerItemBody, type PickerOption } from './picker-item';
 
-export interface MultiSelectOption {
-  id: string;
-  label: string;
-  sublabel?: string | null;
-}
+export type MultiSelectOption = PickerOption;
 
 export interface MultiSelectPickerProps {
   values: string[];
@@ -121,7 +118,7 @@ export function MultiSelectPicker({
           <span>{values.length} selected</span>
         )}
       </PopoverTrigger>
-      <PopoverContent className="p-1 w-[280px]" align="start">
+      <PopoverContent className="p-0 min-w-[300px]" align="start">
         <Command shouldFilter={false}>
           <CommandInput
             placeholder={`Search ${placeholder}…`}
@@ -156,15 +153,25 @@ export function MultiSelectPicker({
                     key={option.id}
                     value={`${option.label} ${option.sublabel ?? ''}`}
                     onSelect={() => toggle(option.id)}
-                    className="flex items-center gap-2"
+                    className="py-2"
                   >
-                    <div className={cn('flex h-4 w-4 items-center justify-center rounded-sm border', checked && 'bg-primary border-primary text-primary-foreground')}>
-                      {checked && <CheckIcon className="h-3 w-3" />}
-                    </div>
-                    <span className="truncate flex-1">{option.label}</span>
-                    {option.sublabel && (
-                      <span className="truncate text-[11px] text-muted-foreground">{option.sublabel}</span>
-                    )}
+                    <PickerItemBody
+                      leading={
+                        <span className="flex items-center gap-2.5">
+                          <span
+                            className={cn(
+                              'flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-input transition-colors',
+                              checked && 'bg-primary border-primary text-primary-foreground',
+                            )}
+                          >
+                            {checked && <CheckIcon className="h-3 w-3" />}
+                          </span>
+                          {option.leading}
+                        </span>
+                      }
+                      label={option.label}
+                      sublabel={option.sublabel}
+                    />
                   </CommandItem>
                 );
               })}

@@ -26,27 +26,14 @@ import {
 } from '@/components/ui/select';
 import { Plus, Send } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
 import { PersonCombobox, type Person } from '@/components/person-combobox';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
+import { RequestTypePicker, type RequestType } from '@/components/request-type-picker';
 import { apiFetch } from '@/lib/api';
 import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
 import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
-
-interface RequestType {
-  id: string;
-  name: string;
-  domain: string;
-  fulfillment_strategy: 'asset' | 'location' | 'fixed' | 'auto';
-  requires_asset: boolean;
-  asset_required: boolean;
-  asset_type_filter: string[];
-  requires_location: boolean;
-  location_required: boolean;
-  form_schema_id?: string | null;
-}
 
 interface FormSchemaEntity {
   id: string;
@@ -62,22 +49,19 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('medium');
-  const [requestTypeId, setRequestTypeId] = useState('');
+  const [selectedRT, setSelectedRT] = useState<RequestType | null>(null);
   const [sourceChannel, setSourceChannel] = useState('phone');
   const [assetId, setAssetId] = useState<string | null>(null);
   const [locationId, setLocationId] = useState<string | null>(null);
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
 
-  const { data: requestTypes } = useApi<RequestType[]>('/request-types', []);
-  const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
+  const requestTypeId = selectedRT?.id ?? '';
 
   useEffect(() => {
-    if (!requestTypeId || !requestTypes) { setFormFields([]); setFormValues({}); return; }
-    const rt = requestTypes.find((r) => r.id === requestTypeId);
-    if (!rt?.form_schema_id) { setFormFields([]); setFormValues({}); return; }
+    if (!selectedRT?.form_schema_id) { setFormFields([]); setFormValues({}); return; }
     let cancelled = false;
-    apiFetch<FormSchemaEntity>(`/config-entities/${rt.form_schema_id}`)
+    apiFetch<FormSchemaEntity>(`/config-entities/${selectedRT.form_schema_id}`)
       .then((entity) => {
         if (cancelled) return;
         setFormFields(entity.current_version?.definition?.fields ?? []);
@@ -85,7 +69,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
       })
       .catch(() => { if (!cancelled) setFormFields([]); });
     return () => { cancelled = true; };
-  }, [requestTypeId, requestTypes]);
+  }, [selectedRT]);
 
   const handleSubmit = async () => {
     if (!title.trim() || !requesterId) return;
@@ -120,7 +104,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
         throw new Error(body.message || `Request failed: ${res.status}`);
       }
       setTitle(''); setDescription(''); setPriority('medium');
-      setRequestTypeId(''); setSelectedRequester(null); setRequesterId('');
+      setSelectedRT(null); setSelectedRequester(null); setRequesterId('');
       setSourceChannel('phone'); setAssetId(null); setLocationId(null);
       setFormFields([]); setFormValues({});
       setOpen(false);
@@ -174,19 +158,14 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
             </Select>
           </Field>
 
-          {requestTypes && requestTypes.length > 0 && (
-            <Field>
-              <FieldLabel htmlFor="new-ticket-type">Request Type</FieldLabel>
-              <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
-                <SelectTrigger id="new-ticket-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
-                <SelectContent>
-                  {requestTypes.map((rt) => (
-                    <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
+          <Field>
+            <FieldLabel htmlFor="new-ticket-type">Request Type</FieldLabel>
+            <RequestTypePicker
+              id="new-ticket-type"
+              value={requestTypeId}
+              onChange={(_, rt) => setSelectedRT(rt)}
+            />
+          </Field>
 
           {selectedRT?.requires_asset && (
             <Field>

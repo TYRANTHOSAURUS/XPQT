@@ -36,6 +36,7 @@ import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
+import { RequestTypePicker } from '@/components/request-type-picker';
 
 interface RequestType {
   id: string;
@@ -194,27 +195,21 @@ export function SubmitRequestPage() {
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)}>
             <FieldGroup>
-              {requestTypes && requestTypes.length > 0 && (
-                <Field>
-                  <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
-                  <Controller
-                    control={control}
-                    name="requestTypeId"
-                    render={({ field }) => (
-                      <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v ?? '')}>
-                        <SelectTrigger id="request-type">
-                          <SelectValue placeholder="Select a request type..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {requestTypes.map((rt) => (
-                            <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                </Field>
-              )}
+              <Field>
+                <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
+                <Controller
+                  control={control}
+                  name="requestTypeId"
+                  render={({ field }) => (
+                    <RequestTypePicker
+                      id="request-type"
+                      value={field.value ?? ''}
+                      onChange={(rtId) => field.onChange(rtId)}
+                      rootCategoryId={categoryId ?? null}
+                    />
+                  )}
+                />
+              </Field>
 
               {selectedRT?.requires_asset && (
                 <Field>
