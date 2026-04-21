@@ -84,8 +84,17 @@ export class ReclassifyService {
     private readonly visibility: TicketVisibilityService,
   ) {}
 
-  async computeImpact(ticketId: string, newRequestTypeId: string): Promise<ReclassifyImpactDto> {
+  async computeImpact(
+    ticketId: string,
+    newRequestTypeId: string,
+    actorAuthUid: string,
+  ): Promise<ReclassifyImpactDto> {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'read');
+    }
 
     const ticket = await this.loadTicket(ticketId, tenant.id);
     this.assertReclassifiable(ticket, newRequestTypeId);
@@ -213,7 +222,7 @@ export class ReclassifyService {
     }
 
     // computeImpact also performs preflight guards (not child, not closed, types differ, type active).
-    const impact = await this.computeImpact(ticketId, dto.newRequestTypeId);
+    const impact = await this.computeImpact(ticketId, dto.newRequestTypeId, actorAuthUid);
 
     const hasInProgressChildren = impact.children.some((c) => c.is_in_progress);
     if (hasInProgressChildren && !dto.acknowledgedChildrenInProgress) {
@@ -229,9 +238,16 @@ export class ReclassifyService {
     const evaluation = await this.routingService.evaluate(routingContext);
     const target = evaluation.target;
 
-    const actorUserId = actorAuthUid === SYSTEM_ACTOR
-      ? null
-      : await this.resolveUserIdFromAuth(actorAuthUid, tenant.id);
+    let actorUserId: string | null = null;
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      actorUserId = await this.resolveUserIdFromAuth(actorAuthUid, tenant.id);
+      if (!actorUserId) {
+        // Caller passed assertVisible via visibility.loadContext, so this should
+        // be unreachable. If it happens, fail loudly — unattributable audit
+        // events are worse than refusing the operation.
+        throw new UnprocessableEntityException('actor user not resolvable in tenant');
+      }
+    }
 
     const { error: rpcError } = await this.supabase.admin.rpc('reclassify_ticket', {
       p_ticket_id: ticketId,
@@ -257,48 +273,96 @@ export class ReclassifyService {
       throw rpcError;
     }
 
-    // Post-RPC best-effort side effects.
+    // Post-RPC best-effort side effects. The RPC has already committed; any
+    // failure here is recoverable (cron will eventually heal timers, admin can
+    // start a workflow manually). We still collect warnings so the caller can
+    // surface them in the UI and the tenant can log a follow-up.
+    const warnings: Array<{ stage: string; message: string }> = [];
+
     if (newType.sla_policy_id) {
+      // Update sla_id FIRST so the pointer is correct even if startTimers
+      // crashes partway through (partial timer rows are the cron's problem,
+      // a stale sla_id pointer would mislead every downstream reader).
       try {
-        await this.slaService.startTimers(ticketId, tenant.id, newType.sla_policy_id);
         await this.supabase.admin
           .from('tickets')
           .update({ sla_id: newType.sla_policy_id })
           .eq('id', ticketId);
       } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
+        console.error('[reclassify] update sla_id failed', err);
+        warnings.push({ stage: 'update_sla_id', message });
+      }
+      try {
+        await this.slaService.startTimers(ticketId, tenant.id, newType.sla_policy_id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
         console.error('[reclassify] startTimers failed', err);
+        warnings.push({ stage: 'start_sla_timers', message });
       }
     } else {
       // No new SLA policy — clear ticket-level SLA computed fields so the UI
       // doesn't show stale due-at values from the old policy's timers.
-      await this.supabase.admin
-        .from('tickets')
-        .update({
-          sla_id: null,
-          sla_response_due_at: null,
-          sla_resolution_due_at: null,
-          sla_response_breached_at: null,
-          sla_resolution_breached_at: null,
-          sla_at_risk: false,
-        })
-        .eq('id', ticketId);
+      try {
+        await this.supabase.admin
+          .from('tickets')
+          .update({
+            sla_id: null,
+            sla_response_due_at: null,
+            sla_resolution_due_at: null,
+            sla_response_breached_at: null,
+            sla_resolution_breached_at: null,
+            sla_at_risk: false,
+          })
+          .eq('id', ticketId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
+        console.error('[reclassify] clear sla fields failed', err);
+        warnings.push({ stage: 'clear_sla_fields', message });
+      }
     }
 
     if (newType.workflow_definition_id) {
       try {
         await this.workflowEngine.startForTicket(ticketId, newType.workflow_definition_id);
       } catch (err) {
+        const message = err instanceof Error ? err.message : 'unknown error';
         console.error('[reclassify] startForTicket failed', err);
+        warnings.push({ stage: 'start_workflow', message });
       }
     }
 
     try {
       await this.routingService.recordDecision(ticketId, routingContext, evaluation);
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error';
       console.error('[reclassify] recordDecision failed', err);
+      warnings.push({ stage: 'record_routing_decision', message });
     }
 
-    return this.tickets.getById(ticketId, SYSTEM_ACTOR);
+    // If any post-RPC stage failed, emit a domain event so the audit trail
+    // shows the partial completion. The primary ticket_type_changed event
+    // already committed inside the RPC, so this is the appropriate place
+    // to record recovery-needed state.
+    if (warnings.length > 0) {
+      try {
+        await this.supabase.admin.from('domain_events').insert({
+          tenant_id: tenant.id,
+          event_type: 'reclassify_post_rpc_warning',
+          entity_type: 'ticket',
+          entity_id: ticketId,
+          payload: { warnings },
+          actor_user_id: actorUserId,
+        });
+      } catch (err) {
+        console.error('[reclassify] failed to record post-rpc warning event', err);
+      }
+    }
+
+    const ticketResponse = await this.tickets.getById(ticketId, SYSTEM_ACTOR);
+    return warnings.length > 0
+      ? { ...(ticketResponse as Record<string, unknown>), post_rpc_warnings: warnings }
+      : ticketResponse;
   }
 
   // ─────── Guards ───────

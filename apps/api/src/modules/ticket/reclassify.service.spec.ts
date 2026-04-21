@@ -184,7 +184,7 @@ describe('ReclassifyService.computeImpact', () => {
       workflowInstance: { id: 'wi1', tenant_id: 'ten1', ticket_id: 'tk1', status: 'active', current_node_id: 'triage', workflow_definitions: { name: 'HVAC v2' } },
     });
 
-    const impact = await service.computeImpact('tk1', 'rt-new');
+    const impact = await service.computeImpact('tk1', 'rt-new', '__system__');
 
     expect(impact.ticket.new_request_type.name).toBe('Plumbing');
     expect(impact.workflow.will_be_cancelled).toBe(true);
@@ -202,17 +202,17 @@ describe('ReclassifyService.computeImpact', () => {
 
   it('throws when ticket is a child work order', async () => {
     const { service } = makeService({ ticket: { ticket_kind: 'work_order' } });
-    await expect(service.computeImpact('tk1', 'rt-new')).rejects.toThrow(/child/i);
+    await expect(service.computeImpact('tk1', 'rt-new', '__system__')).rejects.toThrow(/child/i);
   });
 
   it('throws when ticket is closed', async () => {
     const { service } = makeService({ ticket: { status_category: 'closed' } });
-    await expect(service.computeImpact('tk1', 'rt-new')).rejects.toThrow(/closed or resolved/i);
+    await expect(service.computeImpact('tk1', 'rt-new', '__system__')).rejects.toThrow(/closed or resolved/i);
   });
 
   it('throws when new type equals current', async () => {
     const { service } = makeService({ ticket: { ticket_type_id: 'rt-new' } });
-    await expect(service.computeImpact('tk1', 'rt-new')).rejects.toThrow(/same as current/i);
+    await expect(service.computeImpact('tk1', 'rt-new', '__system__')).rejects.toThrow(/same as current/i);
   });
 
   it('throws when new type is inactive', async () => {
@@ -222,7 +222,7 @@ describe('ReclassifyService.computeImpact', () => {
         { id: 'rt-new', tenant_id: 'ten1', name: 'Plumbing', domain: 'fm', active: false, sla_policy_id: null, workflow_definition_id: null },
       ],
     });
-    await expect(service.computeImpact('tk1', 'rt-new')).rejects.toThrow(/not active/i);
+    await expect(service.computeImpact('tk1', 'rt-new', '__system__')).rejects.toThrow(/not active/i);
   });
 });
 

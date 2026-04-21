@@ -8,8 +8,14 @@ export class ReclassifyController {
   constructor(private readonly service: ReclassifyService) {}
 
   @Post('preview')
-  async preview(@Param('id') id: string, @Body() dto: ReclassifyPreviewDto) {
-    return this.service.computeImpact(id, dto.newRequestTypeId);
+  async preview(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: ReclassifyPreviewDto,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.service.computeImpact(id, dto.newRequestTypeId, actorAuthUid);
   }
 
   @Post()

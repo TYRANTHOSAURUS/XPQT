@@ -55,7 +55,7 @@ as $$
 declare
   v_current_type_id  uuid;
   v_current_user_id  uuid;
-  v_cancelled_wf_id  uuid;
+  v_cancelled_wf_ids uuid[] := '{}';
   v_closed_children  uuid[] := '{}';
   v_stopped_timers   uuid[] := '{}';
   v_watchers         uuid[];
@@ -74,7 +74,7 @@ begin
   where id = p_ticket_id and tenant_id = p_tenant_id
   for update;
 
-  if v_current_type_id is null and not found then
+  if not found then
     raise exception 'ticket_not_found' using errcode = 'P0002';
   end if;
 
@@ -83,15 +83,18 @@ begin
   end if;
 
   -- 4a. Cancel any active workflow_instances for this ticket.
-  update public.workflow_instances
-  set status = 'cancelled',
-      cancelled_at = now(),
-      cancelled_reason = p_reason,
-      cancelled_by = p_actor_user_id
-  where ticket_id = p_ticket_id
-    and tenant_id = p_tenant_id
-    and status in ('active', 'waiting')
-  returning id into v_cancelled_wf_id;
+  with cancelled_wf as (
+    update public.workflow_instances
+    set status = 'cancelled',
+        cancelled_at = now(),
+        cancelled_reason = p_reason,
+        cancelled_by = p_actor_user_id
+    where ticket_id = p_ticket_id
+      and tenant_id = p_tenant_id
+      and status in ('active', 'waiting')
+    returning id
+  )
+  select coalesce(array_agg(id), '{}'::uuid[]) into v_cancelled_wf_ids from cancelled_wf;
 
   -- 4b. Close non-terminal child tickets.
   with closed as (
@@ -155,7 +158,7 @@ begin
       'from_request_type_id', v_current_type_id,
       'to_request_type_id', p_new_request_type_id,
       'reason', p_reason,
-      'cancelled_workflow_instance_id', v_cancelled_wf_id,
+      'cancelled_workflow_instance_ids', to_jsonb(v_cancelled_wf_ids),
       'closed_child_ticket_ids', to_jsonb(v_closed_children),
       'stopped_sla_timer_ids', to_jsonb(v_stopped_timers),
       'previous_assignment', jsonb_build_object('user_id', v_current_user_id),
@@ -169,13 +172,12 @@ begin
     p_actor_user_id
   );
 
-  if v_cancelled_wf_id is not null then
+  if array_length(v_cancelled_wf_ids, 1) > 0 then
     insert into public.domain_events (tenant_id, event_type, entity_type, entity_id, payload, actor_user_id)
-    values (
-      p_tenant_id, 'workflow_cancelled', 'ticket', p_ticket_id,
-      jsonb_build_object('workflow_instance_id', v_cancelled_wf_id, 'reason', p_reason),
-      p_actor_user_id
-    );
+    select p_tenant_id, 'workflow_cancelled', 'ticket', p_ticket_id,
+           jsonb_build_object('workflow_instance_id', wf_id, 'reason', p_reason),
+           p_actor_user_id
+    from unnest(v_cancelled_wf_ids) as wf_id;
   end if;
 
   -- 4i. One ticket_closed event per closed child, flagged as reclassify-driven.
@@ -191,7 +193,7 @@ begin
     'ticket_id', p_ticket_id,
     'from_request_type_id', v_current_type_id,
     'to_request_type_id', p_new_request_type_id,
-    'cancelled_workflow_instance_id', v_cancelled_wf_id,
+    'cancelled_workflow_instance_ids', to_jsonb(v_cancelled_wf_ids),
     'closed_child_ticket_ids', to_jsonb(v_closed_children),
     'stopped_sla_timer_ids', to_jsonb(v_stopped_timers),
     'previous_assignee_user_id', v_current_user_id,

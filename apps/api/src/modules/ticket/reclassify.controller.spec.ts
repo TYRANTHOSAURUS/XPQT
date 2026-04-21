@@ -10,11 +10,19 @@ describe('ReclassifyController', () => {
     return { controller, service };
   }
 
-  it('preview() delegates to computeImpact', async () => {
+  it('preview() delegates to computeImpact with auth uid', async () => {
     const { controller, service } = setup();
-    const result = await controller.preview('tk1', { newRequestTypeId: 'rt-new' });
-    expect(service.computeImpact).toHaveBeenCalledWith('tk1', 'rt-new');
+    const req = { user: { id: 'auth-1' } } as never;
+    const result = await controller.preview(req, 'tk1', { newRequestTypeId: 'rt-new' });
+    expect(service.computeImpact).toHaveBeenCalledWith('tk1', 'rt-new', 'auth-1');
     expect(result).toEqual({ ticket: { id: 'tk1' } });
+  });
+
+  it('preview() throws 401 when no auth user', async () => {
+    const { controller } = setup();
+    const req = {} as never;
+    await expect(controller.preview(req, 'tk1', { newRequestTypeId: 'rt-new' }))
+      .rejects.toThrow(/no auth user/i);
   });
 
   it('execute() extracts auth uid from request and delegates to execute', async () => {

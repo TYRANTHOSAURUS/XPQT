@@ -78,6 +78,7 @@ export function useReclassifyPreview(
   useEffect(() => {
     if (!ticketId || !newRequestTypeId) {
       setData(null);
+      setError(null);
       return;
     }
     let cancelled = false;
