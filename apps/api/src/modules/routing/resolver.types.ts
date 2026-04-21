@@ -41,6 +41,10 @@ export interface ResolverContext {
 export interface LoadedRequestType {
   id: string;
   domain: string | null;
+  /** Routing-v2 domain registry FK. Populated by migration 00041 for all
+   * existing free-text domains. Null only if the request_type has no domain
+   * set at all, or the registry is missing a seed for that tenant. */
+  domain_id: string | null;
   fulfillment_strategy: FulfillmentShape;
   default_team_id: string | null;
   default_vendor_id: string | null;

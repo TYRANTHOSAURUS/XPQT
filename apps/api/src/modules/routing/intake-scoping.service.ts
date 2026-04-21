@@ -17,11 +17,11 @@ import { DomainRegistryService } from './domain-registry.service';
  * is live admins configure this per request type; until then the heuristic
  * matches what legacy tickets actually carry.
  *
- * Domain bridging: request_types.domain is still free text today. We look the
- * text up in `public.domains` via the registry and fall back to `null` if the
- * tenant hasn't backfilled yet (Artifact D step 5). A null `domain_id` is a
- * legitimate state during dual-run — the downstream engines can still match on
- * operational_scope alone.
+ * Domain resolution prefers `request_types.domain_id` (the registry FK,
+ * backfilled by migration 00041). Falls back to free-text domain → registry
+ * key lookup for rows not yet backfilled. Either path returns the same
+ * canonical `domain_id`; null is a legitimate dual-run state and downstream
+ * engines handle it.
  */
 
 const MAX_SPACE_WALK = 12;
@@ -64,7 +64,11 @@ export class IntakeScopingService {
 
   private async resolveDomainId(intake: IntakeContext): Promise<string | null> {
     const rt = await this.resolverRepo.loadRequestType(intake.request_type_id);
-    if (!rt?.domain) return null;
+    if (!rt) return null;
+    // Prefer the FK (fast, accurate, no string comparison).
+    if (rt.domain_id) return rt.domain_id;
+    // Fall back to text lookup for rows that haven't been backfilled yet.
+    if (!rt.domain) return null;
     const row = await this.domainRegistry.findByKey(intake.tenant_id, rt.domain);
     return row?.id ?? null;
   }

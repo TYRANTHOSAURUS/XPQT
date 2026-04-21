@@ -14,7 +14,7 @@ export class ResolverRepository {
   async loadRequestType(id: string): Promise<LoadedRequestType | null> {
     const { data } = await this.supabase.admin
       .from('request_types')
-      .select('id, domain, fulfillment_strategy, default_team_id, default_vendor_id, asset_type_filter')
+      .select('id, domain, domain_id, fulfillment_strategy, default_team_id, default_vendor_id, asset_type_filter')
       .eq('id', id)
       .maybeSingle();
     return (data as LoadedRequestType | null) ?? null;
