@@ -13,7 +13,8 @@ export const personKeys = {
   all: ['persons'] as const,
   lists: () => [...personKeys.all, 'list'] as const,
   list: (search: string | null) => [...personKeys.lists(), { search }] as const,
-  detail: (id: string) => [...personKeys.all, 'detail', id] as const,
+  details: () => [...personKeys.all, 'detail'] as const,
+  detail: (id: string) => [...personKeys.details(), id] as const,
 } as const;
 
 /**

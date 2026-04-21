@@ -362,17 +362,27 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   };
 
   // Debounce the mention query so fast typing doesn't fire a request per keystroke.
+  // mentionPending tracks the in-flight debounce window so the dropdown shows
+  // the spinner *immediately* on keystroke — otherwise stale results from the
+  // previous query would remain visible for the full 180ms window.
   const [debouncedMentionQuery, setDebouncedMentionQuery] = useState('');
+  const [mentionPending, setMentionPending] = useState(false);
   useEffect(() => {
     const q = mentionMatch?.query ?? '';
-    const t = setTimeout(() => setDebouncedMentionQuery(q), 180);
+    if (q !== debouncedMentionQuery) setMentionPending(true);
+    const t = setTimeout(() => {
+      setDebouncedMentionQuery(q);
+      setMentionPending(false);
+    }, 180);
     return () => clearTimeout(t);
+    // debouncedMentionQuery intentionally omitted — we only fire on query change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mentionMatch?.query]);
 
   const { data: remoteMentionResults, isFetching: mentionRemoteFetching } = usePersonsSearch(debouncedMentionQuery);
   const mentionLoading = mentionMatch !== null
     && mentionMatch.query.trim().length >= 2
-    && mentionRemoteFetching;
+    && (mentionPending || mentionRemoteFetching);
 
   // Derive the displayed mention list: server results (when available) → local filter fallback.
   const mentionResults: MentionPerson[] = mentionMatch === null

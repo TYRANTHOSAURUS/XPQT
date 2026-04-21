@@ -12,9 +12,30 @@ interface UpdateMutationContext {
   previous: TicketDetail | undefined;
 }
 
+/** Fields whose server-side handler appends a row to the activity feed. */
+const ACTIVITY_GENERATING_FIELDS = new Set<keyof UpdateTicketPayload>([
+  'status',
+  'status_category',
+  'waiting_reason',
+  'assigned_team_id',
+  'assigned_user_id',
+  'assigned_vendor_id',
+  'sla_id',
+]);
+
+function touchesActivityFeed(updates: UpdateTicketPayload): boolean {
+  return Object.keys(updates).some(
+    (k) => ACTIVITY_GENERATING_FIELDS.has(k as keyof UpdateTicketPayload),
+  );
+}
+
 /**
  * PATCH /tickets/:id with optimistic update + rollback.
- * Settlement invalidates detail and lists so list badges/rows stay consistent.
+ *
+ * Activity feed is only invalidated when the backend actually appends to it
+ * (status / assignment / SLA / waiting-reason edits). Title/priority/tag/cost
+ * edits don't generate activity rows — refetching the feed would be wasted
+ * bandwidth (§6 "invalidate as high as correct, no higher").
  */
 export function useUpdateTicket(id: string) {
   const qc = useQueryClient();
@@ -39,12 +60,16 @@ export function useUpdateTicket(id: string) {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
     },
 
-    onSettled: () =>
-      Promise.all([
+    onSettled: (_data, _err, variables) => {
+      const tasks: Promise<unknown>[] = [
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
+      ];
+      if (variables && touchesActivityFeed(variables)) {
+        tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
+      }
+      return Promise.all(tasks);
+    },
   });
 }
 

@@ -27,8 +27,10 @@ export function requestTypeDetailOptions(id: string | null | undefined) {
     queryKey: requestTypeKeys.detail(id ?? ''),
     queryFn: ({ signal }) => apiFetch<RequestTypeDetail>(`/request-types/${id}`, { signal }),
     enabled: Boolean(id),
-    staleTime: Infinity, // T4 — admin-edited; mutations must invalidate.
-    gcTime: Infinity,
+    // T3 until apps/web/src/components/admin/request-type-dialog.tsx migrates to
+    // RQ mutations that invalidate requestTypeKeys on save. Once that's done,
+    // raise to Infinity per §7.2 T4.
+    staleTime: 5 * 60_000,
   });
 }
 

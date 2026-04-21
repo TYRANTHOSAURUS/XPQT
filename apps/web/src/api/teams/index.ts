@@ -10,7 +10,8 @@ export const teamKeys = {
   all: ['teams'] as const,
   lists: () => [...teamKeys.all, 'list'] as const,
   list: () => [...teamKeys.lists(), {}] as const,
-  detail: (id: string) => [...teamKeys.all, 'detail', id] as const,
+  details: () => [...teamKeys.all, 'detail'] as const,
+  detail: (id: string) => [...teamKeys.details(), id] as const,
 } as const;
 
 export function teamsListOptions() {

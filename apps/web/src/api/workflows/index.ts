@@ -11,8 +11,10 @@ export interface WorkflowInstance {
 export const workflowKeys = {
   all: ['workflows'] as const,
   instances: () => [...workflowKeys.all, 'instances'] as const,
-  instancesByTicket: (ticketId: string) => [...workflowKeys.instances(), 'by-ticket', ticketId] as const,
-  definition: (id: string) => [...workflowKeys.all, 'definition', id] as const,
+  instancesByTicket: (ticketId: string) =>
+    [...workflowKeys.instances(), 'by-ticket', ticketId] as const,
+  definitions: () => [...workflowKeys.all, 'definition'] as const,
+  definition: (id: string) => [...workflowKeys.definitions(), id] as const,
 } as const;
 
 /** Live workflow instances for a ticket. T1 — advances as steps complete. */

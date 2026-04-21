@@ -10,15 +10,18 @@ export const slaPolicyKeys = {
   all: ['sla-policies'] as const,
   lists: () => [...slaPolicyKeys.all, 'list'] as const,
   list: () => [...slaPolicyKeys.lists(), {}] as const,
-  detail: (id: string) => [...slaPolicyKeys.all, 'detail', id] as const,
+  details: () => [...slaPolicyKeys.all, 'detail'] as const,
+  detail: (id: string) => [...slaPolicyKeys.details(), id] as const,
 } as const;
 
 export function slaPoliciesListOptions() {
   return queryOptions({
     queryKey: slaPolicyKeys.list(),
     queryFn: ({ signal }) => apiFetch<SlaPolicy[]>('/sla-policies', { signal }),
-    staleTime: Infinity, // T4 — admin-edited; mutations must invalidate.
-    gcTime: Infinity,
+    // T3 until the admin SLA-policies page (apps/web/src/pages/admin/sla-policies.tsx)
+    // migrates to RQ and invalidates slaPolicyKeys.lists() on create/update/delete.
+    // Once that's done, raise to Infinity per §7.2 T4.
+    staleTime: 5 * 60_000,
   });
 }
 

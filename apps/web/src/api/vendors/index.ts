@@ -11,7 +11,8 @@ export const vendorKeys = {
   all: ['vendors'] as const,
   lists: () => [...vendorKeys.all, 'list'] as const,
   list: () => [...vendorKeys.lists(), {}] as const,
-  detail: (id: string) => [...vendorKeys.all, 'detail', id] as const,
+  details: () => [...vendorKeys.all, 'detail'] as const,
+  detail: (id: string) => [...vendorKeys.details(), id] as const,
 } as const;
 
 export function vendorsListOptions() {
