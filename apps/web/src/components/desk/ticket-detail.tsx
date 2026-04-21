@@ -1093,28 +1093,29 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
 
           {/* Request type */}
           {displayedTicket!.request_type && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1.5">Type</div>
+            <InlineProperty label="Type">
               {displayedTicket!.ticket_kind === 'case'
                 && displayedTicket!.status_category !== 'closed'
                 && displayedTicket!.status_category !== 'resolved' ? (
                 <button
                   type="button"
-                  onClick={() => setReclassifyOpen(true)}
-                  title="Change request type"
-                  className="text-sm text-left w-full rounded -mx-1.5 px-1.5 py-1 hover:bg-muted transition-colors cursor-pointer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setReclassifyOpen(true);
+                  }}
+                  title="Click to change request type"
+                  className="group flex h-8 w-full items-center justify-between rounded-md border border-input bg-background px-2.5 text-sm hover:bg-accent hover:border-accent-foreground/20 transition-colors cursor-pointer"
                 >
-                  <span className="inline-flex items-center gap-1.5">
-                    {displayedTicket!.request_type.name}
-                    <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-                      change
-                    </span>
+                  <span className="truncate">{displayedTicket!.request_type.name}</span>
+                  <span className="text-xs text-muted-foreground opacity-60 group-hover:opacity-100 ml-2 shrink-0">
+                    change →
                   </span>
                 </button>
               ) : (
-                <div className="text-sm">{displayedTicket!.request_type.name}</div>
+                <div className="text-sm py-1">{displayedTicket!.request_type.name}</div>
               )}
-            </div>
+            </InlineProperty>
           )}
 
           {displayedTicket!.interaction_mode === 'external' && (
