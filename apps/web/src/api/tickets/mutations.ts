@@ -100,22 +100,51 @@ export function useReassignTicket(id: string) {
   });
 }
 
-/** POST a comment/activity to a ticket. Invalidates the activity feed. */
+/**
+ * POST a comment/note to a ticket. Uploads attachments first (if any), then
+ * creates the activity row referencing them. One mutation from the caller's
+ * POV — both steps run under `isPending`.
+ */
 export interface AddActivityVariables {
   content: string;
   visibility: 'internal' | 'external';
-  attachments?: FormData;
+  files: File[];
+}
+
+export interface AttachmentMeta {
+  name: string;
+  url?: string;
+  path?: string;
+  size: number;
+  type: string;
 }
 
 export function useAddActivity(id: string) {
   const qc = useQueryClient();
 
-  return useMutation<unknown, Error, FormData>({
-    mutationFn: (formData) =>
-      apiFetch(`/tickets/${id}/activities`, {
+  return useMutation<unknown, Error, AddActivityVariables>({
+    mutationFn: async ({ content, visibility, files }) => {
+      let attachments: AttachmentMeta[] = [];
+
+      if (files.length > 0) {
+        const formData = new FormData();
+        files.forEach((file) => formData.append('files', file));
+        attachments = await apiFetch<AttachmentMeta[]>(
+          `/tickets/${id}/attachments`,
+          { method: 'POST', body: formData },
+        );
+      }
+
+      return apiFetch(`/tickets/${id}/activities`, {
         method: 'POST',
-        body: formData,
-      }),
+        body: JSON.stringify({
+          activity_type: visibility === 'internal' ? 'internal_note' : 'external_comment',
+          visibility,
+          content: content.trim() || undefined,
+          attachments,
+        }),
+      });
+    },
     onSettled: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
