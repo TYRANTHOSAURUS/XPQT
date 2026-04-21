@@ -12,11 +12,12 @@ import { RoutingStudioOverview } from '@/components/admin/routing-studio/overvie
 import { ResolverPipelineStrip } from '@/components/admin/routing-studio/resolver-pipeline-strip';
 import { CaseOwnershipEditor } from '@/components/admin/routing-studio/case-ownership-editor';
 import { ChildDispatchEditor } from '@/components/admin/routing-studio/child-dispatch-editor';
+import { VisibilityTab } from '@/components/admin/routing-studio/visibility-tab';
 
-type TabId = 'overview' | 'simulator' | 'case-ownership' | 'child-dispatch' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks';
+type TabId = 'overview' | 'simulator' | 'case-ownership' | 'child-dispatch' | 'visibility' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks';
 
 const VALID_TABS: readonly TabId[] = [
-  'overview', 'simulator', 'case-ownership', 'child-dispatch', 'rules', 'audit', 'coverage', 'mappings', 'groups', 'fallbacks',
+  'overview', 'simulator', 'case-ownership', 'child-dispatch', 'visibility', 'rules', 'audit', 'coverage', 'mappings', 'groups', 'fallbacks',
 ] as const;
 
 function coerceTab(value: string | null): TabId {
@@ -59,6 +60,7 @@ export function RoutingStudioPage() {
           <TabsTrigger value="simulator">Simulator</TabsTrigger>
           <TabsTrigger value="case-ownership">Case Ownership</TabsTrigger>
           <TabsTrigger value="child-dispatch">Child Dispatch</TabsTrigger>
+          <TabsTrigger value="visibility">Visibility</TabsTrigger>
           <TabsTrigger value="rules">Advanced Overrides</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
           <TabsTrigger value="mappings">Mappings</TabsTrigger>
@@ -81,6 +83,10 @@ export function RoutingStudioPage() {
 
         <TabsContent value="child-dispatch">
           <ChildDispatchEditor />
+        </TabsContent>
+
+        <TabsContent value="visibility">
+          <VisibilityTab />
         </TabsContent>
 
         <TabsContent value="rules">
