@@ -3,24 +3,10 @@ import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
-} from '@/components/ui/dialog';
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from '@/components/ui/field';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
 import {
   Tooltip,
   TooltipContent,
@@ -28,20 +14,8 @@ import {
 } from '@/components/ui/tooltip';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-import { Plus, Copy, RotateCw, Trash2, Power, PowerOff } from 'lucide-react';
-
-interface Webhook {
-  id: string;
-  name: string;
-  workflow_id: string;
-  token: string;
-  active: boolean;
-  ticket_defaults: Record<string, unknown>;
-  field_mapping: Record<string, string>;
-  last_received_at: string | null;
-  last_error: string | null;
-  created_at: string;
-}
+import { WebhookDialog, type WebhookRow } from '@/components/admin/webhook-dialog';
+import { Plus, Copy, RotateCw, Trash2, Power, PowerOff, Pencil } from 'lucide-react';
 
 interface WorkflowSummary {
   id: string;
@@ -57,54 +31,28 @@ function formatDate(iso: string | null) {
 }
 
 export function WebhooksPage() {
-  const { data, loading, refetch } = useApi<Webhook[]>('/workflow-webhooks', []);
+  const { data, loading, refetch } = useApi<WebhookRow[]>('/workflow-webhooks', []);
   const { data: workflows } = useApi<WorkflowSummary[]>('/workflows', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState<{
-    name: string;
-    workflow_id: string;
-    ticket_defaults: string;
-    field_mapping: string;
-  }>({ name: '', workflow_id: '', ticket_defaults: '{}', field_mapping: '{\n  "title": "$.title"\n}' });
+  const [editing, setEditing] = useState<WebhookRow | null>(null);
 
-  const reset = () => setForm({ name: '', workflow_id: '', ticket_defaults: '{}', field_mapping: '{\n  "title": "$.title"\n}' });
+  const openCreate = () => {
+    setEditing(null);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (wh: WebhookRow) => {
+    setEditing(wh);
+    setDialogOpen(true);
+  };
 
   const copyUrl = (token: string) => {
     navigator.clipboard.writeText(`${WEBHOOK_URL_BASE}/${token}`);
     toast.success('URL copied');
   };
 
-  const handleCreate = async () => {
-    let ticketDefaults: Record<string, unknown> = {};
-    let fieldMapping: Record<string, string> = {};
-    try {
-      ticketDefaults = form.ticket_defaults.trim() ? JSON.parse(form.ticket_defaults) : {};
-      fieldMapping = form.field_mapping.trim() ? JSON.parse(form.field_mapping) : {};
-    } catch (e) {
-      toast.error(`Invalid JSON: ${e instanceof Error ? e.message : ''}`);
-      return;
-    }
-    try {
-      await apiFetch('/workflow-webhooks', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: form.name,
-          workflow_id: form.workflow_id,
-          ticket_defaults: ticketDefaults,
-          field_mapping: fieldMapping,
-        }),
-      });
-      toast.success('Webhook created');
-      setDialogOpen(false);
-      reset();
-      refetch();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Create failed');
-    }
-  };
-
-  const toggleActive = async (wh: Webhook) => {
+  const toggleActive = async (wh: WebhookRow) => {
     try {
       await apiFetch(`/workflow-webhooks/${wh.id}`, {
         method: 'PATCH',
@@ -149,72 +97,17 @@ export function WebhooksPage() {
           <h1 className="text-2xl font-bold tracking-tight">Webhooks</h1>
           <p className="text-muted-foreground mt-1">Public endpoints that trigger a workflow when an external system POSTs here.</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) reset(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={() => { reset(); setDialogOpen(true); }} />}>
-            <Plus className="h-4 w-4" /> New Webhook
-          </DialogTrigger>
-          <DialogContent className="max-w-[560px]">
-            <DialogHeader>
-              <DialogTitle>Create Webhook</DialogTitle>
-            </DialogHeader>
-            <FieldGroup className="mt-2">
-              <Field>
-                <FieldLabel htmlFor="webhook-name">Name</FieldLabel>
-                <Input
-                  id="webhook-name"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="e.g. Zendesk issue → incident"
-                />
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="webhook-workflow">Workflow</FieldLabel>
-                <Select value={form.workflow_id} onValueChange={(v) => setForm({ ...form, workflow_id: v ?? '' })}>
-                  <SelectTrigger id="webhook-workflow"><SelectValue placeholder="Select a workflow" /></SelectTrigger>
-                  <SelectContent>
-                    {(workflows ?? []).map((wf) => (
-                      <SelectItem key={wf.id} value={wf.id}>{wf.name} ({wf.status})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="webhook-defaults">Ticket defaults (JSON)</FieldLabel>
-                <Textarea
-                  id="webhook-defaults"
-                  value={form.ticket_defaults}
-                  onChange={(e) => setForm({ ...form, ticket_defaults: e.target.value })}
-                  rows={4}
-                  className="font-mono text-xs"
-                  placeholder='{ "priority": "medium", "interaction_mode": "internal" }'
-                />
-                <FieldDescription>Fixed values applied to every ticket created from this webhook.</FieldDescription>
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="webhook-mapping">Field mapping (JSON — ticket field → JSONPath in payload)</FieldLabel>
-                <Textarea
-                  id="webhook-mapping"
-                  value={form.field_mapping}
-                  onChange={(e) => setForm({ ...form, field_mapping: e.target.value })}
-                  rows={6}
-                  className="font-mono text-xs"
-                  placeholder='{\n  "title": "$.issue.title",\n  "description": "$.issue.body"\n}'
-                />
-                <FieldDescription>
-                  Supports <code>$.foo.bar</code> and <code>$.items[0].name</code>.
-                </FieldDescription>
-              </Field>
-            </FieldGroup>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleCreate} disabled={!form.name.trim() || !form.workflow_id}>Create</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <Button className="gap-2" onClick={openCreate}>
+          <Plus className="h-4 w-4" /> New Webhook
+        </Button>
       </div>
+
+      <WebhookDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        editing={editing}
+        onSaved={refetch}
+      />
 
       <Table>
         <TableHeader>
@@ -224,7 +117,7 @@ export function WebhooksPage() {
             <TableHead className="w-[100px]">Status</TableHead>
             <TableHead>URL</TableHead>
             <TableHead className="w-[180px]">Last received</TableHead>
-            <TableHead className="w-[180px]" />
+            <TableHead className="w-[200px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -232,7 +125,14 @@ export function WebhooksPage() {
           {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No webhooks yet." />}
           {(data ?? []).map((wh) => (
             <TableRow key={wh.id}>
-              <TableCell className="font-medium">{wh.name}</TableCell>
+              <TableCell className="font-medium">
+                <button
+                  className="text-left hover:underline underline-offset-2"
+                  onClick={() => openEdit(wh)}
+                >
+                  {wh.name}
+                </button>
+              </TableCell>
               <TableCell className="text-sm text-muted-foreground">{workflowNameById(wh.workflow_id)}</TableCell>
               <TableCell>
                 <Badge variant={wh.active ? 'default' : 'secondary'}>{wh.active ? 'active' : 'disabled'}</Badge>
@@ -247,6 +147,21 @@ export function WebhooksPage() {
               <TableCell className="text-muted-foreground text-sm">{formatDate(wh.last_received_at)}</TableCell>
               <TableCell>
                 <div className="flex items-center gap-1">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => openEdit(wh)}
+                        />
+                      }
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </TooltipTrigger>
+                    <TooltipContent>Edit</TooltipContent>
+                  </Tooltip>
                   <Tooltip>
                     <TooltipTrigger
                       render={
