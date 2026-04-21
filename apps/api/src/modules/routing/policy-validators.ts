@@ -12,6 +12,14 @@
 // via generic constraints below that the inferred zod output is compatible.
 
 import { z } from 'zod';
+
+// Matches PostgreSQL's uuid type (8-4-4-4-12 hex, any version). Zod v4's
+// `z.uuid()` is strict RFC 4122 — rejects version-nibble 0 and above 5 —
+// but the existing seed data in this codebase uses placeholder UUIDs like
+// '30000000-0000-0000-0000-000000000005' that Postgres accepts. The DB
+// is the authority on what's a valid identifier, not RFC 4122.
+const uuidString = () =>
+  z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid uuid');
 import type {
   CaseOwnerPolicyDefinition,
   ChildDispatchPolicyDefinition,
@@ -20,12 +28,12 @@ import type {
 
 const TeamTarget = z.object({
   kind: z.literal('team'),
-  team_id: z.uuid(),
+  team_id: uuidString(),
 });
 
 const TeamOrVendorTarget = z.object({
   kind: z.enum(['team', 'vendor']),
-  id: z.uuid(),
+  id: uuidString(),
 });
 
 const ScopeSource = z.enum([
@@ -41,14 +49,14 @@ const ScopeSource = z.enum([
 
 export const CaseOwnerPolicyDefinitionSchema = z.object({
   schema_version: z.literal(1),
-  request_type_id: z.uuid(),
+  request_type_id: uuidString(),
   scope_source: ScopeSource,
   rows: z.array(
     z.object({
-      id: z.uuid(),
+      id: uuidString(),
       match: z.object({
-        operational_scope_ids: z.array(z.uuid()).optional(),
-        domain_ids: z.array(z.uuid()).optional(),
+        operational_scope_ids: z.array(uuidString()).optional(),
+        domain_ids: z.array(uuidString()).optional(),
         support_window_id: z.string().nullable().optional(),
       }),
       target: TeamTarget,
@@ -62,7 +70,7 @@ export const CaseOwnerPolicyDefinitionSchema = z.object({
 
 export const ChildDispatchPolicyDefinitionSchema = z.object({
   schema_version: z.literal(1),
-  request_type_id: z.uuid(),
+  request_type_id: uuidString(),
   dispatch_mode: z.enum(['none', 'optional', 'always', 'multi_template']),
   split_strategy: z.enum(['single', 'per_location', 'per_asset', 'per_vendor_service']),
   execution_routing: z.enum([
@@ -98,10 +106,10 @@ export const SpaceLevelsDefinitionSchema = z.object({
 
 export const DomainRegistryDefinitionSchema = z.object({
   schema_version: z.literal(1),
-  default_domain_id: z.uuid().nullable(),
+  default_domain_id: uuidString().nullable(),
   // Canonical display order for the Routing Map columns. All ids must exist
   // in public.domains; PolicyStoreService enforces this at write time.
-  column_order: z.array(z.uuid()),
+  column_order: z.array(uuidString()),
 });
 
 // ─── Dispatch map ────────────────────────────────────────────────────────────
