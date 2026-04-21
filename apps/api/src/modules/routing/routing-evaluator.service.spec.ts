@@ -81,12 +81,22 @@ function stubCaseOwnerEngine(target: { kind: 'team'; team_id: string } = { kind:
   return { evaluate: jest.fn().mockReturnValue(decision) };
 }
 
+function stubSplitOrchestration(plans: any[] = []): any {
+  return { plan: jest.fn().mockReturnValue(plans) };
+}
+
+function stubChildExecutionResolver(output: any): any {
+  return { resolve: jest.fn().mockResolvedValue(output) };
+}
+
 function buildEvaluator(overrides: {
   resolver?: any;
   supabase?: any;
   intakeScoping?: any;
   policyStore?: any;
   caseOwnerEngine?: any;
+  splitOrchestration?: any;
+  childExecutionResolver?: any;
 }) {
   return new RoutingEvaluatorService(
     overrides.resolver ?? stubResolver(),
@@ -94,6 +104,9 @@ function buildEvaluator(overrides: {
     overrides.intakeScoping ?? stubIntakeScoping(),
     overrides.policyStore ?? stubPolicyStore(null),
     overrides.caseOwnerEngine ?? stubCaseOwnerEngine(),
+    overrides.splitOrchestration ?? stubSplitOrchestration(),
+    overrides.childExecutionResolver ??
+      stubChildExecutionResolver({ target: null, chosen_by: 'unassigned', trace: [], evaluated_at: '' }),
   );
 }
 
@@ -215,15 +228,90 @@ describe('RoutingEvaluatorService', () => {
     expect(result.chosen_by).toBe('unassigned');
   });
 
-  it('child_dispatch hook still throws (Workstream C not shipped)', async () => {
+  it('child_dispatch dualrun with no policy → unassigned v2, legacy served', async () => {
     const resolver = stubResolver();
-    const { service } = stubSupabase({ routing_v2_mode: 'dualrun' });
+    const { service, insert } = stubSupabase(
+      { routing_v2_mode: 'dualrun' },
+      { case_owner_policy_entity_id: null, child_dispatch_policy_entity_id: null } as any,
+    );
     const evaluator = buildEvaluator({ resolver, supabase: service });
 
-    // Dualrun serves legacy regardless of v2 error; confirm the v2 error path
-    // records the expected not-implemented message in the diff summary.
     const result = await evaluator.evaluateChildDispatch(CTX);
     expect(result.target).toEqual({ kind: 'team', team_id: TEAM_LEGACY });
+    const row = insert.mock.calls[0][0];
+    expect(row.hook).toBe('child_dispatch');
+    expect(row.v2_output.chosen_by).toBe('unassigned');
+  });
+
+  it('child_dispatch v2_only with policy + single plan → v2 target served', async () => {
+    const resolver = stubResolver();
+    const { service } = stubSupabase(
+      { routing_v2_mode: 'v2_only' },
+      { child_dispatch_policy_entity_id: POLICY_ENTITY_ID } as any,
+    );
+    const policyDef = {
+      schema_version: 1,
+      request_type_id: RT_ID,
+      dispatch_mode: 'always',
+      split_strategy: 'single',
+      execution_routing: 'fixed',
+      fixed_target: { kind: 'team', id: TEAM_V2 },
+    };
+    const policyStore = stubPolicyStore({
+      config_type: 'case_owner_policy' as any,
+      definition: policyDef as any,
+      version_id: 'v1',
+    });
+    const splitOrchestration = stubSplitOrchestration([
+      {
+        plan_id: 'p0',
+        derived_scope: { kind: 'location', location_id: 'loc' },
+        title_hint: 'x',
+        execution_context: {
+          tenant_id: 't', request_type_id: RT_ID, domain_id: null, priority: 'normal',
+          location_id: 'loc', asset_id: null, scope_source: 'selected',
+          operational_scope_id: 'loc', operational_scope_chain: ['loc'],
+          evaluated_at: '2026-04-21T00:00:00.000Z', active_support_window_id: null,
+        },
+        visibility_hints: { parent_owner_sees_children: true, vendor_children_visibility: 'vendor_and_parent_owner', cross_location_overlays: [] },
+      },
+    ]);
+    const childExecutionResolver = stubChildExecutionResolver({
+      target: { kind: 'team', team_id: TEAM_V2 },
+      chosen_by: 'policy_row',
+      trace: [{ step: 'policy_row', matched: true, reason: 'fixed', target: { kind: 'team', team_id: TEAM_V2 } }],
+      evaluated_at: '2026-04-21T00:00:00.000Z',
+    });
+
+    const evaluator = buildEvaluator({
+      resolver, supabase: service, policyStore, splitOrchestration, childExecutionResolver,
+    });
+
+    const result = await evaluator.evaluateChildDispatch(CTX);
+    expect(result.target).toEqual({ kind: 'team', team_id: TEAM_V2 });
+    expect(result.chosen_by).toBe('policy_row');
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('child_dispatch with dispatch_mode=none returns unassigned (zero plans)', async () => {
+    const resolver = stubResolver();
+    const { service } = stubSupabase(
+      { routing_v2_mode: 'v2_only' },
+      { child_dispatch_policy_entity_id: POLICY_ENTITY_ID } as any,
+    );
+    const policyStore = stubPolicyStore({
+      config_type: 'case_owner_policy' as any,
+      definition: {
+        schema_version: 1, request_type_id: RT_ID,
+        dispatch_mode: 'none', split_strategy: 'single', execution_routing: 'fixed',
+      } as any,
+      version_id: 'v1',
+    });
+    const evaluator = buildEvaluator({ resolver, supabase: service, policyStore });
+
+    const result = await evaluator.evaluateChildDispatch(CTX);
+    expect(result.target).toBeNull();
+    expect(result.chosen_by).toBe('unassigned');
   });
 
   it('caches the feature flag per tenant — 3 calls → 1 tenants read', async () => {

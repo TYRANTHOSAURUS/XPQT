@@ -618,3 +618,27 @@ Fail-soft rules during dual-run:
 - Engine throws: caught by `RoutingEvaluatorService.evaluate`, logged, recorded as `diff_summary.v2_error`.
 
 **v2_only mode does NOT throw on missing policy.** A tenant flipped to `v2_only` with no policy attached gets `unassigned` tickets, not 500s. This is intentional — the v2_only cutover criterion is "every active request type has a published policy", and if that's not true the operator needs data, not a broken intake.
+
+## 21. Routing v2 child-dispatch engine (Workstream C)
+
+The `child_dispatch` hook on `RoutingEvaluatorService` is also live. Both hooks now run full v2 paths. The child-dispatch flow is two engines, not one:
+
+- **`SplitOrchestrationService.plan(context, policy)` → `ChildPlan[]`** (Contract 3). Pure function. Decides **how many** children to create and **what scope** each one carries:
+  - `dispatch_mode='none'` → empty array
+  - `dispatch_mode ∈ {optional, always, multi_template}` → at least one plan
+  - `split_strategy='single'` → one plan, location-scoped off the context
+  - `split_strategy='per_asset'` → asset-scoped if `context.asset_id`, else location fallback
+  - `split_strategy='per_vendor_service'` → vendor-scoped if `policy.fixed_target.kind='vendor'`, else location fallback
+  - `split_strategy='per_location'` → one plan today; true multi-location splits need per-scope intake input (Workstream E's studio UI)
+  Plans carry a default `VisibilityHints`: parent owner sees all children, vendor children visible to parent owner too. Overrides come from policy-level config in a later workstream.
+
+- **`ChildExecutionResolverService.resolve(plan, policy)` → `ResolverOutput`** (Contract 4). Per-plan single-target resolution. Vendors are first-class here, unlike case ownership:
+  - `execution_routing='fixed'` → `fixed_target` wins; if unset, `fallback_target`; else `unassigned`
+  - `execution_routing='workflow'` → deliberate `unassigned` — workflow-created children resolve via `DispatchService`, not the routing resolver
+  - `execution_routing ∈ {by_location, by_asset_then_location}` → `ResolverRepository.locationTeam(location_id, domain_id)` first; miss falls through to `fallback_target` then `unassigned`
+  - `execution_routing='by_asset'` → same location walk but skips the location-first branch (asset-specific resolution is Workstream D)
+  Null `context.domain_id` (dual-run unbackfilled tenant) skips the location-team lookup with an explicit trace entry; it does NOT throw.
+
+Legacy compatibility:
+- The v1 callsite (`DispatchService`, `TicketService.runPostCreateAutomation`) expects one `ResolverDecision` back. `adaptChildDispatchToResolver` collapses the N-plan output: first plan's target wins; other plans' outputs are appended to `trace` as informational entries so the simulator and dualrun diff log can still see them.
+- The full `ChildPlan[]` and their per-plan `ResolverOutput`s are not yet persisted — they live in the evaluator's `v2_output` jsonb in `routing_dualrun_logs`. A dedicated `routing_dispatch_plans` audit table belongs to Workstream G/H.

@@ -1,15 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type {
   CaseOwnerPolicyDefinition,
+  ChildDispatchPolicyDefinition,
+  ChildPlan,
   IntakeContext,
   OwnerDecision,
+  ResolverOutput,
   RoutingV2Mode,
 } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { CaseOwnerEngineService } from './case-owner-engine.service';
+import { ChildExecutionResolverService } from './child-execution-resolver.service';
 import { IntakeScopingService } from './intake-scoping.service';
 import { PolicyStoreService } from './policy-store.service';
 import { ResolverService } from './resolver.service';
+import { SplitOrchestrationService } from './split-orchestration.service';
 import {
   AssignmentTarget,
   ChosenBy,
@@ -60,6 +65,8 @@ export class RoutingEvaluatorService {
     private readonly intakeScoping: IntakeScopingService,
     private readonly policyStore: PolicyStoreService,
     private readonly caseOwnerEngine: CaseOwnerEngineService,
+    private readonly splitOrchestration: SplitOrchestrationService,
+    private readonly childExecutionResolver: ChildExecutionResolverService,
   ) {}
 
   /**
@@ -119,11 +126,11 @@ export class RoutingEvaluatorService {
   }
 
   /**
-   * v2 engine dispatch. `case_owner` is wired in Workstream B; `child_dispatch`
-   * still throws until Workstream C lands.
+   * v2 engine dispatch. Both hooks are live as of Workstream C.
    */
   private async evaluateV2(hook: RoutingHook, context: ResolverContext): Promise<ResolverDecision> {
     if (hook === 'case_owner') return this.evaluateCaseOwnerV2(context);
+    if (hook === 'child_dispatch') return this.evaluateChildDispatchV2(context);
     throw new RoutingV2NotImplementedError(hook);
   }
 
@@ -175,20 +182,90 @@ export class RoutingEvaluatorService {
     tenant_id: string,
     request_type_id: string | null,
   ): Promise<string | null> {
+    return this.loadPolicyEntityId(tenant_id, request_type_id, 'case_owner_policy_entity_id');
+  }
+
+  private async loadChildDispatchPolicyEntityId(
+    tenant_id: string,
+    request_type_id: string | null,
+  ): Promise<string | null> {
+    return this.loadPolicyEntityId(tenant_id, request_type_id, 'child_dispatch_policy_entity_id');
+  }
+
+  private async loadPolicyEntityId(
+    tenant_id: string,
+    request_type_id: string | null,
+    column: 'case_owner_policy_entity_id' | 'child_dispatch_policy_entity_id',
+  ): Promise<string | null> {
     if (!request_type_id) return null;
     const { data, error } = await this.supabase.admin
       .from('request_types')
-      .select('case_owner_policy_entity_id')
+      .select(column)
       .eq('tenant_id', tenant_id)
       .eq('id', request_type_id)
       .maybeSingle();
     if (error) {
       this.logger.warn(
-        `Failed to load case_owner_policy_entity_id for request_type ${request_type_id}: ${error.message}`,
+        `Failed to load ${column} for request_type ${request_type_id}: ${error.message}`,
       );
       return null;
     }
-    return (data?.case_owner_policy_entity_id as string | null) ?? null;
+    return ((data as Record<string, unknown> | null)?.[column] as string | null) ?? null;
+  }
+
+  /**
+   * Workstream C: split → per-child execution resolution.
+   *
+   * The legacy callsite expects a single ResolverDecision, so we adapt the
+   * first plan's resolver output. The full ChildPlan[] (with every child's
+   * target + trace) is captured in the dualrun log for diff review — we
+   * attach it below via decorateChildDispatchOutput.
+   */
+  private async evaluateChildDispatchV2(context: ResolverContext): Promise<ResolverDecision> {
+    const policyEntityId = await this.loadChildDispatchPolicyEntityId(
+      context.tenant_id,
+      context.request_type_id,
+    );
+    if (!policyEntityId) {
+      return unassignedDecision('v2: request_type has no child_dispatch_policy_entity_id attached');
+    }
+
+    const published = await this.policyStore.getPublishedDefinition<'child_dispatch_policy'>(
+      context.tenant_id,
+      policyEntityId,
+    );
+    if (!published) {
+      return unassignedDecision(
+        `v2: child_dispatch_policy ${policyEntityId} has no published version`,
+      );
+    }
+
+    const policy = published.definition as ChildDispatchPolicyDefinition;
+    const intake: IntakeContext = {
+      tenant_id: context.tenant_id,
+      request_type_id: context.request_type_id ?? '',
+      requester_person_id: null,
+      selected_location_id: context.location_id,
+      asset_id: context.asset_id,
+      priority: normalizePriority(context.priority),
+      evaluated_at: new Date().toISOString(),
+    };
+    const normalized = await this.intakeScoping.normalize(intake);
+    const plans = this.splitOrchestration.plan(normalized, policy);
+
+    if (plans.length === 0) {
+      return unassignedDecision(
+        `v2: child_dispatch_policy.dispatch_mode=${policy.dispatch_mode} → zero plans`,
+      );
+    }
+
+    const resolutions: Array<{ plan: ChildPlan; output: ResolverOutput }> = [];
+    for (const plan of plans) {
+      const output = await this.childExecutionResolver.resolve(plan, policy);
+      resolutions.push({ plan, output });
+    }
+
+    return adaptChildDispatchToResolver(resolutions);
   }
 
   private async getMode(tenantId: string): Promise<RoutingV2Mode> {
@@ -277,6 +354,33 @@ function adaptOwnerDecisionToResolver(decision: OwnerDecision): ResolverDecision
     chosen_by,
     strategy: 'fixed',
     trace: decision.trace,
+  };
+}
+
+/**
+ * Collapse N child plans into one ResolverDecision for callers that only
+ * understand single-target outputs. First plan's target wins; the rest appear
+ * in trace as informational entries so the diff log and simulator still see
+ * them.
+ */
+function adaptChildDispatchToResolver(
+  resolutions: Array<{ plan: ChildPlan; output: ResolverOutput }>,
+): ResolverDecision {
+  const [first, ...rest] = resolutions;
+  const trace = [...first.output.trace];
+  for (const r of rest) {
+    trace.push({
+      step: 'policy_row',
+      matched: false,
+      reason: `additional plan ${r.plan.plan_id} → ${r.output.chosen_by} ${r.output.target ? `${r.output.target.kind}` : 'null'} (not served to legacy callsite)`,
+      target: r.output.target,
+    });
+  }
+  return {
+    target: (first.output.target as AssignmentTarget | null) ?? null,
+    chosen_by: first.output.chosen_by as ChosenBy,
+    strategy: 'fixed',
+    trace,
   };
 }
 

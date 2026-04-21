@@ -15,6 +15,8 @@ import { PolicyStoreService } from './policy-store.service';
 import { DomainRegistryService } from './domain-registry.service';
 import { IntakeScopingService } from './intake-scoping.service';
 import { CaseOwnerEngineService } from './case-owner-engine.service';
+import { SplitOrchestrationService } from './split-orchestration.service';
+import { ChildExecutionResolverService } from './child-execution-resolver.service';
 
 @Module({
   providers: [
@@ -29,6 +31,8 @@ import { CaseOwnerEngineService } from './case-owner-engine.service';
     DomainRegistryService,
     IntakeScopingService,
     CaseOwnerEngineService,
+    SplitOrchestrationService,
+    ChildExecutionResolverService,
   ],
   controllers: [
     RoutingRuleController,
@@ -44,6 +48,8 @@ import { CaseOwnerEngineService } from './case-owner-engine.service';
     DomainRegistryService,
     IntakeScopingService,
     CaseOwnerEngineService,
+    SplitOrchestrationService,
+    ChildExecutionResolverService,
   ],
 })
 export class RoutingModule {}
