@@ -48,7 +48,7 @@ export function ResolverPipelineStrip({ onTabClick }: Props) {
   }> = [
     {
       id: 'rules',
-      label: 'Rules',
+      label: 'Advanced Overrides',
       count: rulesCount,
       hint: 'Priority-ordered overrides. First active rule whose conditions all match wins — skips every later step.',
       destination: { kind: 'tab', tab: 'rules' },

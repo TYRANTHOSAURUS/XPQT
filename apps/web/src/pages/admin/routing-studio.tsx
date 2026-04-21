@@ -55,7 +55,7 @@ export function RoutingStudioPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="simulator">Simulator</TabsTrigger>
-          <TabsTrigger value="rules">Rules</TabsTrigger>
+          <TabsTrigger value="rules">Advanced Overrides</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
           <TabsTrigger value="mappings">Mappings</TabsTrigger>
           <TabsTrigger value="groups">Groups</TabsTrigger>
