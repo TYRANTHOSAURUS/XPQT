@@ -31,9 +31,18 @@ import {
   XIcon,
   TagIcon,
 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useApi } from '@/hooks/use-api';
-import { apiFetch } from '@/lib/api';
-import { useTicketMutation, UpdateTicketPayload } from '@/hooks/use-ticket-mutation';
+import { ApiError, apiFetch } from '@/lib/api';
+import { useAuth } from '@/providers/auth-provider';
+import {
+  ticketKeys,
+  useTicketDetail,
+  useTicketActivities,
+  useUpdateTicket,
+  useReassignTicket,
+  type UpdateTicketPayload,
+} from '@/api/tickets';
 import { InlineProperty } from '@/components/desk/inline-property';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TicketMetaRow } from '@/components/desk/ticket-meta-row';
@@ -73,40 +82,6 @@ function formatFormValue(field: FormField | undefined, value: unknown): string {
     try { return new Date(String(value)).toLocaleString(); } catch { return String(value); }
   }
   return String(value);
-}
-
-interface TicketData {
-  id: string;
-  ticket_kind: 'case' | 'work_order';
-  parent_ticket_id: string | null;
-  title: string;
-  description: string;
-  status: string;
-  status_category: string;
-  priority: string;
-  waiting_reason: string | null;
-  interaction_mode: string;
-  tags: string[];
-  sla_id: string | null;
-  sla_at_risk: boolean;
-  sla_response_due_at: string | null;
-  sla_resolution_due_at: string | null;
-  sla_response_breached_at: string | null;
-  sla_resolution_breached_at: string | null;
-  created_at: string;
-  requester?: { id: string; first_name: string; last_name: string; email: string; department: string };
-  location?: { id: string; name: string; type: string };
-  asset?: { id: string; name: string; serial_number: string };
-  assigned_team?: { id: string; name: string };
-  assigned_agent?: { id: string; email: string };
-  request_type?: { id: string; name: string; domain: string };
-  form_data?: Record<string, unknown> | null;
-  cost?: number | null;
-  watchers?: string[];
-  assigned_vendor?: { id: string; name: string } | null;
-  reclassified_at?: string | null;
-  reclassified_reason?: string | null;
-  reclassified_from_id?: string | null;
 }
 
 interface Activity {
@@ -242,8 +217,17 @@ function filterMentionPeople(people: MentionPerson[], query: string): MentionPer
 }
 
 export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: string; onClose?: () => void; onOpenTicket?: (id: string) => void }) {
-  const { data: ticket, loading: ticketLoading, error: ticketError, refetch: refetchTicket } = useApi<TicketData>(`/tickets/${ticketId}`, [ticketId]);
-  const { data: activities, refetch: refetchActivities } = useApi<Activity[]>(`/tickets/${ticketId}/activities`, [ticketId]);
+  const qc = useQueryClient();
+  const { person } = useAuth();
+  const {
+    data: ticket,
+    isPending: ticketPending,
+    isFetching: ticketFetching,
+    error: ticketError,
+  } = useTicketDetail(ticketId);
+  const { data: activities } = useTicketActivities(ticketId) as { data: Activity[] | undefined };
+  const refetchTicket = () => qc.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+  const refetchActivities = () => qc.invalidateQueries({ queryKey: ticketKeys.activities(ticketId) });
   const { data: teams } = useApi<Array<{ id: string; name: string }>>('/teams', []);
   const { data: people } = useApi<MentionPerson[]>('/persons', []);
   const { data: users } = useApi<UserOption[]>('/users', []);
@@ -267,16 +251,58 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const [workOrdersNonce, setWorkOrdersNonce] = useState(0);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
 
-  const [overlay, setOverlay] = useState<Partial<UpdateTicketPayload> | null>(null);
-  const { patch, updateAssignment } = useTicketMutation({
-    ticketId,
-    refetch: refetchTicket,
-    onOptimistic: setOverlay,
-  });
+  const updateTicket = useUpdateTicket(ticketId);
+  const reassignTicket = useReassignTicket(ticketId);
 
-  const displayedTicket = ticket && overlay
-    ? ({ ...ticket, ...overlay } as TicketData)
-    : ticket;
+  const patch = (updates: Partial<UpdateTicketPayload>) => {
+    updateTicket.mutate(updates as UpdateTicketPayload, {
+      onError: (err) => {
+        const field = Object.keys(updates)[0] ?? 'field';
+        toast.error(`Failed to update ${field}: ${err.message}`);
+      },
+    });
+  };
+
+  type AssignmentTarget = {
+    kind: 'team' | 'user' | 'vendor';
+    id: string | null;
+    nextLabel: string | null;
+    previousLabel: string | null;
+  };
+
+  const updateAssignment = (target: AssignmentTarget) => {
+    const field = target.kind === 'team'
+      ? 'assigned_team_id'
+      : target.kind === 'user'
+        ? 'assigned_user_id'
+        : 'assigned_vendor_id';
+
+    // First-time assignment — silent PATCH, no routing_decisions audit needed.
+    if (target.previousLabel === null) {
+      updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
+        onError: (err) => toast.error(`Failed to assign ${target.kind}: ${err.message}`),
+      });
+      return;
+    }
+
+    // Reassignment — POST /reassign so the server records a routing_decisions row.
+    const actorName = person ? `${person.first_name} ${person.last_name}`.trim() : 'an agent';
+    const reason = `Reassigned ${target.kind} from ${target.previousLabel} to ${target.nextLabel ?? 'unassigned'} by ${actorName} via ticket sidebar`;
+
+    reassignTicket.mutate(
+      {
+        kind: target.kind,
+        id: target.id,
+        nextLabel: target.nextLabel,
+        previousLabel: target.previousLabel,
+        reason,
+        actorPersonId: person?.id,
+      },
+      { onError: (err) => toast.error(`Failed to reassign ${target.kind}: ${err.message}`) },
+    );
+  };
+
+  const displayedTicket = ticket;
 
   const handleSubmitComment = async () => {
     const trimmedComment = commentText.trim();
@@ -422,25 +448,32 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const mentionOpen = Boolean(mentionMatch);
   const canSubmitComment = Boolean(commentText.trim() || attachmentFiles.length > 0) && !submittingComment;
 
-  if (ticketLoading || !ticket) {
-    if (ticketError) {
-      const isForbidden = /403|forbidden/i.test(ticketError);
-      return (
-        <div className="flex h-full items-center justify-center">
-          <div className="p-6 max-w-[480px] mx-auto text-center">
-            <h2 className="text-lg font-semibold mb-2">
-              {isForbidden ? 'You do not have access to this ticket' : 'Failed to load ticket'}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {isForbidden
-                ? "Your role does not include this ticket. Contact an admin if you believe this is a mistake."
-                : ticketError}
-            </p>
-          </div>
+  if (ticketError && !ticket) {
+    const isForbidden = ticketError instanceof ApiError && ticketError.status === 403;
+    const isNotFound = ticketError instanceof ApiError && ticketError.status === 404;
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="p-6 max-w-[480px] mx-auto text-center">
+          <h2 className="text-lg font-semibold mb-2">
+            {isForbidden
+              ? 'You do not have access to this ticket'
+              : isNotFound
+                ? 'Ticket not found'
+                : 'Failed to load ticket'}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {isForbidden
+              ? "Your role does not include this ticket. Contact an admin if you believe this is a mistake."
+              : isNotFound
+                ? "This ticket may have been deleted or never existed."
+                : ticketError.message}
+          </p>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
+  if (ticketPending || !ticket) {
     return (
       <div className="flex h-full items-center justify-center">
         <Spinner className="size-6 text-muted-foreground" />
@@ -451,7 +484,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   return (
     <div className="flex h-full">
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Background-refetch indicator — 2px bar, stays out of the way during optimistic saves */}
+        {ticketFetching && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary/40" />
+        )}
         {/* Top actions */}
         <div className="flex items-center gap-1 px-6 py-2 shrink-0">
           {onClose && (
