@@ -162,12 +162,8 @@ export interface VisibilityHints {
 // Policies live on config_entities + config_versions — no new policy table.
 // New config_type values: 'case_owner_policy' | 'child_dispatch_policy'
 //                       | 'domain_registry'   | 'space_levels'
-
-export type RoutingStudioConfigType =
-  | 'case_owner_policy'
-  | 'child_dispatch_policy'
-  | 'domain_registry'
-  | 'space_levels';
+// The canonical union type is `RoutingStudioConfigType` in ./validators/routing.ts —
+// it is derived from the schema dispatch map and cannot drift.
 
 // ─── Contract 7. Studio API (Simulator + Map) ────────────────────────────────
 
