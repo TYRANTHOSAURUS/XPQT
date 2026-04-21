@@ -233,7 +233,7 @@ Every fire produces four audit surfaces, any of which is sufficient to reconstru
 
 **New**
 
-- `supabase/migrations/00038_sla_threshold_crossings.sql` — table + indexes + partial index on `sla_timers` + one-time legacy-threshold cleanup.
+- `supabase/migrations/00043_sla_threshold_crossings.sql` — table + indexes + partial index on `sla_timers` + one-time legacy-threshold cleanup.
 - `apps/web/src/components/admin/sla-threshold-row.tsx` — inline horizontal row editor, reusable.
 
 **Modified**

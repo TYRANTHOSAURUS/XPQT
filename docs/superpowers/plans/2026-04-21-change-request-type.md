@@ -20,7 +20,7 @@
 - `apps/api/src/modules/ticket/dto/reclassify.dto.ts`
 - `apps/api/src/modules/ticket/reclassify.service.spec.ts`
 - `apps/api/src/modules/ticket/reclassify.controller.spec.ts`
-- `supabase/migrations/00039_reclassify_support.sql`
+- `supabase/migrations/00044_reclassify_support.sql`
 
 **Backend (modify):**
 - `apps/api/src/modules/ticket/ticket.module.ts` — register new service + controller
@@ -50,11 +50,11 @@
 ## Task 1 — Database migration
 
 **Files:**
-- Create: `supabase/migrations/00039_reclassify_support.sql`
+- Create: `supabase/migrations/00044_reclassify_support.sql`
 
 - [ ] **Step 1.1: Create the migration file**
 
-Write to `supabase/migrations/00039_reclassify_support.sql`:
+Write to `supabase/migrations/00044_reclassify_support.sql`:
 
 ```sql
 -- Reclassification support: columns + RPC for atomic request-type change.
@@ -278,12 +278,12 @@ grant execute on function public.reclassify_ticket(uuid, uuid, uuid, text, uuid,
 - [ ] **Step 1.3: Verify migration applies locally**
 
 Run: `cd /Users/x/Desktop/XPQT && pnpm db:reset`
-Expected: all migrations apply, no errors. Migration shows `00039_reclassify_support.sql` in the apply list.
+Expected: all migrations apply, no errors. Migration shows `00044_reclassify_support.sql` in the apply list.
 
 - [ ] **Step 1.4: Commit**
 
 ```bash
-git add supabase/migrations/00039_reclassify_support.sql
+git add supabase/migrations/00044_reclassify_support.sql
 git commit -m "feat(db): reclassify ticket migration + RPC"
 ```
 
@@ -1910,7 +1910,7 @@ Per the existing CLAUDE.md note, the DB password isn't in the repo — the user 
 PGPASSWORD="<password from session>" psql \
   "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
   -v ON_ERROR_STOP=1 \
-  -f supabase/migrations/00039_reclassify_support.sql
+  -f supabase/migrations/00044_reclassify_support.sql
 ```
 
 Follow with `NOTIFY pgrst, 'reload schema';` (already in the migration).

@@ -74,14 +74,14 @@ apps/web/src/components/desk/
                                      hoist existing overflow actions into it)
 
 supabase/migrations/
-└── 00039_reclassify_support.sql   NEW — schema changes (§5)
+└── 00044_reclassify_support.sql   NEW — schema changes (§5)
 ```
 
 `ReclassifyService` mirrors the existing `DispatchService` pattern — thin controller, fat service, DI'd dependents. Lives in the ticket module because reclassify is fundamentally a ticket-level operation that orchestrates workflow/SLA/routing; it does not belong in any of those subsidiary modules.
 
 ## 5. Data model
 
-Single migration file: `supabase/migrations/00039_reclassify_support.sql`.
+Single migration file: `supabase/migrations/00044_reclassify_support.sql`.
 
 ### 5.1 `tickets` table
 
@@ -398,7 +398,7 @@ At least one end-to-end test: seeded ticket with workflow + SLA policy + 2 child
 
 ## 12. Rollout
 
-- Single migration `supabase/migrations/00039_reclassify_support.sql`. Push to remote following the CLAUDE.md checklist — user confirms before `db:push` (or the psql fallback if push auth is still broken).
+- Single migration `supabase/migrations/00044_reclassify_support.sql`. Push to remote following the CLAUDE.md checklist — user confirms before `db:push` (or the psql fallback if push auth is still broken).
 - No feature flag. The work is additive — existing flows are unchanged if the new UI is never invoked.
 - Ship as a single PR. Split only if review feedback suggests the migration needs to land earlier for coordination.
 

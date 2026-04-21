@@ -515,7 +515,7 @@ An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/recl
 **Relevant files:**
 - `apps/api/src/modules/ticket/reclassify.service.ts` — orchestrator (`computeImpact` + `execute`)
 - `apps/api/src/modules/ticket/reclassify.controller.ts` — `/preview` and execute endpoints
-- `supabase/migrations/00039_reclassify_support.sql` — columns + `reclassify_ticket` RPC
+- `supabase/migrations/00044_reclassify_support.sql` — columns + `reclassify_ticket` RPC
 
 ---
 
