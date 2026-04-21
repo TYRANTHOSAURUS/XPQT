@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Circle,
   CircleAlert,
+  CircleHelp,
   Info,
   Users,
   Wrench,
@@ -52,6 +54,24 @@ interface PublishedResponse<T> {
   published: { definition: T; version_id: string } | null;
 }
 
+interface DualRunLogRow {
+  id: string;
+  hook: 'case_owner' | 'child_dispatch';
+  request_type_id: string | null;
+  target_match: boolean | null;
+  chosen_by_match: boolean | null;
+  diff_summary: Record<string, unknown>;
+}
+
+type ReadinessStatus = 'untested' | 'matches' | 'divergent' | 'error';
+
+interface Readiness {
+  status: ReadinessStatus;
+  matches: number;
+  mismatches: number;
+  errors: number;
+}
+
 interface Props {
   onOpenTab: (tab: string) => void;
   onOpenForRequestType: (tab: 'case-ownership' | 'child-dispatch', rtId: string) => void;
@@ -79,6 +99,35 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
   const [caseOwnerByRt, setCaseOwnerByRt] = useState<Map<string, CaseOwnerPolicy | null>>(new Map());
   const [childDispatchByRt, setChildDispatchByRt] = useState<Map<string, ChildDispatchPolicy | null>>(new Map());
   const [policyLoading, setPolicyLoading] = useState(true);
+  const [readinessByRt, setReadinessByRt] = useState<Map<string, Readiness>>(new Map());
+
+  // Fetch recent dualrun diffs and aggregate per request_type. Gives admins
+  // an at-a-glance "ready for v2_only?" signal per RT. 7 days is arbitrary
+  // but matches the plan's "< 0.1% diff rate over 7 days per tenant"
+  // cutover criterion.
+  useEffect(() => {
+    let cancelled = false;
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    apiFetch<{ rows: DualRunLogRow[] }>(
+      `/routing/studio/dualrun-logs?limit=500&since=${encodeURIComponent(since)}`,
+    )
+      .then((res) => {
+        if (cancelled) return;
+        const agg = new Map<string, Readiness>();
+        for (const row of res.rows ?? []) {
+          if (!row.request_type_id) continue;
+          const cur = agg.get(row.request_type_id) ?? { status: 'untested' as ReadinessStatus, matches: 0, mismatches: 0, errors: 0 };
+          if (typeof row.diff_summary?.v2_error === 'string') cur.errors++;
+          else if (row.target_match === true) cur.matches++;
+          else if (row.target_match === false) cur.mismatches++;
+          cur.status = cur.errors > 0 ? 'error' : cur.mismatches > 0 ? 'divergent' : cur.matches > 0 ? 'matches' : 'untested';
+          agg.set(row.request_type_id, cur);
+        }
+        setReadinessByRt(agg);
+      })
+      .catch(() => { /* readiness is best-effort — silent fail is OK */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!requestTypes || requestTypes.length === 0) {
@@ -178,6 +227,7 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
               requestTypes={rts}
               caseOwnerByRt={caseOwnerByRt}
               childDispatchByRt={childDispatchByRt}
+              readinessByRt={readinessByRt}
               teamsById={teamsById}
               vendorsById={vendorsById}
               policyLoading={policyLoading}
@@ -262,6 +312,7 @@ function DomainGroup({
   requestTypes,
   caseOwnerByRt,
   childDispatchByRt,
+  readinessByRt,
   teamsById,
   vendorsById,
   policyLoading,
@@ -271,6 +322,7 @@ function DomainGroup({
   requestTypes: RequestType[];
   caseOwnerByRt: Map<string, CaseOwnerPolicy | null>;
   childDispatchByRt: Map<string, ChildDispatchPolicy | null>;
+  readinessByRt: Map<string, Readiness>;
   teamsById: Map<string, Team>;
   vendorsById: Map<string, Vendor>;
   policyLoading: boolean;
@@ -315,6 +367,7 @@ function DomainGroup({
                   <Wrench className="size-3" /> Child dispatch (v2)
                 </span>
               </th>
+              <th className="px-3 py-2 text-left font-medium">Ready</th>
               <th className="px-3 py-2 text-right font-medium"></th>
             </tr>
           </thead>
@@ -325,6 +378,7 @@ function DomainGroup({
                 rt={rt}
                 caseOwner={caseOwnerByRt.get(rt.id)}
                 childDispatch={childDispatchByRt.get(rt.id)}
+                readiness={readinessByRt.get(rt.id)}
                 teamsById={teamsById}
                 vendorsById={vendorsById}
                 policyLoading={policyLoading}
@@ -352,6 +406,7 @@ function RoutingMapRow({
   rt,
   caseOwner,
   childDispatch,
+  readiness,
   teamsById,
   vendorsById,
   policyLoading,
@@ -360,6 +415,7 @@ function RoutingMapRow({
   rt: RequestType;
   caseOwner: CaseOwnerPolicy | null | undefined;
   childDispatch: ChildDispatchPolicy | null | undefined;
+  readiness: Readiness | undefined;
   teamsById: Map<string, Team>;
   vendorsById: Map<string, Vendor>;
   policyLoading: boolean;
@@ -397,6 +453,9 @@ function RoutingMapRow({
           vendorsById={vendorsById}
         />
       </td>
+      <td className="px-3 py-2">
+        <ReadinessCell readiness={readiness} />
+      </td>
       <td className="px-3 py-2 text-right">
         <div className="inline-flex items-center gap-1">
           <button
@@ -416,6 +475,40 @@ function RoutingMapRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+function ReadinessCell({ readiness }: { readiness: Readiness | undefined }) {
+  if (!readiness) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title="No dual-run diffs in the last 7 days. Flip routing_v2_mode to dualrun to start capturing.">
+        <CircleHelp className="size-3.5" />
+        untested
+      </span>
+    );
+  }
+  const total = readiness.matches + readiness.mismatches + readiness.errors;
+  if (readiness.errors > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-destructive" title={`${readiness.errors} v2 errors in ${total} diffs`}>
+        <AlertTriangle className="size-3.5" />
+        error
+      </span>
+    );
+  }
+  if (readiness.mismatches > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-amber-700" title={`${readiness.mismatches}/${total} diffs have target_match=false`}>
+        <CircleAlert className="size-3.5" />
+        divergent ({readiness.mismatches}/{total})
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-emerald-700" title={`${readiness.matches}/${total} diffs match legacy. Safe to flip to v2_only.`}>
+      <CheckCircle2 className="size-3.5" />
+      ready ({readiness.matches})
+    </span>
   );
 }
 
