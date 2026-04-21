@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { DomainRegistryService } from './domain-registry.service';
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';

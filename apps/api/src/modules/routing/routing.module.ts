@@ -13,6 +13,8 @@ import { RoutingCoverageService } from './coverage.service';
 import { RoutingEvaluatorService } from './routing-evaluator.service';
 import { PolicyStoreService } from './policy-store.service';
 import { DomainRegistryService } from './domain-registry.service';
+import { IntakeScopingService } from './intake-scoping.service';
+import { CaseOwnerEngineService } from './case-owner-engine.service';
 
 @Module({
   providers: [
@@ -25,6 +27,8 @@ import { DomainRegistryService } from './domain-registry.service';
     RoutingEvaluatorService,
     PolicyStoreService,
     DomainRegistryService,
+    IntakeScopingService,
+    CaseOwnerEngineService,
   ],
   controllers: [
     RoutingRuleController,
@@ -33,6 +37,13 @@ import { DomainRegistryService } from './domain-registry.service';
     DomainParentsController,
     RoutingSimulatorController,
   ],
-  exports: [RoutingService, RoutingEvaluatorService, PolicyStoreService, DomainRegistryService],
+  exports: [
+    RoutingService,
+    RoutingEvaluatorService,
+    PolicyStoreService,
+    DomainRegistryService,
+    IntakeScopingService,
+    CaseOwnerEngineService,
+  ],
 })
 export class RoutingModule {}

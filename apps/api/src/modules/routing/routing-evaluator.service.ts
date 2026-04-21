@@ -1,8 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { RoutingV2Mode } from '@prequest/shared';
+import type {
+  CaseOwnerPolicyDefinition,
+  IntakeContext,
+  OwnerDecision,
+  RoutingV2Mode,
+} from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { CaseOwnerEngineService } from './case-owner-engine.service';
+import { IntakeScopingService } from './intake-scoping.service';
+import { PolicyStoreService } from './policy-store.service';
 import { ResolverService } from './resolver.service';
-import { ResolverContext, ResolverDecision } from './resolver.types';
+import {
+  AssignmentTarget,
+  ChosenBy,
+  ResolverContext,
+  ResolverDecision,
+} from './resolver.types';
 
 /**
  * Workstream 0 / Artifact E: dual-run hook point.
@@ -44,6 +57,9 @@ export class RoutingEvaluatorService {
   constructor(
     private readonly legacyResolver: ResolverService,
     private readonly supabase: SupabaseService,
+    private readonly intakeScoping: IntakeScopingService,
+    private readonly policyStore: PolicyStoreService,
+    private readonly caseOwnerEngine: CaseOwnerEngineService,
   ) {}
 
   /**
@@ -103,13 +119,76 @@ export class RoutingEvaluatorService {
   }
 
   /**
-   * Placeholder for the v2 engine. Workstream B wires in the
-   * NormalizedRoutingContext + CaseOwnerPolicyDefinition path for `case_owner`;
-   * Workstream C wires ChildDispatchPolicyDefinition for `child_dispatch`.
+   * v2 engine dispatch. `case_owner` is wired in Workstream B; `child_dispatch`
+   * still throws until Workstream C lands.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  private async evaluateV2(hook: RoutingHook, _context: ResolverContext): Promise<ResolverDecision> {
+  private async evaluateV2(hook: RoutingHook, context: ResolverContext): Promise<ResolverDecision> {
+    if (hook === 'case_owner') return this.evaluateCaseOwnerV2(context);
     throw new RoutingV2NotImplementedError(hook);
+  }
+
+  /**
+   * Workstream B wiring: intake → published case_owner_policy → engine → ResolverDecision.
+   *
+   * Tenants whose request_type has no `case_owner_policy_entity_id` attached yet
+   * still want v2 dual-run to be non-fatal — we return `unassigned` with a trace
+   * instead of throwing, so the diff log captures "v2 has no policy" as data.
+   */
+  private async evaluateCaseOwnerV2(context: ResolverContext): Promise<ResolverDecision> {
+    const policyEntityId = await this.loadCaseOwnerPolicyEntityId(
+      context.tenant_id,
+      context.request_type_id,
+    );
+    if (!policyEntityId) {
+      return unassignedDecision('v2: request_type has no case_owner_policy_entity_id attached');
+    }
+
+    const published = await this.policyStore.getPublishedDefinition<'case_owner_policy'>(
+      context.tenant_id,
+      policyEntityId,
+    );
+    if (!published) {
+      return unassignedDecision(
+        `v2: case_owner_policy ${policyEntityId} has no published version`,
+      );
+    }
+
+    const intake: IntakeContext = {
+      tenant_id: context.tenant_id,
+      request_type_id: context.request_type_id ?? '',
+      requester_person_id: null,
+      selected_location_id: context.location_id,
+      asset_id: context.asset_id,
+      priority: normalizePriority(context.priority),
+      evaluated_at: new Date().toISOString(),
+    };
+    const normalized = await this.intakeScoping.normalize(intake);
+    const decision = this.caseOwnerEngine.evaluate(
+      normalized,
+      published.definition as CaseOwnerPolicyDefinition,
+    );
+
+    return adaptOwnerDecisionToResolver(decision);
+  }
+
+  private async loadCaseOwnerPolicyEntityId(
+    tenant_id: string,
+    request_type_id: string | null,
+  ): Promise<string | null> {
+    if (!request_type_id) return null;
+    const { data, error } = await this.supabase.admin
+      .from('request_types')
+      .select('case_owner_policy_entity_id')
+      .eq('tenant_id', tenant_id)
+      .eq('id', request_type_id)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(
+        `Failed to load case_owner_policy_entity_id for request_type ${request_type_id}: ${error.message}`,
+      );
+      return null;
+    }
+    return (data?.case_owner_policy_entity_id as string | null) ?? null;
   }
 
   private async getMode(tenantId: string): Promise<RoutingV2Mode> {
@@ -174,6 +253,31 @@ function parseRoutingV2Mode(flags: Record<string, unknown>): RoutingV2Mode {
   const raw = flags.routing_v2_mode;
   if (raw === 'dualrun' || raw === 'shadow' || raw === 'v2_only') return raw;
   return 'off';
+}
+
+function normalizePriority(raw: string | null): IntakeContext['priority'] {
+  if (raw === 'low' || raw === 'high' || raw === 'urgent') return raw;
+  return 'normal';
+}
+
+function unassignedDecision(reason: string): ResolverDecision {
+  return {
+    target: null,
+    chosen_by: 'unassigned',
+    strategy: 'fixed',
+    trace: [{ step: 'unassigned', matched: true, reason, target: null }],
+  };
+}
+
+function adaptOwnerDecisionToResolver(decision: OwnerDecision): ResolverDecision {
+  const chosen_by: ChosenBy =
+    decision.matched_row_id === 'default' ? 'policy_default' : 'policy_row';
+  return {
+    target: decision.target as AssignmentTarget,
+    chosen_by,
+    strategy: 'fixed',
+    trace: decision.trace,
+  };
 }
 
 function targetsEqual(a: ResolverDecision['target'], b: ResolverDecision['target']): boolean {

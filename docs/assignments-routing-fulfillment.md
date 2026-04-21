@@ -594,3 +594,27 @@ Workstream A added the service layer to author and publish policies on top of th
 - **`PolicyStoreService`** (`apps/api/src/modules/routing/policy-store.service.ts`) — CRUD + publish lifecycle for `case_owner_policy`, `child_dispatch_policy`, `domain_registry`, and `space_levels` entities. Every mutation validates the definition against the zod schemas in `@prequest/shared` before touching the database. `createEntity` → `createDraftVersion` → `publishVersion` mirrors the request-type / workflow / SLA lifecycle. `getPublishedDefinition` is what downstream engines call at ticket-create time once Workstreams B/C/D wire them in.
 - **`DomainRegistryService`** (`apps/api/src/modules/routing/domain-registry.service.ts`) — CRUD for `public.domains`. Keys are normalized to lowercase and validated against `[a-z0-9][a-z0-9_-]*`. Parent re-parenting does a recursive walk (`MAX_PARENT_WALK = 20`) to reject transitive cycles before they hit the DB. `deactivate` is a soft delete (`active = false`) — hard delete would null-out every `domain_id` FK that ever referenced the row.
 - Both services are registered and exported from `RoutingModule`. Not wired to HTTP yet (Workstream E's studio UI opens the first call sites).
+
+## 20. Routing v2 case-owner engine (Workstream B)
+
+The `case_owner` hook on `RoutingEvaluatorService` is now a live v2 path — `evaluateV2('case_owner', ctx)` no longer throws. `child_dispatch` still throws until Workstream C lands.
+
+Execution flow when `routing_v2_mode != off`:
+
+1. `loadCaseOwnerPolicyEntityId(tenant_id, request_type_id)` reads `request_types.case_owner_policy_entity_id`. If null, v2 returns a fail-soft `unassigned` decision with a trace entry explaining why.
+2. `PolicyStoreService.getPublishedDefinition` loads the published `case_owner_policy` definition and re-validates via zod.
+3. `IntakeScopingService.normalize(intake)` converts `IntakeContext` → `NormalizedRoutingContext`. Heuristics during dual-run:
+   - `scope_source`: `selected` if `selected_location_id`, `asset_location` if `asset_id`, else `requester_home`.
+   - `location_id`: trusted only when `scope_source ∈ {selected, manual}`.
+   - `domain_id`: free-text `request_types.domain` looked up in the registry via `DomainRegistryService.findByKey`. Null is a legal dual-run state.
+   - `operational_scope_chain`: `ResolverRepository.locationChain`, capped at `MAX_SPACE_WALK = 12`.
+   - `active_support_window_id`: always null until Workstream D wires time windows.
+4. `CaseOwnerEngineService.evaluate(context, policy)` walks `policy.rows` sorted by `ordering_hint` ASC. A row matches when **every** populated `match.*` clause is satisfied (`operational_scope_ids` via chain intersection, `domain_ids` via equality, `support_window_id` via equality). First match wins; otherwise `default_target`. The engine is a pure function — no IO.
+5. `adaptOwnerDecisionToResolver` maps `OwnerDecision` → `ResolverDecision` with `chosen_by: 'policy_row' | 'policy_default'`. These two values are new on the api-side `ChosenBy` union; `routing_decisions.chosen_by` has no check constraint so inserts work without a migration. Workstream D will formalize the stored enum.
+
+Fail-soft rules during dual-run:
+- No `case_owner_policy_entity_id`: v2 → unassigned, legacy served (if mode ≤ shadow), diff logs show `target_match=false`.
+- Published version has no definition row: same as above.
+- Engine throws: caught by `RoutingEvaluatorService.evaluate`, logged, recorded as `diff_summary.v2_error`.
+
+**v2_only mode does NOT throw on missing policy.** A tenant flipped to `v2_only` with no policy attached gets `unassigned` tickets, not 500s. This is intentional — the v2_only cutover criterion is "every active request type has a published policy", and if that's not true the operator needs data, not a broken intake.

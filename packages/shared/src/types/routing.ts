@@ -56,7 +56,13 @@ export interface IntakeContext {
 export interface NormalizedRoutingContext {
   tenant_id: string;
   request_type_id: string;
-  domain_id: string; // domain registry id (see Artifact D)
+  /**
+   * Domain registry id (see Artifact D). Nullable during dual-run: a tenant
+   * that hasn't backfilled the `domains` table yet will surface null here
+   * and engines must fall back to operational-scope-only matching. After
+   * Artifact D step 9 cutover this becomes non-null in practice.
+   */
+  domain_id: string | null;
   priority: Priority;
   location_id: string | null;
   asset_id: string | null;

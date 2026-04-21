@@ -14,6 +14,10 @@ export type ChosenBy =
   | 'space_group_team'
   | 'domain_fallback'
   | 'request_type_default'
+  // Routing v2 values (Artifact A.4). Stored in routing_decisions.chosen_by
+  // (text column, no check constraint) once the v2 engine serves traffic.
+  | 'policy_row'
+  | 'policy_default'
   | 'unassigned';
 
 export interface ResolverContext {
