@@ -11,6 +11,7 @@ import { RoutingSimulatorService } from './simulator.service';
 import { RoutingAuditService } from './audit.service';
 import { RoutingCoverageService } from './coverage.service';
 import { RoutingEvaluatorService } from './routing-evaluator.service';
+import { PolicyStoreService } from './policy-store.service';
 
 @Module({
   providers: [
@@ -21,6 +22,7 @@ import { RoutingEvaluatorService } from './routing-evaluator.service';
     RoutingAuditService,
     RoutingCoverageService,
     RoutingEvaluatorService,
+    PolicyStoreService,
   ],
   controllers: [
     RoutingRuleController,
@@ -29,6 +31,6 @@ import { RoutingEvaluatorService } from './routing-evaluator.service';
     DomainParentsController,
     RoutingSimulatorController,
   ],
-  exports: [RoutingService, RoutingEvaluatorService],
+  exports: [RoutingService, RoutingEvaluatorService, PolicyStoreService],
 })
 export class RoutingModule {}
