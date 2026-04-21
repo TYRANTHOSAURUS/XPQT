@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { RoutingV2Mode } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { ResolverService } from './resolver.service';
 import { ResolverContext, ResolverDecision } from './resolver.types';
@@ -19,7 +20,6 @@ import { ResolverContext, ResolverDecision } from './resolver.types';
  * downstream workstreams have a stable seam.
  */
 
-export type RoutingV2Mode = 'off' | 'dualrun' | 'shadow' | 'v2_only';
 export type RoutingHook = 'case_owner' | 'child_dispatch';
 
 export class RoutingV2NotImplementedError extends Error {

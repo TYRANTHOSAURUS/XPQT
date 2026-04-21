@@ -564,3 +564,22 @@ Feature-flagged under `VITE_FEATURE_ROUTING_STUDIO`. Reaches the resolver withou
 - `GET /routing/studio/coverage` — location × domain matrix. Powered by `public.resolve_coverage(tenant, space_ids[], domains[])` SQL function (migration `00037`) which mirrors the location-chain walk + domain-fallback logic of `ResolverService` without touching `routing_rules` / asset / request-type-default (those aren't part of "coverage" as a concept — they're orthogonal). Returns rows with `chosen_by ∈ {direct, parent, space_group, domain_fallback, uncovered}` plus the matched target and inheritance trail.
 
 Studio is additive and feature-flagged: toggling off returns the UI to the pre-Studio admin surface with zero DB side effects. The SQL function is `STABLE` and idempotent to drop.
+
+## 18. Routing v2 contracts (Workstream 0)
+
+The Routing Studio improvement plan (`docs/routing-studio-improvement-plan-2026-04-21.md`) introduces a four-policy model on top of the existing resolver. Workstream 0 froze the shared types and added additive schema without changing any runtime behavior. What exists today:
+
+- **Shared types** at `packages/shared/src/types/routing.ts` — `IntakeContext`, `NormalizedRoutingContext`, `CaseOwnerPolicyDefinition`, `ChildDispatchPolicyDefinition`, `ChildPlan`, `RoutingPolicy`, `ResolverInput/Output`, `VisibilityHints`, `SimulateRequest/Response`, `MapQuery/Response`, `SpaceLevelsDefinition`, `RoutingV2Mode`. These are the contracts every later workstream imports.
+- **Config types** on `config_entities.config_type`: `case_owner_policy`, `child_dispatch_policy`, `domain_registry`, `space_levels` (migration 00038). Policy payload lives in `config_versions.definition` per the shared TS interfaces. Request types get nullable FK columns `case_owner_policy_entity_id` and `child_dispatch_policy_entity_id` — required-by-cutover per the `v2_only` mode below.
+- **Domain registry** — `public.domains` table with `(tenant_id, key)` unique constraint and self-referential `parent_domain_id` (migration 00039). Nullable `domain_id` FKs on `request_types`, `location_teams`, `domain_parents` run alongside existing free-text columns during dual-run. Cutover drops the text columns.
+- **Dual-run hook** — `RoutingEvaluatorService` at `apps/api/src/modules/routing/routing-evaluator.service.ts`. Reads `tenants.feature_flags.routing_v2_mode` (default `off`) and progresses `off → dualrun → shadow → v2_only` per tenant. Writes one row to `public.routing_dualrun_logs` (migration 00040) per evaluation when the mode is not `off`, capturing legacy-vs-v2 target/chosen_by diff.
+- **Not yet wired** — the evaluator is registered and exported from `RoutingModule` but `TicketService.runPostCreateAutomation` and `DispatchService.dispatch` still call `ResolverService` directly. The v2 engine itself is a stub (`evaluateV2` throws `RoutingV2NotImplementedError`). Workstreams B/C/D replace the stub and swap the call sites.
+
+### MANDATORY doc triggers — additions
+
+In addition to the triggers in §15, update this document when any of the following change:
+
+- `apps/api/src/modules/routing/routing-evaluator.service.ts` — the dual-run seam.
+- Any migration altering `public.domains`, `public.routing_dualrun_logs`, or the `case_owner_policy` / `child_dispatch_policy` / `domain_registry` / `space_levels` shape stored in `config_versions.definition`.
+- `tenants.feature_flags.routing_v2_mode` semantics (add modes, change progression).
+- `packages/shared/src/types/routing.ts` — it's the cross-workstream contract.
