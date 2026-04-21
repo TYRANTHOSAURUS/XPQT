@@ -33,6 +33,7 @@ export class RoutingSimulatorController {
       asset_id: body.asset_id ?? null,
       priority: body.priority ?? null,
       disabled_rule_ids: Array.isArray(body.disabled_rule_ids) ? body.disabled_rule_ids : undefined,
+      include_v2: Boolean(body.include_v2),
     };
     return this.simulator.simulate(input);
   }
@@ -97,4 +98,5 @@ interface SimulateRequestBody {
   asset_id?: string | null;
   priority?: string | null;
   disabled_rule_ids?: string[];
+  include_v2?: boolean;
 }

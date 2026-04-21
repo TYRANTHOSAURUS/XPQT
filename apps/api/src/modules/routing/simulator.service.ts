@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ResolverService } from './resolver.service';
+import { RoutingEvaluatorService, RoutingHook } from './routing-evaluator.service';
 import {
   AssignmentTarget,
   ChosenBy,
@@ -16,18 +17,33 @@ export interface SimulatorInput {
   asset_id?: string | null;
   priority?: string | null;
   disabled_rule_ids?: string[];
+  /** When true, also run the v2 engines (both hooks) and return in .v2 */
+  include_v2?: boolean;
+}
+
+interface DecisionView {
+  chosen_by: ChosenBy;
+  strategy: FulfillmentShape | 'rule';
+  rule_id: string | null;
+  rule_name: string | null;
+  target_kind: 'team' | 'user' | 'vendor' | null;
+  target_id: string | null;
+  target_name: string | null;
+}
+
+interface V2DecisionView {
+  hook: RoutingHook;
+  chosen_by: ChosenBy | null;
+  target_kind: 'team' | 'user' | 'vendor' | null;
+  target_id: string | null;
+  target_name: string | null;
+  trace: TraceEntry[];
+  error: string | null;
+  matches_legacy_target: boolean;
 }
 
 export interface SimulatorResult {
-  decision: {
-    chosen_by: ChosenBy;
-    strategy: FulfillmentShape | 'rule';
-    rule_id: string | null;
-    rule_name: string | null;
-    target_kind: 'team' | 'user' | 'vendor' | null;
-    target_id: string | null;
-    target_name: string | null;
-  };
+  decision: DecisionView;
   effects: {
     sla_policy_id: string | null;
     sla_policy_name: string | null;
@@ -37,6 +53,13 @@ export interface SimulatorResult {
     domain: string | null;
   };
   trace: TraceEntry[];
+  /**
+   * v2 engine preview — runs regardless of routing_v2_mode. `null` means the
+   * simulator was not asked to preview v2 (default). When present, both hooks
+   * ('case_owner' and 'child_dispatch') are evaluated so admins can see both
+   * divergences in a single pane.
+   */
+  v2: V2DecisionView[] | null;
   context_snapshot: {
     tenant_id: string;
     request_type_id: string;
@@ -65,6 +88,7 @@ export class RoutingSimulatorService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly resolver: ResolverService,
+    private readonly evaluator: RoutingEvaluatorService,
   ) {}
 
   async simulate(input: SimulatorInput): Promise<SimulatorResult> {
@@ -87,11 +111,14 @@ export class RoutingSimulatorService {
 
     const decision = await this.resolver.resolve(context);
     const targetName = await this.resolveTargetName(decision.target);
+
+    const v2 = input.include_v2 ? await this.runV2Preview(context, decision.target) : null;
+
     const duration_ms = Date.now() - started;
 
     this.logger.log(
       `simulate tenant=${tenant.id} rt=${input.request_type_id} ` +
-        `chosen_by=${decision.chosen_by} duration=${duration_ms}ms`,
+        `chosen_by=${decision.chosen_by} duration=${duration_ms}ms include_v2=${Boolean(input.include_v2)}`,
     );
 
     return {
@@ -113,6 +140,7 @@ export class RoutingSimulatorService {
         domain: requestType.domain,
       },
       trace: decision.trace,
+      v2,
       context_snapshot: {
         tenant_id: tenant.id,
         request_type_id: input.request_type_id,
@@ -124,6 +152,30 @@ export class RoutingSimulatorService {
       },
       duration_ms,
     };
+  }
+
+  private async runV2Preview(
+    context: ResolverContext,
+    legacyTarget: AssignmentTarget | null,
+  ): Promise<V2DecisionView[]> {
+    const hooks: RoutingHook[] = ['case_owner', 'child_dispatch'];
+    const results: V2DecisionView[] = [];
+    for (const hook of hooks) {
+      const { decision, error } = await this.evaluator.simulateV2(hook, context);
+      const target = decision?.target ?? null;
+      const name = await this.resolveTargetName(target);
+      results.push({
+        hook,
+        chosen_by: decision?.chosen_by ?? null,
+        target_kind: target?.kind ?? null,
+        target_id: targetKindId(target),
+        target_name: name,
+        trace: decision?.trace ?? [],
+        error,
+        matches_legacy_target: targetsEqual(target, legacyTarget),
+      });
+    }
+    return results;
   }
 
   private async loadRequestTypeMeta(requestTypeId: string, tenantId: string) {
@@ -196,4 +248,14 @@ function targetKindId(target: AssignmentTarget | null): string | null {
   if (target.kind === 'team') return target.team_id;
   if (target.kind === 'vendor') return target.vendor_id;
   return target.user_id;
+}
+
+function targetsEqual(a: AssignmentTarget | null, b: AssignmentTarget | null): boolean {
+  if (a === null && b === null) return true;
+  if (a === null || b === null) return false;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'team' && b.kind === 'team') return a.team_id === b.team_id;
+  if (a.kind === 'user' && b.kind === 'user') return a.user_id === b.user_id;
+  if (a.kind === 'vendor' && b.kind === 'vendor') return a.vendor_id === b.vendor_id;
+  return false;
 }

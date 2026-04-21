@@ -39,7 +39,23 @@ type ChosenBy =
   | 'space_group_team'
   | 'domain_fallback'
   | 'request_type_default'
+  // v2 values (Contract 4). Added when the evaluator simulates v2 alongside legacy.
+  | 'policy_row'
+  | 'policy_default'
   | 'unassigned';
+
+type RoutingHook = 'case_owner' | 'child_dispatch';
+
+interface V2DecisionView {
+  hook: RoutingHook;
+  chosen_by: ChosenBy | null;
+  target_kind: Kind | null;
+  target_id: string | null;
+  target_name: string | null;
+  trace: TraceEntry[];
+  error: string | null;
+  matches_legacy_target: boolean;
+}
 
 interface TraceEntry {
   step: ChosenBy;
@@ -67,6 +83,7 @@ interface SimulatorResult {
     domain: string | null;
   };
   trace: TraceEntry[];
+  v2: V2DecisionView[] | null;
   context_snapshot: {
     tenant_id: string;
     request_type_id: string;
@@ -121,6 +138,7 @@ export function RoutingSimulator() {
         asset_id: assetId || null,
         priority,
         disabled_rule_ids: Object.keys(disabledRules),
+        include_v2: true,
       };
       const data = await apiFetch<SimulatorResult>('/routing/studio/simulate', {
         method: 'POST',
@@ -272,6 +290,11 @@ export function RoutingSimulator() {
 
         {/* Result */}
         <ResultBlock result={result} loading={loading} error={error} hasRequestType={!!requestTypeId} />
+
+        {/* v2 preview — always requested; only rendered when present */}
+        {result?.v2 && result.v2.length > 0 && (
+          <V2Preview rows={result.v2} legacyTargetName={result.decision.target_name} />
+        )}
 
         {/* Pipeline */}
         {result && (
@@ -444,6 +467,65 @@ function formatStep(step: ChosenBy): string {
     case 'space_group_team': return 'Space group team';
     case 'domain_fallback': return 'Domain fallback';
     case 'request_type_default': return 'Request type default';
+    case 'policy_row': return 'Policy row (v2)';
+    case 'policy_default': return 'Policy default (v2)';
     case 'unassigned': return 'Unassigned';
   }
+}
+
+function V2Preview({ rows, legacyTargetName }: { rows: V2DecisionView[]; legacyTargetName: string | null }) {
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center justify-between border-b px-4 py-2">
+        <div className="text-xs font-medium uppercase text-muted-foreground">Routing v2 preview</div>
+        <div className="text-xs text-muted-foreground">
+          Runs both hooks regardless of the tenant flag. Legacy is what ships.
+        </div>
+      </div>
+      <ul className="divide-y">
+        {rows.map((row) => (
+          <li key={row.hook} className="px-4 py-3">
+            <div className="flex items-center gap-3">
+              {row.error ? (
+                <AlertTriangle className="size-4 text-destructive" />
+              ) : row.matches_legacy_target ? (
+                <CheckCircle2 className="size-4 text-emerald-600" />
+              ) : (
+                <CircleSlash className="size-4 text-amber-600" />
+              )}
+              <span className="font-medium">{row.hook === 'case_owner' ? 'Case owner' : 'Child dispatch'}</span>
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {row.chosen_by ? (
+                  <Badge variant="outline">{row.chosen_by.replace(/_/g, ' ')}</Badge>
+                ) : null}
+                {row.matches_legacy_target ? (
+                  <Badge variant="outline" className="border-emerald-600 text-emerald-700">matches legacy</Badge>
+                ) : row.error ? null : (
+                  <Badge variant="outline" className="border-amber-600 text-amber-700">divergent</Badge>
+                )}
+              </div>
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {row.error ? (
+                <span>Error: {row.error}</span>
+              ) : row.target_name ? (
+                <span>
+                  v2 picks <strong>{row.target_name}</strong>
+                  {legacyTargetName && !row.matches_legacy_target ? (
+                    <>
+                      {' '} (legacy picks <strong>{legacyTargetName}</strong>)
+                    </>
+                  ) : null}
+                </span>
+              ) : (
+                <span>
+                  v2 returns unassigned — no published policy for this request type yet.
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }

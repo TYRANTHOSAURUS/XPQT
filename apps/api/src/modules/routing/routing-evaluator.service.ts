@@ -135,6 +135,20 @@ export class RoutingEvaluatorService {
   }
 
   /**
+   * Simulator-only: run v2 regardless of `routing_v2_mode` and DO NOT persist
+   * anything to routing_dualrun_logs. Used by RoutingSimulatorService to show
+   * a side-by-side legacy/v2 preview in the Studio's Simulator tab without
+   * polluting the diff log with speculative evaluations.
+   */
+  async simulateV2(hook: RoutingHook, context: ResolverContext): Promise<{ decision: ResolverDecision | null; error: string | null }> {
+    try {
+      return { decision: await this.evaluateV2(hook, context), error: null };
+    } catch (err) {
+      return { decision: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
    * Workstream B wiring: intake → published case_owner_policy → engine → ResolverDecision.
    *
    * Tenants whose request_type has no `case_owner_policy_entity_id` attached yet
