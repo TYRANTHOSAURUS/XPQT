@@ -35,15 +35,19 @@ interface PolicyEntity {
   current_published_version_id: string | null;
 }
 
+interface TargetRef { kind: 'team' | 'vendor'; id: string }
+
 interface ChildDispatchPolicyDefinition {
   schema_version: 1;
   request_type_id: string;
   dispatch_mode: string;
   split_strategy: string;
-  execution_routing: string;
-  fixed_target?: { kind: 'team' | 'vendor'; id: string };
-  fallback_target?: { kind: 'team' | 'vendor'; id: string };
+  execution_routing: 'fixed' | 'by_location';
+  fixed_target?: TargetRef;
+  fallback_target?: TargetRef;
 }
+
+type ExecutionMode = 'fixed' | 'by_location';
 
 interface PublishedPolicyResponse {
   entity: PolicyEntity;
@@ -75,21 +79,30 @@ export function ChildDispatchEditor() {
   const { data: policyEntities } = useApi<PolicyEntity[]>('/admin/routing/policies/child_dispatch_policy', []);
 
   const [selectedRtId, setSelectedRtId] = useState('');
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('fixed');
   const [targetKind, setTargetKind] = useState<TargetKind>('team');
   const [targetId, setTargetId] = useState('');
-  const [currentTarget, setCurrentTarget] = useState<{ kind: TargetKind; id: string } | null>(null);
+  const [fallbackKind, setFallbackKind] = useState<TargetKind>('team');
+  const [fallbackId, setFallbackId] = useState('');
+  const [currentTarget, setCurrentTarget] = useState<TargetRef | null>(null);
+  const [currentFallback, setCurrentFallback] = useState<TargetRef | null>(null);
   const [loadingCurrent, setLoadingCurrent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const selectedRt = (requestTypes ?? []).find((r) => r.id === selectedRtId) ?? null;
 
-  // Prefetch the attached policy's current fixed_target so admins see what's set.
+  // Prefetch the attached policy's current execution_mode + targets so admins
+  // see what's set before editing. Resets to blank when no policy is attached.
   useEffect(() => {
     const entityId = selectedRt?.child_dispatch_policy_entity_id ?? null;
     if (!entityId) {
       setCurrentTarget(null);
+      setCurrentFallback(null);
+      setExecutionMode('fixed');
       setTargetId('');
       setTargetKind('team');
+      setFallbackId('');
+      setFallbackKind('team');
       return;
     }
     let cancelled = false;
@@ -97,17 +110,35 @@ export function ChildDispatchEditor() {
     apiFetch<PublishedPolicyResponse>(`/admin/routing/policies/child_dispatch_policy/${entityId}`)
       .then((res) => {
         if (cancelled) return;
-        const fixed = res.published?.definition.fixed_target ?? null;
+        const def = res.published?.definition ?? null;
+        const mode: ExecutionMode = def?.execution_routing === 'by_location' ? 'by_location' : 'fixed';
+        setExecutionMode(mode);
+
+        const fixed = def?.fixed_target ?? null;
         if (fixed) {
-          setCurrentTarget({ kind: fixed.kind, id: fixed.id });
+          setCurrentTarget(fixed);
           setTargetKind(fixed.kind);
           setTargetId(fixed.id);
         } else {
           setCurrentTarget(null);
+          setTargetId('');
+        }
+
+        const fb = def?.fallback_target ?? null;
+        if (fb) {
+          setCurrentFallback(fb);
+          setFallbackKind(fb.kind);
+          setFallbackId(fb.id);
+        } else {
+          setCurrentFallback(null);
+          setFallbackId('');
         }
       })
       .catch(() => {
-        if (!cancelled) setCurrentTarget(null);
+        if (!cancelled) {
+          setCurrentTarget(null);
+          setCurrentFallback(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingCurrent(false);
@@ -128,10 +159,25 @@ export function ChildDispatchEditor() {
     setTargetKind(kind);
     setTargetId('');
   }
+  function handleFallbackKindChange(kind: TargetKind) {
+    setFallbackKind(kind);
+    setFallbackId('');
+  }
+
+  // Execution mode semantics:
+  //   'fixed'       → fixed_target wins; fallback_target only fires if fixed
+  //                   can't be resolved (rare edge case)
+  //   'by_location' → ChildExecutionResolver hits location_teams(location,
+  //                   domain); on miss, fallback_target takes over, then
+  //                   unassigned. fixed_target is ignored.
+  // Field visibility below matches these semantics so admins don't set values
+  // that never fire.
+  const showPrimary = executionMode === 'fixed';
+  const primaryRequired = executionMode === 'fixed';
 
   async function handleSave() {
     if (!selectedRt) { toast.error('Pick a request type'); return; }
-    if (!targetId) { toast.error(`Pick a ${targetKind}`); return; }
+    if (primaryRequired && !targetId) { toast.error(`Pick a primary ${targetKind}`); return; }
     setSaving(true);
     try {
       let entityId = selectedRt.child_dispatch_policy_entity_id;
@@ -149,20 +195,25 @@ export function ChildDispatchEditor() {
         entityId = created.id;
       }
 
+      const definition: ChildDispatchPolicyDefinition = {
+        schema_version: 1,
+        request_type_id: selectedRt.id,
+        dispatch_mode: 'always',
+        split_strategy: 'single',
+        execution_routing: executionMode,
+      };
+      if (executionMode === 'fixed' && targetId) {
+        definition.fixed_target = { kind: targetKind, id: targetId };
+      }
+      if (fallbackId) {
+        definition.fallback_target = { kind: fallbackKind, id: fallbackId };
+      }
+
       const draft = await apiFetch<{ id: string }>(
         `/admin/routing/policies/child_dispatch_policy/${entityId}/versions`,
         {
           method: 'POST',
-          body: JSON.stringify({
-            definition: {
-              schema_version: 1,
-              request_type_id: selectedRt.id,
-              dispatch_mode: 'always',
-              split_strategy: 'single',
-              execution_routing: 'fixed',
-              fixed_target: { kind: targetKind, id: targetId },
-            },
-          }),
+          body: JSON.stringify({ definition }),
         },
       );
 
@@ -178,13 +229,20 @@ export function ChildDispatchEditor() {
         });
       }
 
-      const targetName =
-        targetKind === 'team'
-          ? teamsById.get(targetId)?.name
-          : vendorsById.get(targetId)?.name;
-      toast.success(`${selectedRt.name} dispatches child work orders to ${targetName ?? targetKind}`);
+      const primaryName = targetId
+        ? (targetKind === 'team' ? teamsById.get(targetId)?.name : vendorsById.get(targetId)?.name)
+        : null;
+      const fallbackName = fallbackId
+        ? (fallbackKind === 'team' ? teamsById.get(fallbackId)?.name : vendorsById.get(fallbackId)?.name)
+        : null;
+      const summary =
+        executionMode === 'fixed'
+          ? `${selectedRt.name} → ${primaryName ?? 'unset'}${fallbackName ? ` (fallback ${fallbackName})` : ''}`
+          : `${selectedRt.name} uses location-team lookup${fallbackName ? `, fallback ${fallbackName}` : ''}`;
+      toast.success(summary);
       setSelectedRtId('');
       setTargetId('');
+      setFallbackId('');
       await refetchRts();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save policy');
@@ -227,9 +285,69 @@ export function ChildDispatchEditor() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="child-dispatch-kind">Target type</FieldLabel>
-            <Select value={targetKind} onValueChange={(v) => handleKindChange((v ?? 'team') as TargetKind)}>
-              <SelectTrigger id="child-dispatch-kind">
+            <FieldLabel htmlFor="child-dispatch-execution">Execution mode</FieldLabel>
+            <Select value={executionMode} onValueChange={(v) => setExecutionMode((v ?? 'fixed') as ExecutionMode)}>
+              <SelectTrigger id="child-dispatch-execution">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fixed">Fixed — always the same target</SelectItem>
+                <SelectItem value="by_location">By location — look up in location_teams</SelectItem>
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              {executionMode === 'fixed'
+                ? 'Every child work order routes to the primary target below.'
+                : "Walks the ticket's location chain against location_teams rows, falling back if nothing matches."}
+            </FieldDescription>
+          </Field>
+
+          {showPrimary && (
+            <>
+              <Field>
+                <FieldLabel htmlFor="child-dispatch-kind">Primary target type</FieldLabel>
+                <Select value={targetKind} onValueChange={(v) => handleKindChange((v ?? 'team') as TargetKind)}>
+                  <SelectTrigger id="child-dispatch-kind">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="team">Team</SelectItem>
+                    <SelectItem value="vendor">Vendor</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="child-dispatch-target">
+                  Primary {targetKind === 'team' ? 'team' : 'vendor'}
+                </FieldLabel>
+                <Select value={targetId} onValueChange={(v) => setTargetId(v ?? '')}>
+                  <SelectTrigger id="child-dispatch-target">
+                    <SelectValue placeholder={`Pick a ${targetKind}`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(targetKind === 'team' ? (teams ?? []) : (vendors ?? [])).map((t) => (
+                      <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {loadingCurrent
+                    ? 'Loading current policy…'
+                    : currentTarget
+                      ? `Currently set to ${currentTarget.kind} "${(currentTarget.kind === 'team' ? teamsById.get(currentTarget.id)?.name : vendorsById.get(currentTarget.id)?.name) ?? currentTarget.id.slice(0, 8)}".`
+                      : 'Child work orders route here in fixed mode.'}
+                </FieldDescription>
+              </Field>
+            </>
+          )}
+
+          <FieldSeparator />
+
+          <Field>
+            <FieldLabel htmlFor="child-dispatch-fallback-kind">Fallback target type (optional)</FieldLabel>
+            <Select value={fallbackKind} onValueChange={(v) => handleFallbackKindChange((v ?? 'team') as TargetKind)}>
+              <SelectTrigger id="child-dispatch-fallback-kind">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -240,25 +358,31 @@ export function ChildDispatchEditor() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="child-dispatch-target">
-              {targetKind === 'team' ? 'Team' : 'Vendor'}
+            <FieldLabel htmlFor="child-dispatch-fallback">
+              Fallback {fallbackKind === 'team' ? 'team' : 'vendor'} (optional)
             </FieldLabel>
-            <Select value={targetId} onValueChange={(v) => setTargetId(v ?? '')}>
-              <SelectTrigger id="child-dispatch-target">
-                <SelectValue placeholder={`Pick a ${targetKind}`} />
+            <Select
+              value={fallbackId || '__none'}
+              onValueChange={(v) => setFallbackId(!v || v === '__none' ? '' : v)}
+            >
+              <SelectTrigger id="child-dispatch-fallback">
+                <SelectValue placeholder="None" />
               </SelectTrigger>
               <SelectContent>
-                {(targetKind === 'team' ? (teams ?? []) : (vendors ?? [])).map((t) => (
+                <SelectItem value="__none">None</SelectItem>
+                {(fallbackKind === 'team' ? (teams ?? []) : (vendors ?? [])).map((t) => (
                   <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <FieldDescription>
               {loadingCurrent
-                ? 'Loading current policy…'
-                : currentTarget
-                  ? `Currently set to ${currentTarget.kind} "${(currentTarget.kind === 'team' ? teamsById.get(currentTarget.id)?.name : vendorsById.get(currentTarget.id)?.name) ?? currentTarget.id.slice(0, 8)}". Pick a different target and save to replace.`
-                  : 'Child work orders route here. Split strategies (per-location, per-asset) and fallback targets come in a later pass — this MVP hardcodes single-target fixed dispatch.'}
+                ? 'Loading…'
+                : currentFallback
+                  ? `Currently ${currentFallback.kind} "${(currentFallback.kind === 'team' ? teamsById.get(currentFallback.id)?.name : vendorsById.get(currentFallback.id)?.name) ?? currentFallback.id.slice(0, 8)}".`
+                  : executionMode === 'by_location'
+                    ? 'Fires when no location_teams row matches the ticket.'
+                    : 'Fires only if the primary target cannot be resolved at runtime.'}
             </FieldDescription>
           </Field>
 

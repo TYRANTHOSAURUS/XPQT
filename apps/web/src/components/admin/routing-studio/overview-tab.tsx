@@ -11,7 +11,13 @@ import {
 import { useApi } from '@/hooks/use-api';
 
 interface Team { id: string }
-interface RequestType { id: string; default_team_id: string | null; default_vendor_id: string | null }
+interface RequestType {
+  id: string;
+  default_team_id: string | null;
+  default_vendor_id: string | null;
+  case_owner_policy_entity_id: string | null;
+  child_dispatch_policy_entity_id: string | null;
+}
 interface RoutingRule { id: string; active: boolean }
 interface LocationTeam { id: string }
 
@@ -39,6 +45,12 @@ export function RoutingStudioOverview({ onOpenTab }: Props) {
   ).length;
   const mappingCount = (mappings ?? []).length;
   const ruleCount = (rules ?? []).length;
+  const caseOwnerPolicyCount = (requestTypes ?? []).filter(
+    (rt) => rt.case_owner_policy_entity_id,
+  ).length;
+  const childDispatchPolicyCount = (requestTypes ?? []).filter(
+    (rt) => rt.child_dispatch_policy_entity_id,
+  ).length;
 
   const checklist = [
     {
@@ -69,9 +81,23 @@ export function RoutingStudioOverview({ onOpenTab }: Props) {
       optional: true,
     },
     {
+      done: caseOwnerPolicyCount > 0,
+      label: 'Attach a case ownership policy (v2, optional)',
+      hint: 'Picks the team that owns the parent case — supports scoped rows by location.',
+      tab: 'case-ownership',
+      optional: true,
+    },
+    {
+      done: childDispatchPolicyCount > 0,
+      label: 'Attach a child dispatch policy (v2, optional)',
+      hint: 'Routes child work orders to a team or vendor. Vendors are first-class here.',
+      tab: 'child-dispatch',
+      optional: true,
+    },
+    {
       done: false, // Always shown as a "try it" prompt
       label: 'Try the simulator',
-      hint: 'Pick a ticket shape and watch the resolver walk live.',
+      hint: 'Pick a ticket shape and watch the resolver walk live. Shows v2 preview alongside legacy.',
       tab: 'simulator',
       nudge: true,
     },
@@ -108,7 +134,7 @@ export function RoutingStudioOverview({ onOpenTab }: Props) {
             icon={<Wrench className="size-4" />}
             title="Execution"
             description="Who actually does the work? For a single assignee it's the same as ownership; for multi-party work it's child work orders (vendors, sub-teams)."
-            configuredAt="Created per ticket via Dispatch. No admin setup needed."
+            configuredAt="Created per ticket via Dispatch. Admin defaults live on the Child Dispatch tab."
           />
           <AxisCard
             icon={<Eye className="size-4" />}
