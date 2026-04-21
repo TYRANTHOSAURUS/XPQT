@@ -101,6 +101,7 @@ Same rule as the assignments/routing doc — **touch visibility code or its depe
 - Any migration changing `users`, `user_role_assignments`, `team_members`, `roles.permissions`, or `spaces.parent_id`.
 
 ## Frontend Rules
+- **Server state = React Query.** New data-fetching code must use TanStack Query following [`docs/react-query-guidelines.md`](docs/react-query-guidelines.md) — one key factory per module under `apps/web/src/api/<module>/`, `queryOptions` helpers, hierarchical keys (`all` → `lists`/`list` → `details`/`detail` → sub-resources), optimistic updates via `onMutate` + rollback. The legacy `useApi` hook (`apps/web/src/hooks/use-api.ts`) is being migrated out — do not add new callers. When touching a file that still uses `useApi`, consider migrating it (see §9–§10 of the guidelines).
 - **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
 - **Install shadcn components before using them:** `npx shadcn@latest add <component-name>`
 - **Design reference:** Linear app — clean, spacious, minimal borders, subtle color usage, properties sidebar on the right.
