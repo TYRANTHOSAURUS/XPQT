@@ -17,6 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { ResolverPipelineStrip } from './resolver-pipeline-strip';
 
 interface RequestType {
   id: string;
@@ -153,6 +154,11 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
           </Button>
         </div>
       </header>
+
+      {/* Pipeline strip lives here (and only here) so admins see the legacy
+        * resolver order alongside the request-type summary table. Other tabs
+        * are task-oriented and don't need the pedagogical context. */}
+      <ResolverPipelineStrip onTabClick={(t) => onOpenTab(t)} />
 
       {rtLoading ? (
         <div className="space-y-2">

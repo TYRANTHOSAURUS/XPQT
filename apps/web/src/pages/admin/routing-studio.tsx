@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RoutingSimulator } from '@/components/admin/routing-studio/simulator';
 import { RoutingAuditTab } from '@/components/admin/routing-studio/audit-tab';
-import { ResolverPipelineStrip } from '@/components/admin/routing-studio/resolver-pipeline-strip';
 import { CaseOwnershipEditor } from '@/components/admin/routing-studio/case-ownership-editor';
 import { VisibilityTab } from '@/components/admin/routing-studio/visibility-tab';
 import { RoutingMap } from '@/components/admin/routing-studio/routing-map';
@@ -95,8 +94,6 @@ export function RoutingStudioPage() {
           One surface for how tickets get assigned. The resolver runs the steps below in order — first match wins.
         </p>
       </div>
-
-      <ResolverPipelineStrip onTabClick={(t) => setTab(coerceTab(t))} />
 
       <Tabs value={tab} onValueChange={(v) => setTab(coerceTab(v))}>
         <TabsList>
