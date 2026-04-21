@@ -38,7 +38,7 @@ export class SplitOrchestrationService {
     if (policy.dispatch_mode === 'none') return [];
 
     const basePlan: ChildPlan = {
-      plan_id: `${context.tenant_id}:${policy.request_type_id}:0`,
+      plan_id: crypto.randomUUID(),
       derived_scope: deriveScope(context, policy),
       title_hint: titleHint(policy),
       execution_context: context,

@@ -642,3 +642,18 @@ The `child_dispatch` hook on `RoutingEvaluatorService` is also live. Both hooks 
 Legacy compatibility:
 - The v1 callsite (`DispatchService`, `TicketService.runPostCreateAutomation`) expects one `ResolverDecision` back. `adaptChildDispatchToResolver` collapses the N-plan output: first plan's target wins; other plans' outputs are appended to `trace` as informational entries so the simulator and dualrun diff log can still see them.
 - The full `ChildPlan[]` and their per-plan `ResolverOutput`s are not yet persisted — they live in the evaluator's `v2_output` jsonb in `routing_dualrun_logs`. A dedicated `routing_dispatch_plans` audit table belongs to Workstream G/H.
+
+## 22. Call-site wire-up
+
+`RoutingService.evaluate(context, hook)` now dispatches through `RoutingEvaluatorService` instead of calling `ResolverService.resolve` directly. This is the seam Workstream 0 deliberately didn't close — it's now live.
+
+- **`hook` parameter** is either `'case_owner'` (default) or `'child_dispatch'`. Keeps the single-function contract for the old callsites and lets them opt into v2 behavior per decision.
+- **`TicketService.runPostCreateAutomation` + reassignment** (lines 579, 814) call `evaluate(ctx)` → defaults to `case_owner`.
+- **`DispatchService.dispatch`** (line 103) passes `'child_dispatch'` explicitly when creating each child work order.
+
+Behavior during dual-run:
+- `routing_v2_mode='off'` (default for every tenant today): pure pass-through. `RoutingEvaluator.evaluate` short-circuits to `legacyResolver.resolve`. The hook parameter is ignored on this path. Zero overhead.
+- `routing_v2_mode ∈ {dualrun, shadow}`: legacy is served to callers; v2 evaluates in the background and both outputs land in `routing_dualrun_logs`. Callers see no change.
+- `routing_v2_mode='v2_only'`: v2 is served. Legacy is not run.
+
+This wire-up is safe to deploy without touching any tenant's flag. Rollback is reverting this commit; existing tenants are not affected because their flag stays `off`.

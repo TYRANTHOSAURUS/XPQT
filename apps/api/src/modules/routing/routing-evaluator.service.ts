@@ -361,16 +361,22 @@ function adaptOwnerDecisionToResolver(decision: OwnerDecision): ResolverDecision
  * Collapse N child plans into one ResolverDecision for callers that only
  * understand single-target outputs. First plan's target wins; the rest appear
  * in trace as informational entries so the diff log and simulator still see
- * them.
+ * them. Each orphan-plan entry preserves its own chosen_by so the trace is
+ * a faithful (if flattened) view of the per-plan decisions.
  */
 function adaptChildDispatchToResolver(
   resolutions: Array<{ plan: ChildPlan; output: ResolverOutput }>,
 ): ResolverDecision {
   const [first, ...rest] = resolutions;
-  const trace = [...first.output.trace];
+  // Shared ChosenBy is a subset of api ChosenBy (shared has everything api does
+  // minus legacy-only 'request_type_default'), so we upcast by assertion here.
+  // The alternative — making resolver.types.ts import TraceEntry/ChosenBy from
+  // shared — is the right long-term shape but belongs to Workstream D's
+  // resolver refactor, not here.
+  const trace = [...first.output.trace] as ResolverDecision['trace'];
   for (const r of rest) {
     trace.push({
-      step: 'policy_row',
+      step: r.output.chosen_by as ChosenBy,
       matched: false,
       reason: `additional plan ${r.plan.plan_id} → ${r.output.chosen_by} ${r.output.target ? `${r.output.target.kind}` : 'null'} (not served to legacy callsite)`,
       target: r.output.target,

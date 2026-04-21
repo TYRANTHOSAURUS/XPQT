@@ -63,6 +63,10 @@ export class ChildExecutionResolverService {
     }
 
     // by_asset | by_location | by_asset_then_location — use the resolver repo.
+    // TODO(Workstream D): implement real asset/asset-type lookup. Today,
+    // by_asset and by_asset_then_location both fall through to location-only
+    // resolution (the location walk), then to fallback_target. Acceptable
+    // because no production tenant has `by_asset` policies yet.
     const locationFirst = policy.execution_routing !== 'by_asset';
     const location_id =
       plan.derived_scope.kind === 'location'
