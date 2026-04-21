@@ -13,12 +13,49 @@ import {
 
 export interface SimulatorInput {
   request_type_id: string;
-  location_id?: string | null;
+  location_id?: string | null;             // LEGACY: pre-portal-scope. Maps to acting_for_location_id.
   asset_id?: string | null;
   priority?: string | null;
   disabled_rule_ids?: string[];
   /** When true, also run the v2 engines (both hooks) and return in .v2 */
   include_v2?: boolean;
+
+  // Portal-scope extension (docs/portal-scope-slice.md §5.6).
+  /** When set, evaluate portal availability for this person as a prefix to routing. */
+  simulate_as_person_id?: string | null;
+  /** Where the requester is. Recorded in the trace for "Ali at Amsterdam raising for Dubai" diagnosis. */
+  current_location_id?: string | null;
+  /** Where the request is for (drives routing). Falls back to legacy `location_id` when both are unset. */
+  acting_for_location_id?: string | null;
+}
+
+export interface PortalAvailabilityTraceView {
+  authorized: boolean;
+  has_any_scope: boolean;
+  effective_location_id: string | null;
+  matched_root_id: string | null;
+  matched_root_source: 'default' | 'grant' | null;
+  grant_id: string | null;
+  visible: boolean;
+  location_required: boolean;
+  granularity: string | null;
+  granularity_ok: boolean;
+  overall_valid: boolean;
+  failure_reason: string | null;
+}
+
+export interface PortalAvailabilityView {
+  person_id: string;
+  current_location_id: string | null;
+  acting_for_location_id: string | null;
+  trace: PortalAvailabilityTraceView;
+  authorized_locations_summary: Array<{
+    id: string;
+    name: string;
+    type: string;
+    source: 'default' | 'grant';
+    grant_id: string | null;
+  }>;
 }
 
 interface DecisionView {
@@ -69,6 +106,12 @@ export interface SimulatorResult {
     asset_id: string | null;
     excluded_rule_ids: string[];
   };
+  /**
+   * Portal availability trace — present only when simulate_as_person_id is supplied.
+   * Uses the same portal_availability_trace() RPC as POST /portal/tickets validation,
+   * guaranteeing the simulator and the submit path see identical availability logic.
+   */
+  portal_availability?: PortalAvailabilityView;
   duration_ms: number;
 }
 
@@ -98,6 +141,13 @@ export class RoutingSimulatorService {
     const requestType = await this.loadRequestTypeMeta(input.request_type_id, tenant.id);
     if (!requestType) throw new NotFoundException('Request type not found');
 
+    // Portal-scope: acting_for_location drives routing; current_location is diagnostic.
+    // Falls back to legacy `location_id` when portal-style inputs aren't supplied.
+    const actingForLocation =
+      input.acting_for_location_id !== undefined
+        ? input.acting_for_location_id
+        : input.location_id ?? null;
+
     const context: ResolverContext = {
       tenant_id: tenant.id,
       ticket_id: 'simulation',
@@ -105,7 +155,7 @@ export class RoutingSimulatorService {
       domain: requestType.domain,
       priority: input.priority ?? 'normal',
       asset_id: input.asset_id ?? null,
-      location_id: input.location_id ?? null,
+      location_id: actingForLocation,
       excluded_rule_ids: input.disabled_rule_ids,
     };
 
@@ -113,6 +163,16 @@ export class RoutingSimulatorService {
     const targetName = await this.resolveTargetName(decision.target);
 
     const v2 = input.include_v2 ? await this.runV2Preview(context, decision.target) : null;
+
+    const portal_availability = input.simulate_as_person_id
+      ? await this.evaluatePortalAvailability(
+          input.simulate_as_person_id,
+          input.current_location_id ?? null,
+          actingForLocation,
+          input.request_type_id,
+          tenant.id,
+        )
+      : undefined;
 
     const duration_ms = Date.now() - started;
 
@@ -146,11 +206,69 @@ export class RoutingSimulatorService {
         request_type_id: input.request_type_id,
         domain: requestType.domain,
         priority: context.priority ?? 'normal',
-        location_id: input.location_id ?? null,
+        location_id: actingForLocation,
         asset_id: input.asset_id ?? null,
         excluded_rule_ids: input.disabled_rule_ids ?? [],
       },
+      portal_availability,
       duration_ms,
+    };
+  }
+
+  private async evaluatePortalAvailability(
+    personId: string,
+    currentLocationId: string | null,
+    actingForLocationId: string | null,
+    requestTypeId: string,
+    tenantId: string,
+  ): Promise<PortalAvailabilityView> {
+    // Uses the same RPC that POST /portal/tickets validation calls — single source of truth.
+    const { data: traceData, error: traceError } = await this.supabase.admin.rpc(
+      'portal_availability_trace',
+      {
+        p_person_id: personId,
+        p_effective_space_id: actingForLocationId,
+        p_request_type_id: requestTypeId,
+        p_tenant_id: tenantId,
+      },
+    );
+    if (traceError) throw traceError;
+    const trace = traceData as unknown as PortalAvailabilityTraceView;
+
+    // Load the authorized-roots summary so admin can see what IS available when auth fails.
+    const { data: rootRows } = await this.supabase.admin.rpc('portal_authorized_root_matches', {
+      p_person_id: personId,
+      p_tenant_id: tenantId,
+    });
+    const rows =
+      ((rootRows ?? []) as Array<{ root_id: string; source: 'default' | 'grant'; grant_id: string | null }>) ?? [];
+
+    let authorized_locations_summary: PortalAvailabilityView['authorized_locations_summary'] = [];
+    if (rows.length > 0) {
+      const ids = rows.map((r) => r.root_id);
+      const { data: spaceRows } = await this.supabase.admin
+        .from('spaces')
+        .select('id, name, type')
+        .in('id', ids)
+        .eq('tenant_id', tenantId);
+      const spaceMap = new Map(
+        ((spaceRows ?? []) as Array<{ id: string; name: string; type: string }>).map((s) => [s.id, s]),
+      );
+      authorized_locations_summary = rows
+        .map((r) => {
+          const s = spaceMap.get(r.root_id);
+          if (!s) return null;
+          return { id: s.id, name: s.name, type: s.type, source: r.source, grant_id: r.grant_id };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+    }
+
+    return {
+      person_id: personId,
+      current_location_id: currentLocationId,
+      acting_for_location_id: actingForLocationId,
+      trace,
+      authorized_locations_summary,
     };
   }
 
