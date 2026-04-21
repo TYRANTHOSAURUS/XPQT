@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -24,10 +24,8 @@ interface RequestType {
   case_owner_policy_entity_id: string | null;
 }
 
-interface Team {
-  id: string;
-  name: string;
-}
+interface Team { id: string; name: string }
+interface SpaceOption { id: string; name: string }
 
 interface PolicyEntity {
   id: string;
@@ -37,11 +35,22 @@ interface PolicyEntity {
   current_published_version_id: string | null;
 }
 
+interface PolicyRow {
+  id: string;
+  match: {
+    operational_scope_ids?: string[];
+    domain_ids?: string[];
+    support_window_id?: string | null;
+  };
+  target: { kind: 'team'; team_id: string };
+  ordering_hint: number;
+}
+
 interface CaseOwnerPolicyDefinition {
   schema_version: 1;
   request_type_id: string;
   scope_source: string;
-  rows: unknown[];
+  rows: PolicyRow[];
   default_target: { kind: 'team'; team_id: string };
 }
 
@@ -55,54 +64,37 @@ interface PublishedPolicyResponse {
 }
 
 /**
- * Routing Studio Case Ownership editor (Workstream B + E MVP).
+ * Routing Studio Case Ownership editor.
  *
- * Minimum viable UI to attach a `case_owner_policy` to a request type
- * without SQL. Creates a new config_entity + draft version + publish on
- * first save; creates a new version on the existing entity on subsequent
- * saves. Admin picks the default_target team; scoped rows, scope source,
- * and support-window gating come in later iterations — this is the
- * walking-skeleton UI that pairs with the live v2 engines.
+ * Lets admins author a published `case_owner_policy` for any request type:
+ *   - a default_target team (what wins when no scoped row matches)
+ *   - an ordered list of scoped rows that override the default for specific
+ *     operational scopes (spaces) — e.g. "tickets with a Netherlands location
+ *     → Service Desk Amsterdam, everything else → Global Service Desk"
+ *
+ * Row matching is AND-combined inside each row (today only space, because
+ * the intake scoping service walks the space tree to produce
+ * operational_scope_chain). Domain and support-window matches are part of
+ * the schema but deferred to later UI passes — domain registry and support
+ * windows aren't UI-editable yet.
+ *
+ * Save runs a fixed 4-call sequence: ensure entity exists → create draft
+ * version → publish → attach to request_types.case_owner_policy_entity_id.
  */
 export function CaseOwnershipEditor() {
   const { data: requestTypes, loading: rtLoading, refetch: refetchRts } = useApi<RequestType[]>('/request-types', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
+  const { data: spaces } = useApi<SpaceOption[]>('/spaces', []);
   const { data: policyEntities } = useApi<PolicyEntity[]>('/admin/routing/policies/case_owner_policy', []);
 
   const [selectedRtId, setSelectedRtId] = useState<string>('');
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [currentTeamId, setCurrentTeamId] = useState<string | null>(null);
+  const [scopedRows, setScopedRows] = useState<PolicyRow[]>([]);
   const [loadingCurrent, setLoadingCurrent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const selectedRt = (requestTypes ?? []).find((r) => r.id === selectedRtId) ?? null;
-
-  // When admin picks a request type that already has a policy, fetch its
-  // published default_target so they see the current state before editing.
-  useEffect(() => {
-    const entityId = selectedRt?.case_owner_policy_entity_id ?? null;
-    if (!entityId) {
-      setCurrentTeamId(null);
-      setSelectedTeamId('');
-      return;
-    }
-    let cancelled = false;
-    setLoadingCurrent(true);
-    apiFetch<PublishedPolicyResponse>(`/admin/routing/policies/case_owner_policy/${entityId}`)
-      .then((res) => {
-        if (cancelled) return;
-        const teamId = res.published?.definition.default_target.team_id ?? null;
-        setCurrentTeamId(teamId);
-        setSelectedTeamId(teamId ?? '');
-      })
-      .catch(() => {
-        if (!cancelled) setCurrentTeamId(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingCurrent(false);
-      });
-    return () => { cancelled = true; };
-  }, [selectedRt]);
   const teamsById = useMemo(() => new Map((teams ?? []).map((t) => [t.id, t])), [teams]);
   const entitiesById = useMemo(
     () => new Map((policyEntities ?? []).map((e) => [e.id, e])),
@@ -111,15 +103,91 @@ export function CaseOwnershipEditor() {
 
   const attachedRows = (requestTypes ?? []).filter((r) => r.case_owner_policy_entity_id);
 
+  // Load existing policy state (default team + scoped rows) when a RT with a
+  // policy is picked. Resets to blank when picking a RT without one.
+  useEffect(() => {
+    const entityId = selectedRt?.case_owner_policy_entity_id ?? null;
+    if (!entityId) {
+      setCurrentTeamId(null);
+      setSelectedTeamId('');
+      setScopedRows([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCurrent(true);
+    apiFetch<PublishedPolicyResponse>(`/admin/routing/policies/case_owner_policy/${entityId}`)
+      .then((res) => {
+        if (cancelled) return;
+        const def = res.published?.definition ?? null;
+        const teamId = def?.default_target.team_id ?? null;
+        setCurrentTeamId(teamId);
+        setSelectedTeamId(teamId ?? '');
+        setScopedRows(def?.rows ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentTeamId(null);
+          setScopedRows([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCurrent(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedRt]);
+
+  function addScopedRow() {
+    setScopedRows((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        match: { operational_scope_ids: [] },
+        target: { kind: 'team', team_id: '' },
+        ordering_hint: prev.length,
+      },
+    ]);
+  }
+
+  function updateScopedRowSpace(rowId: string, spaceId: string) {
+    setScopedRows((prev) =>
+      prev.map((r) =>
+        r.id === rowId
+          ? { ...r, match: { ...r.match, operational_scope_ids: spaceId ? [spaceId] : [] } }
+          : r,
+      ),
+    );
+  }
+
+  function updateScopedRowTeam(rowId: string, teamId: string) {
+    setScopedRows((prev) =>
+      prev.map((r) =>
+        r.id === rowId ? { ...r, target: { kind: 'team', team_id: teamId } } : r,
+      ),
+    );
+  }
+
+  function removeScopedRow(rowId: string) {
+    setScopedRows((prev) =>
+      prev
+        .filter((r) => r.id !== rowId)
+        .map((r, i) => ({ ...r, ordering_hint: i })),
+    );
+  }
+
   async function handleSave() {
-    if (!selectedRt) {
-      toast.error('Pick a request type');
+    if (!selectedRt) { toast.error('Pick a request type'); return; }
+    if (!selectedTeamId) { toast.error('Pick a default team'); return; }
+
+    // Validate scoped rows locally before the 4-call sequence, so we fail fast
+    // instead of partway through (e.g. entity created but version rejected).
+    const incomplete = scopedRows.find(
+      (r) => !r.target.team_id || !(r.match.operational_scope_ids?.[0]),
+    );
+    if (incomplete) {
+      toast.error('Every scoped row needs a location and a team');
       return;
     }
-    if (!selectedTeamId) {
-      toast.error('Pick a default team');
-      return;
-    }
+
     setSaving(true);
     try {
       let entityId = selectedRt.case_owner_policy_entity_id;
@@ -137,6 +205,10 @@ export function CaseOwnershipEditor() {
         entityId = created.id;
       }
 
+      // Normalize ordering_hint to match array order so admins can reorder by
+      // removing + re-adding without keeping stale hints around.
+      const normalizedRows = scopedRows.map((r, i) => ({ ...r, ordering_hint: i }));
+
       const draft = await apiFetch<{ id: string }>(
         `/admin/routing/policies/case_owner_policy/${entityId}/versions`,
         {
@@ -146,7 +218,7 @@ export function CaseOwnershipEditor() {
               schema_version: 1,
               request_type_id: selectedRt.id,
               scope_source: 'requester_home',
-              rows: [],
+              rows: normalizedRows,
               default_target: { kind: 'team', team_id: selectedTeamId },
             },
           }),
@@ -165,11 +237,15 @@ export function CaseOwnershipEditor() {
         });
       }
 
+      const rowSummary = normalizedRows.length > 0
+        ? ` (+${normalizedRows.length} scoped row${normalizedRows.length === 1 ? '' : 's'})`
+        : '';
       toast.success(
-        `${selectedRt.name} now routes parent cases to ${teamsById.get(selectedTeamId)?.name ?? 'team'}`,
+        `${selectedRt.name} → ${teamsById.get(selectedTeamId)?.name ?? 'team'}${rowSummary}`,
       );
       setSelectedRtId('');
       setSelectedTeamId('');
+      setScopedRows([]);
       await refetchRts();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save policy');
@@ -230,8 +306,82 @@ export function CaseOwnershipEditor() {
                 ? 'Loading current policy…'
                 : currentTeamId
                   ? `Currently set to ${teamsById.get(currentTeamId)?.name ?? currentTeamId.slice(0, 8)}. Pick a different team and save to replace.`
-                  : 'This team owns the parent case when no scoped row matches. Scoped rows (by country, campus, etc.) are not editable from this MVP — they come in a later pass.'}
+                  : 'This team owns the parent case when no scoped row below matches.'}
             </FieldDescription>
+          </Field>
+
+          <FieldSeparator />
+
+          <Field>
+            <FieldLabel>Scoped rows</FieldLabel>
+            <FieldDescription>
+              Each row overrides the default for tickets whose operational scope matches. Rows
+              are evaluated in order — the first match wins.
+            </FieldDescription>
+            {scopedRows.length === 0 ? (
+              <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                No scoped rows. All tickets of this type route to the default team.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {scopedRows.map((row, i) => {
+                  const spaceId = row.match.operational_scope_ids?.[0] ?? '';
+                  return (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-[1.5rem_1fr_1fr_auto] items-center gap-2 rounded-md border bg-background p-2"
+                    >
+                      <span className="text-center text-xs text-muted-foreground">{i + 1}</span>
+                      <Select
+                        value={spaceId}
+                        onValueChange={(v) => updateScopedRowSpace(row.id, v ?? '')}
+                      >
+                        <SelectTrigger aria-label="Operational scope">
+                          <SelectValue placeholder="Pick a location" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(spaces ?? []).map((s) => (
+                            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={row.target.team_id}
+                        onValueChange={(v) => updateScopedRowTeam(row.id, v ?? '')}
+                      >
+                        <SelectTrigger aria-label="Team">
+                          <SelectValue placeholder="Pick a team" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(teams ?? []).map((t) => (
+                            <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Remove row"
+                        onClick={() => removeScopedRow(row.id)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={addScopedRow}
+              className="self-start"
+            >
+              <Plus className="mr-1 size-4" />
+              Add scoped row
+            </Button>
           </Field>
 
           <FieldSeparator />
