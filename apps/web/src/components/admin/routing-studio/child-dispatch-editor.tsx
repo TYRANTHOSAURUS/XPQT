@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -35,6 +35,25 @@ interface PolicyEntity {
   current_published_version_id: string | null;
 }
 
+interface ChildDispatchPolicyDefinition {
+  schema_version: 1;
+  request_type_id: string;
+  dispatch_mode: string;
+  split_strategy: string;
+  execution_routing: string;
+  fixed_target?: { kind: 'team' | 'vendor'; id: string };
+  fallback_target?: { kind: 'team' | 'vendor'; id: string };
+}
+
+interface PublishedPolicyResponse {
+  entity: PolicyEntity;
+  published: {
+    config_type: string;
+    definition: ChildDispatchPolicyDefinition;
+    version_id: string;
+  } | null;
+}
+
 type TargetKind = 'team' | 'vendor';
 
 /**
@@ -58,9 +77,43 @@ export function ChildDispatchEditor() {
   const [selectedRtId, setSelectedRtId] = useState('');
   const [targetKind, setTargetKind] = useState<TargetKind>('team');
   const [targetId, setTargetId] = useState('');
+  const [currentTarget, setCurrentTarget] = useState<{ kind: TargetKind; id: string } | null>(null);
+  const [loadingCurrent, setLoadingCurrent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const selectedRt = (requestTypes ?? []).find((r) => r.id === selectedRtId) ?? null;
+
+  // Prefetch the attached policy's current fixed_target so admins see what's set.
+  useEffect(() => {
+    const entityId = selectedRt?.child_dispatch_policy_entity_id ?? null;
+    if (!entityId) {
+      setCurrentTarget(null);
+      setTargetId('');
+      setTargetKind('team');
+      return;
+    }
+    let cancelled = false;
+    setLoadingCurrent(true);
+    apiFetch<PublishedPolicyResponse>(`/admin/routing/policies/child_dispatch_policy/${entityId}`)
+      .then((res) => {
+        if (cancelled) return;
+        const fixed = res.published?.definition.fixed_target ?? null;
+        if (fixed) {
+          setCurrentTarget({ kind: fixed.kind, id: fixed.id });
+          setTargetKind(fixed.kind);
+          setTargetId(fixed.id);
+        } else {
+          setCurrentTarget(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentTarget(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCurrent(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedRt]);
   const teamsById = useMemo(() => new Map((teams ?? []).map((t) => [t.id, t])), [teams]);
   const vendorsById = useMemo(() => new Map((vendors ?? []).map((v) => [v.id, v])), [vendors]);
   const entitiesById = useMemo(
@@ -201,9 +254,11 @@ export function ChildDispatchEditor() {
               </SelectContent>
             </Select>
             <FieldDescription>
-              Child work orders route here. Split strategies (per-location, per-asset) and
-              fallback targets come in a later pass — this MVP hardcodes single-target fixed
-              dispatch.
+              {loadingCurrent
+                ? 'Loading current policy…'
+                : currentTarget
+                  ? `Currently set to ${currentTarget.kind} "${(currentTarget.kind === 'team' ? teamsById.get(currentTarget.id)?.name : vendorsById.get(currentTarget.id)?.name) ?? currentTarget.id.slice(0, 8)}". Pick a different target and save to replace.`
+                  : 'Child work orders route here. Split strategies (per-location, per-asset) and fallback targets come in a later pass — this MVP hardcodes single-target fixed dispatch.'}
             </FieldDescription>
           </Field>
 

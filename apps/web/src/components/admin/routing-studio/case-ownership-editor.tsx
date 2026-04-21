@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,23 @@ interface PolicyEntity {
   current_published_version_id: string | null;
 }
 
+interface CaseOwnerPolicyDefinition {
+  schema_version: 1;
+  request_type_id: string;
+  scope_source: string;
+  rows: unknown[];
+  default_target: { kind: 'team'; team_id: string };
+}
+
+interface PublishedPolicyResponse {
+  entity: PolicyEntity;
+  published: {
+    config_type: string;
+    definition: CaseOwnerPolicyDefinition;
+    version_id: string;
+  } | null;
+}
+
 /**
  * Routing Studio Case Ownership editor (Workstream B + E MVP).
  *
@@ -54,9 +71,38 @@ export function CaseOwnershipEditor() {
 
   const [selectedRtId, setSelectedRtId] = useState<string>('');
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [currentTeamId, setCurrentTeamId] = useState<string | null>(null);
+  const [loadingCurrent, setLoadingCurrent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const selectedRt = (requestTypes ?? []).find((r) => r.id === selectedRtId) ?? null;
+
+  // When admin picks a request type that already has a policy, fetch its
+  // published default_target so they see the current state before editing.
+  useEffect(() => {
+    const entityId = selectedRt?.case_owner_policy_entity_id ?? null;
+    if (!entityId) {
+      setCurrentTeamId(null);
+      setSelectedTeamId('');
+      return;
+    }
+    let cancelled = false;
+    setLoadingCurrent(true);
+    apiFetch<PublishedPolicyResponse>(`/admin/routing/policies/case_owner_policy/${entityId}`)
+      .then((res) => {
+        if (cancelled) return;
+        const teamId = res.published?.definition.default_target.team_id ?? null;
+        setCurrentTeamId(teamId);
+        setSelectedTeamId(teamId ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentTeamId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCurrent(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedRt]);
   const teamsById = useMemo(() => new Map((teams ?? []).map((t) => [t.id, t])), [teams]);
   const entitiesById = useMemo(
     () => new Map((policyEntities ?? []).map((e) => [e.id, e])),
@@ -180,8 +226,11 @@ export function CaseOwnershipEditor() {
               </SelectContent>
             </Select>
             <FieldDescription>
-              This team owns the parent case when no scoped row matches. Scoped rows (by country,
-              campus, etc.) are not editable from this MVP — they come in a later pass.
+              {loadingCurrent
+                ? 'Loading current policy…'
+                : currentTeamId
+                  ? `Currently set to ${teamsById.get(currentTeamId)?.name ?? currentTeamId.slice(0, 8)}. Pick a different team and save to replace.`
+                  : 'This team owns the parent case when no scoped row matches. Scoped rows (by country, campus, etc.) are not editable from this MVP — they come in a later pass.'}
             </FieldDescription>
           </Field>
 
