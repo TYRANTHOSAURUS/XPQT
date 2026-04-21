@@ -239,6 +239,7 @@ export class ReclassifyService {
     const target = evaluation.target;
 
     let actorUserId: string | null = null;
+    let actorPersonId: string | null = null;
     if (actorAuthUid !== SYSTEM_ACTOR) {
       actorUserId = await this.resolveUserIdFromAuth(actorAuthUid, tenant.id);
       if (!actorUserId) {
@@ -247,6 +248,7 @@ export class ReclassifyService {
         // events are worse than refusing the operation.
         throw new UnprocessableEntityException('actor user not resolvable in tenant');
       }
+      actorPersonId = await this.resolvePersonIdFromAuth(actorAuthUid, tenant.id);
     }
 
     const { error: rpcError } = await this.supabase.admin.rpc('reclassify_ticket', {
@@ -274,13 +276,15 @@ export class ReclassifyService {
     }
 
     // Activity feed entry — shown in the ticket's Activity tab as a system row.
-    // One entry per reclassify, including the full impact summary so anyone
-    // reviewing the ticket history can see what changed without clicking
-    // through to the audit log.
+    // We pass author_person_id explicitly (resolved before the RPC, while the
+    // actor still had write access) and SYSTEM_ACTOR for actorAuthUid so
+    // addActivity doesn't re-assertVisible — the actor may have been routed
+    // off the ticket by reclassify, which would cause a false 403 here.
     try {
       await this.tickets.addActivity(ticketId, {
         activity_type: 'system_event',
         visibility: 'system',
+        author_person_id: actorPersonId ?? undefined,
         metadata: {
           event: `Reclassified from "${impact.ticket.current_request_type.name}" to "${impact.ticket.new_request_type.name}"`,
           event_type: 'request_type_changed',
@@ -521,6 +525,16 @@ export class ReclassifyService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
     return (data?.id as string | undefined) ?? null;
+  }
+
+  private async resolvePersonIdFromAuth(authUid: string, tenantId: string): Promise<string | null> {
+    const { data } = await this.supabase.admin
+      .from('users')
+      .select('person_id')
+      .eq('auth_uid', authUid)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    return (data?.person_id as string | undefined) ?? null;
   }
 
   // ─────── Builders ───────

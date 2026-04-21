@@ -713,7 +713,7 @@ export class TicketService {
             from_sla_id: changes.sla_id.from,
             to_sla_id: changes.sla_id.to,
           },
-        });
+        }, undefined, actorAuthUid);
       } catch (err) {
         console.error('[sla] restart on sla_id change failed', err);
       }
@@ -725,7 +725,7 @@ export class TicketService {
         activity_type: 'system_event',
         visibility: 'system',
         metadata: { event: 'status_changed', ...changes.status_category },
-      });
+      }, undefined, actorAuthUid);
       await this.logDomainEvent(id, 'ticket_status_changed', changes.status_category);
     }
 
@@ -738,7 +738,7 @@ export class TicketService {
           team: changes.assigned_team_id,
           user: changes.assigned_user_id,
         },
-      });
+      }, undefined, actorAuthUid);
       await this.logDomainEvent(id, 'ticket_assigned', {
         team: changes.assigned_team_id,
         user: changes.assigned_user_id,
@@ -966,7 +966,20 @@ export class TicketService {
       await this.visibility.assertVisible(ticketId, ctx, 'write');
     }
 
-    const authorPersonId = await this.resolveAuthorPersonId(dto.author_person_id, accessToken);
+    // Resolve author: explicit DTO value > access-token lookup > auth-uid lookup.
+    // Internal system_event callers pass actorAuthUid but no access token — the
+    // auth-uid fallback ensures those rows are still attributed to a person so
+    // the activity feed shows "who did what when" instead of just "what when".
+    let authorPersonId = await this.resolveAuthorPersonId(dto.author_person_id, accessToken);
+    if (!authorPersonId && actorAuthUid !== SYSTEM_ACTOR) {
+      const { data: userRow } = await this.supabase.admin
+        .from('users')
+        .select('person_id')
+        .eq('auth_uid', actorAuthUid)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (userRow?.person_id) authorPersonId = userRow.person_id as string;
+    }
 
     const { data, error } = await this.supabase.admin
       .from('ticket_activities')

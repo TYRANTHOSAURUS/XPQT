@@ -572,9 +572,13 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                   const eventText =
                     (activity.metadata as Record<string, unknown> | null)?.event as string | undefined
                     ?? activity.content;
+                  const who = activity.author
+                    ? `${activity.author.first_name ?? ''} ${activity.author.last_name ?? ''}`.trim() || 'System'
+                    : 'System';
                   return (
                     <div key={activity.id} className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3 shrink-0" />
+                      <span className="text-foreground/80 font-medium shrink-0">{who}</span>
                       <span className="truncate">{eventText}</span>
                       <span className="shrink-0">· {timeAgo(activity.created_at)}</span>
                     </div>
