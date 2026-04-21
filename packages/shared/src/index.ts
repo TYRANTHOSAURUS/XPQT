@@ -6,4 +6,3 @@ export * from './types/tenant';
 export * from './types/ticket';
 export * from './types/form-bindings';
 export * from './types/routing';
-export * from './validators/routing';

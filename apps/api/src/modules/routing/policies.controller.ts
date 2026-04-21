@@ -6,7 +6,7 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
-import { ROUTING_STUDIO_SCHEMAS, type RoutingStudioConfigType } from '@prequest/shared';
+import { ROUTING_STUDIO_SCHEMAS, type RoutingStudioConfigType } from './policy-validators';
 import { TenantContext } from '../../common/tenant-context';
 import { PolicyStoreService } from './policy-store.service';
 

@@ -1,19 +1,22 @@
 // Workstream A / task WA-1: runtime validators for routing policy definitions.
 // Schemas here are the canonical runtime check for anything stored in
 // public.config_versions.definition for the routing-studio config types.
-// Both apps/api (PolicyStoreService) and apps/web (policy editor UI) import
-// from here — single source of truth.
 //
-// Types in ./types/routing.ts are kept hand-authored; we assert via generic
-// constraints below that the inferred zod output is compatible. If the
-// TS type drifts from the schema, the test file in apps/api catches it.
+// Lives in apps/api (not @prequest/shared) because zod v4 is an ESM-only
+// package. Re-exporting it from shared/src/index.ts flipped Node's loader
+// into ESM mode for the whole monorepo and broke the API's CJS require
+// chain (extensionless re-exports of './types/enums' fail ESM resolution).
+// Types stay in @prequest/shared; validators live here.
+//
+// Types in @prequest/shared/types/routing.ts are hand-authored; we assert
+// via generic constraints below that the inferred zod output is compatible.
 
 import { z } from 'zod';
 import type {
   CaseOwnerPolicyDefinition,
   ChildDispatchPolicyDefinition,
   SpaceLevelsDefinition,
-} from '../types/routing';
+} from '@prequest/shared';
 
 const TeamTarget = z.object({
   kind: z.literal('team'),

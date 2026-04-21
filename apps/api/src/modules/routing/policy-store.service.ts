@@ -3,7 +3,7 @@ import {
   parsePolicyDefinition,
   ROUTING_STUDIO_SCHEMAS,
   type RoutingStudioConfigType,
-} from '@prequest/shared';
+} from './policy-validators';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 
 /**

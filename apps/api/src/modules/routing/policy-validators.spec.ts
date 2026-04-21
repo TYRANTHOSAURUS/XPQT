@@ -3,7 +3,7 @@ import {
   CaseOwnerPolicyDefinitionSchema,
   ChildDispatchPolicyDefinitionSchema,
   SpaceLevelsDefinitionSchema,
-} from '@prequest/shared';
+} from './policy-validators';
 
 describe('routing policy validators', () => {
   // Valid RFC 4122 v4 UUIDs (strict zod check requires real version nibble).
