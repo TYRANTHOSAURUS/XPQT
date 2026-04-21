@@ -8,25 +8,34 @@ import { DomainFallbacksEditor } from '@/components/admin/routing-studio/domain-
 import { SpaceGroupsEditor } from '@/components/admin/routing-studio/space-groups-editor';
 import { RoutingRulesEditor } from '@/components/admin/routing-studio/routing-rules-editor';
 import { LocationTeamsEditor } from '@/components/admin/routing-studio/location-teams-editor';
+import { RoutingStudioOverview } from '@/components/admin/routing-studio/overview-tab';
+import { ResolverPipelineStrip, type PipelineStep } from '@/components/admin/routing-studio/resolver-pipeline-strip';
 
-type TabId = 'simulator' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks';
+type TabId = 'overview' | 'simulator' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks';
 
 const VALID_TABS: readonly TabId[] = [
-  'simulator', 'rules', 'audit', 'coverage', 'mappings', 'groups', 'fallbacks',
+  'overview', 'simulator', 'rules', 'audit', 'coverage', 'mappings', 'groups', 'fallbacks',
 ] as const;
 
 function coerceTab(value: string | null): TabId {
   return (VALID_TABS as readonly string[]).includes(value ?? '')
     ? (value as TabId)
-    : 'simulator';
+    : 'overview';
 }
+
+const STEP_TO_TAB: Record<PipelineStep, TabId> = {
+  rules: 'rules',
+  asset: 'mappings',
+  coverage: 'coverage',
+  defaults: 'rules',
+  unassigned: 'audit',
+};
 
 export function RoutingStudioPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = coerceTab(searchParams.get('tab'));
   const [tab, setTabState] = useState<TabId>(urlTab);
 
-  // Sync state when the URL changes externally (redirect landings, back/forward nav).
   useEffect(() => {
     if (urlTab !== tab) setTabState(urlTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,16 +49,19 @@ export function RoutingStudioPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 py-4">
+    <div className="flex flex-col gap-5 py-4">
       <div>
         <h1 className="text-2xl font-semibold">Routing Studio</h1>
         <p className="text-sm text-muted-foreground">
-          Explore how routing rules, locations, assets, and fallbacks compose to assign tickets.
+          One surface for how tickets get assigned. The resolver runs the steps below in order — first match wins.
         </p>
       </div>
 
+      <ResolverPipelineStrip onStepClick={(step) => setTab(STEP_TO_TAB[step])} />
+
       <Tabs value={tab} onValueChange={(v) => setTab(coerceTab(v))}>
         <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="simulator">Simulator</TabsTrigger>
           <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
@@ -58,6 +70,10 @@ export function RoutingStudioPage() {
           <TabsTrigger value="fallbacks">Fallbacks</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="overview">
+          <RoutingStudioOverview onOpenTab={(t) => setTab(coerceTab(t))} />
+        </TabsContent>
 
         <TabsContent value="simulator">
           <RoutingSimulator />
