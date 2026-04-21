@@ -3,28 +3,60 @@ import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RoutingSimulator } from '@/components/admin/routing-studio/simulator';
 import { RoutingAuditTab } from '@/components/admin/routing-studio/audit-tab';
-import { CoverageMatrix } from '@/components/admin/routing-studio/coverage-matrix';
-import { DomainFallbacksEditor } from '@/components/admin/routing-studio/domain-fallbacks-editor';
-import { SpaceGroupsEditor } from '@/components/admin/routing-studio/space-groups-editor';
-import { RoutingRulesEditor } from '@/components/admin/routing-studio/routing-rules-editor';
-import { LocationTeamsEditor } from '@/components/admin/routing-studio/location-teams-editor';
-import { RoutingStudioOverview } from '@/components/admin/routing-studio/overview-tab';
 import { ResolverPipelineStrip } from '@/components/admin/routing-studio/resolver-pipeline-strip';
 import { CaseOwnershipEditor } from '@/components/admin/routing-studio/case-ownership-editor';
-import { ChildDispatchEditor } from '@/components/admin/routing-studio/child-dispatch-editor';
 import { VisibilityTab } from '@/components/admin/routing-studio/visibility-tab';
-import { DomainsEditor } from '@/components/admin/routing-studio/domains-editor';
+import { RoutingMap } from '@/components/admin/routing-studio/routing-map';
+import { ChildDispatchTab } from '@/components/admin/routing-studio/child-dispatch-tab';
+import { AdvancedOverridesTab } from '@/components/admin/routing-studio/advanced-overrides-tab';
 
-type TabId = 'overview' | 'simulator' | 'case-ownership' | 'child-dispatch' | 'visibility' | 'rules' | 'audit' | 'coverage' | 'mappings' | 'groups' | 'fallbacks' | 'domains';
+/**
+ * Routing Studio — seven top-level tabs matching Artifact C's target IA:
+ *
+ *   Routing Map · Case Ownership · Child Dispatch · Visibility ·
+ *   Simulator · Advanced Overrides · Audit
+ *
+ * Removed from the v0 layout: Overview (empty state now lives in Routing
+ * Map), Coverage (legacy matrix; merged into Child Dispatch sub-panel),
+ * Mappings + Groups (ditto), Domains + Fallbacks (merged into Advanced
+ * Overrides sub-panels). Old `?tab=` URLs redirect to the new tab they
+ * live inside so bookmarks keep working.
+ */
+
+type TabId =
+  | 'routing-map'
+  | 'case-ownership'
+  | 'child-dispatch'
+  | 'visibility'
+  | 'simulator'
+  | 'rules'
+  | 'audit';
 
 const VALID_TABS: readonly TabId[] = [
-  'overview', 'simulator', 'case-ownership', 'child-dispatch', 'visibility', 'rules', 'audit', 'coverage', 'mappings', 'groups', 'fallbacks', 'domains',
+  'routing-map',
+  'case-ownership',
+  'child-dispatch',
+  'visibility',
+  'simulator',
+  'rules',
+  'audit',
 ] as const;
 
+// Old URLs land on the new tab that absorbs them.
+const TAB_ALIASES: Record<string, TabId> = {
+  overview: 'routing-map',
+  coverage: 'child-dispatch',
+  mappings: 'child-dispatch',
+  groups: 'child-dispatch',
+  fallbacks: 'rules',
+  domains: 'rules',
+};
+
 function coerceTab(value: string | null): TabId {
-  return (VALID_TABS as readonly string[]).includes(value ?? '')
-    ? (value as TabId)
-    : 'overview';
+  if (!value) return 'routing-map';
+  if ((VALID_TABS as readonly string[]).includes(value)) return value as TabId;
+  if (value in TAB_ALIASES) return TAB_ALIASES[value];
+  return 'routing-map';
 }
 
 export function RoutingStudioPage() {
@@ -53,30 +85,21 @@ export function RoutingStudioPage() {
         </p>
       </div>
 
-      <ResolverPipelineStrip onTabClick={(t) => setTab(t)} />
+      <ResolverPipelineStrip onTabClick={(t) => setTab(coerceTab(t))} />
 
       <Tabs value={tab} onValueChange={(v) => setTab(coerceTab(v))}>
         <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="simulator">Simulator</TabsTrigger>
+          <TabsTrigger value="routing-map">Routing Map</TabsTrigger>
           <TabsTrigger value="case-ownership">Case Ownership</TabsTrigger>
           <TabsTrigger value="child-dispatch">Child Dispatch</TabsTrigger>
           <TabsTrigger value="visibility">Visibility</TabsTrigger>
+          <TabsTrigger value="simulator">Simulator</TabsTrigger>
           <TabsTrigger value="rules">Advanced Overrides</TabsTrigger>
-          <TabsTrigger value="coverage">Coverage</TabsTrigger>
-          <TabsTrigger value="mappings">Mappings</TabsTrigger>
-          <TabsTrigger value="groups">Groups</TabsTrigger>
-          <TabsTrigger value="fallbacks">Fallbacks</TabsTrigger>
-          <TabsTrigger value="domains">Domains</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview">
-          <RoutingStudioOverview onOpenTab={(t) => setTab(coerceTab(t))} />
-        </TabsContent>
-
-        <TabsContent value="simulator">
-          <RoutingSimulator />
+        <TabsContent value="routing-map">
+          <RoutingMap onOpenTab={(t) => setTab(coerceTab(t))} />
         </TabsContent>
 
         <TabsContent value="case-ownership">
@@ -84,35 +107,19 @@ export function RoutingStudioPage() {
         </TabsContent>
 
         <TabsContent value="child-dispatch">
-          <ChildDispatchEditor />
+          <ChildDispatchTab />
         </TabsContent>
 
         <TabsContent value="visibility">
           <VisibilityTab />
         </TabsContent>
 
+        <TabsContent value="simulator">
+          <RoutingSimulator />
+        </TabsContent>
+
         <TabsContent value="rules">
-          <RoutingRulesEditor compact />
-        </TabsContent>
-
-        <TabsContent value="coverage">
-          <CoverageMatrix />
-        </TabsContent>
-
-        <TabsContent value="mappings">
-          <LocationTeamsEditor compact />
-        </TabsContent>
-
-        <TabsContent value="groups">
-          <SpaceGroupsEditor compact />
-        </TabsContent>
-
-        <TabsContent value="fallbacks">
-          <DomainFallbacksEditor compact />
-        </TabsContent>
-
-        <TabsContent value="domains">
-          <DomainsEditor />
+          <AdvancedOverridesTab />
         </TabsContent>
 
         <TabsContent value="audit">
