@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Post, Put, Query } from '@nestjs/common';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
-import { DecisionRow, RoutingAuditService } from './audit.service';
+import { DecisionRow, DualRunLogRow, RoutingAuditService } from './audit.service';
 import { CoverageResponse, RoutingCoverageService } from './coverage.service';
 import { ChosenBy } from './resolver.types';
 
@@ -51,6 +51,23 @@ export class RoutingSimulatorController {
       offset: offset ? Number.parseInt(offset, 10) : undefined,
       chosen_by: chosenBy as ChosenBy | undefined,
       ticket_id: ticketId,
+      since,
+    });
+  }
+
+  @Get('dualrun-logs')
+  async listDualRunLogs(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('hook') hook?: string,
+    @Query('only_divergent') onlyDivergent?: string,
+    @Query('since') since?: string,
+  ): Promise<{ rows: DualRunLogRow[]; total: number }> {
+    return this.audit.listDualRunLogs({
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      offset: offset ? Number.parseInt(offset, 10) : undefined,
+      hook: hook === 'case_owner' || hook === 'child_dispatch' ? hook : undefined,
+      only_divergent: onlyDivergent === 'true' || onlyDivergent === '1',
       since,
     });
   }
