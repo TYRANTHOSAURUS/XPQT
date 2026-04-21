@@ -273,6 +273,28 @@ export class ReclassifyService {
       throw rpcError;
     }
 
+    // Activity feed entry — shown in the ticket's Activity tab as a system row.
+    // One entry per reclassify, including the full impact summary so anyone
+    // reviewing the ticket history can see what changed without clicking
+    // through to the audit log.
+    try {
+      await this.tickets.addActivity(ticketId, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: {
+          event: `Reclassified from "${impact.ticket.current_request_type.name}" to "${impact.ticket.new_request_type.name}"`,
+          event_type: 'request_type_changed',
+          from_request_type: impact.ticket.current_request_type,
+          to_request_type: impact.ticket.new_request_type,
+          reason: dto.reason,
+          closed_child_count: impact.children.length,
+          cancelled_workflow: impact.workflow.will_be_cancelled,
+        },
+      });
+    } catch (err) {
+      console.error('[reclassify] addActivity failed', err);
+    }
+
     // Post-RPC best-effort side effects. The RPC has already committed; any
     // failure here is recoverable (cron will eventually heal timers, admin can
     // start a workflow manually). We still collect warnings so the caller can
