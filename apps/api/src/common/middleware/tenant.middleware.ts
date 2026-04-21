@@ -17,21 +17,29 @@ export class TenantMiddleware implements NestMiddleware {
   }
 
   private async resolveTenant(req: Request): Promise<TenantInfo | null> {
-    // Method 1: Subdomain (primary — acme.platform.com)
+    // Method 1: Header (for API consumers — explicit wins)
+    const headerTenantId = req.headers['x-tenant-id'] as string;
+    if (headerTenantId) {
+      const t = await this.tenantService.resolveById(headerTenantId);
+      if (t) return t;
+    }
+
+    // Method 2: Subdomain (primary — acme.platform.com)
     const host = req.hostname;
     const subdomain = host.split('.')[0];
     if (subdomain && subdomain !== 'www' && subdomain !== 'localhost') {
-      return this.tenantService.resolveBySlug(subdomain);
+      const t = await this.tenantService.resolveBySlug(subdomain);
+      if (t) return t;
     }
 
-    // Method 2: Header (for API consumers)
-    const headerTenantId = req.headers['x-tenant-id'] as string;
-    if (headerTenantId) {
-      return this.tenantService.resolveById(headerTenantId);
-    }
-
-    // Local development: use default tenant or first available
-    if (host === 'localhost' || host === '127.0.0.1') {
+    // Local development / single-tenant deploy: resolve a default tenant.
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    const fallbackSlug = process.env.DEFAULT_TENANT_SLUG;
+    if (isLocal || fallbackSlug) {
+      if (fallbackSlug) {
+        const t = await this.tenantService.resolveBySlug(fallbackSlug);
+        if (t) return t;
+      }
       return this.tenantService.resolveDefault();
     }
 
