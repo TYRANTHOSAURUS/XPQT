@@ -97,4 +97,51 @@ export class PersonService {
     if (error) throw error;
     return data;
   }
+
+  // ── Portal-scope slice: location grants ──────────────────────────────────
+
+  async listLocationGrants(personId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('person_location_grants')
+      .select('id, space_id, granted_by_user_id, granted_at, note, space:spaces(id, name, type)')
+      .eq('person_id', personId)
+      .eq('tenant_id', tenant.id)
+      .order('granted_at');
+    if (error) throw error;
+    return data;
+  }
+
+  async addLocationGrant(
+    personId: string,
+    dto: { space_id: string; note?: string },
+    grantedByUserId?: string,
+  ) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('person_location_grants')
+      .insert({
+        tenant_id: tenant.id,
+        person_id: personId,
+        space_id: dto.space_id,
+        note: dto.note ?? null,
+        granted_by_user_id: grantedByUserId ?? null,
+      })
+      .select('id, space_id, granted_by_user_id, granted_at, note')
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async removeLocationGrant(personId: string, grantId: string) {
+    const tenant = TenantContext.current();
+    const { error } = await this.supabase.admin
+      .from('person_location_grants')
+      .delete()
+      .eq('id', grantId)
+      .eq('person_id', personId)
+      .eq('tenant_id', tenant.id);
+    if (error) throw error;
+    return { ok: true };
+  }
 }

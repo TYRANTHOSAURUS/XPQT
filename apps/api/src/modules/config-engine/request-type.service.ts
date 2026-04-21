@@ -47,6 +47,7 @@ export class RequestTypeService {
     asset_type_filter?: string[];
     requires_location?: boolean;
     location_required?: boolean;
+    location_granularity?: string | null;
     default_team_id?: string | null;
     default_vendor_id?: string | null;
     requires_approval?: boolean;
