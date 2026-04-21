@@ -219,6 +219,28 @@ describe('ResolverService', () => {
       expect(d.target).toEqual({ kind: 'team', team_id: 'vip-team' });
     });
 
+    it('excluded_rule_ids skips those rules so next step can win (simulator "disable rule")', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([
+          {
+            id: 'r1', name: 'VIP', priority: 100,
+            conditions: [{ field: 'priority', operator: 'equals', value: 'urgent' }],
+            action_assign_team_id: 'vip-team', action_assign_user_id: null,
+          },
+        ]),
+        loadRequestType: jest.fn().mockResolvedValue({
+          id: 'rt', domain: 'fm', fulfillment_strategy: 'fixed',
+          default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
+        }),
+      });
+      const svc = new ResolverService(repo as never);
+      const d = await svc.resolve(
+        ctx({ request_type_id: 'rt', priority: 'urgent', excluded_rule_ids: ['r1'] }),
+      );
+      expect(d.chosen_by).toBe('request_type_default');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'normal-team' });
+    });
+
     it('rules with no match fall through to the resolver chain', async () => {
       const repo = stubRepo({
         loadRoutingRules: jest.fn().mockResolvedValue([

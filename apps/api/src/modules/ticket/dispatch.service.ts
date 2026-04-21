@@ -100,7 +100,11 @@ export class DispatchService {
         asset_id: assetId,
         location_id: locationId,
       };
-      routingEvaluation = await this.routingService.evaluate(routingCtx);
+      // Child work-order dispatch → evaluator's 'child_dispatch' hook. During
+      // dual-run this is a pass-through to the legacy resolver; once a tenant
+      // attaches a child_dispatch_policy and flips routing_v2_mode, the v2
+      // split + per-child resolver takes over.
+      routingEvaluation = await this.routingService.evaluate(routingCtx, 'child_dispatch');
       if (routingEvaluation.target) {
         if (routingEvaluation.target.kind === 'team') row.assigned_team_id = routingEvaluation.target.team_id;
         if (routingEvaluation.target.kind === 'user') row.assigned_user_id = routingEvaluation.target.user_id;

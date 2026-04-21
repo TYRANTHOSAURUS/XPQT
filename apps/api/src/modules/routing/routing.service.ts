@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { ResolverService } from './resolver.service';
+import { RoutingEvaluatorService, RoutingHook } from './routing-evaluator.service';
 import {
   AssignmentTarget,
   ChosenBy,
@@ -23,11 +23,24 @@ export interface RoutingEvaluation {
 export class RoutingService {
   constructor(
     private readonly supabase: SupabaseService,
-    private readonly resolver: ResolverService,
+    private readonly evaluator: RoutingEvaluatorService,
   ) {}
 
-  async evaluate(context: ResolverContext): Promise<RoutingEvaluation> {
-    const decision = await this.resolver.resolve(context);
+  /**
+   * Evaluate routing for a ticket. The evaluator wraps both the legacy
+   * ResolverService and the v2 engines under `routing_v2_mode` — this method
+   * transparently dispatches to whichever path the tenant's flag selects.
+   *
+   * Callers pass `hook` to distinguish the parent-case owner decision from
+   * the child-work-order dispatch decision. TicketService (parent create +
+   * reassignment) passes `'case_owner'`; DispatchService passes
+   * `'child_dispatch'`. Default is `'case_owner'` for historical callers.
+   */
+  async evaluate(context: ResolverContext, hook: RoutingHook = 'case_owner'): Promise<RoutingEvaluation> {
+    const decision =
+      hook === 'child_dispatch'
+        ? await this.evaluator.evaluateChildDispatch(context)
+        : await this.evaluator.evaluateCaseOwner(context);
     return {
       target: decision.target,
       chosen_by: decision.chosen_by,

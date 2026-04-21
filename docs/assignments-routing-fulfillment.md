@@ -554,3 +554,106 @@ Move items here with a date when a gap from §13 is closed. Keeps the doc honest
 - **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that was the *case* policy bleeding into child rows). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team default → none. New schema in migration `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill, future dispatches are correct. Cases also gain a close guard that refuses `resolved`/`closed` while any child is still open, and children's `sla_id` is now editable post-dispatch via `PATCH /tickets/:id` which calls `SlaService.restartTimers`. Workflow `create_child_tasks` node now forwards per-task `sla_policy_id` through to dispatch.
 - **2026-04-18 — Sidebar reassign now audits.** The desk sidebar's `useTicketMutation.updateAssignment` hook now calls `POST /tickets/:id/reassign` (with a synthesized reason) whenever an existing assignee is replaced. First-time assignment still uses silent `PATCH`. `routing_decisions` captures every sidebar reassignment going forward.
 - **2026-04-18 — Workflow-spawned children reach parity with manual dispatch.** `WorkflowEngineService.create_child_tasks` now calls `DispatchService.dispatch` per task. Children receive SLA timer start, a `routing_decisions` row, and a `dispatched` parent activity — same as manual dispatch via `POST /tickets/:id/dispatch`.
+
+## 17. Routing Studio (admin surface)
+
+Feature-flagged under `VITE_FEATURE_ROUTING_STUDIO`. Reaches the resolver without changing runtime behavior — read-only dry-runs and explainability.
+
+- `POST /routing/studio/simulate` — wraps `ResolverService.resolve` without persisting. Accepts optional `disabled_rule_ids` to demo "what if this rule didn't match." Implemented via `excluded_rule_ids` on `ResolverContext` (backwards-compatible additive field).
+- `GET /routing/studio/decisions` — paginated read of `routing_decisions` with filters (`chosen_by`, `ticket_id`, `since`). Batches team/vendor/user name lookups to avoid N+1. Indexed by existing `(tenant_id, chosen_by)` and `(tenant_id, ticket_id)`.
+- `GET /routing/studio/coverage` — location × domain matrix. Powered by `public.resolve_coverage(tenant, space_ids[], domains[])` SQL function (migration `00037`) which mirrors the location-chain walk + domain-fallback logic of `ResolverService` without touching `routing_rules` / asset / request-type-default (those aren't part of "coverage" as a concept — they're orthogonal). Returns rows with `chosen_by ∈ {direct, parent, space_group, domain_fallback, uncovered}` plus the matched target and inheritance trail.
+
+Studio is additive and feature-flagged: toggling off returns the UI to the pre-Studio admin surface with zero DB side effects. The SQL function is `STABLE` and idempotent to drop.
+
+## 18. Routing v2 contracts (Workstream 0)
+
+The Routing Studio improvement plan (`docs/routing-studio-improvement-plan-2026-04-21.md`) introduces a four-policy model on top of the existing resolver. Workstream 0 froze the shared types and added additive schema without changing any runtime behavior. What exists today:
+
+- **Shared types** at `packages/shared/src/types/routing.ts` — `IntakeContext`, `NormalizedRoutingContext`, `CaseOwnerPolicyDefinition`, `ChildDispatchPolicyDefinition`, `ChildPlan`, `RoutingPolicy`, `ResolverInput/Output`, `VisibilityHints`, `SimulateRequest/Response`, `MapQuery/Response`, `SpaceLevelsDefinition`, `RoutingV2Mode`. These are the contracts every later workstream imports.
+- **Config types** on `config_entities.config_type`: `case_owner_policy`, `child_dispatch_policy`, `domain_registry`, `space_levels` (migration 00038). Policy payload lives in `config_versions.definition` per the shared TS interfaces. Request types get nullable FK columns `case_owner_policy_entity_id` and `child_dispatch_policy_entity_id` — required-by-cutover per the `v2_only` mode below.
+- **Domain registry** — `public.domains` table with `(tenant_id, key)` unique constraint and self-referential `parent_domain_id` (migration 00039). Nullable `domain_id` FKs on `request_types`, `location_teams`, `domain_parents` run alongside existing free-text columns during dual-run. Cutover drops the text columns.
+- **Dual-run hook** — `RoutingEvaluatorService` at `apps/api/src/modules/routing/routing-evaluator.service.ts`. Reads `tenants.feature_flags.routing_v2_mode` (default `off`) and progresses `off → dualrun → shadow → v2_only` per tenant. Writes one row to `public.routing_dualrun_logs` (migration 00040) per evaluation when the mode is not `off`, capturing legacy-vs-v2 target/chosen_by diff.
+- **Not yet wired** — the evaluator is registered and exported from `RoutingModule` but `TicketService.runPostCreateAutomation` and `DispatchService.dispatch` still call `ResolverService` directly. The v2 engine itself is a stub (`evaluateV2` throws `RoutingV2NotImplementedError`). Workstreams B/C/D replace the stub and swap the call sites.
+
+### MANDATORY doc triggers — additions
+
+In addition to the triggers in §15, update this document when any of the following change:
+
+- `apps/api/src/modules/routing/routing-evaluator.service.ts` — the dual-run seam.
+- `apps/api/src/modules/routing/policy-store.service.ts` — config-engine-backed policy storage.
+- `apps/api/src/modules/routing/domain-registry.service.ts` — `public.domains` CRUD.
+- Any migration altering `public.domains`, `public.routing_dualrun_logs`, or the `case_owner_policy` / `child_dispatch_policy` / `domain_registry` / `space_levels` shape stored in `config_versions.definition`.
+- `tenants.feature_flags.routing_v2_mode` semantics (add modes, change progression).
+- `packages/shared/src/types/routing.ts` — it's the cross-workstream contract.
+- `packages/shared/src/validators/routing.ts` — the runtime zod schemas. Changing a schema without bumping `schema_version` is a breaking change.
+
+## 19. Routing v2 policy storage (Workstream A)
+
+Workstream A added the service layer to author and publish policies on top of the config engine, without any HTTP or runtime call sites.
+
+- **`PolicyStoreService`** (`apps/api/src/modules/routing/policy-store.service.ts`) — CRUD + publish lifecycle for `case_owner_policy`, `child_dispatch_policy`, `domain_registry`, and `space_levels` entities. Every mutation validates the definition against the zod schemas in `@prequest/shared` before touching the database. `createEntity` → `createDraftVersion` → `publishVersion` mirrors the request-type / workflow / SLA lifecycle. `getPublishedDefinition` is what downstream engines call at ticket-create time once Workstreams B/C/D wire them in.
+- **`DomainRegistryService`** (`apps/api/src/modules/routing/domain-registry.service.ts`) — CRUD for `public.domains`. Keys are normalized to lowercase and validated against `[a-z0-9][a-z0-9_-]*`. Parent re-parenting does a recursive walk (`MAX_PARENT_WALK = 20`) to reject transitive cycles before they hit the DB. `deactivate` is a soft delete (`active = false`) — hard delete would null-out every `domain_id` FK that ever referenced the row.
+- Both services are registered and exported from `RoutingModule`. Not wired to HTTP yet (Workstream E's studio UI opens the first call sites).
+
+## 20. Routing v2 case-owner engine (Workstream B)
+
+The `case_owner` hook on `RoutingEvaluatorService` is now a live v2 path — `evaluateV2('case_owner', ctx)` no longer throws. `child_dispatch` still throws until Workstream C lands.
+
+Execution flow when `routing_v2_mode != off`:
+
+1. `loadCaseOwnerPolicyEntityId(tenant_id, request_type_id)` reads `request_types.case_owner_policy_entity_id`. If null, v2 returns a fail-soft `unassigned` decision with a trace entry explaining why.
+2. `PolicyStoreService.getPublishedDefinition` loads the published `case_owner_policy` definition and re-validates via zod.
+3. `IntakeScopingService.normalize(intake)` converts `IntakeContext` → `NormalizedRoutingContext`. Heuristics during dual-run:
+   - `scope_source`: `selected` if `selected_location_id`, `asset_location` if `asset_id`, else `requester_home`.
+   - `location_id`: trusted only when `scope_source ∈ {selected, manual}`.
+   - `domain_id`: free-text `request_types.domain` looked up in the registry via `DomainRegistryService.findByKey`. Null is a legal dual-run state.
+   - `operational_scope_chain`: `ResolverRepository.locationChain`, capped at `MAX_SPACE_WALK = 12`.
+   - `active_support_window_id`: always null until Workstream D wires time windows.
+4. `CaseOwnerEngineService.evaluate(context, policy)` walks `policy.rows` sorted by `ordering_hint` ASC. A row matches when **every** populated `match.*` clause is satisfied (`operational_scope_ids` via chain intersection, `domain_ids` via equality, `support_window_id` via equality). First match wins; otherwise `default_target`. The engine is a pure function — no IO.
+5. `adaptOwnerDecisionToResolver` maps `OwnerDecision` → `ResolverDecision` with `chosen_by: 'policy_row' | 'policy_default'`. These two values are new on the api-side `ChosenBy` union; `routing_decisions.chosen_by` has no check constraint so inserts work without a migration. Workstream D will formalize the stored enum.
+
+Fail-soft rules during dual-run:
+- No `case_owner_policy_entity_id`: v2 → unassigned, legacy served (if mode ≤ shadow), diff logs show `target_match=false`.
+- Published version has no definition row: same as above.
+- Engine throws: caught by `RoutingEvaluatorService.evaluate`, logged, recorded as `diff_summary.v2_error`.
+
+**v2_only mode does NOT throw on missing policy.** A tenant flipped to `v2_only` with no policy attached gets `unassigned` tickets, not 500s. This is intentional — the v2_only cutover criterion is "every active request type has a published policy", and if that's not true the operator needs data, not a broken intake.
+
+## 21. Routing v2 child-dispatch engine (Workstream C)
+
+The `child_dispatch` hook on `RoutingEvaluatorService` is also live. Both hooks now run full v2 paths. The child-dispatch flow is two engines, not one:
+
+- **`SplitOrchestrationService.plan(context, policy)` → `ChildPlan[]`** (Contract 3). Pure function. Decides **how many** children to create and **what scope** each one carries:
+  - `dispatch_mode='none'` → empty array
+  - `dispatch_mode ∈ {optional, always, multi_template}` → at least one plan
+  - `split_strategy='single'` → one plan, location-scoped off the context
+  - `split_strategy='per_asset'` → asset-scoped if `context.asset_id`, else location fallback
+  - `split_strategy='per_vendor_service'` → vendor-scoped if `policy.fixed_target.kind='vendor'`, else location fallback
+  - `split_strategy='per_location'` → one plan today; true multi-location splits need per-scope intake input (Workstream E's studio UI)
+  Plans carry a default `VisibilityHints`: parent owner sees all children, vendor children visible to parent owner too. Overrides come from policy-level config in a later workstream.
+
+- **`ChildExecutionResolverService.resolve(plan, policy)` → `ResolverOutput`** (Contract 4). Per-plan single-target resolution. Vendors are first-class here, unlike case ownership:
+  - `execution_routing='fixed'` → `fixed_target` wins; if unset, `fallback_target`; else `unassigned`
+  - `execution_routing='workflow'` → deliberate `unassigned` — workflow-created children resolve via `DispatchService`, not the routing resolver
+  - `execution_routing ∈ {by_location, by_asset_then_location}` → `ResolverRepository.locationTeam(location_id, domain_id)` first; miss falls through to `fallback_target` then `unassigned`
+  - `execution_routing='by_asset'` → same location walk but skips the location-first branch (asset-specific resolution is Workstream D)
+  Null `context.domain_id` (dual-run unbackfilled tenant) skips the location-team lookup with an explicit trace entry; it does NOT throw.
+
+Legacy compatibility:
+- The v1 callsite (`DispatchService`, `TicketService.runPostCreateAutomation`) expects one `ResolverDecision` back. `adaptChildDispatchToResolver` collapses the N-plan output: first plan's target wins; other plans' outputs are appended to `trace` as informational entries so the simulator and dualrun diff log can still see them.
+- The full `ChildPlan[]` and their per-plan `ResolverOutput`s are not yet persisted — they live in the evaluator's `v2_output` jsonb in `routing_dualrun_logs`. A dedicated `routing_dispatch_plans` audit table belongs to Workstream G/H.
+
+## 22. Call-site wire-up
+
+`RoutingService.evaluate(context, hook)` now dispatches through `RoutingEvaluatorService` instead of calling `ResolverService.resolve` directly. This is the seam Workstream 0 deliberately didn't close — it's now live.
+
+- **`hook` parameter** is either `'case_owner'` (default) or `'child_dispatch'`. Keeps the single-function contract for the old callsites and lets them opt into v2 behavior per decision.
+- **`TicketService.runPostCreateAutomation` + reassignment** (lines 579, 814) call `evaluate(ctx)` → defaults to `case_owner`.
+- **`DispatchService.dispatch`** (line 103) passes `'child_dispatch'` explicitly when creating each child work order.
+
+Behavior during dual-run:
+- `routing_v2_mode='off'` (default for every tenant today): pure pass-through. `RoutingEvaluator.evaluate` short-circuits to `legacyResolver.resolve`. The hook parameter is ignored on this path. Zero overhead.
+- `routing_v2_mode ∈ {dualrun, shadow}`: legacy is served to callers; v2 evaluates in the background and both outputs land in `routing_dualrun_logs`. Callers see no change.
+- `routing_v2_mode='v2_only'`: v2 is served. Legacy is not run.
+
+This wire-up is safe to deploy without touching any tenant's flag. Rollback is reverting this commit; existing tenants are not affected because their flag stays `off`.

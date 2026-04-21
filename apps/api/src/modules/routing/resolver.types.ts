@@ -14,6 +14,10 @@ export type ChosenBy =
   | 'space_group_team'
   | 'domain_fallback'
   | 'request_type_default'
+  // Routing v2 values (Artifact A.4). Stored in routing_decisions.chosen_by
+  // (text column, no check constraint) once the v2 engine serves traffic.
+  | 'policy_row'
+  | 'policy_default'
   | 'unassigned';
 
 export interface ResolverContext {
@@ -24,6 +28,8 @@ export interface ResolverContext {
   priority: string | null;
   asset_id: string | null;
   location_id: string | null;
+  /** Rule ids to skip during the pre-step. Used by the simulator's "disable rule" affordance. */
+  excluded_rule_ids?: string[];
   loaded?: {
     request_type?: LoadedRequestType | null;
     asset?: LoadedAsset | null;
@@ -35,6 +41,10 @@ export interface ResolverContext {
 export interface LoadedRequestType {
   id: string;
   domain: string | null;
+  /** Routing-v2 domain registry FK. Populated by migration 00041 for all
+   * existing free-text domains. Null only if the request_type has no domain
+   * set at all, or the registry is missing a seed for that tenant. */
+  domain_id: string | null;
   fulfillment_strategy: FulfillmentShape;
   default_team_id: string | null;
   default_vendor_id: string | null;

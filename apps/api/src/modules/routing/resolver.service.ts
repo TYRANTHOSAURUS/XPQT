@@ -48,7 +48,11 @@ export class ResolverService {
   }
 
   private async tryRules(context: ResolverContext, trace: TraceEntry[]): Promise<ResolverDecision | null> {
-    const rules = await this.repo.loadRoutingRules(context.tenant_id);
+    const excluded = context.excluded_rule_ids;
+    const allRules = await this.repo.loadRoutingRules(context.tenant_id);
+    const rules = excluded && excluded.length > 0
+      ? allRules.filter((r) => !excluded.includes(r.id))
+      : allRules;
     const ruleCtx: Record<string, unknown> = {
       ticket_type_id: context.request_type_id,
       request_type_id: context.request_type_id,
