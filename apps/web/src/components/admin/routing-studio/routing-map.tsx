@@ -52,6 +52,7 @@ interface PublishedResponse<T> {
 
 interface Props {
   onOpenTab: (tab: string) => void;
+  onOpenForRequestType: (tab: 'case-ownership' | 'child-dispatch', rtId: string) => void;
 }
 
 /**
@@ -66,7 +67,7 @@ interface Props {
  * When there are no request types (empty tenant), shows the same onboarding
  * checklist the old Overview carried.
  */
-export function RoutingMap({ onOpenTab }: Props) {
+export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
   const { data: requestTypes, loading: rtLoading } = useApi<RequestType[]>('/request-types', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
   const { data: vendors } = useApi<Vendor[]>('/vendors', []);
@@ -171,7 +172,7 @@ export function RoutingMap({ onOpenTab }: Props) {
               teamsById={teamsById}
               vendorsById={vendorsById}
               policyLoading={policyLoading}
-              onOpenTab={onOpenTab}
+              onOpenForRequestType={onOpenForRequestType}
             />
           ))}
         </div>
@@ -255,7 +256,7 @@ function DomainGroup({
   teamsById,
   vendorsById,
   policyLoading,
-  onOpenTab,
+  onOpenForRequestType,
 }: {
   domain: string;
   requestTypes: RequestType[];
@@ -264,7 +265,7 @@ function DomainGroup({
   teamsById: Map<string, Team>;
   vendorsById: Map<string, Vendor>;
   policyLoading: boolean;
-  onOpenTab: (tab: string) => void;
+  onOpenForRequestType: (tab: 'case-ownership' | 'child-dispatch', rtId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const caseOwnerDone = requestTypes.filter((rt) => rt.case_owner_policy_entity_id).length;
@@ -318,7 +319,7 @@ function DomainGroup({
                 teamsById={teamsById}
                 vendorsById={vendorsById}
                 policyLoading={policyLoading}
-                onOpenTab={onOpenTab}
+                onOpenForRequestType={onOpenForRequestType}
               />
             ))}
           </tbody>
@@ -345,7 +346,7 @@ function RoutingMapRow({
   teamsById,
   vendorsById,
   policyLoading,
-  onOpenTab,
+  onOpenForRequestType,
 }: {
   rt: RequestType;
   caseOwner: CaseOwnerPolicy | null | undefined;
@@ -353,7 +354,7 @@ function RoutingMapRow({
   teamsById: Map<string, Team>;
   vendorsById: Map<string, Vendor>;
   policyLoading: boolean;
-  onOpenTab: (tab: string) => void;
+  onOpenForRequestType: (tab: 'case-ownership' | 'child-dispatch', rtId: string) => void;
 }) {
   const legacyLabel = rt.default_team_id
     ? teamsById.get(rt.default_team_id)?.name ?? rt.default_team_id.slice(0, 8)
@@ -392,14 +393,14 @@ function RoutingMapRow({
           <button
             type="button"
             className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-            onClick={() => onOpenTab('case-ownership')}
+            onClick={() => onOpenForRequestType('case-ownership', rt.id)}
           >
             Case <ArrowRight className="inline size-3" />
           </button>
           <button
             type="button"
             className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-            onClick={() => onOpenTab('child-dispatch')}
+            onClick={() => onOpenForRequestType('child-dispatch', rt.id)}
           >
             Child <ArrowRight className="inline size-3" />
           </button>

@@ -18,10 +18,14 @@ import { CoverageMatrix } from './coverage-matrix';
  * Mappings + Groups tools here). Once enough tenants are on v2_only and
  * legacy location_teams retires, these sub-panels come out.
  */
-export function ChildDispatchTab() {
+interface Props {
+  initialRequestTypeId?: string | null;
+}
+
+export function ChildDispatchTab({ initialRequestTypeId }: Props) {
   return (
     <div className="flex flex-col gap-4">
-      <ChildDispatchEditor />
+      <ChildDispatchEditor initialRequestTypeId={initialRequestTypeId} />
 
       <section className="rounded-md border bg-muted/20">
         <header className="border-b px-3 py-2 text-xs uppercase text-muted-foreground">

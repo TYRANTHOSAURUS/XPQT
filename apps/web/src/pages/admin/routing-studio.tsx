@@ -69,12 +69,23 @@ export function RoutingStudioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlTab]);
 
-  const setTab = (next: TabId) => {
+  const setTab = (next: TabId, extraParams?: Record<string, string>) => {
     setTabState(next);
     const params = new URLSearchParams(searchParams);
     params.set('tab', next);
+    // Clear any rt=… param when switching manually; deep-links set it
+    // via extraParams. Without this, a stale rt sticks across tab clicks.
+    params.delete('rt');
+    if (extraParams) {
+      for (const [key, value] of Object.entries(extraParams)) {
+        if (value) params.set(key, value);
+      }
+    }
     setSearchParams(params, { replace: true });
   };
+
+  const openTabWithRt = (next: TabId, rtId: string) => setTab(next, { rt: rtId });
+  const initialRtId = searchParams.get('rt') ?? null;
 
   return (
     <div className="flex flex-col gap-5 py-4">
@@ -99,15 +110,18 @@ export function RoutingStudioPage() {
         </TabsList>
 
         <TabsContent value="routing-map">
-          <RoutingMap onOpenTab={(t) => setTab(coerceTab(t))} />
+          <RoutingMap
+            onOpenTab={(t) => setTab(coerceTab(t))}
+            onOpenForRequestType={openTabWithRt}
+          />
         </TabsContent>
 
         <TabsContent value="case-ownership">
-          <CaseOwnershipEditor />
+          <CaseOwnershipEditor initialRequestTypeId={tab === 'case-ownership' ? initialRtId : null} />
         </TabsContent>
 
         <TabsContent value="child-dispatch">
-          <ChildDispatchTab />
+          <ChildDispatchTab initialRequestTypeId={tab === 'child-dispatch' ? initialRtId : null} />
         </TabsContent>
 
         <TabsContent value="visibility">

@@ -81,13 +81,31 @@ interface PublishedPolicyResponse {
  * Save runs a fixed 4-call sequence: ensure entity exists → create draft
  * version → publish → attach to request_types.case_owner_policy_entity_id.
  */
-export function CaseOwnershipEditor() {
+interface Props {
+  /** Deep-link: pre-select a request type when the tab opens (from
+   * ?rt=<id> on the Studio URL). */
+  initialRequestTypeId?: string | null;
+}
+
+export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
   const { data: requestTypes, loading: rtLoading, refetch: refetchRts } = useApi<RequestType[]>('/request-types', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
   const { data: spaces } = useApi<SpaceOption[]>('/spaces', []);
   const { data: policyEntities } = useApi<PolicyEntity[]>('/admin/routing/policies/case_owner_policy', []);
 
-  const [selectedRtId, setSelectedRtId] = useState<string>('');
+  const [selectedRtId, setSelectedRtId] = useState<string>(initialRequestTypeId ?? '');
+
+  // Honor deep-link once the request-types list has loaded — selecting a
+  // RT before the list arrives would leave the Select in an orphan state.
+  useEffect(() => {
+    if (!initialRequestTypeId) return;
+    if (!requestTypes) return;
+    if (selectedRtId === initialRequestTypeId) return;
+    if (requestTypes.some((rt) => rt.id === initialRequestTypeId)) {
+      setSelectedRtId(initialRequestTypeId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRequestTypeId, requestTypes]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [currentTeamId, setCurrentTeamId] = useState<string | null>(null);
   const [scopedRows, setScopedRows] = useState<PolicyRow[]>([]);

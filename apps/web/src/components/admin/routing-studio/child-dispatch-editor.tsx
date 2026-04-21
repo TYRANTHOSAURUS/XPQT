@@ -72,13 +72,29 @@ type TargetKind = 'team' | 'vendor';
  * Unlike case ownership, vendors are first-class here — child work orders
  * are the execution lane where vendors belong.
  */
-export function ChildDispatchEditor() {
+interface Props {
+  /** Deep-link: pre-select a request type when the tab opens (from
+   * ?rt=<id> on the Studio URL). */
+  initialRequestTypeId?: string | null;
+}
+
+export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
   const { data: requestTypes, loading: rtLoading, refetch: refetchRts } = useApi<RequestType[]>('/request-types', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
   const { data: vendors } = useApi<Vendor[]>('/vendors', []);
   const { data: policyEntities } = useApi<PolicyEntity[]>('/admin/routing/policies/child_dispatch_policy', []);
 
-  const [selectedRtId, setSelectedRtId] = useState('');
+  const [selectedRtId, setSelectedRtId] = useState(initialRequestTypeId ?? '');
+
+  useEffect(() => {
+    if (!initialRequestTypeId) return;
+    if (!requestTypes) return;
+    if (selectedRtId === initialRequestTypeId) return;
+    if (requestTypes.some((rt) => rt.id === initialRequestTypeId)) {
+      setSelectedRtId(initialRequestTypeId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRequestTypeId, requestTypes]);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('fixed');
   const [targetKind, setTargetKind] = useState<TargetKind>('team');
   const [targetId, setTargetId] = useState('');
