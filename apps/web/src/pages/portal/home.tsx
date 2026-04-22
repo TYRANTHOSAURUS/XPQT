@@ -32,11 +32,12 @@ interface CatalogCategory {
   description: string;
   icon: string;
   display_order: number;
+  parent_category_id: string | null;
 }
 
 interface PortalCatalogResponse {
   selected_location: { id: string; name: string; type: string };
-  categories: Array<{ id: string; service_items: Array<{ id: string }> }>;
+  categories: Array<{ id: string; service_items: Array<{ id: string }>; parent_category_id: string | null }>;
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -66,29 +67,43 @@ export function PortalHome() {
   const { data: portal } = usePortal();
   const currentLocation = portal?.current_location ?? null;
 
-  // Load portal catalog to determine which categories have *any* visible
-  // request type at the current location. Empty categories are hidden so
-  // users don't click into dead ends.
+  // Load portal catalog to determine which categories have visible items at
+  // the current location (directly or via descendants). Empty branches are
+  // hidden so users don't click into dead ends.
   const [visibleCategoryIds, setVisibleCategoryIds] = useState<Set<string> | null>(null);
   useEffect(() => {
     if (!currentLocation) { setVisibleCategoryIds(null); return; }
     apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
       .then((res) => {
-        const ids = new Set(
-          res.categories.filter((c) => c.service_items.length > 0).map((c) => c.id),
-        );
-        setVisibleCategoryIds(ids);
+        // Backend only returns categories that have items (direct or deep).
+        // Roll visibility up to the top-level so a parent with only-child items
+        // still appears as a card.
+        const byId = new Map(res.categories.map((c) => [c.id, c]));
+        const visible = new Set<string>();
+        const walkUp = (id: string) => {
+          let cur: string | null | undefined = id;
+          while (cur) {
+            if (visible.has(cur)) return;
+            visible.add(cur);
+            cur = byId.get(cur)?.parent_category_id ?? null;
+          }
+        };
+        for (const c of res.categories) walkUp(c.id);
+        setVisibleCategoryIds(visible);
       })
       .catch(() => setVisibleCategoryIds(null));
   }, [currentLocation?.id]);
 
   const categories = useMemo(() => {
-    const source = (dbCategories ?? []).map((cat) => ({
-      ...cat,
-      IconComponent: iconMap[cat.icon] ?? HelpCircle,
-      color: colorMap[cat.icon] ?? 'text-gray-500',
-    }));
-    // Hide categories with no visible request types at the current location.
+    const source = (dbCategories ?? [])
+      // Only top-level categories render as cards on the home. Subcategories
+      // are drilled into from the category page.
+      .filter((c) => !c.parent_category_id)
+      .map((cat) => ({
+        ...cat,
+        IconComponent: iconMap[cat.icon] ?? HelpCircle,
+        color: colorMap[cat.icon] ?? 'text-gray-500',
+      }));
     if (!visibleCategoryIds) return source;
     return source.filter((c) => visibleCategoryIds.has(c.id));
   }, [dbCategories, visibleCategoryIds]);

@@ -100,6 +100,7 @@ interface CatalogCategoryV2 {
   id: string;
   name: string;
   icon: string | null;
+  parent_category_id: string | null;
   service_items: CatalogServiceItem[];
 }
 
@@ -585,7 +586,7 @@ export class PortalService {
         .in('service_item_id', visibleIds),
       this.supabase.admin
         .from('service_catalog_categories')
-        .select('id, name, icon, display_order')
+        .select('id, name, icon, parent_category_id, display_order')
         .eq('tenant_id', tenant.id)
         .eq('active', true)
         .order('display_order'),
@@ -671,7 +672,7 @@ export class PortalService {
 
     // Group into categories
     const catBindings = ((catsRes.data ?? []) as Array<{ service_item_id: string; category_id: string }>);
-    const categories = ((categoriesRes.data ?? []) as Array<{ id: string; name: string; icon: string | null }>);
+    const categories = ((categoriesRes.data ?? []) as Array<{ id: string; name: string; icon: string | null; parent_category_id: string | null }>);
     const byCategory = new Map<string, CatalogServiceItem[]>();
 
     for (const item of items) {
@@ -710,16 +711,46 @@ export class PortalService {
       }
     }
 
+    // Return every category that has direct items OR a descendant with items,
+    // so the frontend can build the full tree (parent_category_id) and drill
+    // down without missing branches. Clients filter to top-level on render.
+    const childrenByParent = new Map<string | null, string[]>();
+    for (const cat of categories) {
+      const key = cat.parent_category_id ?? null;
+      if (!childrenByParent.has(key)) childrenByParent.set(key, []);
+      childrenByParent.get(key)!.push(cat.id);
+    }
+    const hasItemsDeep = new Map<string, boolean>();
+    const compute = (id: string): boolean => {
+      if (hasItemsDeep.has(id)) return hasItemsDeep.get(id)!;
+      const direct = (byCategory.get(id)?.length ?? 0) > 0;
+      const kids = childrenByParent.get(id) ?? [];
+      const deep = direct || kids.some(compute);
+      hasItemsDeep.set(id, deep);
+      return deep;
+    };
+    for (const cat of categories) compute(cat.id);
+
     const resultCategories: CatalogCategoryV2[] = [];
     for (const cat of categories) {
-      const list = byCategory.get(cat.id);
-      if (list && list.length > 0) {
-        resultCategories.push({ id: cat.id, name: cat.name, icon: cat.icon, service_items: list });
-      }
+      if (!hasItemsDeep.get(cat.id)) continue;
+      resultCategories.push({
+        id: cat.id,
+        name: cat.name,
+        icon: cat.icon,
+        parent_category_id: cat.parent_category_id,
+        service_items: byCategory.get(cat.id) ?? [],
+      });
     }
     const uncategorized = byCategory.get('__uncategorized');
     if (uncategorized && uncategorized.length > 0) {
-      resultCategories.push({ id: '__uncategorized', name: 'Other', icon: null, service_items: uncategorized });
+      resultCategories.push({
+        id: '__uncategorized',
+        name: 'Other',
+        icon: null,
+        parent_category_id: null,
+        service_items: uncategorized,
+      });
     }
 
     return { selected_location: selectedSpace!, categories: resultCategories };
