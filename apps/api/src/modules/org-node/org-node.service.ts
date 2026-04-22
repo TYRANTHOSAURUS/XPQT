@@ -1,6 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+
+const PG_UNIQUE_VIOLATION = '23505';
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === PG_UNIQUE_VIOLATION;
+}
 
 interface OrgNodeRow {
   id: string;
@@ -151,6 +157,9 @@ export class OrgNodeService {
   }
 
   // ── Memberships ────────────────────────────────────────────────────────
+  // v1 single-select UI: only primary memberships are surfaced. Non-primary
+  // rows in the join table (reserved for future multi-membership support)
+  // stay invisible so "person's org is X" matches what the admin sees.
   async listMembers(nodeId: string) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -158,6 +167,7 @@ export class OrgNodeService {
       .select('id, person_id, is_primary, created_at, person:persons(id, first_name, last_name, email)')
       .eq('org_node_id', nodeId)
       .eq('tenant_id', tenant.id)
+      .eq('is_primary', true)
       .order('created_at');
     if (error) throw error;
     return data;
@@ -189,7 +199,16 @@ export class OrgNodeService {
       )
       .select('*')
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) {
+      // Raced with another "set primary" call — the partial unique index on
+      // is_primary per person is our safety net. Surface a readable 409.
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(
+          'Another organisation change for this person is in progress. Reload and try again.',
+        );
+      }
+      throw new BadRequestException(error.message);
+    }
     return data;
   }
 
