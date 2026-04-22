@@ -26,6 +26,7 @@ import { UserManagementModule } from './modules/user-management/user-management.
 import { VendorModule } from './modules/vendor/vendor.module';
 import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
 import { PortalModule } from './modules/portal/portal.module';
+import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { PortalModule } from './modules/portal/portal.module';
     VendorModule,
     CatalogMenuModule,
     PortalModule,
+    ServiceCatalogModule,
   ],
   controllers: [HealthController],
   providers: [

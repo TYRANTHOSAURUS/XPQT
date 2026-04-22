@@ -15,6 +15,7 @@ import { MyRequestsPage } from '@/pages/portal/my-requests';
 import { CatalogCategoryPage } from '@/pages/portal/catalog-category';
 import { SubmitRequestPage } from '@/pages/portal/submit-request';
 import { RequestTypesPage } from '@/pages/admin/request-types';
+import { ServiceItemsPage } from '@/pages/admin/service-items';
 import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
@@ -104,6 +105,7 @@ export function App() {
             <Route index element={<Navigate to="/admin/request-types" replace />} />
             {/* Config */}
             <Route path="request-types" element={<RequestTypesPage />} />
+            <Route path="service-items" element={<ServiceItemsPage />} />
             <Route path="form-schemas" element={<FormSchemasPage />} />
             <Route path="teams" element={<TeamsPage />} />
             <Route path="locations" element={<LocationsPage />} />

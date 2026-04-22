@@ -59,6 +59,7 @@ const legacyRoutingNav = [
 
 const configNav = [
   { title: 'Catalog Hierarchy', path: '/admin/catalog-hierarchy', icon: ListTree },
+  { title: 'Service Catalog', path: '/admin/service-items', icon: FileText },
   { title: 'Request Types', path: '/admin/request-types', icon: FileText },
   { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
