@@ -20,6 +20,8 @@ import {
   Printer,
   Key,
   Car,
+  FolderOpen,
+  ChevronRight,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/hooks/use-api';
@@ -35,9 +37,25 @@ interface CatalogCategory {
   parent_category_id: string | null;
 }
 
+interface CatalogServiceItem {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  search_terms: string[] | null;
+}
+
+interface CatalogCategoryV2 {
+  id: string;
+  name: string;
+  icon: string | null;
+  parent_category_id: string | null;
+  service_items: CatalogServiceItem[];
+}
+
 interface PortalCatalogResponse {
   selected_location: { id: string; name: string; type: string };
-  categories: Array<{ id: string; service_items: Array<{ id: string }>; parent_category_id: string | null }>;
+  categories: CatalogCategoryV2[];
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -67,37 +85,33 @@ export function PortalHome() {
   const { data: portal } = usePortal();
   const currentLocation = portal?.current_location ?? null;
 
-  // Load portal catalog to determine which categories have visible items at
-  // the current location (directly or via descendants). Empty branches are
-  // hidden so users don't click into dead ends.
-  const [visibleCategoryIds, setVisibleCategoryIds] = useState<Set<string> | null>(null);
+  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
   useEffect(() => {
-    if (!currentLocation) { setVisibleCategoryIds(null); return; }
+    if (!currentLocation) { setCatalog(null); return; }
     apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
-      .then((res) => {
-        // Backend only returns categories that have items (direct or deep).
-        // Roll visibility up to the top-level so a parent with only-child items
-        // still appears as a card.
-        const byId = new Map(res.categories.map((c) => [c.id, c]));
-        const visible = new Set<string>();
-        const walkUp = (id: string) => {
-          let cur: string | null | undefined = id;
-          while (cur) {
-            if (visible.has(cur)) return;
-            visible.add(cur);
-            cur = byId.get(cur)?.parent_category_id ?? null;
-          }
-        };
-        for (const c of res.categories) walkUp(c.id);
-        setVisibleCategoryIds(visible);
-      })
-      .catch(() => setVisibleCategoryIds(null));
+      .then(setCatalog)
+      .catch(() => setCatalog(null));
   }, [currentLocation?.id]);
 
-  const categories = useMemo(() => {
+  // Roll visibility up so a parent with only-child items stays visible.
+  const visibleCategoryIds = useMemo(() => {
+    if (!catalog) return null;
+    const byId = new Map(catalog.categories.map((c) => [c.id, c]));
+    const visible = new Set<string>();
+    const walkUp = (id: string) => {
+      let cur: string | null | undefined = id;
+      while (cur) {
+        if (visible.has(cur)) return;
+        visible.add(cur);
+        cur = byId.get(cur)?.parent_category_id ?? null;
+      }
+    };
+    for (const c of catalog.categories) walkUp(c.id);
+    return visible;
+  }, [catalog]);
+
+  const topLevelCategories = useMemo(() => {
     const source = (dbCategories ?? [])
-      // Only top-level categories render as cards on the home. Subcategories
-      // are drilled into from the category page.
       .filter((c) => !c.parent_category_id)
       .map((cat) => ({
         ...cat,
@@ -108,12 +122,42 @@ export function PortalHome() {
     return source.filter((c) => visibleCategoryIds.has(c.id));
   }, [dbCategories, visibleCategoryIds]);
 
-  const filtered = searchQuery
-    ? categories.filter((c) =>
-        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (c.description ?? '').toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : categories;
+  const trimmedQuery = searchQuery.trim().toLowerCase();
+
+  // Search across the full tree + all visible service items, so results
+  // include deeply-nested categories and individual leaf services.
+  const searchResults = useMemo(() => {
+    if (!trimmedQuery) return null;
+    const q = trimmedQuery;
+
+    const matchesText = (...fields: Array<string | null | undefined>) =>
+      fields.some((f) => (f ?? '').toLowerCase().includes(q));
+
+    const matchedCategories = (dbCategories ?? [])
+      .filter((c) => !visibleCategoryIds || visibleCategoryIds.has(c.id))
+      .filter((c) => matchesText(c.name, c.description))
+      .map((c) => ({
+        ...c,
+        IconComponent: iconMap[c.icon] ?? FolderOpen,
+        color: colorMap[c.icon] ?? 'text-gray-500',
+      }));
+
+    type ServiceHit = CatalogServiceItem & { categoryName: string | null };
+    const matchedServices: ServiceHit[] = [];
+    const seen = new Set<string>();
+    for (const cat of catalog?.categories ?? []) {
+      for (const item of cat.service_items) {
+        if (seen.has(item.id)) continue;
+        const terms = (item.search_terms ?? []).join(' ');
+        if (matchesText(item.name, item.description, item.key, terms)) {
+          seen.add(item.id);
+          matchedServices.push({ ...item, categoryName: cat.name });
+        }
+      }
+    }
+
+    return { categories: matchedCategories, services: matchedServices };
+  }, [trimmedQuery, dbCategories, catalog, visibleCategoryIds]);
 
   return (
     <div>
@@ -125,7 +169,7 @@ export function PortalHome() {
         <div className="relative max-w-lg mx-auto mt-6">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
           <Input
-            placeholder="Search for a service..."
+            placeholder="Search services, categories, or keywords..."
             className="pl-12 h-12 text-base"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -133,33 +177,101 @@ export function PortalHome() {
         </div>
       </div>
 
-      {/* Service catalog grid */}
       {loading && (
         <div className="text-center py-12 text-muted-foreground">Loading services...</div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {filtered.map((category) => (
-          <Card
-            key={category.id}
-            className="cursor-pointer transition-colors hover:bg-accent/50"
-            onClick={() => navigate(`/portal/catalog/${category.id}`)}
-          >
-            <CardHeader>
-              <div className={`mb-2 ${category.color}`}>
-                <category.IconComponent className="h-6 w-6" />
-              </div>
-              <CardTitle className="text-base">{category.name}</CardTitle>
-              <CardDescription>{category.description}</CardDescription>
-            </CardHeader>
-          </Card>
-        ))}
-      </div>
+      {/* Default view: top-level categories */}
+      {!searchResults && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {topLevelCategories.map((category) => (
+              <Card
+                key={category.id}
+                className="cursor-pointer transition-colors hover:bg-accent/50"
+                onClick={() => navigate(`/portal/catalog/${category.id}`)}
+              >
+                <CardHeader>
+                  <div className={`mb-2 ${category.color}`}>
+                    <category.IconComponent className="h-6 w-6" />
+                  </div>
+                  <CardTitle className="text-base">{category.name}</CardTitle>
+                  <CardDescription>{category.description}</CardDescription>
+                </CardHeader>
+              </Card>
+            ))}
+          </div>
 
-      {!loading && filtered.length === 0 && (
-        <div className="text-center py-12 text-muted-foreground">
-          {searchQuery ? 'No services match your search' : 'No service categories configured yet'}
-        </div>
+          {!loading && topLevelCategories.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              No service categories configured yet
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Search results: flat list of matching categories + services */}
+      {searchResults && (
+        <>
+          {searchResults.categories.length > 0 && (
+            <div className="mb-8">
+              <h2 className="text-sm font-medium text-muted-foreground mb-3">Categories</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {searchResults.categories.map((c) => (
+                  <Card
+                    key={c.id}
+                    className="cursor-pointer transition-colors hover:bg-accent/50"
+                    onClick={() => navigate(`/portal/catalog/${c.id}`)}
+                  >
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <div className={c.color}>
+                          <c.IconComponent className="h-5 w-5" />
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                      <CardTitle className="text-base mt-2">{c.name}</CardTitle>
+                      {c.description && <CardDescription>{c.description}</CardDescription>}
+                    </CardHeader>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {searchResults.services.length > 0 && (
+            <div>
+              <h2 className="text-sm font-medium text-muted-foreground mb-3">Services</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {searchResults.services.map((s) => (
+                  <Card
+                    key={s.id}
+                    className="cursor-pointer transition-colors hover:bg-accent/50"
+                    onClick={() => navigate(`/portal/submit?type=${s.id}`)}
+                  >
+                    <CardHeader>
+                      <CardTitle className="text-base">{s.name}</CardTitle>
+                      <CardDescription>
+                        {s.description ?? `Submit a ${s.name.toLowerCase()} request`}
+                        {s.categoryName && (
+                          <span className="block mt-1 text-[11px] uppercase tracking-wide text-muted-foreground/70">
+                            in {s.categoryName}
+                          </span>
+                        )}
+                      </CardDescription>
+                    </CardHeader>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {searchResults.categories.length === 0 && searchResults.services.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              No services or categories match "{searchQuery}"
+            </div>
+          )}
+        </>
       )}
     </div>
   );
