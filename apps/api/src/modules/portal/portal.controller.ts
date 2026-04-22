@@ -13,6 +13,7 @@ import type { Request } from 'express';
 import { PortalService } from './portal.service';
 import { PortalSubmitService } from './portal-submit.service';
 import { PortalSubmitDto } from './portal-submit.types';
+import { TenantContext } from '../../common/tenant-context';
 
 @Controller('portal')
 export class PortalController {
@@ -50,6 +51,13 @@ export class PortalController {
   ) {
     if (!locationId) {
       throw new BadRequestException('location_id is required');
+    }
+    // Flag-gated dual path. Phase 2 ships v2 alongside v1; phase 4 flips the
+    // tenant flag. see docs/service-catalog-redesign.md §9.
+    const tenant = TenantContext.current();
+    const mode = await this.portal.getServiceCatalogReadMode(tenant.id);
+    if (mode === 'dualrun' || mode === 'v2_only') {
+      return this.portal.getCatalogV2(this.authUid(request), locationId);
     }
     return this.portal.getCatalog(this.authUid(request), locationId);
   }

@@ -69,6 +69,47 @@ export interface PortalCatalogResponse {
   categories: CatalogCategory[];
 }
 
+// ── v2 (service-catalog-redesign) response shape ─────────────────────
+// Shipped alongside v1 during phase 2. Frontend cuts over in phase 4 when
+// tenants.feature_flags.service_catalog_read flips to dualrun/v2_only.
+// See docs/service-catalog-redesign.md §5.1
+
+interface CatalogServiceItem {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  kb_link: string | null;
+  disruption_banner: string | null;
+  search_terms: string[];
+  on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
+  form_schema_id: string | null;       // from matched form variant (null → no form)
+  fulfillment: {
+    id: string;                          // fulfillment_type_id
+    requires_location: boolean;
+    location_required: boolean;
+    location_granularity: string | null;
+    requires_asset: boolean;
+    asset_required: boolean;
+    asset_type_filter: string[];
+  };
+}
+
+interface CatalogCategoryV2 {
+  id: string;
+  name: string;
+  icon: string | null;
+  service_items: CatalogServiceItem[];
+}
+
+export interface PortalCatalogResponseV2 {
+  selected_location: SpaceSummary;
+  categories: CatalogCategoryV2[];
+}
+
+export type ServiceCatalogReadMode = 'off' | 'dualrun' | 'v2_only';
+
 export interface PortalSpacesResponse {
   parent: SpaceSummary;
   children: Array<{
@@ -247,9 +288,16 @@ export class PortalService {
       });
     }
 
+    // Service-catalog redesign phase 2: per-person onboardable set via v2 RPC.
+    // Legacy portal_onboardable_locations(tenant) kept deprecated in SQL for
+    // other callers; this controller route switches to the v2 signature so
+    // criteria + effective-dating are honored identically to the catalog
+    // render. See docs/service-catalog-redesign.md Phase 2 §Migration.
+    const { personId: actorPersonId } = await this.resolveActor(authUid);
+    if (!actorPersonId) throw new UnauthorizedException('No linked person');
     const { data: rows, error } = await this.supabase.admin.rpc(
-      'portal_onboardable_locations',
-      { p_tenant_id: tenant.id },
+      'portal_onboardable_space_ids_v2',
+      { p_tenant_id: tenant.id, p_actor_person_id: actorPersonId },
     );
     if (error) throw error;
 
@@ -483,6 +531,218 @@ export class PortalService {
       selected_location: selectedSpace!,
       categories: resultCategories,
     };
+  }
+
+  /**
+   * Service-catalog v2 read path. Returns service_items shaped by the
+   * locked redesign (docs/service-catalog-redesign.md §5.1). Gated by
+   * tenants.feature_flags.service_catalog_read; callers hit getCatalog()
+   * which delegates here when the flag is dualrun or v2_only.
+   */
+  async getCatalogV2(authUid: string, locationId: string): Promise<PortalCatalogResponseV2> {
+    const tenant = TenantContext.current();
+    const { personId } = await this.resolveActor(authUid);
+    if (!personId) throw new UnauthorizedException('No linked person');
+
+    const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
+    if (!authorizedIds.includes(locationId)) {
+      throw new ForbiddenException({
+        code: 'location_not_authorized',
+        message: 'Selected location is not in your authorized scope',
+      });
+    }
+
+    const { data: visibleRows, error: visibleErr } = await this.supabase.admin.rpc(
+      'portal_visible_service_item_ids',
+      {
+        p_actor_person_id: personId,
+        p_selected_space_id: locationId,
+        p_tenant_id: tenant.id,
+      },
+    );
+    if (visibleErr) throw visibleErr;
+
+    const visibleIds = ((visibleRows ?? []) as Array<Record<string, string> | string>).map((r) =>
+      typeof r === 'string' ? r : (Object.values(r)[0] as string),
+    );
+
+    if (visibleIds.length === 0) {
+      const selected = await this.loadSpaceSummary(locationId);
+      return { selected_location: selected!, categories: [] };
+    }
+
+    // Load items + their categories + fulfillment intake fields in parallel.
+    const [itemsRes, catsRes, categoriesRes, selectedSpace] = await Promise.all([
+      this.supabase.admin
+        .from('service_items')
+        .select('id, key, name, description, icon, search_terms, kb_link, disruption_banner, on_behalf_policy, fulfillment_type_id, display_order')
+        .eq('tenant_id', tenant.id)
+        .in('id', visibleIds),
+      this.supabase.admin
+        .from('service_item_categories')
+        .select('service_item_id, category_id, display_order')
+        .eq('tenant_id', tenant.id)
+        .in('service_item_id', visibleIds),
+      this.supabase.admin
+        .from('service_catalog_categories')
+        .select('id, name, icon, display_order')
+        .eq('tenant_id', tenant.id)
+        .eq('active', true)
+        .order('display_order'),
+      this.loadSpaceSummary(locationId),
+    ]);
+
+    const items = (itemsRes.data ?? []) as Array<{
+      id: string; key: string; name: string; description: string | null;
+      icon: string | null; search_terms: string[] | null;
+      kb_link: string | null; disruption_banner: string | null;
+      on_behalf_policy: string;
+      fulfillment_type_id: string;
+      display_order: number;
+    }>;
+
+    const fulfillmentIds = Array.from(new Set(items.map((i) => i.fulfillment_type_id)));
+    const { data: ftRows } = await this.supabase.admin
+      .from('fulfillment_types')
+      .select('id, requires_location, location_required, location_granularity, requires_asset, asset_required, asset_type_filter')
+      .eq('tenant_id', tenant.id)
+      .in('id', fulfillmentIds);
+    const ftMap = new Map(
+      ((ftRows ?? []) as Array<Record<string, unknown>>).map((r) => [r.id as string, r]),
+    );
+
+    // Matched form variant per item. One query over all visibleIds; resolve winner in JS.
+    const { data: variantRows } = await this.supabase.admin
+      .from('service_item_form_variants')
+      .select('id, service_item_id, criteria_set_id, form_schema_id, priority, starts_at, ends_at, active, created_at')
+      .eq('tenant_id', tenant.id)
+      .in('service_item_id', visibleIds);
+    const now = Date.now();
+    type Variant = {
+      id: string; service_item_id: string; criteria_set_id: string | null;
+      form_schema_id: string; priority: number; starts_at: string | null;
+      ends_at: string | null; active: boolean; created_at: string;
+    };
+    const activeVariantsByItem = new Map<string, Variant[]>();
+    for (const v of ((variantRows ?? []) as Variant[])) {
+      if (!v.active) continue;
+      if (v.starts_at && new Date(v.starts_at).getTime() > now) continue;
+      if (v.ends_at && new Date(v.ends_at).getTime() <= now) continue;
+      const arr = activeVariantsByItem.get(v.service_item_id) ?? [];
+      arr.push(v);
+      activeVariantsByItem.set(v.service_item_id, arr);
+    }
+
+    // Criteria matches for non-default variants: evaluate in batch.
+    const nonDefaultCriteriaIds = new Set<string>();
+    for (const list of activeVariantsByItem.values()) {
+      for (const v of list) if (v.criteria_set_id) nonDefaultCriteriaIds.add(v.criteria_set_id);
+    }
+    const criteriaHits = new Map<string, boolean>();
+    for (const csId of nonDefaultCriteriaIds) {
+      const { data: hit, error: cErr } = await this.supabase.admin.rpc('criteria_matches', {
+        p_set_id: csId,
+        p_person_id: personId,
+        p_tenant_id: tenant.id,
+      });
+      if (cErr) throw cErr;
+      criteriaHits.set(csId, Boolean(hit));
+    }
+    const pickVariant = (itemId: string): string | null => {
+      const list = activeVariantsByItem.get(itemId) ?? [];
+      // priority desc, created_at asc
+      list.sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
+      for (const v of list) {
+        if (v.criteria_set_id === null) return v.form_schema_id;
+        if (criteriaHits.get(v.criteria_set_id)) return v.form_schema_id;
+      }
+      // Fall back to default if not already hit
+      const def = list.find((v) => v.criteria_set_id === null);
+      return def?.form_schema_id ?? null;
+    };
+
+    // Group into categories
+    const catBindings = ((catsRes.data ?? []) as Array<{ service_item_id: string; category_id: string }>);
+    const categories = ((categoriesRes.data ?? []) as Array<{ id: string; name: string; icon: string | null }>);
+    const byCategory = new Map<string, CatalogServiceItem[]>();
+
+    for (const item of items) {
+      const ft = ftMap.get(item.fulfillment_type_id) ?? {};
+      const serviceItem: CatalogServiceItem = {
+        id: item.id,
+        key: item.key,
+        name: item.name,
+        description: item.description,
+        icon: item.icon,
+        kb_link: item.kb_link,
+        disruption_banner: item.disruption_banner,
+        search_terms: item.search_terms ?? [],
+        on_behalf_policy: (item.on_behalf_policy as CatalogServiceItem['on_behalf_policy']) ?? 'self_only',
+        form_schema_id: pickVariant(item.id),
+        fulfillment: {
+          id: item.fulfillment_type_id,
+          requires_location: Boolean(ft.requires_location),
+          location_required: Boolean(ft.location_required),
+          location_granularity: (ft.location_granularity as string | null) ?? null,
+          requires_asset: Boolean(ft.requires_asset),
+          asset_required: Boolean(ft.asset_required),
+          asset_type_filter: (ft.asset_type_filter as string[] | null) ?? [],
+        },
+      };
+      const bindings = catBindings.filter((b) => b.service_item_id === item.id);
+      if (bindings.length === 0) {
+        const key = '__uncategorized';
+        if (!byCategory.has(key)) byCategory.set(key, []);
+        byCategory.get(key)!.push(serviceItem);
+      } else {
+        for (const b of bindings) {
+          if (!byCategory.has(b.category_id)) byCategory.set(b.category_id, []);
+          byCategory.get(b.category_id)!.push(serviceItem);
+        }
+      }
+    }
+
+    const resultCategories: CatalogCategoryV2[] = [];
+    for (const cat of categories) {
+      const list = byCategory.get(cat.id);
+      if (list && list.length > 0) {
+        resultCategories.push({ id: cat.id, name: cat.name, icon: cat.icon, service_items: list });
+      }
+    }
+    const uncategorized = byCategory.get('__uncategorized');
+    if (uncategorized && uncategorized.length > 0) {
+      resultCategories.push({ id: '__uncategorized', name: 'Other', icon: null, service_items: uncategorized });
+    }
+
+    return { selected_location: selectedSpace!, categories: resultCategories };
+  }
+
+  /**
+   * Reads tenants.feature_flags.service_catalog_read with a 30s cache.
+   * Matches the pattern in RoutingEvaluatorService.getMode.
+   */
+  private readonly catalogModeCache = new Map<string, { mode: ServiceCatalogReadMode; expires_at: number }>();
+  private readonly CATALOG_MODE_TTL_MS = 30_000;
+
+  async getServiceCatalogReadMode(tenantId: string): Promise<ServiceCatalogReadMode> {
+    const cached = this.catalogModeCache.get(tenantId);
+    const now = Date.now();
+    if (cached && cached.expires_at > now) return cached.mode;
+
+    const { data, error } = await this.supabase.admin
+      .from('tenants')
+      .select('feature_flags')
+      .eq('id', tenantId)
+      .maybeSingle();
+    if (error || !data) {
+      this.catalogModeCache.set(tenantId, { mode: 'off', expires_at: now + this.CATALOG_MODE_TTL_MS });
+      return 'off';
+    }
+    const raw = ((data.feature_flags as Record<string, unknown> | null) ?? {}).service_catalog_read;
+    const mode: ServiceCatalogReadMode =
+      raw === 'dualrun' || raw === 'v2_only' ? raw : 'off';
+    this.catalogModeCache.set(tenantId, { mode, expires_at: now + this.CATALOG_MODE_TTL_MS });
+    return mode;
   }
 
   async getSpaces(authUid: string, under: string): Promise<PortalSpacesResponse> {

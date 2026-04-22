@@ -20,6 +20,7 @@ export interface CreateTicketDto {
   impact?: string;
   urgency?: string;
   requester_person_id: string;
+  requested_for_person_id?: string;
   location_id?: string;
   asset_id?: string;
   assigned_team_id?: string;
@@ -436,6 +437,7 @@ export class TicketService {
         impact: dto.impact,
         urgency: dto.urgency,
         requester_person_id: dto.requester_person_id,
+        requested_for_person_id: dto.requested_for_person_id ?? dto.requester_person_id,
         location_id: dto.location_id,
         asset_id: dto.asset_id,
         assigned_team_id: dto.assigned_team_id,
