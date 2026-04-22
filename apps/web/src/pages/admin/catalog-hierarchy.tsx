@@ -4,7 +4,7 @@ import {
   CatalogCategoryNode,
   FlatItem,
 } from '@/components/admin/catalog-tree-editor';
-import { RequestTypeDialog } from '@/components/admin/request-type-dialog';
+import { CatalogServiceSheet } from '@/components/admin/catalog/catalog-service-sheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -59,8 +59,8 @@ export function CatalogHierarchyPage() {
 
   const [form, setForm] = useState<CategoryFormState>(emptyForm);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [rtDialogOpen, setRtDialogOpen] = useState(false);
-  const [rtEditId, setRtEditId] = useState<string | null>(null);
+  const [serviceSheetOpen, setServiceSheetOpen] = useState(false);
+  const [serviceRtId, setServiceRtId] = useState<string | null>(null);
 
   const openCreate = (parentId: string | null) => {
     setForm({ ...emptyForm, parentId });
@@ -69,8 +69,10 @@ export function CatalogHierarchyPage() {
 
   const openEdit = (item: FlatItem) => {
     if (item.kind === 'request_type') {
-      setRtEditId(item.id);
-      setRtDialogOpen(true);
+      // Service Catalog Sheet is the new primary editor. Legacy RequestTypeDialog
+      // is still reachable via Advanced editor link inside the Fulfillment tab.
+      setServiceRtId(item.id);
+      setServiceSheetOpen(true);
       return;
     }
     setForm({
@@ -178,10 +180,10 @@ export function CatalogHierarchyPage() {
         />
       )}
 
-      <RequestTypeDialog
-        open={rtDialogOpen}
-        onOpenChange={setRtDialogOpen}
-        editingId={rtEditId}
+      <CatalogServiceSheet
+        open={serviceSheetOpen}
+        onOpenChange={setServiceSheetOpen}
+        requestTypeId={serviceRtId}
         onSaved={refetch}
       />
 

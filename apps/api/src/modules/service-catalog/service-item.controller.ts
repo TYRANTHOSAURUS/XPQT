@@ -73,6 +73,18 @@ export class ServiceItemController {
     return this.service.putOfferings(id, body.offerings);
   }
 
+  @Get(':id/coverage-matrix')
+  async coverageMatrix(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
+    return this.service.getCoverageMatrix(id);
+  }
+
+  @Get('by-request-type/:requestTypeId')
+  async getByRequestTypeId(@Req() request: Request, @Param('requestTypeId') requestTypeId: string) {
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
+    return this.service.getByRequestTypeId(requestTypeId);
+  }
+
   @Put(':id/categories')
   async putCategories(
     @Req() request: Request,
