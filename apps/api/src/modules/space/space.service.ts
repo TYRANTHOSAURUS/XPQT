@@ -33,6 +33,7 @@ export class SpaceService {
     parent_id?: string;
     reservable?: boolean;
     search?: string;
+    include_inactive?: boolean;
   }) {
     const tenant = TenantContext.current();
     let query = this.supabase.admin
@@ -40,6 +41,10 @@ export class SpaceService {
       .select('*')
       .eq('tenant_id', tenant.id)
       .order('name');
+
+    // Default to active-only; admins can opt in with include_inactive=true if they
+    // want to manage archived spaces. Portal/combobox flows depend on active filtering.
+    if (!filters?.include_inactive) query = query.eq('active', true);
 
     if (filters?.type) query = query.eq('type', filters.type);
     if (filters?.types?.length) query = query.in('type', filters.types);

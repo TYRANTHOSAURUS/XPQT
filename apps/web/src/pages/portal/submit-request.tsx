@@ -151,9 +151,14 @@ export function SubmitRequestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preselectedType]);
 
-  // When the RT changes, load its form schema.
+  // When the RT changes, load its form schema and reset asset/location state
+  // that may no longer apply to the new RT (codex v4 review: hidden asset state).
   useEffect(() => {
     setDrilledLocation(null);
+    if (!selectedRT?.requires_asset) {
+      setAssetId(null);
+      setAssetLocationSummary(null);
+    }
     if (!selectedRT?.form_schema_id) {
       setFormFields([]);
       setValues({});
@@ -165,7 +170,7 @@ export function SubmitRequestPage() {
         setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [selectedRT?.id, selectedRT?.form_schema_id]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.requires_asset]);
 
   // Determine whether drill-down is needed.
   // Current location is always a site/building; if granularity is site/building and
@@ -194,6 +199,13 @@ export function SubmitRequestPage() {
 
     if (selectedRT?.location_required && !submitLocationId && !assetId) {
       toast.error('Please pick a location or asset');
+      return;
+    }
+
+    // Enforce drill-down when granularity is set even if location_required=false.
+    // Backend would 400; catch it here for a friendlier message.
+    if (selectedRT?.location_granularity && !submitLocationId && !assetId) {
+      toast.error('Please drill down to the required location');
       return;
     }
 

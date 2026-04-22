@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Patch, Post, Put, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import type { RoutingV2Mode } from '@prequest/shared';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
 import { DecisionRow, DualRunLogRow, RoutingAuditService } from './audit.service';
@@ -6,6 +7,7 @@ import { CoverageResponse, RoutingCoverageService } from './coverage.service';
 import { ChosenBy } from './resolver.types';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { PermissionGuard } from '../../common/permission-guard';
 
 /**
  * Routing Studio simulator — dry-run, admin-only.
@@ -22,6 +24,7 @@ export class RoutingSimulatorController {
     private readonly audit: RoutingAuditService,
     private readonly coverage: RoutingCoverageService,
     private readonly supabase: SupabaseService,
+    private readonly permissions: PermissionGuard,
   ) {}
 
   /**
@@ -78,7 +81,15 @@ export class RoutingSimulatorController {
   }
 
   @Post('simulate')
-  async simulate(@Body() body: SimulateRequestBody): Promise<SimulatorResult> {
+  async simulate(
+    @Req() request: Request,
+    @Body() body: SimulateRequestBody,
+  ): Promise<SimulatorResult> {
+    // Simulator exposes cross-person portal availability and studio internals —
+    // require an admin-grade permission so authenticated non-admins can't probe
+    // another person's trace.
+    await this.permissions.requirePermission(request, 'routing_studio:access');
+
     if (!body || typeof body !== 'object') {
       throw new BadRequestException('Body required');
     }

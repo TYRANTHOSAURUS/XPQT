@@ -20,28 +20,17 @@ interface PortalSpacesResponse {
   children: SpaceNode[];
 }
 
-// Canonical depth ordering of spaces.type values. Values not listed are
-// treated as leaf-level (room-depth). Kept in sync with 00004_spaces.sql.
-const TYPE_RANK: Record<string, number> = {
-  site: 0,
-  building: 1,
-  floor: 2,
-  room: 3,
-  meeting_room: 3,
-  common_area: 3,
-  storage_room: 3,
-  technical_room: 3,
-  parking_space: 3,
-  desk: 4,
-};
-
-function typeRank(type: string): number {
-  return TYPE_RANK[type] ?? 3;
-}
-
+/**
+ * A selected space satisfies the request type's granularity only by EXACT
+ * spaces.type match. The backend (portal_submit_location_valid) accepts
+ * deeper descendants *iff* the hierarchy actually contains a matching
+ * ancestor type, which the UI cannot verify without a full ancestor walk.
+ * Exact-match keeps the UI strict and prevents 400s from sibling leaf types
+ * (room vs common_area) that rank the same but aren't interchangeable.
+ */
 export function satisfiesGranularity(selectedType: string, granularity: string | null): boolean {
   if (!granularity) return true;
-  return typeRank(selectedType) >= typeRank(granularity);
+  return selectedType === granularity;
 }
 
 interface Props {

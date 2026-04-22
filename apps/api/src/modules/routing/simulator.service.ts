@@ -142,11 +142,17 @@ export class RoutingSimulatorService {
     if (!requestType) throw new NotFoundException('Request type not found');
 
     // Portal-scope: acting_for_location drives routing; current_location is diagnostic.
-    // Falls back to legacy `location_id` when portal-style inputs aren't supplied.
-    const actingForLocation =
-      input.acting_for_location_id !== undefined
-        ? input.acting_for_location_id
-        : input.location_id ?? null;
+    // Fallback order when acting_for is unset: legacy `location_id` → `current_location_id`.
+    // The current-location-only case lets admins answer "what would Ali get if they
+    // raised this from Amsterdam HQ without drilling deeper?" without repeating inputs.
+    let actingForLocation: string | null;
+    if (input.acting_for_location_id !== undefined && input.acting_for_location_id !== null) {
+      actingForLocation = input.acting_for_location_id;
+    } else if (input.location_id !== undefined && input.location_id !== null) {
+      actingForLocation = input.location_id;
+    } else {
+      actingForLocation = input.current_location_id ?? null;
+    }
 
     const context: ResolverContext = {
       tenant_id: tenant.id,

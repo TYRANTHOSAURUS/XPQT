@@ -64,6 +64,35 @@ interface TraceEntry {
   target: { kind: Kind; team_id?: string; user_id?: string; vendor_id?: string } | null;
 }
 
+interface PortalAvailabilityTraceView {
+  authorized: boolean;
+  has_any_scope: boolean;
+  effective_location_id: string | null;
+  matched_root_id: string | null;
+  matched_root_source: 'default' | 'grant' | null;
+  grant_id: string | null;
+  visible: boolean;
+  location_required: boolean;
+  granularity: string | null;
+  granularity_ok: boolean;
+  overall_valid: boolean;
+  failure_reason: string | null;
+}
+
+interface PortalAvailabilityView {
+  person_id: string;
+  current_location_id: string | null;
+  acting_for_location_id: string | null;
+  trace: PortalAvailabilityTraceView;
+  authorized_locations_summary: Array<{
+    id: string;
+    name: string;
+    type: string;
+    source: 'default' | 'grant';
+    grant_id: string | null;
+  }>;
+}
+
 interface SimulatorResult {
   decision: {
     chosen_by: ChosenBy;
@@ -93,12 +122,14 @@ interface SimulatorResult {
     asset_id: string | null;
     excluded_rule_ids: string[];
   };
+  portal_availability?: PortalAvailabilityView;
   duration_ms: number;
 }
 
 interface RequestTypeDTO { id: string; name: string; domain: string | null }
 interface SpaceDTO { id: string; name: string }
 interface AssetDTO { id: string; name: string | null; tag: string | null }
+interface PersonDTO { id: string; first_name: string; last_name: string; email: string | null }
 
 // ---- Priority options (matches resolver context values used elsewhere) ----
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
@@ -108,12 +139,19 @@ export function RoutingSimulator() {
   const { data: requestTypes } = useApi<RequestTypeDTO[]>('/request-types', []);
   const { data: spaces } = useApi<SpaceDTO[]>('/spaces', []);
   const { data: assets } = useApi<AssetDTO[]>('/assets', []);
+  const { data: persons } = useApi<PersonDTO[]>('/persons', []);
 
   const [requestTypeId, setRequestTypeId] = useState<string>('');
   const [locationId, setLocationId] = useState<string>('');
   const [assetId, setAssetId] = useState<string>('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [disabledRules, setDisabledRules] = useState<Record<string, string>>({});
+
+  // Portal-scope simulation inputs. When simulateAsPersonId is set, the backend
+  // runs portal_availability_trace as a prefix and returns .portal_availability.
+  const [simulateAsPersonId, setSimulateAsPersonId] = useState<string>('');
+  const [currentLocationId, setCurrentLocationId] = useState<string>('');
+  const [actingForLocationId, setActingForLocationId] = useState<string>('');
 
   const [result, setResult] = useState<SimulatorResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,6 +177,11 @@ export function RoutingSimulator() {
         priority,
         disabled_rule_ids: Object.keys(disabledRules),
         include_v2: true,
+        // Portal-scope extension — backend runs portal_availability_trace
+        // as a prefix when simulate_as_person_id is set.
+        simulate_as_person_id: simulateAsPersonId || null,
+        current_location_id: currentLocationId || null,
+        acting_for_location_id: actingForLocationId || null,
       };
       const data = await apiFetch<SimulatorResult>('/routing/studio/simulate', {
         method: 'POST',
@@ -152,7 +195,7 @@ export function RoutingSimulator() {
     } finally {
       if (seq === requestSeqRef.current) setLoading(false);
     }
-  }, [requestTypeId, locationId, assetId, priority, disabledRules]);
+  }, [requestTypeId, locationId, assetId, priority, disabledRules, simulateAsPersonId, currentLocationId, actingForLocationId]);
 
   // Debounced auto-run on input change — protects DB from fast dropdown thrashing.
   useEffect(() => {
@@ -180,6 +223,9 @@ export function RoutingSimulator() {
     setLocationId('');
     setAssetId('');
     setPriority('normal');
+    setSimulateAsPersonId('');
+    setCurrentLocationId('');
+    setActingForLocationId('');
   };
 
   return (
@@ -266,6 +312,78 @@ export function RoutingSimulator() {
             </div>
           </FieldGroup>
         </FieldSet>
+
+        {/* Portal-scope simulation */}
+        <FieldSet>
+          <FieldLegend variant="label">Simulate as a portal user (optional)</FieldLegend>
+          <FieldGroup>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <Field>
+                <FieldLabel htmlFor="sim-person">Person</FieldLabel>
+                <Select
+                  value={simulateAsPersonId || '__none'}
+                  onValueChange={(v) => setSimulateAsPersonId(v === '__none' || !v ? '' : v)}
+                >
+                  <SelectTrigger id="sim-person">
+                    <SelectValue placeholder="Not a portal simulation" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">Not a portal simulation</SelectItem>
+                    {(persons ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.first_name} {p.last_name}{p.email ? ` · ${p.email}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>Answers "why can Ali request for Dubai?"</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="sim-current-location">Current location</FieldLabel>
+                <Select
+                  value={currentLocationId || '__none'}
+                  onValueChange={(v) => setCurrentLocationId(v === '__none' || !v ? '' : v)}
+                >
+                  <SelectTrigger id="sim-current-location">
+                    <SelectValue placeholder="—" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {(spaces ?? []).map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>Where the requester is (diagnostic).</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="sim-acting-for">Acting for</FieldLabel>
+                <Select
+                  value={actingForLocationId || '__none'}
+                  onValueChange={(v) => setActingForLocationId(v === '__none' || !v ? '' : v)}
+                >
+                  <SelectTrigger id="sim-acting-for">
+                    <SelectValue placeholder="Use current location" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">Use current location</SelectItem>
+                    {(spaces ?? []).map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>Where the request is for (drives routing).</FieldDescription>
+              </Field>
+            </div>
+          </FieldGroup>
+        </FieldSet>
+
+        {/* Portal availability result */}
+        {result?.portal_availability && (
+          <PortalAvailabilityBlock data={result.portal_availability} />
+        )}
 
         {/* Disabled rules chips */}
         {disabledRulesList.length > 0 && (
@@ -454,6 +572,61 @@ function PipelineStep({
         </CollapsibleContent>
       </Collapsible>
     </li>
+  );
+}
+
+function PortalAvailabilityBlock({ data }: { data: PortalAvailabilityView }) {
+  const { trace, authorized_locations_summary } = data;
+  const ok = trace.overall_valid;
+
+  return (
+    <Alert variant={ok ? 'default' : 'destructive'}>
+      {ok ? <CheckCircle2 className="size-4" /> : <CircleSlash className="size-4" />}
+      <AlertTitle>
+        {ok
+          ? 'Portal submission would succeed'
+          : `Portal submission blocked: ${trace.failure_reason ?? 'unknown'}`}
+      </AlertTitle>
+      <AlertDescription className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant="outline">authorized: {String(trace.authorized)}</Badge>
+          <Badge variant="outline">visible: {String(trace.visible)}</Badge>
+          <Badge variant="outline">
+            granularity: {trace.granularity ?? 'any'} {trace.granularity_ok ? '✓' : '✗'}
+          </Badge>
+          {trace.matched_root_source && (
+            <Badge variant="outline" className="capitalize">
+              matched via {trace.matched_root_source}
+              {trace.grant_id ? ` (grant ${trace.grant_id.slice(0, 8)})` : ''}
+            </Badge>
+          )}
+        </div>
+
+        {authorized_locations_summary.length > 0 && (
+          <div className="text-xs">
+            <div className="font-medium mb-1">Authorized scope:</div>
+            <ul className="space-y-0.5">
+              {authorized_locations_summary.map((l) => (
+                <li key={l.id} className="text-muted-foreground">
+                  {l.name} <span className="capitalize">({l.type})</span>
+                  {' · '}
+                  <span className="capitalize">{l.source}</span>
+                  {l.id === trace.matched_root_id && (
+                    <Badge variant="outline" className="ml-2 text-[10px]">matched</Badge>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {authorized_locations_summary.length === 0 && (
+          <div className="text-xs text-muted-foreground">
+            No authorized scope. Assign a default work location or add a grant.
+          </div>
+        )}
+      </AlertDescription>
+    </Alert>
   );
 }
 

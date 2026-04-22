@@ -6,13 +6,13 @@ update public.roles
 set permissions =
   case
     when permissions is null or jsonb_typeof(permissions) <> 'array' then
-      '["people:manage","request_types:manage"]'::jsonb
+      '["people:manage","request_types:manage","routing_studio:access"]'::jsonb
     else (
       select jsonb_agg(distinct elem)
       from (
         select jsonb_array_elements_text(permissions) as elem
         union
-        select unnest(array['people:manage','request_types:manage'])
+        select unnest(array['people:manage','request_types:manage','routing_studio:access'])
       ) t
     )
   end,

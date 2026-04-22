@@ -29,17 +29,20 @@ export class PortalSubmitService {
   async submit(authUid: string, dto: PortalSubmitDto) {
     const { intake, portal_trace } = await this.resolvePortalSubmit(authUid, dto);
 
-    // Create the ticket using intake as source of truth. selected_location_id
-    // maps to tickets.location_id. scope_source preservation is tracked for a
-    // future slice — see docs/portal-scope-slice.md §2 caveat.
+    // tickets.location_id MUST be the effective location (user-picked or asset-resolved)
+    // so approval/visibility/list queries don't see a null-location ticket while the
+    // request pauses pre-routing. scope_source preservation is a separate slice — see
+    // docs/portal-scope-slice.md §2 caveat.
     const ticket = await this.ticketService.create({
       ticket_type_id: intake.request_type_id,
       title: dto.title,
       description: dto.description,
       priority: intake.priority,
       requester_person_id: intake.requester_person_id!,
-      location_id: intake.selected_location_id ?? undefined,
+      location_id: portal_trace.effective_location_id ?? undefined,
       asset_id: intake.asset_id ?? undefined,
+      impact: dto.impact,
+      urgency: dto.urgency,
       source_channel: 'portal',
       form_data: dto.form_data,
     });

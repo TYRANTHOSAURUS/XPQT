@@ -19,9 +19,11 @@ import { IntakeScopingService } from './intake-scoping.service';
 import { CaseOwnerEngineService } from './case-owner-engine.service';
 import { SplitOrchestrationService } from './split-orchestration.service';
 import { ChildExecutionResolverService } from './child-execution-resolver.service';
+import { PermissionGuard } from '../../common/permission-guard';
 
 @Module({
   providers: [
+    PermissionGuard,
     RoutingService,
     ResolverService,
     ResolverRepository,

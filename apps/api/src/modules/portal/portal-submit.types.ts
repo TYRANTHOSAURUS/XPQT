@@ -9,6 +9,8 @@ export interface PortalSubmitDto {
   location_id?: string | null;   // user-picked; never prefilled from asset
   asset_id?: string | null;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
+  impact?: string;
+  urgency?: string;
   title: string;
   description?: string;
   form_data?: Record<string, unknown>;
