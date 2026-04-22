@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,7 @@ export interface Space {
   name: string;
   type: string;
   parent_id: string | null;
+  active?: boolean;
 }
 
 interface Props {
@@ -49,7 +50,28 @@ export function LocationCombobox({
     apiFetch<Space[]>(`/spaces?${params.toString()}`).then(setSpaces).catch(() => setSpaces([]));
   }, [search, typesFilter?.join(','), activeOnly]);
 
-  const selected = spaces.find((s) => s.id === value);
+  // If `value` is set but isn't in the filtered list — typical case:
+  // activeOnly=true and the chosen space was archived after the form was saved
+  // — fetch it explicitly so the user sees their current selection and can
+  // decide to clear it. Without this, an admin loading an old record sees a
+  // blank combobox and loses context for a field that's actually set.
+  const [missingSelected, setMissingSelected] = useState<Space | null>(null);
+  useEffect(() => {
+    if (!value) { setMissingSelected(null); return; }
+    if (spaces.some((s) => s.id === value)) { setMissingSelected(null); return; }
+    let cancelled = false;
+    apiFetch<Space>(`/spaces/${value}`)
+      .then((s) => { if (!cancelled) setMissingSelected(s); })
+      .catch(() => { if (!cancelled) setMissingSelected(null); });
+    return () => { cancelled = true; };
+  }, [value, spaces]);
+
+  const selected = spaces.find((s) => s.id === value) ?? missingSelected;
+  const displayList = useMemo(() => {
+    if (!missingSelected) return spaces;
+    if (spaces.some((s) => s.id === missingSelected.id)) return spaces;
+    return [missingSelected, ...spaces];
+  }, [spaces, missingSelected]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -65,7 +87,9 @@ export function LocationCombobox({
         }
       >
         <span className={cn('truncate', !selected && 'text-muted-foreground')}>
-          {selected ? `${selected.name} (${selected.type})` : placeholder}
+          {selected
+            ? `${selected.name} (${selected.type})${selected.active === false ? ' — archived' : ''}`
+            : placeholder}
         </span>
         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
       </PopoverTrigger>
@@ -75,7 +99,7 @@ export function LocationCombobox({
           <CommandList>
             <CommandEmpty>No matching location.</CommandEmpty>
             <CommandGroup>
-              {spaces.map((s) => (
+              {displayList.map((s) => (
                 <CommandItem
                   key={s.id}
                   value={s.id}
@@ -87,6 +111,9 @@ export function LocationCombobox({
                   <Check className={cn('mr-2 h-4 w-4', value === s.id ? 'opacity-100' : 'opacity-0')} />
                   <span className="flex-1">{s.name}</span>
                   <span className="text-xs text-muted-foreground">{s.type}</span>
+                  {s.active === false && (
+                    <span className="text-xs text-amber-600 ml-2">archived</span>
+                  )}
                 </CommandItem>
               ))}
             </CommandGroup>
