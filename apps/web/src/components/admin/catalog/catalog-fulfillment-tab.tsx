@@ -1,175 +1,208 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Settings2, Workflow, Clock, Users, Building2, ShieldCheck,
-  ExternalLink, Sparkles, Wrench, FileText,
-} from 'lucide-react';
-import { apiFetch } from '@/lib/api';
-import type { ServiceItemDetail } from './catalog-service-sheet';
+import { useApi } from '@/hooks/use-api';
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSeparator, FieldSet } from '@/components/ui/field';
+import { RequestTypeDialog } from '@/components/admin/request-type-dialog';
+import type { ServiceItemDetail } from './catalog-service-panel';
 
-interface FulfillmentType {
+interface RequestType {
   id: string;
   name: string;
   domain: string | null;
-  fulfillment_strategy: string | null;
-  requires_asset: boolean;
-  asset_required: boolean;
-  requires_location: boolean;
-  location_required: boolean;
-  location_granularity: string | null;
-  requires_approval: boolean;
-  default_team_id: string | null;
-  default_vendor_id: string | null;
+  active: boolean;
+  fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
+  location_granularity?: string | null;
+  requires_location?: boolean;
+  requires_asset?: boolean;
+  asset_type_filter?: string[] | null;
+  requires_approval?: boolean;
+  default_team_id?: string | null;
+  default_vendor_id?: string | null;
+  form_schema_id?: string | null;
   sla_policy?: { id: string; name: string } | null;
   workflow?: { id: string; name: string } | null;
 }
 
+interface CriteriaSet { id: string; name: string }
+
+const policyLabel: Record<ServiceItemDetail['on_behalf_policy'], string> = {
+  self_only: 'Only the requester themselves',
+  any_person: 'Any person in the directory',
+  direct_reports: 'Manager → direct reports',
+  configured_list: 'Actor/target rules below',
+};
+
 export function CatalogFulfillmentTab({
-  detail, requestTypeId,
-}: { detail: ServiceItemDetail; onSaved: () => void; requestTypeId: string }) {
-  const navigate = useNavigate();
-  const [ft, setFt] = useState<FulfillmentType | null>(null);
+  detail,
+  onSaved,
+  requestTypeId,
+}: {
+  detail: ServiceItemDetail;
+  onSaved: () => void;
+  requestTypeId: string;
+}) {
+  const { data: rt } = useApi<RequestType>(`/request-types/${requestTypeId}`, [requestTypeId]);
+  const { data: sets } = useApi<CriteriaSet[]>('/admin/criteria-sets', []);
+  const setsById = new Map((sets ?? []).map((s) => [s.id, s]));
+  const [editOpen, setEditOpen] = useState(false);
 
-  useEffect(() => {
-    apiFetch<FulfillmentType>(`/request-types/${detail.fulfillment_type_id}`)
-      .then(setFt)
-      .catch(() => setFt(null));
-  }, [detail.fulfillment_type_id]);
+  const actors = detail.on_behalf_rules.filter((r) => r.role === 'actor');
+  const targets = detail.on_behalf_rules.filter((r) => r.role === 'target');
 
   return (
-    <div className="space-y-5">
-      <div className="relative overflow-hidden rounded-xl p-5 bg-gradient-to-br from-slate-500/10 via-background to-transparent ring-1 ring-slate-500/20">
-        <div className="flex items-start gap-3">
-          <div className="size-9 rounded-lg bg-slate-500/10 text-slate-600 flex items-center justify-center">
-            <Wrench className="size-4" />
-          </div>
-          <div className="flex-1">
-            <h3 className="font-semibold">Internal fulfillment</h3>
-            <p className="text-xs text-muted-foreground mt-1 max-w-md">
-              Workflow, SLA, routing domain, intake requirements. Most admins never touch this — it's wired when the service is first created.
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 h-7 text-xs"
-            onClick={() => navigate(`/admin/request-types?edit=${requestTypeId}`)}
-          >
-            Advanced editor
-            <ExternalLink className="size-3" />
-          </Button>
-        </div>
-      </div>
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Fulfillment is defined on the linked Request Type (workflow, SLA, routing domain, defaults).
+        On-behalf-of policy and rules are catalog-level and apply only in the portal.
+      </p>
 
-      {ft && (
-        <div className="grid grid-cols-2 gap-3">
-          <DetailCard icon={<Settings2 className="size-3.5" />} label="Fulfillment name" value={ft.name} />
-          <DetailCard
-            icon={<Sparkles className="size-3.5" />}
-            label="Domain"
-            value={ft.domain ? <Badge variant="outline" className="capitalize">{ft.domain}</Badge> : <span className="text-muted-foreground italic">—</span>}
-          />
-          <DetailCard
-            icon={<Workflow className="size-3.5" />}
-            label="Workflow"
-            value={ft.workflow?.name ?? <span className="text-muted-foreground italic">None</span>}
-          />
-          <DetailCard
-            icon={<Clock className="size-3.5" />}
-            label="SLA policy"
-            value={ft.sla_policy?.name ?? <span className="text-muted-foreground italic">None</span>}
-          />
-        </div>
-      )}
-
-      {ft && (
-        <div className="rounded-xl ring-1 ring-border bg-background">
-          <div className="px-3.5 py-2.5 border-b bg-muted/30 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <FileText className="size-3.5" /> Intake requirements
-          </div>
-          <div className="p-3.5 grid grid-cols-2 gap-3 text-sm">
-            <ChipRow
-              label="Location"
-              enabled={ft.requires_location}
-              required={ft.location_required}
-              extra={ft.location_granularity ? (
-                <Badge variant="outline" className="text-[10px] capitalize ml-1">
-                  {ft.location_granularity.replace('_', ' ')}
-                </Badge>
-              ) : null}
+      <FieldGroup>
+        <FieldSet>
+          <FieldLegend>Linked Request Type</FieldLegend>
+          <FieldDescription>Drives routing domain, workflow, SLA and approvals.</FieldDescription>
+          <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <ReadOnly label="Name" value={rt?.name ?? '—'} />
+            <ReadOnly
+              label="Domain"
+              value={rt?.domain ? <Badge variant="outline" className="capitalize">{rt.domain}</Badge> : '—'}
             />
-            <ChipRow label="Asset" enabled={ft.requires_asset} required={ft.asset_required} />
-            <ChipRow label="Approval" enabled={ft.requires_approval} required={ft.requires_approval} />
-            <ChipRow label="Strategy" enabled customLabel={ft.fulfillment_strategy ?? 'fixed'} />
+            <ReadOnly
+              label="Strategy"
+              value={rt?.fulfillment_strategy ? (
+                <Badge variant="outline" className="capitalize">{rt.fulfillment_strategy}</Badge>
+              ) : '—'}
+            />
+            <ReadOnly
+              label="Location depth"
+              value={rt?.location_granularity
+                ? <span className="capitalize">{rt.location_granularity.replace('_', ' ')}</span>
+                : 'Any'}
+            />
+            <ReadOnly label="Workflow" value={rt?.workflow?.name ?? '—'} />
+            <ReadOnly label="SLA policy" value={rt?.sla_policy?.name ?? '—'} />
+            <ReadOnly
+              label="Approval"
+              value={rt?.requires_approval ? (
+                <Badge variant="secondary">Required</Badge>
+              ) : <span className="text-muted-foreground">None</span>}
+            />
+            <ReadOnly
+              label="Default handler"
+              value={
+                rt?.default_team_id
+                  ? <span className="text-xs font-mono truncate">team:{rt.default_team_id.slice(0, 8)}</span>
+                  : rt?.default_vendor_id
+                    ? <span className="text-xs font-mono truncate">vendor:{rt.default_vendor_id.slice(0, 8)}</span>
+                    : <span className="text-muted-foreground">—</span>
+              }
+            />
           </div>
-        </div>
-      )}
+          <div className="mt-3">
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+              Edit fulfillment settings
+            </Button>
+          </div>
+        </FieldSet>
 
-      {ft && (ft.default_team_id || ft.default_vendor_id) && (
-        <div className="rounded-xl ring-1 ring-border bg-gradient-to-br from-emerald-500/5 via-background to-background">
-          <div className="px-3.5 py-2.5 border-b flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <ShieldCheck className="size-3.5 text-emerald-600" />
-            Default handler
-          </div>
-          <div className="p-3.5 text-sm flex items-center gap-2">
-            {ft.default_team_id && (
-              <Badge variant="outline" className="gap-1 bg-emerald-500/5 text-emerald-600 border-emerald-500/30">
-                <Users className="size-3" />
-                Team: {ft.default_team_id.slice(0, 8)}…
+        <FieldSeparator />
+
+        <FieldSet>
+          <FieldLegend>On-behalf-of policy</FieldLegend>
+          <FieldDescription>Who may submit this request, and for whom.</FieldDescription>
+          <Field>
+            <FieldLabel>Policy</FieldLabel>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="capitalize">
+                {detail.on_behalf_policy.replace('_', ' ')}
               </Badge>
-            )}
-            {ft.default_vendor_id && (
-              <Badge variant="outline" className="gap-1 bg-emerald-500/5 text-emerald-600 border-emerald-500/30">
-                <Building2 className="size-3" />
-                Vendor: {ft.default_vendor_id.slice(0, 8)}…
-              </Badge>
-            )}
-            <span className="text-[11px] text-muted-foreground">
-              Used when location_teams doesn't resolve.
-            </span>
-          </div>
-        </div>
-      )}
+              <span className="text-xs text-muted-foreground">
+                {policyLabel[detail.on_behalf_policy]}
+              </span>
+            </div>
+          </Field>
+
+          {detail.on_behalf_policy === 'configured_list' && (
+            <div className="overflow-auto rounded-md border">
+              <table className="min-w-full border-collapse text-sm">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className="border-b px-3 py-2 text-left font-medium w-32">Role</th>
+                    <th className="border-b px-3 py-2 text-left font-medium">Criteria sets</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <OnBehalfRow
+                    label="Actor (submitter)"
+                    items={actors}
+                    setsById={setsById}
+                  />
+                  <OnBehalfRow
+                    label="Target (on-behalf-of)"
+                    items={targets}
+                    setsById={setsById}
+                  />
+                </tbody>
+              </table>
+            </div>
+          )}
+        </FieldSet>
+      </FieldGroup>
+
+      <p className="text-xs text-muted-foreground">
+        On-behalf criteria authoring is not yet inline. Manage criteria sets at{' '}
+        <span className="font-medium">Settings → Criteria sets</span> (coming soon).
+      </p>
+
+      <RequestTypeDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        editingId={requestTypeId}
+        onSaved={() => {
+          setEditOpen(false);
+          onSaved();
+        }}
+      />
     </div>
   );
 }
 
-function DetailCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
+function ReadOnly({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-xl p-3 bg-background ring-1 ring-border">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {icon}
-        {label}
-      </div>
-      <div className="mt-1 text-sm">{value}</div>
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="truncate">{value}</span>
     </div>
   );
 }
 
-function ChipRow({
-  label, enabled, required, extra, customLabel,
+function OnBehalfRow({
+  label,
+  items,
+  setsById,
 }: {
   label: string;
-  enabled: boolean;
-  required?: boolean;
-  extra?: React.ReactNode;
-  customLabel?: string;
+  items: ServiceItemDetail['on_behalf_rules'];
+  setsById: Map<string, { id: string; name: string }>;
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <div className={`size-5 rounded flex items-center justify-center text-[10px] font-bold ${
-        enabled
-          ? 'bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/20'
-          : 'bg-muted/40 text-muted-foreground ring-1 ring-border'
-      }`}>
-        {enabled ? '✓' : '—'}
-      </div>
-      <span className="text-sm flex-1">{label}</span>
-      {customLabel && <Badge variant="outline" className="text-[10px] capitalize">{customLabel}</Badge>}
-      {required && !customLabel && <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-600">required</Badge>}
-      {extra}
-    </div>
+    <tr>
+      <th scope="row" className="border-b px-3 py-1.5 text-left font-normal align-top">
+        {label}
+      </th>
+      <td className="border-b px-3 py-1.5">
+        {items.length === 0 ? (
+          <span className="text-xs text-muted-foreground italic">default: everyone</span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {items.map((r) => (
+              <Badge key={r.id} variant="secondary">
+                {setsById.get(r.criteria_set_id)?.name ?? 'Unknown set'}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }

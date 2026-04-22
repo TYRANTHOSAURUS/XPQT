@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Field,
@@ -16,7 +15,7 @@ import {
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useApi } from '@/hooks/use-api';
-import type { ServiceItemDetail } from './catalog-service-sheet';
+import type { ServiceItemDetail } from './catalog-service-panel';
 
 interface Category { id: string; name: string }
 
@@ -77,17 +76,17 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
   };
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-4">
       <FieldGroup>
-        <div className="grid grid-cols-[1fr_auto] gap-3 items-start">
+        <div className="grid grid-cols-2 gap-3">
           <Field>
             <FieldLabel htmlFor="basics-name">Name</FieldLabel>
             <Input id="basics-name" value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field orientation="horizontal" className="pt-7">
+          <Field orientation="horizontal" className="self-end pb-1">
             <Checkbox id="basics-active" checked={active} onCheckedChange={(v) => setActive(!!v)} />
-            <FieldLabel htmlFor="basics-active" className="font-normal whitespace-nowrap">
-              Portal-active
+            <FieldLabel htmlFor="basics-active" className="font-normal">
+              Active in portal
             </FieldLabel>
           </Field>
         </div>
@@ -98,9 +97,9 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
             id="basics-desc"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="min-h-[72px] resize-none"
+            className="min-h-[72px]"
           />
-          <FieldDescription>Shown as the subtitle on the portal card.</FieldDescription>
+          <FieldDescription>Subtitle on the portal card.</FieldDescription>
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
@@ -138,26 +137,21 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
 
         <FieldSet>
           <FieldLegend>Categories</FieldLegend>
-          <FieldDescription>Multiple allowed. The card appears under every selected category.</FieldDescription>
+          <FieldDescription>Multiple allowed.</FieldDescription>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {(categories ?? []).map((c) => {
-              const active = categoryIds.includes(c.id);
+              const on = categoryIds.includes(c.id);
               return (
-                <button
+                <Button
                   key={c.id}
                   type="button"
+                  variant={on ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-7 rounded-full text-xs"
                   onClick={() => toggleCategory(c.id)}
-                  className={`
-                    inline-flex items-center rounded-full px-3 py-1 text-xs font-medium
-                    ring-1 transition-all
-                    ${active
-                      ? 'bg-primary/10 text-primary ring-primary/30 shadow-sm'
-                      : 'bg-muted/30 text-muted-foreground ring-border hover:bg-muted/50 hover:text-foreground'
-                    }
-                  `}
                 >
                   {c.name}
-                </button>
+                </Button>
               );
             })}
             {(!categories || categories.length === 0) && (
@@ -167,10 +161,9 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
         </FieldSet>
       </FieldGroup>
 
-      <div className="flex items-center justify-between pt-2 border-t">
-        <Badge variant="outline" className="text-[10px] font-mono">{detail.key}</Badge>
+      <div className="flex justify-end border-t pt-3">
         <Button onClick={save} disabled={saving || !name.trim()}>
-          {saving ? 'Saving…' : 'Save changes'}
+          {saving ? 'Saving…' : 'Save'}
         </Button>
       </div>
     </div>

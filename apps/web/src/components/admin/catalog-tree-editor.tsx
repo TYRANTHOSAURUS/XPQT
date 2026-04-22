@@ -134,9 +134,10 @@ interface RowProps {
   onDelete?: (item: FlatItem) => void;
   onAddChild?: (categoryId: string) => void;
   isOverlay?: boolean;
+  selected?: boolean;
 }
 
-function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay }: RowProps) {
+function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, selected }: RowProps) {
   const {
     attributes,
     listeners,
@@ -160,9 +161,9 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay }
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex items-center gap-2 py-1.5 pr-2 rounded-md border border-transparent hover:bg-accent/40 ${
-        isOverlay ? 'bg-background border-border shadow-lg' : ''
-      }`}
+      className={`group flex items-center gap-2 py-1.5 pr-2 rounded-md border ${
+        selected ? 'border-primary/40 bg-accent/60' : 'border-transparent hover:bg-accent/40'
+      } ${isOverlay ? 'bg-background border-border shadow-lg' : ''}`}
     >
       <button
         type="button"
@@ -272,6 +273,7 @@ interface CatalogTreeEditorProps {
   onEdit?: (item: FlatItem) => void;
   onDelete?: (item: FlatItem) => void;
   onAddChild?: (parentCategoryId: string | null) => void;
+  selectedRequestTypeId?: string | null;
 }
 
 export function CatalogTreeEditor({
@@ -281,6 +283,7 @@ export function CatalogTreeEditor({
   onEdit,
   onDelete,
   onAddChild,
+  selectedRequestTypeId,
 }: CatalogTreeEditorProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -421,6 +424,7 @@ export function CatalogTreeEditor({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onAddChild={item.kind === 'category' ? (id) => onAddChild?.(id) : undefined}
+                selected={item.kind === 'request_type' && item.id === selectedRequestTypeId}
               />
             ))}
           </div>

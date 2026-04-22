@@ -4,7 +4,7 @@ import {
   CatalogCategoryNode,
   FlatItem,
 } from '@/components/admin/catalog-tree-editor';
-import { CatalogServiceSheet } from '@/components/admin/catalog/catalog-service-sheet';
+import { CatalogServicePanel } from '@/components/admin/catalog/catalog-service-panel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -59,8 +59,7 @@ export function CatalogHierarchyPage() {
 
   const [form, setForm] = useState<CategoryFormState>(emptyForm);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [serviceSheetOpen, setServiceSheetOpen] = useState(false);
-  const [serviceRtId, setServiceRtId] = useState<string | null>(null);
+  const [selectedRtId, setSelectedRtId] = useState<string | null>(null);
 
   const openCreate = (parentId: string | null) => {
     setForm({ ...emptyForm, parentId });
@@ -69,10 +68,7 @@ export function CatalogHierarchyPage() {
 
   const openEdit = (item: FlatItem) => {
     if (item.kind === 'request_type') {
-      // Service Catalog Sheet is the new primary editor. Legacy RequestTypeDialog
-      // is still reachable via Advanced editor link inside the Fulfillment tab.
-      setServiceRtId(item.id);
-      setServiceSheetOpen(true);
+      setSelectedRtId(item.id);
       return;
     }
     setForm({
@@ -126,6 +122,7 @@ export function CatalogHierarchyPage() {
     try {
       await apiFetch(`/service-catalog/categories/${item.id}`, { method: 'DELETE' });
       toast.success('Category deleted');
+      if (selectedRtId && !tree) setSelectedRtId(null);
       refetch();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete category');
@@ -153,39 +150,46 @@ export function CatalogHierarchyPage() {
   };
 
   return (
-    <div className="max-w-4xl">
-      <div className="flex items-start justify-between mb-6">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-start justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Catalog Hierarchy</h1>
-          <p className="text-muted-foreground mt-1">
-            Drag to reorder or reparent. Categories cap at 3 levels; request types live as leaves.
+          <h1 className="text-2xl font-bold tracking-tight">Service Catalog</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Each request type is a service. Click one to configure coverage, audience, form, and fulfillment.
           </p>
         </div>
       </div>
 
-      {loading && (
-        <div className="flex items-center justify-center py-8">
-          <Spinner className="size-6 text-muted-foreground" />
+      <div className="flex-1 min-h-0 flex gap-4 items-stretch">
+        {/* Tree column */}
+        <div className="w-[380px] shrink-0 overflow-auto">
+          {loading && (
+            <div className="flex items-center justify-center py-8">
+              <Spinner className="size-5 text-muted-foreground" />
+            </div>
+          )}
+          {!loading && (
+            <CatalogTreeEditor
+              tree={tree ?? []}
+              onCategoryMove={handleCategoryMove}
+              onRequestTypeMove={handleRequestTypeMove}
+              onEdit={openEdit}
+              onDelete={handleDelete}
+              onAddChild={openCreate}
+              selectedRequestTypeId={selectedRtId}
+            />
+          )}
         </div>
-      )}
 
-      {!loading && (
-        <CatalogTreeEditor
-          tree={tree ?? []}
-          onCategoryMove={handleCategoryMove}
-          onRequestTypeMove={handleRequestTypeMove}
-          onEdit={openEdit}
-          onDelete={handleDelete}
-          onAddChild={openCreate}
-        />
-      )}
-
-      <CatalogServiceSheet
-        open={serviceSheetOpen}
-        onOpenChange={setServiceSheetOpen}
-        requestTypeId={serviceRtId}
-        onSaved={refetch}
-      />
+        {/* Panel column */}
+        <div className="flex-1 min-w-0 overflow-auto rounded-lg border bg-card p-4">
+          <CatalogServicePanel
+            requestTypeId={selectedRtId}
+            onSaved={refetch}
+            onClose={() => setSelectedRtId(null)}
+          />
+        </div>
+      </div>
 
       <Dialog
         open={dialogOpen}
