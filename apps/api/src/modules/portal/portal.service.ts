@@ -228,6 +228,48 @@ export class PortalService {
   }
 
   /**
+   * Pre-onboard list: sites/buildings in this tenant that actually have
+   * at least one active request type with an eligible-descendant match for
+   * the user's eventual catalog. Filters out "dead" sites so the onboarding
+   * picker doesn't lead the user into an empty catalog.
+   *
+   * Only callable when the caller's self-onboard gate is open. v1 doesn't
+   * filter by role/department — all employees see the same tenant-wide
+   * onboardable set. See docs/portal-scope-slice.md §11.
+   */
+  async getOnboardableLocations(authUid: string): Promise<SpaceSummary[]> {
+    const tenant = TenantContext.current();
+    const me = await this.getMe(authUid);
+    if (!me.can_self_onboard) {
+      throw new ForbiddenException({
+        code: 'self_onboard_disabled',
+        message: 'Self-onboarding is not available for this account',
+      });
+    }
+
+    const { data: rows, error } = await this.supabase.admin.rpc(
+      'portal_onboardable_locations',
+      { p_tenant_id: tenant.id },
+    );
+    if (error) throw error;
+
+    const ids =
+      ((rows ?? []) as Array<Record<string, string> | string>).map((r) =>
+        typeof r === 'string' ? r : (Object.values(r)[0] as string),
+      );
+    if (ids.length === 0) return [];
+
+    const { data: spaces } = await this.supabase.admin
+      .from('spaces')
+      .select('id, name, type')
+      .in('id', ids)
+      .eq('tenant_id', tenant.id)
+      .order('name');
+
+    return (spaces ?? []) as SpaceSummary[];
+  }
+
+  /**
    * Zero-scope bootstrap: an employee claims their initial default work location
    * on first login. Subject to THREE independent gates:
    *   1. Tenant flag `portal_self_onboard` = true.

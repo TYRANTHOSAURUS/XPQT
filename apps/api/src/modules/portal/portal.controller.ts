@@ -65,6 +65,11 @@ export class PortalController {
     return this.portal.getSpaces(this.authUid(request), under);
   }
 
+  @Get('me/onboard-locations')
+  async onboardLocations(@Req() request: Request) {
+    return this.portal.getOnboardableLocations(this.authUid(request));
+  }
+
   @Post('me/claim-default-location')
   async claimDefaultLocation(
     @Req() request: Request,
