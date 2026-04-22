@@ -24,9 +24,16 @@ import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { PersonCombobox } from '@/components/person-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
+import { OrgNodeCombobox } from '@/components/org-node-combobox';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
 import { FieldSeparator } from '@/components/ui/field';
 import { TableLoading, TableEmpty } from '@/components/table-states';
+
+interface PrimaryMembership {
+  org_node_id: string;
+  is_primary: boolean;
+  org_node: { id: string; name: string; code: string | null } | { id: string; name: string; code: string | null }[] | null;
+}
 
 interface Person {
   id: string;
@@ -35,13 +42,20 @@ interface Person {
   email: string | null;
   phone: string | null;
   type: string;
-  division: string | null;
-  department: string | null;
   cost_center: string | null;
   manager_person_id: string | null;
   manager?: { id: string; first_name: string; last_name: string } | null;
   default_location_id: string | null;
   active: boolean;
+  primary_membership?: PrimaryMembership[] | null;
+}
+
+function getPrimaryOrgNode(person: Person): { id: string; name: string; code: string | null } | null {
+  const memberships = person.primary_membership ?? [];
+  const primary = memberships.find((m) => m.is_primary);
+  if (!primary) return null;
+  const node = Array.isArray(primary.org_node) ? primary.org_node[0] : primary.org_node;
+  return node ?? null;
 }
 
 const personTypes = [
@@ -71,11 +85,10 @@ export function PersonsPage() {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [type, setType] = useState('employee');
-  const [division, setDivision] = useState('');
-  const [department, setDepartment] = useState('');
   const [costCenter, setCostCenter] = useState('');
   const [managerId, setManagerId] = useState('');
   const [defaultLocationId, setDefaultLocationId] = useState<string | null>(null);
+  const [primaryOrgNodeId, setPrimaryOrgNodeId] = useState<string | null>(null);
 
   const resetForm = () => {
     setEditId(null);
@@ -84,11 +97,10 @@ export function PersonsPage() {
     setEmail('');
     setPhone('');
     setType('employee');
-    setDivision('');
-    setDepartment('');
     setCostCenter('');
     setManagerId('');
     setDefaultLocationId(null);
+    setPrimaryOrgNodeId(null);
   };
 
   const handleSave = async () => {
@@ -99,11 +111,10 @@ export function PersonsPage() {
       email: email || undefined,
       phone: phone || undefined,
       type,
-      division: division || undefined,
-      department: department || undefined,
       cost_center: costCenter || undefined,
       manager_person_id: managerId || undefined,
       default_location_id: defaultLocationId,
+      primary_org_node_id: primaryOrgNodeId,
     };
     try {
       if (editId) {
@@ -128,11 +139,10 @@ export function PersonsPage() {
     setEmail(person.email ?? '');
     setPhone(person.phone ?? '');
     setType(person.type);
-    setDivision(person.division ?? '');
-    setDepartment(person.department ?? '');
     setCostCenter(person.cost_center ?? '');
     setManagerId(person.manager_person_id ?? '');
     setDefaultLocationId(person.default_location_id ?? null);
+    setPrimaryOrgNodeId(getPrimaryOrgNode(person)?.id ?? null);
     setDialogOpen(true);
   };
 
@@ -220,35 +230,27 @@ export function PersonsPage() {
                 </Select>
               </Field>
 
-              <div className="grid grid-cols-3 gap-3">
-                <Field>
-                  <FieldLabel htmlFor="person-division">Division</FieldLabel>
-                  <Input
-                    id="person-division"
-                    value={division}
-                    onChange={(e) => setDivision(e.target.value)}
-                    placeholder="e.g. Engineering"
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="person-department">Department</FieldLabel>
-                  <Input
-                    id="person-department"
-                    value={department}
-                    onChange={(e) => setDepartment(e.target.value)}
-                    placeholder="e.g. IT"
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="person-cost-center">Cost Center</FieldLabel>
-                  <Input
-                    id="person-cost-center"
-                    value={costCenter}
-                    onChange={(e) => setCostCenter(e.target.value)}
-                    placeholder="e.g. CC-100"
-                  />
-                </Field>
-              </div>
+              <Field>
+                <FieldLabel htmlFor="person-org">Organisation</FieldLabel>
+                <OrgNodeCombobox
+                  value={primaryOrgNodeId}
+                  onChange={setPrimaryOrgNodeId}
+                  placeholder="Select organisation…"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  The person's primary node in the org tree. Inherits the node's location grants in the portal.
+                </p>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="person-cost-center">Cost Center</FieldLabel>
+                <Input
+                  id="person-cost-center"
+                  value={costCenter}
+                  onChange={(e) => setCostCenter(e.target.value)}
+                  placeholder="e.g. CC-100"
+                />
+              </Field>
 
               <Field>
                 <FieldLabel htmlFor="person-manager">Manager</FieldLabel>
@@ -310,29 +312,30 @@ export function PersonsPage() {
             <TableHead className="w-[200px]">Email</TableHead>
             <TableHead className="w-[130px]">Phone</TableHead>
             <TableHead className="w-[120px]">Type</TableHead>
-            <TableHead className="w-[120px]">Department</TableHead>
-            <TableHead className="w-[120px]">Division</TableHead>
+            <TableHead className="w-[200px]">Organisation</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && <TableLoading cols={7} />}
-          {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No persons found." />}
-          {(data ?? []).map((person) => (
-            <TableRow key={person.id}>
-              <TableCell className="font-medium">{person.first_name} {person.last_name}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{person.email ?? '---'}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{person.phone ?? '---'}</TableCell>
-              <TableCell>{getTypeBadge(person.type)}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{person.department ?? '---'}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{person.division ?? '---'}</TableCell>
-              <TableCell>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(person)}>
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
+          {loading && <TableLoading cols={6} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No persons found." />}
+          {(data ?? []).map((person) => {
+            const orgNode = getPrimaryOrgNode(person);
+            return (
+              <TableRow key={person.id}>
+                <TableCell className="font-medium">{person.first_name} {person.last_name}</TableCell>
+                <TableCell className="text-muted-foreground text-sm">{person.email ?? '---'}</TableCell>
+                <TableCell className="text-muted-foreground text-sm">{person.phone ?? '---'}</TableCell>
+                <TableCell>{getTypeBadge(person.type)}</TableCell>
+                <TableCell className="text-muted-foreground text-sm">{orgNode?.name ?? '---'}</TableCell>
+                <TableCell>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(person)}>
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>
