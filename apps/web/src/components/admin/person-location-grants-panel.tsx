@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { MapPin, Plus, Trash2 } from 'lucide-react';
+import { MapPin, Plus, Trash2, Home, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -16,13 +16,14 @@ import { apiFetch } from '@/lib/api';
 import { LocationCombobox } from '@/components/location-combobox';
 import { toast } from 'sonner';
 
-interface Grant {
-  id: string;
-  space_id: string;
-  granted_by_user_id: string | null;
-  granted_at: string;
-  note: string | null;
+type AuthSource = 'default' | 'grant' | 'org_grant';
+interface EffectiveAuth {
+  source: AuthSource;
   space: { id: string; name: string; type: string };
+  grant_id: string | null;
+  granted_at: string | null;
+  note: string | null;
+  org_node: { id: string; name: string } | null;
 }
 
 interface Props {
@@ -35,7 +36,7 @@ interface Props {
  * /persons/:id/location-grants. Guarded server-side by people:manage.
  */
 export function PersonLocationGrantsPanel({ personId }: Props) {
-  const [grants, setGrants] = useState<Grant[]>([]);
+  const [effective, setEffective] = useState<EffectiveAuth[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addSpaceId, setAddSpaceId] = useState<string | null>(null);
@@ -46,11 +47,11 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const rows = await apiFetch<Grant[]>(`/persons/${personId}/location-grants`);
-      setGrants(rows);
+      const eff = await apiFetch<EffectiveAuth[]>(`/persons/${personId}/effective-authorization`);
+      setEffective(eff);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load grants');
-      setGrants([]);
+      setError(e instanceof Error ? e.message : 'Failed to load authorization');
+      setEffective([]);
     } finally {
       setLoading(false);
     }
@@ -95,53 +96,82 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
   return (
     <FieldGroup>
       <div>
-        <h3 className="text-sm font-medium mb-1">Location grants</h3>
+        <h3 className="text-sm font-medium mb-1">Effective portal authorization</h3>
         <p className="text-xs text-muted-foreground">
-          Extra sites or buildings this person can submit portal requests for. Their default
-          work location is always authorized; add grants only for additional locations.
+          Every location this person can submit requests for, with the reason
+          they're authorized: their default work location, an explicit grant,
+          or a grant inherited through an org membership.
         </p>
       </div>
 
       {error && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Couldn't load grants</AlertTitle>
+          <AlertTitle>Couldn't load authorization</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
-      {!loading && grants.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">No grants yet.</p>
+      {!loading && effective.length === 0 && !error && (
+        <p className="text-sm text-muted-foreground">
+          No authorized locations. Set a default work location or add a grant below.
+        </p>
       )}
 
-      {grants.length > 0 && (
+      {effective.length > 0 && (
         <div className="flex flex-col divide-y border rounded-md">
-          {grants.map((g) => (
-            <div key={g.id} className="flex items-start gap-3 p-3">
-              <MapPin className="h-4 w-4 mt-0.5 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{g.space.name}</span>
-                  <Badge variant="outline" className="text-xs capitalize">
-                    {g.space.type}
-                  </Badge>
+          {effective.map((row, i) => {
+            const Icon = row.source === 'default' ? Home : row.source === 'org_grant' ? Users : MapPin;
+            return (
+              <div key={`${row.source}-${row.space.id}-${row.grant_id ?? i}`} className="flex items-start gap-3 p-3">
+                <Icon className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium truncate">{row.space.name}</span>
+                    <Badge variant="outline" className="text-xs capitalize">{row.space.type}</Badge>
+                    {row.source === 'default' && (
+                      <Badge variant="secondary" className="text-[10px]">default</Badge>
+                    )}
+                    {row.source === 'grant' && (
+                      <Badge variant="secondary" className="text-[10px]">grant</Badge>
+                    )}
+                    {row.source === 'org_grant' && (
+                      <Badge variant="secondary" className="text-[10px]">via org</Badge>
+                    )}
+                  </div>
+                  {row.source === 'default' && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Set as the person's default work location.
+                    </p>
+                  )}
+                  {row.source === 'org_grant' && row.org_node && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Inherited from org node <span className="font-medium">{row.org_node.name}</span>.
+                    </p>
+                  )}
+                  {row.source === 'grant' && row.note && (
+                    <p className="text-xs text-muted-foreground mt-0.5">{row.note}</p>
+                  )}
+                  {row.source === 'grant' && row.granted_at && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Granted {new Date(row.granted_at).toLocaleDateString()}
+                    </p>
+                  )}
                 </div>
-                {g.note && <p className="text-xs text-muted-foreground mt-0.5">{g.note}</p>}
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Granted {new Date(g.granted_at).toLocaleDateString()}
-                </p>
+                {row.source === 'grant' && row.grant_id && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                    onClick={() => void onRemove(row.grant_id!)}
+                    title="Revoke grant"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                onClick={() => void onRemove(g.id)}
-                title="Revoke grant"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
