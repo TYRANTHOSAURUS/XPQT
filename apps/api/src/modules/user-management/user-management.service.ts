@@ -255,7 +255,7 @@ export class UserManagementService {
     const tenant = TenantContext.current();
     let query = this.supabase.admin
       .from('persons')
-      .select('*, manager:persons!persons_manager_person_id_fkey(id, first_name, last_name)')
+      .select('*, manager:persons!manager_person_id(id, first_name, last_name)')
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('first_name');
