@@ -27,6 +27,7 @@ import { VendorModule } from './modules/vendor/vendor.module';
 import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
 import { PortalModule } from './modules/portal/portal.module';
 import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
+import { OrgNodeModule } from './modules/org-node/org-node.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.
     CatalogMenuModule,
     PortalModule,
     ServiceCatalogModule,
+    OrgNodeModule,
   ],
   controllers: [HealthController],
   providers: [
