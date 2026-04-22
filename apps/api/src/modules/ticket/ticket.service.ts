@@ -405,7 +405,7 @@ export class TicketService {
       .from('tickets')
       .select(`
         *,
-        requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email, department),
+        requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email),
         location:spaces!tickets_location_id_fkey(id, name, type, parent_id),
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),

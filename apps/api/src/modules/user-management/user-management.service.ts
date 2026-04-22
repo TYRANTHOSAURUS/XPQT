@@ -31,8 +31,6 @@ export interface CreatePersonDto {
   email?: string;
   phone?: string;
   type: string;
-  division?: string;
-  department?: string;
   cost_center?: string;
   manager_person_id?: string;
 }
@@ -80,7 +78,7 @@ export class UserManagementService {
       .from('users')
       .select(`
         *,
-        person:persons(id, first_name, last_name, email, department, type),
+        person:persons(id, first_name, last_name, email, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
           role:roles(id, name, type)
@@ -98,7 +96,7 @@ export class UserManagementService {
       .from('users')
       .select(`
         *,
-        person:persons(id, first_name, last_name, email, department, type),
+        person:persons(id, first_name, last_name, email, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
           role:roles(id, name, type)
