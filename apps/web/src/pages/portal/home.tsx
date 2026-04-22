@@ -21,8 +21,10 @@ import {
   Key,
   Car,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApi } from '@/hooks/use-api';
+import { apiFetch } from '@/lib/api';
+import { usePortal } from '@/providers/portal-provider';
 
 interface CatalogCategory {
   id: string;
@@ -30,6 +32,11 @@ interface CatalogCategory {
   description: string;
   icon: string;
   display_order: number;
+}
+
+interface PortalCatalogResponse {
+  selected_location: { id: string; name: string; type: string };
+  categories: Array<{ id: string; request_types: Array<{ id: string }> }>;
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -56,12 +63,35 @@ export function PortalHome() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const { data: dbCategories, loading } = useApi<CatalogCategory[]>('/service-catalog/categories', []);
+  const { data: portal } = usePortal();
+  const currentLocation = portal?.current_location ?? null;
 
-  const categories = (dbCategories ?? []).map((cat) => ({
-    ...cat,
-    IconComponent: iconMap[cat.icon] ?? HelpCircle,
-    color: colorMap[cat.icon] ?? 'text-gray-500',
-  }));
+  // Load portal catalog to determine which categories have *any* visible
+  // request type at the current location. Empty categories are hidden so
+  // users don't click into dead ends.
+  const [visibleCategoryIds, setVisibleCategoryIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!currentLocation) { setVisibleCategoryIds(null); return; }
+    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
+      .then((res) => {
+        const ids = new Set(
+          res.categories.filter((c) => c.request_types.length > 0).map((c) => c.id),
+        );
+        setVisibleCategoryIds(ids);
+      })
+      .catch(() => setVisibleCategoryIds(null));
+  }, [currentLocation?.id]);
+
+  const categories = useMemo(() => {
+    const source = (dbCategories ?? []).map((cat) => ({
+      ...cat,
+      IconComponent: iconMap[cat.icon] ?? HelpCircle,
+      color: colorMap[cat.icon] ?? 'text-gray-500',
+    }));
+    // Hide categories with no visible request types at the current location.
+    if (!visibleCategoryIds) return source;
+    return source.filter((c) => visibleCategoryIds.has(c.id));
+  }, [dbCategories, visibleCategoryIds]);
 
   const filtered = searchQuery
     ? categories.filter((c) =>
