@@ -47,6 +47,7 @@ import {
   Compass,
   ArrowLeft,
   Building2,
+  Palette,
 } from 'lucide-react';
 import { features } from '@/lib/features';
 
@@ -68,6 +69,7 @@ const configNav = [
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
   { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
   { title: 'Webhooks', path: '/admin/webhooks', icon: Webhook },
+  { title: 'Branding', path: '/admin/branding', icon: Palette },
 ];
 
 const peopleNav = [
@@ -109,6 +111,7 @@ const pageTitles: Record<string, string> = {
   '/admin/assets': 'Assets',
   '/admin/vendors': 'Vendors',
   '/admin/vendor-menus': 'Vendor Menus',
+  '/admin/branding': 'Branding',
 };
 
 export function AdminLayout() {
