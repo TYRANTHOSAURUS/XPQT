@@ -1,6 +1,6 @@
-# Portal Scope Slice — Design (LOCKED, codex-approved)
+# Portal Scope Slice — Design (LOCKED, codex-approved, SHIPPED)
 
-**Status:** **Locked design — codex-approved after 7 review rounds.** Ready for user sign-off → implementation.
+**Status:** Implementation shipped on main and remote Supabase (commits `3d2370a..f904cd8`, migrations `00047`-`00055`). Design locked after 7 codex review rounds. Codex-reviewed implementation with fixes applied.
 **Scope:** Contract 0 for portal submissions. Feeds the **already-shipped** `IntakeContext` (`packages/shared/src/types/routing.ts`) + `IntakeScopingService.normalize()` (Contract 1).
 **Source of truth:** the brief, codex's locked v1 decisions, and the existing Contract 1 code.
 
