@@ -1,40 +1,59 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
   Card,
+  CardDescription,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from '@/components/ui/card';
 import { ArrowLeft, Plus } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
 import { Spinner } from '@/components/ui/spinner';
+import { apiFetch } from '@/lib/api';
+import { usePortal } from '@/providers/portal-provider';
 
-interface RequestType {
+interface CatalogRequestType {
   id: string;
   name: string;
-  domain: string;
+  description: string | null;
+  domain: string | null;
 }
 
 interface CatalogCategory {
   id: string;
   name: string;
-  description: string;
+  icon: string | null;
+  request_types: CatalogRequestType[];
+}
+
+interface PortalCatalogResponse {
+  selected_location: { id: string; name: string; type: string };
+  categories: CatalogCategory[];
 }
 
 export function CatalogCategoryPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
+  const { data: portal } = usePortal();
 
-  // Fetch category details
-  const { data: categories } = useApi<CatalogCategory[]>('/service-catalog/categories', []);
-  const category = categories?.find((c) => c.id === categoryId);
+  const currentLocation = portal?.current_location ?? null;
+  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  // Fetch request types linked to this category
-  const { data: requestTypes, loading } = useApi<RequestType[]>(
-    categoryId ? `/service-catalog/categories/${categoryId}/request-types` : '',
-    [categoryId],
-  );
+  useEffect(() => {
+    if (!currentLocation) return;
+    setLoading(true);
+    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
+      .then(setCatalog)
+      .catch(() => setCatalog(null))
+      .finally(() => setLoading(false));
+  }, [currentLocation?.id]);
+
+  const { category, requestTypes } = useMemo(() => {
+    if (!catalog || !categoryId) return { category: null, requestTypes: [] as CatalogRequestType[] };
+    const cat = catalog.categories.find((c) => c.id === categoryId);
+    return { category: cat ?? null, requestTypes: cat?.request_types ?? [] };
+  }, [catalog, categoryId]);
 
   return (
     <div>
@@ -43,7 +62,11 @@ export function CatalogCategoryPage() {
       </Button>
 
       <h1 className="text-2xl font-bold tracking-tight mb-2">{category?.name ?? 'Services'}</h1>
-      <p className="text-muted-foreground mb-8">Select the type of request you'd like to submit</p>
+      <p className="text-muted-foreground mb-8">
+        {currentLocation
+          ? <>Showing services for <span className="font-medium">{currentLocation.name}</span></>
+          : 'Select the type of request you\'d like to submit'}
+      </p>
 
       {loading && (
         <div className="flex items-center justify-center py-12">
@@ -51,9 +74,11 @@ export function CatalogCategoryPage() {
         </div>
       )}
 
-      {!loading && (!requestTypes || requestTypes.length === 0) && (
+      {!loading && requestTypes.length === 0 && (
         <div className="text-center py-12">
-          <p className="text-muted-foreground mb-4">No specific request types configured for this category yet.</p>
+          <p className="text-muted-foreground mb-4">
+            No request types available in this category at your selected location.
+          </p>
           <Button onClick={() => navigate(`/portal/submit`)}>
             <Plus className="h-4 w-4 mr-2" /> Submit a General Request
           </Button>
@@ -61,7 +86,7 @@ export function CatalogCategoryPage() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {(requestTypes ?? []).map((rt) => (
+        {requestTypes.map((rt) => (
           <Card
             key={rt.id}
             className="cursor-pointer transition-colors hover:bg-accent/50"
@@ -69,7 +94,7 @@ export function CatalogCategoryPage() {
           >
             <CardHeader>
               <CardTitle className="text-base">{rt.name}</CardTitle>
-              <CardDescription>Submit a {rt.name.toLowerCase()} request</CardDescription>
+              <CardDescription>{rt.description ?? `Submit a ${rt.name.toLowerCase()} request`}</CardDescription>
             </CardHeader>
           </Card>
         ))}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Field,
+  FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
@@ -26,29 +27,45 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { ArrowLeft, Send, CheckCircle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertCircle, ArrowLeft, Send, CheckCircle, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
-import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
+import { usePortal } from '@/providers/portal-provider';
 import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
 import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 import { AssetCombobox } from '@/components/asset-combobox';
-import { LocationCombobox } from '@/components/location-combobox';
-import { RequestTypePicker } from '@/components/request-type-picker';
+import {
+  PortalLocationDrilldown,
+  satisfiesGranularity,
+} from '@/components/portal/portal-location-drilldown';
 
-interface RequestType {
+interface CatalogRequestType {
   id: string;
   name: string;
-  domain: string;
+  description: string | null;
+  domain: string | null;
   form_schema_id: string | null;
-  fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
-  requires_asset?: boolean;
-  asset_required?: boolean;
-  asset_type_filter?: string[];
-  requires_location?: boolean;
-  location_required?: boolean;
+  requires_location: boolean;
+  location_required: boolean;
+  location_granularity: string | null;
+  requires_asset: boolean;
+  asset_required: boolean;
+  asset_type_filter: string[];
+}
+
+interface CatalogCategory {
+  id: string;
+  name: string;
+  icon: string | null;
+  request_types: CatalogRequestType[];
+}
+
+interface PortalCatalogResponse {
+  selected_location: { id: string; name: string; type: string };
+  categories: CatalogCategory[];
 }
 
 interface FormSchemaEntity {
@@ -59,8 +76,8 @@ interface FormSchemaEntity {
 const submitSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200, 'Title is too long'),
   description: z.string().max(5000, 'Description is too long').optional(),
-  priority: z.enum(['low', 'medium', 'high', 'critical']),
-  requestTypeId: z.string().optional(),
+  priority: z.enum(['low', 'normal', 'high', 'urgent']),
+  requestTypeId: z.string().min(1, 'Pick a request type'),
 });
 
 type SubmitFormValues = z.infer<typeof submitSchema>;
@@ -68,15 +85,23 @@ type SubmitFormValues = z.infer<typeof submitSchema>;
 export function SubmitRequestPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
-  const { person } = useAuth();
+  const { data: portal } = usePortal();
+  const [searchParams] = useSearchParams();
+  const preselectedType = searchParams.get('type') ?? '';
+
+  const currentLocation = portal?.current_location ?? null;
+
+  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
   const [submitted, setSubmitted] = useState(false);
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [assetId, setAssetId] = useState<string | null>(null);
-  const [locationId, setLocationId] = useState<string | null>(null);
-
-  const [searchParams] = useSearchParams();
-  const preselectedType = searchParams.get('type') ?? '';
+  const [assetLocationSummary, setAssetLocationSummary] = useState<{ id: string; name: string } | null>(null);
+  const [drilledLocation, setDrilledLocation] = useState<{ id: string; name: string; type: string } | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const {
     control,
@@ -87,18 +112,38 @@ export function SubmitRequestPage() {
     formState: { errors, isSubmitting },
   } = useForm<SubmitFormValues>({
     resolver: zodResolver(submitSchema),
-    defaultValues: { title: '', description: '', priority: 'medium', requestTypeId: preselectedType },
+    defaultValues: { title: '', description: '', priority: 'normal', requestTypeId: preselectedType },
   });
 
   const requestTypeId = watch('requestTypeId');
 
-  const { data: requestTypes } = useApi<RequestType[]>(
-    `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
-    [categoryId],
-  );
+  // Load catalog scoped to the portal's currently-selected location.
+  useEffect(() => {
+    if (!currentLocation) {
+      setCatalog(null);
+      return;
+    }
+    setCatalogLoading(true);
+    setCatalogError(null);
+    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
+      .then(setCatalog)
+      .catch((e) => setCatalogError(e instanceof Error ? e.message : 'Failed to load catalog'))
+      .finally(() => setCatalogLoading(false));
+  }, [currentLocation?.id, currentLocation]);
 
-  // Reflect a newly-arrived ?type=<id> query param (e.g. navigating between
-  // catalog cards without unmounting this page) into the form state.
+  // Flatten visible RTs; optionally filter by categoryId from URL.
+  const requestTypes = useMemo<CatalogRequestType[]>(() => {
+    if (!catalog) return [];
+    if (categoryId) {
+      const cat = catalog.categories.find((c) => c.id === categoryId);
+      return cat?.request_types ?? [];
+    }
+    return catalog.categories.flatMap((c) => c.request_types);
+  }, [catalog, categoryId]);
+
+  const selectedRT = requestTypes.find((r) => r.id === requestTypeId);
+
+  // Reflect ?type=<id> into the form state.
   useEffect(() => {
     if (preselectedType && preselectedType !== requestTypeId) {
       setValue('requestTypeId', preselectedType);
@@ -106,50 +151,64 @@ export function SubmitRequestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preselectedType]);
 
-  const selectedRT = requestTypes?.find((r) => r.id === requestTypeId);
-
+  // When the RT changes, load its form schema.
   useEffect(() => {
-    if (!requestTypeId || !requestTypes) { setFormFields([]); return; }
-    const rt = requestTypes.find((r) => r.id === requestTypeId);
-    if (!rt?.form_schema_id) { setFormFields([]); return; }
-    apiFetch<FormSchemaEntity>(`/config-entities/${rt.form_schema_id}`)
+    setDrilledLocation(null);
+    if (!selectedRT?.form_schema_id) {
+      setFormFields([]);
+      setValues({});
+      return;
+    }
+    apiFetch<FormSchemaEntity>(`/config-entities/${selectedRT.form_schema_id}`)
       .then((entity) => {
-        const fields = entity.current_version?.definition?.fields ?? [];
-        setFormFields(fields);
+        setFormFields(entity.current_version?.definition?.fields ?? []);
         setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [requestTypeId, requestTypes]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id]);
+
+  // Determine whether drill-down is needed.
+  // Current location is always a site/building; if granularity is site/building and
+  // current satisfies it, no drill-down. Otherwise drill is required.
+  const needsDrilldown = useMemo(() => {
+    if (!selectedRT?.location_granularity || !currentLocation) return false;
+    return !satisfiesGranularity(currentLocation.type, selectedRT.location_granularity);
+  }, [selectedRT?.location_granularity, currentLocation]);
+
+  // The location we'll submit to the backend. Only user-picked / drilled values —
+  // never asset-resolved (that runs server-side to preserve scope_source provenance).
+  const submitLocationId: string | null = useMemo(() => {
+    if (drilledLocation) return drilledLocation.id;
+    if (needsDrilldown) return null;
+    return currentLocation?.id ?? null;
+  }, [drilledLocation, needsDrilldown, currentLocation]);
 
   const onSubmit = async (formValues: SubmitFormValues) => {
+    setSubmitError(null);
+
     const missing = validateRequired(formFields, values);
     if (missing) {
       toast.error(`"${missing.label}" is required`);
       return;
     }
-    if (selectedRT?.asset_required && !assetId) {
-      toast.error('Please select the affected asset');
-      return;
-    }
-    if (selectedRT?.location_required && !locationId) {
-      toast.error('Please select a location');
+
+    if (selectedRT?.location_required && !submitLocationId && !assetId) {
+      toast.error('Please pick a location or asset');
       return;
     }
 
     const { bound, form_data } = splitFormData(formFields, values);
 
     try {
-      await apiFetch('/tickets', {
+      await apiFetch('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
+          request_type_id: formValues.requestTypeId,
           title: formValues.title,
           description: formValues.description,
           priority: formValues.priority,
-          ticket_type_id: formValues.requestTypeId || undefined,
-          requester_person_id: person?.id,
-          source_channel: 'portal',
           asset_id: assetId ?? undefined,
-          location_id: locationId ?? undefined,
+          location_id: submitLocationId ?? undefined,
           ...bound,
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
@@ -157,7 +216,9 @@ export function SubmitRequestPage() {
       toast.success('Request submitted');
       setSubmitted(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to submit request');
+      const msg = err instanceof Error ? err.message : 'Failed to submit request';
+      setSubmitError(msg);
+      toast.error(msg);
     }
   };
 
@@ -190,9 +251,17 @@ export function SubmitRequestPage() {
       <Card>
         <CardHeader>
           <CardTitle>Submit a Request</CardTitle>
-          <CardDescription>Describe your issue or request and we'll route it to the right team</CardDescription>
+          <CardDescription>Describe your issue or request and we'll route it to the right team.</CardDescription>
         </CardHeader>
         <CardContent>
+          {catalogError && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Catalog failed to load</AlertTitle>
+              <AlertDescription>{catalogError}</AlertDescription>
+            </Alert>
+          )}
+
           <form onSubmit={handleSubmit(onSubmit)}>
             <FieldGroup>
               <Field>
@@ -201,14 +270,38 @@ export function SubmitRequestPage() {
                   control={control}
                   name="requestTypeId"
                   render={({ field }) => (
-                    <RequestTypePicker
-                      id="request-type"
+                    <Select
                       value={field.value ?? ''}
-                      onChange={(rtId) => field.onChange(rtId)}
-                      rootCategoryId={categoryId ?? null}
-                    />
+                      onValueChange={(v) => field.onChange(v ?? '')}
+                      disabled={catalogLoading}
+                    >
+                      <SelectTrigger id="request-type">
+                        <SelectValue
+                          placeholder={
+                            catalogLoading
+                              ? 'Loading…'
+                              : requestTypes.length === 0
+                                ? 'No request types available here'
+                                : 'Select a request type'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {requestTypes.map((rt) => (
+                          <SelectItem key={rt.id} value={rt.id}>
+                            {rt.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   )}
                 />
+                {currentLocation && (
+                  <FieldDescription>
+                    Showing services for <span className="font-medium">{currentLocation.name}</span>.
+                  </FieldDescription>
+                )}
+                {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
               </Field>
 
               {selectedRT?.requires_asset && (
@@ -221,20 +314,47 @@ export function SubmitRequestPage() {
                     value={assetId}
                     onChange={(id, asset) => {
                       setAssetId(id);
-                      if (asset?.assigned_space_id) setLocationId(asset.assigned_space_id);
+                      if (asset?.assigned_space_id) {
+                        // Display-only; never submitted as selected_location_id.
+                        // Backend resolves asset.assigned_space_id itself to preserve provenance.
+                        setAssetLocationSummary({
+                          id: asset.assigned_space_id,
+                          name: (asset as { assigned_space?: { name?: string } }).assigned_space?.name ?? 'asset location',
+                        });
+                      } else {
+                        setAssetLocationSummary(null);
+                      }
                     }}
                     assetTypeFilter={selectedRT.asset_type_filter ?? []}
                   />
+                  {assetLocationSummary && (
+                    <FieldDescription className="flex items-center gap-1">
+                      <MapPin className="h-3 w-3" /> From asset: {assetLocationSummary.name}
+                    </FieldDescription>
+                  )}
                 </Field>
               )}
 
-              {selectedRT?.requires_location && (
+              {selectedRT?.location_granularity && needsDrilldown && currentLocation && (
                 <Field>
-                  <FieldLabel htmlFor="portal-location">
+                  <FieldLabel htmlFor="portal-drilldown">
                     Location
                     {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
                   </FieldLabel>
-                  <LocationCombobox value={locationId} onChange={setLocationId} />
+                  <PortalLocationDrilldown
+                    rootSpace={currentLocation}
+                    granularity={selectedRT.location_granularity}
+                    onPick={(s) => setDrilledLocation(s)}
+                    selected={drilledLocation}
+                  />
+                  {drilledLocation && (
+                    <FieldDescription className="flex items-center gap-1">
+                      <MapPin className="h-3 w-3" /> Selected: {drilledLocation.name}
+                      <Badge variant="outline" className="ml-1 text-xs capitalize">
+                        {drilledLocation.type.replace('_', ' ')}
+                      </Badge>
+                    </FieldDescription>
+                  )}
                 </Field>
               )}
 
@@ -267,13 +387,13 @@ export function SubmitRequestPage() {
                   control={control}
                   name="priority"
                   render={({ field }) => (
-                    <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'medium') as SubmitFormValues['priority'])}>
+                    <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'normal') as SubmitFormValues['priority'])}>
                       <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="low">Low — not urgent</SelectItem>
-                        <SelectItem value="medium">Medium — normal priority</SelectItem>
+                        <SelectItem value="normal">Normal — usual priority</SelectItem>
                         <SelectItem value="high">High — needs attention soon</SelectItem>
-                        <SelectItem value="critical">Critical — blocking my work</SelectItem>
+                        <SelectItem value="urgent">Urgent — blocking my work</SelectItem>
                       </SelectContent>
                     </Select>
                   )}
@@ -285,6 +405,14 @@ export function SubmitRequestPage() {
                 values={values}
                 onChange={(id, v) => setValues((prev) => ({ ...prev, [id]: v }))}
               />
+
+              {submitError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Submission failed</AlertTitle>
+                  <AlertDescription>{submitError}</AlertDescription>
+                </Alert>
+              )}
 
               <div className="flex justify-end pt-2">
                 <Button type="submit" disabled={isSubmitting}>
