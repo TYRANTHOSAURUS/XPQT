@@ -72,6 +72,31 @@ export class UserManagementService {
     return data;
   }
 
+  /**
+   * Resolve the authenticated caller by their Supabase auth_uid. Returns the
+   * user row, joined person, and role_assignments in one query. Used by
+   * GET /users/me so the frontend doesn't need to search persons by email to
+   * find role assignments.
+   */
+  async getByAuthUid(authUid: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select(`
+        *,
+        person:persons(id, first_name, last_name, email, type, default_location_id),
+        role_assignments:user_role_assignments(
+          id, domain_scope, location_scope,
+          role:roles(id, name, type)
+        )
+      `)
+      .eq('auth_uid', authUid)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
   async listUsers() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin

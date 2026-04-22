@@ -48,49 +48,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const fetchUserData = useCallback(async (currentUser: User | null) => {
-    if (!currentUser?.email) {
+    if (!currentUser) {
       setPerson(null);
       setAppUser(null);
       return;
     }
 
     try {
-      // Fetch person record by email
-      const persons = await apiFetch<Person[]>(
-        `/persons?search=${encodeURIComponent(currentUser.email)}`,
-      );
-      const matchedPerson = persons?.find(
-        (p) => p.email?.toLowerCase() === currentUser.email?.toLowerCase(),
-      );
-      setPerson(matchedPerson ?? null);
-
-      // Fetch user record (roles)
-      type ApiUser = {
+      // Single-hop resolution via auth_uid. Backend joins the person row and
+      // role_assignments in one query, so we don't depend on persons-by-email
+      // search to find roles.
+      type MeResponse = {
         id: string;
         person_id: string;
+        person: Person | null;
         role_assignments?: { role?: { name?: string; type?: string } | null }[];
-      };
-      const users = await apiFetch<ApiUser[]>('/users');
-      const matchedUser = users?.find(
-        (u) => matchedPerson && u.person_id === matchedPerson.id,
-      );
-      setAppUser(
-        matchedUser
-          ? {
-              id: matchedUser.id,
-              person_id: matchedUser.person_id,
-              roles: (matchedUser.role_assignments ?? [])
-                .map((ra) => ra.role)
-                .filter((r): r is { name: string; type: string } => Boolean(r?.name))
-                .map((r) => ({
-                  name: r.name,
-                  type: (r.type === 'admin' || r.type === 'agent' ? r.type : 'employee') as RoleType,
-                })),
-            }
-          : null,
-      );
+      } | null;
+      const me = await apiFetch<MeResponse>('/users/me');
+      if (!me) {
+        setPerson(null);
+        setAppUser(null);
+        return;
+      }
+
+      setPerson(me.person ?? null);
+      setAppUser({
+        id: me.id,
+        person_id: me.person_id,
+        roles: (me.role_assignments ?? [])
+          .map((ra) => ra.role)
+          .filter((r): r is { name: string; type: string } => Boolean(r?.name))
+          .map((r) => ({
+            name: r.name,
+            type: (r.type === 'admin' || r.type === 'agent' ? r.type : 'employee') as RoleType,
+          })),
+      });
     } catch {
-      // API might not be available yet or user might not have a person record
+      // Auth valid but no public.users row (or API down) — fall through unauth.
       setPerson(null);
       setAppUser(null);
     }

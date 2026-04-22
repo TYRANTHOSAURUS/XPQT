@@ -1,4 +1,7 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query } from '@nestjs/common';
+import {
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UnauthorizedException,
+} from '@nestjs/common';
+import type { Request } from 'express';
 import {
   UserManagementService,
   CreateRoleDto,
@@ -10,6 +13,17 @@ import {
 @Controller('users')
 export class UsersController {
   constructor(private readonly service: UserManagementService) {}
+
+  // Single-hop resolver for the authenticated caller. Looks up public.users by
+  // auth_uid (set by AuthGuard on request.user.id), returns the user, linked
+  // person, and role_assignments in one call. Replaces the fragile
+  // persons-by-email → users-list chain that previously gated admin access.
+  @Get('me')
+  async me(@Req() request: Request) {
+    const authUid = (request as { user?: { id: string } }).user?.id;
+    if (!authUid) throw new UnauthorizedException('No auth user');
+    return this.service.getByAuthUid(authUid);
+  }
 
   @Get()
   async list() {
