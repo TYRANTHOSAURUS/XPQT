@@ -23,6 +23,9 @@ import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { PersonCombobox } from '@/components/person-combobox';
+import { LocationCombobox } from '@/components/location-combobox';
+import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
+import { FieldSeparator } from '@/components/ui/field';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Person {
@@ -37,6 +40,7 @@ interface Person {
   cost_center: string | null;
   manager_person_id: string | null;
   manager?: { id: string; first_name: string; last_name: string } | null;
+  default_location_id: string | null;
   active: boolean;
 }
 
@@ -71,6 +75,7 @@ export function PersonsPage() {
   const [department, setDepartment] = useState('');
   const [costCenter, setCostCenter] = useState('');
   const [managerId, setManagerId] = useState('');
+  const [defaultLocationId, setDefaultLocationId] = useState<string | null>(null);
 
   const resetForm = () => {
     setEditId(null);
@@ -83,6 +88,7 @@ export function PersonsPage() {
     setDepartment('');
     setCostCenter('');
     setManagerId('');
+    setDefaultLocationId(null);
   };
 
   const handleSave = async () => {
@@ -97,6 +103,7 @@ export function PersonsPage() {
       department: department || undefined,
       cost_center: costCenter || undefined,
       manager_person_id: managerId || undefined,
+      default_location_id: defaultLocationId,
     };
     try {
       if (editId) {
@@ -125,6 +132,7 @@ export function PersonsPage() {
     setDepartment(person.department ?? '');
     setCostCenter(person.cost_center ?? '');
     setManagerId(person.manager_person_id ?? '');
+    setDefaultLocationId(person.default_location_id ?? null);
     setDialogOpen(true);
   };
 
@@ -251,6 +259,28 @@ export function PersonsPage() {
                   placeholder="Select manager..."
                 />
               </Field>
+
+              <FieldSeparator />
+
+              <Field>
+                <FieldLabel>Default work location</FieldLabel>
+                <LocationCombobox
+                  value={defaultLocationId}
+                  onChange={setDefaultLocationId}
+                  typesFilter={['site', 'building']}
+                  placeholder="Pick a site or building…"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  The portal defaults to this location for submissions. Only sites and buildings are allowed; floor/room-level defaults aren't supported.
+                </p>
+              </Field>
+
+              {editId && (
+                <>
+                  <FieldSeparator />
+                  <PersonLocationGrantsPanel personId={editId} />
+                </>
+              )}
             </FieldGroup>
             </ScrollArea>
             <DialogFooter>

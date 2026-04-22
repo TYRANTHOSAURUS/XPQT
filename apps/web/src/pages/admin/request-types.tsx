@@ -16,19 +16,17 @@ interface RequestType {
   active: boolean;
   sla_policy?: { id: string; name: string } | null;
   catalog_category_id?: string | null;
-  routing_rule_id?: string | null;
   form_schema_id?: string | null;
   fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
+  location_granularity?: string | null;
   requires_approval?: boolean;
 }
 
 interface Category { id: string; name: string }
-interface RoutingRule { id: string; name: string }
 
 export function RequestTypesPage() {
   const { data, loading, refetch } = useApi<RequestType[]>('/request-types', []);
   const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
-  const { data: routingRules } = useApi<RoutingRule[]>('/routing-rules', []);
   const { data: formSchemas } = useApi<{ id: string; display_name: string }[]>('/config-entities?type=form_schema', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -49,14 +47,14 @@ export function RequestTypesPage() {
     return categories.find((c) => c.id === id)?.name ?? '—';
   };
 
-  const getRoutingRuleName = (id: string | null | undefined) => {
-    if (!id || !routingRules) return '—';
-    return routingRules.find((r) => r.id === id)?.name ?? '—';
-  };
-
   const getFormSchemaName = (id: string | null | undefined) => {
     if (!id || !formSchemas) return '—';
     return formSchemas.find((s) => s.id === id)?.display_name ?? '—';
+  };
+
+  const formatGranularity = (g: string | null | undefined) => {
+    if (!g) return 'Any';
+    return g.replace('_', ' ');
   };
 
   return (
@@ -87,7 +85,7 @@ export function RequestTypesPage() {
             <TableHead className="w-[130px]">Category</TableHead>
             <TableHead className="w-[150px]">Form</TableHead>
             <TableHead className="w-[130px]">SLA Policy</TableHead>
-            <TableHead className="w-[130px]">Routing Rule</TableHead>
+            <TableHead className="w-[140px]">Location depth</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
@@ -106,7 +104,7 @@ export function RequestTypesPage() {
               <TableCell className="text-muted-foreground text-sm">{getCategoryName(rt.catalog_category_id)}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{getFormSchemaName(rt.form_schema_id)}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{rt.sla_policy?.name ?? '—'}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{getRoutingRuleName(rt.routing_rule_id)}</TableCell>
+              <TableCell className="text-muted-foreground text-sm capitalize">{formatGranularity(rt.location_granularity)}</TableCell>
               <TableCell><Badge variant={rt.active ? 'default' : 'secondary'}>{rt.active ? 'Active' : 'Inactive'}</Badge></TableCell>
               <TableCell>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(rt.id)}>

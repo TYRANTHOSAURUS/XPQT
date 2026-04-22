@@ -30,8 +30,8 @@ interface RequestType {
   active: boolean;
   sla_policy?: { id: string; name: string } | null;
   catalog_category_id?: string | null;
-  routing_rule_id?: string | null;
   form_schema_id?: string | null;
+  location_granularity?: string | null;
   fulfillment_strategy?: FulfillmentStrategy;
   requires_asset?: boolean;
   asset_required?: boolean;
@@ -45,11 +45,26 @@ interface RequestType {
 
 interface SlaPolicy { id: string; name: string }
 interface Category { id: string; name: string }
-interface RoutingRule { id: string; name: string }
 interface Team { id: string; name: string }
 interface FormSchemaListItem { id: string; display_name: string }
 
 const domains = ['it', 'fm', 'workplace', 'visitor', 'catering', 'security', 'general'];
+
+// Matches spaces.type check constraint in 00004_spaces.sql. Presented with
+// human-readable labels.
+const GRANULARITY_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '__any', label: 'Any (no drill-down)' },
+  { value: 'site', label: 'Site' },
+  { value: 'building', label: 'Building' },
+  { value: 'floor', label: 'Floor' },
+  { value: 'room', label: 'Room' },
+  { value: 'meeting_room', label: 'Meeting room' },
+  { value: 'common_area', label: 'Common area' },
+  { value: 'storage_room', label: 'Storage room' },
+  { value: 'technical_room', label: 'Technical room' },
+  { value: 'desk', label: 'Desk' },
+  { value: 'parking_space', label: 'Parking space' },
+];
 
 interface RequestTypeDialogProps {
   open: boolean;
@@ -68,7 +83,6 @@ export function RequestTypeDialog({
 }: RequestTypeDialogProps) {
   const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
   const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
-  const { data: routingRules } = useApi<RoutingRule[]>('/routing-rules', []);
   const { data: formSchemas } = useApi<FormSchemaListItem[]>('/config-entities?type=form_schema', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
 
@@ -76,8 +90,8 @@ export function RequestTypeDialog({
   const [domain, setDomain] = useState('general');
   const [slaPolicyId, setSlaPolicyId] = useState('');
   const [categoryId, setCategoryId] = useState('');
-  const [routingRuleId, setRoutingRuleId] = useState('');
   const [formSchemaId, setFormSchemaId] = useState('');
+  const [locationGranularity, setLocationGranularity] = useState('__any');
   const [fulfillmentStrategy, setFulfillmentStrategy] = useState<FulfillmentStrategy>('fixed');
   const [requiresAsset, setRequiresAsset] = useState(false);
   const [assetRequired, setAssetRequired] = useState(false);
@@ -96,8 +110,8 @@ export function RequestTypeDialog({
       setDomain('general');
       setSlaPolicyId('');
       setCategoryId(defaultCategoryId ?? '');
-      setRoutingRuleId('');
       setFormSchemaId('');
+      setLocationGranularity('__any');
       setFulfillmentStrategy('fixed');
       setRequiresAsset(false);
       setAssetRequired(false);
@@ -118,8 +132,8 @@ export function RequestTypeDialog({
         setDomain(rt.domain ?? 'general');
         setSlaPolicyId(rt.sla_policy?.id ?? '');
         setCategoryId(rt.catalog_category_id ?? '');
-        setRoutingRuleId(rt.routing_rule_id ?? '');
         setFormSchemaId(rt.form_schema_id ?? '');
+        setLocationGranularity(rt.location_granularity ?? '__any');
         setFulfillmentStrategy(rt.fulfillment_strategy ?? 'fixed');
         setRequiresAsset(!!rt.requires_asset);
         setAssetRequired(!!rt.asset_required);
@@ -145,8 +159,8 @@ export function RequestTypeDialog({
       domain,
       sla_policy_id: slaPolicyId || undefined,
       catalog_category_id: categoryId || undefined,
-      routing_rule_id: routingRuleId || undefined,
       form_schema_id: formSchemaId || undefined,
+      location_granularity: locationGranularity === '__any' ? null : locationGranularity,
       fulfillment_strategy: fulfillmentStrategy,
       requires_asset: requiresAsset,
       asset_required: assetRequired,
@@ -244,19 +258,6 @@ export function RequestTypeDialog({
             </Select>
           </Field>
 
-          <Field>
-            <FieldLabel htmlFor="rt-routing-rule">Linked Routing Rule (override)</FieldLabel>
-            <Select value={routingRuleId} onValueChange={(v) => setRoutingRuleId(v ?? '')}>
-              <SelectTrigger id="rt-routing-rule"><SelectValue placeholder="None" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">None</SelectItem>
-                {(routingRules ?? []).map((r) => (
-                  <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-
           <FieldSeparator />
 
           <FieldSet>
@@ -341,6 +342,22 @@ export function RequestTypeDialog({
                   />
                 </Field>
               )}
+
+              <Field>
+                <FieldLabel htmlFor="rt-location-granularity">Location granularity</FieldLabel>
+                <Select value={locationGranularity} onValueChange={(v) => setLocationGranularity(v ?? '__any')}>
+                  <SelectTrigger id="rt-location-granularity"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {GRANULARITY_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  When set, portal submissions must pinpoint a location at this depth.
+                  Employees whose current location is shallower are asked to drill down.
+                </FieldDescription>
+              </Field>
 
               <Field>
                 <FieldLabel htmlFor="rt-default-team">Default fallback team</FieldLabel>
