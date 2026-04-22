@@ -34,7 +34,7 @@ export class ConfigEngineService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('config_entities')
-      .select('*, versions:config_versions(*)')
+      .select('*, current_version:config_versions!fk_ce_published_version(*), versions:config_versions!config_versions_config_entity_id_fkey(*)')
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .single();

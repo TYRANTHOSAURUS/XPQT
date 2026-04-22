@@ -10,14 +10,19 @@ export class TeamService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('teams')
-      .select('*')
+      .select('*, org_node:org_nodes(id, name, code)')
       .eq('tenant_id', tenant.id)
       .order('name');
     if (error) throw error;
     return data;
   }
 
-  async create(dto: { name: string; domain_scope?: string; location_scope?: string }) {
+  async create(dto: {
+    name: string;
+    domain_scope?: string;
+    location_scope?: string;
+    org_node_id?: string | null;
+  }) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('teams')

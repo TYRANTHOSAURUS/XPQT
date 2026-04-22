@@ -1,19 +1,26 @@
-import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
+import { ApprovalService } from '../approval/approval.service';
+import { TicketVisibilityService } from './ticket-visibility.service';
+
+export const SYSTEM_ACTOR = '__system__';
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
   parent_ticket_id?: string;
+  ticket_kind?: 'case' | 'work_order';
   title: string;
   description?: string;
   priority?: string;
   impact?: string;
   urgency?: string;
   requester_person_id: string;
+  requested_for_person_id?: string;
   location_id?: string;
   asset_id?: string;
   assigned_team_id?: string;
@@ -32,16 +39,34 @@ export interface UpdateTicketDto {
   priority?: string;
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
   tags?: string[];
   watchers?: string[];
   cost?: number | null;
   satisfaction_rating?: number | null;
   satisfaction_comment?: string | null;
+  /**
+   * Reassigns the executor SLA on a child work order. Refused on parent cases
+   * (parent SLA is locked on reassign per docs §SLA-on-reassignment).
+   * Triggers SlaService.restartTimers which stops existing timers and starts new ones.
+   * Pass `null` to clear the SLA (no timers will run).
+   */
+  sla_id?: string | null;
+}
+
+export interface ReassignDto {
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+  reason: string;
+  rerun_resolver?: boolean;
+  actor_person_id?: string;
 }
 
 export interface TicketListFilters {
-  status_category?: string;
-  priority?: string;
+  status_category?: string | string[];
+  priority?: string | string[];
+  ticket_kind?: 'case' | 'work_order';
   assigned_team_id?: string;
   assigned_user_id?: string;
   location_id?: string;
@@ -58,20 +83,69 @@ export interface AddActivityDto {
   author_person_id?: string;
   visibility: string;
   content?: string;
-  attachments?: Array<{ name: string; url: string; size: number; type: string }>;
+  attachments?: Array<{ name: string; url?: string; path?: string; size: number; type: string }>;
   metadata?: Record<string, unknown>;
 }
 
+interface StoredAttachment {
+  name: string;
+  url?: string;
+  path?: string;
+  size: number;
+  type: string;
+}
+
+type InboxReason = 'mentioned' | 'assigned_to_me' | 'my_team' | 'watching';
+
+interface InboxActivityPreview {
+  id: string;
+  content: string | null;
+  created_at: string;
+  visibility: string;
+  attachments: StoredAttachment[];
+  author?: { first_name: string; last_name: string } | null;
+}
+
+interface InboxActorContext {
+  userId: string;
+  personId: string;
+  email?: string | null;
+  fullName: string;
+}
+
+interface InboxTicketRow {
+  id: string;
+  title: string;
+  status_category: string;
+  priority: string;
+  created_at: string;
+  requester?: { first_name: string; last_name: string };
+  assigned_team?: { id: string; name: string };
+  assigned_agent?: { id: string; email: string };
+}
+
+const TICKET_ATTACHMENT_BUCKET = 'ticket-attachments';
+const INBOX_REASON_PRIORITY: Record<InboxReason, number> = {
+  mentioned: 4,
+  assigned_to_me: 3,
+  my_team: 2,
+  watching: 1,
+};
+
 @Injectable()
 export class TicketService {
+  private attachmentBucketReady = false;
+
   constructor(
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
+    @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
-  async list(filters: TicketListFilters = {}) {
+  async list(filters: TicketListFilters = {}, actorAuthUid: string) {
     const tenant = TenantContext.current();
     const limit = Math.min(filters.limit ?? 50, 100);
 
@@ -88,9 +162,24 @@ export class TicketService {
       .order('created_at', { ascending: false })
       .limit(limit);
 
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      const ids = await this.visibility.getVisibleIds(ctx);
+      if (ids !== null) {
+        query = query.in('id', ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000']);
+      }
+    }
+
     // Apply filters
-    if (filters.status_category) query = query.eq('status_category', filters.status_category);
-    if (filters.priority) query = query.eq('priority', filters.priority);
+    if (filters.status_category) {
+      const vals = Array.isArray(filters.status_category) ? filters.status_category : [filters.status_category];
+      query = vals.length === 1 ? query.eq('status_category', vals[0]) : query.in('status_category', vals);
+    }
+    if (filters.priority) {
+      const vals = Array.isArray(filters.priority) ? filters.priority : [filters.priority];
+      query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
+    }
+    if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
     if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);
     if (filters.location_id) query = query.eq('location_id', filters.location_id);
@@ -123,17 +212,205 @@ export class TicketService {
     };
   }
 
-  async getById(id: string) {
+  async getInbox(accessToken?: string, limit = 50) {
+    const actor = await this.resolveInboxActor(accessToken);
+    if (!actor?.personId) {
+      return { items: [] };
+    }
+
     const tenant = TenantContext.current();
+    const cappedLimit = Math.min(limit, 100);
+    const teamIds = actor.userId
+      ? await this.listActorTeamIds(actor.userId)
+      : [];
+
+    const mentionRefsPromise = actor.fullName
+      ? this.supabase.admin
+          .from('ticket_activities')
+          .select('ticket_id')
+          .eq('tenant_id', tenant.id)
+          .in('activity_type', ['internal_note', 'external_comment'])
+          .in('visibility', ['internal', 'external'])
+          .ilike('content', `%@${actor.fullName}%`)
+          .order('created_at', { ascending: false })
+          .limit(200)
+      : Promise.resolve({ data: [] as Array<{ ticket_id: string }>, error: null });
+
+    const [assignedTickets, teamTickets, watchingTickets, mentionRefs] = await Promise.all([
+      actor.userId
+        ? this.fetchInboxTickets((query) => query.eq('assigned_user_id', actor.userId))
+        : Promise.resolve([] as InboxTicketRow[]),
+      teamIds.length > 0
+        ? this.fetchInboxTickets((query) => query.in('assigned_team_id', teamIds))
+        : Promise.resolve([] as InboxTicketRow[]),
+      this.fetchInboxTickets((query) => query.contains('watchers', [actor.personId])),
+      mentionRefsPromise,
+    ]);
+
+    const ticketMap = new Map<string, { ticket: InboxTicketRow; reasons: Set<InboxReason> }>();
+    const addTicket = (ticket: InboxTicketRow, reason: InboxReason) => {
+      const existing = ticketMap.get(ticket.id);
+      if (existing) {
+        existing.reasons.add(reason);
+        return;
+      }
+
+      ticketMap.set(ticket.id, {
+        ticket,
+        reasons: new Set([reason]),
+      });
+    };
+
+    assignedTickets.forEach((ticket) => addTicket(ticket, 'assigned_to_me'));
+    teamTickets.forEach((ticket) => addTicket(ticket, 'my_team'));
+    watchingTickets.forEach((ticket) => addTicket(ticket, 'watching'));
+
+    const mentionTicketIds = Array.from(
+      new Set((mentionRefs.data ?? []).map((row) => row.ticket_id as string).filter(Boolean)),
+    );
+    const missingMentionIds = mentionTicketIds.filter((id) => !ticketMap.has(id));
+    const mentionTickets = missingMentionIds.length > 0
+      ? await this.fetchInboxTickets((query) => query.in('id', missingMentionIds))
+      : [];
+    mentionTickets.forEach((ticket) => addTicket(ticket, 'mentioned'));
+    mentionTicketIds.forEach((id) => {
+      const existing = ticketMap.get(id);
+      if (existing) existing.reasons.add('mentioned');
+    });
+
+    const candidateIds = Array.from(ticketMap.keys());
+    if (candidateIds.length === 0) {
+      return { items: [] };
+    }
+
+    const { data: activityRows, error: activityError } = await this.supabase.admin
+      .from('ticket_activities')
+      .select(`
+        id,
+        ticket_id,
+        visibility,
+        content,
+        attachments,
+        created_at,
+        author:persons!ticket_activities_author_person_id_fkey(first_name, last_name)
+      `)
+      .eq('tenant_id', tenant.id)
+      .in('activity_type', ['internal_note', 'external_comment'])
+      .in('ticket_id', candidateIds)
+      .in('visibility', ['internal', 'external'])
+      .order('created_at', { ascending: false });
+
+    if (activityError) throw activityError;
+
+    const latestByTicket = new Map<string, InboxActivityPreview>();
+    for (const row of activityRows ?? []) {
+      const ticketId = row.ticket_id as string;
+      const entry = ticketMap.get(ticketId);
+
+      if (entry && this.contentMentionsActor((row.content as string | null) ?? null, actor)) {
+        entry.reasons.add('mentioned');
+      }
+
+      if (latestByTicket.has(ticketId)) continue;
+
+      latestByTicket.set(ticketId, {
+        id: row.id as string,
+        content: (row.content as string | null) ?? null,
+        created_at: row.created_at as string,
+        visibility: row.visibility as string,
+        attachments: Array.isArray(row.attachments) ? (row.attachments as StoredAttachment[]) : [],
+        author: this.pickSingle(
+          row.author as
+            | { first_name: string; last_name: string }
+            | Array<{ first_name: string; last_name: string }>
+            | null,
+        ),
+      });
+    }
+
+    const items = candidateIds
+      .map((id) => {
+        const entry = ticketMap.get(id);
+        if (!entry) return null;
+
+        const latestActivity = latestByTicket.get(id) ?? null;
+        const orderedReasons = Array.from(entry.reasons).sort(
+          (a, b) => INBOX_REASON_PRIORITY[b] - INBOX_REASON_PRIORITY[a],
+        );
+
+        return {
+          ...entry.ticket,
+          inbox_reason: orderedReasons[0],
+          inbox_reasons: orderedReasons,
+          latest_activity: latestActivity,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((a, b) => {
+        const reasonDiff =
+          INBOX_REASON_PRIORITY[b.inbox_reason as InboxReason] -
+          INBOX_REASON_PRIORITY[a.inbox_reason as InboxReason];
+        if (reasonDiff !== 0) return reasonDiff;
+
+        const aTime = a.latest_activity?.created_at ?? a.created_at;
+        const bTime = b.latest_activity?.created_at ?? b.created_at;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      })
+      .slice(0, cappedLimit);
+
+    return { items };
+  }
+
+  async listDistinctTags(actorAuthUid: string): Promise<string[]> {
+    const tenant = TenantContext.current();
+    // Tags are derived from visible tickets only — apply the same read filter
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      const ids = await this.visibility.getVisibleIds(ctx);
+      if (ids !== null) {
+        // Query tags only from visible tickets
+        const visibleIds = ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'];
+        const { data, error } = await this.supabase.admin
+          .from('tickets')
+          .select('tags')
+          .eq('tenant_id', tenant.id)
+          .in('id', visibleIds)
+          .not('tags', 'is', null);
+        if (error) throw error;
+        const tagSet = new Set<string>();
+        for (const row of data ?? []) {
+          if (Array.isArray(row.tags)) {
+            for (const t of row.tags as string[]) tagSet.add(t);
+          }
+        }
+        return Array.from(tagSet).sort();
+      }
+    }
+    const { data, error } = await this.supabase.admin.rpc('tickets_distinct_tags', {
+      tenant: tenant.id,
+    });
+    if (error) throw error;
+    return (data ?? []).map((row: { tag: string }) => row.tag);
+  }
+
+  async getById(id: string, actorAuthUid: string) {
+    const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'read');
+    }
+
     const { data, error } = await this.supabase.admin
       .from('tickets')
       .select(`
         *,
-        requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email, department),
+        requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email),
         location:spaces!tickets_location_id_fkey(id, name, type, parent_id),
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
         assigned_agent:users!tickets_assigned_user_id_fkey(id, email),
+        assigned_vendor:vendors!tickets_assigned_vendor_id_fkey(id, name),
         request_type:request_types!tickets_ticket_type_id_fkey(id, name, domain)
       `)
       .eq('id', id)
@@ -153,12 +430,14 @@ export class TicketService {
         tenant_id: tenant.id,
         ticket_type_id: dto.ticket_type_id,
         parent_ticket_id: dto.parent_ticket_id,
+        ticket_kind: dto.ticket_kind ?? 'case',
         title: dto.title,
         description: dto.description,
         priority: dto.priority ?? 'medium',
         impact: dto.impact,
         urgency: dto.urgency,
         requester_person_id: dto.requester_person_id,
+        requested_for_person_id: dto.requested_for_person_id ?? dto.requester_person_id,
         location_id: dto.location_id,
         asset_id: dto.asset_id,
         assigned_team_id: dto.assigned_team_id,
@@ -184,73 +463,164 @@ export class TicketService {
     // Log domain event
     await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
 
+    // Load full request-type config once — used by approval gate + automation
+    const requestTypeCfg = data.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
+          .eq('id', data.ticket_type_id)
+          .single()).data
+      : null;
+
+    // ── Approval gate ─────────────────────────────────────────
+    // When the request type requires approval, park the ticket in
+    // pending_approval and create an approval request. Routing/SLA/workflow
+    // happen once approval is granted (see onApprovalDecision).
+    if (requestTypeCfg?.requires_approval &&
+        (requestTypeCfg.approval_approver_person_id || requestTypeCfg.approval_approver_team_id)) {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'awaiting_approval', status_category: 'pending_approval' })
+        .eq('id', data.id);
+      data.status = 'awaiting_approval';
+      data.status_category = 'pending_approval';
+
+      await this.approvalService.createSingleStep({
+        target_entity_type: 'ticket',
+        target_entity_id: data.id,
+        approver_person_id: requestTypeCfg.approval_approver_person_id as string | undefined,
+        approver_team_id: requestTypeCfg.approval_approver_team_id as string | undefined,
+      });
+
+      await this.addActivity(data.id, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_requested' },
+      });
+
+      return data;
+    }
+
+    // Normal path: routing → SLA → workflow
+    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg);
+    return data;
+  }
+
+  /**
+   * Called by approval flow after a ticket's approval request is resolved.
+   * Runs routing/SLA/workflow on approval; marks ticket cancelled on rejection.
+   */
+  async onApprovalDecision(ticketId: string, outcome: 'approved' | 'rejected') {
+    const tenant = TenantContext.current();
+    const ticket = await this.getById(ticketId, SYSTEM_ACTOR);
+    if (ticket.status_category !== 'pending_approval') return;
+
+    if (outcome === 'rejected') {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ status: 'rejected', status_category: 'closed', closed_at: new Date().toISOString() })
+        .eq('id', ticketId);
+      await this.addActivity(ticketId, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'approval_rejected' },
+      });
+      return;
+    }
+
+    // Approved — move out of pending_approval and run automation
+    await this.supabase.admin
+      .from('tickets')
+      .update({ status: 'new', status_category: 'new' })
+      .eq('id', ticketId);
+    const ticketRecord = await this.getById(ticketId, SYSTEM_ACTOR);
+
+    await this.addActivity(ticketId, {
+      activity_type: 'system_event',
+      visibility: 'system',
+      metadata: { event: 'approval_approved' },
+    });
+
+    const cfg = ticketRecord.ticket_type_id
+      ? (await this.supabase.admin
+          .from('request_types')
+          .select('domain, sla_policy_id, workflow_definition_id')
+          .eq('id', ticketRecord.ticket_type_id)
+          .single()).data
+      : null;
+
+    await this.runPostCreateAutomation(ticketRecord as Record<string, unknown>, tenant.id, cfg);
+  }
+
+  private async runPostCreateAutomation(
+    data: Record<string, unknown>,
+    tenantId: string,
+    requestTypeCfg: Record<string, unknown> | null,
+  ) {
     // ── Auto-routing ──────────────────────────────────────────
-    // If no team was explicitly assigned, evaluate routing rules
-    if (!data.assigned_team_id && !data.assigned_user_id) {
+    const isWorkOrder = data.ticket_kind === 'work_order';
+    if (!isWorkOrder && !data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
-        const requestType = data.ticket_type_id
-          ? await this.supabase.admin.from('request_types').select('domain').eq('id', data.ticket_type_id).single()
-          : null;
+        let effectiveLocation = data.location_id as string | null;
+        if (!effectiveLocation && data.asset_id) {
+          const { data: asset } = await this.supabase.admin
+            .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
+          effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+        }
 
-        const routingResult = await this.routingService.evaluate({
-          ticket_type_id: data.ticket_type_id,
-          domain: requestType?.data?.domain,
-          location_id: data.location_id,
-          priority: data.priority,
-        });
+        const evalCtx = {
+          tenant_id: tenantId,
+          ticket_id: data.id as string,
+          request_type_id: (data.ticket_type_id as string | null) ?? null,
+          domain: (requestTypeCfg?.domain as string | null) ?? null,
+          priority: data.priority as string | null,
+          asset_id: (data.asset_id as string | null) ?? null,
+          location_id: effectiveLocation,
+        };
 
-        if (routingResult.assigned_team_id || routingResult.assigned_user_id) {
-          const updates: Record<string, unknown> = {};
-          if (routingResult.assigned_team_id) updates.assigned_team_id = routingResult.assigned_team_id;
-          if (routingResult.assigned_user_id) updates.assigned_user_id = routingResult.assigned_user_id;
-          updates.status_category = 'assigned';
+        const result = await this.routingService.evaluate(evalCtx);
+        await this.routingService.recordDecision(data.id as string, evalCtx, result);
 
-          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id);
+        if (result.target) {
+          const updates: Record<string, unknown> = { status_category: 'assigned' };
+          if (result.target.kind === 'team') updates.assigned_team_id = result.target.team_id;
+          if (result.target.kind === 'user') updates.assigned_user_id = result.target.user_id;
+          if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
+          if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
+
+          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id as string);
           Object.assign(data, updates);
 
-          await this.addActivity(data.id, {
+          await this.addActivity(data.id as string, {
             activity_type: 'system_event',
             visibility: 'system',
-            metadata: { event: 'auto_routed', rule: routingResult.rule_name },
+            metadata: {
+              event: 'auto_routed',
+              chosen_by: result.chosen_by,
+              strategy: result.strategy,
+              rule: result.rule_name,
+            },
           });
         }
-      } catch {
-        // Routing failure should not block ticket creation
+      } catch (err) {
+        console.error('[routing] evaluate failed', err);
       }
     }
 
     // ── Auto-SLA ──────────────────────────────────────────────
-    // Start SLA timers if the request type has a linked SLA policy
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.sla_policy_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('sla_policy_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.sla_policy_id) {
-          await this.slaService.startTimers(data.id, tenant.id, requestType.sla_policy_id);
-          await this.supabase.admin.from('tickets').update({ sla_id: requestType.sla_policy_id }).eq('id', data.id);
-        }
+        await this.slaService.startTimers(data.id as string, tenantId, requestTypeCfg.sla_policy_id as string);
+        await this.supabase.admin.from('tickets').update({ sla_id: requestTypeCfg.sla_policy_id }).eq('id', data.id as string);
       } catch {
         // SLA failure should not block ticket creation
       }
     }
 
     // ── Auto-workflow ─────────────────────────────────────────
-    // Start workflow if the request type has a linked workflow definition
-    if (data.ticket_type_id) {
+    if (requestTypeCfg?.workflow_definition_id) {
       try {
-        const { data: requestType } = await this.supabase.admin
-          .from('request_types')
-          .select('workflow_definition_id')
-          .eq('id', data.ticket_type_id)
-          .single();
-
-        if (requestType?.workflow_definition_id) {
-          await this.workflowEngine.startForTicket(data.id, requestType.workflow_definition_id);
-        }
+        await this.workflowEngine.startForTicket(data.id as string, requestTypeCfg.workflow_definition_id as string);
       } catch {
         // Workflow failure should not block ticket creation
       }
@@ -259,11 +629,40 @@ export class TicketService {
     return data;
   }
 
-  async update(id: string, dto: UpdateTicketDto) {
+  async update(id: string, dto: UpdateTicketDto, actorAuthUid: string) {
     const tenant = TenantContext.current();
 
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'write');
+    }
+
     // Get current state for change tracking
-    const current = await this.getById(id);
+    const current = await this.getById(id, SYSTEM_ACTOR);
+
+    // SLA reassignment is work-order-only; parent case SLA is locked on reassign.
+    if (dto.sla_id !== undefined && (current as Record<string, unknown>).ticket_kind === 'case') {
+      throw new BadRequestException('cannot change sla_id on a case; parent SLA is locked');
+    }
+
+    // Parent close guard: a case cannot move to resolved/closed while children are open.
+    if (
+      (dto.status_category === 'resolved' || dto.status_category === 'closed') &&
+      (current as Record<string, unknown>).ticket_kind === 'case'
+    ) {
+      const { data: openChildren } = await this.supabase.admin
+        .from('tickets')
+        .select('id')
+        .eq('parent_ticket_id', id)
+        .eq('tenant_id', tenant.id)
+        .not('status_category', 'in', '(resolved,closed)');
+      const childIds = (openChildren ?? []).map((c: { id: string }) => c.id);
+      if (childIds.length > 0) {
+        throw new BadRequestException(
+          `cannot close case while children are open: ${childIds.join(', ')}`,
+        );
+      }
+    }
 
     const updateData: Record<string, unknown> = {};
     const changes: Record<string, { from: unknown; to: unknown }> = {};
@@ -295,13 +694,40 @@ export class TicketService {
 
     if (error) throw error;
 
+    // ── SLA pause/resume on waiting-state transitions ──────────
+    if (changes.status_category || changes.waiting_reason) {
+      try {
+        await this.applyWaitingStateTransition(id, tenant.id, current, data);
+      } catch (err) {
+        console.error('[sla] pause/resume failed', err);
+      }
+    }
+
+    // ── SLA policy change on a child: stop old timers, start fresh ones ──────
+    if (changes.sla_id) {
+      try {
+        await this.slaService.restartTimers(id, tenant.id, changes.sla_id.to as string | null);
+        await this.addActivity(id, {
+          activity_type: 'system_event',
+          visibility: 'system',
+          metadata: {
+            event: 'sla_changed',
+            from_sla_id: changes.sla_id.from,
+            to_sla_id: changes.sla_id.to,
+          },
+        }, undefined, actorAuthUid);
+      } catch (err) {
+        console.error('[sla] restart on sla_id change failed', err);
+      }
+    }
+
     // Log changes as system events
     if (changes.status_category) {
       await this.addActivity(id, {
         activity_type: 'system_event',
         visibility: 'system',
         metadata: { event: 'status_changed', ...changes.status_category },
-      });
+      }, undefined, actorAuthUid);
       await this.logDomainEvent(id, 'ticket_status_changed', changes.status_category);
     }
 
@@ -314,7 +740,7 @@ export class TicketService {
           team: changes.assigned_team_id,
           user: changes.assigned_user_id,
         },
-      });
+      }, undefined, actorAuthUid);
       await this.logDomainEvent(id, 'ticket_assigned', {
         team: changes.assigned_team_id,
         user: changes.assigned_user_id,
@@ -324,8 +750,165 @@ export class TicketService {
     return data;
   }
 
-  async getActivities(ticketId: string, visibility?: string) {
+  /**
+   * Explicitly reassign a ticket with a reason. Distinct from plain `update`
+   * so we can record a routing_decisions trace row and keep the reason visible
+   * in the timeline.
+   */
+  async reassign(id: string, dto: ReassignDto, actorAuthUid: string) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(id, ctx, 'write');
+    }
+
+    const current = await this.getById(id, SYSTEM_ACTOR);
+
+    if (!dto.reason?.trim()) {
+      throw new Error('reassignment reason is required');
+    }
+
+    const prev = {
+      team: current.assigned_team_id as string | null,
+      user: current.assigned_user_id as string | null,
+      vendor: current.assigned_vendor_id as string | null,
+    };
+
+    let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
+    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
+    let strategy: string = 'manual';
+    let trace: Array<Record<string, unknown>> = [
+      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+    ];
+
+    if (dto.rerun_resolver) {
+      // Clear current assignment and let the resolver pick fresh
+      await this.supabase.admin
+        .from('tickets')
+        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
+        .eq('id', id);
+
+      const rtCfg = current.ticket_type_id
+        ? (await this.supabase.admin
+            .from('request_types')
+            .select('domain')
+            .eq('id', current.ticket_type_id)
+            .single()).data
+        : null;
+
+      let effectiveLocation = current.location_id as string | null;
+      if (!effectiveLocation && current.asset_id) {
+        const { data: asset } = await this.supabase.admin
+          .from('assets').select('assigned_space_id').eq('id', current.asset_id as string).single();
+        effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+      }
+
+      const evalCtx = {
+        tenant_id: tenant.id,
+        ticket_id: id,
+        request_type_id: (current.ticket_type_id as string | null) ?? null,
+        domain: (rtCfg?.domain as string | null) ?? null,
+        priority: current.priority as string | null,
+        asset_id: (current.asset_id as string | null) ?? null,
+        location_id: effectiveLocation,
+      };
+      const result = await this.routingService.evaluate(evalCtx);
+      await this.routingService.recordDecision(id, evalCtx, result);
+      if (result.target) {
+        if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
+        else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
+        else if (result.target.kind === 'vendor') nextTarget = { kind: 'vendor', id: result.target.vendor_id };
+      }
+      chosenBy = 'rerun_resolver';
+      strategy = result.strategy;
+      trace = [
+        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
+        ...(result.trace as unknown as Array<Record<string, unknown>>),
+      ];
+    } else {
+      if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+      else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+      else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+    }
+
+    const updates: Record<string, unknown> = {
+      assigned_team_id: null,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: nextTarget ? 'assigned' : 'new',
+    };
+    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
+    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
+    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+
+    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
+
+    await this.supabase.admin.from('routing_decisions').insert({
+      tenant_id: tenant.id,
+      ticket_id: id,
+      strategy,
+      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+      chosen_by: chosenBy,
+      trace,
+      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
+    });
+
+    await this.addActivity(id, {
+      activity_type: 'system_event',
+      author_person_id: dto.actor_person_id,
+      visibility: 'internal',
+      content: dto.reason,
+      metadata: {
+        event: 'reassigned',
+        previous: prev,
+        next: nextTarget,
+        mode: chosenBy,
+      },
+    });
+
+    return this.getById(id, SYSTEM_ACTOR);
+  }
+
+  private async applyWaitingStateTransition(
+    ticketId: string,
+    tenantId: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+  ) {
+    const slaPolicyId = (after.sla_id ?? before.sla_id) as string | null;
+    if (!slaPolicyId) return;
+
+    const { data: policy } = await this.supabase.admin
+      .from('sla_policies')
+      .select('pause_on_waiting_reasons')
+      .eq('id', slaPolicyId)
+      .maybeSingle();
+
+    const pauseReasons = (policy?.pause_on_waiting_reasons as string[] | null) ?? [];
+    const shouldPause = (t: Record<string, unknown>) =>
+      t.status_category === 'waiting' &&
+      !!t.waiting_reason &&
+      pauseReasons.includes(t.waiting_reason as string);
+
+    const wasPaused = shouldPause(before);
+    const isPaused = shouldPause(after);
+
+    if (!wasPaused && isPaused) {
+      await this.slaService.pauseTimers(ticketId, tenantId);
+    } else if (wasPaused && !isPaused) {
+      await this.slaService.resumeTimers(ticketId, tenantId);
+    }
+  }
+
+  async getActivities(ticketId: string, visibility: string | undefined, actorAuthUid: string) {
+    const tenant = TenantContext.current();
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'read');
+    }
 
     let query = this.supabase.admin
       .from('ticket_activities')
@@ -344,11 +927,61 @@ export class TicketService {
 
     const { data, error } = await query;
     if (error) throw error;
-    return data;
+    if (!data) return [];
+
+    const signedActivities = await Promise.all(
+      data.map(async (activity) => {
+        const attachments = Array.isArray(activity.attachments)
+          ? await Promise.all(
+              (activity.attachments as StoredAttachment[]).map(async (attachment) => {
+                if (!attachment.path || attachment.url) return attachment;
+
+                const { data: signed, error: signedError } = await this.supabase.admin.storage
+                  .from(TICKET_ATTACHMENT_BUCKET)
+                  .createSignedUrl(attachment.path, 60 * 60);
+
+                if (signedError || !signed?.signedUrl) return attachment;
+
+                return {
+                  ...attachment,
+                  url: signed.signedUrl,
+                };
+              }),
+            )
+          : [];
+
+        return {
+          ...activity,
+          attachments,
+        };
+      }),
+    );
+
+    return signedActivities;
   }
 
-  async addActivity(ticketId: string, dto: AddActivityDto) {
+  async addActivity(ticketId: string, dto: AddActivityDto, accessToken?: string, actorAuthUid: string = SYSTEM_ACTOR) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'write');
+    }
+
+    // Resolve author: explicit DTO value > access-token lookup > auth-uid lookup.
+    // Internal system_event callers pass actorAuthUid but no access token — the
+    // auth-uid fallback ensures those rows are still attributed to a person so
+    // the activity feed shows "who did what when" instead of just "what when".
+    let authorPersonId = await this.resolveAuthorPersonId(dto.author_person_id, accessToken);
+    if (!authorPersonId && actorAuthUid !== SYSTEM_ACTOR) {
+      const { data: userRow } = await this.supabase.admin
+        .from('users')
+        .select('person_id')
+        .eq('auth_uid', actorAuthUid)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (userRow?.person_id) authorPersonId = userRow.person_id as string;
+    }
 
     const { data, error } = await this.supabase.admin
       .from('ticket_activities')
@@ -356,7 +989,7 @@ export class TicketService {
         tenant_id: tenant.id,
         ticket_id: ticketId,
         activity_type: dto.activity_type,
-        author_person_id: dto.author_person_id,
+        author_person_id: authorPersonId,
         visibility: dto.visibility,
         content: dto.content,
         attachments: dto.attachments ?? [],
@@ -369,11 +1002,72 @@ export class TicketService {
     return data;
   }
 
-  async getChildTasks(parentTicketId: string) {
+  async uploadActivityAttachments(ticketId: string, files: Array<{
+    originalname: string;
+    mimetype: string;
+    size: number;
+    buffer: Buffer;
+  }>, actorAuthUid: string = SYSTEM_ACTOR) {
     const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(ticketId, ctx, 'write');
+    }
+
+    await this.ensureAttachmentBucket();
+
+    const uploads = await Promise.all(
+      files.map(async (file) => {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${tenant.id}/tickets/${ticketId}/${randomUUID()}-${safeName}`;
+
+        const { error } = await this.supabase.admin.storage
+          .from(TICKET_ATTACHMENT_BUCKET)
+          .upload(path, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false,
+          });
+
+        if (error) throw error;
+
+        return {
+          name: file.originalname,
+          path,
+          size: file.size,
+          type: file.mimetype,
+        };
+      }),
+    );
+
+    return uploads;
+  }
+
+  async getChildTasks(parentTicketId: string, actorAuthUid: string) {
+    const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      // Gate on visibility of the parent
+      await this.visibility.assertVisible(parentTicketId, ctx, 'read');
+      // Also narrow the children to visible set
+      const visibleIds = await this.visibility.getVisibleIds(ctx);
+      let q = this.supabase.admin
+        .from('tickets')
+        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
+        .eq('parent_ticket_id', parentTicketId)
+        .eq('tenant_id', tenant.id);
+      if (visibleIds !== null) {
+        q = q.in('id', visibleIds.length > 0 ? visibleIds : ['00000000-0000-0000-0000-000000000000']);
+      }
+      const { data, error } = await q.order('created_at');
+      if (error) throw error;
+      return data;
+    }
+
     const { data, error } = await this.supabase.admin
       .from('tickets')
-      .select('id, title, status, status_category, priority, assigned_team_id, assigned_user_id, interaction_mode, created_at, resolved_at')
+      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)
       .order('created_at');
@@ -407,5 +1101,189 @@ export class TicketService {
         entity_id: entityId,
         payload,
       });
+  }
+
+  private async ensureAttachmentBucket() {
+    if (this.attachmentBucketReady) return;
+
+    const { data: buckets, error } = await this.supabase.admin.storage.listBuckets();
+    if (error) throw error;
+
+    const exists = buckets?.some((bucket) => bucket.name === TICKET_ATTACHMENT_BUCKET);
+    if (!exists) {
+      const { error: createError } = await this.supabase.admin.storage.createBucket(
+        TICKET_ATTACHMENT_BUCKET,
+        {
+          public: false,
+          fileSizeLimit: '20MB',
+        },
+      );
+
+      if (createError && !createError.message.toLowerCase().includes('already')) {
+        throw createError;
+      }
+    }
+
+    this.attachmentBucketReady = true;
+  }
+
+  private pickSingle<T>(value?: T | T[] | null): T | null {
+    if (Array.isArray(value)) return value[0] ?? null;
+    return value ?? null;
+  }
+
+  private contentMentionsActor(content: string | null | undefined, actor: InboxActorContext) {
+    if (!content) return false;
+
+    const aliases = [
+      actor.fullName,
+      actor.email,
+      actor.email?.split('@')[0] ?? null,
+    ]
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    return aliases.some((alias) => {
+      const escapedAlias = alias
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\s+/g, '\\s+');
+      const mentionPattern = new RegExp(
+        `(^|[\\s([{"'])@${escapedAlias}(?=$|[\\s),.:;!?\\]}'"])`,
+        'i',
+      );
+
+      return mentionPattern.test(content);
+    });
+  }
+
+  private async fetchInboxTickets(
+    applyFilters: (query: any) => any,
+  ) {
+    const tenant = TenantContext.current();
+    let query = this.supabase.admin
+      .from('tickets')
+      .select(`
+        id,
+        title,
+        status_category,
+        priority,
+        created_at,
+        requester:persons!tickets_requester_person_id_fkey(first_name, last_name),
+        assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email)
+      `)
+      .eq('tenant_id', tenant.id);
+
+    query = applyFilters(query);
+
+    const { data, error } = await query.limit(200);
+    if (error) throw error;
+
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      title: row.title as string,
+      status_category: row.status_category as string,
+      priority: row.priority as string,
+      created_at: row.created_at as string,
+      requester: this.pickSingle(
+        row.requester as
+          | { first_name: string; last_name: string }
+          | Array<{ first_name: string; last_name: string }>
+          | null,
+      ) ?? undefined,
+      assigned_team: this.pickSingle(
+        row.assigned_team as
+          | { id: string; name: string }
+          | Array<{ id: string; name: string }>
+          | null,
+      ) ?? undefined,
+      assigned_agent: this.pickSingle(
+        row.assigned_agent as
+          | { id: string; email: string }
+          | Array<{ id: string; email: string }>
+          | null,
+      ) ?? undefined,
+    })) satisfies InboxTicketRow[];
+  }
+
+  private async listActorTeamIds(userId: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('team_members')
+      .select('team_id')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+    return (data ?? []).map((row) => row.team_id as string);
+  }
+
+  private async resolveInboxActor(accessToken?: string): Promise<InboxActorContext | null> {
+    if (!accessToken) return null;
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.auth.getUser(accessToken);
+    if (error || !data.user) return null;
+
+    let userQuery = await this.supabase.admin
+      .from('users')
+      .select('id, person_id, email, person:persons!users_person_id_fkey(id, first_name, last_name, email)')
+      .eq('tenant_id', tenant.id)
+      .eq('auth_uid', data.user.id)
+      .maybeSingle();
+
+    if (!userQuery.data && data.user.email) {
+      userQuery = await this.supabase.admin
+        .from('users')
+        .select('id, person_id, email, person:persons!users_person_id_fkey(id, first_name, last_name, email)')
+        .eq('tenant_id', tenant.id)
+        .ilike('email', data.user.email)
+        .maybeSingle();
+    }
+
+    if (userQuery.error || !userQuery.data) return null;
+
+    const person = this.pickSingle(
+      userQuery.data.person as
+        | {
+            id: string;
+            first_name: string;
+            last_name: string;
+            email?: string | null;
+          }
+        | Array<{
+            id: string;
+            first_name: string;
+            last_name: string;
+            email?: string | null;
+          }>
+        | null,
+    );
+
+    if (!person?.id) return null;
+
+    return {
+      userId: userQuery.data.id as string,
+      personId: person.id,
+      email: person.email ?? (userQuery.data.email as string | null) ?? data.user.email ?? null,
+      fullName: `${person.first_name} ${person.last_name}`.trim(),
+    };
+  }
+
+  private async resolveAuthorPersonId(explicitAuthorPersonId?: string, accessToken?: string) {
+    if (!accessToken) return explicitAuthorPersonId;
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.auth.getUser(accessToken);
+    if (error || !data.user?.email) return explicitAuthorPersonId;
+
+    const { data: person } = await this.supabase.admin
+      .from('persons')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .ilike('email', data.user.email)
+      .maybeSingle();
+
+    return person?.id ?? explicitAuthorPersonId;
   }
 }

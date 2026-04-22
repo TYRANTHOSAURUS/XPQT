@@ -9,7 +9,12 @@ export class TeamController {
   async list() { return this.teamService.list(); }
 
   @Post()
-  async create(@Body() dto: { name: string; domain_scope?: string; location_scope?: string }) {
+  async create(@Body() dto: {
+    name: string;
+    domain_scope?: string;
+    location_scope?: string;
+    org_node_id?: string | null;
+  }) {
     return this.teamService.create(dto);
   }
 

@@ -1,21 +1,33 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
+import { PersonAvatar } from '@/components/person-avatar';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, X, UserPlus } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { SpaceSelect } from '@/components/space-select';
+import { OrgNodeCombobox } from '@/components/org-node-combobox';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Team {
   id: string;
@@ -23,6 +35,9 @@ interface Team {
   domain_scope: string | null;
   location_scope: string | null;
   active: boolean;
+  default_sla_policy_id: string | null;
+  org_node_id: string | null;
+  org_node?: { id: string; name: string; code: string | null } | { id: string; name: string; code: string | null }[] | null;
 }
 
 interface Space {
@@ -49,24 +64,27 @@ export function TeamsPage() {
   const { data, loading, refetch } = useApi<Team[]>('/teams', []);
   const { data: spaces } = useApi<Space[]>('/spaces', []);
   const { data: users } = useApi<User[]>('/users', []);
+  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [domainScope, setDomainScope] = useState('all');
   const [locationScope, setLocationScope] = useState('');
+  const [defaultSlaPolicyId, setDefaultSlaPolicyId] = useState<string>('');
+  const [orgNodeId, setOrgNodeId] = useState<string | null>(null);
 
   // Members sub-section (only shown when editing)
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [addUserId, setAddUserId] = useState('');
 
-  const locationOptions = (spaces ?? []).filter((s) => ['site', 'building'].includes(s.type));
-
   const resetForm = () => {
     setName('');
     setDomainScope('all');
     setLocationScope('');
+    setDefaultSlaPolicyId('');
+    setOrgNodeId(null);
     setEditId(null);
     setMembers([]);
     setAddUserId('');
@@ -90,15 +108,23 @@ export function TeamsPage() {
       name,
       domain_scope: domainScope === 'all' ? null : domainScope,
       location_scope: locationScope || null,
+      default_sla_policy_id: defaultSlaPolicyId || null,
+      org_node_id: orgNodeId,
     };
-    if (editId) {
-      await apiFetch(`/teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/teams', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Team updated');
+      } else {
+        await apiFetch('/teams', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Team created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save team');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = async (team: Team) => {
@@ -106,6 +132,8 @@ export function TeamsPage() {
     setName(team.name);
     setDomainScope(team.domain_scope ?? 'all');
     setLocationScope(team.location_scope ?? '');
+    setDefaultSlaPolicyId(team.default_sla_policy_id ?? '');
+    setOrgNodeId(team.org_node_id ?? null);
     setDialogOpen(true);
     await loadMembers(team.id);
   };
@@ -117,18 +145,28 @@ export function TeamsPage() {
 
   const handleAddMember = async () => {
     if (!editId || !addUserId) return;
-    await apiFetch(`/teams/${editId}/members`, {
-      method: 'POST',
-      body: JSON.stringify({ user_id: addUserId }),
-    });
-    setAddUserId('');
-    await loadMembers(editId);
+    try {
+      await apiFetch(`/teams/${editId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: addUserId }),
+      });
+      toast.success('Member added');
+      setAddUserId('');
+      await loadMembers(editId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add member');
+    }
   };
 
   const handleRemoveMember = async (userId: string) => {
     if (!editId) return;
-    await apiFetch(`/teams/${editId}/members/${userId}`, { method: 'DELETE' });
-    await loadMembers(editId);
+    try {
+      await apiFetch(`/teams/${editId}/members/${userId}`, { method: 'DELETE' });
+      toast.success('Member removed');
+      await loadMembers(editId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to remove member');
+    }
   };
 
   const getMemberName = (member: TeamMember) => {
@@ -159,50 +197,94 @@ export function TeamsPage() {
           <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Team</DialogTitle>
+              <DialogDescription>Manage assignment groups and members for ticket routing.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2">
-              <div className="space-y-2">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. FM Team Amsterdam, IT Service Desk..." />
-              </div>
-              <div className="space-y-2">
-                <Label>Domain Scope</Label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="team-name">Name</FieldLabel>
+                <Input
+                  id="team-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. FM Team Amsterdam, IT Service Desk..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-domain-scope">Domain Scope</FieldLabel>
                 <Select value={domainScope} onValueChange={(v) => setDomainScope(v ?? 'all')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="team-domain-scope"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {domains.map((d) => (
                       <SelectItem key={d} value={d}>{d === 'all' ? 'All domains' : d.charAt(0).toUpperCase() + d.slice(1)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Location Scope</Label>
-                <Select value={locationScope} onValueChange={(v) => setLocationScope(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="All locations" /></SelectTrigger>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-location-scope">Location Scope</FieldLabel>
+                <SpaceSelect
+                  value={locationScope}
+                  onChange={setLocationScope}
+                  typeFilter={['site', 'building']}
+                  placeholder="All locations"
+                  emptyLabel="All locations"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-org-node">Organisation</FieldLabel>
+                <OrgNodeCombobox
+                  value={orgNodeId}
+                  onChange={setOrgNodeId}
+                  placeholder="Optional — attach to an organisation"
+                />
+                <FieldDescription>
+                  Categorise this team under an organisation. Does not grant team members the organisation's locations.
+                </FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-default-sla">Default SLA policy</FieldLabel>
+                <Select value={defaultSlaPolicyId} onValueChange={(v) => setDefaultSlaPolicyId(v ?? '')}>
+                  <SelectTrigger id="team-default-sla"><SelectValue placeholder="None" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All locations</SelectItem>
-                    {locationOptions.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>{s.name} ({s.type})</SelectItem>
+                    <SelectItem value="">None</SelectItem>
+                    {(slaPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
+                <FieldDescription>
+                  Falls back to this when a sub-issue is dispatched to this team (or to a user on this team) without an explicit SLA pick.
+                </FieldDescription>
+              </Field>
 
               {editId && (
                 <>
-                  <Separator />
-                  <div className="space-y-3">
-                    <Label className="text-sm font-medium">Team Members</Label>
+                  <FieldSeparator />
+                  <FieldSet>
+                    <FieldLegend variant="label">Team Members</FieldLegend>
                     {membersLoading ? (
-                      <p className="text-sm text-muted-foreground">Loading members...</p>
+                      <FieldDescription>Loading members...</FieldDescription>
                     ) : members.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No members yet.</p>
+                      <FieldDescription>No members yet.</FieldDescription>
                     ) : (
                       <div className="space-y-1">
                         {members.map((member) => (
                           <div key={member.id} className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/40 text-sm">
-                            <span>{getMemberName(member)}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <PersonAvatar
+                                size="sm"
+                                person={{
+                                  first_name: member.user?.person?.first_name,
+                                  last_name: member.user?.person?.last_name,
+                                  email: member.user?.email,
+                                }}
+                              />
+                              <span className="truncate">{getMemberName(member)}</span>
+                            </div>
                             <Button
                               variant="ghost"
                               size="icon"
@@ -230,17 +312,16 @@ export function TeamsPage() {
                         <UserPlus className="h-4 w-4" />
                       </Button>
                     </div>
-                  </div>
+                  </FieldSet>
                 </>
               )}
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
-            </div>
+            </FieldGroup>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -256,12 +337,8 @@ export function TeamsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No teams yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={5} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={5} message="No teams yet." />}
           {(data ?? []).map((team) => (
             <TableRow key={team.id}>
               <TableCell className="font-medium">{team.name}</TableCell>

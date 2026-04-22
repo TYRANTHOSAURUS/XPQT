@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import { TableEmpty, TableLoading } from '@/components/table-states';
 import { useApi } from '@/hooks/use-api';
 import {
   AlertTriangle,
@@ -317,19 +318,9 @@ export function ReportsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {teamsLoading && teamEntries.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center py-8 text-muted-foreground">
-                    Loading...
-                  </TableCell>
-                </TableRow>
-              )}
+              {teamsLoading && teamEntries.length === 0 && <TableLoading cols={3} />}
               {!teamsLoading && teamEntries.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center py-8 text-muted-foreground">
-                    No open tickets assigned to teams.
-                  </TableCell>
-                </TableRow>
+                <TableEmpty cols={3} message="No open tickets assigned to teams." />
               )}
               {teamEntries.map(([teamId, stats]) => (
                 <TableRow key={teamId}>

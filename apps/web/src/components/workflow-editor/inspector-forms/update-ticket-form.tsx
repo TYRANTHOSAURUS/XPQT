@@ -1,7 +1,13 @@
 import { useState, useEffect } from 'react';
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 
 export function UpdateTicketForm({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) {
@@ -15,31 +21,34 @@ export function UpdateTicketForm({ node, readOnly }: { node: WorkflowNode; readO
   }, [node.id]);
 
   return (
-    <div className="grid gap-1.5">
-      <Label className="text-xs">Fields (JSON)</Label>
-      <Textarea
-        value={text}
-        onChange={(e) => {
-          const v = e.target.value;
-          setText(v);
-          try {
-            const parsed = JSON.parse(v);
-            if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-              update(node.id, { fields: parsed });
-              setError(null);
-            } else {
-              setError('Must be an object');
+    <FieldGroup>
+      <Field>
+        <FieldLabel htmlFor={`update-${node.id}-fields`} className="text-xs">Fields (JSON)</FieldLabel>
+        <Textarea
+          id={`update-${node.id}-fields`}
+          value={text}
+          onChange={(e) => {
+            const v = e.target.value;
+            setText(v);
+            try {
+              const parsed = JSON.parse(v);
+              if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+                update(node.id, { fields: parsed });
+                setError(null);
+              } else {
+                setError('Must be an object');
+              }
+            } catch {
+              setError('Invalid JSON');
             }
-          } catch {
-            setError('Invalid JSON');
-          }
-        }}
-        rows={6}
-        className="font-mono text-xs"
-        disabled={readOnly}
-      />
-      {error && <p className="text-xs text-red-600">{error}</p>}
-      <p className="text-xs text-muted-foreground">e.g. {'{"status": "in_progress", "priority": "high"}'}</p>
-    </div>
+          }}
+          rows={6}
+          className="font-mono text-xs"
+          disabled={readOnly}
+        />
+        {error && <FieldError>{error}</FieldError>}
+        <FieldDescription>e.g. {'{"status": "in_progress", "priority": "high"}'}</FieldDescription>
+      </Field>
+    </FieldGroup>
   );
 }

@@ -1,9 +1,18 @@
-import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import {
   Select,
   SelectContent,
@@ -18,26 +27,54 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { ArrowLeft, Send, CheckCircle } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
-import { useAuth } from '@/providers/auth-provider';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertCircle, ArrowLeft, Send, CheckCircle, MapPin } from 'lucide-react';
+import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
+import { usePortal } from '@/providers/portal-provider';
+import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
+import { splitFormData, validateRequired } from '@/lib/form-submission';
+import type { FormField } from '@/components/admin/form-builder/premade-fields';
+import { AssetCombobox } from '@/components/asset-combobox';
+import { PersonCombobox } from '@/components/person-combobox';
+import {
+  PortalLocationDrilldown,
+  satisfiesGranularity,
+} from '@/components/portal/portal-location-drilldown';
 
-interface RequestType {
+interface CatalogServiceItem {
   id: string;
+  key: string;
   name: string;
-  domain: string;
+  description: string | null;
+  icon: string | null;
+  kb_link: string | null;
+  disruption_banner: string | null;
+  search_terms: string[];
+  on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
   form_schema_id: string | null;
+  fulfillment: {
+    id: string;
+    requires_location: boolean;
+    location_required: boolean;
+    location_granularity: string | null;
+    requires_asset: boolean;
+    asset_required: boolean;
+    asset_type_filter: string[];
+  };
 }
 
-interface FormField {
+interface CatalogCategory {
   id: string;
-  label: string;
-  type: string;
-  required: boolean;
-  placeholder?: string;
-  help_text?: string;
-  options?: string[];
+  name: string;
+  icon: string | null;
+  service_items: CatalogServiceItem[];
+}
+
+interface PortalCatalogResponse {
+  selected_location: { id: string; name: string; type: string };
+  categories: CatalogCategory[];
 }
 
 interface FormSchemaEntity {
@@ -45,61 +82,167 @@ interface FormSchemaEntity {
   current_version?: { definition: { fields: FormField[] } } | null;
 }
 
+const submitSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(200, 'Title is too long'),
+  description: z.string().max(5000, 'Description is too long').optional(),
+  priority: z.enum(['low', 'normal', 'high', 'urgent']),
+  requestTypeId: z.string().min(1, 'Pick a request type'),
+});
+
+type SubmitFormValues = z.infer<typeof submitSchema>;
+
 export function SubmitRequestPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
-  const { person } = useAuth();
+  const { data: portal } = usePortal();
+  const [searchParams] = useSearchParams();
+  const preselectedType = searchParams.get('type') ?? '';
+
+  const currentLocation = portal?.current_location ?? null;
+
+  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
   const [submitted, setSubmitted] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState('medium');
-  const [requestTypeId, setRequestTypeId] = useState('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
-  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [assetId, setAssetId] = useState<string | null>(null);
+  const [requestedForPersonId, setRequestedForPersonId] = useState<string | null>(null);
+  const [assetLocationSummary, setAssetLocationSummary] = useState<{ id: string; name: string } | null>(null);
+  const [drilledLocation, setDrilledLocation] = useState<{ id: string; name: string; type: string } | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const { data: requestTypes } = useApi<RequestType[]>(
-    `/request-types${categoryId ? `?domain=${categoryId}` : ''}`,
-    [categoryId],
-  );
+  const {
+    control,
+    handleSubmit,
+    watch,
+    register,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<SubmitFormValues>({
+    resolver: zodResolver(submitSchema),
+    defaultValues: { title: '', description: '', priority: 'normal', requestTypeId: preselectedType },
+  });
 
-  // Fetch form schema when request type changes
+  const requestTypeId = watch('requestTypeId');
+
+  // Load catalog scoped to the portal's currently-selected location.
   useEffect(() => {
-    if (!requestTypeId || !requestTypes) { setFormFields([]); return; }
-    const rt = requestTypes.find((r) => r.id === requestTypeId);
-    if (!rt?.form_schema_id) { setFormFields([]); return; }
-    apiFetch<FormSchemaEntity>(`/config-entities/${rt.form_schema_id}`)
+    if (!currentLocation) {
+      setCatalog(null);
+      return;
+    }
+    setCatalogLoading(true);
+    setCatalogError(null);
+    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
+      .then(setCatalog)
+      .catch((e) => setCatalogError(e instanceof Error ? e.message : 'Failed to load catalog'))
+      .finally(() => setCatalogLoading(false));
+  }, [currentLocation?.id, currentLocation]);
+
+  // Flatten visible service items; optionally filter by categoryId from URL.
+  const serviceItems = useMemo<CatalogServiceItem[]>(() => {
+    if (!catalog) return [];
+    if (categoryId) {
+      const cat = catalog.categories.find((c) => c.id === categoryId);
+      return cat?.service_items ?? [];
+    }
+    return catalog.categories.flatMap((c) => c.service_items);
+  }, [catalog, categoryId]);
+
+  const selectedRT = serviceItems.find((r) => r.id === requestTypeId);
+
+  // Reflect ?type=<id> into the form state.
+  useEffect(() => {
+    if (preselectedType && preselectedType !== requestTypeId) {
+      setValue('requestTypeId', preselectedType);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preselectedType]);
+
+  // When the RT changes, load its form schema and reset asset/location state
+  // that may no longer apply to the new RT (codex v4 review: hidden asset state).
+  useEffect(() => {
+    setDrilledLocation(null);
+    if (!selectedRT?.fulfillment.requires_asset) {
+      setAssetId(null);
+      setAssetLocationSummary(null);
+    }
+    // Clear requestedForPersonId when the new item is self_only OR when no
+    // item is selected. Prevents a stale target from being submitted after
+    // switching away from an on-behalf-capable item.
+    if (!selectedRT || selectedRT.on_behalf_policy === 'self_only') {
+      setRequestedForPersonId(null);
+    }
+    if (!selectedRT?.form_schema_id) {
+      setFormFields([]);
+      setValues({});
+      return;
+    }
+    apiFetch<FormSchemaEntity>(`/config-entities/${selectedRT.form_schema_id}`)
       .then((entity) => {
-        const fields = entity.current_version?.definition?.fields ?? [];
-        setFormFields(fields);
-        setFormData({});
+        setFormFields(entity.current_version?.definition?.fields ?? []);
+        setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [requestTypeId, requestTypes]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.fulfillment.requires_asset, selectedRT?.on_behalf_policy]);
 
-  const handleSubmit = async () => {
-    if (!title.trim()) return;
-    setSubmitting(true);
+  const needsDrilldown = useMemo(() => {
+    if (!selectedRT?.fulfillment.location_granularity || !currentLocation) return false;
+    return !satisfiesGranularity(currentLocation.type, selectedRT.fulfillment.location_granularity);
+  }, [selectedRT?.fulfillment.location_granularity, currentLocation]);
+
+  // The location we'll submit to the backend. Only user-picked / drilled values —
+  // never asset-resolved (that runs server-side to preserve scope_source provenance).
+  const submitLocationId: string | null = useMemo(() => {
+    if (drilledLocation) return drilledLocation.id;
+    if (needsDrilldown) return null;
+    return currentLocation?.id ?? null;
+  }, [drilledLocation, needsDrilldown, currentLocation]);
+
+  const onSubmit = async (formValues: SubmitFormValues) => {
+    setSubmitError(null);
+
+    const missing = validateRequired(formFields, values);
+    if (missing) {
+      toast.error(`"${missing.label}" is required`);
+      return;
+    }
+
+    if (selectedRT?.fulfillment.location_required && !submitLocationId && !assetId) {
+      toast.error('Please pick a location or asset');
+      return;
+    }
+
+    if (selectedRT?.fulfillment.location_granularity && !submitLocationId && !assetId) {
+      toast.error('Please drill down to the required location');
+      return;
+    }
+
+    const { bound, form_data } = splitFormData(formFields, values);
 
     try {
-      await apiFetch('/tickets', {
+      await apiFetch('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
-          title,
-          description,
-          priority,
-          ticket_type_id: requestTypeId || undefined,
-          requester_person_id: person?.id,
-          source_channel: 'portal',
-          form_data: Object.keys(formData).length > 0 ? formData : undefined,
+          service_item_id: formValues.requestTypeId,
+          title: formValues.title,
+          description: formValues.description,
+          priority: formValues.priority,
+          asset_id: assetId ?? undefined,
+          location_id: submitLocationId ?? undefined,
+          requested_for_person_id: requestedForPersonId ?? undefined,
+          ...bound,
+          form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
       });
+      toast.success('Request submitted');
       setSubmitted(true);
-    } catch {
-      // TODO: error handling
-    } finally {
-      setSubmitting(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to submit request';
+      setSubmitError(msg);
+      toast.error(msg);
     }
   };
 
@@ -132,119 +275,191 @@ export function SubmitRequestPage() {
       <Card>
         <CardHeader>
           <CardTitle>Submit a Request</CardTitle>
-          <CardDescription>Describe your issue or request and we'll route it to the right team</CardDescription>
+          <CardDescription>Describe your issue or request and we'll route it to the right team.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Request type */}
-          {requestTypes && requestTypes.length > 0 && (
-            <div className="space-y-2">
-              <Label htmlFor="request-type">Request Type</Label>
-              <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a request type..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {requestTypes.map((rt) => (
-                    <SelectItem key={rt.id} value={rt.id}>{rt.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+        <CardContent>
+          {catalogError && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Catalog failed to load</AlertTitle>
+              <AlertDescription>{catalogError}</AlertDescription>
+            </Alert>
           )}
 
-          {/* Title */}
-          <div className="space-y-2">
-            <Label htmlFor="title">Title</Label>
-            <Input
-              id="title"
-              placeholder="Brief summary of your request..."
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </div>
-
-          {/* Description */}
-          <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              placeholder="Provide details about your request..."
-              className="min-h-[120px]"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </div>
-
-          {/* Priority */}
-          <div className="space-y-2">
-            <Label htmlFor="priority">Priority</Label>
-            <Select value={priority} onValueChange={(v) => setPriority(v ?? 'medium')}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="low">Low — not urgent</SelectItem>
-                <SelectItem value="medium">Medium — normal priority</SelectItem>
-                <SelectItem value="high">High — needs attention soon</SelectItem>
-                <SelectItem value="critical">Critical — blocking my work</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Dynamic form fields from form schema */}
-          {formFields.map((field) => (
-            <div key={field.id} className="space-y-2">
-              <Label>
-                {field.label}
-                {field.required && <span className="text-destructive ml-1">*</span>}
-              </Label>
-              {field.help_text && <p className="text-xs text-muted-foreground">{field.help_text}</p>}
-              {(field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'datetime') && (
-                <Input
-                  type={field.type === 'datetime' ? 'datetime-local' : field.type}
-                  placeholder={field.placeholder}
-                  value={formData[field.id] ?? ''}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
+                <Controller
+                  control={control}
+                  name="requestTypeId"
+                  render={({ field }) => (
+                    <Select
+                      value={field.value ?? ''}
+                      onValueChange={(v) => field.onChange(v ?? '')}
+                      disabled={catalogLoading}
+                    >
+                      <SelectTrigger id="request-type">
+                        <SelectValue
+                          placeholder={
+                            catalogLoading
+                              ? 'Loading…'
+                              : serviceItems.length === 0
+                                ? 'No services available here'
+                                : 'Select a service'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {serviceItems.map((rt) => (
+                          <SelectItem key={rt.id} value={rt.id}>
+                            {rt.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                 />
-              )}
-              {field.type === 'textarea' && (
-                <Textarea
-                  placeholder={field.placeholder}
-                  value={formData[field.id] ?? ''}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: e.target.value }))}
-                />
-              )}
-              {(field.type === 'dropdown' || field.type === 'multi_select') && field.options && (
-                <Select value={formData[field.id] ?? ''} onValueChange={(v) => setFormData((prev) => ({ ...prev, [field.id]: v ?? '' }))}>
-                  <SelectTrigger><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
-                  <SelectContent>
-                    {field.options.map((opt) => (
-                      <SelectItem key={opt} value={opt}>{opt}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              {field.type === 'checkbox' && (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={formData[field.id] === 'true'}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field.id]: String(e.target.checked) }))}
-                    className="rounded border-input"
+                {currentLocation && (
+                  <FieldDescription>
+                    Showing services for <span className="font-medium">{currentLocation.name}</span>.
+                  </FieldDescription>
+                )}
+                {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
+              </Field>
+
+              {selectedRT?.fulfillment.requires_asset && (
+                <Field>
+                  <FieldLabel htmlFor="portal-asset">
+                    Asset
+                    {selectedRT.fulfillment.asset_required && <span className="text-destructive ml-1">*</span>}
+                  </FieldLabel>
+                  <AssetCombobox
+                    value={assetId}
+                    onChange={(id, asset) => {
+                      setAssetId(id);
+                      if (asset?.assigned_space_id) {
+                        setAssetLocationSummary({
+                          id: asset.assigned_space_id,
+                          name: (asset as { assigned_space?: { name?: string } }).assigned_space?.name ?? 'asset location',
+                        });
+                      } else {
+                        setAssetLocationSummary(null);
+                      }
+                    }}
+                    assetTypeFilter={selectedRT.fulfillment.asset_type_filter ?? []}
                   />
-                  <span className="text-sm">{field.placeholder}</span>
-                </div>
+                  {assetLocationSummary && (
+                    <FieldDescription className="flex items-center gap-1">
+                      <MapPin className="h-3 w-3" /> From asset: {assetLocationSummary.name}
+                    </FieldDescription>
+                  )}
+                </Field>
               )}
-            </div>
-          ))}
 
-          {/* Submit */}
-          <div className="flex justify-end pt-2">
-            <Button onClick={handleSubmit} disabled={!title.trim() || submitting}>
-              <Send className="h-4 w-4 mr-2" />
-              {submitting ? 'Submitting...' : 'Submit Request'}
-            </Button>
-          </div>
+              {selectedRT && selectedRT.on_behalf_policy !== 'self_only' && (
+                <Field>
+                  <FieldLabel htmlFor="portal-requested-for">Requesting for</FieldLabel>
+                  <PersonCombobox
+                    value={requestedForPersonId ?? ''}
+                    onChange={(v) => setRequestedForPersonId(v || null)}
+                    placeholder="Leave blank to request for yourself"
+                  />
+                  <FieldDescription>
+                    This service allows submitting on behalf of another person.
+                    {selectedRT.on_behalf_policy === 'direct_reports' && ' Limited to your direct reports.'}
+                    {selectedRT.on_behalf_policy === 'configured_list' && ' Target is validated server-side.'}
+                  </FieldDescription>
+                </Field>
+              )}
+
+              {selectedRT?.fulfillment.location_granularity && needsDrilldown && currentLocation && (
+                <Field>
+                  <FieldLabel htmlFor="portal-drilldown">
+                    Location
+                    {selectedRT.fulfillment.location_required && <span className="text-destructive ml-1">*</span>}
+                  </FieldLabel>
+                  <PortalLocationDrilldown
+                    rootSpace={currentLocation}
+                    granularity={selectedRT.fulfillment.location_granularity}
+                    onPick={(s) => setDrilledLocation(s)}
+                    selected={drilledLocation}
+                  />
+                  {drilledLocation && (
+                    <FieldDescription className="flex items-center gap-1">
+                      <MapPin className="h-3 w-3" /> Selected: {drilledLocation.name}
+                      <Badge variant="outline" className="ml-1 text-xs capitalize">
+                        {drilledLocation.type.replace('_', ' ')}
+                      </Badge>
+                    </FieldDescription>
+                  )}
+                </Field>
+              )}
+
+              <Field>
+                <FieldLabel htmlFor="title">Title</FieldLabel>
+                <Input
+                  id="title"
+                  placeholder="Brief summary of your request..."
+                  aria-invalid={!!errors.title}
+                  {...register('title')}
+                />
+                {errors.title && <FieldError>{errors.title.message}</FieldError>}
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="description">Description</FieldLabel>
+                <Textarea
+                  id="description"
+                  placeholder="Provide details about your request..."
+                  className="min-h-[120px]"
+                  aria-invalid={!!errors.description}
+                  {...register('description')}
+                />
+                {errors.description && <FieldError>{errors.description.message}</FieldError>}
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="priority">Priority</FieldLabel>
+                <Controller
+                  control={control}
+                  name="priority"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'normal') as SubmitFormValues['priority'])}>
+                      <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low — not urgent</SelectItem>
+                        <SelectItem value="normal">Normal — usual priority</SelectItem>
+                        <SelectItem value="high">High — needs attention soon</SelectItem>
+                        <SelectItem value="urgent">Urgent — blocking my work</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </Field>
+
+              <DynamicFormFields
+                fields={formFields}
+                values={values}
+                onChange={(id, v) => setValues((prev) => ({ ...prev, [id]: v }))}
+              />
+
+              {submitError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Submission failed</AlertTitle>
+                  <AlertDescription>{submitError}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="flex justify-end pt-2">
+                <Button type="submit" disabled={isSubmitting}>
+                  <Send className="h-4 w-4 mr-2" />
+                  {isSubmitting ? 'Submitting...' : 'Submit Request'}
+                </Button>
+              </div>
+            </FieldGroup>
+          </form>
         </CardContent>
       </Card>
     </div>

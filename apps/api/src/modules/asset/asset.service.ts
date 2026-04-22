@@ -50,7 +50,13 @@ export class AssetService {
     return data;
   }
 
-  async list(filters?: { asset_role?: string; status?: string; search?: string }) {
+  async list(filters?: {
+    asset_role?: string;
+    status?: string;
+    search?: string;
+    asset_type_ids?: string[];
+    space_id?: string;
+  }) {
     const tenant = TenantContext.current();
     let query = this.supabase.admin
       .from('assets')
@@ -66,6 +72,8 @@ export class AssetService {
     if (filters?.asset_role) query = query.eq('asset_role', filters.asset_role);
     if (filters?.status) query = query.eq('status', filters.status);
     if (filters?.search) query = query.ilike('name', `%${filters.search}%`);
+    if (filters?.asset_type_ids?.length) query = query.in('asset_type_id', filters.asset_type_ids);
+    if (filters?.space_id) query = query.eq('assigned_space_id', filters.space_id);
 
     const { data, error } = await query;
     if (error) throw error;

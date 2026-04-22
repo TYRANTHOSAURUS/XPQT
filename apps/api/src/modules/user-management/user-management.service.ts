@@ -2,10 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
+export type RoleType = 'admin' | 'agent' | 'employee';
+
 export interface CreateRoleDto {
   name: string;
   description?: string;
   permissions?: string[];
+  type?: RoleType;
 }
 
 export interface CreateRoleAssignmentDto {
@@ -15,14 +18,19 @@ export interface CreateRoleAssignmentDto {
   location_scope?: string[];
 }
 
+export interface CreateUserDto {
+  person_id: string;
+  email: string;
+  username?: string;
+  status?: string;
+}
+
 export interface CreatePersonDto {
   first_name: string;
   last_name: string;
   email?: string;
   phone?: string;
   type: string;
-  division?: string;
-  department?: string;
   cost_center?: string;
   manager_person_id?: string;
 }
@@ -33,16 +41,72 @@ export class UserManagementService {
 
   // ─── Users ───────────────────────────────────────────────────────────────
 
+  async createUser(dto: CreateUserDto) {
+    const tenant = TenantContext.current();
+
+    // Best-effort: link to Supabase Auth account if one exists for this email
+    let auth_uid: string | null = null;
+    try {
+      const { data: list } = await this.supabase.admin.auth.admin.listUsers();
+      const authUser = list?.users?.find(
+        (u) => u.email?.toLowerCase() === dto.email.toLowerCase(),
+      );
+      auth_uid = authUser?.id ?? null;
+    } catch {
+      // listUsers requires service role; ignore and proceed without linkage
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .insert({
+        tenant_id: tenant.id,
+        person_id: dto.person_id,
+        email: dto.email,
+        username: dto.username ?? null,
+        status: dto.status ?? 'active',
+        auth_uid,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  /**
+   * Resolve the authenticated caller by their Supabase auth_uid. Returns the
+   * user row, joined person, and role_assignments in one query. Used by
+   * GET /users/me so the frontend doesn't need to search persons by email to
+   * find role assignments.
+   */
+  async getByAuthUid(authUid: string) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select(`
+        *,
+        person:persons(id, first_name, last_name, email, type, default_location_id),
+        role_assignments:user_role_assignments(
+          id, domain_scope, location_scope,
+          role:roles(id, name, type)
+        )
+      `)
+      .eq('auth_uid', authUid)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
   async listUsers() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('users')
       .select(`
         *,
-        person:persons(id, first_name, last_name, email, department, type),
+        person:persons(id, first_name, last_name, email, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
-          role:roles(id, name)
+          role:roles(id, name, type)
         )
       `)
       .eq('tenant_id', tenant.id)
@@ -57,10 +121,10 @@ export class UserManagementService {
       .from('users')
       .select(`
         *,
-        person:persons(id, first_name, last_name, email, department, type),
+        person:persons(id, first_name, last_name, email, type),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
-          role:roles(id, name)
+          role:roles(id, name, type)
         )
       `)
       .eq('id', id)
@@ -87,7 +151,7 @@ export class UserManagementService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('user_role_assignments')
-      .select('*, role:roles(id, name, description)')
+      .select('*, role:roles(id, name, description, type)')
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
     if (error) throw error;
@@ -191,7 +255,7 @@ export class UserManagementService {
     const tenant = TenantContext.current();
     let query = this.supabase.admin
       .from('persons')
-      .select('*, manager:persons!persons_manager_person_id_fkey(id, first_name, last_name)')
+      .select('*, manager:persons!manager_person_id(id, first_name, last_name)')
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('first_name');

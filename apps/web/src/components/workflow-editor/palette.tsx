@@ -1,6 +1,7 @@
 import { NODE_TYPE_LIST } from './node-types';
 import { useGraphStore } from './graph-store';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export function Palette({ disabled }: { disabled?: boolean }) {
   const addNode = useGraphStore((s) => s.addNode);
@@ -12,18 +13,23 @@ export function Palette({ disabled }: { disabled?: boolean }) {
         {NODE_TYPE_LIST.map((m) => {
           const Icon = m.icon;
           return (
-            <Button
-              key={m.type}
-              variant="outline"
-              size="sm"
-              disabled={disabled}
-              onClick={() => addNode(m.type)}
-              className="justify-start gap-2 h-8"
-              title={m.description}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              <span className="text-xs">{m.label}</span>
-            </Button>
+            <Tooltip key={m.type}>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => addNode(m.type)}
+                    className="justify-start gap-2 h-8"
+                  />
+                }
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span className="text-xs">{m.label}</span>
+              </TooltipTrigger>
+              <TooltipContent side="right">{m.description}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>

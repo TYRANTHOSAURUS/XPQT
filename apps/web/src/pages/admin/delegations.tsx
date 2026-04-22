@@ -1,17 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Ban } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { PersonCombobox } from '@/components/person-combobox';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Person {
   id: string;
@@ -63,115 +71,6 @@ function getPersonName(p?: DelegationUser | null) {
   return p.email ?? '---';
 }
 
-function DelegationPersonPicker({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (id: string) => void;
-  placeholder: string;
-}) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Person[]>([]);
-  const [open, setOpen] = useState(false);
-  const [displayName, setDisplayName] = useState('');
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!value) {
-      setDisplayName('');
-      return;
-    }
-    apiFetch<Person[]>('/persons').then((persons) => {
-      const p = persons.find((x) => x.id === value);
-      if (p) setDisplayName(`${p.first_name} ${p.last_name}`);
-    }).catch(() => {});
-  }, [value]);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleSearch = (q: string) => {
-    setQuery(q);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!q.trim()) {
-      setResults([]);
-      setOpen(false);
-      return;
-    }
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const data = await apiFetch<Person[]>(`/persons?search=${encodeURIComponent(q)}`);
-        setResults(data);
-        setOpen(true);
-      } catch {
-        setResults([]);
-      }
-    }, 300);
-  };
-
-  const handleSelect = (person: Person) => {
-    onChange(person.id);
-    setDisplayName(`${person.first_name} ${person.last_name}`);
-    setQuery('');
-    setResults([]);
-    setOpen(false);
-  };
-
-  const handleClear = () => {
-    onChange('');
-    setDisplayName('');
-    setQuery('');
-    setResults([]);
-    setOpen(false);
-  };
-
-  return (
-    <div className="relative" ref={containerRef}>
-      {value && displayName ? (
-        <div className="flex items-center gap-2">
-          <div className="flex-1 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm h-8 flex items-center">
-            {displayName}
-          </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleClear}>
-            &times;
-          </Button>
-        </div>
-      ) : (
-        <Input
-          value={query}
-          onChange={(e) => handleSearch(e.target.value)}
-          placeholder={placeholder}
-          onFocus={() => { if (results.length > 0) setOpen(true); }}
-        />
-      )}
-      {open && results.length > 0 && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg bg-popover shadow-md ring-1 ring-foreground/10 max-h-48 overflow-y-auto">
-          {results.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
-              onClick={() => handleSelect(p)}
-            >
-              {p.first_name} {p.last_name}
-              {p.email && <span className="text-muted-foreground ml-2">{p.email}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function DelegationsPage() {
   const { data, loading, refetch } = useApi<Delegation[]>('/delegations', []);
@@ -191,26 +90,36 @@ export function DelegationsPage() {
 
   const handleCreate = async () => {
     if (!delegatorId || !delegateId || !startsAt || !endsAt) return;
-    await apiFetch('/delegations', {
-      method: 'POST',
-      body: JSON.stringify({
-        delegator_user_id: delegatorId,
-        delegate_user_id: delegateId,
-        starts_at: startsAt,
-        ends_at: endsAt,
-      }),
-    });
-    resetForm();
-    setDialogOpen(false);
-    refetch();
+    try {
+      await apiFetch('/delegations', {
+        method: 'POST',
+        body: JSON.stringify({
+          delegator_user_id: delegatorId,
+          delegate_user_id: delegateId,
+          starts_at: startsAt,
+          ends_at: endsAt,
+        }),
+      });
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+      toast.success('Delegation created');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create delegation');
+    }
   };
 
   const handleDeactivate = async (id: string) => {
-    await apiFetch(`/delegations/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ active: false }),
-    });
-    refetch();
+    try {
+      await apiFetch(`/delegations/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      });
+      refetch();
+      toast.success('Delegation deactivated');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to deactivate delegation');
+    }
   };
 
   const openCreate = () => {
@@ -231,39 +140,60 @@ export function DelegationsPage() {
           <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
             <Plus className="h-4 w-4" /> Add Delegation
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[480px]">
+          <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Create Delegation</DialogTitle>
+              <DialogDescription>
+                Cover approvals while someone is out of office. The delegate will act on behalf of the delegator during the selected period.
+              </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2">
-              <div className="space-y-2">
-                <Label>Delegator (who is away)</Label>
-                <DelegationPersonPicker value={delegatorId} onChange={setDelegatorId} placeholder="Search delegator..." />
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="delegation-delegator">Delegator (who is away)</FieldLabel>
+                <PersonCombobox
+                  value={delegatorId}
+                  onChange={setDelegatorId}
+                  placeholder="Search delegator..."
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="delegation-delegate">Delegate (who will approve)</FieldLabel>
+                <PersonCombobox
+                  value={delegateId}
+                  onChange={setDelegateId}
+                  placeholder="Search delegate..."
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel htmlFor="delegation-starts">Starts At</FieldLabel>
+                  <Input
+                    id="delegation-starts"
+                    type="date"
+                    value={startsAt}
+                    onChange={(e) => setStartsAt(e.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="delegation-ends">Ends At</FieldLabel>
+                  <Input
+                    id="delegation-ends"
+                    type="date"
+                    value={endsAt}
+                    onChange={(e) => setEndsAt(e.target.value)}
+                  />
+                </Field>
               </div>
-              <div className="space-y-2">
-                <Label>Delegate (who will approve)</Label>
-                <DelegationPersonPicker value={delegateId} onChange={setDelegateId} placeholder="Search delegate..." />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Starts At</Label>
-                  <Input type="date" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Ends At</Label>
-                  <Input type="date" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
-                </div>
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button
-                  onClick={handleCreate}
-                  disabled={!delegatorId || !delegateId || !startsAt || !endsAt || delegatorId === delegateId}
-                >
-                  Create
-                </Button>
-              </div>
-            </div>
+            </FieldGroup>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button
+                onClick={handleCreate}
+                disabled={!delegatorId || !delegateId || !startsAt || !endsAt || delegatorId === delegateId}
+              >
+                Create
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -280,12 +210,8 @@ export function DelegationsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && sorted.length === 0 && (
-            <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No delegations yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={6} />}
+          {!loading && sorted.length === 0 && <TableEmpty cols={6} message="No delegations yet." />}
           {sorted.map((d) => {
             const status = getDelegationStatus(d);
             return (
@@ -299,15 +225,21 @@ export function DelegationsPage() {
                 </TableCell>
                 <TableCell>
                   {status !== 'expired' && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => handleDeactivate(d.id)}
-                      title="Deactivate"
-                    >
-                      <Ban className="h-4 w-4" />
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleDeactivate(d.id)}
+                          />
+                        }
+                      >
+                        <Ban className="h-4 w-4" />
+                      </TooltipTrigger>
+                      <TooltipContent>Deactivate</TooltipContent>
+                    </Tooltip>
                   )}
                 </TableCell>
               </TableRow>

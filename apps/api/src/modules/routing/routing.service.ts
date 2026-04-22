@@ -1,77 +1,86 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { RoutingEvaluatorService, RoutingHook } from './routing-evaluator.service';
+import {
+  AssignmentTarget,
+  ChosenBy,
+  FulfillmentShape,
+  ResolverContext,
+  TraceEntry,
+} from './resolver.types';
 
-interface RoutingContext {
-  ticket_type_id?: string;
-  domain?: string;
-  location_id?: string;
-  priority?: string;
-  [key: string]: unknown;
-}
-
-interface RoutingResult {
-  assigned_team_id: string | null;
-  assigned_user_id: string | null;
+export interface RoutingEvaluation {
+  target: AssignmentTarget | null;
+  chosen_by: ChosenBy;
   rule_id: string | null;
   rule_name: string | null;
+  strategy: FulfillmentShape | 'rule';
+  trace: TraceEntry[];
 }
 
 @Injectable()
 export class RoutingService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly evaluator: RoutingEvaluatorService,
+  ) {}
 
-  async evaluate(context: RoutingContext): Promise<RoutingResult> {
-    const tenant = TenantContext.current();
-
-    // Load active routing rules, ordered by priority (highest first)
-    const { data: rules, error } = await this.supabase.admin
-      .from('routing_rules')
-      .select('*')
-      .eq('tenant_id', tenant.id)
-      .eq('active', true)
-      .order('priority', { ascending: false });
-
-    if (error) throw error;
-
-    // Evaluate rules in priority order — first match wins
-    for (const rule of rules ?? []) {
-      if (this.matchesConditions(rule.conditions as Array<{ field: string; operator: string; value: unknown }>, context)) {
-        return {
-          assigned_team_id: rule.action_assign_team_id,
-          assigned_user_id: rule.action_assign_user_id,
-          rule_id: rule.id,
-          rule_name: rule.name,
-        };
-      }
-    }
-
-    // No rule matched
-    return { assigned_team_id: null, assigned_user_id: null, rule_id: null, rule_name: null };
+  /**
+   * Compute a routing decision WITHOUT persisting it. The evaluator wraps
+   * both the legacy ResolverService and the v2 engines under `routing_v2_mode`
+   * — this method transparently dispatches to whichever path the tenant's
+   * flag selects.
+   *
+   * Callers pass `hook` to distinguish the parent-case owner decision from
+   * the child-work-order dispatch decision. TicketService (parent create +
+   * reassignment) passes `'case_owner'`; DispatchService passes
+   * `'child_dispatch'`. Default is `'case_owner'` for historical callers.
+   *
+   * Callers who want the decision written to `routing_decisions` must also
+   * call `recordDecision()`. Preview flows (reclassify, dry-run automation)
+   * intentionally omit that call so the decision trace doesn't pollute the
+   * audit history until the user confirms.
+   */
+  async evaluate(context: ResolverContext, hook: RoutingHook = 'case_owner'): Promise<RoutingEvaluation> {
+    const decision =
+      hook === 'child_dispatch'
+        ? await this.evaluator.evaluateChildDispatch(context)
+        : await this.evaluator.evaluateCaseOwner(context);
+    return {
+      target: decision.target,
+      chosen_by: decision.chosen_by,
+      rule_id: decision.rule_id ?? null,
+      rule_name: decision.rule_name ?? null,
+      strategy: decision.strategy,
+      trace: decision.trace,
+    };
   }
 
-  private matchesConditions(
-    conditions: Array<{ field: string; operator: string; value: unknown }>,
-    context: RoutingContext,
-  ): boolean {
-    if (!conditions || conditions.length === 0) return true;
-
-    return conditions.every((condition) => {
-      const actual = context[condition.field];
-      switch (condition.operator) {
-        case 'equals':
-          return actual === condition.value;
-        case 'not_equals':
-          return actual !== condition.value;
-        case 'in':
-          return Array.isArray(condition.value) && condition.value.includes(actual);
-        case 'not_in':
-          return Array.isArray(condition.value) && !condition.value.includes(actual);
-        case 'exists':
-          return actual !== null && actual !== undefined;
-        default:
-          return false;
-      }
+  /**
+   * Persist a previously computed evaluation to `routing_decisions`.
+   * Each call inserts a new row — routing history is append-only so
+   * callers can see the full decision trail per ticket.
+   */
+  async recordDecision(ticketId: string, context: ResolverContext, evaluation: RoutingEvaluation) {
+    const tenant = TenantContext.current();
+    await this.supabase.admin.from('routing_decisions').insert({
+      tenant_id: tenant.id,
+      ticket_id: ticketId,
+      strategy: evaluation.strategy,
+      chosen_team_id: evaluation.target?.kind === 'team' ? evaluation.target.team_id : null,
+      chosen_user_id: evaluation.target?.kind === 'user' ? evaluation.target.user_id : null,
+      chosen_vendor_id: evaluation.target?.kind === 'vendor' ? evaluation.target.vendor_id : null,
+      chosen_by: evaluation.chosen_by,
+      rule_id: evaluation.rule_id,
+      trace: evaluation.trace,
+      context: {
+        request_type_id: context.request_type_id,
+        domain: context.domain,
+        priority: context.priority,
+        asset_id: context.asset_id,
+        location_id: context.location_id,
+      },
     });
   }
 }

@@ -1,5 +1,6 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
+import { WorkspaceSwitcher } from '@/components/workspace-switcher';
 import {
   Sidebar,
   SidebarContent,
@@ -33,6 +34,9 @@ import {
   Settings,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
+import { PortalProvider, usePortal } from '@/providers/portal-provider';
+import { PortalLocationPicker } from '@/components/portal/portal-location-picker';
+import { PortalNoScopeBlocker } from '@/components/portal/portal-no-scope-blocker';
 
 const portalNav = [
   { title: 'Home', path: '/portal', icon: Home },
@@ -60,9 +64,18 @@ const pageTitles: Record<string, string> = {
 };
 
 export function PortalLayout() {
+  return (
+    <PortalProvider>
+      <PortalLayoutInner />
+    </PortalProvider>
+  );
+}
+
+function PortalLayoutInner() {
   const navigate = useNavigate();
   const location = useLocation();
   const { hasRole } = useAuth();
+  const { data: portal, loading: portalLoading } = usePortal();
 
   const hasAgentPermission = hasRole('agent');
   const hasAdminPermission = hasRole('admin');
@@ -75,23 +88,7 @@ export function PortalLayout() {
     <SidebarProvider>
       <Sidebar variant="inset">
         <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="lg"
-                onClick={() => navigate('/portal')}
-                className="cursor-pointer"
-              >
-                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Prequest</span>
-                  <span className="truncate text-xs text-muted-foreground">Employee Portal</span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <WorkspaceSwitcher current="portal" />
         </SidebarHeader>
 
         <SidebarContent>
@@ -182,9 +179,14 @@ export function PortalLayout() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
+          <div className="ml-auto">
+            <PortalLocationPicker />
+          </div>
         </header>
         <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
-          <Outlet />
+          {!portalLoading && portal && !portal.can_submit
+            ? <PortalNoScopeBlocker />
+            : <Outlet />}
         </div>
       </SidebarInset>
     </SidebarProvider>

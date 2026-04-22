@@ -24,6 +24,8 @@ interface GraphState {
   updateNodeConfig: (id: string, patch: Record<string, unknown>) => void;
   renameNode: (id: string, label: string) => void;
   deleteSelection: () => void;
+  deleteNodes: (ids: string[]) => void;
+  setNodePosition: (id: string, position: { x: number; y: number }) => void;
   connect: (from: string, to: string, condition?: string) => void;
   disconnect: (fromId: string, toId: string, condition?: string) => void;
 
@@ -59,9 +61,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   addNode: (type) => {
     const snap = snapshot(get());
-    const node = createNode(type);
+    const existing = get().nodes;
+    const base = existing.length > 0
+      ? (existing[existing.length - 1].position ?? { x: 100, y: 100 })
+      : { x: 100, y: 100 };
+    const node = { ...createNode(type), position: { x: base.x + 260, y: base.y } };
     set({
-      nodes: [...get().nodes, node],
+      nodes: [...existing, node],
       selectedIds: [node.id],
       dirty: true,
       past: [...get().past.slice(-MAX_HISTORY + 1), snap],
@@ -100,6 +106,27 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       dirty: true,
       past: [...get().past.slice(-MAX_HISTORY + 1), snap],
       future: [],
+    });
+  },
+
+  deleteNodes: (ids) => {
+    if (ids.length === 0) return;
+    const sel = new Set(ids);
+    const snap = snapshot(get());
+    set({
+      nodes: get().nodes.filter((n) => !sel.has(n.id)),
+      edges: get().edges.filter((e) => !sel.has(e.from) && !sel.has(e.to)),
+      selectedIds: get().selectedIds.filter((id) => !sel.has(id)),
+      dirty: true,
+      past: [...get().past.slice(-MAX_HISTORY + 1), snap],
+      future: [],
+    });
+  },
+
+  setNodePosition: (id, position) => {
+    set({
+      nodes: get().nodes.map((n) => n.id === id ? { ...n, position } : n),
+      dirty: true,
     });
   },
 

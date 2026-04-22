@@ -101,6 +101,10 @@ function validateNodeConfig(n: WorkflowNode): ValidationError[] {
     case 'timer':
       req('TIMER_DELAY', 'Timer requires delay_minutes > 0', typeof c.delay_minutes === 'number' && c.delay_minutes > 0);
       break;
+    case 'http_request':
+      req('HTTP_URL', 'HTTP Request requires a URL', typeof c.url === 'string' && (c.url as string).trim().length > 0);
+      req('HTTP_METHOD', 'HTTP Request requires a method', ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(c.method as string));
+      break;
   }
   return errs;
 }

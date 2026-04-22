@@ -1,7 +1,9 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
+import { AuthGuard } from './modules/auth/auth.guard';
 import { SupabaseModule } from './common/supabase/supabase.module';
 import { HealthController } from './health.controller';
 import { TenantModule } from './modules/tenant/tenant.module';
@@ -21,6 +23,11 @@ import { AssetModule } from './modules/asset/asset.module';
 import { BusinessHoursModule } from './modules/business-hours/business-hours.module';
 import { DelegationModule } from './modules/delegation/delegation.module';
 import { UserManagementModule } from './modules/user-management/user-management.module';
+import { VendorModule } from './modules/vendor/vendor.module';
+import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
+import { PortalModule } from './modules/portal/portal.module';
+import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
+import { OrgNodeModule } from './modules/org-node/org-node.module';
 
 @Module({
   imports: [
@@ -47,14 +54,24 @@ import { UserManagementModule } from './modules/user-management/user-management.
     BusinessHoursModule,
     DelegationModule,
     UserManagementModule,
+    VendorModule,
+    CatalogMenuModule,
+    PortalModule,
+    ServiceCatalogModule,
+    OrgNodeModule,
   ],
   controllers: [HealthController],
+  providers: [
+    // Secure by default: every route requires a valid Supabase Bearer token.
+    // Opt out with @Public() on the specific handler or controller.
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(TenantMiddleware)
-      .exclude('api/health')
+      .exclude('api/health', 'api/webhooks/:token')
       .forRoutes('*');
   }
 }

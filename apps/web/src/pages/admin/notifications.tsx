@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -9,14 +8,25 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Mail, Bell } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface NotificationTemplate {
   id: string;
@@ -87,14 +97,20 @@ export function NotificationsPage() {
       body,
       channels: getChannels(),
     };
-    if (editId) {
-      await apiFetch(`/notification-templates/${editId}`, { method: 'PATCH', body: JSON.stringify(dto) });
-    } else {
-      await apiFetch('/notification-templates', { method: 'POST', body: JSON.stringify(dto) });
+    try {
+      if (editId) {
+        await apiFetch(`/notification-templates/${editId}`, { method: 'PATCH', body: JSON.stringify(dto) });
+        toast.success('Notification template updated');
+      } else {
+        await apiFetch('/notification-templates', { method: 'POST', body: JSON.stringify(dto) });
+        toast.success('Notification template created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save notification template');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (tmpl: NotificationTemplate) => {
@@ -130,76 +146,88 @@ export function NotificationsPage() {
           <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Notification Template</DialogTitle>
+              <DialogDescription>Configure the message sent when this event fires.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ticket Assigned Notification" />
-              </div>
-              <div className="space-y-2">
-                <Label>Event Type</Label>
+            <ScrollArea className="max-h-[72vh] pr-3">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="notif-name">Name</FieldLabel>
+                <Input
+                  id="notif-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Ticket Assigned Notification"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="notif-event">Event Type</FieldLabel>
                 <Select value={eventType} onValueChange={(v) => setEventType(v ?? 'ticket_created')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="notif-event"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {eventTypes.map((e) => (
                       <SelectItem key={e.value} value={e.value}>{e.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Subject</Label>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="notif-subject">Subject</FieldLabel>
                 <Input
+                  id="notif-subject"
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder='Use tokens like {{ticket.title}}'
                 />
-                <p className="text-xs text-muted-foreground">
-                  Use tokens like {'{{ticket.title}}'}
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label>Body</Label>
+                <FieldDescription>Use tokens like {'{{ticket.title}}'}</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="notif-body">Body</FieldLabel>
                 <Textarea
+                  id="notif-body"
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
                   placeholder={`Hi {{requester.name}},\n\nYour request "{{ticket.title}}" has been updated.\n\nThank you.`}
                   className="h-36 resize-none font-mono text-sm"
                 />
-                <p className="text-xs text-muted-foreground">
-                  Available tokens: {AVAILABLE_TOKENS.join(', ')}
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label>Channels</Label>
-                <div className="flex gap-4">
-                  <div className="flex items-center gap-1.5">
+                <FieldDescription>Available tokens: {AVAILABLE_TOKENS.join(', ')}</FieldDescription>
+              </Field>
+
+              <FieldSet>
+                <FieldLegend variant="label">Channels</FieldLegend>
+                <FieldGroup data-slot="checkbox-group" className="flex-row gap-4">
+                  <Field orientation="horizontal">
                     <Checkbox
+                      id="notif-email"
                       checked={emailEnabled}
                       onCheckedChange={(c) => setEmailEnabled(c === true)}
                     />
-                    <Label className="font-normal flex items-center gap-1">
+                    <FieldLabel htmlFor="notif-email" className="font-normal flex items-center gap-1">
                       <Mail className="h-3.5 w-3.5" /> Email
-                    </Label>
-                  </div>
-                  <div className="flex items-center gap-1.5">
+                    </FieldLabel>
+                  </Field>
+                  <Field orientation="horizontal">
                     <Checkbox
+                      id="notif-in-app"
                       checked={inAppEnabled}
                       onCheckedChange={(c) => setInAppEnabled(c === true)}
                     />
-                    <Label className="font-normal flex items-center gap-1">
+                    <FieldLabel htmlFor="notif-in-app" className="font-normal flex items-center gap-1">
                       <Bell className="h-3.5 w-3.5" /> In-app
-                    </Label>
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
-            </div>
+                    </FieldLabel>
+                  </Field>
+                </FieldGroup>
+              </FieldSet>
+            </FieldGroup>
+            </ScrollArea>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -214,12 +242,8 @@ export function NotificationsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No notification templates yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={4} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={4} message="No notification templates yet." />}
           {(data ?? []).map((tmpl) => (
             <TableRow key={tmpl.id}>
               <TableCell className="font-medium">{tmpl.name}</TableCell>

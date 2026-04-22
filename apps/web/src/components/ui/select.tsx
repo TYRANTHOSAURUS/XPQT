@@ -4,7 +4,41 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+// Base UI's Select.Value renders the raw `value` unless the root is given an `items` map.
+// Instead of making every call site pass that, we walk the children tree here and build the
+// map automatically — so `<SelectValue />` shows the SelectItem's child text, not the UUID.
+function collectItems(children: React.ReactNode): Record<string, React.ReactNode> {
+  const out: Record<string, React.ReactNode> = {}
+  const walk = (node: React.ReactNode) => {
+    React.Children.forEach(node, (child) => {
+      if (!React.isValidElement(child)) return
+      const props = child.props as { value?: unknown; children?: React.ReactNode }
+      if (child.type === SelectItem && props.value != null && props.value !== "") {
+        out[String(props.value)] = props.children
+        return
+      }
+      if (props.children) walk(props.children)
+    })
+  }
+  walk(children)
+  return out
+}
+
+function Select<Value>({
+  children,
+  items,
+  ...props
+}: SelectPrimitive.Root.Props<Value>) {
+  const derivedItems = React.useMemo(
+    () => (items ? items : collectItems(children)),
+    [items, children],
+  )
+  return (
+    <SelectPrimitive.Root items={derivedItems as SelectPrimitive.Root.Props<Value>["items"]} {...props}>
+      {children}
+    </SelectPrimitive.Root>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

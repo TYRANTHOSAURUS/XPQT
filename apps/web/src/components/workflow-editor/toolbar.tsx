@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Undo2, Redo2, Save, Send, RotateCcw, FlaskConical, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useGraphStore } from './graph-store';
 import { validate } from './validation';
@@ -45,8 +46,36 @@ export function Toolbar({ name, status, saving, onSave, onPublish, onUnpublish, 
         </div>
       </div>
 
-      <Button variant="ghost" size="sm" onClick={undo} disabled={past.length === 0 || readOnly} title="Undo (⌘Z)"><Undo2 className="h-4 w-4" /></Button>
-      <Button variant="ghost" size="sm" onClick={redo} disabled={future.length === 0 || readOnly} title="Redo (⌘⇧Z)"><Redo2 className="h-4 w-4" /></Button>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={undo}
+              disabled={past.length === 0 || readOnly}
+            />
+          }
+        >
+          <Undo2 className="h-4 w-4" />
+        </TooltipTrigger>
+        <TooltipContent>Undo (⌘Z)</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={redo}
+              disabled={future.length === 0 || readOnly}
+            />
+          }
+        >
+          <Redo2 className="h-4 w-4" />
+        </TooltipTrigger>
+        <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
+      </Tooltip>
 
       <Button variant="outline" size="sm" onClick={onSimulate} className="gap-1.5">
         <FlaskConical className="h-3.5 w-3.5" /> Simulate

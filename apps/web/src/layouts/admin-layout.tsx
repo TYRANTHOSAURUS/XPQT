@@ -1,5 +1,7 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
+import { WorkspaceSwitcher } from '@/components/workspace-switcher';
+import { useAuth } from '@/providers/auth-provider';
 import {
   Sidebar,
   SidebarContent,
@@ -24,36 +26,52 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import {
-  FileText,
   Users,
   MapPin,
   Clock,
   Route,
   Bell,
   Calendar,
-  Headset,
-  LayoutDashboard,
   FormInput,
   UserCog,
   PersonStanding,
   Package,
-  Tags,
   GitBranch,
+  Webhook,
   HandCoins,
+  ListTree,
+  Store,
+  BookOpen,
+  Network,
+  Layers,
+  Compass,
+  ArrowLeft,
+  Building2,
 } from 'lucide-react';
+import { features } from '@/lib/features';
+
+const legacyRoutingNav = [
+  { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
+  { title: 'Location Teams', path: '/admin/location-teams', icon: MapPin },
+  { title: 'Space Groups', path: '/admin/space-groups', icon: Layers },
+  { title: 'Domain Hierarchy', path: '/admin/domain-parents', icon: Network },
+];
 
 const configNav = [
-  { title: 'Request Types', path: '/admin/request-types', icon: FileText },
+  { title: 'Service Catalog', path: '/admin/catalog-hierarchy', icon: ListTree },
   { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
-  { title: 'Catalog Categories', path: '/admin/catalog-categories', icon: Tags },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
-  { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
+  ...(features.routingStudio
+    ? [{ title: 'Routing Studio', path: '/admin/routing-studio', icon: Compass }]
+    : legacyRoutingNav),
   { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
   { title: 'Notifications', path: '/admin/notifications', icon: Bell },
   { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
+  { title: 'Webhooks', path: '/admin/webhooks', icon: Webhook },
 ];
 
 const peopleNav = [
+  { title: 'Organisations', path: '/admin/organisations', icon: Building2 },
   { title: 'Teams', path: '/admin/teams', icon: Users },
   { title: 'Users & Roles', path: '/admin/users', icon: UserCog },
   { title: 'Persons', path: '/admin/persons', icon: PersonStanding },
@@ -63,61 +81,72 @@ const peopleNav = [
 const operationsNav = [
   { title: 'Locations', path: '/admin/locations', icon: MapPin },
   { title: 'Assets', path: '/admin/assets', icon: Package },
+  { title: 'Vendors', path: '/admin/vendors', icon: Store },
+  { title: 'Vendor Menus', path: '/admin/vendor-menus', icon: BookOpen },
 ];
 
-const quickNav = [
-  { title: 'Portal', path: '/portal', icon: LayoutDashboard },
-  { title: 'Service Desk', path: '/desk', icon: Headset },
-];
 
 const pageTitles: Record<string, string> = {
+  '/admin/catalog-hierarchy': 'Catalog Hierarchy',
   '/admin/request-types': 'Request Types',
   '/admin/form-schemas': 'Form Schemas',
-  '/admin/catalog-categories': 'Catalog Categories',
   '/admin/teams': 'Teams',
   '/admin/locations': 'Locations',
   '/admin/sla-policies': 'SLA Policies',
+  '/admin/routing-studio': 'Routing Studio',
   '/admin/routing-rules': 'Routing Rules',
+  '/admin/location-teams': 'Location Teams',
+  '/admin/space-groups': 'Space Groups',
+  '/admin/domain-parents': 'Domain Hierarchy',
   '/admin/business-hours': 'Business Hours',
   '/admin/notifications': 'Notifications',
   '/admin/workflow-templates': 'Workflow Templates',
+  '/admin/webhooks': 'Webhooks',
   '/admin/users': 'Users & Roles',
   '/admin/persons': 'Persons',
+  '/admin/organisations': 'Organisations',
   '/admin/delegations': 'Delegations',
   '/admin/assets': 'Assets',
+  '/admin/vendors': 'Vendors',
+  '/admin/vendor-menus': 'Vendor Menus',
 };
 
 export function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { hasRole } = useAuth();
   const pageTitle = Object.entries(pageTitles).find(([path]) =>
     location.pathname.startsWith(path)
   )?.[1] ?? 'Admin';
+
+  const backTarget = hasRole('agent')
+    ? { title: 'Back to Service Desk', path: '/desk' }
+    : { title: 'Back to Portal', path: '/portal' };
 
   return (
     <SidebarProvider>
       <Sidebar variant="inset">
         <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="lg"
-                onClick={() => navigate('/admin/request-types')}
-                className="cursor-pointer"
-              >
-                <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-                  <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Prequest</span>
-                  <span className="truncate text-xs text-muted-foreground">Admin</span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <WorkspaceSwitcher current="admin" />
         </SidebarHeader>
 
         <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => navigate(backTarget.path)}
+                    className="cursor-pointer"
+                  >
+                    <ArrowLeft />
+                    <span>{backTarget.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
           <SidebarGroup>
             <SidebarGroupLabel>Configuration</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -178,24 +207,6 @@ export function AdminLayout() {
             </SidebarGroupContent>
           </SidebarGroup>
 
-          <SidebarGroup>
-            <SidebarGroupLabel>Navigate</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {quickNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </SidebarContent>
 
         <SidebarFooter>

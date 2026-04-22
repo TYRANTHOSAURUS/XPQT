@@ -1,8 +1,15 @@
 import { useMemo, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Separator } from '@/components/ui/separator';
 import { HistoryTimeline, type InstanceEvent } from './history-timeline';
 import { useGraphStore } from './graph-store';
 import type { SimulateResult } from '@/hooks/use-workflow';
@@ -58,27 +65,31 @@ export function SimulatePanel({ open, onOpenChange, onRun }: Props) {
         <SheetHeader>
           <SheetTitle>Simulate workflow</SheetTitle>
         </SheetHeader>
-        <div className="grid gap-3 py-4">
+        <FieldGroup className="py-4">
           {fields.length === 0 ? (
-            <p className="text-sm text-muted-foreground">This workflow has no condition nodes; simulation will follow the default path.</p>
+            <FieldDescription>
+              This workflow has no condition nodes; simulation will follow the default path.
+            </FieldDescription>
           ) : (
             fields.map((f) => (
-              <div key={f} className="grid gap-1.5">
-                <Label className="text-xs">{f}</Label>
+              <Field key={f}>
+                <FieldLabel htmlFor={`sim-${f}`} className="text-xs">{f}</FieldLabel>
                 <Input
+                  id={`sim-${f}`}
                   value={ticket[f] ?? ''}
                   onChange={(e) => setTicket({ ...ticket, [f]: e.target.value })}
                   placeholder={`ticket.${f}`}
                 />
-              </div>
+              </Field>
             ))
           )}
           <Button onClick={handleRun} disabled={running}>{running ? 'Running…' : 'Run simulation'}</Button>
-          {error && <p className="text-xs text-red-600">{error}</p>}
-        </div>
+          {error && <FieldError>{error}</FieldError>}
+        </FieldGroup>
 
         {result && (
-          <div className="mt-4 border-t pt-4">
+          <div className="mt-4">
+            <Separator className="mb-4" />
             <div className="flex items-center gap-2 mb-2">
               <span className="text-sm font-semibold">Result</span>
               {result.terminated

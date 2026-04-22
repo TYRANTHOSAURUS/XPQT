@@ -1,21 +1,31 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 type DayKey = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
 
@@ -124,14 +134,20 @@ export function BusinessHoursPage() {
   const handleSave = async () => {
     if (!name.trim()) return;
     const body = { name, time_zone: timezone, working_hours: workingHours, holidays };
-    if (editId) {
-      await apiFetch(`/business-hours/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/business-hours', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/business-hours/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Calendar updated');
+      } else {
+        await apiFetch('/business-hours', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Calendar created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save calendar');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (cal: BusinessHoursCalendar) => {
@@ -165,38 +181,52 @@ export function BusinessHoursPage() {
           <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Business Hours Calendar</DialogTitle>
+              <DialogDescription>Define working hours and holidays used by SLA policies.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-              <div className="space-y-2">
-                <Label>Name</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Standard Office Hours" />
-              </div>
-              <div className="space-y-2">
-                <Label>Timezone</Label>
+            <ScrollArea className="max-h-[72vh] pr-3">
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="bh-name">Name</FieldLabel>
+                <Input
+                  id="bh-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Standard Office Hours"
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="bh-timezone">Timezone</FieldLabel>
                 <Select value={timezone} onValueChange={(v) => setTimezone(v ?? 'UTC')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="bh-timezone"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {TIMEZONES.map((tz) => (
                       <SelectItem key={tz} value={tz}>{tz}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
 
-              <div className="space-y-2">
-                <Label>Working Hours</Label>
+              <FieldSet>
+                <FieldLegend variant="label">Working Hours</FieldLegend>
                 <div className="space-y-2">
                   {DAYS.map(({ key, label }) => {
                     const dayData = workingHours[key];
                     const isClosed = dayData === null;
                     return (
                       <div key={key} className="grid grid-cols-[80px_1fr_auto] items-center gap-3">
-                        <Label className={`text-sm ${isClosed ? 'text-muted-foreground' : ''}`}>{label}</Label>
+                        <FieldLabel
+                          htmlFor={`bh-day-${key}-start`}
+                          className={`text-sm ${isClosed ? 'text-muted-foreground' : ''}`}
+                        >
+                          {label}
+                        </FieldLabel>
                         {isClosed ? (
                           <span className="text-sm text-muted-foreground">Closed</span>
                         ) : (
                           <div className="flex items-center gap-2">
                             <Input
+                              id={`bh-day-${key}-start`}
                               type="time"
                               value={dayData.start}
                               onChange={(e) => updateDayTime(key, 'start', e.target.value)}
@@ -204,6 +234,7 @@ export function BusinessHoursPage() {
                             />
                             <span className="text-muted-foreground text-sm">to</span>
                             <Input
+                              id={`bh-day-${key}-end`}
                               type="time"
                               value={dayData.end}
                               onChange={(e) => updateDayTime(key, 'end', e.target.value)}
@@ -211,23 +242,29 @@ export function BusinessHoursPage() {
                             />
                           </div>
                         )}
-                        <div className="flex items-center gap-1.5">
+                        <Field orientation="horizontal">
                           <Checkbox
+                            id={`bh-day-${key}-closed`}
                             checked={isClosed}
                             onCheckedChange={() => toggleDay(key)}
                           />
-                          <Label className="text-xs text-muted-foreground">Closed</Label>
-                        </div>
+                          <FieldLabel
+                            htmlFor={`bh-day-${key}-closed`}
+                            className="text-xs font-normal text-muted-foreground"
+                          >
+                            Closed
+                          </FieldLabel>
+                        </Field>
                       </div>
                     );
                   })}
                 </div>
-              </div>
+              </FieldSet>
 
-              <div className="space-y-2">
-                <Label>Holidays</Label>
+              <FieldSet>
+                <FieldLegend variant="label">Holidays</FieldLegend>
                 {holidays.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No holidays added.</p>
+                  <FieldDescription>No holidays added.</FieldDescription>
                 ) : (
                   <div className="space-y-1">
                     {holidays.map((h, i) => (
@@ -241,29 +278,47 @@ export function BusinessHoursPage() {
                   </div>
                 )}
                 <div className="flex gap-2 items-end">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Date</Label>
-                    <Input type="date" value={newHolidayDate} onChange={(e) => setNewHolidayDate(e.target.value)} className="h-8 text-sm w-36" />
-                  </div>
-                  <div className="space-y-1 flex-1">
-                    <Label className="text-xs">Name</Label>
-                    <Input value={newHolidayName} onChange={(e) => setNewHolidayName(e.target.value)} className="h-8 text-sm" placeholder="e.g. New Year's Day" />
-                  </div>
-                  <div className="flex items-center gap-1.5 pb-1">
-                    <Checkbox checked={newHolidayRecurring} onCheckedChange={(c) => setNewHolidayRecurring(c === true)} />
-                    <Label className="text-xs">Recurring</Label>
-                  </div>
+                  <Field className="w-36">
+                    <FieldLabel htmlFor="bh-holiday-date" className="text-xs">Date</FieldLabel>
+                    <Input
+                      id="bh-holiday-date"
+                      type="date"
+                      value={newHolidayDate}
+                      onChange={(e) => setNewHolidayDate(e.target.value)}
+                      className="h-8 text-sm"
+                    />
+                  </Field>
+                  <Field className="flex-1">
+                    <FieldLabel htmlFor="bh-holiday-name" className="text-xs">Name</FieldLabel>
+                    <Input
+                      id="bh-holiday-name"
+                      value={newHolidayName}
+                      onChange={(e) => setNewHolidayName(e.target.value)}
+                      className="h-8 text-sm"
+                      placeholder="e.g. New Year's Day"
+                    />
+                  </Field>
+                  <Field orientation="horizontal" className="pb-1">
+                    <Checkbox
+                      id="bh-holiday-recurring"
+                      checked={newHolidayRecurring}
+                      onCheckedChange={(c) => setNewHolidayRecurring(c === true)}
+                    />
+                    <FieldLabel htmlFor="bh-holiday-recurring" className="text-xs font-normal">
+                      Recurring
+                    </FieldLabel>
+                  </Field>
                   <Button variant="outline" size="sm" onClick={addHoliday}>Add</Button>
                 </div>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
-            </div>
+              </FieldSet>
+            </FieldGroup>
+            </ScrollArea>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -278,12 +333,8 @@ export function BusinessHoursPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && (!data || data.length === 0) && (
-            <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No calendars yet.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={4} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={4} message="No calendars yet." />}
           {(data ?? []).map((cal) => (
             <TableRow key={cal.id}>
               <TableCell>

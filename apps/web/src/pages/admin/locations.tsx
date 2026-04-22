@@ -1,21 +1,29 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  Field,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Space {
   id: string;
@@ -74,14 +82,20 @@ export function LocationsPage() {
       parent_id: parentId || undefined,
       amenities: amenities.length > 0 ? amenities : undefined,
     };
-    if (editId) {
-      await apiFetch(`/spaces/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-    } else {
-      await apiFetch('/spaces', { method: 'POST', body: JSON.stringify(body) });
+    try {
+      if (editId) {
+        await apiFetch(`/spaces/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        toast.success('Space updated');
+      } else {
+        await apiFetch('/spaces', { method: 'POST', body: JSON.stringify(body) });
+        toast.success('Space created');
+      }
+      resetForm();
+      setDialogOpen(false);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save space');
     }
-    resetForm();
-    setDialogOpen(false);
-    refetch();
   };
 
   const openEdit = (space: Space) => {
@@ -124,23 +138,25 @@ export function LocationsPage() {
           <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Space</DialogTitle>
+              <DialogDescription>Manage sites, buildings, floors, rooms, and desks.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 mt-2">
-              <div className="space-y-2">
-                <Label>Type</Label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="space-type">Type</FieldLabel>
                 <Select value={type} onValueChange={(v) => setType(v ?? 'room')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="space-type"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {spaceTypes.map((t) => (
                       <SelectItem key={t} value={t}>{t.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Parent</Label>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="space-parent">Parent</FieldLabel>
                 <Select value={parentId} onValueChange={(v) => setParentId(v ?? '')}>
-                  <SelectTrigger><SelectValue placeholder="None (top level)" /></SelectTrigger>
+                  <SelectTrigger id="space-parent"><SelectValue placeholder="None (top level)" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">None (top level)</SelectItem>
                     {parentOptions.map((s) => (
@@ -148,48 +164,76 @@ export function LocationsPage() {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
+
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Name</Label>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Room 302" />
-                </div>
-                <div className="space-y-2">
-                  <Label>Code</Label>
-                  <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. AMS-A-302" />
-                </div>
+                <Field>
+                  <FieldLabel htmlFor="space-name">Name</FieldLabel>
+                  <Input
+                    id="space-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. Room 302"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="space-code">Code</FieldLabel>
+                  <Input
+                    id="space-code"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    placeholder="e.g. AMS-A-302"
+                  />
+                </Field>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Capacity</Label>
-                  <Input type="number" value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder="0" />
-                </div>
-                <div className="flex items-center gap-2 pt-6">
-                  <Checkbox checked={reservable} onCheckedChange={(c) => setReservable(c === true)} />
-                  <Label>Reservable</Label>
-                </div>
+
+              <div className="grid grid-cols-2 gap-4 items-end">
+                <Field>
+                  <FieldLabel htmlFor="space-capacity">Capacity</FieldLabel>
+                  <Input
+                    id="space-capacity"
+                    type="number"
+                    value={capacity}
+                    onChange={(e) => setCapacity(e.target.value)}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="space-reservable"
+                    checked={reservable}
+                    onCheckedChange={(c) => setReservable(c === true)}
+                  />
+                  <FieldLabel htmlFor="space-reservable" className="font-normal">
+                    Reservable
+                  </FieldLabel>
+                </Field>
               </div>
-              <div className="space-y-2">
-                <Label>Amenities</Label>
-                <div className="grid grid-cols-2 gap-2">
+
+              <FieldSet>
+                <FieldLegend variant="label">Amenities</FieldLegend>
+                <FieldGroup data-slot="checkbox-group" className="grid grid-cols-2 gap-2">
                   {amenityOptions.map((opt) => (
-                    <div key={opt.value} className="flex items-center gap-2">
+                    <Field key={opt.value} orientation="horizontal">
                       <Checkbox
+                        id={`space-amenity-${opt.value}`}
                         checked={amenities.includes(opt.value)}
                         onCheckedChange={() => toggleAmenity(opt.value)}
                       />
-                      <Label className="font-normal cursor-pointer">{opt.label}</Label>
-                    </div>
+                      <FieldLabel htmlFor={`space-amenity-${opt.value}`} className="font-normal">
+                        {opt.label}
+                      </FieldLabel>
+                    </Field>
                   ))}
-                </div>
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={!name.trim()}>
-                  {editId ? 'Save' : 'Create'}
-                </Button>
-              </div>
-            </div>
+                </FieldGroup>
+              </FieldSet>
+            </FieldGroup>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleSave} disabled={!name.trim()}>
+                {editId ? 'Save' : 'Create'}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -207,12 +251,8 @@ export function LocationsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && (
-            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
-          )}
-          {!loading && spaces.length === 0 && (
-            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No spaces yet. Start by adding a site.</TableCell></TableRow>
-          )}
+          {loading && <TableLoading cols={7} />}
+          {!loading && spaces.length === 0 && <TableEmpty cols={7} message="No spaces yet. Start by adding a site." />}
           {spaces.map((space) => (
             <TableRow key={space.id}>
               <TableCell className="font-medium">{space.name}</TableCell>

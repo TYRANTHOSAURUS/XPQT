@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { DispatchService } from '../ticket/dispatch.service';
 
 interface WorkflowNode {
   id: string;
@@ -37,7 +38,38 @@ export interface WorkflowRunContext {
 
 @Injectable()
 export class WorkflowEngineService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    @Inject(forwardRef(() => DispatchService)) private readonly dispatchService: DispatchService,
+  ) {}
+
+  /**
+   * Cancel any active workflow_instances for a ticket. Idempotent —
+   * safe to call when no active instance exists. Used by reclassification
+   * (via the reclassify_ticket RPC which performs the same operation in-txn)
+   * and available for any future "cancel workflow" admin action.
+   */
+  async cancelInstanceForTicket(
+    ticketId: string,
+    tenantId: string,
+    reason: string,
+    actorUserId: string | null,
+  ): Promise<string[]> {
+    const { data } = await this.supabase.admin
+      .from('workflow_instances')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_reason: reason,
+        cancelled_by: actorUserId,
+      })
+      .eq('ticket_id', ticketId)
+      .eq('tenant_id', tenantId)
+      .in('status', ['active', 'waiting'])
+      .select('id');
+
+    return (data ?? []).map((row: { id: string }) => row.id);
+  }
 
   async startForTicket(ticketId: string, workflowDefinitionId: string) {
     const tenant = TenantContext.current();
@@ -180,7 +212,14 @@ export class WorkflowEngineService {
 
       case 'create_child_tasks': {
         const tasks = node.config.tasks as Array<{
-          title: string; description?: string; assigned_team_id?: string; interaction_mode?: string; priority?: string;
+          title: string;
+          description?: string;
+          assigned_team_id?: string;
+          assigned_user_id?: string;
+          assigned_vendor_id?: string;
+          interaction_mode?: string;
+          priority?: string;
+          sla_policy_id?: string | null;
         }> | undefined;
 
         if (ctx?.dryRun) {
@@ -189,27 +228,26 @@ export class WorkflowEngineService {
             payload: { dry_run_would_create: tasks?.length ?? 0 },
           }, ctx);
         } else if (tasks && tenant) {
-          const { data: parentTicket } = await this.supabase.admin
-            .from('tickets')
-            .select('tenant_id, requester_person_id, location_id')
-            .eq('id', ticketId)
-            .single();
-          if (parentTicket) {
-            for (const task of tasks) {
-              await this.supabase.admin.from('tickets').insert({
-                tenant_id: tenant.id,
-                parent_ticket_id: ticketId,
-                title: task.title,
+          for (let i = 0; i < tasks.length; i++) {
+            const task = tasks[i];
+            const title = task.title?.trim() || `Subtask ${i + 1}`;
+            try {
+              await this.dispatchService.dispatch(ticketId, {
+                title,
                 description: task.description,
                 assigned_team_id: task.assigned_team_id,
-                interaction_mode: task.interaction_mode ?? 'internal',
-                priority: task.priority ?? 'medium',
-                requester_person_id: parentTicket.requester_person_id,
-                location_id: parentTicket.location_id,
-                status: 'new',
-                status_category: 'new',
-                source_channel: 'workflow',
-              });
+                assigned_user_id: task.assigned_user_id,
+                assigned_vendor_id: task.assigned_vendor_id,
+                priority: task.priority,
+                interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
+                // Pass through ONLY if the task explicitly set the field. `undefined` falls through
+                // to DispatchService.resolveChildSla; explicit `null` means "No SLA".
+                ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
+                  ? { sla_id: task.sla_policy_id ?? null }
+                  : {}),
+              }, '__system__');
+            } catch (err) {
+              console.error('[workflow] create_child_tasks: dispatch failed', err);
             }
           }
         }
@@ -290,9 +328,104 @@ export class WorkflowEngineService {
         break;
       }
 
+      case 'http_request': {
+        const method = (node.config.method as string) ?? 'POST';
+        const url = node.config.url as string;
+        const headers = (node.config.headers as Record<string, string>) ?? {};
+        const bodyTemplate = (node.config.body as string) ?? '';
+        const saveAs = (node.config.save_response_as as string) ?? '';
+
+        // Load ticket/context for template substitution
+        let ticket: Record<string, unknown> | null = null;
+        if (ctx?.dryRun) {
+          ticket = ctx.simulatedTicket ?? {};
+        } else {
+          const { data } = await this.supabase.admin.from('tickets').select('*').eq('id', ticketId).single();
+          ticket = data;
+        }
+
+        const substitutedUrl = this.substituteTemplate(url, { ticket });
+        const substitutedHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(headers)) {
+          substitutedHeaders[k] = this.substituteTemplate(v, { ticket });
+        }
+        const substitutedBody = this.substituteTemplate(bodyTemplate, { ticket });
+
+        if (ctx?.dryRun) {
+          await this.emit(instanceId, 'node_entered', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { dry_run_would_call: { method, url: substitutedUrl } },
+          }, ctx);
+          await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+          break;
+        }
+
+        try {
+          const init: RequestInit = {
+            method,
+            headers: { 'Content-Type': 'application/json', ...substitutedHeaders },
+            signal: AbortSignal.timeout(20000),
+          };
+          if (method !== 'GET' && method !== 'DELETE' && substitutedBody) {
+            init.body = substitutedBody;
+          }
+          const res = await fetch(substitutedUrl, init);
+          let parsed: unknown = null;
+          const text = await res.text();
+          try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+
+          await this.emit(instanceId, 'node_entered', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { status: res.status, ok: res.ok, url: substitutedUrl, method },
+          });
+
+          if (saveAs) {
+            const { data: inst } = await this.supabase.admin
+              .from('workflow_instances')
+              .select('context')
+              .eq('id', instanceId)
+              .single();
+            const newCtx = { ...(inst?.context ?? {}), [saveAs]: parsed };
+            await this.supabase.admin
+              .from('workflow_instances')
+              .update({ context: newCtx })
+              .eq('id', instanceId);
+          }
+        } catch (err) {
+          await this.emit(instanceId, 'instance_failed', {
+            node_id: node.id, node_type: 'http_request',
+            payload: { error: err instanceof Error ? err.message : 'HTTP request failed', url: substitutedUrl },
+          });
+          // Continue the workflow anyway — the failure is recorded. Alternative: halt.
+        }
+
+        await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+        break;
+      }
+
       default:
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
     }
+  }
+
+  /**
+   * Replace `{{ticket.field}}` style tokens with values from `vars`.
+   * Supports nested paths (`{{ticket.nested.field}}`) and context (`{{context.key}}`).
+   */
+  private substituteTemplate(tpl: string, vars: Record<string, unknown>): string {
+    if (!tpl) return tpl;
+    return tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
+      const parts = path.split('.');
+      let cur: unknown = vars;
+      for (const p of parts) {
+        if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
+          cur = (cur as Record<string, unknown>)[p];
+        } else {
+          return '';
+        }
+      }
+      return cur == null ? '' : typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+    });
   }
 
   async resume(instanceId: string, edgeCondition?: string) {

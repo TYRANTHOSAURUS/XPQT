@@ -306,6 +306,7 @@ export function TicketsPage() {
               <TicketDetail
                 ticketId={selectedTicketId}
                 onClose={() => setSelectedTicketId(null)}
+                onOpenTicket={setSelectedTicketId}
               />
             </div>
           </Panel>

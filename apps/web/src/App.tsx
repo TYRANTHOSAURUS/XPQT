@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Toaster } from 'sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Toaster } from '@/components/ui/sonner';
 import { AuthProvider } from '@/providers/auth-provider';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { LoginPage } from '@/pages/auth/login';
@@ -15,24 +15,37 @@ import { MyRequestsPage } from '@/pages/portal/my-requests';
 import { CatalogCategoryPage } from '@/pages/portal/catalog-category';
 import { SubmitRequestPage } from '@/pages/portal/submit-request';
 import { RequestTypesPage } from '@/pages/admin/request-types';
+import { ServiceItemsPage } from '@/pages/admin/service-items';
 import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
 import { RoutingRulesPage } from '@/pages/admin/routing-rules';
+import { LocationTeamsPage } from '@/pages/admin/location-teams';
+import { SpaceGroupsPage } from '@/pages/admin/space-groups';
+import { DomainParentsPage } from '@/pages/admin/domain-parents';
 import { FormSchemasPage } from '@/pages/admin/form-schemas';
 import { UsersPage } from '@/pages/admin/users';
 import { PersonsPage } from '@/pages/admin/persons';
+import { OrganisationsPage } from '@/pages/admin/organisations';
+import { OrganisationCreatePage } from '@/pages/admin/organisation-create';
+import { OrganisationDetailPage } from '@/pages/admin/organisation-detail';
 import { AssetsPage } from '@/pages/admin/assets';
 import { BusinessHoursPage } from '@/pages/admin/business-hours';
 import { NotificationsPage } from '@/pages/admin/notifications';
-import { CatalogCategoriesPage } from '@/pages/admin/catalog-categories';
+import { CatalogHierarchyPage } from '@/pages/admin/catalog-hierarchy';
 import { DelegationsPage } from '@/pages/admin/delegations';
 import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
 import { WorkflowInstancePage } from '@/pages/admin/workflow-instance';
+import { WebhooksPage } from '@/pages/admin/webhooks';
+import { VendorsPage } from '@/pages/admin/vendors';
+import { VendorMenusPage } from '@/pages/admin/vendor-menus';
+import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
+import { RoutingStudioPage } from '@/pages/admin/routing-studio';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { useTheme } from '@/hooks/use-theme';
+import { features } from '@/lib/features';
 
 export function App() {
   useTheme();
@@ -95,23 +108,72 @@ export function App() {
             <Route index element={<Navigate to="/admin/request-types" replace />} />
             {/* Config */}
             <Route path="request-types" element={<RequestTypesPage />} />
+            <Route path="service-items" element={<ServiceItemsPage />} />
             <Route path="form-schemas" element={<FormSchemasPage />} />
             <Route path="teams" element={<TeamsPage />} />
             <Route path="locations" element={<LocationsPage />} />
             <Route path="sla-policies" element={<SlaPoliciesPage />} />
-            <Route path="routing-rules" element={<RoutingRulesPage />} />
+            {/*
+             * Legacy routing admin paths. When the Routing Studio flag is on, we
+             * redirect these to the unified Studio. Flag-off keeps the old pages
+             * reachable so rollback is a single env-var flip.
+             */}
+            <Route
+              path="routing-rules"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=rules" replace />
+                  : <RoutingRulesPage />
+              }
+            />
+            <Route
+              path="location-teams"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=mappings" replace />
+                  : <LocationTeamsPage />
+              }
+            />
+            <Route
+              path="space-groups"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=groups" replace />
+                  : <SpaceGroupsPage />
+              }
+            />
+            <Route
+              path="domain-parents"
+              element={
+                features.routingStudio
+                  ? <Navigate to="/admin/routing-studio?tab=fallbacks" replace />
+                  : <DomainParentsPage />
+              }
+            />
             <Route path="business-hours" element={<BusinessHoursPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
-            <Route path="catalog-categories" element={<CatalogCategoriesPage />} />
+            <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
+            <Route path="webhooks" element={<WebhooksPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />
+            <Route path="organisations" element={<OrganisationsPage />} />
+            <Route path="organisations/new" element={<OrganisationCreatePage />} />
+            <Route path="organisations/:id" element={<OrganisationDetailPage />} />
             <Route path="delegations" element={<DelegationsPage />} />
             {/* Assets */}
             <Route path="assets" element={<AssetsPage />} />
+            {/* Vendors */}
+            <Route path="vendors" element={<VendorsPage />} />
+            <Route path="vendor-menus" element={<VendorMenusPage />} />
+            <Route path="vendor-menus/:id" element={<VendorMenuDetailPage />} />
+            {/* Routing Studio (feature-flagged, phase 1: additive only) */}
+            {features.routingStudio && (
+              <Route path="routing-studio" element={<RoutingStudioPage />} />
+            )}
           </Route>
         </Routes>
       </TooltipProvider>

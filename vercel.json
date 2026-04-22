@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "buildCommand": "pnpm --filter @prequest/web build",
+  "outputDirectory": "apps/web/dist",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://xpqt-api.onrender.com/api/:path*" }
+  ]
+}

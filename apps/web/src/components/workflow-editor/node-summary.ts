@@ -14,6 +14,9 @@ export function summarizeNode(n: WorkflowNode): string {
     case 'create_child_tasks': return `${((c.tasks as unknown[]) || []).length} task(s)`;
     case 'wait_for': return `Wait for ${c.wait_type ?? '—'}`;
     case 'timer': return `Delay ${c.delay_minutes ?? 0} min`;
+    case 'http_request': return c.url
+      ? `${c.method ?? 'POST'} ${String(c.url).slice(0, 28)}${String(c.url).length > 28 ? '…' : ''}`
+      : 'Unconfigured';
     default: return '';
   }
 }
