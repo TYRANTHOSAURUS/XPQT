@@ -77,6 +77,23 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [authLoading, refresh]);
 
+  // Lightweight reactivity: re-fetch /portal/me when the tab regains focus.
+  // Covers the case where an admin grants/revokes scope in another session
+  // and the employee switches back — they'll see fresh picker options
+  // without a full refresh. Not real-time but cheap.
+  useEffect(() => {
+    if (authLoading) return;
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [authLoading, refresh]);
+
   const setCurrentLocation = useCallback(
     async (spaceId: string) => {
       const updated = await apiFetch<PortalMeResponse>('/portal/me', {
