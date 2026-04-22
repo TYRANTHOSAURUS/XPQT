@@ -276,7 +276,7 @@ export class OrgNodeService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('teams')
-      .select('id, name, description')
+      .select('id, name, domain_scope')
       .eq('org_node_id', nodeId)
       .eq('tenant_id', tenant.id)
       .order('name');

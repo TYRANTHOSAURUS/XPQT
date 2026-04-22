@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
 
-interface Team { id: string; name: string; description: string | null; }
+interface Team { id: string; name: string; domain_scope: string | null; }
 
 interface Props {
   teams: Team[];
@@ -39,8 +39,8 @@ export function OrgNodeTeamsPanel({ teams, onChanged }: Props) {
           <Wrench className="size-4 text-muted-foreground" />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate">{t.name}</div>
-            {t.description && (
-              <div className="text-xs text-muted-foreground truncate">{t.description}</div>
+            {t.domain_scope && (
+              <div className="text-xs text-muted-foreground truncate capitalize">{t.domain_scope}</div>
             )}
           </div>
           <Button variant="ghost" size="icon" onClick={() => detach(t.id)} aria-label="Detach team">

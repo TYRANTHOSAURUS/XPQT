@@ -23,7 +23,7 @@ import { apiFetch } from '@/lib/api';
 interface AttachedTeam {
   id: string;
   name: string;
-  description: string | null;
+  domain_scope: string | null;
 }
 
 interface OrgNodeDetail {
