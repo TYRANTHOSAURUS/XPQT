@@ -46,6 +46,7 @@ import {
   Layers,
   Compass,
   ArrowLeft,
+  Building2,
 } from 'lucide-react';
 import { features } from '@/lib/features';
 
@@ -70,6 +71,7 @@ const configNav = [
 ];
 
 const peopleNav = [
+  { title: 'Organisations', path: '/admin/organisations', icon: Building2 },
   { title: 'Teams', path: '/admin/teams', icon: Users },
   { title: 'Users & Roles', path: '/admin/users', icon: UserCog },
   { title: 'Persons', path: '/admin/persons', icon: PersonStanding },
@@ -102,6 +104,7 @@ const pageTitles: Record<string, string> = {
   '/admin/webhooks': 'Webhooks',
   '/admin/users': 'Users & Roles',
   '/admin/persons': 'Persons',
+  '/admin/organisations': 'Organisations',
   '/admin/delegations': 'Delegations',
   '/admin/assets': 'Assets',
   '/admin/vendors': 'Vendors',

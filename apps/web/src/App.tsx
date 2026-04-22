@@ -26,6 +26,9 @@ import { DomainParentsPage } from '@/pages/admin/domain-parents';
 import { FormSchemasPage } from '@/pages/admin/form-schemas';
 import { UsersPage } from '@/pages/admin/users';
 import { PersonsPage } from '@/pages/admin/persons';
+import { OrganisationsPage } from '@/pages/admin/organisations';
+import { OrganisationCreatePage } from '@/pages/admin/organisation-create';
+import { OrganisationDetailPage } from '@/pages/admin/organisation-detail';
 import { AssetsPage } from '@/pages/admin/assets';
 import { BusinessHoursPage } from '@/pages/admin/business-hours';
 import { NotificationsPage } from '@/pages/admin/notifications';
@@ -157,6 +160,9 @@ export function App() {
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />
+            <Route path="organisations" element={<OrganisationsPage />} />
+            <Route path="organisations/new" element={<OrganisationCreatePage />} />
+            <Route path="organisations/:id" element={<OrganisationDetailPage />} />
             <Route path="delegations" element={<DelegationsPage />} />
             {/* Assets */}
             <Route path="assets" element={<AssetsPage />} />
