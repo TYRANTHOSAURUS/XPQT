@@ -22,6 +22,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useAuth, type RoleType } from "@/providers/auth-provider"
+import { TenantLogo } from "@/components/tenant-logo"
 
 export type WorkspaceId = "portal" | "desk" | "admin"
 
@@ -69,7 +70,7 @@ export function WorkspaceSwitcher({ current, collapsed = false }: WorkspaceSwitc
             }
           >
             <div className="flex aspect-square size-8 items-center justify-center shrink-0">
-              <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="size-7" />
+              <TenantLogo variant="mark" alt="Prequest" className="size-7" />
             </div>
             {!collapsed && (
               <>

@@ -17,6 +17,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
+import { TenantLogo } from '@/components/tenant-logo';
 
 export function SignUpPage() {
   const navigate = useNavigate();
@@ -70,11 +71,7 @@ export function SignUpPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-2">
-          <img
-            src="/assets/prequest-icon-color.svg"
-            alt="Prequest"
-            className="h-12 w-12"
-          />
+          <TenantLogo variant="mark" alt="Prequest" className="h-12 w-12" />
           <h1 className="text-xl font-semibold tracking-tight">Prequest</h1>
         </div>
 

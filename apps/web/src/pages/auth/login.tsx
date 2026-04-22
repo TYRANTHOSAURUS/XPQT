@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/providers/auth-provider';
+import { TenantLogo } from '@/components/tenant-logo';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ export function LoginPage() {
         <div className="flex justify-center gap-2 md:justify-start">
           <Link to="/" className="flex items-center gap-2 font-medium">
             <div className="flex h-8 w-8 items-center justify-center">
-              <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-7 w-7" />
+              <TenantLogo variant="mark" alt="Prequest" className="h-7 w-7" />
             </div>
             Prequest
           </Link>
@@ -128,7 +129,7 @@ export function LoginPage() {
       <div className="relative hidden bg-muted lg:block">
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center px-12">
-            <img src="/assets/prequest-icon-color.svg" alt="Prequest" className="h-24 w-24 mx-auto mb-8 opacity-80" />
+            <TenantLogo variant="mark" alt="Prequest" className="h-24 w-24 mx-auto mb-8 opacity-80" />
             <h2 className="text-3xl font-bold tracking-tight">Unified Workplace Operations</h2>
             <p className="text-muted-foreground mt-3 text-lg max-w-md mx-auto">
               One platform for facilities, IT service management, reservations, visitors, and more.

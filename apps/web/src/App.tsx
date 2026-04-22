@@ -44,15 +44,20 @@ import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
 import { RoutingStudioPage } from '@/pages/admin/routing-studio';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
+import { BrandingPage } from '@/pages/admin/branding';
 import { useTheme } from '@/hooks/use-theme';
 import { features } from '@/lib/features';
+import { BrandingProvider } from '@/hooks/use-branding';
+import { ThemeProvider } from '@/providers/theme-provider';
 
 export function App() {
   useTheme();
 
   return (
-    <AuthProvider>
-      <TooltipProvider>
+    <BrandingProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <TooltipProvider>
         <Toaster position="top-right" richColors />
         <Routes>
           <Route path="/" element={<Navigate to="/portal" replace />} />
@@ -174,9 +179,13 @@ export function App() {
             {features.routingStudio && (
               <Route path="routing-studio" element={<RoutingStudioPage />} />
             )}
+            {/* Branding */}
+            <Route path="branding" element={<BrandingPage />} />
           </Route>
         </Routes>
-      </TooltipProvider>
-    </AuthProvider>
+          </TooltipProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </BrandingProvider>
   );
 }
