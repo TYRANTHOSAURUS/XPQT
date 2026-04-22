@@ -30,13 +30,14 @@ export class OrgNodeController {
   @Get(':id')
   async get(@Req() req: Request, @Param('id') id: string) {
     await this.permissions.requirePermission(req, PERMISSION);
-    const [node, members, grants, teams] = await Promise.all([
+    // Detail-page panels (Members, Location grants) own their own data and
+    // refresh independently after each mutation. Only attached teams are
+    // included here because the panel renders them inline without a refetch.
+    const [node, teams] = await Promise.all([
       this.service.getById(id),
-      this.service.listMembers(id),
-      this.service.listGrants(id),
       this.service.listAttachedTeams(id),
     ]);
-    return { ...node, members, location_grants: grants, teams };
+    return { ...node, teams };
   }
 
   @Post()

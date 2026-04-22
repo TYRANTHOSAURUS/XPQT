@@ -33,8 +33,9 @@ interface OrgNodeDetail {
   description: string | null;
   parent_id: string | null;
   active: boolean;
-  members: unknown[];
-  location_grants: unknown[];
+  // Members and location grants are owned by their respective panels (each
+  // panel fetches independently and refreshes after mutations). The detail
+  // endpoint includes only the inline-rendered teams list.
   teams: AttachedTeam[];
 }
 
