@@ -11,29 +11,14 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { PersonService } from './person.service';
-import { SupabaseService } from '../../common/supabase/supabase.service';
-import { TenantContext } from '../../common/tenant-context';
+import { PermissionGuard } from '../../common/permission-guard';
 
 @Controller('persons')
 export class PersonController {
   constructor(
     private readonly personService: PersonService,
-    private readonly supabase: SupabaseService,
+    private readonly permissions: PermissionGuard,
   ) {}
-
-  private async resolveActorUserId(request: Request): Promise<string | null> {
-    const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) return null;
-    const tenant = TenantContext.currentOrNull();
-    if (!tenant) return null;
-    const { data } = await this.supabase.admin
-      .from('users')
-      .select('id')
-      .eq('tenant_id', tenant.id)
-      .eq('auth_uid', authUid)
-      .maybeSingle();
-    return (data as { id: string } | null)?.id ?? null;
-  }
 
   @Get()
   async list(
@@ -55,7 +40,7 @@ export class PersonController {
   }
 
   @Post()
-  async create(@Body() dto: {
+  async create(@Req() request: Request, @Body() dto: {
     first_name: string;
     last_name: string;
     email?: string;
@@ -66,18 +51,25 @@ export class PersonController {
     cost_center?: string;
     manager_person_id?: string;
   }) {
+    await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.create(dto);
   }
 
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
+  async update(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: Record<string, unknown>,
+  ) {
+    await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.update(id, dto);
   }
 
   // ── Portal-scope slice: location grants ─────────────────────────────────
 
   @Get(':id/location-grants')
-  async listGrants(@Param('id') id: string) {
+  async listGrants(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.listLocationGrants(id);
   }
 
@@ -87,12 +79,17 @@ export class PersonController {
     @Param('id') id: string,
     @Body() dto: { space_id: string; note?: string },
   ) {
-    const grantedByUserId = await this.resolveActorUserId(request);
-    return this.personService.addLocationGrant(id, dto, grantedByUserId ?? undefined);
+    const { userId } = await this.permissions.requirePermission(request, 'people:manage');
+    return this.personService.addLocationGrant(id, dto, userId);
   }
 
   @Delete(':id/location-grants/:grantId')
-  async removeGrant(@Param('id') id: string, @Param('grantId') grantId: string) {
+  async removeGrant(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Param('grantId') grantId: string,
+  ) {
+    await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.removeLocationGrant(id, grantId);
   }
 }

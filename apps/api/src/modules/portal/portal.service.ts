@@ -129,12 +129,17 @@ export class PortalService {
 
     const userRow = userFull.data as { id: string; email: string | null; portal_current_location_id: string | null };
 
-    const defaultLocation = person.default_location_id
-      ? await this.loadSpaceSummary(person.default_location_id)
-      : null;
-
     const authorized = authorizedLocationsRes;
     const can_submit = authorized.length > 0;
+
+    // default_location projected ONLY when it's active (i.e. present in the
+    // authorized-roots list with source='default'). An inactive default is
+    // hidden from the display and from self-heal fallback — otherwise the
+    // trigger on users.portal_current_location_id would throw 500 on read.
+    const activeDefaultFromAuth = authorized.find((loc) => loc.source === 'default') ?? null;
+    const defaultLocation = activeDefaultFromAuth
+      ? { id: activeDefaultFromAuth.id, name: activeDefaultFromAuth.name, type: activeDefaultFromAuth.type }
+      : null;
 
     // Self-heal stale current_location.
     let currentLocationId = userRow.portal_current_location_id;
@@ -143,11 +148,10 @@ export class PortalService {
       : false;
 
     if (currentLocationId && !currentIsAuthorized) {
-      // Fall back to default if active, else oldest grant.
-      const defaultIsActive = defaultLocation !== null;
+      // Deterministic fallback: active default → oldest active grant → null.
       let fallback: string | null = null;
-      if (defaultIsActive) {
-        fallback = defaultLocation!.id;
+      if (defaultLocation) {
+        fallback = defaultLocation.id;
       } else {
         const oldestGrant = authorized
           .filter((l) => l.source === 'grant' && l.granted_at)
@@ -160,7 +164,6 @@ export class PortalService {
         .update({ portal_current_location_id: fallback })
         .eq('id', userId);
     } else if (!currentLocationId && can_submit) {
-      // First visit: default current to default_location, else oldest grant.
       const initial =
         defaultLocation?.id ??
         authorized
@@ -411,6 +414,7 @@ export class PortalService {
       .select('id, name, type')
       .eq('id', spaceId)
       .eq('tenant_id', tenant.id)
+      .eq('active', true)
       .maybeSingle();
     return (data as SpaceSummary | null) ?? null;
   }

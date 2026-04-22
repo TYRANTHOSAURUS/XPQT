@@ -93,6 +93,10 @@ export class RoutingSimulatorController {
       priority: body.priority ?? null,
       disabled_rule_ids: Array.isArray(body.disabled_rule_ids) ? body.disabled_rule_ids : undefined,
       include_v2: Boolean(body.include_v2),
+      // Portal-scope extension (docs/portal-scope-slice.md §5.6)
+      simulate_as_person_id: body.simulate_as_person_id ?? null,
+      current_location_id: body.current_location_id ?? null,
+      acting_for_location_id: body.acting_for_location_id ?? null,
     };
     return this.simulator.simulate(input);
   }
@@ -175,4 +179,8 @@ interface SimulateRequestBody {
   priority?: string | null;
   disabled_rule_ids?: string[];
   include_v2?: boolean;
+  // Portal-scope extension
+  simulate_as_person_id?: string | null;
+  current_location_id?: string | null;
+  acting_for_location_id?: string | null;
 }
