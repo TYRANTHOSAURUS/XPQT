@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
 import { SpaceSelect } from '@/components/space-select';
+import { OrgNodeCombobox } from '@/components/org-node-combobox';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Team {
@@ -35,6 +36,8 @@ interface Team {
   location_scope: string | null;
   active: boolean;
   default_sla_policy_id: string | null;
+  org_node_id: string | null;
+  org_node?: { id: string; name: string; code: string | null } | { id: string; name: string; code: string | null }[] | null;
 }
 
 interface Space {
@@ -69,6 +72,7 @@ export function TeamsPage() {
   const [domainScope, setDomainScope] = useState('all');
   const [locationScope, setLocationScope] = useState('');
   const [defaultSlaPolicyId, setDefaultSlaPolicyId] = useState<string>('');
+  const [orgNodeId, setOrgNodeId] = useState<string | null>(null);
 
   // Members sub-section (only shown when editing)
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -80,6 +84,7 @@ export function TeamsPage() {
     setDomainScope('all');
     setLocationScope('');
     setDefaultSlaPolicyId('');
+    setOrgNodeId(null);
     setEditId(null);
     setMembers([]);
     setAddUserId('');
@@ -104,6 +109,7 @@ export function TeamsPage() {
       domain_scope: domainScope === 'all' ? null : domainScope,
       location_scope: locationScope || null,
       default_sla_policy_id: defaultSlaPolicyId || null,
+      org_node_id: orgNodeId,
     };
     try {
       if (editId) {
@@ -127,6 +133,7 @@ export function TeamsPage() {
     setDomainScope(team.domain_scope ?? 'all');
     setLocationScope(team.location_scope ?? '');
     setDefaultSlaPolicyId(team.default_sla_policy_id ?? '');
+    setOrgNodeId(team.org_node_id ?? null);
     setDialogOpen(true);
     await loadMembers(team.id);
   };
@@ -224,6 +231,18 @@ export function TeamsPage() {
                   placeholder="All locations"
                   emptyLabel="All locations"
                 />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="team-org-node">Organisation</FieldLabel>
+                <OrgNodeCombobox
+                  value={orgNodeId}
+                  onChange={setOrgNodeId}
+                  placeholder="Optional — attach to an organisation"
+                />
+                <FieldDescription>
+                  Categorise this team under an organisation. Does not grant team members the organisation's locations.
+                </FieldDescription>
               </Field>
 
               <Field>
