@@ -21,6 +21,12 @@ interface Props {
   typesFilter?: string[];
   placeholder?: string;
   disabled?: boolean;
+  /**
+   * When true, only active spaces are listed. Use for portal-scope
+   * contexts (default_location, grant targets) where an inactive space
+   * would be rejected by the server-side trigger anyway.
+   */
+  activeOnly?: boolean;
 }
 
 export function LocationCombobox({
@@ -29,6 +35,7 @@ export function LocationCombobox({
   typesFilter,
   placeholder = 'Select location…',
   disabled,
+  activeOnly,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [spaces, setSpaces] = useState<Space[]>([]);
@@ -38,8 +45,9 @@ export function LocationCombobox({
     const params = new URLSearchParams();
     if (typesFilter?.length) params.set('types', typesFilter.join(','));
     if (search) params.set('search', search);
+    if (activeOnly) params.set('active_only', 'true');
     apiFetch<Space[]>(`/spaces?${params.toString()}`).then(setSpaces).catch(() => setSpaces([]));
-  }, [search, typesFilter?.join(',')]);
+  }, [search, typesFilter?.join(','), activeOnly]);
 
   const selected = spaces.find((s) => s.id === value);
 

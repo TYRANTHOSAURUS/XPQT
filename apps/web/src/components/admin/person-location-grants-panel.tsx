@@ -155,6 +155,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
             onChange={setAddSpaceId}
             typesFilter={['site', 'building']}
             placeholder="Select a site or building…"
+            activeOnly
           />
           <Input
             value={addNote}

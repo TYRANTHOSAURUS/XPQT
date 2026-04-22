@@ -27,6 +27,12 @@ export class RoutingSimulatorController {
     private readonly permissions: PermissionGuard,
   ) {}
 
+  private async assertStudioAccess(request: Request) {
+    // Every routing-studio endpoint exposes tenant-sensitive config, audit logs,
+    // or cross-person portal trace data. Gate all of them behind a single key.
+    await this.permissions.requirePermission(request, 'routing_studio:access');
+  }
+
   /**
    * Tenant-level routing_v2_mode read/write. Progression is
    * off → dualrun → shadow → v2_only and back.
@@ -35,7 +41,8 @@ export class RoutingSimulatorController {
    * cache_ttl_ms so the UI can show a countdown.
    */
   @Get('mode')
-  async getMode(): Promise<{ mode: RoutingV2Mode; cache_ttl_ms: number }> {
+  async getMode(@Req() request: Request): Promise<{ mode: RoutingV2Mode; cache_ttl_ms: number }> {
+    await this.assertStudioAccess(request);
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('tenants')
@@ -50,7 +57,11 @@ export class RoutingSimulatorController {
   }
 
   @Patch('mode')
-  async setMode(@Body() body: { mode?: string }): Promise<{ mode: RoutingV2Mode }> {
+  async setMode(
+    @Req() request: Request,
+    @Body() body: { mode?: string },
+  ): Promise<{ mode: RoutingV2Mode }> {
+    await this.assertStudioAccess(request);
     const tenant = TenantContext.current();
     if (!body?.mode || !VALID_MODES.includes(body.mode as RoutingV2Mode)) {
       throw new BadRequestException(
@@ -85,10 +96,7 @@ export class RoutingSimulatorController {
     @Req() request: Request,
     @Body() body: SimulateRequestBody,
   ): Promise<SimulatorResult> {
-    // Simulator exposes cross-person portal availability and studio internals —
-    // require an admin-grade permission so authenticated non-admins can't probe
-    // another person's trace.
-    await this.permissions.requirePermission(request, 'routing_studio:access');
+    await this.assertStudioAccess(request);
 
     if (!body || typeof body !== 'object') {
       throw new BadRequestException('Body required');
@@ -114,12 +122,14 @@ export class RoutingSimulatorController {
 
   @Get('decisions')
   async listDecisions(
+    @Req() request: Request,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
     @Query('chosen_by') chosenBy?: string,
     @Query('ticket_id') ticketId?: string,
     @Query('since') since?: string,
   ): Promise<{ rows: DecisionRow[]; total: number }> {
+    await this.assertStudioAccess(request);
     return this.audit.listDecisions({
       limit: limit ? Number.parseInt(limit, 10) : undefined,
       offset: offset ? Number.parseInt(offset, 10) : undefined,
@@ -131,12 +141,14 @@ export class RoutingSimulatorController {
 
   @Get('dualrun-logs')
   async listDualRunLogs(
+    @Req() request: Request,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
     @Query('hook') hook?: string,
     @Query('only_divergent') onlyDivergent?: string,
     @Query('since') since?: string,
   ): Promise<{ rows: DualRunLogRow[]; total: number }> {
+    await this.assertStudioAccess(request);
     return this.audit.listDualRunLogs({
       limit: limit ? Number.parseInt(limit, 10) : undefined,
       offset: offset ? Number.parseInt(offset, 10) : undefined,
@@ -148,10 +160,12 @@ export class RoutingSimulatorController {
 
   @Get('coverage')
   async coverageMatrix(
+    @Req() request: Request,
     @Query('space_root_id') spaceRootId?: string,
     @Query('domains') domainsCsv?: string,
     @Query('max_cells') maxCells?: string,
   ): Promise<CoverageResponse> {
+    await this.assertStudioAccess(request);
     return this.coverage.getCoverage({
       space_root_id: spaceRootId,
       domains: domainsCsv ? domainsCsv.split(',').map((d) => d.trim()).filter(Boolean) : undefined,
@@ -160,7 +174,8 @@ export class RoutingSimulatorController {
   }
 
   @Put('coverage/cell')
-  async setCoverageCell(@Body() body: SetCellRequestBody) {
+  async setCoverageCell(@Req() request: Request, @Body() body: SetCellRequestBody) {
+    await this.assertStudioAccess(request);
     if (!body || typeof body !== 'object') throw new BadRequestException('Body required');
     if (!body.space_id || !body.domain) {
       throw new BadRequestException('space_id and domain are required');

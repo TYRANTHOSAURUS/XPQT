@@ -12,7 +12,7 @@ export class SpaceController {
     @Query('parent_id') parentId?: string,
     @Query('reservable') reservable?: string,
     @Query('search') search?: string,
-    @Query('include_inactive') includeInactive?: string,
+    @Query('active_only') activeOnly?: string,
   ) {
     return this.spaceService.list({
       type,
@@ -20,7 +20,7 @@ export class SpaceController {
       parent_id: parentId,
       reservable: reservable === 'true' ? true : reservable === 'false' ? false : undefined,
       search,
-      include_inactive: includeInactive === 'true',
+      active_only: activeOnly === 'true' || activeOnly === '1',
     });
   }
 

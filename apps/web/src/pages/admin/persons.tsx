@@ -269,6 +269,7 @@ export function PersonsPage() {
                   onChange={setDefaultLocationId}
                   typesFilter={['site', 'building']}
                   placeholder="Pick a site or building…"
+                  activeOnly
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   The portal defaults to this location for submissions. Only sites and buildings are allowed; floor/room-level defaults aren't supported.
