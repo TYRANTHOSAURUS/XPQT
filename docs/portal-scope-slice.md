@@ -342,6 +342,15 @@ Seven functions, all `stable`, tenant-aware, null-safe.
 
 ### 4.1 `portal_authorized_root_matches(p_person_id, p_tenant_id)`
 
+> **Updated 2026-04-22 (migration 00080):** the function now unions a third
+> source — `org_grant` — covering location grants attached to any `org_node`
+> the person belongs to (via `person_org_memberships`) **and to any ancestor**
+> of those nodes. The ancestor walk is provided by
+> `public.org_node_ancestors(p_node_id)`. Tie-break in
+> `portal_match_authorized_root` (§4.3) is now `default > grant > org_grant`
+> when two roots are equidistant from the selected space — the more specific
+> source wins.
+
 ```sql
 create or replace function public.portal_authorized_root_matches(
   p_person_id uuid,
@@ -352,14 +361,35 @@ create or replace function public.portal_authorized_root_matches(
   join public.spaces s on s.id = p.default_location_id
   where p.id = p_person_id and p.tenant_id = p_tenant_id
     and s.active = true
+
   union all
+
   select g.space_id, 'grant'::text, g.id
   from public.person_location_grants g
   join public.spaces s on s.id = g.space_id
   where g.person_id = p_person_id and g.tenant_id = p_tenant_id
+    and s.active = true
+
+  union all
+
+  -- Org-node grants walk up the org tree from every node the person belongs to.
+  -- grant_id is org_node_location_grants.id; consumers branch on `source` to
+  -- know which provenance table to query for richer details.
+  select ongl.space_id, 'org_grant'::text, ongl.id
+  from public.person_org_memberships pom
+  cross join lateral public.org_node_ancestors(pom.org_node_id) as a(node_id)
+  join public.org_node_location_grants ongl on ongl.org_node_id = a.node_id
+  join public.spaces s on s.id = ongl.space_id
+  where pom.person_id = p_person_id
+    and pom.tenant_id = p_tenant_id
+    and ongl.tenant_id = p_tenant_id
     and s.active = true;
 $$;
 ```
+
+See `docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md`
+for the org-node tree, membership, and location-grant data model that backs
+the third source.
 
 ### 4.2 `portal_authorized_space_ids(p_person_id, p_tenant_id)`
 

@@ -54,6 +54,8 @@ XPQT/
 - **Tenant resolution:** AsyncLocalStorage middleware resolves tenant from subdomain or X-Tenant-Id header.
 - **Auth:** Supabase Auth (JWT). Backend validates tokens via AuthGuard.
 - **Module boundaries:** NestJS modules with explicit service exports. No module touches another module's tables directly.
+- **Org structure (requester side):** `org_nodes` is the per-tenant requester hierarchy (self-referential tree). Persons attach via `person_org_memberships` (one primary today, multi-membership ready). Location grants attached to a node via `org_node_location_grants` cascade to all members and descendants — see the third `org_grant` source in `portal_authorized_root_matches` (migration 00080). Reference: [`docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md`](docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md).
+- **Settings-page template:** new admin pages should be built with `SettingsPageShell` / `SettingsPageHeader` / `SettingsSection` / `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx` (centered 640px column, optional back-button navigation). Reference implementations live under `/admin/organisations`.
 
 ## Assignments, Routing & Fulfillment
 
