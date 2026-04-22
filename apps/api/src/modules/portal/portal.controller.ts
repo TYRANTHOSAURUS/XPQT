@@ -13,7 +13,6 @@ import type { Request } from 'express';
 import { PortalService } from './portal.service';
 import { PortalSubmitService } from './portal-submit.service';
 import { PortalSubmitDto } from './portal-submit.types';
-import { TenantContext } from '../../common/tenant-context';
 
 @Controller('portal')
 export class PortalController {
@@ -52,15 +51,10 @@ export class PortalController {
     if (!locationId) {
       throw new BadRequestException('location_id is required');
     }
-    // Phase 4: default to v2 (service_items). Admins can explicitly opt out by
-    // setting tenants.feature_flags.service_catalog_read = 'off' (e.g. for
-    // emergency rollback). Phase-1 backfill guarantees v2 parity with v1 for
-    // seeded tenants. See docs/service-catalog-redesign.md §9.
-    const tenant = TenantContext.current();
-    const mode = await this.portal.getServiceCatalogReadMode(tenant.id);
-    if (mode === 'off') {
-      return this.portal.getCatalog(this.authUid(request), locationId);
-    }
+    // v2 always. The phase-1 backfill + mirror triggers guarantee v2 parity
+    // with v1 for seeded tenants, and the frontend only understands v2 shape.
+    // Rollback mechanism = revert the relevant frontend commit and re-deploy.
+    // See docs/service-catalog-redesign.md §9.
     return this.portal.getCatalogV2(this.authUid(request), locationId);
   }
 

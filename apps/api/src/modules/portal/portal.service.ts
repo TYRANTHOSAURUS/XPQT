@@ -658,13 +658,13 @@ export class PortalService {
     const criteriaHits = new Map<string, boolean>(criteriaEntries);
     const pickVariant = (itemId: string): string | null => {
       const list = activeVariantsByItem.get(itemId) ?? [];
-      // priority desc, created_at asc
-      list.sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
-      for (const v of list) {
-        if (v.criteria_set_id === null) return v.form_schema_id;
-        if (criteriaHits.get(v.criteria_set_id)) return v.form_schema_id;
-      }
-      // Fall back to default if not already hit
+      // Default (criteria_set_id IS NULL) is fallback-only; a matching
+      // conditional variant always wins over it regardless of priority.
+      // Tie-break among conditionals: priority desc, created_at asc.
+      const conditional = list
+        .filter((v) => v.criteria_set_id !== null && criteriaHits.get(v.criteria_set_id))
+        .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
+      if (conditional.length > 0) return conditional[0].form_schema_id;
       const def = list.find((v) => v.criteria_set_id === null);
       return def?.form_schema_id ?? null;
     };

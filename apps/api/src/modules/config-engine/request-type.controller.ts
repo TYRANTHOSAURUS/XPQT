@@ -43,7 +43,12 @@ export class RequestTypeController {
       approval_approver_person_id?: string | null;
     },
   ) {
+    // RT mutations mirror into service_items via triggers 00070/00071/00072.
+    // Require BOTH permissions so a role with only request_types:manage can't
+    // indirectly edit portal-facing catalog data without service_catalog:manage.
+    // Admin seeds get both (migrations 00054 + 00067). Codex end-to-end finding #3.
     await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
     return this.requestTypeService.create(dto);
   }
 
@@ -53,7 +58,12 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() dto: Record<string, unknown>,
   ) {
+    // RT mutations mirror into service_items via triggers 00070/00071/00072.
+    // Require BOTH permissions so a role with only request_types:manage can't
+    // indirectly edit portal-facing catalog data without service_catalog:manage.
+    // Admin seeds get both (migrations 00054 + 00067). Codex end-to-end finding #3.
     await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
     return this.requestTypeService.update(id, dto);
   }
 }

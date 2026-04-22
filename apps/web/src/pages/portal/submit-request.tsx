@@ -37,6 +37,7 @@ import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-field
 import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 import { AssetCombobox } from '@/components/asset-combobox';
+import { PersonCombobox } from '@/components/person-combobox';
 import {
   PortalLocationDrilldown,
   satisfiesGranularity,
@@ -107,6 +108,7 @@ export function SubmitRequestPage() {
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [assetId, setAssetId] = useState<string | null>(null);
+  const [requestedForPersonId, setRequestedForPersonId] = useState<string | null>(null);
   const [assetLocationSummary, setAssetLocationSummary] = useState<{ id: string; name: string } | null>(null);
   const [drilledLocation, setDrilledLocation] = useState<{ id: string; name: string; type: string } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -224,6 +226,7 @@ export function SubmitRequestPage() {
           priority: formValues.priority,
           asset_id: assetId ?? undefined,
           location_id: submitLocationId ?? undefined,
+          requested_for_person_id: requestedForPersonId ?? undefined,
           ...bound,
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
@@ -345,6 +348,22 @@ export function SubmitRequestPage() {
                       <MapPin className="h-3 w-3" /> From asset: {assetLocationSummary.name}
                     </FieldDescription>
                   )}
+                </Field>
+              )}
+
+              {selectedRT && selectedRT.on_behalf_policy !== 'self_only' && (
+                <Field>
+                  <FieldLabel htmlFor="portal-requested-for">Requesting for</FieldLabel>
+                  <PersonCombobox
+                    value={requestedForPersonId ?? ''}
+                    onChange={(v) => setRequestedForPersonId(v || null)}
+                    placeholder="Leave blank to request for yourself"
+                  />
+                  <FieldDescription>
+                    This service allows submitting on behalf of another person.
+                    {selectedRT.on_behalf_policy === 'direct_reports' && ' Limited to your direct reports.'}
+                    {selectedRT.on_behalf_policy === 'configured_list' && ' Target is validated server-side.'}
+                  </FieldDescription>
                 </Field>
               )}
 
