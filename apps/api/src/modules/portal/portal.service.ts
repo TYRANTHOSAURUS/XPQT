@@ -633,21 +633,29 @@ export class PortalService {
       activeVariantsByItem.set(v.service_item_id, arr);
     }
 
-    // Criteria matches for non-default variants: evaluate in batch.
+    // Criteria matches for non-default variants: evaluate all in parallel.
+    // Design §3.4 "criteria caching" called for explicit per-invocation batch;
+    // Promise.all pushes the ≤N RPCs concurrently and the PL/pgSQL evaluator
+    // preloads the person row in each call (no extra round trips).
     const nonDefaultCriteriaIds = new Set<string>();
     for (const list of activeVariantsByItem.values()) {
       for (const v of list) if (v.criteria_set_id) nonDefaultCriteriaIds.add(v.criteria_set_id);
     }
-    const criteriaHits = new Map<string, boolean>();
-    for (const csId of nonDefaultCriteriaIds) {
-      const { data: hit, error: cErr } = await this.supabase.admin.rpc('criteria_matches', {
-        p_set_id: csId,
-        p_person_id: personId,
-        p_tenant_id: tenant.id,
-      });
-      if (cErr) throw cErr;
-      criteriaHits.set(csId, Boolean(hit));
-    }
+    const criteriaEntries = await Promise.all(
+      Array.from(nonDefaultCriteriaIds).map((csId) =>
+        this.supabase.admin
+          .rpc('criteria_matches', {
+            p_set_id: csId,
+            p_person_id: personId,
+            p_tenant_id: tenant.id,
+          })
+          .then(({ data, error }) => {
+            if (error) throw error;
+            return [csId, Boolean(data)] as const;
+          }),
+      ),
+    );
+    const criteriaHits = new Map<string, boolean>(criteriaEntries);
     const pickVariant = (itemId: string): string | null => {
       const list = activeVariantsByItem.get(itemId) ?? [];
       // priority desc, created_at asc
