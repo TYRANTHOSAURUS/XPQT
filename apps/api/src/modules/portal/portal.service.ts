@@ -27,6 +27,7 @@ export interface PortalMeResponse {
     first_name: string;
     last_name: string;
     email: string | null;
+    type: string;
   };
   user: { id: string; email: string | null };
   default_location: SpaceSummary | null;
@@ -34,6 +35,12 @@ export interface PortalMeResponse {
   current_location: SpaceSummary | null;
   role_scopes: RoleScope[];
   can_submit: boolean;
+  /**
+   * True iff the server would accept POST /portal/me/claim-default-location
+   * for this caller right now. All of: tenant has portal_self_onboard flag
+   * enabled, person has type='employee', person has no default and no grants.
+   */
+  can_self_onboard: boolean;
 }
 
 interface CatalogRequestType {
@@ -106,10 +113,10 @@ export class PortalService {
     const { userId, personId, userEmail } = await this.resolveActor(authUid);
     if (!personId) throw new UnauthorizedException('No linked person');
 
-    const [personRes, userFull, authorizedLocationsRes, userRolesRes] = await Promise.all([
+    const [personRes, userFull, authorizedLocationsRes, userRolesRes, tenantFlagsRes] = await Promise.all([
       this.supabase.admin
         .from('persons')
-        .select('id, first_name, last_name, email, default_location_id')
+        .select('id, first_name, last_name, email, type, default_location_id')
         .eq('id', personId)
         .eq('tenant_id', tenant.id)
         .single(),
@@ -120,10 +127,15 @@ export class PortalService {
         .single(),
       this.loadAuthorizedLocations(personId),
       this.loadRoleScopes(userId),
+      this.supabase.admin
+        .from('tenants')
+        .select('feature_flags')
+        .eq('id', tenant.id)
+        .single(),
     ]);
 
     const person = personRes.data as
-      | { id: string; first_name: string; last_name: string; email: string | null; default_location_id: string | null }
+      | { id: string; first_name: string; last_name: string; email: string | null; type: string; default_location_id: string | null }
       | null;
     if (!person) throw new NotFoundException('Person not found');
 
@@ -183,12 +195,25 @@ export class PortalService {
       ? authorized.find((l) => l.id === currentLocationId) ?? (await this.loadSpaceSummary(currentLocationId))
       : null;
 
+    // Self-onboard gate — exposed on the response so the UI can show the
+    // picker in the NoScopeBlocker only when the server would actually
+    // accept a POST /portal/me/claim-default-location. Matches the same
+    // conditions checked server-side in claimDefaultLocation() below.
+    const tenantFlags =
+      ((tenantFlagsRes.data as { feature_flags?: Record<string, unknown> } | null)
+        ?.feature_flags ?? {}) as Record<string, unknown>;
+    const self_onboard_flag_on = tenantFlags.portal_self_onboard === true;
+    const zero_scope = !person.default_location_id && authorized.length === 0;
+    const can_self_onboard =
+      self_onboard_flag_on && zero_scope && person.type === 'employee';
+
     return {
       person: {
         id: person.id,
         first_name: person.first_name,
         last_name: person.last_name,
         email: person.email,
+        type: person.type,
       },
       user: { id: userRow.id, email: userRow.email ?? userEmail },
       default_location: defaultLocation,
@@ -198,7 +223,83 @@ export class PortalService {
         : null,
       role_scopes: userRolesRes,
       can_submit,
+      can_self_onboard,
     };
+  }
+
+  /**
+   * Zero-scope bootstrap: an employee claims their initial default work location
+   * on first login. Subject to THREE independent gates:
+   *   1. Tenant flag `portal_self_onboard` = true.
+   *   2. persons.type = 'employee' (contractors/vendors/temps/visitors can't).
+   *   3. Person currently has NO default and NO grants (one-shot, not re-homing).
+   * All three re-checked server-side. DB triggers from 00047/00055 enforce
+   * site/building + active + tenant on the space reference.
+   */
+  async claimDefaultLocation(authUid: string, spaceId: string): Promise<PortalMeResponse> {
+    const tenant = TenantContext.current();
+    const { personId } = await this.resolveActor(authUid);
+    if (!personId) throw new UnauthorizedException('No linked person');
+
+    // Gate 1 — tenant feature flag.
+    const { data: tenantRow } = await this.supabase.admin
+      .from('tenants')
+      .select('feature_flags')
+      .eq('id', tenant.id)
+      .single();
+    const flags =
+      ((tenantRow as { feature_flags?: Record<string, unknown> } | null)?.feature_flags ?? {}) as Record<string, unknown>;
+    if (flags.portal_self_onboard !== true) {
+      throw new ForbiddenException({
+        code: 'self_onboard_disabled',
+        message: 'Portal self-onboarding is not enabled for this tenant',
+      });
+    }
+
+    // Gates 2 + 3 — person state.
+    const { data: personRow } = await this.supabase.admin
+      .from('persons')
+      .select('id, type, default_location_id')
+      .eq('id', personId)
+      .eq('tenant_id', tenant.id)
+      .single();
+    const person = personRow as
+      | { id: string; type: string; default_location_id: string | null }
+      | null;
+    if (!person) throw new NotFoundException('Person not found');
+    if (person.type !== 'employee') {
+      throw new ForbiddenException({
+        code: 'self_onboard_forbidden_person_type',
+        message: `Only employees can self-assign a work location (your record type is '${person.type}')`,
+      });
+    }
+    if (person.default_location_id) {
+      throw new ForbiddenException({
+        code: 'default_already_set',
+        message: 'Your work location is already set; contact an admin to change it',
+      });
+    }
+    const { count: grantCount } = await this.supabase.admin
+      .from('person_location_grants')
+      .select('id', { count: 'exact', head: true })
+      .eq('person_id', personId)
+      .eq('tenant_id', tenant.id);
+    if ((grantCount ?? 0) > 0) {
+      throw new ForbiddenException({
+        code: 'grants_exist',
+        message: 'You already have location access; contact an admin for changes',
+      });
+    }
+
+    // Validated — write. Trigger 00047/00055 enforces site|building + active + tenant.
+    const { error } = await this.supabase.admin
+      .from('persons')
+      .update({ default_location_id: spaceId })
+      .eq('id', personId)
+      .eq('tenant_id', tenant.id);
+    if (error) throw error;
+
+    return this.getMe(authUid);
   }
 
   async setCurrentLocation(authUid: string, locationId: string): Promise<PortalMeResponse> {

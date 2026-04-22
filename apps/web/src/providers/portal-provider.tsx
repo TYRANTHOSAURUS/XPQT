@@ -24,7 +24,7 @@ export interface AuthorizedLocation extends SpaceSummary {
 }
 
 export interface PortalMeResponse {
-  person: { id: string; first_name: string; last_name: string; email: string | null };
+  person: { id: string; first_name: string; last_name: string; email: string | null; type: string };
   user: { id: string; email: string | null };
   default_location: SpaceSummary | null;
   authorized_locations: AuthorizedLocation[];
@@ -35,6 +35,7 @@ export interface PortalMeResponse {
     location_scope: string[] | null;
   }>;
   can_submit: boolean;
+  can_self_onboard: boolean;
 }
 
 interface PortalContextValue {
@@ -43,6 +44,7 @@ interface PortalContextValue {
   error: string | null;
   refresh: () => Promise<void>;
   setCurrentLocation: (spaceId: string) => Promise<void>;
+  claimDefaultLocation: (spaceId: string) => Promise<void>;
 }
 
 const PortalContext = createContext<PortalContextValue | undefined>(undefined);
@@ -105,9 +107,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const claimDefaultLocation = useCallback(
+    async (spaceId: string) => {
+      const updated = await apiFetch<PortalMeResponse>('/portal/me/claim-default-location', {
+        method: 'POST',
+        body: JSON.stringify({ space_id: spaceId }),
+      });
+      setData(updated);
+    },
+    [],
+  );
+
   const value = useMemo<PortalContextValue>(
-    () => ({ data, loading, error, refresh, setCurrentLocation }),
-    [data, loading, error, refresh, setCurrentLocation],
+    () => ({ data, loading, error, refresh, setCurrentLocation, claimDefaultLocation }),
+    [data, loading, error, refresh, setCurrentLocation, claimDefaultLocation],
   );
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>;

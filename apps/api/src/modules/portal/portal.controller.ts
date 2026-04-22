@@ -65,6 +65,17 @@ export class PortalController {
     return this.portal.getSpaces(this.authUid(request), under);
   }
 
+  @Post('me/claim-default-location')
+  async claimDefaultLocation(
+    @Req() request: Request,
+    @Body() body: { space_id: string },
+  ) {
+    if (!body?.space_id) {
+      throw new BadRequestException('space_id is required');
+    }
+    return this.portal.claimDefaultLocation(this.authUid(request), body.space_id);
+  }
+
   @Post('tickets')
   async submitTicket(@Req() request: Request, @Body() dto: PortalSubmitDto) {
     return this.submit.submit(this.authUid(request), dto);
