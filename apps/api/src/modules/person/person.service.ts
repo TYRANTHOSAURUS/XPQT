@@ -1,6 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+
+const PG_UNIQUE_VIOLATION = '23505';
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === PG_UNIQUE_VIOLATION;
+}
 
 @Injectable()
 export class PersonService {
@@ -148,7 +154,14 @@ export class PersonService {
         },
         { onConflict: 'person_id,org_node_id' },
       );
-    if (error) throw error;
+    if (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(
+          'Another organisation change for this person is in progress. Reload and try again.',
+        );
+      }
+      throw error;
+    }
   }
 
   private async clearPrimaryMembership(personId: string) {
