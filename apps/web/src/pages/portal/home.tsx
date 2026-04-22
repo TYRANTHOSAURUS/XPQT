@@ -36,7 +36,7 @@ interface CatalogCategory {
 
 interface PortalCatalogResponse {
   selected_location: { id: string; name: string; type: string };
-  categories: Array<{ id: string; request_types: Array<{ id: string }> }>;
+  categories: Array<{ id: string; service_items: Array<{ id: string }> }>;
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -75,7 +75,7 @@ export function PortalHome() {
     apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
       .then((res) => {
         const ids = new Set(
-          res.categories.filter((c) => c.request_types.length > 0).map((c) => c.id),
+          res.categories.filter((c) => c.service_items.length > 0).map((c) => c.id),
         );
         setVisibleCategoryIds(ids);
       })

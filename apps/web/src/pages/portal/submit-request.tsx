@@ -42,25 +42,33 @@ import {
   satisfiesGranularity,
 } from '@/components/portal/portal-location-drilldown';
 
-interface CatalogRequestType {
+interface CatalogServiceItem {
   id: string;
+  key: string;
   name: string;
   description: string | null;
-  domain: string | null;
+  icon: string | null;
+  kb_link: string | null;
+  disruption_banner: string | null;
+  search_terms: string[];
+  on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
   form_schema_id: string | null;
-  requires_location: boolean;
-  location_required: boolean;
-  location_granularity: string | null;
-  requires_asset: boolean;
-  asset_required: boolean;
-  asset_type_filter: string[];
+  fulfillment: {
+    id: string;
+    requires_location: boolean;
+    location_required: boolean;
+    location_granularity: string | null;
+    requires_asset: boolean;
+    asset_required: boolean;
+    asset_type_filter: string[];
+  };
 }
 
 interface CatalogCategory {
   id: string;
   name: string;
   icon: string | null;
-  request_types: CatalogRequestType[];
+  service_items: CatalogServiceItem[];
 }
 
 interface PortalCatalogResponse {
@@ -131,17 +139,17 @@ export function SubmitRequestPage() {
       .finally(() => setCatalogLoading(false));
   }, [currentLocation?.id, currentLocation]);
 
-  // Flatten visible RTs; optionally filter by categoryId from URL.
-  const requestTypes = useMemo<CatalogRequestType[]>(() => {
+  // Flatten visible service items; optionally filter by categoryId from URL.
+  const serviceItems = useMemo<CatalogServiceItem[]>(() => {
     if (!catalog) return [];
     if (categoryId) {
       const cat = catalog.categories.find((c) => c.id === categoryId);
-      return cat?.request_types ?? [];
+      return cat?.service_items ?? [];
     }
-    return catalog.categories.flatMap((c) => c.request_types);
+    return catalog.categories.flatMap((c) => c.service_items);
   }, [catalog, categoryId]);
 
-  const selectedRT = requestTypes.find((r) => r.id === requestTypeId);
+  const selectedRT = serviceItems.find((r) => r.id === requestTypeId);
 
   // Reflect ?type=<id> into the form state.
   useEffect(() => {
@@ -155,7 +163,7 @@ export function SubmitRequestPage() {
   // that may no longer apply to the new RT (codex v4 review: hidden asset state).
   useEffect(() => {
     setDrilledLocation(null);
-    if (!selectedRT?.requires_asset) {
+    if (!selectedRT?.fulfillment.requires_asset) {
       setAssetId(null);
       setAssetLocationSummary(null);
     }
@@ -170,15 +178,12 @@ export function SubmitRequestPage() {
         setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.requires_asset]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.fulfillment.requires_asset]);
 
-  // Determine whether drill-down is needed.
-  // Current location is always a site/building; if granularity is site/building and
-  // current satisfies it, no drill-down. Otherwise drill is required.
   const needsDrilldown = useMemo(() => {
-    if (!selectedRT?.location_granularity || !currentLocation) return false;
-    return !satisfiesGranularity(currentLocation.type, selectedRT.location_granularity);
-  }, [selectedRT?.location_granularity, currentLocation]);
+    if (!selectedRT?.fulfillment.location_granularity || !currentLocation) return false;
+    return !satisfiesGranularity(currentLocation.type, selectedRT.fulfillment.location_granularity);
+  }, [selectedRT?.fulfillment.location_granularity, currentLocation]);
 
   // The location we'll submit to the backend. Only user-picked / drilled values —
   // never asset-resolved (that runs server-side to preserve scope_source provenance).
@@ -197,14 +202,12 @@ export function SubmitRequestPage() {
       return;
     }
 
-    if (selectedRT?.location_required && !submitLocationId && !assetId) {
+    if (selectedRT?.fulfillment.location_required && !submitLocationId && !assetId) {
       toast.error('Please pick a location or asset');
       return;
     }
 
-    // Enforce drill-down when granularity is set even if location_required=false.
-    // Backend would 400; catch it here for a friendlier message.
-    if (selectedRT?.location_granularity && !submitLocationId && !assetId) {
+    if (selectedRT?.fulfillment.location_granularity && !submitLocationId && !assetId) {
       toast.error('Please drill down to the required location');
       return;
     }
@@ -215,7 +218,7 @@ export function SubmitRequestPage() {
       await apiFetch('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
-          request_type_id: formValues.requestTypeId,
+          service_item_id: formValues.requestTypeId,
           title: formValues.title,
           description: formValues.description,
           priority: formValues.priority,
@@ -292,14 +295,14 @@ export function SubmitRequestPage() {
                           placeholder={
                             catalogLoading
                               ? 'Loading…'
-                              : requestTypes.length === 0
-                                ? 'No request types available here'
-                                : 'Select a request type'
+                              : serviceItems.length === 0
+                                ? 'No services available here'
+                                : 'Select a service'
                           }
                         />
                       </SelectTrigger>
                       <SelectContent>
-                        {requestTypes.map((rt) => (
+                        {serviceItems.map((rt) => (
                           <SelectItem key={rt.id} value={rt.id}>
                             {rt.name}
                           </SelectItem>
@@ -316,19 +319,17 @@ export function SubmitRequestPage() {
                 {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
               </Field>
 
-              {selectedRT?.requires_asset && (
+              {selectedRT?.fulfillment.requires_asset && (
                 <Field>
                   <FieldLabel htmlFor="portal-asset">
                     Asset
-                    {selectedRT.asset_required && <span className="text-destructive ml-1">*</span>}
+                    {selectedRT.fulfillment.asset_required && <span className="text-destructive ml-1">*</span>}
                   </FieldLabel>
                   <AssetCombobox
                     value={assetId}
                     onChange={(id, asset) => {
                       setAssetId(id);
                       if (asset?.assigned_space_id) {
-                        // Display-only; never submitted as selected_location_id.
-                        // Backend resolves asset.assigned_space_id itself to preserve provenance.
                         setAssetLocationSummary({
                           id: asset.assigned_space_id,
                           name: (asset as { assigned_space?: { name?: string } }).assigned_space?.name ?? 'asset location',
@@ -337,7 +338,7 @@ export function SubmitRequestPage() {
                         setAssetLocationSummary(null);
                       }
                     }}
-                    assetTypeFilter={selectedRT.asset_type_filter ?? []}
+                    assetTypeFilter={selectedRT.fulfillment.asset_type_filter ?? []}
                   />
                   {assetLocationSummary && (
                     <FieldDescription className="flex items-center gap-1">
@@ -347,15 +348,15 @@ export function SubmitRequestPage() {
                 </Field>
               )}
 
-              {selectedRT?.location_granularity && needsDrilldown && currentLocation && (
+              {selectedRT?.fulfillment.location_granularity && needsDrilldown && currentLocation && (
                 <Field>
                   <FieldLabel htmlFor="portal-drilldown">
                     Location
-                    {selectedRT.location_required && <span className="text-destructive ml-1">*</span>}
+                    {selectedRT.fulfillment.location_required && <span className="text-destructive ml-1">*</span>}
                   </FieldLabel>
                   <PortalLocationDrilldown
                     rootSpace={currentLocation}
-                    granularity={selectedRT.location_granularity}
+                    granularity={selectedRT.fulfillment.location_granularity}
                     onPick={(s) => setDrilledLocation(s)}
                     selected={drilledLocation}
                   />

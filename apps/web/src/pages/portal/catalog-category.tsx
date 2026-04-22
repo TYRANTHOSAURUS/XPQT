@@ -12,18 +12,18 @@ import { Spinner } from '@/components/ui/spinner';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 
-interface CatalogRequestType {
+interface CatalogServiceItem {
   id: string;
+  key: string;
   name: string;
   description: string | null;
-  domain: string | null;
 }
 
 interface CatalogCategory {
   id: string;
   name: string;
   icon: string | null;
-  request_types: CatalogRequestType[];
+  service_items: CatalogServiceItem[];
 }
 
 interface PortalCatalogResponse {
@@ -50,9 +50,9 @@ export function CatalogCategoryPage() {
   }, [currentLocation?.id]);
 
   const { category, requestTypes } = useMemo(() => {
-    if (!catalog || !categoryId) return { category: null, requestTypes: [] as CatalogRequestType[] };
+    if (!catalog || !categoryId) return { category: null, requestTypes: [] as CatalogServiceItem[] };
     const cat = catalog.categories.find((c) => c.id === categoryId);
-    return { category: cat ?? null, requestTypes: cat?.request_types ?? [] };
+    return { category: cat ?? null, requestTypes: cat?.service_items ?? [] };
   }, [catalog, categoryId]);
 
   return (
