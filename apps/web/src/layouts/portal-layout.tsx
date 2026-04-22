@@ -34,6 +34,9 @@ import {
   Settings,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
+import { PortalProvider, usePortal } from '@/providers/portal-provider';
+import { PortalLocationPicker } from '@/components/portal/portal-location-picker';
+import { PortalNoScopeBlocker } from '@/components/portal/portal-no-scope-blocker';
 
 const portalNav = [
   { title: 'Home', path: '/portal', icon: Home },
@@ -61,9 +64,18 @@ const pageTitles: Record<string, string> = {
 };
 
 export function PortalLayout() {
+  return (
+    <PortalProvider>
+      <PortalLayoutInner />
+    </PortalProvider>
+  );
+}
+
+function PortalLayoutInner() {
   const navigate = useNavigate();
   const location = useLocation();
   const { hasRole } = useAuth();
+  const { data: portal, loading: portalLoading } = usePortal();
 
   const hasAgentPermission = hasRole('agent');
   const hasAdminPermission = hasRole('admin');
@@ -167,9 +179,14 @@ export function PortalLayout() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
+          <div className="ml-auto">
+            <PortalLocationPicker />
+          </div>
         </header>
         <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
-          <Outlet />
+          {!portalLoading && portal && !portal.can_submit
+            ? <PortalNoScopeBlocker />
+            : <Outlet />}
         </div>
       </SidebarInset>
     </SidebarProvider>
