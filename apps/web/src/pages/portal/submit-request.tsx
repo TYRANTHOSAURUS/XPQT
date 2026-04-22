@@ -169,6 +169,12 @@ export function SubmitRequestPage() {
       setAssetId(null);
       setAssetLocationSummary(null);
     }
+    // Clear requestedForPersonId when the new item is self_only OR when no
+    // item is selected. Prevents a stale target from being submitted after
+    // switching away from an on-behalf-capable item.
+    if (!selectedRT || selectedRT.on_behalf_policy === 'self_only') {
+      setRequestedForPersonId(null);
+    }
     if (!selectedRT?.form_schema_id) {
       setFormFields([]);
       setValues({});
@@ -180,7 +186,7 @@ export function SubmitRequestPage() {
         setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.fulfillment.requires_asset]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.fulfillment.requires_asset, selectedRT?.on_behalf_policy]);
 
   const needsDrilldown = useMemo(() => {
     if (!selectedRT?.fulfillment.location_granularity || !currentLocation) return false;
