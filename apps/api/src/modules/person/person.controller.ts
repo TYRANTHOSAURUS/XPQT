@@ -46,10 +46,9 @@ export class PersonController {
     email?: string;
     phone?: string;
     type: string;
-    division?: string;
-    department?: string;
     cost_center?: string;
     manager_person_id?: string;
+    primary_org_node_id?: string | null;
   }) {
     await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.create(dto);
@@ -91,5 +90,11 @@ export class PersonController {
   ) {
     await this.permissions.requirePermission(request, 'people:manage');
     return this.personService.removeLocationGrant(id, grantId);
+  }
+
+  @Get(':id/effective-authorization')
+  async listEffectiveAuthorization(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'people:manage');
+    return this.personService.listEffectiveAuthorization(id);
   }
 }
