@@ -410,6 +410,98 @@ export class ServiceItemService {
     };
   }
 
+  /**
+   * Per-location fulfillment handler. Derives domain from the service_item's
+   * linked request_type and upserts/deletes a `location_teams` row for
+   * (tenant, space_id, domain). Lets catalog admins configure routing without
+   * needing `routing_studio:access`.
+   */
+  async setHandlerAt(
+    serviceItemId: string,
+    body: { space_id: string; assignee: { kind: 'team' | 'vendor'; id: string } | null },
+  ) {
+    const tenant = TenantContext.current();
+    if (!body?.space_id) throw new BadRequestException('space_id required');
+
+    const { data: siRow } = await this.supabase.admin
+      .from('service_items')
+      .select('id, fulfillment_type_id')
+      .eq('id', serviceItemId)
+      .eq('tenant_id', tenant.id)
+      .single();
+    if (!siRow) throw new NotFoundException('Service item not found');
+    const fulfillmentTypeId = (siRow as { fulfillment_type_id: string }).fulfillment_type_id;
+
+    const { data: ftRow } = await this.supabase.admin
+      .from('request_types')
+      .select('id, domain')
+      .eq('id', fulfillmentTypeId)
+      .eq('tenant_id', tenant.id)
+      .single();
+    const domain = (ftRow as { domain: string | null } | null)?.domain;
+    if (!domain) {
+      throw new BadRequestException(
+        'Linked request type has no routing domain. Set a domain on the request type before assigning per-location handlers.',
+      );
+    }
+
+    const { data: existingRow } = await this.supabase.admin
+      .from('location_teams')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('space_id', body.space_id)
+      .eq('domain', domain)
+      .maybeSingle();
+    const existing = existingRow as { id: string } | null;
+
+    if (body.assignee === null) {
+      if (existing) {
+        const del = await this.supabase.admin
+          .from('location_teams')
+          .delete()
+          .eq('id', existing.id)
+          .eq('tenant_id', tenant.id);
+        if (del.error) throw new BadRequestException(del.error.message);
+      }
+      return { ok: true, deleted: !!existing };
+    }
+
+    if (!body.assignee.id || !body.assignee.kind) {
+      throw new BadRequestException('assignee.kind and assignee.id required');
+    }
+
+    const patch = {
+      team_id: body.assignee.kind === 'team' ? body.assignee.id : null,
+      vendor_id: body.assignee.kind === 'vendor' ? body.assignee.id : null,
+    };
+
+    if (existing) {
+      const { error, data } = await this.supabase.admin
+        .from('location_teams')
+        .update(patch)
+        .eq('id', existing.id)
+        .eq('tenant_id', tenant.id)
+        .select()
+        .single();
+      if (error) throw new BadRequestException(error.message);
+      return data;
+    }
+
+    const { error, data } = await this.supabase.admin
+      .from('location_teams')
+      .insert({
+        tenant_id: tenant.id,
+        space_id: body.space_id,
+        space_group_id: null,
+        domain,
+        ...patch,
+      })
+      .select()
+      .single();
+    if (error) throw new BadRequestException(error.message);
+    return data;
+  }
+
   async putCategories(serviceItemId: string, categoryIds: string[]) {
     const tenant = TenantContext.current();
     const del = await this.supabase.admin

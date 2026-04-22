@@ -29,6 +29,7 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
   const [disruption, setDisruption] = useState(detail.disruption_banner ?? '');
   const [searchTerms, setSearchTerms] = useState((detail.search_terms ?? []).join(', '));
   const [active, setActive] = useState(detail.active);
+  const [displayOrder, setDisplayOrder] = useState(detail.display_order);
   const [categoryIds, setCategoryIds] = useState<string[]>(detail.categories.map((c) => c.category_id));
   const [saving, setSaving] = useState(false);
 
@@ -40,6 +41,7 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
     setDisruption(detail.disruption_banner ?? '');
     setSearchTerms((detail.search_terms ?? []).join(', '));
     setActive(detail.active);
+    setDisplayOrder(detail.display_order);
     setCategoryIds(detail.categories.map((c) => c.category_id));
   }, [detail.id]);
 
@@ -59,6 +61,7 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
           kb_link: kbLink.trim() || null,
           disruption_banner: disruption.trim() || null,
           search_terms: searchTerms.split(',').map((s) => s.trim()).filter(Boolean),
+          display_order: Number.isFinite(displayOrder) ? displayOrder : 0,
           active,
         }),
       });
@@ -78,7 +81,7 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
   return (
     <div className="flex flex-col gap-4">
       <FieldGroup>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-[1fr_180px] gap-3">
           <Field>
             <FieldLabel htmlFor="basics-name">Name</FieldLabel>
             <Input id="basics-name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -88,6 +91,24 @@ export function CatalogBasicsTab({ detail, onSaved }: { detail: ServiceItemDetai
             <FieldLabel htmlFor="basics-active" className="font-normal">
               Active in portal
             </FieldLabel>
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field>
+            <FieldLabel htmlFor="basics-key">Key</FieldLabel>
+            <Input id="basics-key" value={detail.key} readOnly disabled className="font-mono text-xs" />
+            <FieldDescription>Stable machine key. Created with the request type.</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="basics-order">Display order</FieldLabel>
+            <Input
+              id="basics-order"
+              type="number"
+              value={displayOrder}
+              onChange={(e) => setDisplayOrder(parseInt(e.target.value, 10) || 0)}
+            />
+            <FieldDescription>Lower numbers appear first on portal cards.</FieldDescription>
           </Field>
         </div>
 

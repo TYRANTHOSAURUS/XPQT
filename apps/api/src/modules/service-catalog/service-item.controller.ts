@@ -97,4 +97,17 @@ export class ServiceItemController {
     }
     return this.service.putCategories(id, body.category_ids);
   }
+
+  @Put(':id/handler-at')
+  async setHandlerAt(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() body: { space_id: string; assignee: { kind: 'team' | 'vendor'; id: string } | null },
+  ) {
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
+    if (!body || !body.space_id) {
+      throw new BadRequestException('space_id required');
+    }
+    return this.service.setHandlerAt(id, body);
+  }
 }

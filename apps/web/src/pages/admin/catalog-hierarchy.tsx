@@ -162,7 +162,7 @@ export function CatalogHierarchyPage() {
 
       <div className="flex-1 min-h-0 flex gap-4 items-stretch">
         {/* Tree column */}
-        <div className="w-[380px] shrink-0 overflow-auto">
+        <div className="w-[960px] shrink-0 overflow-auto">
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="size-5 text-muted-foreground" />

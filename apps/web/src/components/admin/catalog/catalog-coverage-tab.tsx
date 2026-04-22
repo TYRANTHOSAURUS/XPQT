@@ -11,6 +11,7 @@ import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import type { ServiceItemDetail } from './catalog-service-panel';
+import { SetHandlerDialog, type SetHandlerInput } from './set-handler-dialog';
 
 interface CoverageRow {
   site_id: string;
@@ -46,6 +47,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
   const [filter, setFilter] = useState<Filter>('all');
   const [nonce, setNonce] = useState(0);
   const [saving, setSaving] = useState<string | null>(null);
+  const [handlerInput, setHandlerInput] = useState<SetHandlerInput | null>(null);
 
   const { data, loading, error } = useApi<CoverageResponse>(
     `/admin/service-items/${detail.id}/coverage-matrix?_=${nonce}`,
@@ -198,7 +200,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
               <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">
                 Handler
               </th>
-              <th className="border-b px-3 py-2 text-right font-medium text-muted-foreground w-32">
+              <th className="border-b px-3 py-2 text-right font-medium text-muted-foreground w-44">
                 Action
               </th>
             </tr>
@@ -227,23 +229,46 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
                         {s.reachable_via === 'rt_default' && (
                           <span className="ml-1 text-xs opacity-70">(default)</span>
                         )}
+                        {s.reachable_via === 'space_group' && (
+                          <span className="ml-1 text-xs opacity-70">(via group)</span>
+                        )}
                       </span>
                     ) : (
                       <span className="text-xs">—</span>
                     )}
                   </td>
                   <td className="border-b px-3 py-1.5 text-right">
-                    {directOffered ? (
-                      <Button size="sm" variant="ghost" disabled={!!saving} onClick={() => toggleSite(s)}>
-                        Remove
-                      </Button>
-                    ) : s.offering ? (
-                      <span className="text-xs text-muted-foreground italic">inherited</span>
-                    ) : (
-                      <Button size="sm" variant="outline" disabled={!!saving} onClick={() => toggleSite(s)}>
-                        Offer here
-                      </Button>
-                    )}
+                    <div className="flex items-center justify-end gap-1">
+                      {s.offering && data?.domain && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!!saving}
+                          onClick={() => setHandlerInput({
+                            space_id: s.site_id,
+                            space_name: s.site_name,
+                            domain: data.domain!,
+                            current_handler_kind: s.handler_kind,
+                            current_handler_id: s.handler_id,
+                            current_handler_name: s.handler_name,
+                            resolved_via: s.reachable_via,
+                          })}
+                        >
+                          Set handler
+                        </Button>
+                      )}
+                      {directOffered ? (
+                        <Button size="sm" variant="ghost" disabled={!!saving} onClick={() => toggleSite(s)}>
+                          Remove
+                        </Button>
+                      ) : s.offering ? (
+                        <span className="text-xs text-muted-foreground italic">inherited</span>
+                      ) : (
+                        <Button size="sm" variant="outline" disabled={!!saving} onClick={() => toggleSite(s)}>
+                          Offer here
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -260,6 +285,21 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
       </div>
 
       <Legend />
+
+      <SetHandlerDialog
+        serviceItemId={detail.id}
+        input={handlerInput}
+        open={!!handlerInput}
+        onOpenChange={(open) => { if (!open) setHandlerInput(null); }}
+        onSaved={() => { reload(); onSaved(); }}
+      />
+
+      {!data.domain && (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          This request type has no routing domain set — per-location handler assignment is disabled
+          until a domain is chosen in the Fulfillment tab.
+        </p>
+      )}
     </div>
   );
 }
