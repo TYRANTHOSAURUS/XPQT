@@ -187,15 +187,15 @@ export function SubIssuesSection({
                   className={cn('h-2 w-2 rounded-full shrink-0', PRIORITY_DOT[row.priority] ?? 'bg-muted-foreground/40')}
                   title={`Priority: ${row.priority}`}
                 />
-                <span className="flex-1 truncate text-sm">{row.title}</span>
-                <span className="flex items-center gap-1.5 text-xs text-muted-foreground min-w-0">
+                <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
+                <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                   {person && <PersonAvatar size="sm" className="size-4" person={person} />}
-                  <span className="truncate max-w-[120px]">{assignee}</span>
+                  <span className="max-w-[120px] truncate">{assignee}</span>
                 </span>
-                <span className="w-20 text-right">
+                <span className="w-20 shrink-0 text-right">
                   <SlaChip row={row} />
                 </span>
-                <Badge variant={STATUS_VARIANT[row.status_category] ?? 'outline'} className="text-xs">
+                <Badge variant={STATUS_VARIANT[row.status_category] ?? 'outline'} className="shrink-0 text-xs">
                   {row.status_category.replace('_', ' ')}
                 </Badge>
               </li>
