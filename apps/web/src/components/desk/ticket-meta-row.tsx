@@ -75,23 +75,25 @@ function SubIssueProgress({ parentId }: { parentId: string }) {
   const { data, loading } = useWorkOrders(parentId);
   if (loading || data.length === 0) return null;
   const done = data.filter((r) => r.status_category === 'resolved' || r.status_category === 'closed').length;
+  const ratio = done / data.length;
   return (
-    <span className="inline-flex items-center gap-1 text-foreground/80">
-      <span className="relative inline-flex h-3 w-3 items-center justify-center">
-        <svg viewBox="0 0 12 12" className="h-3 w-3">
-          <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.5" />
-          <circle
-            cx="6"
-            cy="6"
-            r="5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeDasharray={`${(done / data.length) * 31.4} 31.4`}
-            strokeDashoffset="0"
-            transform="rotate(-90 6 6)"
-            strokeLinecap="round"
-          />
+    <span className="inline-flex items-center gap-1.5 text-foreground/80">
+      <span className="relative inline-flex h-3.5 w-3.5 items-center justify-center">
+        <svg viewBox="0 0 14 14" className="h-3.5 w-3.5">
+          <circle cx="7" cy="7" r="5.5" fill="none" className="stroke-muted-foreground/30" strokeWidth="2" />
+          {ratio > 0 && (
+            <circle
+              cx="7"
+              cy="7"
+              r="5.5"
+              fill="none"
+              className="stroke-blue-500"
+              strokeWidth="2"
+              strokeDasharray={`${ratio * 2 * Math.PI * 5.5} ${2 * Math.PI * 5.5}`}
+              transform="rotate(-90 7 7)"
+              strokeLinecap="round"
+            />
+          )}
         </svg>
       </span>
       <span className="tabular-nums">{done}/{data.length}</span>
