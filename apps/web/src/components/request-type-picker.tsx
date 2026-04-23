@@ -25,7 +25,6 @@ export interface RequestType {
   asset_type_filter: string[];
   requires_location: boolean;
   location_required: boolean;
-  form_schema_id?: string | null;
 }
 
 interface CatalogRequestType {

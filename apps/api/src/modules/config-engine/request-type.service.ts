@@ -99,7 +99,9 @@ export class RequestTypeService {
     on_behalf_policy?: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
     display_order?: number;
     domain?: string;
-    form_schema_id?: string;
+    // form_schema_id removed: default form lives exclusively on
+    // request_type_form_variants (criteria_set_id IS NULL). Admin writes via
+    // PUT /request-types/:id/form-variants. See migration 00098.
     workflow_definition_id?: string;
     sla_policy_id?: string;
     fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
@@ -309,12 +311,15 @@ export class RequestTypeService {
       this.validateHandlerShape(o);
       this.validateOverrideNonEmpty(o);
     }
-    // Partial-unique indexes in 00091 reject two concurrently-active rows
-    // for the same (request_type, scope, scope-target). Scheduled windows
-    // (starts_at/ends_at) are service-layer's job — two active rows with
-    // non-overlapping windows on the same scope-target would both pass the
-    // DB unique check but are semantically ambiguous once the calendar
-    // advances. Reject overlap here so the admin has to resolve it.
+    // Migration 00101 dropped the 00091 partial-unique indexes so scheduled
+    // handoffs are expressible (admin prepares next month's override with
+    // active=true + future starts_at while the current one is still active).
+    // This service-layer check is now the sole arbiter: it permits multiple
+    // active rows on the same (request_type, scope, scope-target) AS LONG AS
+    // their [starts_at, ends_at) windows don't intersect. The resolver
+    // precedence function filters by `active AND starts_at <= now() AND
+    // ends_at > now()` so at most one row is ever in-effect at runtime; the
+    // ORDER BY id ASC breaks residual ties.
     this.validateNoTemporalOverlap(overrides);
     await this.assertIdsInTenant('spaces', overrides.map((o) => o.space_id ?? null), 'space_id');
     await this.assertIdsInTenant('space_groups', overrides.map((o) => o.space_group_id ?? null), 'space_group_id');

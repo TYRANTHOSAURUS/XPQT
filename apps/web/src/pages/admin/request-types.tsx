@@ -15,19 +15,13 @@ interface RequestType {
   domain: string;
   active: boolean;
   sla_policy?: { id: string; name: string } | null;
-  catalog_category_id?: string | null;
-  form_schema_id?: string | null;
   fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
   location_granularity?: string | null;
   requires_approval?: boolean;
 }
 
-interface Category { id: string; name: string }
-
 export function RequestTypesPage() {
   const { data, loading, refetch } = useApi<RequestType[]>('/request-types', []);
-  const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
-  const { data: formSchemas } = useApi<{ id: string; display_name: string }[]>('/config-entities?type=form_schema', []);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -42,16 +36,6 @@ export function RequestTypesPage() {
     setDialogOpen(true);
   };
 
-  const getCategoryName = (id: string | null | undefined) => {
-    if (!id || !categories) return '—';
-    return categories.find((c) => c.id === id)?.name ?? '—';
-  };
-
-  const getFormSchemaName = (id: string | null | undefined) => {
-    if (!id || !formSchemas) return '—';
-    return formSchemas.find((s) => s.id === id)?.display_name ?? '—';
-  };
-
   const formatGranularity = (g: string | null | undefined) => {
     if (!g) return 'Any';
     return g.replace('_', ' ');
@@ -62,7 +46,10 @@ export function RequestTypesPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Request Types</h1>
-          <p className="text-muted-foreground mt-1">Define the types of requests employees can submit</p>
+          <p className="text-muted-foreground mt-1">
+            Fulfillment configuration. Portal-facing fields (categories, coverage, audience, form variants) live on{' '}
+            <span className="font-medium">/admin/catalog-hierarchy</span>.
+          </p>
         </div>
         <Button className="gap-2" onClick={openCreate}>
           <Plus className="h-4 w-4" /> Add Request Type
@@ -82,8 +69,6 @@ export function RequestTypesPage() {
             <TableHead>Name</TableHead>
             <TableHead className="w-[100px]">Domain</TableHead>
             <TableHead className="w-[110px]">Strategy</TableHead>
-            <TableHead className="w-[130px]">Category</TableHead>
-            <TableHead className="w-[150px]">Form</TableHead>
             <TableHead className="w-[130px]">SLA Policy</TableHead>
             <TableHead className="w-[140px]">Location depth</TableHead>
             <TableHead className="w-[80px]">Status</TableHead>
@@ -91,8 +76,10 @@ export function RequestTypesPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && <TableLoading cols={9} />}
-          {!loading && (!data || data.length === 0) && <TableEmpty cols={9} message="No request types yet. Create one to get started." />}
+          {loading && <TableLoading cols={7} />}
+          {!loading && (!data || data.length === 0) && (
+            <TableEmpty cols={7} message="No request types yet. Create one to get started." />
+          )}
           {(data ?? []).map((rt) => (
             <TableRow key={rt.id}>
               <TableCell className="font-medium">
@@ -101,8 +88,6 @@ export function RequestTypesPage() {
               </TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.domain ?? 'general'}</Badge></TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.fulfillment_strategy ?? 'fixed'}</Badge></TableCell>
-              <TableCell className="text-muted-foreground text-sm">{getCategoryName(rt.catalog_category_id)}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{getFormSchemaName(rt.form_schema_id)}</TableCell>
               <TableCell className="text-muted-foreground text-sm">{rt.sla_policy?.name ?? '—'}</TableCell>
               <TableCell className="text-muted-foreground text-sm capitalize">{formatGranularity(rt.location_granularity)}</TableCell>
               <TableCell><Badge variant={rt.active ? 'default' : 'secondary'}>{rt.active ? 'Active' : 'Inactive'}</Badge></TableCell>

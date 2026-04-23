@@ -59,15 +59,27 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const requestTypeId = selectedRT?.id ?? '';
 
   useEffect(() => {
-    if (!selectedRT?.form_schema_id) { setFormFields([]); setFormValues({}); return; }
+    if (!selectedRT?.id) { setFormFields([]); setFormValues({}); return; }
     let cancelled = false;
-    apiFetch<FormSchemaEntity>(`/config-entities/${selectedRT.form_schema_id}`)
-      .then((entity) => {
+    // Default form schema now lives on request_type_form_variants
+    // (criteria_set_id IS NULL). The desk create path picks the default —
+    // audience-conditional variants are a portal concern (we don't have a
+    // real requester persona here at create time).
+    (async () => {
+      try {
+        const variants = await apiFetch<Array<{
+          criteria_set_id: string | null; form_schema_id: string; active: boolean;
+        }>>(`/request-types/${selectedRT.id}/form-variants`);
+        const def = variants.find((v) => v.criteria_set_id === null && v.active);
+        if (!def) { if (!cancelled) { setFormFields([]); setFormValues({}); } return; }
+        const entity = await apiFetch<FormSchemaEntity>(`/config-entities/${def.form_schema_id}`);
         if (cancelled) return;
         setFormFields(entity.current_version?.definition?.fields ?? []);
         setFormValues({});
-      })
-      .catch(() => { if (!cancelled) setFormFields([]); });
+      } catch {
+        if (!cancelled) setFormFields([]);
+      }
+    })();
     return () => { cancelled = true; };
   }, [selectedRT]);
 

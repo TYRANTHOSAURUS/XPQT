@@ -40,7 +40,6 @@ interface RequestType {
   approval_approver_team_id?: string | null;
   default_team_id?: string | null;
   default_vendor_id?: string | null;
-  form_schema_id?: string | null;
   sla_policy_id?: string | null;
   workflow_definition_id?: string | null;
   sla_policy?: { id: string; name: string } | null;

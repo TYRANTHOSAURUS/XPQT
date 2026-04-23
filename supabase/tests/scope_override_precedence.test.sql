@@ -17,8 +17,7 @@
 --   - inherit_to_descendants=false skips ancestor
 --   - active=false rows are invisible
 --   - starts_at / ends_at effective-dating boundaries
---   - Same-tier id tie-breaks (earliest id wins)
---   - Multiple matching space-group memberships
+--   - Same-tier id tie-breaks via multi-group membership (earliest id wins)
 
 begin;
 
@@ -41,10 +40,6 @@ declare
   v_ov_group2 uuid := 'fffffff0-0000-0000-0000-0000000000d5';
   v_ov_scheduled_past uuid := 'fffffff0-0000-0000-0000-0000000000d6';
   v_ov_scheduled_future uuid := 'fffffff0-0000-0000-0000-0000000000d7';
-  -- Two ancestor overrides at the same depth for tie-break test.
-  -- v_ov_anc_a is lexicographically smaller, so it should win.
-  v_ov_anc_a uuid := 'fffffff0-0000-0000-0000-0000000000da';
-  v_ov_anc_b uuid := 'fffffff0-0000-0000-0000-0000000000db';
   v_team uuid := 'fffffff0-0000-0000-0000-0000000000e1';
   v_result jsonb;
 begin
@@ -195,20 +190,16 @@ begin
   end if;
   delete from public.request_type_scope_overrides where id = v_ov_scheduled_past;
 
-  -- ── Test 11: same-tier id tie-break (two ancestor_space overrides at same depth)
-  -- Both attach to the building (depth 2 from the selected room). Earliest
-  -- (lexicographic) id wins — v_ov_anc_a < v_ov_anc_b. Space-group stays
-  -- active as the NEXT tier; both ancestors should beat it.
-  -- Partial-unique (request_type_id, space_id) where active+scope=space blocks
-  -- two active on the SAME space; use different spaces (bld and site) both
-  -- of which are ancestors of the room. Building is depth=2, site is depth=3,
-  -- so building wins via the depth tiebreak. Switch to same depth by using
-  -- two different groups instead — same space_group space, multi-membership:
-  -- already set up above. Use a second group override and verify it acts.
+  -- ── Test 11: same-tier id tie-break via two space_group overrides.
+  -- The selected room belongs to both v_group and v_group2. Both overrides
+  -- match at the space_group tier; the precedence function's stable
+  -- ORDER BY id ASC picks the earliest id. (This is the only real same-tier
+  -- collision expressible in this tree: exact_space has one possible match
+  -- per selected space; ancestors are naturally ordered by depth; tenant is
+  -- uniquely scoped. Multi-group membership is where real ties happen.)
   insert into public.request_type_scope_overrides
     (id, tenant_id, request_type_id, scope_kind, space_group_id, active, handler_kind, handler_team_id)
     values (v_ov_group2, v_tenant, v_rt, 'space_group', v_group2, true, 'team', v_team);
-  -- Two group overrides (v_ov_group, v_ov_group2) both match; earlier id wins.
   -- Remove the ancestor to isolate the tier.
   update public.request_type_scope_overrides set active = false where id = v_ov_anc;
   v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);

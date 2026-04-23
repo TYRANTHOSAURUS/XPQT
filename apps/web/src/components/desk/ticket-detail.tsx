@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Layout } from 'react-resizable-panels';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from '@/components/ui/resizable';
+import { SidebarGroup } from '@/components/ui/sidebar-group';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -49,7 +56,7 @@ import { useUsers } from '@/api/users';
 import { useVendors } from '@/api/vendors';
 import { usePersons, usePersonsSearch } from '@/api/persons';
 import { useSlaPolicies } from '@/api/sla-policies';
-import { useRequestType } from '@/api/request-types';
+import { useRequestTypeDefaultFormSchema } from '@/api/request-types';
 import { useConfigEntity } from '@/api/config-entities';
 import { useTicketWorkflowInstances } from '@/api/workflows';
 import { InlineProperty } from '@/components/desk/inline-property';
@@ -141,6 +148,27 @@ const priorityConfig: Record<string, { label: string; color: string }> = {
 };
 
 const MAX_MENTION_RESULTS = 8;
+const SIDEBAR_LAYOUT_STORAGE_KEY = 'ticket-detail-sidebar-layout-v1';
+
+function loadSidebarLayout(): Layout | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_LAYOUT_STORAGE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as Layout;
+    if (
+      parsed
+      && typeof parsed === 'object'
+      && typeof parsed.main === 'number'
+      && typeof parsed.sidebar === 'number'
+    ) {
+      return parsed;
+    }
+  } catch {
+    // ignored — fall through to default
+  }
+  return undefined;
+}
 
 function SlaTimer({ dueAt, breachedAt }: { dueAt: string | null; breachedAt: string | null }) {
   if (!dueAt) return <span className="text-sm text-muted-foreground">No SLA</span>;
@@ -231,8 +259,12 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const { data: vendors } = useVendors();
   const { data: tagSuggestions } = useTicketTagSuggestions();
   const { data: slaPolicies } = useSlaPolicies();
-  const { data: requestTypeDetail } = useRequestType(ticket?.request_type?.id ?? null);
-  const { data: configEntity } = useConfigEntity(requestTypeDetail?.form_schema_id ?? null);
+  // Default form schema lives on request_type_form_variants now
+  // (request_types.form_schema_id was dropped in migration 00098).
+  const { data: defaultFormVariant } = useRequestTypeDefaultFormSchema(
+    ticket?.request_type?.id ?? null,
+  );
+  const { data: configEntity } = useConfigEntity(defaultFormVariant?.form_schema_id ?? null);
   const schemaFields = configEntity?.current_version?.definition?.fields ?? [];
   const [commentText, setCommentText] = useState('');
   const [commentVisibility, setCommentVisibility] = useState<'internal' | 'external'>('internal');
@@ -247,6 +279,15 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const [addWorkOrderOpen, setAddWorkOrderOpen] = useState(false);
   const [workOrdersNonce, setWorkOrdersNonce] = useState(0);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
+
+  const [sidebarLayout] = useState<Layout | undefined>(() => loadSidebarLayout());
+  const persistSidebarLayout = useCallback((layout: Layout) => {
+    try {
+      window.localStorage.setItem(SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+    } catch {
+      // ignored — storage may be unavailable (private mode, quota)
+    }
+  }, []);
 
   const updateTicket = useUpdateTicket(ticketId);
   const reassignTicket = useReassignTicket(ticketId);
@@ -433,9 +474,14 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   }
 
   return (
-    <div className="flex h-full">
+    <ResizablePanelGroup
+      orientation="horizontal"
+      defaultLayout={sidebarLayout}
+      onLayoutChanged={persistSidebarLayout}
+      className="h-full"
+    >
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 relative">
+      <ResizablePanel id="main" minSize="480px" className="flex flex-col min-w-0 relative overflow-hidden">
         {/* Background-refetch indicator — 2px bar, stays out of the way during optimistic saves */}
         {ticketFetching && (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary/40" />
@@ -888,13 +934,20 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
             </div>
           </div>
         </ScrollArea>
-      </div>
+      </ResizablePanel>
+
+      <ResizableHandle className="w-px bg-border/60 transition-colors hover:bg-border data-[resize-handle-state=drag]:bg-primary/40 data-[resize-handle-state=hover]:bg-border" />
 
       {/* Properties sidebar (right) */}
-      <div className="w-[320px] shrink-0 border-l overflow-y-auto">
-        <div className="p-5 space-y-5">
-          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Properties</div>
-
+      <ResizablePanel
+        id="sidebar"
+        defaultSize="320px"
+        minSize="240px"
+        maxSize="560px"
+        className="overflow-y-auto"
+      >
+        <div className="space-y-2 p-3">
+          <SidebarGroup title="Properties">
           <InlineProperty label="Status">
             <Select
               value={displayedTicket!.status_category}
@@ -985,36 +1038,36 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               }}
             />
           </InlineProperty>
+          </SidebarGroup>
 
-          {/* SLA */}
-          <div>
-            <div className="text-xs text-muted-foreground mb-1.5">SLA</div>
-            {displayedTicket!.ticket_kind === 'work_order' ? (
-              <Select
-                value={displayedTicket!.sla_id ?? '__none__'}
-                onValueChange={(v) => {
-                  const next = v === '__none__' ? null : v;
-                  if (next !== displayedTicket!.sla_id) patch({ sla_id: next } as Partial<UpdateTicketPayload>);
-                }}
-              >
-                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="No SLA" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No SLA</SelectItem>
-                  {(slaPolicies ?? []).map((p) => (
-                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
-            <div className={displayedTicket!.ticket_kind === 'work_order' ? 'mt-2' : ''}>
+          <SidebarGroup title="SLA">
+            {displayedTicket!.ticket_kind === 'work_order' && (
+              <InlineProperty label="Policy">
+                <Select
+                  value={displayedTicket!.sla_id ?? '__none__'}
+                  onValueChange={(v) => {
+                    const next = v === '__none__' ? null : v;
+                    if (next !== displayedTicket!.sla_id) patch({ sla_id: next } as Partial<UpdateTicketPayload>);
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="No SLA" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No SLA</SelectItem>
+                    {(slaPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </InlineProperty>
+            )}
+            <div>
+              <div className="text-xs text-muted-foreground mb-1.5">Resolution</div>
               <SlaTimer dueAt={displayedTicket!.sla_resolution_due_at} breachedAt={displayedTicket!.sla_resolution_breached_at} />
             </div>
-          </div>
+            <TicketSlaEscalations ticketId={displayedTicket!.id} />
+          </SidebarGroup>
 
-          <TicketSlaEscalations ticketId={displayedTicket!.id} />
-
-          <Separator />
-
+          <SidebarGroup title="Requester">
           {/* Requester */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Requester</div>
@@ -1046,7 +1099,9 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               <div className="text-xs text-muted-foreground">{displayedTicket!.asset.serial_number}</div>
             </div>
           )}
+          </SidebarGroup>
 
+          <SidebarGroup title="Labels">
           <InlineProperty label="Labels" icon={<TagIcon className="h-3 w-3" />}>
             <MultiSelectPicker
               values={displayedTicket!.tags ?? []}
@@ -1080,9 +1135,9 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               onChange={(next) => patch({ cost: next })}
             />
           </InlineProperty>
+          </SidebarGroup>
 
-          <Separator />
-
+          <SidebarGroup title="Details">
           {/* Request type */}
           {displayedTicket!.request_type && (
             <InlineProperty label="Type">
@@ -1141,9 +1196,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
             })}</div>
           </div>
+          </SidebarGroup>
         </div>
-      </div>
-    </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   );
 }
 

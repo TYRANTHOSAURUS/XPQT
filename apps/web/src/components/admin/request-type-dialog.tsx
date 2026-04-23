@@ -29,7 +29,6 @@ interface RequestType {
   domain: string | null;
   active: boolean;
   sla_policy?: { id: string; name: string } | null;
-  form_schema_id?: string | null;
   location_granularity?: string | null;
   fulfillment_strategy?: FulfillmentStrategy;
   requires_asset?: boolean;
@@ -40,6 +39,23 @@ interface RequestType {
   default_team_id?: string | null;
   requires_approval?: boolean;
   approval_approver_team_id?: string | null;
+}
+
+/**
+ * The default form schema for a request type lives on
+ * request_type_form_variants (criteria_set_id IS NULL). Since migration 00098
+ * dropped the denormalized column, this dialog fetches the default variant
+ * on load and writes through PUT /request-types/:id/form-variants on save —
+ * request_types itself never carries a form_schema_id anymore.
+ */
+interface FormVariantRow {
+  id: string;
+  criteria_set_id: string | null;
+  form_schema_id: string;
+  priority: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  active: boolean;
 }
 
 interface SlaPolicy { id: string; name: string }
@@ -121,13 +137,20 @@ export function RequestTypeDialog({
     let cancelled = false;
     (async () => {
       try {
-        const rt = await apiFetch<RequestType>(`/request-types/${editingId}`);
+        const [rt, variants] = await Promise.all([
+          apiFetch<RequestType>(`/request-types/${editingId}`),
+          apiFetch<FormVariantRow[]>(`/request-types/${editingId}/form-variants`),
+        ]);
         if (cancelled) return;
         setName(rt.name);
         setDomain(rt.domain ?? 'general');
         setSlaPolicyId(rt.sla_policy?.id ?? '');
-        setFormSchemaId(rt.form_schema_id ?? '');
-        setInitialFormSchemaId(rt.form_schema_id ?? null);
+        // Default form variant = criteria_set_id IS NULL + active. If none
+        // exists the dialog shows "None" and a save picks up any value the
+        // admin selects.
+        const defaultVariant = (variants ?? []).find((v) => v.criteria_set_id === null && v.active) ?? null;
+        setFormSchemaId(defaultVariant?.form_schema_id ?? '');
+        setInitialFormSchemaId(defaultVariant?.form_schema_id ?? null);
         setLocationGranularity(rt.location_granularity ?? '__any');
         setFulfillmentStrategy(rt.fulfillment_strategy ?? 'fixed');
         setRequiresAsset(!!rt.requires_asset);
@@ -153,7 +176,6 @@ export function RequestTypeDialog({
       name,
       domain,
       sla_policy_id: slaPolicyId || undefined,
-      form_schema_id: formSchemaId || null,
       location_granularity: locationGranularity === '__any' ? null : locationGranularity,
       fulfillment_strategy: fulfillmentStrategy,
       requires_asset: requiresAsset,
@@ -190,9 +212,30 @@ export function RequestTypeDialog({
       }
 
       if (needsVariantSync) {
+        // PUT /form-variants is a replace-set — fetch existing, preserve any
+        // conditional variants (criteria_set_id != null), and submit the new
+        // full list so admin-authored conditionals aren't wiped by this
+        // dialog. CREATE path: no existing conditionals; this still writes
+        // the default (or an empty list if the admin cleared the field).
+        const existing = (await apiFetch<FormVariantRow[]>(
+          `/request-types/${savedId}/form-variants`,
+        )) ?? [];
+        const conditionals = existing
+          .filter((v) => v.criteria_set_id !== null)
+          .map((v) => ({
+            criteria_set_id: v.criteria_set_id,
+            form_schema_id: v.form_schema_id,
+            priority: v.priority,
+            starts_at: v.starts_at,
+            ends_at: v.ends_at,
+            active: v.active,
+          }));
         const variants = targetSchemaId
-          ? [{ criteria_set_id: null, form_schema_id: targetSchemaId, priority: 0, active: true }]
-          : [];
+          ? [
+              ...conditionals,
+              { criteria_set_id: null, form_schema_id: targetSchemaId, priority: 0, active: true },
+            ]
+          : conditionals;
         try {
           await apiFetch(`/request-types/${savedId}/form-variants`, {
             method: 'PUT',

@@ -475,7 +475,13 @@ function ResultBlock({
   }
   if (!result) return null;
 
-  const unassigned = result.decision.chosen_by === 'unassigned';
+  // Both 'unassigned' and 'scope_override_unassigned' produce a null target:
+  // the first is "no rule matched," the second is the admin explicitly saying
+  // "block auto-routing at this scope." Both render as the destructive
+  // outcome; the chosen_by badge below distinguishes them.
+  const unassigned =
+    result.decision.chosen_by === 'unassigned' ||
+    result.decision.chosen_by === 'scope_override_unassigned';
   return (
     <Alert variant={unassigned ? 'destructive' : 'default'}>
       {unassigned ? <CircleSlash className="size-4" /> : <CheckCircle2 className="size-4" />}
