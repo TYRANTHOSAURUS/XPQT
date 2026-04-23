@@ -5,6 +5,6 @@
   "buildCommand": "pnpm --filter @prequest/web build",
   "outputDirectory": "apps/web/dist",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://xpqt-api.onrender.com/api/:path*" }
+    { "source": "/api/:path*", "destination": "https://xpqt-api-eu.onrender.com/api/:path*" }
   ]
 }

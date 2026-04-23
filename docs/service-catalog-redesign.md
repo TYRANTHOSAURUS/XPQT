@@ -1,5 +1,9 @@
 # Service Catalog Redesign — v3 (LOCKED, codex-approved)
 
+> Superseded on 2026-04-23 by [docs/service-catalog-live.md](./service-catalog-live.md).
+> Do not continue implementation from this split `service_items` / `request_types` model.
+> The live architecture has collapsed back to a single request-type-centered model.
+
 **Status:** v3 locked. v1 rejected → v2 approved-with-changes → v3 closes the three remaining items (form-variant backfill, onboardable-compat path, criteria effective-dating) and applies codex's §13 answers. Ready for implementation.
 **Scope:** Replace request-type-as-portal-card with a 5-concept model (employee context · location auth · service item · coverage · fulfillment type). Derives from ServiceNow catalog items + user criteria, Jira request-type-vs-work-type, TOPdesk service catalogue.
 
