@@ -357,8 +357,17 @@ export function CatalogCoverageTab({ detail, onSaved }: {
               return (
                 <tr
                   key={r.site.id}
-                  className={`cursor-pointer hover:bg-muted/30 ${r.offered ? '' : 'opacity-60'}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Explain coverage for ${r.site.name}`}
+                  className={`cursor-pointer hover:bg-muted/30 focus:outline-none focus:ring-1 focus:ring-ring ${r.offered ? '' : 'opacity-60'}`}
                   onClick={() => openDrillDown(r)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openDrillDown(r);
+                    }
+                  }}
                 >
                   <td className="border-b px-3 py-1.5 align-top">
                     <div className="flex flex-col gap-0.5">
@@ -546,7 +555,13 @@ export function CatalogCoverageTab({ detail, onSaved }: {
         detail={detail}
         onEditOverride={openEditOverride}
         onAddOverride={openOverrideForSite}
-        onToggleOffering={toggleSite}
+        onToggleOffering={(siteId) => {
+          // drillRow is a snapshot; the matrix refetches after toggle but
+          // the sheet body would show stale values. Close so the admin sees
+          // the fresh row in the table and can re-open if they want.
+          setDrillDownOpen(false);
+          void toggleSite(siteId);
+        }}
         hasTenantOffering={hasTenantOffering}
         directOffered={drillRow ? directOfferedIds.has(drillRow.site.id) : false}
       />

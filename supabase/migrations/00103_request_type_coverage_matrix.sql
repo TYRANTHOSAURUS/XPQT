@@ -44,14 +44,19 @@ create or replace function public.request_type_coverage_matrix(
     s.type,
     s.parent_id,
     (
+      -- Pick the most specific offering rule for this site: an exact-space
+      -- direct rule outranks any inherited ancestor-space rule, which in
+      -- turn outranks a space-group rule, which outranks a tenant-wide rule.
+      -- Older rules break ties within the same tier.
       select to_jsonb(o)
       from public.request_type_offering_matches(p_request_type_id, s.id, p_tenant_id) o
       order by
-        case o.scope_kind
-          when 'tenant' then 2
-          when 'space_group' then 1
-          when 'space' then 0
-          else 3
+        case
+          when o.scope_kind = 'space' and o.space_id = s.id then 0
+          when o.scope_kind = 'space' then 1
+          when o.scope_kind = 'space_group' then 2
+          when o.scope_kind = 'tenant' then 3
+          else 4
         end,
         o.created_at
       limit 1
