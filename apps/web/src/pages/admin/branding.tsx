@@ -7,6 +7,9 @@ import {
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
 } from '@/components/ui/field';
 import {
   SettingsPageShell,
@@ -104,34 +107,144 @@ function LogoSlot({
   );
 }
 
+// Defaults match the baked-in light/dark surface tokens in apps/web/src/index.css.
+// When the admin clicks "Customize" on a null field, the picker seeds with these
+// so they have a sensible starting point to nudge from.
+const DEFAULT_BG_LIGHT = '#ffffff';
+const DEFAULT_BG_DARK = '#1a1a1f';
+const DEFAULT_SB_LIGHT = '#fafafa';
+const DEFAULT_SB_DARK = '#1e1e24';
+
+function SurfaceColorField({
+  id,
+  label,
+  seed,
+  value,
+  onChange,
+  onReset,
+}: {
+  id: string;
+  label: string;
+  seed: string;
+  value: string | null;
+  onChange: (next: string) => void;
+  onReset: () => void;
+}) {
+  const hexValid = value === null ? true : HEX_RE.test(value);
+
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      {value === null ? (
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center px-2 py-1 rounded-md text-xs bg-muted text-muted-foreground">
+            Default
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange(seed)}
+          >
+            Customize
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3">
+          <input
+            id={`${id}-picker`}
+            type="color"
+            value={hexValid ? value : '#000000'}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-10 h-10 rounded border cursor-pointer shrink-0"
+            aria-label={`${label} color picker`}
+          />
+          <Input
+            id={id}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-32 font-mono"
+            aria-invalid={!hexValid}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onReset}
+          >
+            Use default
+          </Button>
+        </div>
+      )}
+    </Field>
+  );
+}
+
 export function BrandingPage() {
   const { branding, loading, updateBranding, uploadLogo, removeLogo } = useBranding();
 
   const [primary, setPrimary] = useState(branding.primary_color);
   const [accent, setAccent] = useState(branding.accent_color);
   const [mode, setMode] = useState<Branding['theme_mode_default']>(branding.theme_mode_default);
+  const [bgLight, setBgLight] = useState<string | null>(branding.background_light);
+  const [bgDark,  setBgDark]  = useState<string | null>(branding.background_dark);
+  const [sbLight, setSbLight] = useState<string | null>(branding.sidebar_light);
+  const [sbDark,  setSbDark]  = useState<string | null>(branding.sidebar_dark);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setPrimary(branding.primary_color);
     setAccent(branding.accent_color);
     setMode(branding.theme_mode_default);
-  }, [branding.primary_color, branding.accent_color, branding.theme_mode_default]);
+    setBgLight(branding.background_light);
+    setBgDark(branding.background_dark);
+    setSbLight(branding.sidebar_light);
+    setSbDark(branding.sidebar_dark);
+  }, [
+    branding.primary_color,
+    branding.accent_color,
+    branding.theme_mode_default,
+    branding.background_light,
+    branding.background_dark,
+    branding.sidebar_light,
+    branding.sidebar_dark,
+  ]);
+
+  const surfaceEqual = (local: string | null, server: string | null) =>
+    (local?.toLowerCase() ?? null) === (server?.toLowerCase() ?? null);
 
   const dirty =
     primary.toLowerCase() !== branding.primary_color.toLowerCase() ||
     accent.toLowerCase() !== branding.accent_color.toLowerCase() ||
-    mode !== branding.theme_mode_default;
+    mode !== branding.theme_mode_default ||
+    !surfaceEqual(bgLight, branding.background_light) ||
+    !surfaceEqual(bgDark,  branding.background_dark) ||
+    !surfaceEqual(sbLight, branding.sidebar_light) ||
+    !surfaceEqual(sbDark,  branding.sidebar_dark);
 
-  const canSave = dirty && HEX_RE.test(primary) && HEX_RE.test(accent) && !saving;
+  const surfaceValid = (v: string | null) => v === null || HEX_RE.test(v);
+
+  const canSave =
+    dirty &&
+    HEX_RE.test(primary) &&
+    HEX_RE.test(accent) &&
+    surfaceValid(bgLight) &&
+    surfaceValid(bgDark) &&
+    surfaceValid(sbLight) &&
+    surfaceValid(sbDark) &&
+    !saving;
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await updateBranding({
         primary_color: primary.toLowerCase(),
-        accent_color: accent.toLowerCase(),
+        accent_color:  accent.toLowerCase(),
         theme_mode_default: mode,
+        background_light: bgLight?.toLowerCase() ?? null,
+        background_dark:  bgDark?.toLowerCase()  ?? null,
+        sidebar_light:    sbLight?.toLowerCase() ?? null,
+        sidebar_dark:     sbDark?.toLowerCase()  ?? null,
       });
       toast.success('Branding saved');
     } catch (err) {
@@ -145,6 +258,10 @@ export function BrandingPage() {
     setPrimary(branding.primary_color);
     setAccent(branding.accent_color);
     setMode(branding.theme_mode_default);
+    setBgLight(branding.background_light);
+    setBgDark(branding.background_dark);
+    setSbLight(branding.sidebar_light);
+    setSbDark(branding.sidebar_dark);
   };
 
   if (loading && !branding.primary_color) {
@@ -255,6 +372,59 @@ export function BrandingPage() {
             Accent
           </span>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Surfaces"
+        description="Optionally override the page background and sidepanel colors per theme mode. Foreground, border, and hover tones are derived automatically."
+      >
+        <FieldGroup>
+          <FieldSet>
+            <FieldLegend>Page background</FieldLegend>
+            <FieldDescription>The main canvas color behind content.</FieldDescription>
+            <FieldGroup>
+              <SurfaceColorField
+                id="bg-light"
+                label="Light mode"
+                seed={DEFAULT_BG_LIGHT}
+                value={bgLight}
+                onChange={setBgLight}
+                onReset={() => setBgLight(null)}
+              />
+              <SurfaceColorField
+                id="bg-dark"
+                label="Dark mode"
+                seed={DEFAULT_BG_DARK}
+                value={bgDark}
+                onChange={setBgDark}
+                onReset={() => setBgDark(null)}
+              />
+            </FieldGroup>
+          </FieldSet>
+          <FieldSeparator />
+          <FieldSet>
+            <FieldLegend>Sidepanel</FieldLegend>
+            <FieldDescription>The left navigation surface.</FieldDescription>
+            <FieldGroup>
+              <SurfaceColorField
+                id="sb-light"
+                label="Light mode"
+                seed={DEFAULT_SB_LIGHT}
+                value={sbLight}
+                onChange={setSbLight}
+                onReset={() => setSbLight(null)}
+              />
+              <SurfaceColorField
+                id="sb-dark"
+                label="Dark mode"
+                seed={DEFAULT_SB_DARK}
+                value={sbDark}
+                onChange={setSbDark}
+                onReset={() => setSbDark(null)}
+              />
+            </FieldGroup>
+          </FieldSet>
+        </FieldGroup>
       </SettingsSection>
 
       <SettingsSection
