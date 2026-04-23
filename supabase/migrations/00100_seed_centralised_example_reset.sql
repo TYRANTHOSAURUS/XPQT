@@ -54,6 +54,7 @@ begin
   delete from public.delegations where tenant_id = t;
   delete from public.routing_decisions where tenant_id = t;
   delete from public.workflow_instance_events where tenant_id = t;
+  delete from public.workflow_instances where tenant_id = t;
   delete from public.workflow_webhooks where tenant_id = t;
   delete from public.approvals where tenant_id = t;
   delete from public.sla_timers where tenant_id = t;
@@ -67,7 +68,6 @@ begin
   delete from public.vendor_service_areas where tenant_id = t;
   delete from public.location_teams where tenant_id = t;
   delete from public.routing_rules where tenant_id = t;
-  delete from public.domain_parents where tenant_id = t;
   delete from public.request_type_scope_overrides where tenant_id = t;
   delete from public.request_type_on_behalf_rules where tenant_id = t;
   delete from public.request_type_form_variants where tenant_id = t;
@@ -75,6 +75,8 @@ begin
   delete from public.request_type_coverage_rules where tenant_id = t;
   delete from public.request_type_categories where tenant_id = t;
   delete from public.request_types where tenant_id = t;
+  delete from public.domain_parents where tenant_id = t;
+  delete from public.domains where tenant_id = t;
   delete from public.service_catalog_categories where tenant_id = t;
   delete from public.space_group_members where tenant_id = t;
   delete from public.space_groups where tenant_id = t;
@@ -86,8 +88,8 @@ begin
   delete from public.org_node_location_grants where tenant_id = t;
   delete from public.person_location_grants where tenant_id = t;
   delete from public.person_org_memberships where tenant_id = t;
-  delete from public.teams where tenant_id = t;
   delete from public.vendors where tenant_id = t;
+  delete from public.teams where tenant_id = t;
   delete from public.roles where tenant_id = t;
 
   delete from public.users
