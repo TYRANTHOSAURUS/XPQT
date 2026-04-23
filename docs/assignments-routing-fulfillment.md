@@ -569,7 +569,8 @@ Trigger list:
 - `apps/api/src/modules/approval/` — anything that changes the `pending_approval` state semantics.
 - `apps/api/src/modules/workflow/workflow-engine.service.ts` — especially the `create_child_tasks` node, anything that inserts `tickets` rows, and `cancelInstanceForTicket`.
 - `apps/api/src/modules/ticket/reclassify.service.ts` or `reclassify.controller.ts` — the whole reclassification surface is routing-adjacent (see §12a).
-- Any migration that adds or alters: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`, `workflow_instances`.
+- Any migration that adds or alters: `tickets`, `request_types`, `request_type_coverage_rules`, `request_type_audience_rules`, `request_type_form_variants`, `request_type_on_behalf_rules`, `request_type_scope_overrides`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`, `workflow_instances`.
+- Any change to the request-type-native predicates: `public.request_type_visible_ids`, `public.request_type_offering_matches`, `public.request_type_requestable_trace`, `public.request_type_onboardable_space_ids` (see §23).
 
 Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-capable rules, visibility scoping) — entry in Section 13 should move from "not solved" to a new detailed section.
 
@@ -579,6 +580,7 @@ Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-c
 
 Move items here with a date when a gap from §13 is closed. Keeps the doc honest about what was once broken and when it was fixed.
 
+- **2026-04-23 — Service catalog collapsed to request_types.** The split `service_items` / `request_types` model is being retired. Request types now carry portal-facing fields directly (`kb_link`, `disruption_banner`, `on_behalf_policy`, `keywords`, `display_order`) plus five request-type-native satellite tables (`request_type_coverage_rules`, `_audience_rules`, `_form_variants`, `_on_behalf_rules`, `_scope_overrides`). See §23 for the full inventory and the resolver's position on scope overrides. Migrations 00085–00093. Routing/assignment code paths (`runPostCreateAutomation`, `DispatchService`, `ResolverService`, child-SLA resolution) are unchanged.
 - **2026-04-21 — Reclassify existing ticket.** Previously, a ticket's `request_type_id` was effectively immutable after creation — changing it required closing and re-creating the ticket. Now `POST /tickets/:id/reclassify` (with `/preview` counterpart) allows an agent to change the request type in place; all four axes cascade correctly per §12a. Atomic RPC `reclassify_ticket` in migration `00039`.
 - **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that was the *case* policy bleeding into child rows). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team default → none. New schema in migration `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill, future dispatches are correct. Cases also gain a close guard that refuses `resolved`/`closed` while any child is still open, and children's `sla_id` is now editable post-dispatch via `PATCH /tickets/:id` which calls `SlaService.restartTimers`. Workflow `create_child_tasks` node now forwards per-task `sla_policy_id` through to dispatch.
 - **2026-04-18 — Sidebar reassign now audits.** The desk sidebar's `useTicketMutation.updateAssignment` hook now calls `POST /tickets/:id/reassign` (with a synthesized reason) whenever an existing assignee is replaced. First-time assignment still uses silent `PATCH`. `routing_decisions` captures every sidebar reassignment going forward.
@@ -686,3 +688,34 @@ Behavior during dual-run:
 - `routing_v2_mode='v2_only'`: v2 is served. Legacy is not run.
 
 This wire-up is safe to deploy without touching any tenant's flag. Rollback is reverting this commit; existing tenants are not affected because their flag stays `off`.
+
+## 23. Service catalog collapse (2026-04-23)
+
+Catalog architecture reference: [`docs/service-catalog-live.md`](./service-catalog-live.md). This section summarizes the parts that touch routing/assignment.
+
+**Before (migrations 00057–00074):** a split model with `service_items` as the portal-facing entity and `request_types` as the fulfillment-facing entity, joined by `request_type_service_item_bridge`. Mirror triggers kept the two sides in sync on `request_types` INSERT/UPDATE (`trg_auto_pair_service_item`, `trg_mirror_rt_update_to_si`) and on `request_type_categories` INSERT/DELETE (`trg_mirror_rtc_insert`, `trg_mirror_rtc_delete`).
+
+**After (migrations 00085–00093):** one entity, `request_types`, carrying everything portal + fulfillment need. Satellite tables are now request-type-native:
+
+- `request_type_coverage_rules` — where the service is offered (tenant / space / space_group scope). Replaces `service_item_offerings`.
+- `request_type_audience_rules` — who can see / request it (visible_allow / visible_deny / request_allow / request_deny). Replaces `service_item_criteria`.
+- `request_type_form_variants` — per-audience form variant with partial-unique default. Replaces `service_item_form_variants`.
+- `request_type_on_behalf_rules` — actor / target criteria for `on_behalf_policy='configured_list'`. Replaces `service_item_on_behalf_rules`.
+- `request_type_scope_overrides` — **new, no legacy equivalent.** Per-scope overrides for effective handler (team | vendor | none), workflow, case SLA, child dispatch policy, executor SLA, case-owner policy entity. One active row per (request_type, scope, scope-target) via partial unique indexes. Resolver precedence per [`service-catalog-live.md §6.3`](./service-catalog-live.md#63-effective-fulfillment-resolution): exact match → inherited ancestor → space_group → tenant → request_type default → generic routing defaults.
+
+Portal predicates are now request-type-native and live alongside the legacy service-item-backed set until phase E cleanup:
+
+- `public.request_type_visible_ids(actor, selected_space, tenant) → setof uuid`
+- `public.request_type_offering_matches(rt_id, selected_space, tenant) → table(id, scope_kind, space_id, space_group_id, created_at)`
+- `public.request_type_requestable_trace(actor, rt_id, requested_for, selected_space, asset, tenant) → jsonb` — single source of truth for portal submit validation + routing-studio simulator `portal_availability` projection.
+- `public.request_type_onboardable_space_ids(tenant, actor) → setof uuid`
+
+Impact on assignment/routing code:
+
+- `TicketService.runPostCreateAutomation`, `DispatchService.dispatch`, `DispatchService.resolveChildSla` — **no change.** They keep reading `request_types` columns (`domain`, `domain_id`, `sla_policy_id`, `default_team_id`, `default_vendor_id`, `workflow_definition_id`, `case_owner_policy_entity_id`, `child_dispatch_policy_entity_id`). Those columns moved nowhere.
+- `ResolverService.resolve` — **no change.** Coverage/audience concerns never lived on the resolver; they're a portal-visibility concern.
+- Scope overrides (`request_type_scope_overrides`) are NOT YET consulted by the resolver or by `DispatchService.resolveChildSla`. The table + admin API exist; resolver integration to honor per-scope `handler_*`, `workflow_definition_id`, `case_sla_policy_id`, `child_dispatch_policy_entity_id`, `executor_sla_policy_id` is a follow-up slice. Today the admin can set overrides but routing still falls through the existing resolver chain — overrides are advisory only until wired.
+- `PortalSubmitService.resolvePortalSubmit` — now calls `request_type_requestable_trace` directly; DTO is `request_type_id` only (service_item_id removed).
+- `RoutingSimulatorService.evaluatePortalAvailability` — now calls `request_type_requestable_trace` and projects to the slim `PortalAvailabilityTraceView` the simulator UI already consumes.
+
+Phase E (pending) drops `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, the four mirror/auto-pair triggers, the bridge-wrapper predicates (`portal_visible_request_type_ids` as written in 00069, `portal_availability_trace`), the v2 predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`), and the legacy `portal_onboardable_locations`. The `service_catalog:manage` permission is retired at the same time.

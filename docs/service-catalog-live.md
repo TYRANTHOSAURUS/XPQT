@@ -437,39 +437,22 @@ Canonical portal functions should become:
 
 These are primary APIs again, not wrappers.
 
-## 11. Implementation Plan
+## 11. Implementation Status
 
-### Phase 1: Stop the split
+Plan reference: [`docs/superpowers/plans/2026-04-23-service-catalog-collapse.md`](./superpowers/plans/2026-04-23-service-catalog-collapse.md).
 
-1. Declare this doc the source of truth.
-2. Stop building new behavior on `service_items`.
-3. Remove admin navigation to standalone service-item surfaces.
+**Shipped (2026-04-23):**
 
-### Phase 2: Collapse schema
+- Phase A — migrations 00085–00091. Five request-type-native satellite tables (`request_type_coverage_rules`, `_audience_rules`, `_form_variants`, `_on_behalf_rules`, `_scope_overrides`) + three `request_types` portal columns (`kb_link`, `disruption_banner`, `on_behalf_policy`). Backfilled from the bridged service-item tables; scope-override constraints tightened after codex review (handler-shape, non-empty, active-per-scope uniqueness).
+- Phase B — migration 00092 + 00093. Request-type-native predicates `request_type_visible_ids`, `request_type_offering_matches`, `request_type_requestable_trace`, `request_type_onboardable_space_ids`. Ancestor-once + grouped-audience performance fix; `(tenant_id, mode, active, request_type_id)` index added.
+- Phase C — backend. Portal submit DTO drops `service_item_id`; portal catalog reads `request_type_visible_ids`; onboardable calls `request_type_onboardable_space_ids`; routing-studio simulator calls `request_type_requestable_trace`. Admin CRUD PUT-replace endpoints shipped on `/request-types/:id/{categories,coverage,audience,form-variants,on-behalf-rules,scope-overrides}` with DB-invariant validation; `service_catalog:manage` guards removed from POST/PATCH/DELETE.
+- Phase D — frontend. `/admin/service-items` page, `ServiceItemDialog`, `SetHandlerDialog` deleted. Catalog panel + tabs wired to `/request-types/:id/*`. Portal pages consume `categories → request_types` shape; submit posts `request_type_id`.
 
-1. Move any remaining portal-only columns needed onto `request_types`.
-2. Replace service-item-scoped tables with request-type-scoped tables.
-3. Migrate existing service-item data back onto request types.
-4. Drop bridge tables, views, and mirror triggers.
+**Pending:**
 
-### Phase 3: Rewire runtime
-
-1. Portal catalog reads request types directly.
-2. Portal submit validates request types directly.
-3. Coverage matrix computes effective handler/workflow/SLA using the new override stack.
-4. Admin simulator traces request type availability and fulfillment directly.
-
-### Phase 4: Rewire admin UX
-
-1. Keep one tree page only.
-2. Rename the primary admin noun if wanted, but keep one concept only.
-3. Add full CRUD for audience, form variants, on-behalf rules, and scope overrides.
-
-### Phase 5: Hard cleanup
-
-1. Delete dead service-item codepaths.
-2. Delete compatibility SQL functions.
-3. Delete old docs that describe the split model or mark them superseded.
+- Phase E — hard cleanup. Drop `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, and the mirror/auto-pair triggers. Drop the service-item-backed predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`) and the bridge-wrapper predicates (`portal_visible_request_type_ids` bridge version, `portal_availability_trace`). Drop the `portal_onboardable_locations` legacy function. Retire the `service_catalog:manage` permission. Delete the `apps/api/src/modules/service-catalog` module (preserving the tree/categories endpoints by moving them under the config-engine surface).
+- Coverage matrix UI (§8) — net-new. Effective handler / workflow / case SLA / child dispatch / executor SLA per location, with override drawer calling `PUT /request-types/:id/scope-overrides`. Tracked as a dedicated slice.
+- Scope-override resolver integration — the table + admin API exist; `ResolverService` and `DispatchService.resolveChildSla` do NOT yet consult `request_type_scope_overrides`. Wiring them is its own slice (breaks no existing behavior but enables the override contract).
 
 ## 12. Performance And Quality Guardrails
 
