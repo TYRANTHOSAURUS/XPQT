@@ -15,9 +15,12 @@ import { MyRequestsPage } from '@/pages/portal/my-requests';
 import { CatalogCategoryPage } from '@/pages/portal/catalog-category';
 import { SubmitRequestPage } from '@/pages/portal/submit-request';
 import { RequestTypesPage } from '@/pages/admin/request-types';
+import { CriteriaSetsPage } from '@/pages/admin/criteria-sets';
 import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
+import { SlaPolicyCreatePage } from '@/pages/admin/sla-policy-create';
+import { SlaPolicyDetailPage } from '@/pages/admin/sla-policy-detail';
 import { RoutingRulesPage } from '@/pages/admin/routing-rules';
 import { LocationTeamsPage } from '@/pages/admin/location-teams';
 import { SpaceGroupsPage } from '@/pages/admin/space-groups';
@@ -37,6 +40,9 @@ import { WorkflowTemplatesPage } from '@/pages/admin/workflow-templates';
 import { WorkflowEditorPage } from '@/pages/admin/workflow-editor';
 import { WorkflowInstancePage } from '@/pages/admin/workflow-instance';
 import { WebhooksPage } from '@/pages/admin/webhooks';
+import { WebhookCreatePage } from '@/pages/admin/webhook-create';
+import { WebhookDetailPage } from '@/pages/admin/webhook-detail';
+import { WebhookEventsPage } from '@/pages/admin/webhook-events';
 import { VendorsPage } from '@/pages/admin/vendors';
 import { VendorMenusPage } from '@/pages/admin/vendor-menus';
 import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
@@ -116,6 +122,8 @@ export function App() {
             <Route path="teams" element={<TeamsPage />} />
             <Route path="locations" element={<LocationsPage />} />
             <Route path="sla-policies" element={<SlaPoliciesPage />} />
+            <Route path="sla-policies/new" element={<SlaPolicyCreatePage />} />
+            <Route path="sla-policies/:id" element={<SlaPolicyDetailPage />} />
             {/*
              * Legacy routing admin paths. When the Routing Studio flag is on, we
              * redirect these to the unified Studio. Flag-off keeps the old pages
@@ -156,10 +164,14 @@ export function App() {
             <Route path="business-hours" element={<BusinessHoursPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />
+            <Route path="criteria-sets" element={<CriteriaSetsPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
             <Route path="webhooks" element={<WebhooksPage />} />
+            <Route path="webhooks/new" element={<WebhookCreatePage />} />
+            <Route path="webhooks/:id" element={<WebhookDetailPage />} />
+            <Route path="webhooks/:id/events" element={<WebhookEventsPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
             <Route path="persons" element={<PersonsPage />} />

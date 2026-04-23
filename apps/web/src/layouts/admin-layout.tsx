@@ -40,6 +40,7 @@ import {
   Webhook,
   HandCoins,
   ListTree,
+  Filter,
   Store,
   BookOpen,
   Network,
@@ -61,6 +62,7 @@ const legacyRoutingNav = [
 const configNav = [
   { title: 'Service Catalog', path: '/admin/catalog-hierarchy', icon: ListTree },
   { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
+  { title: 'Criteria Sets', path: '/admin/criteria-sets', icon: Filter },
   { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
   ...(features.routingStudio
     ? [{ title: 'Routing Studio', path: '/admin/routing-studio', icon: Compass }]
@@ -92,6 +94,7 @@ const pageTitles: Record<string, string> = {
   '/admin/catalog-hierarchy': 'Catalog Hierarchy',
   '/admin/request-types': 'Request Types',
   '/admin/form-schemas': 'Form Schemas',
+  '/admin/criteria-sets': 'Criteria Sets',
   '/admin/teams': 'Teams',
   '/admin/locations': 'Locations',
   '/admin/sla-policies': 'SLA Policies',
