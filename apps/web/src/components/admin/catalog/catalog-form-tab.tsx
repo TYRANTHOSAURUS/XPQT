@@ -75,8 +75,8 @@ export function CatalogFormTab({ detail }: { detail: ServiceItemDetail; onSaved:
       </div>
 
       <p className="text-xs text-muted-foreground">
-        The default variant syncs from the linked Request Type's form schema. Conditional variants
-        require inline criteria authoring (coming soon).
+        The default variant is written by the request-type dialog when its Linked Form Schema
+        changes. Conditional variants require inline criteria authoring (coming soon).
       </p>
     </div>
   );

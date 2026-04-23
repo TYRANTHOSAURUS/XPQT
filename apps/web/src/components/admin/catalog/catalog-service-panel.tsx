@@ -58,6 +58,22 @@ export interface ServiceItemDetail {
     active: boolean;
   }>;
   on_behalf_rules: Array<{ id: string; role: 'actor' | 'target'; criteria_set_id: string }>;
+  scope_overrides: Array<{
+    id: string;
+    scope_kind: 'tenant' | 'space' | 'space_group';
+    space_id: string | null;
+    space_group_id: string | null;
+    inherit_to_descendants: boolean;
+    active: boolean;
+    handler_kind: 'team' | 'vendor' | 'none' | null;
+    handler_team_id: string | null;
+    handler_vendor_id: string | null;
+    workflow_definition_id: string | null;
+    case_sla_policy_id: string | null;
+    case_owner_policy_entity_id: string | null;
+    child_dispatch_policy_entity_id: string | null;
+    executor_sla_policy_id: string | null;
+  }>;
 }
 
 interface RequestTypeRow {
@@ -80,14 +96,20 @@ interface Props {
 }
 
 async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
-  const [rt, categoryIds, coverage, audience, variants, onBehalfRules] = await Promise.all([
-    apiFetch<RequestTypeRow>(`/request-types/${requestTypeId}`),
-    apiFetch<string[]>(`/request-types/${requestTypeId}/categories`),
-    apiFetch<ServiceItemDetail['offerings']>(`/request-types/${requestTypeId}/coverage`),
-    apiFetch<ServiceItemDetail['criteria']>(`/request-types/${requestTypeId}/audience`),
-    apiFetch<ServiceItemDetail['form_variants']>(`/request-types/${requestTypeId}/form-variants`),
-    apiFetch<ServiceItemDetail['on_behalf_rules']>(`/request-types/${requestTypeId}/on-behalf-rules`),
-  ]);
+  const [rt, categoryIds, coverage, audience, variants, onBehalfRules, scopeOverrides] =
+    await Promise.all([
+      apiFetch<RequestTypeRow>(`/request-types/${requestTypeId}`),
+      apiFetch<string[]>(`/request-types/${requestTypeId}/categories`),
+      apiFetch<ServiceItemDetail['offerings']>(`/request-types/${requestTypeId}/coverage`),
+      apiFetch<ServiceItemDetail['criteria']>(`/request-types/${requestTypeId}/audience`),
+      apiFetch<ServiceItemDetail['form_variants']>(`/request-types/${requestTypeId}/form-variants`),
+      apiFetch<ServiceItemDetail['on_behalf_rules']>(
+        `/request-types/${requestTypeId}/on-behalf-rules`,
+      ),
+      apiFetch<ServiceItemDetail['scope_overrides']>(
+        `/request-types/${requestTypeId}/scope-overrides`,
+      ),
+    ]);
 
   return {
     id: rt.id,
@@ -107,6 +129,7 @@ async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
     criteria: audience,
     form_variants: variants,
     on_behalf_rules: onBehalfRules,
+    scope_overrides: scopeOverrides,
   };
 }
 

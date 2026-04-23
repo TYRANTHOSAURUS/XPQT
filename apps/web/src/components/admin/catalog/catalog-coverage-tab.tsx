@@ -264,10 +264,42 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
         </table>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Per-location handler and workflow overrides live in <span className="font-medium">scope overrides</span>
-        {' '}(net-new editor coming next). Use the routing simulator to debug effective assignment today.
-      </p>
+      <div className="rounded-md border bg-muted/20 p-3">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-medium text-muted-foreground">Scope overrides</span>
+          <span className="text-xs text-muted-foreground">
+            {detail.scope_overrides.filter((o) => o.active).length} active
+          </span>
+        </div>
+        {detail.scope_overrides.filter((o) => o.active).length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No per-scope handler, workflow, SLA, or dispatch-policy overrides.
+            The resolver falls through to the request type defaults and routing chain.
+          </p>
+        ) : (
+          <ul className="space-y-1 text-xs text-muted-foreground">
+            {detail.scope_overrides
+              .filter((o) => o.active)
+              .map((o) => (
+                <li key={o.id} className="font-mono">
+                  <span className="capitalize">{o.scope_kind.replace('_', ' ')}</span>
+                  {o.space_id && <span> · space {o.space_id.slice(0, 8)}</span>}
+                  {o.space_group_id && <span> · group {o.space_group_id.slice(0, 8)}</span>}
+                  {o.handler_kind && (
+                    <span> · handler={o.handler_kind}</span>
+                  )}
+                  {o.workflow_definition_id && <span> · workflow overridden</span>}
+                  {o.case_sla_policy_id && <span> · case SLA overridden</span>}
+                  {o.executor_sla_policy_id && <span> · executor SLA overridden</span>}
+                </li>
+              ))}
+          </ul>
+        )}
+        <p className="mt-2 text-xs text-muted-foreground">
+          Advisory — scope overrides are authored via <code className="font-mono">PUT /request-types/:id/scope-overrides</code>
+          {' '}and stored, but the resolver does not yet consult them. Inline editor + resolver wiring tracked as a separate slice.
+        </p>
+      </div>
     </div>
   );
 }

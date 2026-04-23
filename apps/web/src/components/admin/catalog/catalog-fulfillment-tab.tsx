@@ -70,7 +70,7 @@ const ON_BEHALF_OPTIONS: Array<{ value: OnBehalfPolicy; label: string; hint: str
   { value: 'self_only', label: 'Self only', hint: 'Only the requester themselves.' },
   { value: 'any_person', label: 'Any person', hint: 'Any person in the directory.' },
   { value: 'direct_reports', label: 'Direct reports', hint: 'Managers can submit for their reports.' },
-  { value: 'configured_list', label: 'Configured (criteria)', hint: 'Actor/target rules defined in Audience tab.' },
+  { value: 'configured_list', label: 'Configured (criteria)', hint: 'Actor and target criteria-set bindings — managed via PUT /request-types/:id/on-behalf-rules; no inline editor yet.' },
 ];
 
 type DefaultAssignee = 'none' | 'team' | 'vendor';

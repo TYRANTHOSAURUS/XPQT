@@ -29,7 +29,6 @@ interface RequestType {
   domain: string | null;
   active: boolean;
   sla_policy?: { id: string; name: string } | null;
-  catalog_category_id?: string | null;
   form_schema_id?: string | null;
   location_granularity?: string | null;
   fulfillment_strategy?: FulfillmentStrategy;
@@ -44,7 +43,6 @@ interface RequestType {
 }
 
 interface SlaPolicy { id: string; name: string }
-interface Category { id: string; name: string }
 interface Team { id: string; name: string }
 interface FormSchemaListItem { id: string; display_name: string }
 
@@ -70,7 +68,6 @@ interface RequestTypeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editingId: string | null;
-  defaultCategoryId?: string | null;
   onSaved: () => void;
 }
 
@@ -78,19 +75,17 @@ export function RequestTypeDialog({
   open,
   onOpenChange,
   editingId,
-  defaultCategoryId,
   onSaved,
 }: RequestTypeDialogProps) {
   const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
-  const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
   const { data: formSchemas } = useApi<FormSchemaListItem[]>('/config-entities?type=form_schema', []);
   const { data: teams } = useApi<Team[]>('/teams', []);
 
   const [name, setName] = useState('');
   const [domain, setDomain] = useState('general');
   const [slaPolicyId, setSlaPolicyId] = useState('');
-  const [categoryId, setCategoryId] = useState('');
   const [formSchemaId, setFormSchemaId] = useState('');
+  const [initialFormSchemaId, setInitialFormSchemaId] = useState<string | null>(null);
   const [locationGranularity, setLocationGranularity] = useState('__any');
   const [fulfillmentStrategy, setFulfillmentStrategy] = useState<FulfillmentStrategy>('fixed');
   const [requiresAsset, setRequiresAsset] = useState(false);
@@ -109,8 +104,8 @@ export function RequestTypeDialog({
       setName('');
       setDomain('general');
       setSlaPolicyId('');
-      setCategoryId(defaultCategoryId ?? '');
       setFormSchemaId('');
+      setInitialFormSchemaId(null);
       setLocationGranularity('__any');
       setFulfillmentStrategy('fixed');
       setRequiresAsset(false);
@@ -131,8 +126,8 @@ export function RequestTypeDialog({
         setName(rt.name);
         setDomain(rt.domain ?? 'general');
         setSlaPolicyId(rt.sla_policy?.id ?? '');
-        setCategoryId(rt.catalog_category_id ?? '');
         setFormSchemaId(rt.form_schema_id ?? '');
+        setInitialFormSchemaId(rt.form_schema_id ?? null);
         setLocationGranularity(rt.location_granularity ?? '__any');
         setFulfillmentStrategy(rt.fulfillment_strategy ?? 'fixed');
         setRequiresAsset(!!rt.requires_asset);
@@ -150,7 +145,7 @@ export function RequestTypeDialog({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, editingId, defaultCategoryId, onOpenChange]);
+  }, [open, editingId, onOpenChange]);
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -158,8 +153,7 @@ export function RequestTypeDialog({
       name,
       domain,
       sla_policy_id: slaPolicyId || undefined,
-      catalog_category_id: categoryId || undefined,
-      form_schema_id: formSchemaId || undefined,
+      form_schema_id: formSchemaId || null,
       location_granularity: locationGranularity === '__any' ? null : locationGranularity,
       fulfillment_strategy: fulfillmentStrategy,
       requires_asset: requiresAsset,
@@ -173,12 +167,32 @@ export function RequestTypeDialog({
     };
     setSaving(true);
     try {
+      let savedId: string;
       if (editingId) {
         await apiFetch(`/request-types/${editingId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        savedId = editingId;
         toast.success('Request type updated');
       } else {
-        await apiFetch('/request-types', { method: 'POST', body: JSON.stringify(body) });
+        const created = await apiFetch<{ id: string }>('/request-types', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        savedId = created.id;
         toast.success('Request type created');
+      }
+      // Sync the request-type-native default form variant whenever the
+      // linked form schema changes. Portal submit reads request_type_form_
+      // _variants; writing only request_types.form_schema_id here would
+      // leave the portal on a stale default.
+      const targetSchemaId = formSchemaId || null;
+      if (targetSchemaId !== initialFormSchemaId) {
+        const variants = targetSchemaId
+          ? [{ criteria_set_id: null, form_schema_id: targetSchemaId, priority: 0, active: true }]
+          : [];
+        await apiFetch(`/request-types/${savedId}/form-variants`, {
+          method: 'PUT',
+          body: JSON.stringify({ variants }),
+        });
       }
       onOpenChange(false);
       onSaved();
@@ -214,19 +228,6 @@ export function RequestTypeDialog({
               <SelectContent>
                 {domains.map((d) => (
                   <SelectItem key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="rt-category">Service Catalog Category</FieldLabel>
-            <Select value={categoryId} onValueChange={(v) => setCategoryId(v ?? '')}>
-              <SelectTrigger id="rt-category"><SelectValue placeholder="None" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">None</SelectItem>
-                {(categories ?? []).map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
