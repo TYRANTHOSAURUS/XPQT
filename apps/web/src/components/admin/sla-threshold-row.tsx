@@ -11,7 +11,7 @@ import type {
   ThresholdAction,
   ThresholdTargetType,
   ThresholdTimerScope,
-} from '@/pages/admin/sla-policies';
+} from '@/api/sla-policies';
 
 interface Team { id: string; name: string }
 
