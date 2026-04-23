@@ -81,7 +81,7 @@ function makeSvc(deps: ReturnType<typeof makeDeps>) {
     workflowEngine,
     approvalService,
     visibility as never,
-    { resolve: jest.fn().mockResolvedValue(null) } as never,
+    { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
   );
 }
 

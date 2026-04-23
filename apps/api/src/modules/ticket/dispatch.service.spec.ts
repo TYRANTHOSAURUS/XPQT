@@ -135,7 +135,7 @@ function makeDeps(
     assertVisible: jest.fn().mockResolvedValue(undefined),
   };
 
-  const scopeOverrides = { resolve: jest.fn().mockResolvedValue(null) };
+  const scopeOverrides = { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) };
 
   return { ticketService, supabase, routingService, slaService, visibilityService, scopeOverrides, inserted, updates, activities };
 }
@@ -158,7 +158,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     const dto: DispatchDto = { title: 'Install replacement glass', assigned_vendor_id: 'vendor-X' };
     const child = await svc.dispatch(parent.id, dto, '__system__');
@@ -181,7 +181,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'Investigate' }, '__system__');
     expect(routingService.evaluate).toHaveBeenCalled();
@@ -197,7 +197,7 @@ describe('DispatchService', () => {
       deps.routingService as never,
       deps.slaService as never,
       deps.visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await expect(svc.dispatch(parent.id, { title: 'x' }, '__system__')).rejects.toThrow(/work_order/);
   });
@@ -212,7 +212,7 @@ describe('DispatchService', () => {
       deps.routingService as never,
       deps.slaService as never,
       deps.visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await expect(svc.dispatch(parent.id, { title: 'x' }, '__system__')).rejects.toThrow(/pending approval/);
   });
@@ -226,7 +226,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'Replace window pane', assigned_vendor_id: 'glazier' }, '__system__');
     await svc.dispatch(parent.id, { title: 'Buy replacement glass', assigned_vendor_id: 'supplier' }, '__system__');
@@ -246,7 +246,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     // request_types mock returns sla_policy_id: 'sla-1' — that's the parent's desk SLA.
     // Child must NOT pick it up unless explicitly passed in DTO.
@@ -265,7 +265,7 @@ describe('DispatchService', () => {
       deps.routingService as never,
       deps.slaService as never,
       deps.visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await expect(svc.dispatch(parent.id, { title: '   ' }, '__system__')).rejects.toThrow(/title/);
   });
@@ -279,7 +279,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'x', assigned_team_id: 't1', sla_id: 'sla-explicit' }, '__system__');
     expect(inserted[0].sla_id).toBe('sla-explicit');
@@ -297,7 +297,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: 'v1', sla_id: null }, '__system__');
     expect(inserted[0].sla_id).toBeNull();
@@ -315,7 +315,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: 'v1' }, '__system__');
     expect(inserted[0].sla_id).toBe('sla-vendor');
@@ -333,7 +333,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     // override routing so no vendor is assigned
     routingService.evaluate.mockResolvedValueOnce({
@@ -357,7 +357,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'x', assigned_team_id: 't1', assigned_vendor_id: 'v1' }, '__system__');
     expect(inserted[0].sla_id).toBe('sla-vendor');
@@ -375,7 +375,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     await svc.dispatch(parent.id, { title: 'x', assigned_user_id: 'u1' }, '__system__');
     expect(inserted[0].sla_id).toBe('sla-userteam');
@@ -390,7 +390,7 @@ describe('DispatchService', () => {
       routingService as never,
       slaService as never,
       visibilityService as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     routingService.evaluate.mockResolvedValueOnce({
       target: { kind: 'team', team_id: 't1' },

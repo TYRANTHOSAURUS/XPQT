@@ -33,7 +33,7 @@ describe('ResolverService scope-override pre-step', () => {
   it('passes through to the normal chain when no override matches', async () => {
     const svc = new ResolverService(
       repo() as never,
-      { resolve: jest.fn().mockResolvedValue(null) } as never,
+      { resolveForLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     const d = await svc.resolve(ctx());
     expect(d.chosen_by).toBe('location_team');
@@ -44,7 +44,7 @@ describe('ResolverService scope-override pre-step', () => {
     const svc = new ResolverService(
       repo() as never,
       {
-        resolve: jest.fn().mockResolvedValue({
+        resolveForLocation: jest.fn().mockResolvedValue({
           id: 'ov1', scope_kind: 'space', space_id: 'loc1', space_group_id: null,
           inherit_to_descendants: true, starts_at: null, ends_at: null,
           handler_kind: 'team', handler_team_id: 'override-team',
@@ -66,7 +66,7 @@ describe('ResolverService scope-override pre-step', () => {
     const svc = new ResolverService(
       repo() as never,
       {
-        resolve: jest.fn().mockResolvedValue({
+        resolveForLocation: jest.fn().mockResolvedValue({
           id: 'ov1', scope_kind: 'tenant', space_id: null, space_group_id: null,
           inherit_to_descendants: true, starts_at: null, ends_at: null,
           handler_kind: 'vendor', handler_team_id: null,
@@ -86,7 +86,7 @@ describe('ResolverService scope-override pre-step', () => {
     const svc = new ResolverService(
       repo() as never,
       {
-        resolve: jest.fn().mockResolvedValue({
+        resolveForLocation: jest.fn().mockResolvedValue({
           id: 'ov1', scope_kind: 'space', space_id: 'loc1', space_group_id: null,
           inherit_to_descendants: true, starts_at: null, ends_at: null,
           handler_kind: 'none', handler_team_id: null, handler_vendor_id: null,
@@ -106,7 +106,7 @@ describe('ResolverService scope-override pre-step', () => {
     const svc = new ResolverService(
       repo() as never,
       {
-        resolve: jest.fn().mockResolvedValue({
+        resolveForLocation: jest.fn().mockResolvedValue({
           id: 'ov1', scope_kind: 'tenant', space_id: null, space_group_id: null,
           inherit_to_descendants: true, starts_at: null, ends_at: null,
           handler_kind: null, handler_team_id: null, handler_vendor_id: null,

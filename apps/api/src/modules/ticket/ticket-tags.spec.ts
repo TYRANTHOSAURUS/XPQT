@@ -7,6 +7,7 @@ import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { ApprovalService } from '../approval/approval.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
+import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
 
 describe('TicketService.listDistinctTags', () => {
   const tenantAId = '00000000-0000-0000-0000-00000000000a';
@@ -34,6 +35,7 @@ describe('TicketService.listDistinctTags', () => {
         { provide: WorkflowEngineService, useValue: {} },
         { provide: ApprovalService, useValue: {} },
         { provide: TicketVisibilityService, useValue: {} },
+        { provide: ScopeOverrideResolverService, useValue: {} },
       ],
     }).compile();
 

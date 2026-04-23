@@ -30,11 +30,16 @@ export class ResolverService {
     // SLA/policy-entity ids; routing falls through to the normal chain and
     // downstream callers consume the override for their own fields.
     // See live-doc §5.5 + §6.3.
+    // Effective-location fallback (explicit → asset) is centralized in
+    // ScopeOverrideResolverService. The asset was already hydrated above so
+    // we resolve the effective space ourselves and call resolveForLocation
+    // to skip a second assets round trip; semantics match ScopeOverrideResolverService.deriveEffectiveLocation.
+    const overrideLocationId = context.location_id ?? loaded.asset?.assigned_space_id ?? null;
     const override = context.request_type_id
-      ? await this.scopeOverrides.resolve(
+      ? await this.scopeOverrides.resolveForLocation(
           context.tenant_id,
           context.request_type_id,
-          context.location_id ?? loaded.asset?.assigned_space_id ?? null,
+          overrideLocationId,
         )
       : null;
     if (override?.handler_kind === 'none') {

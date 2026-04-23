@@ -161,7 +161,7 @@ export class RoutingEvaluatorService {
     const policyEntityId = await this.loadCaseOwnerPolicyEntityId(
       context.tenant_id,
       context.request_type_id,
-      context.location_id ?? null,
+      { locationId: context.location_id ?? null, assetId: context.asset_id ?? null },
     );
     if (!policyEntityId) {
       return unassignedDecision('v2: request_type has no case_owner_policy_entity_id attached');
@@ -203,42 +203,36 @@ export class RoutingEvaluatorService {
    *      request-type default).
    * Returns null when neither is set; callers treat that as "no v2 policy
    * attached" and keep their fail-soft unassigned behavior.
+   *
+   * Intake carries locationId + assetId; the scope-override service derives
+   * effective location centrally (explicit → asset → null) so this loader
+   * matches the resolver/ticket/dispatch rule.
    */
   private async loadCaseOwnerPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
-    effective_location_id: string | null = null,
+    intake: { locationId: string | null; assetId: string | null } = { locationId: null, assetId: null },
   ): Promise<string | null> {
-    return this.loadPolicyEntityId(
-      tenant_id,
-      request_type_id,
-      effective_location_id,
-      'case_owner_policy_entity_id',
-    );
+    return this.loadPolicyEntityId(tenant_id, request_type_id, intake, 'case_owner_policy_entity_id');
   }
 
   private async loadChildDispatchPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
-    effective_location_id: string | null = null,
+    intake: { locationId: string | null; assetId: string | null } = { locationId: null, assetId: null },
   ): Promise<string | null> {
-    return this.loadPolicyEntityId(
-      tenant_id,
-      request_type_id,
-      effective_location_id,
-      'child_dispatch_policy_entity_id',
-    );
+    return this.loadPolicyEntityId(tenant_id, request_type_id, intake, 'child_dispatch_policy_entity_id');
   }
 
   private async loadPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
-    effective_location_id: string | null,
+    intake: { locationId: string | null; assetId: string | null },
     column: 'case_owner_policy_entity_id' | 'child_dispatch_policy_entity_id',
   ): Promise<string | null> {
     if (!request_type_id) return null;
 
-    const override = await this.scopeOverrides.resolve(tenant_id, request_type_id, effective_location_id);
+    const override = await this.scopeOverrides.resolve(tenant_id, request_type_id, intake);
     const overridden = override?.[column];
     if (overridden) return overridden;
 
@@ -269,7 +263,7 @@ export class RoutingEvaluatorService {
     const policyEntityId = await this.loadChildDispatchPolicyEntityId(
       context.tenant_id,
       context.request_type_id,
-      context.location_id ?? null,
+      { locationId: context.location_id ?? null, assetId: context.asset_id ?? null },
     );
     if (!policyEntityId) {
       return unassignedDecision('v2: request_type has no child_dispatch_policy_entity_id attached');

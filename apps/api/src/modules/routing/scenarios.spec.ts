@@ -26,7 +26,7 @@ function repo(over: Partial<Record<string, jest.Mock>> = {}) {
 // Tests that exercise the override pre-step live in a dedicated scope-override
 // spec file so the scenarios here stay focused on the rules/asset/location
 // chain.
-const noScopeOverride = { resolve: jest.fn().mockResolvedValue(null) };
+const noScopeOverride = { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) };
 
 function ctx(over: Partial<ResolverContext> = {}): ResolverContext {
   return {

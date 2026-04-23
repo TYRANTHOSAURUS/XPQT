@@ -178,8 +178,13 @@ export class DispatchService {
 
     const requestTypeId = row.ticket_type_id as string | null;
     if (requestTypeId) {
-      const childLocation = (row.location_id as string | null) ?? null;
-      const override = await this.scopeOverrides.resolve(tenantId, requestTypeId, childLocation);
+      // Asset-only children (no row.location_id but row.asset_id set) must
+      // still hit the executor-SLA override — delegate to the centralized
+      // effective-location derivation in ScopeOverrideResolverService.
+      const override = await this.scopeOverrides.resolve(tenantId, requestTypeId, {
+        locationId: (row.location_id as string | null) ?? null,
+        assetId: (row.asset_id as string | null) ?? null,
+      });
       if (override?.executor_sla_policy_id) return override.executor_sla_policy_id;
     }
 

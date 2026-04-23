@@ -574,23 +574,28 @@ export class TicketService {
     options: CreateTicketOptions = {},
   ) {
     const isWorkOrder = data.ticket_kind === 'work_order';
-    // Compute effective location once for both the auto-routing branch and the
-    // scope-override lookup. Falls back to the asset's assigned_space_id when
-    // no explicit location was supplied.
-    let effectiveLocation = data.location_id as string | null;
-    if (!effectiveLocation && data.asset_id) {
-      const { data: asset } = await this.supabase.admin
-        .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
-      effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
-    }
 
-    // Scope-override lookup is advisory for the resolver (which already runs
-    // its own copy of this query) but authoritative for workflow / case SLA /
-    // executor SLA below. One lookup here; ResolverService.resolve repeats
-    // the call but the function is STABLE and cheap.
-    // See docs/service-catalog-live.md §5.5 + §6.3.
+    // Scope-override lookup is advisory for the resolver (which runs its own
+    // copy) but authoritative for workflow / case SLA below. Asset-backed
+    // location fallback (locationId → assetId.assigned_space_id → null) lives
+    // inside the scope-override service so every consumer sees the same rule.
+    // One extra STABLE RPC call when we also need effectiveLocation for the
+    // auto-routing branch; the service caches nothing but the overhead is a
+    // single-row index lookup.
+    const overrideIntake = {
+      locationId: (data.location_id as string | null) ?? null,
+      assetId: (data.asset_id as string | null) ?? null,
+    };
+    const effectiveLocation = await this.scopeOverrides.deriveEffectiveLocation(
+      tenantId,
+      overrideIntake,
+    );
     const scopeOverride = (data.ticket_type_id && !isWorkOrder)
-      ? await this.scopeOverrides.resolve(tenantId, data.ticket_type_id as string, effectiveLocation)
+      ? await this.scopeOverrides.resolveForLocation(
+          tenantId,
+          data.ticket_type_id as string,
+          effectiveLocation,
+        )
       : null;
     const effectiveWorkflowDefinitionId =
       scopeOverride?.workflow_definition_id ??

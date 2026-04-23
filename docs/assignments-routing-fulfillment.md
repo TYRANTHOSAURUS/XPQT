@@ -764,8 +764,11 @@ For a given `(tenant, request_type, effective_location)` tuple:
 
 ### Tests
 
-- Unit: `apps/api/src/modules/routing/scope-override-resolver.spec.ts` (5 cases: no override, team, vendor, none, handler-null fall-through).
-- SQL smoke: one-off query against remote confirms `request_type_effective_scope_override(tenant, rt, null)` returns `null` when no overrides are configured. Per-precedence fixtures are TODO before the tests gate Phase E.
+- Unit: `apps/api/src/modules/routing/scope-override-resolver.spec.ts` — 5 resolver cases (no override, team, vendor, none, handler-null fall-through).
+- Unit: `apps/api/src/modules/ticket/dispatch-scope-override.spec.ts` — 4 cases pinning executor-SLA override on location-backed + asset-only children + fall-through when the override is empty + dto.sla_id short-circuit.
+- SQL: `supabase/tests/scope_override_precedence.test.sql` — 8 cases covering the full precedence table (exact, ancestor-inherit, space-group, tenant, null-space, disjoint-space, inherit=false-ancestor-skipped, all-inactive-null). Run with `psql … -f supabase/tests/scope_override_precedence.test.sql`; 8/8 PASS expected.
+
+Effective-location derivation (`locationId → assetId.assigned_space_id → null`) is centralized in `ScopeOverrideResolverService.deriveEffectiveLocation` so every consumer sees the same rule; the `ResolverService.resolve` pre-step passes the pre-hydrated asset's space in and calls `resolveForLocation` to skip a second asset round trip; all other consumers call `resolve({ locationId, assetId })` directly.
 
 ### Trigger additions for §15
 

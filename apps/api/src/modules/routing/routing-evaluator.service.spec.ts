@@ -107,7 +107,7 @@ function buildEvaluator(overrides: {
     overrides.splitOrchestration ?? stubSplitOrchestration(),
     overrides.childExecutionResolver ??
       stubChildExecutionResolver({ target: null, chosen_by: 'unassigned', trace: [], evaluated_at: '' }),
-    { resolve: jest.fn().mockResolvedValue(null) } as never,
+    { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
   );
 }
 
