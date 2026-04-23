@@ -145,6 +145,7 @@ export class RequestTypeService {
   async putCategories(requestTypeId: string, categoryIds: string[]) {
     const tenant = TenantContext.current();
     await this.assertRequestTypeExists(requestTypeId);
+    await this.assertIdsInTenant('service_catalog_categories', categoryIds, 'category_id');
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_categories')
@@ -183,6 +184,8 @@ export class RequestTypeService {
     await this.assertRequestTypeExists(requestTypeId);
 
     for (const r of rules) this.validateScope(r.scope_kind, r.space_id ?? null, r.space_group_id ?? null);
+    await this.assertIdsInTenant('spaces', rules.map((r) => r.space_id ?? null), 'space_id');
+    await this.assertIdsInTenant('space_groups', rules.map((r) => r.space_group_id ?? null), 'space_group_id');
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_coverage_rules')
@@ -226,6 +229,7 @@ export class RequestTypeService {
   async putAudience(requestTypeId: string, rules: AudienceRuleInput[]) {
     const tenant = TenantContext.current();
     await this.assertRequestTypeExists(requestTypeId);
+    await this.assertIdsInTenant('criteria_sets', rules.map((r) => r.criteria_set_id), 'criteria_set_id');
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_audience_rules')
@@ -275,6 +279,16 @@ export class RequestTypeService {
         message: 'At most one default form variant (criteria_set_id = null) is allowed per request type',
       });
     }
+    await this.assertIdsInTenant(
+      'criteria_sets',
+      variants.map((v) => v.criteria_set_id),
+      'criteria_set_id',
+    );
+    await this.assertIdsInTenant(
+      'config_entities',
+      variants.map((v) => v.form_schema_id),
+      'form_schema_id',
+    );
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_form_variants')
@@ -318,6 +332,7 @@ export class RequestTypeService {
   async putOnBehalfRules(requestTypeId: string, rules: OnBehalfRuleInput[]) {
     const tenant = TenantContext.current();
     await this.assertRequestTypeExists(requestTypeId);
+    await this.assertIdsInTenant('criteria_sets', rules.map((r) => r.criteria_set_id), 'criteria_set_id');
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_on_behalf_rules')
@@ -361,6 +376,28 @@ export class RequestTypeService {
       this.validateHandlerShape(o);
       this.validateOverrideNonEmpty(o);
     }
+    await this.assertIdsInTenant('spaces', overrides.map((o) => o.space_id ?? null), 'space_id');
+    await this.assertIdsInTenant('space_groups', overrides.map((o) => o.space_group_id ?? null), 'space_group_id');
+    await this.assertIdsInTenant('teams', overrides.map((o) => o.handler_team_id ?? null), 'handler_team_id');
+    await this.assertIdsInTenant('vendors', overrides.map((o) => o.handler_vendor_id ?? null), 'handler_vendor_id');
+    await this.assertIdsInTenant(
+      'workflow_definitions',
+      overrides.map((o) => o.workflow_definition_id ?? null),
+      'workflow_definition_id',
+    );
+    await this.assertIdsInTenant(
+      'sla_policies',
+      overrides.flatMap((o) => [o.case_sla_policy_id ?? null, o.executor_sla_policy_id ?? null]),
+      'case_sla_policy_id / executor_sla_policy_id',
+    );
+    await this.assertIdsInTenant(
+      'config_entities',
+      overrides.flatMap((o) => [
+        o.case_owner_policy_entity_id ?? null,
+        o.child_dispatch_policy_entity_id ?? null,
+      ]),
+      'case_owner_policy_entity_id / child_dispatch_policy_entity_id',
+    );
 
     const { error: delErr } = await this.supabase.admin
       .from('request_type_scope_overrides')
@@ -419,6 +456,39 @@ export class RequestTypeService {
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new BadRequestException('Request type not found in this tenant');
+  }
+
+  /**
+   * Reject references to rows in other tenants before running the replace-set.
+   * The service uses the RLS-bypassing admin client, so plain FKs can't catch
+   * cross-tenant leakage. Each relevant tenant-scoped table gets a batched
+   * existence check; missing rows throw BadRequest.
+   *
+   * `nullable=true` drops null entries from the ID set before the query; it's
+   * used for optional references (e.g. form variant criteria_set_id can be
+   * null for the default variant).
+   */
+  private async assertIdsInTenant(
+    table: string,
+    ids: Array<string | null | undefined>,
+    label = table,
+  ): Promise<void> {
+    const nonEmpty = Array.from(new Set(ids.filter((x): x is string => !!x)));
+    if (nonEmpty.length === 0) return;
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from(table)
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .in('id', nonEmpty);
+    if (error) throw error;
+    const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));
+    const missing = nonEmpty.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `${label}: ${missing.length} referenced id(s) not found in this tenant — ${missing.join(', ')}`,
+      );
+    }
   }
 
   private validateScope(scope_kind: ScopeKind, space_id: string | null, space_group_id: string | null) {

@@ -53,11 +53,17 @@ export class RequestTypeController {
   // ── Per-request-type satellite tables ─────────────────────────────────
   // Each endpoint is a PUT-replace: the request body is the new full set of
   // rows for this request type. The service guards DB invariants (scope XOR,
-  // handler shape, non-empty override, at-most-one-default variant).
+  // handler shape, non-empty override, at-most-one-default variant) plus
+  // cross-tenant FK validation for every referenced id.
   // See docs/service-catalog-live.md §10.
+  //
+  // Both GET and PUT require request_types:manage. The satellite rows expose
+  // handler/vendor/workflow/SLA/policy identifiers that are not user-safe to
+  // enumerate without the admin grant — no separate read-permission today.
 
   @Get(':id/categories')
-  async listCategories(@Param('id') id: string) {
+  async listCategories(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listCategories(id);
   }
 
@@ -72,7 +78,8 @@ export class RequestTypeController {
   }
 
   @Get(':id/coverage')
-  async listCoverage(@Param('id') id: string) {
+  async listCoverage(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listCoverage(id);
   }
 
@@ -87,7 +94,8 @@ export class RequestTypeController {
   }
 
   @Get(':id/audience')
-  async listAudience(@Param('id') id: string) {
+  async listAudience(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listAudience(id);
   }
 
@@ -102,7 +110,8 @@ export class RequestTypeController {
   }
 
   @Get(':id/form-variants')
-  async listFormVariants(@Param('id') id: string) {
+  async listFormVariants(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listFormVariants(id);
   }
 
@@ -117,7 +126,8 @@ export class RequestTypeController {
   }
 
   @Get(':id/on-behalf-rules')
-  async listOnBehalfRules(@Param('id') id: string) {
+  async listOnBehalfRules(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listOnBehalfRules(id);
   }
 
@@ -132,7 +142,8 @@ export class RequestTypeController {
   }
 
   @Get(':id/scope-overrides')
-  async listScopeOverrides(@Param('id') id: string) {
+  async listScopeOverrides(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
     return this.requestTypeService.listScopeOverrides(id);
   }
 

@@ -1,30 +1,50 @@
 import {
-  BadRequestException,
-  Body,
   Controller,
-  Delete,
   Get,
+  GoneException,
   Param,
-  Patch,
   Post,
   Put,
+  Patch,
+  Delete,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import {
-  CreateServiceItemDto,
-  OfferingDto,
-  ServiceItemService,
-  UpdateServiceItemDto,
-} from './service-item.service';
+import { ServiceItemService } from './service-item.service';
 import { PermissionGuard } from '../../common/permission-guard';
 
+/**
+ * Frozen-for-retirement controller.
+ *
+ * The service-catalog collapse moved authoring to /request-types/:id/*.
+ * Phase D deleted the frontend callers; this controller stays mounted for
+ * Phase E's codepath audit, but every mutator now returns 410 Gone so no
+ * admin tool can silently create drift between the legacy service_item_*
+ * tables and the live request_type_* tables. The legacy one-way mirror
+ * triggers still propagate from request_types → service_items so the
+ * snapshot tables stay consistent until Phase E drops them.
+ *
+ * GET endpoints remain available for audit + migration sanity checks. They
+ * are guarded by service_catalog:manage (the seeded admin permission). When
+ * Phase E deletes the whole service_items schema, this module is unregistered
+ * in the same commit.
+ */
 @Controller('admin/service-items')
 export class ServiceItemController {
   constructor(
     private readonly service: ServiceItemService,
     private readonly permissions: PermissionGuard,
   ) {}
+
+  private retiredMessage = {
+    code: 'service_items_retired',
+    message:
+      '/admin/service-items is retired. Manage catalog configuration via /request-types/:id/{categories,coverage,audience,form-variants,on-behalf-rules,scope-overrides}. See docs/service-catalog-live.md.',
+  } as const;
+
+  private refuse(): never {
+    throw new GoneException(this.retiredMessage);
+  }
 
   @Get()
   async list(@Req() request: Request) {
@@ -38,39 +58,13 @@ export class ServiceItemController {
     return this.service.getById(id);
   }
 
-  @Post()
-  async create(@Req() request: Request, @Body() dto: CreateServiceItemDto) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    return this.service.create(dto);
-  }
-
-  @Patch(':id')
-  async update(
+  @Get('by-request-type/:requestTypeId')
+  async getByRequestTypeId(
     @Req() request: Request,
-    @Param('id') id: string,
-    @Body() dto: UpdateServiceItemDto,
+    @Param('requestTypeId') requestTypeId: string,
   ) {
     await this.permissions.requirePermission(request, 'service_catalog:manage');
-    return this.service.update(id, dto);
-  }
-
-  @Delete(':id')
-  async remove(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    return this.service.remove(id);
-  }
-
-  @Put(':id/offerings')
-  async putOfferings(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() body: { offerings: OfferingDto[] },
-  ) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    if (!body || !Array.isArray(body.offerings)) {
-      throw new BadRequestException('offerings array required');
-    }
-    return this.service.putOfferings(id, body.offerings);
+    return this.service.getByRequestTypeId(requestTypeId);
   }
 
   @Get(':id/coverage-matrix')
@@ -79,35 +73,21 @@ export class ServiceItemController {
     return this.service.getCoverageMatrix(id);
   }
 
-  @Get('by-request-type/:requestTypeId')
-  async getByRequestTypeId(@Req() request: Request, @Param('requestTypeId') requestTypeId: string) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    return this.service.getByRequestTypeId(requestTypeId);
-  }
+  @Post()
+  create(): never { return this.refuse(); }
+
+  @Patch(':id')
+  update(): never { return this.refuse(); }
+
+  @Delete(':id')
+  remove(): never { return this.refuse(); }
+
+  @Put(':id/offerings')
+  putOfferings(): never { return this.refuse(); }
 
   @Put(':id/categories')
-  async putCategories(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() body: { category_ids: string[] },
-  ) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    if (!body || !Array.isArray(body.category_ids)) {
-      throw new BadRequestException('category_ids array required');
-    }
-    return this.service.putCategories(id, body.category_ids);
-  }
+  putCategories(): never { return this.refuse(); }
 
   @Put(':id/handler-at')
-  async setHandlerAt(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() body: { space_id: string; assignee: { kind: 'team' | 'vendor'; id: string } | null },
-  ) {
-    await this.permissions.requirePermission(request, 'service_catalog:manage');
-    if (!body || !body.space_id) {
-      throw new BadRequestException('space_id required');
-    }
-    return this.service.setHandlerAt(id, body);
-  }
+  setHandlerAt(): never { return this.refuse(); }
 }
