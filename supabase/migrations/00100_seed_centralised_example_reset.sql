@@ -52,13 +52,21 @@ begin
   delete from public.notifications where tenant_id = t;
   delete from public.notification_preferences where tenant_id = t;
   delete from public.delegations where tenant_id = t;
+  delete from public.audit_events where tenant_id = t;
+  delete from public.domain_events where tenant_id = t;
+  delete from public.routing_dualrun_logs where tenant_id = t;
   delete from public.routing_decisions where tenant_id = t;
   delete from public.workflow_instance_events where tenant_id = t;
   delete from public.workflow_instances where tenant_id = t;
   delete from public.workflow_webhooks where tenant_id = t;
+  delete from public.webhook_events where tenant_id = t;
   delete from public.approvals where tenant_id = t;
+  delete from public.sla_threshold_crossings where tenant_id = t;
   delete from public.sla_timers where tenant_id = t;
   delete from public.ticket_activities where tenant_id = t;
+  delete from public.reservations where tenant_id = t;
+  delete from public.visitors where tenant_id = t;
+  delete from public.maintenance_schedules where tenant_id = t;
   delete from public.tickets where tenant_id = t;
   delete from public.asset_assignment_history where tenant_id = t;
   delete from public.order_line_items where tenant_id = t;
@@ -75,6 +83,7 @@ begin
   delete from public.request_type_coverage_rules where tenant_id = t;
   delete from public.request_type_categories where tenant_id = t;
   delete from public.request_types where tenant_id = t;
+  delete from public.criteria_sets where tenant_id = t;
   delete from public.domain_parents where tenant_id = t;
   delete from public.domains where tenant_id = t;
   delete from public.service_catalog_categories where tenant_id = t;
@@ -88,6 +97,11 @@ begin
   delete from public.org_node_location_grants where tenant_id = t;
   delete from public.person_location_grants where tenant_id = t;
   delete from public.person_org_memberships where tenant_id = t;
+  delete from public.org_nodes where tenant_id = t;
+  update public.config_entities
+  set current_published_version_id = null
+  where tenant_id = t;
+  delete from public.config_versions where tenant_id = t;
   delete from public.vendors where tenant_id = t;
   delete from public.teams where tenant_id = t;
   delete from public.roles where tenant_id = t;
