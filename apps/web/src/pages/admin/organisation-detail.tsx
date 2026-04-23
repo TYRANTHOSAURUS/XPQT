@@ -158,6 +158,7 @@ export function OrganisationDetailPage() {
       <SettingsSection
         title="Members"
         description="People whose primary organisation is this node. They inherit the location grants below."
+        density="tight"
       >
         <OrgNodeMembersPanel nodeId={node.id} />
       </SettingsSection>
@@ -165,6 +166,7 @@ export function OrganisationDetailPage() {
       <SettingsSection
         title="Location grants"
         description="Sites and buildings every member of this organisation (and its descendants) can request for."
+        density="tight"
       >
         <OrgNodeGrantsPanel nodeId={node.id} />
       </SettingsSection>
@@ -172,6 +174,7 @@ export function OrganisationDetailPage() {
       <SettingsSection
         title="Teams attached"
         description="Operational teams categorised under this organisation. Team membership does not grant locations."
+        density="tight"
       >
         <OrgNodeTeamsPanel teams={node.teams} onChanged={load} />
       </SettingsSection>
@@ -179,6 +182,7 @@ export function OrganisationDetailPage() {
       <SettingsSection
         title="Danger zone"
         description="Deleting an organisation removes its memberships and location grants. Children must be moved or deleted first."
+        bordered={false}
       >
         <div className="flex justify-end">
           <Button variant="destructive" onClick={remove}>

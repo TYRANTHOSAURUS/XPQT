@@ -51,16 +51,49 @@ interface SettingsSectionProps {
   description?: string;
   children: React.ReactNode;
   className?: string;
+  /**
+   * Wraps children in a bordered card container (default true). Linear-style
+   * settings pages use a card per section to visually scope each block. Set
+   * false for sections that contain only a single action (e.g. a Delete
+   * button) where a card would feel heavy.
+   */
+  bordered?: boolean;
+  /**
+   * Internal padding inside the card. Default 'normal' (p-6). Use 'tight'
+   * (p-4) for sections containing dense list rows that already have their
+   * own padding (e.g. members panel).
+   */
+  density?: 'normal' | 'tight';
 }
 
-export function SettingsSection({ title, description, children, className }: SettingsSectionProps) {
+export function SettingsSection({
+  title,
+  description,
+  children,
+  className,
+  bordered = true,
+  density = 'normal',
+}: SettingsSectionProps) {
+  const body = bordered ? (
+    <div
+      className={cn(
+        'rounded-lg border bg-card flex flex-col gap-4',
+        density === 'tight' ? 'p-4' : 'p-6',
+      )}
+    >
+      {children}
+    </div>
+  ) : (
+    <div className="flex flex-col gap-4">{children}</div>
+  );
+
   return (
-    <section className={cn('flex flex-col gap-4 border-t pt-6 first:border-t-0 first:pt-0', className)}>
+    <section className={cn('flex flex-col gap-3', className)}>
       <div className="flex flex-col gap-1">
         <h2 className="text-base font-medium">{title}</h2>
         {description && <p className="text-sm text-muted-foreground">{description}</p>}
       </div>
-      <div className="flex flex-col gap-4">{children}</div>
+      {body}
     </section>
   );
 }
