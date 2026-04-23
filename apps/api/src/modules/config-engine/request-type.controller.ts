@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { RequestTypeService } from './request-type.service';
 import { PermissionGuard } from '../../common/permission-guard';
@@ -65,5 +65,15 @@ export class RequestTypeController {
     await this.permissions.requirePermission(request, 'request_types:manage');
     await this.permissions.requirePermission(request, 'service_catalog:manage');
     return this.requestTypeService.update(id, dto);
+  }
+
+  @Delete(':id')
+  async remove(@Req() request: Request, @Param('id') id: string) {
+    // Soft-delete: mark inactive. Mirror triggers propagate active=false to the
+    // paired service_item so portal visibility drops in sync. Hard deletion
+    // would orphan tickets/history — avoid unless explicitly requested.
+    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'service_catalog:manage');
+    return this.requestTypeService.update(id, { active: false });
   }
 }

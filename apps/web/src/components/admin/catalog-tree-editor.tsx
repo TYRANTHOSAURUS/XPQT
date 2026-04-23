@@ -157,11 +157,24 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, 
   const Icon = item.kind === 'category' ? Folder : FileText;
   const iconColor = item.kind === 'category' ? 'text-muted-foreground' : 'text-blue-500';
 
+  const isRequestType = item.kind === 'request_type';
+  // Whole-row click opens the detail panel for request_types. Categories keep
+  // the pencil affordance so the category form stays explicit.
+  const rowClickable = isRequestType && onEdit;
+
   return (
     <div
       ref={setNodeRef}
       style={style}
+      onClick={rowClickable ? () => onEdit!(item) : undefined}
+      role={rowClickable ? 'button' : undefined}
+      tabIndex={rowClickable ? 0 : undefined}
+      onKeyDown={rowClickable
+        ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEdit!(item); } }
+        : undefined}
       className={`group flex items-center gap-2 py-1.5 pr-2 rounded-md border ${
+        rowClickable ? 'cursor-pointer' : ''
+      } ${
         selected ? 'border-primary/40 bg-accent/60' : 'border-transparent hover:bg-accent/40'
       } ${isOverlay ? 'bg-background border-border shadow-lg' : ''}`}
     >
@@ -170,6 +183,7 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, 
         className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground/60 hover:text-foreground cursor-grab active:cursor-grabbing"
         {...attributes}
         {...listeners}
+        onClick={(e) => e.stopPropagation()}
         aria-label="Drag handle"
       >
         <GripVertical className="h-4 w-4" />
@@ -180,7 +194,7 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, 
           variant="ghost"
           size="icon"
           className="h-6 w-6 text-muted-foreground hover:text-foreground"
-          onClick={() => onToggleCollapse(item.id)}
+          onClick={(e) => { e.stopPropagation(); onToggleCollapse(item.id); }}
           aria-label={item.collapsed ? 'Expand' : 'Collapse'}
         >
           {item.collapsed ? (
@@ -203,63 +217,72 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, 
         </span>
       )}
 
-      {item.kind === 'request_type' && (
+      {isRequestType && (
         <Badge variant="secondary" className="ml-1 text-[10px] h-5">
           Request
         </Badge>
       )}
 
-      <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="ml-auto flex items-center gap-0.5">
         {item.kind === 'category' && onAddChild && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={() => onAddChild(item.id)}
-                />
-              }
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </TooltipTrigger>
-            <TooltipContent>Add child</TooltipContent>
-          </Tooltip>
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={(e) => { e.stopPropagation(); onAddChild(item.id); }}
+                  />
+                }
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </TooltipTrigger>
+              <TooltipContent>Add child</TooltipContent>
+            </Tooltip>
+          </div>
         )}
-        {onEdit && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={() => onEdit(item)}
-                />
-              }
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </TooltipTrigger>
-            <TooltipContent>Edit</TooltipContent>
-          </Tooltip>
+        {item.kind === 'category' && onEdit && (
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={(e) => { e.stopPropagation(); onEdit(item); }}
+                  />
+                }
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </TooltipTrigger>
+              <TooltipContent>Edit</TooltipContent>
+            </Tooltip>
+          </div>
         )}
-        {onDelete && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7 text-destructive hover:text-destructive"
-                  onClick={() => onDelete(item)}
-                />
-              }
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </TooltipTrigger>
-            <TooltipContent>Delete</TooltipContent>
-          </Tooltip>
+        {item.kind === 'category' && onDelete && (
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-destructive hover:text-destructive"
+                    onClick={(e) => { e.stopPropagation(); onDelete(item); }}
+                  />
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </TooltipTrigger>
+              <TooltipContent>Delete</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
+        {isRequestType && (
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground" />
         )}
       </div>
     </div>

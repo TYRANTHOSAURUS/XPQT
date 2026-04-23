@@ -4,7 +4,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertTriangle, MousePointerClick } from 'lucide-react';
+import { AlertTriangle, MousePointerClick, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { CatalogBasicsTab } from './catalog-basics-tab';
 import { CatalogCoverageTab } from './catalog-coverage-tab';
@@ -90,6 +91,25 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
     }
   };
 
+  const [deleting, setDeleting] = useState(false);
+  const handleDelete = async () => {
+    if (!requestTypeId || !detail) return;
+    if (!confirm(`Delete "${detail.name}"? It will be deactivated and hidden from the portal. Existing tickets are unaffected.`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await apiFetch(`/request-types/${requestTypeId}`, { method: 'DELETE' });
+      toast.success('Service deactivated');
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   if (!requestTypeId) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
@@ -133,7 +153,20 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
             {!detail.active && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
           </div>
         </div>
-        <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+            onClick={handleDelete}
+            disabled={deleting || !detail.active}
+            title={detail.active ? 'Delete service' : 'Already inactive'}
+          >
+            <Trash2 className="h-4 w-4 mr-1" />
+            {deleting ? 'Deleting…' : 'Delete'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
