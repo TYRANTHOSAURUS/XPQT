@@ -147,6 +147,12 @@ export class RequestTypeController {
     return this.requestTypeService.listScopeOverrides(id);
   }
 
+  @Get(':id/coverage-matrix')
+  async getCoverageMatrix(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'request_types:manage');
+    return this.requestTypeService.getCoverageMatrix(id);
+  }
+
   @Put(':id/scope-overrides')
   async putScopeOverrides(
     @Req() request: Request,

@@ -365,6 +365,216 @@ export class RequestTypeService {
     return data;
   }
 
+  // ── Coverage matrix (read-only aggregate for admin UI) ─────────────────
+  // Returns one row per site/building in the tenant with the composed
+  // effective state: which coverage rule offers it (if any), which scope
+  // override wins (if any), and the request_types defaults that fall through.
+  // Source labels are computed server-side so the UI renders badges without
+  // re-implementing precedence. See live-doc §8.
+  async getCoverageMatrix(requestTypeId: string) {
+    const tenant = TenantContext.current();
+    await this.assertRequestTypeExists(requestTypeId);
+
+    const { data: rows, error } = await this.supabase.admin.rpc('request_type_coverage_matrix', {
+      p_tenant_id: tenant.id,
+      p_request_type_id: requestTypeId,
+    });
+    if (error) throw error;
+
+    type MatrixRow = {
+      site_id: string;
+      site_name: string;
+      site_type: 'site' | 'building';
+      parent_id: string | null;
+      offering: Record<string, unknown> | null;
+      override: Record<string, unknown> | null;
+      rt_defaults: {
+        default_team_id: string | null;
+        default_vendor_id: string | null;
+        workflow_definition_id: string | null;
+        sla_policy_id: string | null;
+      };
+    };
+    const raw = (rows ?? []) as MatrixRow[];
+
+    // Gather every id we need to hydrate into a display name in one batch per
+    // table. Skipping nulls + de-duping keeps the per-request work bounded at
+    // O(distinct-ids) regardless of tenant size.
+    const teamIds = new Set<string>();
+    const vendorIds = new Set<string>();
+    const workflowIds = new Set<string>();
+    const slaIds = new Set<string>();
+    const configEntityIds = new Set<string>();
+
+    for (const r of raw) {
+      const o = (r.override ?? {}) as Record<string, string | null | undefined>;
+      if (o.handler_team_id) teamIds.add(o.handler_team_id);
+      if (o.handler_vendor_id) vendorIds.add(o.handler_vendor_id);
+      if (o.workflow_definition_id) workflowIds.add(o.workflow_definition_id);
+      if (o.case_sla_policy_id) slaIds.add(o.case_sla_policy_id);
+      if (o.executor_sla_policy_id) slaIds.add(o.executor_sla_policy_id);
+      if (o.case_owner_policy_entity_id) configEntityIds.add(o.case_owner_policy_entity_id);
+      if (o.child_dispatch_policy_entity_id) configEntityIds.add(o.child_dispatch_policy_entity_id);
+    }
+    const d = raw[0]?.rt_defaults;
+    if (d?.default_team_id) teamIds.add(d.default_team_id);
+    if (d?.default_vendor_id) vendorIds.add(d.default_vendor_id);
+    if (d?.workflow_definition_id) workflowIds.add(d.workflow_definition_id);
+    if (d?.sla_policy_id) slaIds.add(d.sla_policy_id);
+
+    const [teams, vendors, workflows, slas, configEntities] = await Promise.all([
+      this.fetchNames('teams', tenant.id, Array.from(teamIds), 'name'),
+      this.fetchNames('vendors', tenant.id, Array.from(vendorIds), 'name'),
+      this.fetchNames('workflow_definitions', tenant.id, Array.from(workflowIds), 'name'),
+      this.fetchNames('sla_policies', tenant.id, Array.from(slaIds), 'name'),
+      this.fetchNames('config_entities', tenant.id, Array.from(configEntityIds), 'display_name'),
+    ]);
+
+    type Source = 'override' | 'default' | 'override_unassigned' | 'none' | 'routing';
+    const rtDefaults = raw[0]?.rt_defaults ?? {
+      default_team_id: null, default_vendor_id: null,
+      workflow_definition_id: null, sla_policy_id: null,
+    };
+
+    return {
+      request_type_id: requestTypeId,
+      defaults: {
+        default_team_id: rtDefaults.default_team_id,
+        default_team_name: rtDefaults.default_team_id
+          ? teams.get(rtDefaults.default_team_id) ?? null : null,
+        default_vendor_id: rtDefaults.default_vendor_id,
+        default_vendor_name: rtDefaults.default_vendor_id
+          ? vendors.get(rtDefaults.default_vendor_id) ?? null : null,
+        workflow_definition_id: rtDefaults.workflow_definition_id,
+        workflow_definition_name: rtDefaults.workflow_definition_id
+          ? workflows.get(rtDefaults.workflow_definition_id) ?? null : null,
+        sla_policy_id: rtDefaults.sla_policy_id,
+        sla_policy_name: rtDefaults.sla_policy_id
+          ? slas.get(rtDefaults.sla_policy_id) ?? null : null,
+      },
+      rows: raw.map((r) => {
+        const override = (r.override ?? null) as null | {
+          id: string;
+          scope_kind: string;
+          space_id: string | null;
+          space_group_id: string | null;
+          handler_kind: 'team' | 'vendor' | 'none' | null;
+          handler_team_id: string | null;
+          handler_vendor_id: string | null;
+          workflow_definition_id: string | null;
+          case_sla_policy_id: string | null;
+          case_owner_policy_entity_id: string | null;
+          child_dispatch_policy_entity_id: string | null;
+          executor_sla_policy_id: string | null;
+          precedence: string;
+        };
+        const offering = (r.offering ?? null) as null | {
+          id: string;
+          scope_kind: 'tenant' | 'space' | 'space_group';
+          space_id: string | null;
+          space_group_id: string | null;
+        };
+
+        // Handler composition -------------------------------------------------
+        let handler: {
+          kind: 'team' | 'vendor' | 'none' | null;
+          id: string | null;
+          name: string | null;
+          source: Source;
+        };
+        if (override?.handler_kind) {
+          const kind = override.handler_kind;
+          if (kind === 'team') {
+            handler = {
+              kind: 'team', id: override.handler_team_id,
+              name: override.handler_team_id ? teams.get(override.handler_team_id) ?? null : null,
+              source: 'override',
+            };
+          } else if (kind === 'vendor') {
+            handler = {
+              kind: 'vendor', id: override.handler_vendor_id,
+              name: override.handler_vendor_id ? vendors.get(override.handler_vendor_id) ?? null : null,
+              source: 'override',
+            };
+          } else {
+            handler = { kind: 'none', id: null, name: null, source: 'override_unassigned' };
+          }
+        } else if (rtDefaults.default_team_id) {
+          handler = {
+            kind: 'team', id: rtDefaults.default_team_id,
+            name: teams.get(rtDefaults.default_team_id) ?? null,
+            source: 'default',
+          };
+        } else if (rtDefaults.default_vendor_id) {
+          handler = {
+            kind: 'vendor', id: rtDefaults.default_vendor_id,
+            name: vendors.get(rtDefaults.default_vendor_id) ?? null,
+            source: 'default',
+          };
+        } else {
+          handler = { kind: null, id: null, name: null, source: 'routing' };
+        }
+
+        const composeId = (
+          overrideId: string | null | undefined,
+          defaultId: string | null | undefined,
+          names: Map<string, string>,
+        ): { id: string | null; name: string | null; source: Source } => {
+          if (overrideId) return { id: overrideId, name: names.get(overrideId) ?? null, source: 'override' };
+          if (defaultId) return { id: defaultId, name: names.get(defaultId) ?? null, source: 'default' };
+          return { id: null, name: null, source: 'none' };
+        };
+
+        return {
+          site: { id: r.site_id, name: r.site_name, type: r.site_type, parent_id: r.parent_id },
+          offering: offering ? { scope_kind: offering.scope_kind, rule_id: offering.id } : null,
+          offered: !!offering,
+          override_id: override?.id ?? null,
+          override_scope_kind: override?.scope_kind ?? null,
+          override_precedence: override?.precedence ?? null,
+          handler,
+          workflow: composeId(
+            override?.workflow_definition_id,
+            rtDefaults.workflow_definition_id,
+            workflows,
+          ),
+          case_sla: composeId(
+            override?.case_sla_policy_id,
+            rtDefaults.sla_policy_id,
+            slas,
+          ),
+          // child_dispatch / executor_sla have no request-type default — they
+          // fall through to team/vendor defaults at dispatch time. Show
+          // override-or-none here; the UI labels 'none' as "team/vendor default".
+          child_dispatch: composeId(override?.child_dispatch_policy_entity_id, null, configEntities),
+          executor_sla: composeId(override?.executor_sla_policy_id, null, slas),
+        };
+      }),
+    };
+  }
+
+  private async fetchNames(
+    table: string,
+    tenantId: string,
+    ids: string[],
+    nameColumn: string,
+  ): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const { data, error } = await this.supabase.admin
+      .from(table)
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .in('id', ids);
+    if (error) throw error;
+    const map = new Map<string, string>();
+    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+      const name = row[nameColumn];
+      const id = row.id;
+      if (typeof id === 'string' && typeof name === 'string') map.set(id, name);
+    }
+    return map;
+  }
+
   // ── Internals ──────────────────────────────────────────────────────────
 
   private async assertRequestTypeExists(requestTypeId: string) {

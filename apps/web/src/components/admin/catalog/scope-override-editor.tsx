@@ -46,26 +46,26 @@ interface Draft extends Omit<ScopeOverrideRow, 'id'> {
   id?: string;
 }
 
-function toDraft(o: ScopeOverrideRow | null): Draft {
-  return o
-    ? { ...o }
-    : {
-        scope_kind: 'space',
-        space_id: null,
-        space_group_id: null,
-        inherit_to_descendants: true,
-        active: true,
-        starts_at: null,
-        ends_at: null,
-        handler_kind: null,
-        handler_team_id: null,
-        handler_vendor_id: null,
-        workflow_definition_id: null,
-        case_sla_policy_id: null,
-        case_owner_policy_entity_id: null,
-        child_dispatch_policy_entity_id: null,
-        executor_sla_policy_id: null,
-      };
+function toDraft(o: ScopeOverrideRow | null, seed?: Partial<ScopeOverrideRow> | null): Draft {
+  if (o) return { ...o };
+  const base: Draft = {
+    scope_kind: 'space',
+    space_id: null,
+    space_group_id: null,
+    inherit_to_descendants: true,
+    active: true,
+    starts_at: null,
+    ends_at: null,
+    handler_kind: null,
+    handler_team_id: null,
+    handler_vendor_id: null,
+    workflow_definition_id: null,
+    case_sla_policy_id: null,
+    case_owner_policy_entity_id: null,
+    child_dispatch_policy_entity_id: null,
+    executor_sla_policy_id: null,
+  };
+  return seed ? { ...base, ...seed } : base;
 }
 
 function draftToPutRow(d: Draft) {
@@ -94,6 +94,13 @@ interface EditorProps {
   onOpenChange: (open: boolean) => void;
   existingOverrides: ScopeOverrideRow[];
   editing: ScopeOverrideRow | null;
+  /**
+   * Preset values for a new override. Ignored when `editing` is set. Used by
+   * the coverage matrix to open a scope-scoped editor from a site row (so the
+   * scope kind + space id are prefilled, and the admin only picks the handler
+   * / workflow / SLA / policy fields).
+   */
+  initialDraft?: Partial<ScopeOverrideRow> | null;
   onSaved: () => void;
 }
 
@@ -110,6 +117,7 @@ export function ScopeOverrideEditor({
   onOpenChange,
   existingOverrides,
   editing,
+  initialDraft,
   onSaved,
 }: EditorProps) {
   const { data: teams } = useApi<Team[]>('/teams', []);
@@ -123,8 +131,11 @@ export function ScopeOverrideEditor({
 
   useEffect(() => {
     if (!open) return;
-    setDraft(toDraft(editing));
-  }, [open, editing?.id]);
+    setDraft(toDraft(editing, initialDraft));
+    // initialDraft is intentionally a fresh-draft seed; we stringify so a
+    // parent passing a new object each render doesn't re-seed stale edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editing?.id, JSON.stringify(initialDraft ?? null)]);
 
   const patch = <K extends keyof Draft>(k: K, v: Draft[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));

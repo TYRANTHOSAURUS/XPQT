@@ -5,33 +5,132 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Plus, SlidersHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import type { ServiceItemDetail } from './catalog-service-panel';
 import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
-import { Plus } from 'lucide-react';
 
 /**
- * Coverage tab: lists every site/building in the tenant and lets the admin
- * toggle a per-space offering on/off. Tenant-wide toggle is one click.
+ * Per-site coverage matrix. Columns: offered, handler, workflow, case SLA,
+ * child dispatch, executor SLA — each with a source badge so the admin sees
+ * whether an override wins, the request-type default applies, or the
+ * resolver falls through to the routing chain.
  *
- * The full coverage matrix (effective handler + workflow + SLA + override
- * indicators per live-doc §8) is net-new work tracked as a dedicated slice.
- * This tab ships the offered-or-not column + inheritance indicator only.
+ * Backend: GET /request-types/:id/coverage-matrix composes the row with:
+ *   override (request_type_effective_scope_override precedence walker) >
+ *   request_types defaults > null (= routing-dependent for handler, or
+ *   "team/vendor default" for child_dispatch / executor_sla). See live-doc §8.
  */
 
-interface SiteRow {
-  id: string;
-  name: string;
-  type: 'site' | 'building';
+type SourceTag = 'override' | 'default' | 'override_unassigned' | 'none' | 'routing';
+
+interface DimensionValue {
+  id: string | null;
+  name: string | null;
+  source: SourceTag;
+}
+
+interface HandlerValue {
+  kind: 'team' | 'vendor' | 'none' | null;
+  id: string | null;
+  name: string | null;
+  source: SourceTag;
+}
+
+interface MatrixRow {
+  site: { id: string; name: string; type: 'site' | 'building'; parent_id: string | null };
+  offered: boolean;
+  offering: { scope_kind: 'tenant' | 'space' | 'space_group'; rule_id: string } | null;
+  override_id: string | null;
+  override_scope_kind: 'tenant' | 'space' | 'space_group' | null;
+  override_precedence: string | null;
+  handler: HandlerValue;
+  workflow: DimensionValue;
+  case_sla: DimensionValue;
+  child_dispatch: DimensionValue;
+  executor_sla: DimensionValue;
+}
+
+interface MatrixResponse {
+  request_type_id: string;
+  defaults: {
+    default_team_id: string | null;
+    default_team_name: string | null;
+    default_vendor_id: string | null;
+    default_vendor_name: string | null;
+    workflow_definition_id: string | null;
+    workflow_definition_name: string | null;
+    sla_policy_id: string | null;
+    sla_policy_name: string | null;
+  };
+  rows: MatrixRow[];
 }
 
 type Filter = 'all' | 'offered' | 'uncovered';
 
-export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDetail; onSaved: () => void }) {
+function SourceBadge({ source, childLabelForNone }: {
+  source: SourceTag;
+  childLabelForNone?: string;
+}) {
+  const cfg: Record<SourceTag, { label: string; className: string }> = {
+    override: {
+      label: 'override',
+      className: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/30',
+    },
+    override_unassigned: {
+      label: 'override · unassigned',
+      className: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/30',
+    },
+    default: {
+      label: 'default',
+      className: 'bg-muted text-muted-foreground border-border',
+    },
+    routing: {
+      label: 'routing',
+      className: 'bg-background text-muted-foreground border-dashed',
+    },
+    none: {
+      label: childLabelForNone ?? '—',
+      className: 'bg-background text-muted-foreground border-dashed',
+    },
+  };
+  const c = cfg[source];
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] border ${c.className}`}
+    >
+      {c.label}
+    </span>
+  );
+}
+
+function DimensionCell({
+  v,
+  noneLabel = 'not set',
+  sourceNoneLabel,
+}: {
+  v: DimensionValue;
+  noneLabel?: string;
+  sourceNoneLabel?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className={v.id ? '' : 'text-muted-foreground italic text-xs'}>
+        {v.name ?? (v.id ? v.id.slice(0, 8) : noneLabel)}
+      </span>
+      <SourceBadge source={v.source} childLabelForNone={sourceNoneLabel} />
+    </div>
+  );
+}
+
+export function CatalogCoverageTab({ detail, onSaved }: {
+  detail: ServiceItemDetail;
+  onSaved: () => void;
+}) {
   const [filter, setFilter] = useState<Filter>('all');
   const [saving, setSaving] = useState<string | null>(null);
   const [localOfferings, setLocalOfferings] = useState(detail.offerings);
@@ -39,29 +138,37 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
 
   const [overrideEditorOpen, setOverrideEditorOpen] = useState(false);
   const [editingOverride, setEditingOverride] = useState<ScopeOverrideRow | null>(null);
+  const [editorInitialDraft, setEditorInitialDraft] =
+    useState<Partial<ScopeOverrideRow> | null>(null);
 
   const openNewOverride = () => {
     setEditingOverride(null);
+    setEditorInitialDraft(null);
     setOverrideEditorOpen(true);
   };
-  const openEditOverride = (o: ScopeOverrideRow) => {
-    setEditingOverride(o);
+  const openEditOverride = (id: string) => {
+    const o = detail.scope_overrides.find((x) => x.id === id) ?? null;
+    if (!o) return;
+    setEditingOverride(o as ScopeOverrideRow);
+    setEditorInitialDraft(null);
+    setOverrideEditorOpen(true);
+  };
+  const openOverrideForSite = (siteId: string) => {
+    setEditingOverride(null);
+    setEditorInitialDraft({ scope_kind: 'space', space_id: siteId });
     setOverrideEditorOpen(true);
   };
 
-  // Sites + buildings in this tenant. We use the existing spaces/admin list
-  // (non-paginated today; if tenants grow past a few hundred sites this
-  // becomes the first thing to paginate).
-  const { data: sitesData, loading, error } = useApi<SiteRow[]>(
-    `/spaces?types=site,building&active_only=true`,
-    [detail.id],
+  // Matrix — one call per request type per mount/reload.
+  const { data: matrix, loading, error, refetch } = useApi<MatrixResponse>(
+    `/request-types/${detail.id}/coverage-matrix`,
+    [detail.id, detail.scope_overrides.length, localOfferings.length],
   );
 
   const hasTenantOffering = useMemo(
     () => localOfferings.some((o) => o.active && o.scope_kind === 'tenant'),
     [localOfferings],
   );
-
   const directOfferedIds = useMemo(
     () =>
       new Set(
@@ -114,6 +221,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
       await putCoverage(next);
       setLocalOfferings(next);
       onSaved();
+      refetch();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to update');
     } finally {
@@ -142,6 +250,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
       await putCoverage(next);
       setLocalOfferings(next);
       onSaved();
+      refetch();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed');
     } finally {
@@ -149,7 +258,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
     }
   };
 
-  if (loading && !sitesData) {
+  if (loading && !matrix) {
     return (
       <div className="space-y-2">
         <Skeleton className="h-8 w-full" />
@@ -162,20 +271,19 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
     return (
       <Alert variant="destructive">
         <AlertTriangle className="size-4" />
-        <AlertTitle>Coverage failed to load</AlertTitle>
+        <AlertTitle>Coverage matrix failed to load</AlertTitle>
         <AlertDescription>{error}</AlertDescription>
       </Alert>
     );
   }
 
-  const sites = sitesData ?? [];
-  const visible = sites.filter((s) => {
-    if (filter === 'offered') return hasTenantOffering || directOfferedIds.has(s.id);
-    if (filter === 'uncovered') return !hasTenantOffering && !directOfferedIds.has(s.id);
+  const rows = matrix?.rows ?? [];
+  const visible = rows.filter((r) => {
+    if (filter === 'offered') return r.offered;
+    if (filter === 'uncovered') return !r.offered;
     return true;
   });
-
-  const offeredCount = sites.filter((s) => hasTenantOffering || directOfferedIds.has(s.id)).length;
+  const offeredCount = rows.filter((r) => r.offered).length;
 
   return (
     <div className="flex flex-col gap-3">
@@ -196,7 +304,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
           </Field>
         </FieldGroup>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
-          <span>{offeredCount} / {sites.length} offered</span>
+          <span>{offeredCount} / {rows.length} offered</span>
           <Button
             size="sm"
             variant={hasTenantOffering ? 'default' : 'outline'}
@@ -213,63 +321,135 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
           <thead className="sticky top-0 z-10 bg-background">
             <tr>
               <th className="border-b px-3 py-2 text-left font-medium">Site</th>
-              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground w-32">Type</th>
-              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Coverage</th>
-              <th className="border-b px-3 py-2 text-right font-medium text-muted-foreground w-36">Action</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground w-28">Offered</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Handler</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Workflow</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Case SLA</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Child dispatch</th>
+              <th className="border-b px-3 py-2 text-left font-medium text-muted-foreground">Executor SLA</th>
+              <th className="border-b px-3 py-2 text-right font-medium text-muted-foreground w-28">Action</th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((s) => {
-              const isDirect = directOfferedIds.has(s.id);
-              const tone = isDirect
-                ? 'direct'
-                : hasTenantOffering
-                  ? 'inherited'
-                  : 'uncovered';
-              const label = isDirect
-                ? 'direct · + descendants'
-                : hasTenantOffering
-                  ? 'tenant-wide'
-                  : 'not offered';
+            {visible.map((r) => {
+              const isDirect = directOfferedIds.has(r.site.id);
+              const offeringLabel = r.offered
+                ? (isDirect
+                    ? 'direct · + descendants'
+                    : r.offering?.scope_kind === 'tenant'
+                      ? 'tenant-wide'
+                      : r.offering?.scope_kind === 'space_group'
+                        ? 'via group'
+                        : 'inherited')
+                : 'not offered';
               return (
-                <tr key={s.id}>
-                  <td className="border-b px-3 py-1.5">{s.name}</td>
-                  <td className="border-b px-3 py-1.5 text-muted-foreground capitalize">{s.type}</td>
-                  <td className="border-b px-3 py-1.5">
-                    <span
+                <tr key={r.site.id} className={r.offered ? '' : 'opacity-60'}>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-medium">{r.site.name}</span>
+                      <span className="text-[10px] text-muted-foreground capitalize">{r.site.type}</span>
+                    </div>
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <Badge
+                      variant="outline"
                       className={
-                        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 ' +
-                        (tone === 'direct'
-                          ? 'bg-emerald-500/10 text-emerald-900 dark:text-emerald-200'
-                          : tone === 'inherited'
-                            ? 'bg-muted text-muted-foreground'
-                            : 'bg-background text-muted-foreground border border-dashed')
+                        r.offered
+                          ? (isDirect
+                              ? 'bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 border-emerald-500/30'
+                              : 'bg-muted')
+                          : 'border-dashed text-muted-foreground'
                       }
                     >
-                      {tone === 'inherited' && <span className="text-xs opacity-70">↑</span>}
-                      {tone === 'uncovered' && <span className="text-xs opacity-70">—</span>}
-                      <span>{label}</span>
-                    </span>
+                      {offeringLabel}
+                    </Badge>
                   </td>
-                  <td className="border-b px-3 py-1.5 text-right">
-                    {isDirect ? (
-                      <Button size="sm" variant="ghost" disabled={!!saving} onClick={() => toggleSite(s.id)}>
-                        Remove
-                      </Button>
-                    ) : hasTenantOffering ? (
-                      <span className="text-xs text-muted-foreground italic">inherited</span>
-                    ) : (
-                      <Button size="sm" variant="outline" disabled={!!saving} onClick={() => toggleSite(s.id)}>
-                        Offer here
-                      </Button>
-                    )}
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <div className="flex flex-col gap-0.5">
+                      <span className={r.handler.id || r.handler.kind === 'none' ? '' : 'text-muted-foreground italic text-xs'}>
+                        {r.handler.kind === 'none'
+                          ? 'Unassigned'
+                          : r.handler.name
+                            ?? (r.handler.id ? r.handler.id.slice(0, 8) : 'routing chain')}
+                      </span>
+                      <SourceBadge source={r.handler.source} />
+                    </div>
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <DimensionCell v={r.workflow} />
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <DimensionCell v={r.case_sla} />
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <DimensionCell
+                      v={r.child_dispatch}
+                      sourceNoneLabel="team / vendor default"
+                    />
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
+                    <DimensionCell
+                      v={r.executor_sla}
+                      sourceNoneLabel="team / vendor default"
+                    />
+                  </td>
+                  <td className="border-b px-3 py-1.5 text-right align-top">
+                    <div className="flex items-center justify-end gap-1">
+                      {r.override_id ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7"
+                          onClick={() => openEditOverride(r.override_id!)}
+                          disabled={!!saving}
+                        >
+                          <SlidersHorizontal className="h-3 w-3 mr-1" />
+                          Edit override
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7"
+                          onClick={() => openOverrideForSite(r.site.id)}
+                          disabled={!!saving}
+                          title="Add per-site override"
+                        >
+                          <SlidersHorizontal className="h-3 w-3 mr-1" />
+                          Override
+                        </Button>
+                      )}
+                      {isDirect ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7"
+                          disabled={!!saving}
+                          onClick={() => toggleSite(r.site.id)}
+                        >
+                          Remove
+                        </Button>
+                      ) : hasTenantOffering ? (
+                        <span className="text-[10px] text-muted-foreground italic">inherited</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7"
+                          disabled={!!saving}
+                          onClick={() => toggleSite(r.site.id)}
+                        >
+                          Offer
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <td colSpan={8} className="px-3 py-6 text-center text-sm text-muted-foreground">
                   No sites match this filter.
                 </td>
               </tr>
@@ -292,8 +472,8 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
         </div>
         {detail.scope_overrides.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No per-scope handler, workflow, SLA, or dispatch-policy overrides.
-            The resolver falls through to the request type defaults and routing chain.
+            No per-scope handler, workflow, SLA, or dispatch-policy overrides. The resolver falls
+            through to the request type defaults and routing chain.
           </p>
         ) : (
           <ul className="space-y-1 text-xs">
@@ -305,7 +485,7 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
                     'w-full text-left rounded px-2 py-1.5 hover:bg-muted/50 font-mono text-xs ' +
                     (o.active ? '' : 'opacity-50')
                   }
-                  onClick={() => openEditOverride(o as ScopeOverrideRow)}
+                  onClick={() => openEditOverride(o.id)}
                 >
                   <span className="capitalize">{o.scope_kind.replace('_', ' ')}</span>
                   {o.space_id && <span> · space {o.space_id.slice(0, 8)}</span>}
@@ -333,7 +513,8 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
         onOpenChange={setOverrideEditorOpen}
         existingOverrides={detail.scope_overrides as ScopeOverrideRow[]}
         editing={editingOverride}
-        onSaved={onSaved}
+        initialDraft={editorInitialDraft}
+        onSaved={() => { onSaved(); refetch(); }}
       />
     </div>
   );
