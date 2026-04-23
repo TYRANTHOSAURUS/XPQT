@@ -25,6 +25,8 @@ type ChosenBy =
   | 'request_type_default'
   | 'policy_row'
   | 'policy_default'
+  | 'scope_override'
+  | 'scope_override_unassigned'
   | 'unassigned';
 
 interface DecisionRow {
@@ -76,6 +78,8 @@ const CHOSEN_BY_OPTIONS: ChosenBy[] = [
   'request_type_default',
   'policy_row',
   'policy_default',
+  'scope_override',
+  'scope_override_unassigned',
   'unassigned',
 ];
 

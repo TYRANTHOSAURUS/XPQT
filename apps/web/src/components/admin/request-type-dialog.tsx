@@ -166,34 +166,58 @@ export function RequestTypeDialog({
       approval_approver_team_id: requiresApproval ? (approvalApproverTeamId || null) : null,
     };
     setSaving(true);
+    // The save is two server calls (UPDATE/INSERT request_types, then
+    // replace the default form variant when form_schema_id changed). If the
+    // first succeeds and the second fails we don't want to leave a half-
+    // applied state behind: on CREATE we roll the new row back; on UPDATE
+    // we surface the failure with an actionable message and keep the dialog
+    // open so the admin can retry.
+    const targetSchemaId = formSchemaId || null;
+    const needsVariantSync = targetSchemaId !== initialFormSchemaId;
+    let createdId: string | null = null;
     try {
       let savedId: string;
       if (editingId) {
         await apiFetch(`/request-types/${editingId}`, { method: 'PATCH', body: JSON.stringify(body) });
         savedId = editingId;
-        toast.success('Request type updated');
       } else {
         const created = await apiFetch<{ id: string }>('/request-types', {
           method: 'POST',
           body: JSON.stringify(body),
         });
         savedId = created.id;
-        toast.success('Request type created');
+        createdId = created.id;
       }
-      // Sync the request-type-native default form variant whenever the
-      // linked form schema changes. Portal submit reads request_type_form_
-      // _variants; writing only request_types.form_schema_id here would
-      // leave the portal on a stale default.
-      const targetSchemaId = formSchemaId || null;
-      if (targetSchemaId !== initialFormSchemaId) {
+
+      if (needsVariantSync) {
         const variants = targetSchemaId
           ? [{ criteria_set_id: null, form_schema_id: targetSchemaId, priority: 0, active: true }]
           : [];
-        await apiFetch(`/request-types/${savedId}/form-variants`, {
-          method: 'PUT',
-          body: JSON.stringify({ variants }),
-        });
+        try {
+          await apiFetch(`/request-types/${savedId}/form-variants`, {
+            method: 'PUT',
+            body: JSON.stringify({ variants }),
+          });
+        } catch (variantErr) {
+          // CREATE path: roll the just-created request type back so a retry
+          // doesn't produce a duplicate. Best-effort — a rollback failure is
+          // surfaced to the user but doesn't mask the original error.
+          if (createdId) {
+            try {
+              await apiFetch(`/request-types/${createdId}`, { method: 'DELETE' });
+            } catch {
+              toast.error(
+                'Form schema sync failed AND rollback of the new request type failed. Check /admin/request-types for a stray row.',
+              );
+              throw variantErr;
+            }
+          }
+          // UPDATE path: surface the drift.
+          throw variantErr;
+        }
       }
+
+      toast.success(editingId ? 'Request type updated' : 'Request type created');
       onOpenChange(false);
       onSaved();
     } catch (err) {

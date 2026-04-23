@@ -3,23 +3,24 @@
 -- tenant is namespaced under a fixed UUID and dropped at the end.
 --
 -- Usage:
---   PGPASSWORD=<pw> psql "postgresql://postgres@db.<host>:5432/postgres" \
---     -v ON_ERROR_STOP=1 \
---     -f supabase/tests/scope_override_precedence.test.sql
---
--- Or against local supabase:
 --   psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
 --     -v ON_ERROR_STOP=1 \
 --     -f supabase/tests/scope_override_precedence.test.sql
 --
--- Covers the four precedence tiers in live-doc §6.3:
---   exact_space → ancestor_space (inherit) → space_group → tenant.
+-- Remote (prefer local):
+--   PGPASSWORD=<pw> psql "postgresql://postgres@db.<host>:5432/postgres" \
+--     -v ON_ERROR_STOP=1 -f supabase/tests/scope_override_precedence.test.sql
+--
+-- Covers:
+--   - Live-doc §6.3 precedence tiers (exact → ancestor-inherit → group → tenant)
+--   - Null-space / disjoint-space edge cases
+--   - inherit_to_descendants=false skips ancestor
+--   - active=false rows are invisible
+--   - starts_at / ends_at effective-dating boundaries
+--   - Same-tier id tie-breaks (earliest id wins)
+--   - Multiple matching space-group memberships
 
 begin;
-
--- ── Fixtures ──────────────────────────────────────────────────────────────
--- Tenant, spaces (site → building → floor → room), space group, request type.
--- Fixed UUIDs so the test can assert by id.
 
 do $$
 declare
@@ -31,30 +32,29 @@ declare
   v_room uuid := 'fffffff0-0000-0000-0000-0000000000a4';
   v_other uuid := 'fffffff0-0000-0000-0000-0000000000b1';
   v_group uuid := 'fffffff0-0000-0000-0000-0000000000c1';
+  v_group2 uuid := 'fffffff0-0000-0000-0000-0000000000c2';
+  -- Lower/higher UUIDs for deterministic id-based tie-break.
   v_ov_tenant uuid := 'fffffff0-0000-0000-0000-0000000000d1';
   v_ov_anc uuid := 'fffffff0-0000-0000-0000-0000000000d2';
   v_ov_group uuid := 'fffffff0-0000-0000-0000-0000000000d3';
   v_ov_exact uuid := 'fffffff0-0000-0000-0000-0000000000d4';
+  v_ov_group2 uuid := 'fffffff0-0000-0000-0000-0000000000d5';
+  v_ov_scheduled_past uuid := 'fffffff0-0000-0000-0000-0000000000d6';
+  v_ov_scheduled_future uuid := 'fffffff0-0000-0000-0000-0000000000d7';
+  -- Two ancestor overrides at the same depth for tie-break test.
+  -- v_ov_anc_a is lexicographically smaller, so it should win.
+  v_ov_anc_a uuid := 'fffffff0-0000-0000-0000-0000000000da';
+  v_ov_anc_b uuid := 'fffffff0-0000-0000-0000-0000000000db';
   v_team uuid := 'fffffff0-0000-0000-0000-0000000000e1';
   v_result jsonb;
 begin
-  -- Clean slate. Order matters: mirror triggers on request_types INSERT
-  -- spawn service_items + service_item_offerings / _form_variants in the
-  -- test tenant; those must be cleared before we can drop spaces + teams +
-  -- the tenant itself. Legacy service_item_* tables are dropped in Phase E;
-  -- until then this test must tear them down explicitly.
+  -- Clean slate. After Phase E (migration 00097) the legacy service_item_*
+  -- tables no longer exist; only request-type-native rows need clearing.
   delete from public.request_type_scope_overrides where tenant_id = v_tenant;
   delete from public.request_type_coverage_rules where tenant_id = v_tenant;
   delete from public.request_type_form_variants where tenant_id = v_tenant;
   delete from public.request_type_audience_rules where tenant_id = v_tenant;
   delete from public.request_type_on_behalf_rules where tenant_id = v_tenant;
-  delete from public.service_item_offerings where tenant_id = v_tenant;
-  delete from public.service_item_form_variants where tenant_id = v_tenant;
-  delete from public.service_item_criteria where tenant_id = v_tenant;
-  delete from public.service_item_on_behalf_rules where tenant_id = v_tenant;
-  delete from public.service_item_categories where tenant_id = v_tenant;
-  delete from public.request_type_service_item_bridge where tenant_id = v_tenant;
-  delete from public.service_items where tenant_id = v_tenant;
   delete from public.space_group_members where tenant_id = v_tenant;
   delete from public.space_groups where tenant_id = v_tenant;
   delete from public.request_types where tenant_id = v_tenant;
@@ -64,6 +64,7 @@ begin
 
   insert into public.tenants (id, name, slug) values (v_tenant, 'test-scope-override', 'test-scope-override');
   insert into public.teams (id, tenant_id, name) values (v_team, v_tenant, 'Test Team');
+
   insert into public.spaces (id, tenant_id, parent_id, type, name, active)
     values (v_site, v_tenant, null, 'site', 'Site A', true);
   insert into public.spaces (id, tenant_id, parent_id, type, name, active)
@@ -76,8 +77,12 @@ begin
     values (v_other, v_tenant, null, 'site', 'Site B', true);
 
   insert into public.space_groups (id, tenant_id, name) values (v_group, v_tenant, 'Group A');
+  insert into public.space_groups (id, tenant_id, name) values (v_group2, v_tenant, 'Group B');
   insert into public.space_group_members (tenant_id, space_group_id, space_id)
     values (v_tenant, v_group, v_room);
+  -- Same room is also a member of a second group → both apply at space_group tier.
+  insert into public.space_group_members (tenant_id, space_group_id, space_id)
+    values (v_tenant, v_group2, v_room);
 
   insert into public.request_types (id, tenant_id, name, active, fulfillment_strategy)
     values (v_rt, v_tenant, 'Test RT', true, 'fixed');
@@ -105,7 +110,7 @@ begin
     raise exception 'T2 expected precedence=space_group got %', v_result->>'precedence';
   end if;
 
-  -- ── Test 3: add ancestor_space override (on building with inherit=true) → wins over space_group ──
+  -- ── Test 3: ancestor_space with inherit=true → wins over space_group ──
   insert into public.request_type_scope_overrides
     (id, tenant_id, request_type_id, scope_kind, space_id, inherit_to_descendants, active, handler_kind, handler_team_id)
     values (v_ov_anc, v_tenant, v_rt, 'space', v_bld, true, true, 'team', v_team);
@@ -115,7 +120,7 @@ begin
     raise exception 'T3 expected precedence=ancestor_space got %', v_result->>'precedence';
   end if;
 
-  -- ── Test 4: add exact space override on the selected room → wins over ancestor ──
+  -- ── Test 4: exact_space on the selected room → wins over ancestor ──
   insert into public.request_type_scope_overrides
     (id, tenant_id, request_type_id, scope_kind, space_id, inherit_to_descendants, active, handler_kind, handler_team_id)
     values (v_ov_exact, v_tenant, v_rt, 'space', v_room, false, true, 'team', v_team);
@@ -134,7 +139,7 @@ begin
     raise exception 'T5 expected precedence=tenant (null space) got %', v_result->>'precedence';
   end if;
 
-  -- ── Test 6: selected space in a different tree → tenant (no ancestor/group hit) ──
+  -- ── Test 6: selected space in disjoint tree → tenant (no ancestor/group hit) ──
   v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_other);
   if coalesce(v_result->>'precedence', '') <> 'tenant' then
     raise exception 'T6 expected precedence=tenant (disjoint space) got %', v_result->>'precedence';
@@ -152,28 +157,87 @@ begin
     raise exception 'T7 expected precedence=space_group (inherit=false ancestor skipped) got %', v_result->>'precedence';
   end if;
 
-  -- ── Test 8: inactive rows are ignored ──
+  -- ── Test 8: inactive rows are invisible ──
   update public.request_type_scope_overrides set active = false where tenant_id = v_tenant;
   v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);
   if v_result is not null then
     raise exception 'T8 expected NULL (all overrides inactive) got %', v_result;
   end if;
+  -- Reactivate for subsequent tests.
+  update public.request_type_scope_overrides set active = true where tenant_id = v_tenant;
+  -- The inherit=false change persists from T7; put the ancestor back to inherit=true.
+  update public.request_type_scope_overrides set inherit_to_descendants = true where id = v_ov_anc;
 
-  raise notice 'scope_override_precedence: 8/8 passed';
+  -- ── Test 9: starts_at in the future → row invisible, falls through ──
+  -- Ensure only the space-group override is active to start with.
+  update public.request_type_scope_overrides set active = false where id in (v_ov_anc, v_ov_tenant);
+  insert into public.request_type_scope_overrides
+    (id, tenant_id, request_type_id, scope_kind, space_id, inherit_to_descendants, active,
+     starts_at, handler_kind, handler_team_id)
+    values (v_ov_scheduled_future, v_tenant, v_rt, 'space', v_room, false, true,
+            now() + interval '1 day', 'team', v_team);
+  v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);
+  -- Scheduled-future exact_space should be hidden → space_group wins.
+  if coalesce(v_result->>'precedence', '') <> 'space_group' then
+    raise exception 'T9 expected precedence=space_group (future exact hidden) got %', v_result->>'precedence';
+  end if;
 
-  -- Cleanup. See same ordering note as above.
+  -- ── Test 10: ends_at in the past → row invisible ──
+  delete from public.request_type_scope_overrides where id = v_ov_scheduled_future;
+  insert into public.request_type_scope_overrides
+    (id, tenant_id, request_type_id, scope_kind, space_id, inherit_to_descendants, active,
+     starts_at, ends_at, handler_kind, handler_team_id)
+    values (v_ov_scheduled_past, v_tenant, v_rt, 'space', v_room, false, true,
+            now() - interval '2 day', now() - interval '1 day', 'team', v_team);
+  v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);
+  if coalesce(v_result->>'precedence', '') <> 'space_group' then
+    raise exception 'T10 expected precedence=space_group (past-ended exact hidden) got %', v_result->>'precedence';
+  end if;
+  delete from public.request_type_scope_overrides where id = v_ov_scheduled_past;
+
+  -- ── Test 11: same-tier id tie-break (two ancestor_space overrides at same depth)
+  -- Both attach to the building (depth 2 from the selected room). Earliest
+  -- (lexicographic) id wins — v_ov_anc_a < v_ov_anc_b. Space-group stays
+  -- active as the NEXT tier; both ancestors should beat it.
+  -- Partial-unique (request_type_id, space_id) where active+scope=space blocks
+  -- two active on the SAME space; use different spaces (bld and site) both
+  -- of which are ancestors of the room. Building is depth=2, site is depth=3,
+  -- so building wins via the depth tiebreak. Switch to same depth by using
+  -- two different groups instead — same space_group space, multi-membership:
+  -- already set up above. Use a second group override and verify it acts.
+  insert into public.request_type_scope_overrides
+    (id, tenant_id, request_type_id, scope_kind, space_group_id, active, handler_kind, handler_team_id)
+    values (v_ov_group2, v_tenant, v_rt, 'space_group', v_group2, true, 'team', v_team);
+  -- Two group overrides (v_ov_group, v_ov_group2) both match; earlier id wins.
+  -- Remove the ancestor to isolate the tier.
+  update public.request_type_scope_overrides set active = false where id = v_ov_anc;
+  v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);
+  if coalesce(v_result->>'precedence', '') <> 'space_group' then
+    raise exception 'T11 expected precedence=space_group got %', v_result->>'precedence';
+  end if;
+  if coalesce(v_result->>'id', '') <> v_ov_group::text then
+    raise exception 'T11 expected id=% (earlier) got %', v_ov_group, v_result->>'id';
+  end if;
+
+  -- ── Test 12: multi-space-group membership works regardless of which group's
+  -- override is active. Deactivate v_ov_group → v_ov_group2 becomes the hit.
+  update public.request_type_scope_overrides set active = false where id = v_ov_group;
+  v_result := public.request_type_effective_scope_override(v_tenant, v_rt, v_room);
+  if coalesce(v_result->>'precedence', '') <> 'space_group' then
+    raise exception 'T12 expected precedence=space_group (second group) got %', v_result->>'precedence';
+  end if;
+  if coalesce(v_result->>'id', '') <> v_ov_group2::text then
+    raise exception 'T12 expected id=% (only remaining group) got %', v_ov_group2, v_result->>'id';
+  end if;
+
+  raise notice 'scope_override_precedence: 12/12 passed';
+
+  -- Cleanup. Same post-Phase-E order as above.
   delete from public.request_type_scope_overrides where tenant_id = v_tenant;
   delete from public.request_type_coverage_rules where tenant_id = v_tenant;
   delete from public.request_type_form_variants where tenant_id = v_tenant;
   delete from public.request_type_audience_rules where tenant_id = v_tenant;
   delete from public.request_type_on_behalf_rules where tenant_id = v_tenant;
-  delete from public.service_item_offerings where tenant_id = v_tenant;
-  delete from public.service_item_form_variants where tenant_id = v_tenant;
-  delete from public.service_item_criteria where tenant_id = v_tenant;
-  delete from public.service_item_on_behalf_rules where tenant_id = v_tenant;
-  delete from public.service_item_categories where tenant_id = v_tenant;
-  delete from public.request_type_service_item_bridge where tenant_id = v_tenant;
-  delete from public.service_items where tenant_id = v_tenant;
   delete from public.space_group_members where tenant_id = v_tenant;
   delete from public.space_groups where tenant_id = v_tenant;
   delete from public.request_types where tenant_id = v_tenant;

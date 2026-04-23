@@ -309,6 +309,13 @@ export class RequestTypeService {
       this.validateHandlerShape(o);
       this.validateOverrideNonEmpty(o);
     }
+    // Partial-unique indexes in 00091 reject two concurrently-active rows
+    // for the same (request_type, scope, scope-target). Scheduled windows
+    // (starts_at/ends_at) are service-layer's job — two active rows with
+    // non-overlapping windows on the same scope-target would both pass the
+    // DB unique check but are semantically ambiguous once the calendar
+    // advances. Reject overlap here so the admin has to resolve it.
+    this.validateNoTemporalOverlap(overrides);
     await this.assertIdsInTenant('spaces', overrides.map((o) => o.space_id ?? null), 'space_id');
     await this.assertIdsInTenant('space_groups', overrides.map((o) => o.space_group_id ?? null), 'space_group_id');
     await this.assertIdsInTenant('teams', overrides.map((o) => o.handler_team_id ?? null), 'handler_team_id');
@@ -429,6 +436,55 @@ export class RequestTypeService {
     }
     if (k === 'none' && (hasTeam || hasVendor)) {
       throw new BadRequestException('handler_kind=none forbids both handler_team_id and handler_vendor_id');
+    }
+  }
+
+  /**
+   * Reject two active overrides on the same (scope_kind, scope-target) tuple
+   * whose effective windows overlap. The DB's partial-unique indexes catch
+   * two rows that are both active=true AND both unbounded (null start + null
+   * end), but scheduled-date pairs slip through. "Overlap" here means
+   * [startA, endA) ∩ [startB, endB) is non-empty, with null=open-ended.
+   */
+  private validateNoTemporalOverlap(overrides: ScopeOverrideInput[]) {
+    const active = overrides.filter((o) => o.active !== false);
+    // Bucket by (scope_kind, scope-target).
+    const bucket = new Map<string, ScopeOverrideInput[]>();
+    for (const o of active) {
+      const target = o.scope_kind === 'tenant'
+        ? '__tenant__'
+        : o.scope_kind === 'space'
+          ? `space:${o.space_id ?? ''}`
+          : `group:${o.space_group_id ?? ''}`;
+      const key = `${o.scope_kind}|${target}`;
+      const list = bucket.get(key) ?? [];
+      list.push(o);
+      bucket.set(key, list);
+    }
+    const toMs = (s: string | null | undefined, fallback: number) =>
+      s ? new Date(s).getTime() : fallback;
+    for (const [key, list] of bucket.entries()) {
+      if (list.length < 2) continue;
+      // Compare each pair once.
+      for (let i = 0; i < list.length; i += 1) {
+        const a = list[i];
+        const aStart = toMs(a.starts_at, -Infinity);
+        const aEnd = toMs(a.ends_at, Infinity);
+        for (let j = i + 1; j < list.length; j += 1) {
+          const b = list[j];
+          const bStart = toMs(b.starts_at, -Infinity);
+          const bEnd = toMs(b.ends_at, Infinity);
+          // Overlap iff aStart < bEnd && bStart < aEnd.
+          if (aStart < bEnd && bStart < aEnd) {
+            throw new BadRequestException({
+              code: 'scope_override_temporal_overlap',
+              message:
+                `Two active overrides on ${key} have overlapping windows. ` +
+                `Adjust starts_at/ends_at so they don't intersect, or mark one active=false.`,
+            });
+          }
+        }
+      }
     }
   }
 

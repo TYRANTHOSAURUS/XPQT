@@ -436,7 +436,7 @@ Canonical portal functions as shipped:
 - `public.request_type_requestable_trace(actor, rt_id, requested_for, selected_space, asset, tenant)` — full submit / simulator trace.
 - `public.request_type_onboardable_space_ids(tenant, actor)` — onboardable site/building list.
 
-These are primary RPCs, not wrappers. Migrations `00092`–`00093`. The bridge-wrapper variants named `portal_visible_request_type_ids` + `portal_availability_trace` still exist and are scheduled for deletion in Phase E.
+These are primary RPCs, not wrappers. Migrations `00092`–`00093`. The bridge-wrapper variants named `portal_visible_request_type_ids` + `portal_availability_trace` were dropped in Phase E (migration `00097`); callers must use the request-type-native names above.
 
 ## 11. Implementation Status
 

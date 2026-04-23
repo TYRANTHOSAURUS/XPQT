@@ -296,8 +296,11 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
           </ul>
         )}
         <p className="mt-2 text-xs text-muted-foreground">
-          Advisory — scope overrides are authored via <code className="font-mono">PUT /request-types/:id/scope-overrides</code>
-          {' '}and stored, but the resolver does not yet consult them. Inline editor + resolver wiring tracked as a separate slice.
+          Live — the resolver consults these overrides at case creation (handler + workflow + case SLA)
+          and at dispatch (executor SLA). <code className="font-mono">handler_kind=none</code> is an
+          explicit unassign terminal. Authored via
+          {' '}<code className="font-mono">PUT /request-types/:id/scope-overrides</code>; an inline editor
+          is tracked as a separate slice.
         </p>
       </div>
     </div>

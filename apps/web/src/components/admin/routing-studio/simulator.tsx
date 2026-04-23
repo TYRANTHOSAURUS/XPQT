@@ -42,6 +42,11 @@ type ChosenBy =
   // v2 values (Contract 4). Added when the evaluator simulates v2 alongside legacy.
   | 'policy_row'
   | 'policy_default'
+  // Scope-override pre-step (live-doc §6.3). `scope_override_unassigned` is
+  // the handler_kind='none' terminal — admin explicitly blocks auto-routing
+  // at that scope.
+  | 'scope_override'
+  | 'scope_override_unassigned'
   | 'unassigned';
 
 type RoutingHook = 'case_owner' | 'child_dispatch';
@@ -642,6 +647,8 @@ function formatStep(step: ChosenBy): string {
     case 'request_type_default': return 'Request type default';
     case 'policy_row': return 'Policy row (v2)';
     case 'policy_default': return 'Policy default (v2)';
+    case 'scope_override': return 'Scope override';
+    case 'scope_override_unassigned': return 'Scope override (unassigned)';
     case 'unassigned': return 'Unassigned';
   }
 }

@@ -32,7 +32,9 @@ function/trigger/RPC they cover.
 
 ## Current tests
 
-- `scope_override_precedence.test.sql` — 8 cases covering live-doc §6.3
-  precedence (exact_space > ancestor_space (inherit) > space_group > tenant)
-  plus null-space, disjoint space, inherit=false, and all-inactive paths for
-  `public.request_type_effective_scope_override`.
+- `scope_override_precedence.test.sql` — 12 cases covering live-doc §6.3
+  precedence (exact_space > ancestor_space (inherit) > space_group > tenant),
+  null-space, disjoint space, inherit=false, all-inactive, starts_at/ends_at
+  effective-dating boundaries, same-tier id tie-break, and multi-group
+  membership for `public.request_type_effective_scope_override`.
+  Post-Phase-E safe — only touches `request_type_*` tables.

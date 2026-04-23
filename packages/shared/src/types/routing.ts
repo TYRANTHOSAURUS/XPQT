@@ -31,7 +31,15 @@ export type ChosenBy =
   | 'parent_location_team'
   | 'space_group_team'
   | 'domain_fallback'
+  | 'request_type_default'
   | 'rule'
+  // Scope-override provenance (see apps/api resolver.types.ts + live-doc §6.3):
+  // `scope_override` carries a concrete team/vendor target from a matched
+  // request_type_scope_overrides row; `scope_override_unassigned` is the
+  // explicit `handler_kind='none'` terminal (admin blocks auto-routing at
+  // this scope). Both short-circuit the normal resolver chain.
+  | 'scope_override'
+  | 'scope_override_unassigned'
   | 'unassigned';
 
 export interface TraceEntry {

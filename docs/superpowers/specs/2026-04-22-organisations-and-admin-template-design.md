@@ -235,7 +235,7 @@ $$;
 
 Rationale: the more specific source wins when two grants could equally explain a selection. A direct personal grant is more specific than one inherited via the tree.
 
-**No changes needed** to `portal_authorized_space_ids`, `portal_match_authorized_root`, or the portal catalog/trace predicates beyond the tie-break extension above. They all compose on `portal_authorized_root_matches`. Post-2026-04-23 service-catalog collapse the canonical portal predicates are `public.request_type_visible_ids` + `public.request_type_requestable_trace` (the old `portal_visible_request_type_ids` / `portal_availability_trace` are bridge wrappers scheduled for Phase E deletion); the tie-break behavior above applies identically to the native versions.
+**No changes needed** to `portal_authorized_space_ids`, `portal_match_authorized_root`, or the portal catalog/trace predicates beyond the tie-break extension above. They all compose on `portal_authorized_root_matches`. Post-2026-04-23 service-catalog collapse + Phase E hard cleanup, the canonical portal predicates are `public.request_type_visible_ids` + `public.request_type_requestable_trace` (the old `portal_visible_request_type_ids` / `portal_availability_trace` were dropped in migration `00097`). Tie-break behavior above applies identically to the native versions.
 
 ### 4.1 Performance
 
