@@ -11,6 +11,8 @@ import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import type { ServiceItemDetail } from './catalog-service-panel';
+import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
+import { Plus } from 'lucide-react';
 
 /**
  * Coverage tab: lists every site/building in the tenant and lets the admin
@@ -34,6 +36,18 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
   const [saving, setSaving] = useState<string | null>(null);
   const [localOfferings, setLocalOfferings] = useState(detail.offerings);
   useEffect(() => setLocalOfferings(detail.offerings), [detail.id, detail.offerings]);
+
+  const [overrideEditorOpen, setOverrideEditorOpen] = useState(false);
+  const [editingOverride, setEditingOverride] = useState<ScopeOverrideRow | null>(null);
+
+  const openNewOverride = () => {
+    setEditingOverride(null);
+    setOverrideEditorOpen(true);
+  };
+  const openEditOverride = (o: ScopeOverrideRow) => {
+    setEditingOverride(o);
+    setOverrideEditorOpen(true);
+  };
 
   // Sites + buildings in this tenant. We use the existing spaces/admin list
   // (non-paginated today; if tenants grow past a few hundred sites this
@@ -267,42 +281,60 @@ export function CatalogCoverageTab({ detail, onSaved }: { detail: ServiceItemDet
       <div className="rounded-md border bg-muted/20 p-3">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-medium text-muted-foreground">Scope overrides</span>
-          <span className="text-xs text-muted-foreground">
-            {detail.scope_overrides.filter((o) => o.active).length} active
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {detail.scope_overrides.filter((o) => o.active).length} active · {detail.scope_overrides.length} total
+            </span>
+            <Button size="sm" variant="outline" className="h-7" onClick={openNewOverride}>
+              <Plus className="h-3 w-3 mr-1" /> Add override
+            </Button>
+          </div>
         </div>
-        {detail.scope_overrides.filter((o) => o.active).length === 0 ? (
+        {detail.scope_overrides.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             No per-scope handler, workflow, SLA, or dispatch-policy overrides.
             The resolver falls through to the request type defaults and routing chain.
           </p>
         ) : (
-          <ul className="space-y-1 text-xs text-muted-foreground">
-            {detail.scope_overrides
-              .filter((o) => o.active)
-              .map((o) => (
-                <li key={o.id} className="font-mono">
+          <ul className="space-y-1 text-xs">
+            {detail.scope_overrides.map((o) => (
+              <li key={o.id}>
+                <button
+                  type="button"
+                  className={
+                    'w-full text-left rounded px-2 py-1.5 hover:bg-muted/50 font-mono text-xs ' +
+                    (o.active ? '' : 'opacity-50')
+                  }
+                  onClick={() => openEditOverride(o as ScopeOverrideRow)}
+                >
                   <span className="capitalize">{o.scope_kind.replace('_', ' ')}</span>
                   {o.space_id && <span> · space {o.space_id.slice(0, 8)}</span>}
                   {o.space_group_id && <span> · group {o.space_group_id.slice(0, 8)}</span>}
-                  {o.handler_kind && (
-                    <span> · handler={o.handler_kind}</span>
-                  )}
-                  {o.workflow_definition_id && <span> · workflow overridden</span>}
-                  {o.case_sla_policy_id && <span> · case SLA overridden</span>}
-                  {o.executor_sla_policy_id && <span> · executor SLA overridden</span>}
-                </li>
-              ))}
+                  {o.handler_kind && <span> · handler={o.handler_kind}</span>}
+                  {o.workflow_definition_id && <span> · workflow</span>}
+                  {o.case_sla_policy_id && <span> · case SLA</span>}
+                  {o.executor_sla_policy_id && <span> · executor SLA</span>}
+                  {!o.active && <span className="ml-2 text-muted-foreground italic">(inactive)</span>}
+                </button>
+              </li>
+            ))}
           </ul>
         )}
         <p className="mt-2 text-xs text-muted-foreground">
           Live — the resolver consults these overrides at case creation (handler + workflow + case SLA)
           and at dispatch (executor SLA). <code className="font-mono">handler_kind=none</code> is an
-          explicit unassign terminal. Authored via
-          {' '}<code className="font-mono">PUT /request-types/:id/scope-overrides</code>; an inline editor
-          is tracked as a separate slice.
+          explicit unassign terminal. Click a row to edit.
         </p>
       </div>
+
+      <ScopeOverrideEditor
+        requestTypeId={detail.id}
+        open={overrideEditorOpen}
+        onOpenChange={setOverrideEditorOpen}
+        existingOverrides={detail.scope_overrides as ScopeOverrideRow[]}
+        editing={editingOverride}
+        onSaved={onSaved}
+      />
     </div>
   );
 }
