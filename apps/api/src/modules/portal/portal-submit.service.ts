@@ -9,23 +9,17 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
 import {
-  PortalRequestableTrace,
+  RequestTypeTrace,
   PortalSubmitDto,
 } from './portal-submit.types';
 
 /**
  * Portal submission resolver.
  *
- * Service-catalog redesign phase 2: the DTO accepts EITHER service_item_id
- * (preferred in v2) OR request_type_id (legacy, resolved via the
- * request_type_service_item_bridge). The single-source-of-truth predicate is
- * portal_requestable_trace(), which returns a strict superset of the shipped
- * portal_availability_trace shape. See docs/service-catalog-redesign.md §4.2.
- *
- * Tickets are still inserted with ticket_type_id pointing at the fulfillment
- * type (= the legacy request_type id), keeping downstream routing/SLA/
- * workflow paths unchanged. tickets.requested_for_person_id is populated from
- * the DTO when provided (defaults to the auth-bound requester).
+ * Single path: the DTO carries request_type_id; validation is a single call to
+ * public.request_type_requestable_trace(). tickets.requested_for_person_id is
+ * populated from the DTO (defaults to the auth-bound requester).
+ * See docs/service-catalog-live.md §6.
  */
 @Injectable()
 export class PortalSubmitService {
@@ -35,11 +29,11 @@ export class PortalSubmitService {
   ) {}
 
   async submit(authUid: string, dto: PortalSubmitDto) {
-    const { intake, portal_trace, requested_for_person_id, fulfillment_type_id } =
+    const { intake, portal_trace, requested_for_person_id } =
       await this.resolvePortalSubmit(authUid, dto);
 
     const ticket = await this.ticketService.create({
-      ticket_type_id: fulfillment_type_id,
+      ticket_type_id: dto.request_type_id,
       title: dto.title,
       description: dto.description,
       priority: intake.priority,
@@ -61,11 +55,17 @@ export class PortalSubmitService {
     dto: PortalSubmitDto,
   ): Promise<{
     intake: IntakeContext;
-    portal_trace: PortalRequestableTrace;
+    portal_trace: RequestTypeTrace;
     requested_for_person_id: string;
-    fulfillment_type_id: string;
   }> {
     const tenant = TenantContext.current();
+
+    if (!dto.request_type_id) {
+      throw new BadRequestException({
+        code: 'request_type_required',
+        message: 'request_type_id is required',
+      });
+    }
 
     // 1. Auth-bind requester.
     const userLookup = await this.supabase.admin
@@ -80,62 +80,20 @@ export class PortalSubmitService {
     }
     const requesterPersonId = userRow.person_id;
 
-    // 2. Resolve service_item_id + fulfillment_type_id.
-    //    Preferred: DTO passes service_item_id directly.
-    //    Legacy: DTO passes request_type_id; we bridge to the paired service_item.
-    let serviceItemId = dto.service_item_id ?? null;
-    if (!serviceItemId && dto.request_type_id) {
-      const { data: bridgeRow } = await this.supabase.admin
-        .from('request_type_service_item_bridge')
-        .select('service_item_id')
-        .eq('request_type_id', dto.request_type_id)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle();
-      serviceItemId = (bridgeRow as { service_item_id: string } | null)?.service_item_id ?? null;
-    }
-    if (!serviceItemId) {
-      throw new BadRequestException({
-        code: 'service_item_required',
-        message: 'service_item_id or request_type_id must be provided',
-      });
-    }
-
-    const { data: siRow } = await this.supabase.admin
-      .from('service_items')
-      .select('id, active, fulfillment_type_id, on_behalf_policy')
-      .eq('id', serviceItemId)
+    // 2. Load request type for intake preflight (inactive → 404 before trace).
+    const { data: rtRow } = await this.supabase.admin
+      .from('request_types')
+      .select('id, active')
+      .eq('id', dto.request_type_id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    const si = siRow as
-      | { id: string; active: boolean; fulfillment_type_id: string; on_behalf_policy: string }
-      | null;
-    if (!si || !si.active) {
-      throw new NotFoundException('Service item not found or inactive');
-    }
-    const fulfillmentTypeId = si.fulfillment_type_id;
-
-    // 3. Load fulfillment intake (for asset-resolve preflight).
-    const { data: ftRow } = await this.supabase.admin
-      .from('fulfillment_types')
-      .select('id, active, requires_asset, asset_required, asset_type_filter')
-      .eq('id', fulfillmentTypeId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    const ft = ftRow as
-      | {
-          id: string;
-          active: boolean;
-          requires_asset: boolean | null;
-          asset_required: boolean | null;
-          asset_type_filter: string[] | null;
-        }
-      | null;
-    if (!ft || !ft.active) {
-      throw new NotFoundException('Fulfillment type inactive');
+    const rt = rtRow as { id: string; active: boolean } | null;
+    if (!rt || !rt.active) {
+      throw new NotFoundException('Request type not found or inactive');
     }
 
-    // 4. Early asset lookup (tenant-scoped) to derive the effective location
-    //    and catch cross-tenant leakage before portal_requestable_trace runs.
+    // 3. Early asset lookup (tenant-scoped) to derive the effective location
+    //    and catch cross-tenant leakage before the trace RPC runs.
     let assetAssignedSpaceId: string | null = null;
     if (dto.asset_id) {
       const assetLookup = await this.supabase.admin
@@ -156,20 +114,20 @@ export class PortalSubmitService {
       assetAssignedSpaceId = asset.assigned_space_id;
     }
 
-    // 5. Effective location: user-picked, else asset-resolved, else null.
+    // 4. Effective location: user-picked, else asset-resolved, else null.
     const effectiveLocationId: string | null = dto.location_id
       ? dto.location_id
       : assetAssignedSpaceId;
 
-    // 6. requested_for defaults to requester (self-submit).
+    // 5. requested_for defaults to requester (self-submit).
     const requestedForPersonId = dto.requested_for_person_id ?? requesterPersonId;
 
-    // 7. Single source of truth: portal_requestable_trace.
+    // 6. Single source of truth: request_type_requestable_trace.
     const { data: traceData, error: traceError } = await this.supabase.admin.rpc(
-      'portal_requestable_trace',
+      'request_type_requestable_trace',
       {
         p_actor_person_id: requesterPersonId,
-        p_service_item_id: serviceItemId,
+        p_request_type_id: dto.request_type_id,
         p_requested_for_person_id: requestedForPersonId,
         p_effective_space_id: effectiveLocationId,
         p_asset_id: dto.asset_id ?? null,
@@ -177,7 +135,7 @@ export class PortalSubmitService {
       },
     );
     if (traceError) throw traceError;
-    const portal_trace = traceData as unknown as PortalRequestableTrace;
+    const portal_trace = traceData as unknown as RequestTypeTrace;
 
     if (!portal_trace.overall_valid) {
       throw new BadRequestException({
@@ -187,11 +145,10 @@ export class PortalSubmitService {
       });
     }
 
-    // 8. Build Contract-1-aligned IntakeContext. request_type_id on the
-    //    intake points at the fulfillment_type_id (same UUID in phase-1/2).
+    // 7. Build Contract-1-aligned IntakeContext.
     const intake: IntakeContext = {
       tenant_id: tenant.id,
-      request_type_id: fulfillmentTypeId,
+      request_type_id: dto.request_type_id,
       requester_person_id: requesterPersonId,
       selected_location_id: dto.location_id ?? null,
       asset_id: dto.asset_id ?? null,
@@ -203,7 +160,6 @@ export class PortalSubmitService {
       intake,
       portal_trace,
       requested_for_person_id: requestedForPersonId,
-      fulfillment_type_id: fulfillmentTypeId,
     };
   }
 }

@@ -51,11 +51,7 @@ export class PortalController {
     if (!locationId) {
       throw new BadRequestException('location_id is required');
     }
-    // v2 always. The phase-1 backfill + mirror triggers guarantee v2 parity
-    // with v1 for seeded tenants, and the frontend only understands v2 shape.
-    // Rollback mechanism = revert the relevant frontend commit and re-deploy.
-    // See docs/service-catalog-redesign.md §9.
-    return this.portal.getCatalogV2(this.authUid(request), locationId);
+    return this.portal.getCatalog(this.authUid(request), locationId);
   }
 
   @Get('spaces')

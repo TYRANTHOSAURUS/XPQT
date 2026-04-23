@@ -229,17 +229,35 @@ export class RoutingSimulatorService {
     tenantId: string,
   ): Promise<PortalAvailabilityView> {
     // Uses the same RPC that POST /portal/tickets validation calls — single source of truth.
+    // The request-type-native trace returns a superset; we project to the slim
+    // PortalAvailabilityTraceView that the simulator UI already consumes.
     const { data: traceData, error: traceError } = await this.supabase.admin.rpc(
-      'portal_availability_trace',
+      'request_type_requestable_trace',
       {
-        p_person_id: personId,
-        p_effective_space_id: actingForLocationId,
+        p_actor_person_id: personId,
         p_request_type_id: requestTypeId,
+        p_requested_for_person_id: personId,
+        p_effective_space_id: actingForLocationId,
+        p_asset_id: null,
         p_tenant_id: tenantId,
       },
     );
     if (traceError) throw traceError;
-    const trace = traceData as unknown as PortalAvailabilityTraceView;
+    const fullTrace = traceData as unknown as Record<string, unknown>;
+    const trace: PortalAvailabilityTraceView = {
+      authorized: Boolean(fullTrace.authorized),
+      has_any_scope: Boolean(fullTrace.has_any_scope),
+      effective_location_id: (fullTrace.effective_location_id as string | null) ?? null,
+      matched_root_id: (fullTrace.matched_root_id as string | null) ?? null,
+      matched_root_source: (fullTrace.matched_root_source as 'default' | 'grant' | null) ?? null,
+      grant_id: (fullTrace.grant_id as string | null) ?? null,
+      visible: Boolean(fullTrace.visible),
+      location_required: Boolean(fullTrace.location_required),
+      granularity: (fullTrace.granularity as string | null) ?? null,
+      granularity_ok: Boolean(fullTrace.granularity_ok),
+      overall_valid: Boolean(fullTrace.overall_valid),
+      failure_reason: (fullTrace.failure_reason as string | null) ?? null,
+    };
 
     // Load the authorized-roots summary so admin can see what IS available when auth fails.
     const { data: rootRows } = await this.supabase.admin.rpc('portal_authorized_root_matches', {
