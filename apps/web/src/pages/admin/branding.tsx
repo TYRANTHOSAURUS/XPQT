@@ -1,9 +1,19 @@
 import { useEffect, useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field';
+import {
+  SettingsPageShell,
+  SettingsPageHeader,
+  SettingsSection,
+  SettingsFooterActions,
+} from '@/components/ui/settings-page';
 import { useBranding, type Branding } from '@/hooks/use-branding';
 import { toast } from 'sonner';
 
@@ -131,149 +141,159 @@ export function BrandingPage() {
     }
   };
 
+  const handleDiscard = () => {
+    setPrimary(branding.primary_color);
+    setAccent(branding.accent_color);
+    setMode(branding.theme_mode_default);
+  };
+
   if (loading && !branding.primary_color) {
-    return <div className="p-6 text-muted-foreground">Loading branding…</div>;
+    return (
+      <SettingsPageShell>
+        <SettingsPageHeader title="Branding" description="Loading…" />
+      </SettingsPageShell>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-6 max-w-3xl">
-      <Card>
-        <CardHeader>
-          <CardTitle>Logo assets</CardTitle>
-          <CardDescription>
-            SVG, PNG, or WebP up to 1 MB. Favicon: SVG, PNG, or ICO up to 256 KB.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <LogoSlot
-            kind="light"
-            label="Light mode logo"
-            hint="Shown on light backgrounds (sidebar, login page)"
-            url={branding.logo_light_url}
-            onUpload={(f) => uploadLogo('light', f)}
-            onRemove={() => removeLogo('light')}
-            accept="image/svg+xml,image/png,image/webp"
-          />
-          <LogoSlot
-            kind="dark"
-            label="Dark mode logo"
-            hint="Shown on dark backgrounds"
-            url={branding.logo_dark_url}
-            onUpload={(f) => uploadLogo('dark', f)}
-            onRemove={() => removeLogo('dark')}
-            accept="image/svg+xml,image/png,image/webp"
-          />
-          <LogoSlot
-            kind="favicon"
-            label="Favicon"
-            hint="Shown in the browser tab (32×32 recommended)"
-            url={branding.favicon_url}
-            onUpload={(f) => uploadLogo('favicon', f)}
-            onRemove={() => removeLogo('favicon')}
-            accept="image/svg+xml,image/png,image/x-icon"
-          />
-        </CardContent>
-      </Card>
+    <SettingsPageShell>
+      <SettingsPageHeader
+        title="Branding"
+        description="Logos, colors, and the default theme mode for your workspace."
+      />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Colors</CardTitle>
-          <CardDescription>Changes take effect on save and apply across the app.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex items-center gap-3">
-            <Label htmlFor="primary-color" className="w-28 shrink-0">Primary</Label>
-            <input
-              id="primary-color-picker"
-              type="color"
-              value={HEX_RE.test(primary) ? primary : '#000000'}
-              onChange={(e) => setPrimary(e.target.value)}
-              className="w-10 h-10 rounded border cursor-pointer"
-              aria-label="Primary color picker"
-            />
-            <Input
-              id="primary-color"
-              value={primary}
-              onChange={(e) => setPrimary(e.target.value)}
-              className="w-32 font-mono"
-              aria-invalid={!HEX_RE.test(primary)}
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            <Label htmlFor="accent-color" className="w-28 shrink-0">Accent</Label>
-            <input
-              id="accent-color-picker"
-              type="color"
-              value={HEX_RE.test(accent) ? accent : '#000000'}
-              onChange={(e) => setAccent(e.target.value)}
-              className="w-10 h-10 rounded border cursor-pointer"
-              aria-label="Accent color picker"
-            />
-            <Input
-              id="accent-color"
-              value={accent}
-              onChange={(e) => setAccent(e.target.value)}
-              className="w-32 font-mono"
-              aria-invalid={!HEX_RE.test(accent)}
-            />
-          </div>
-          <div className="rounded border p-4 flex flex-wrap items-center gap-3">
-            <span className="text-xs text-muted-foreground mr-2">Preview (saved values):</span>
-            <Button size="sm">Primary button</Button>
-            <Button size="sm" variant="secondary">Secondary</Button>
-            <span
-              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-              style={{ backgroundColor: branding.accent_color, color: '#fff' }}
-            >
-              Accent
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+      <SettingsSection
+        title="Logo assets"
+        description="SVG, PNG, or WebP up to 1 MB. Favicon: SVG, PNG, or ICO up to 256 KB."
+        density="tight"
+      >
+        <LogoSlot
+          kind="light"
+          label="Light mode logo"
+          hint="Shown on light backgrounds (sidebar, login page)"
+          url={branding.logo_light_url}
+          onUpload={(f) => uploadLogo('light', f)}
+          onRemove={() => removeLogo('light')}
+          accept="image/svg+xml,image/png,image/webp"
+        />
+        <LogoSlot
+          kind="dark"
+          label="Dark mode logo"
+          hint="Shown on dark backgrounds"
+          url={branding.logo_dark_url}
+          onUpload={(f) => uploadLogo('dark', f)}
+          onRemove={() => removeLogo('dark')}
+          accept="image/svg+xml,image/png,image/webp"
+        />
+        <LogoSlot
+          kind="favicon"
+          label="Favicon"
+          hint="Shown in the browser tab (32×32 recommended)"
+          url={branding.favicon_url}
+          onUpload={(f) => uploadLogo('favicon', f)}
+          onRemove={() => removeLogo('favicon')}
+          accept="image/svg+xml,image/png,image/x-icon"
+        />
+      </SettingsSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Default theme mode</CardTitle>
-          <CardDescription>Each user can override their own preference.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <RadioGroup
-            value={mode}
-            onValueChange={(v) => setMode(v as Branding['theme_mode_default'])}
-            className="flex gap-6"
+      <SettingsSection
+        title="Colors"
+        description="Changes take effect on save and apply across the app."
+      >
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="primary-color">Primary</FieldLabel>
+            <div className="flex items-center gap-3">
+              <input
+                id="primary-color-picker"
+                type="color"
+                value={HEX_RE.test(primary) ? primary : '#000000'}
+                onChange={(e) => setPrimary(e.target.value)}
+                className="w-10 h-10 rounded border cursor-pointer shrink-0"
+                aria-label="Primary color picker"
+              />
+              <Input
+                id="primary-color"
+                value={primary}
+                onChange={(e) => setPrimary(e.target.value)}
+                className="w-32 font-mono"
+                aria-invalid={!HEX_RE.test(primary)}
+              />
+            </div>
+            <FieldDescription>The main brand color used for primary buttons and accents.</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="accent-color">Accent</FieldLabel>
+            <div className="flex items-center gap-3">
+              <input
+                id="accent-color-picker"
+                type="color"
+                value={HEX_RE.test(accent) ? accent : '#000000'}
+                onChange={(e) => setAccent(e.target.value)}
+                className="w-10 h-10 rounded border cursor-pointer shrink-0"
+                aria-label="Accent color picker"
+              />
+              <Input
+                id="accent-color"
+                value={accent}
+                onChange={(e) => setAccent(e.target.value)}
+                className="w-32 font-mono"
+                aria-invalid={!HEX_RE.test(accent)}
+              />
+            </div>
+            <FieldDescription>Used for badges and secondary highlights.</FieldDescription>
+          </Field>
+        </FieldGroup>
+        <div className="rounded border bg-muted/30 p-4 flex flex-wrap items-center gap-3">
+          <span className="text-xs text-muted-foreground mr-2">Preview (saved values):</span>
+          <Button size="sm">Primary button</Button>
+          <Button size="sm" variant="secondary">Secondary</Button>
+          <span
+            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+            style={{ backgroundColor: branding.accent_color, color: '#fff' }}
           >
-            <label className="flex items-center gap-2 cursor-pointer">
-              <RadioGroupItem value="light" id="mode-light" />
-              <span>Light</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <RadioGroupItem value="dark" id="mode-dark" />
-              <span>Dark</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <RadioGroupItem value="system" id="mode-system" />
-              <span>System</span>
-            </label>
-          </RadioGroup>
-        </CardContent>
-      </Card>
+            Accent
+          </span>
+        </div>
+      </SettingsSection>
 
-      <div className="sticky bottom-0 bg-background py-3 border-t flex justify-end gap-3">
-        <Button
-          variant="ghost"
-          disabled={!dirty || saving}
-          onClick={() => {
-            setPrimary(branding.primary_color);
-            setAccent(branding.accent_color);
-            setMode(branding.theme_mode_default);
-          }}
+      <SettingsSection
+        title="Default theme mode"
+        description="Each user can override their own preference."
+      >
+        <RadioGroup
+          value={mode}
+          onValueChange={(v) => setMode(v as Branding['theme_mode_default'])}
+          className="flex flex-col gap-2"
         >
-          Discard
-        </Button>
-        <Button disabled={!canSave} onClick={handleSave}>
-          {saving ? 'Saving…' : 'Save changes'}
-        </Button>
-      </div>
-    </div>
+          <Field orientation="horizontal">
+            <RadioGroupItem value="light" id="mode-light" />
+            <FieldLabel className="font-normal" htmlFor="mode-light">Light</FieldLabel>
+          </Field>
+          <Field orientation="horizontal">
+            <RadioGroupItem value="dark" id="mode-dark" />
+            <FieldLabel className="font-normal" htmlFor="mode-dark">Dark</FieldLabel>
+          </Field>
+          <Field orientation="horizontal">
+            <RadioGroupItem value="system" id="mode-system" />
+            <FieldLabel className="font-normal" htmlFor="mode-system">System (follow user OS)</FieldLabel>
+          </Field>
+        </RadioGroup>
+      </SettingsSection>
+
+      <SettingsFooterActions
+        primary={{
+          label: 'Save changes',
+          onClick: handleSave,
+          loading: saving,
+          disabled: !canSave,
+        }}
+        secondary={{
+          label: 'Discard',
+          onClick: handleDiscard,
+          disabled: !dirty || saving,
+        }}
+      />
+    </SettingsPageShell>
   );
 }
