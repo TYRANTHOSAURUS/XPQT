@@ -13,9 +13,8 @@ import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 import { useApi } from '@/hooks/use-api';
 
-interface CatalogServiceItem {
+interface CatalogRequestType {
   id: string;
-  key: string;
   name: string;
   description: string | null;
 }
@@ -25,7 +24,7 @@ interface CatalogCategory {
   name: string;
   icon: string | null;
   parent_category_id: string | null;
-  service_items: CatalogServiceItem[];
+  request_types: CatalogRequestType[];
 }
 
 interface PortalCatalogResponse {
@@ -62,7 +61,7 @@ export function CatalogCategoryPage() {
 
   const { category, directItems, subcategories } = useMemo(() => {
     if (!catalog || !categoryId || !dbCategories) {
-      return { category: null, directItems: [] as CatalogServiceItem[], subcategories: [] as DbCategory[] };
+      return { category: null, directItems: [] as CatalogRequestType[], subcategories: [] as DbCategory[] };
     }
     const visibleIds = new Set(catalog.categories.map((c) => c.id));
     const cat = catalog.categories.find((c) => c.id === categoryId) ?? null;
@@ -71,7 +70,7 @@ export function CatalogCategoryPage() {
       .filter((c) => c.parent_category_id === categoryId && visibleIds.has(c.id));
     return {
       category: cat ? { ...cat, description: meta?.description ?? null } : null,
-      directItems: cat?.service_items ?? [],
+      directItems: cat?.request_types ?? [],
       subcategories: children,
     };
   }, [catalog, dbCategories, categoryId]);

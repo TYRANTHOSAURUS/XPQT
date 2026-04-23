@@ -37,25 +37,24 @@ interface CatalogCategory {
   parent_category_id: string | null;
 }
 
-interface CatalogServiceItem {
+interface CatalogRequestType {
   id: string;
-  key: string;
   name: string;
   description: string | null;
-  search_terms: string[] | null;
+  keywords: string[] | null;
 }
 
-interface CatalogCategoryV2 {
+interface CatalogCategoryResponse {
   id: string;
   name: string;
   icon: string | null;
   parent_category_id: string | null;
-  service_items: CatalogServiceItem[];
+  request_types: CatalogRequestType[];
 }
 
 interface PortalCatalogResponse {
   selected_location: { id: string; name: string; type: string };
-  categories: CatalogCategoryV2[];
+  categories: CatalogCategoryResponse[];
 }
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -142,14 +141,14 @@ export function PortalHome() {
         color: colorMap[c.icon] ?? 'text-gray-500',
       }));
 
-    type ServiceHit = CatalogServiceItem & { categoryName: string | null };
+    type ServiceHit = CatalogRequestType & { categoryName: string | null };
     const matchedServices: ServiceHit[] = [];
     const seen = new Set<string>();
     for (const cat of catalog?.categories ?? []) {
-      for (const item of cat.service_items) {
+      for (const item of cat.request_types) {
         if (seen.has(item.id)) continue;
-        const terms = (item.search_terms ?? []).join(' ');
-        if (matchesText(item.name, item.description, item.key, terms)) {
+        const terms = (item.keywords ?? []).join(' ');
+        if (matchesText(item.name, item.description, terms)) {
           seen.add(item.id);
           matchedServices.push({ ...item, categoryName: cat.name });
         }

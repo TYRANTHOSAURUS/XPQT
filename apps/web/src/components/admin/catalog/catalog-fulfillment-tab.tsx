@@ -154,17 +154,12 @@ export function CatalogFulfillmentTab({
         default_vendor_id: defaultKind === 'vendor' ? defaultId || null : null,
         requires_approval: requiresApproval,
         approval_approver_team_id: requiresApproval ? approverTeamId || null : null,
+        on_behalf_policy: onBehalfPolicy,
       };
       await apiFetch(`/request-types/${requestTypeId}`, {
         method: 'PATCH',
         body: JSON.stringify(rtBody),
       });
-      if (onBehalfPolicy !== detail.on_behalf_policy) {
-        await apiFetch(`/admin/service-items/${detail.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ on_behalf_policy: onBehalfPolicy }),
-        });
-      }
       toast.success('Fulfillment saved');
       onSaved();
     } catch (e) {

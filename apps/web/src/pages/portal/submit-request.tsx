@@ -45,17 +45,15 @@ import {
 
 interface CatalogServiceItem {
   id: string;
-  key: string;
   name: string;
   description: string | null;
   icon: string | null;
   kb_link: string | null;
   disruption_banner: string | null;
-  search_terms: string[];
+  keywords: string[];
   on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
   form_schema_id: string | null;
-  fulfillment: {
-    id: string;
+  intake: {
     requires_location: boolean;
     location_required: boolean;
     location_granularity: string | null;
@@ -69,7 +67,7 @@ interface CatalogCategory {
   id: string;
   name: string;
   icon: string | null;
-  service_items: CatalogServiceItem[];
+  request_types: CatalogServiceItem[];
 }
 
 interface PortalCatalogResponse {
@@ -146,9 +144,9 @@ export function SubmitRequestPage() {
     if (!catalog) return [];
     if (categoryId) {
       const cat = catalog.categories.find((c) => c.id === categoryId);
-      return cat?.service_items ?? [];
+      return cat?.request_types ?? [];
     }
-    return catalog.categories.flatMap((c) => c.service_items);
+    return catalog.categories.flatMap((c) => c.request_types);
   }, [catalog, categoryId]);
 
   const selectedRT = serviceItems.find((r) => r.id === requestTypeId);
@@ -165,7 +163,7 @@ export function SubmitRequestPage() {
   // that may no longer apply to the new RT (codex v4 review: hidden asset state).
   useEffect(() => {
     setDrilledLocation(null);
-    if (!selectedRT?.fulfillment.requires_asset) {
+    if (!selectedRT?.intake.requires_asset) {
       setAssetId(null);
       setAssetLocationSummary(null);
     }
@@ -186,12 +184,12 @@ export function SubmitRequestPage() {
         setValues({});
       })
       .catch(() => setFormFields([]));
-  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.fulfillment.requires_asset, selectedRT?.on_behalf_policy]);
+  }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.intake.requires_asset, selectedRT?.on_behalf_policy]);
 
   const needsDrilldown = useMemo(() => {
-    if (!selectedRT?.fulfillment.location_granularity || !currentLocation) return false;
-    return !satisfiesGranularity(currentLocation.type, selectedRT.fulfillment.location_granularity);
-  }, [selectedRT?.fulfillment.location_granularity, currentLocation]);
+    if (!selectedRT?.intake.location_granularity || !currentLocation) return false;
+    return !satisfiesGranularity(currentLocation.type, selectedRT.intake.location_granularity);
+  }, [selectedRT?.intake.location_granularity, currentLocation]);
 
   // The location we'll submit to the backend. Only user-picked / drilled values —
   // never asset-resolved (that runs server-side to preserve scope_source provenance).
@@ -210,12 +208,12 @@ export function SubmitRequestPage() {
       return;
     }
 
-    if (selectedRT?.fulfillment.location_required && !submitLocationId && !assetId) {
+    if (selectedRT?.intake.location_required && !submitLocationId && !assetId) {
       toast.error('Please pick a location or asset');
       return;
     }
 
-    if (selectedRT?.fulfillment.location_granularity && !submitLocationId && !assetId) {
+    if (selectedRT?.intake.location_granularity && !submitLocationId && !assetId) {
       toast.error('Please drill down to the required location');
       return;
     }
@@ -226,7 +224,7 @@ export function SubmitRequestPage() {
       await apiFetch('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
-          service_item_id: formValues.requestTypeId,
+          request_type_id: formValues.requestTypeId,
           title: formValues.title,
           description: formValues.description,
           priority: formValues.priority,
@@ -328,11 +326,11 @@ export function SubmitRequestPage() {
                 {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
               </Field>
 
-              {selectedRT?.fulfillment.requires_asset && (
+              {selectedRT?.intake.requires_asset && (
                 <Field>
                   <FieldLabel htmlFor="portal-asset">
                     Asset
-                    {selectedRT.fulfillment.asset_required && <span className="text-destructive ml-1">*</span>}
+                    {selectedRT.intake.asset_required && <span className="text-destructive ml-1">*</span>}
                   </FieldLabel>
                   <AssetCombobox
                     value={assetId}
@@ -347,7 +345,7 @@ export function SubmitRequestPage() {
                         setAssetLocationSummary(null);
                       }
                     }}
-                    assetTypeFilter={selectedRT.fulfillment.asset_type_filter ?? []}
+                    assetTypeFilter={selectedRT.intake.asset_type_filter ?? []}
                   />
                   {assetLocationSummary && (
                     <FieldDescription className="flex items-center gap-1">
@@ -373,15 +371,15 @@ export function SubmitRequestPage() {
                 </Field>
               )}
 
-              {selectedRT?.fulfillment.location_granularity && needsDrilldown && currentLocation && (
+              {selectedRT?.intake.location_granularity && needsDrilldown && currentLocation && (
                 <Field>
                   <FieldLabel htmlFor="portal-drilldown">
                     Location
-                    {selectedRT.fulfillment.location_required && <span className="text-destructive ml-1">*</span>}
+                    {selectedRT.intake.location_required && <span className="text-destructive ml-1">*</span>}
                   </FieldLabel>
                   <PortalLocationDrilldown
                     rootSpace={currentLocation}
-                    granularity={selectedRT.fulfillment.location_granularity}
+                    granularity={selectedRT.intake.location_granularity}
                     onPick={(s) => setDrilledLocation(s)}
                     selected={drilledLocation}
                   />

@@ -13,17 +13,24 @@ import { CatalogAudienceTab } from './catalog-audience-tab';
 import { CatalogFormTab } from './catalog-form-tab';
 import { CatalogFulfillmentTab } from './catalog-fulfillment-tab';
 
+/**
+ * The "detail" shape consumed by each tab. Keeps the property names the tabs
+ * expect (offerings, criteria, form_variants, on_behalf_rules) while the
+ * underlying tables moved onto the request-type-native set. Fields are
+ * assembled by the panel from separate GETs on the request-type satellite
+ * endpoints. See docs/service-catalog-live.md §5 + §10.
+ */
 export interface ServiceItemDetail {
-  id: string;
-  key: string;
+  id: string;                  // request_type_id
+  key: string;                 // synthetic: first 8 chars of id — kept for display
   name: string;
   description: string | null;
   icon: string | null;
-  search_terms: string[] | null;
+  search_terms: string[] | null;   // mirrors request_types.keywords
   kb_link: string | null;
   disruption_banner: string | null;
   on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
-  fulfillment_type_id: string;
+  fulfillment_type_id: string;     // same as id (no split)
   display_order: number;
   active: boolean;
   categories: Array<{ id: string; category_id: string; display_order: number }>;
@@ -53,10 +60,54 @@ export interface ServiceItemDetail {
   on_behalf_rules: Array<{ id: string; role: 'actor' | 'target'; criteria_set_id: string }>;
 }
 
+interface RequestTypeRow {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  keywords: string[] | null;
+  kb_link: string | null;
+  disruption_banner: string | null;
+  on_behalf_policy: ServiceItemDetail['on_behalf_policy'];
+  display_order: number;
+  active: boolean;
+}
+
 interface Props {
   requestTypeId: string | null;
   onSaved: () => void;
   onClose: () => void;
+}
+
+async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
+  const [rt, categoryIds, coverage, audience, variants, onBehalfRules] = await Promise.all([
+    apiFetch<RequestTypeRow>(`/request-types/${requestTypeId}`),
+    apiFetch<string[]>(`/request-types/${requestTypeId}/categories`),
+    apiFetch<ServiceItemDetail['offerings']>(`/request-types/${requestTypeId}/coverage`),
+    apiFetch<ServiceItemDetail['criteria']>(`/request-types/${requestTypeId}/audience`),
+    apiFetch<ServiceItemDetail['form_variants']>(`/request-types/${requestTypeId}/form-variants`),
+    apiFetch<ServiceItemDetail['on_behalf_rules']>(`/request-types/${requestTypeId}/on-behalf-rules`),
+  ]);
+
+  return {
+    id: rt.id,
+    key: rt.id.slice(0, 8),
+    name: rt.name,
+    description: rt.description,
+    icon: rt.icon,
+    search_terms: rt.keywords ?? [],
+    kb_link: rt.kb_link,
+    disruption_banner: rt.disruption_banner,
+    on_behalf_policy: rt.on_behalf_policy ?? 'self_only',
+    fulfillment_type_id: rt.id,
+    display_order: rt.display_order ?? 0,
+    active: rt.active,
+    categories: categoryIds.map((cid) => ({ id: cid, category_id: cid, display_order: 0 })),
+    offerings: coverage,
+    criteria: audience,
+    form_variants: variants,
+    on_behalf_rules: onBehalfRules,
+  };
 }
 
 export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) {
@@ -74,20 +125,20 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
     setError(null);
     setDetail(null);
     setActiveTab('basics');
-    apiFetch<ServiceItemDetail>(`/admin/service-items/by-request-type/${requestTypeId}`)
+    loadDetail(requestTypeId)
       .then(setDetail)
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load'))
       .finally(() => setLoading(false));
   }, [requestTypeId]);
 
   const reload = async () => {
-    if (!detail) return;
+    if (!requestTypeId) return;
     try {
-      const fresh = await apiFetch<ServiceItemDetail>(`/admin/service-items/${detail.id}`);
+      const fresh = await loadDetail(requestTypeId);
       setDetail(fresh);
       onSaved();
     } catch {
-      // toast already surfaced by child
+      // toast surfaced by child
     }
   };
 
@@ -149,7 +200,6 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
         <div className="min-w-0">
           <h2 className="text-lg font-semibold truncate">{detail.name}</h2>
           <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-            <span className="font-mono truncate">{detail.key}</span>
             {!detail.active && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
           </div>
         </div>

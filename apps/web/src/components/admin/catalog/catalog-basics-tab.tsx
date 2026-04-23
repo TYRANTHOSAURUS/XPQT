@@ -63,7 +63,7 @@ export function CatalogBasicsTab({
   const save = async () => {
     setSaving(true);
     try {
-      await apiFetch(`/admin/service-items/${detail.id}`, {
+      await apiFetch(`/request-types/${detail.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           name: name.trim(),
@@ -71,12 +71,12 @@ export function CatalogBasicsTab({
           icon: icon.trim() || null,
           kb_link: kbLink.trim() || null,
           disruption_banner: disruption.trim() || null,
-          search_terms: searchTerms.split(',').map((s) => s.trim()).filter(Boolean),
+          keywords: searchTerms.split(',').map((s) => s.trim()).filter(Boolean),
           display_order: Number.isFinite(displayOrder) ? displayOrder : 0,
           active,
         }),
       });
-      await apiFetch(`/admin/service-items/${detail.id}/categories`, {
+      await apiFetch(`/request-types/${detail.id}/categories`, {
         method: 'PUT',
         body: JSON.stringify({ category_ids: categoryIds }),
       });
