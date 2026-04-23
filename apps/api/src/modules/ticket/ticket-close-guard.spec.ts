@@ -73,6 +73,7 @@ function makeDeps(parent: Row, openChildren: string[]) {
   };
   const svc = new TicketService(
     supabase as never, {} as never, slaService as never, {} as never, {} as never, visibility as never,
+    { resolve: jest.fn().mockResolvedValue(null) } as never,
   );
   return { svc, row: () => row };
 }

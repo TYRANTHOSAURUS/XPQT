@@ -14,6 +14,7 @@ import { ChildExecutionResolverService } from './child-execution-resolver.servic
 import { IntakeScopingService } from './intake-scoping.service';
 import { PolicyStoreService } from './policy-store.service';
 import { ResolverService } from './resolver.service';
+import { ScopeOverrideResolverService } from './scope-override-resolver.service';
 import { SplitOrchestrationService } from './split-orchestration.service';
 import {
   AssignmentTarget,
@@ -67,6 +68,7 @@ export class RoutingEvaluatorService {
     private readonly caseOwnerEngine: CaseOwnerEngineService,
     private readonly splitOrchestration: SplitOrchestrationService,
     private readonly childExecutionResolver: ChildExecutionResolverService,
+    private readonly scopeOverrides: ScopeOverrideResolverService,
   ) {}
 
   /**
@@ -159,6 +161,7 @@ export class RoutingEvaluatorService {
     const policyEntityId = await this.loadCaseOwnerPolicyEntityId(
       context.tenant_id,
       context.request_type_id,
+      context.location_id ?? null,
     );
     if (!policyEntityId) {
       return unassignedDecision('v2: request_type has no case_owner_policy_entity_id attached');
@@ -192,26 +195,53 @@ export class RoutingEvaluatorService {
     return adaptOwnerDecisionToResolver(decision);
   }
 
+  /**
+   * Scope-override-aware policy-entity lookup. Order:
+   *   1. request_type_scope_overrides.(case_owner|child_dispatch)_policy_entity_id
+   *      matching (tenant, request_type, effective_location) precedence.
+   *   2. request_types.(case_owner|child_dispatch)_policy_entity_id (the
+   *      request-type default).
+   * Returns null when neither is set; callers treat that as "no v2 policy
+   * attached" and keep their fail-soft unassigned behavior.
+   */
   private async loadCaseOwnerPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
+    effective_location_id: string | null = null,
   ): Promise<string | null> {
-    return this.loadPolicyEntityId(tenant_id, request_type_id, 'case_owner_policy_entity_id');
+    return this.loadPolicyEntityId(
+      tenant_id,
+      request_type_id,
+      effective_location_id,
+      'case_owner_policy_entity_id',
+    );
   }
 
   private async loadChildDispatchPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
+    effective_location_id: string | null = null,
   ): Promise<string | null> {
-    return this.loadPolicyEntityId(tenant_id, request_type_id, 'child_dispatch_policy_entity_id');
+    return this.loadPolicyEntityId(
+      tenant_id,
+      request_type_id,
+      effective_location_id,
+      'child_dispatch_policy_entity_id',
+    );
   }
 
   private async loadPolicyEntityId(
     tenant_id: string,
     request_type_id: string | null,
+    effective_location_id: string | null,
     column: 'case_owner_policy_entity_id' | 'child_dispatch_policy_entity_id',
   ): Promise<string | null> {
     if (!request_type_id) return null;
+
+    const override = await this.scopeOverrides.resolve(tenant_id, request_type_id, effective_location_id);
+    const overridden = override?.[column];
+    if (overridden) return overridden;
+
     const { data, error } = await this.supabase.admin
       .from('request_types')
       .select(column)
@@ -239,6 +269,7 @@ export class RoutingEvaluatorService {
     const policyEntityId = await this.loadChildDispatchPolicyEntityId(
       context.tenant_id,
       context.request_type_id,
+      context.location_id ?? null,
     );
     if (!policyEntityId) {
       return unassignedDecision('v2: request_type has no child_dispatch_policy_entity_id attached');

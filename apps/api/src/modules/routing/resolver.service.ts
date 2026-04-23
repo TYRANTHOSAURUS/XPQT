@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ResolverRepository } from './resolver-repository';
+import { ScopeOverrideResolverService } from './scope-override-resolver.service';
 import {
   AssignmentTarget,
   ChosenBy,
@@ -12,11 +13,67 @@ import {
 
 @Injectable()
 export class ResolverService {
-  constructor(private readonly repo: ResolverRepository) {}
+  constructor(
+    private readonly repo: ResolverRepository,
+    private readonly scopeOverrides: ScopeOverrideResolverService,
+  ) {}
 
   async resolve(context: ResolverContext): Promise<ResolverDecision> {
     const trace: TraceEntry[] = [];
     const loaded = await this.hydrate(context);
+
+    // Scope-override pre-step. When the admin has configured a request-type-
+    // scoped handler override that matches this ticket's location, it wins
+    // over rules/asset/location/default. handler_kind='none' is an explicit
+    // unassignment and is terminal (the admin is saying "this scope has no
+    // coverage"). handler_kind=null means the override only touches workflow/
+    // SLA/policy-entity ids; routing falls through to the normal chain and
+    // downstream callers consume the override for their own fields.
+    // See live-doc §5.5 + §6.3.
+    const override = context.request_type_id
+      ? await this.scopeOverrides.resolve(
+          context.tenant_id,
+          context.request_type_id,
+          context.location_id ?? loaded.asset?.assigned_space_id ?? null,
+        )
+      : null;
+    if (override?.handler_kind === 'none') {
+      trace.push({
+        step: 'scope_override_unassigned',
+        matched: true,
+        reason: `scope override ${override.id} (${override.precedence}) handler_kind=none`,
+        target: null,
+      });
+      return { target: null, chosen_by: 'scope_override_unassigned', strategy: 'fixed', trace };
+    }
+    if (override?.handler_kind === 'team' && override.handler_team_id) {
+      const target: AssignmentTarget = { kind: 'team', team_id: override.handler_team_id };
+      trace.push({
+        step: 'scope_override',
+        matched: true,
+        reason: `scope override ${override.id} (${override.precedence}) team`,
+        target,
+      });
+      return { target, chosen_by: 'scope_override', strategy: 'fixed', trace };
+    }
+    if (override?.handler_kind === 'vendor' && override.handler_vendor_id) {
+      const target: AssignmentTarget = { kind: 'vendor', vendor_id: override.handler_vendor_id };
+      trace.push({
+        step: 'scope_override',
+        matched: true,
+        reason: `scope override ${override.id} (${override.precedence}) vendor`,
+        target,
+      });
+      return { target, chosen_by: 'scope_override', strategy: 'fixed', trace };
+    }
+    if (override) {
+      trace.push({
+        step: 'scope_override',
+        matched: false,
+        reason: `scope override ${override.id} (${override.precedence}) has no handler — falling through to chain`,
+        target: null,
+      });
+    }
 
     const ruleHit = await this.tryRules(context, trace);
     if (ruleHit) return ruleHit;

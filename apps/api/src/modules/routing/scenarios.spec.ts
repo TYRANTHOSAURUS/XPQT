@@ -22,6 +22,12 @@ function repo(over: Partial<Record<string, jest.Mock>> = {}) {
   };
 }
 
+// Scope-override resolver stub: no override configured in any scenario below.
+// Tests that exercise the override pre-step live in a dedicated scope-override
+// spec file so the scenarios here stay focused on the rules/asset/location
+// chain.
+const noScopeOverride = { resolve: jest.fn().mockResolvedValue(null) };
+
 function ctx(over: Partial<ResolverContext> = {}): ResolverContext {
   return {
     tenant_id: 't1',
@@ -45,7 +51,7 @@ describe('canonical enterprise routing scenarios', () => {
       locationChain: jest.fn().mockResolvedValue(['locA']),
       locationTeam: jest.fn(async (sid, dom) =>
         sid === 'locA' && dom === 'it' ? { team_id: 'service-desk-A', vendor_id: null } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'locA', domain: 'it' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'service-desk-A' });
     expect(d.chosen_by).toBe('location_team');
@@ -60,7 +66,7 @@ describe('canonical enterprise routing scenarios', () => {
       locationChain: jest.fn().mockResolvedValue(['locB', 'region-east']),
       locationTeam: jest.fn(async (sid, dom) =>
         sid === 'region-east' && dom === 'fm' ? { team_id: 'fm-shared', vendor_id: null } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'locB', domain: 'fm' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'fm-shared' });
     expect(d.chosen_by).toBe('parent_location_team');
@@ -75,7 +81,7 @@ describe('canonical enterprise routing scenarios', () => {
       locationChain: jest.fn().mockResolvedValue(['locC']),
       spaceGroupTeam: jest.fn(async (sid, dom) =>
         sid === 'locC' && dom === 'fm' ? { team_id: 'fm-shared', vendor_id: null } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'locC', domain: 'fm' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'fm-shared' });
     expect(d.chosen_by).toBe('space_group_team');
@@ -87,7 +93,7 @@ describe('canonical enterprise routing scenarios', () => {
         id: 'rt', domain: 'catering', fulfillment_strategy: 'fixed',
         default_team_id: 'catering-desk', default_vendor_id: null, asset_type_filter: [],
       }),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ domain: 'catering' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'catering-desk' });
     expect(d.chosen_by).toBe('request_type_default');
@@ -102,7 +108,7 @@ describe('canonical enterprise routing scenarios', () => {
       locationChain: jest.fn().mockResolvedValue(['locC', 'region-west']),
       locationTeam: jest.fn(async (sid, dom) =>
         sid === 'region-west' && dom === 'doors' ? { team_id: 'region-west-doors', vendor_id: null } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'locC', domain: 'doors' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'region-west-doors' });
     expect(d.chosen_by).toBe('parent_location_team');
@@ -118,7 +124,7 @@ describe('canonical enterprise routing scenarios', () => {
       domainChain: jest.fn().mockResolvedValue(['doors', 'fm']),
       locationTeam: jest.fn(async (sid, dom) =>
         sid === 'region-west' && dom === 'fm' ? { team_id: 'region-west-fm', vendor_id: null } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'locC', domain: 'doors' }));
     expect(d.target).toEqual({ kind: 'team', team_id: 'region-west-fm' });
     expect(d.chosen_by).toBe('domain_fallback');
@@ -133,7 +139,7 @@ describe('canonical enterprise routing scenarios', () => {
       locationChain: jest.fn().mockResolvedValue(['A1', 'campus']),
       locationTeam: jest.fn(async (sid, dom) =>
         sid === 'A1' && dom === 'fm' ? { team_id: null, vendor_id: 'vendor-Z' } : null),
-    }) as never);
+    }) as never, noScopeOverride as never);
     const d = await svc.resolve(ctx({ location_id: 'A1', domain: 'fm' }));
     expect(d.target).toEqual({ kind: 'vendor', vendor_id: 'vendor-Z' });
     expect(d.chosen_by).toBe('location_team');

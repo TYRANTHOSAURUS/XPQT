@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
+import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { ApprovalService } from '../approval/approval.service';
@@ -28,6 +29,17 @@ export interface CreateTicketDto {
   interaction_mode?: string;
   source_channel?: string;
   form_data?: Record<string, unknown>;
+  external_system?: string;
+  external_id?: string;
+}
+
+export interface CreateTicketOptions {
+  /**
+   * When true, skip the request-type's workflow start inside
+   * runPostCreateAutomation. Used by webhook ingest when the webhook row
+   * carries its own workflow_id override so exactly one instance starts.
+   */
+  skipWorkflow?: boolean;
 }
 
 export interface UpdateTicketDto {
@@ -143,6 +155,7 @@ export class TicketService {
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
     @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
     private readonly visibility: TicketVisibilityService,
+    private readonly scopeOverrides: ScopeOverrideResolverService,
   ) {}
 
   async list(filters: TicketListFilters = {}, actorAuthUid: string) {
@@ -421,7 +434,7 @@ export class TicketService {
     return data;
   }
 
-  async create(dto: CreateTicketDto) {
+  async create(dto: CreateTicketDto, options: CreateTicketOptions = {}) {
     const tenant = TenantContext.current();
 
     const { data, error } = await this.supabase.admin
@@ -447,6 +460,8 @@ export class TicketService {
         status: 'new',
         status_category: 'new',
         form_data: dto.form_data,
+        external_system: dto.external_system,
+        external_id: dto.external_id,
       })
       .select()
       .single();
@@ -502,7 +517,7 @@ export class TicketService {
     }
 
     // Normal path: routing → SLA → workflow
-    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg);
+    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg, options);
     return data;
   }
 
@@ -556,17 +571,39 @@ export class TicketService {
     data: Record<string, unknown>,
     tenantId: string,
     requestTypeCfg: Record<string, unknown> | null,
+    options: CreateTicketOptions = {},
   ) {
-    // ── Auto-routing ──────────────────────────────────────────
     const isWorkOrder = data.ticket_kind === 'work_order';
+    // Compute effective location once for both the auto-routing branch and the
+    // scope-override lookup. Falls back to the asset's assigned_space_id when
+    // no explicit location was supplied.
+    let effectiveLocation = data.location_id as string | null;
+    if (!effectiveLocation && data.asset_id) {
+      const { data: asset } = await this.supabase.admin
+        .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
+      effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
+    }
+
+    // Scope-override lookup is advisory for the resolver (which already runs
+    // its own copy of this query) but authoritative for workflow / case SLA /
+    // executor SLA below. One lookup here; ResolverService.resolve repeats
+    // the call but the function is STABLE and cheap.
+    // See docs/service-catalog-live.md §5.5 + §6.3.
+    const scopeOverride = (data.ticket_type_id && !isWorkOrder)
+      ? await this.scopeOverrides.resolve(tenantId, data.ticket_type_id as string, effectiveLocation)
+      : null;
+    const effectiveWorkflowDefinitionId =
+      scopeOverride?.workflow_definition_id ??
+      (requestTypeCfg?.workflow_definition_id as string | null | undefined) ??
+      null;
+    const effectiveCaseSlaPolicyId =
+      scopeOverride?.case_sla_policy_id ??
+      (requestTypeCfg?.sla_policy_id as string | null | undefined) ??
+      null;
+
+    // ── Auto-routing ──────────────────────────────────────────
     if (!isWorkOrder && !data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
       try {
-        let effectiveLocation = data.location_id as string | null;
-        if (!effectiveLocation && data.asset_id) {
-          const { data: asset } = await this.supabase.admin
-            .from('assets').select('assigned_space_id').eq('id', data.asset_id as string).single();
-          effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
-        }
 
         const evalCtx = {
           tenant_id: tenantId,
@@ -608,19 +645,22 @@ export class TicketService {
     }
 
     // ── Auto-SLA ──────────────────────────────────────────────
-    if (requestTypeCfg?.sla_policy_id) {
+    // Scope override's case_sla_policy_id wins over request_types.sla_policy_id
+    // when set. Null override leaves the request-type default intact.
+    if (effectiveCaseSlaPolicyId) {
       try {
-        await this.slaService.startTimers(data.id as string, tenantId, requestTypeCfg.sla_policy_id as string);
-        await this.supabase.admin.from('tickets').update({ sla_id: requestTypeCfg.sla_policy_id }).eq('id', data.id as string);
+        await this.slaService.startTimers(data.id as string, tenantId, effectiveCaseSlaPolicyId);
+        await this.supabase.admin.from('tickets').update({ sla_id: effectiveCaseSlaPolicyId }).eq('id', data.id as string);
       } catch {
         // SLA failure should not block ticket creation
       }
     }
 
     // ── Auto-workflow ─────────────────────────────────────────
-    if (requestTypeCfg?.workflow_definition_id) {
+    // Same precedence: scope override's workflow_definition_id wins.
+    if (effectiveWorkflowDefinitionId && !options.skipWorkflow) {
       try {
-        await this.workflowEngine.startForTicket(data.id as string, requestTypeCfg.workflow_definition_id as string);
+        await this.workflowEngine.startForTicket(data.id as string, effectiveWorkflowDefinitionId);
       } catch {
         // Workflow failure should not block ticket creation
       }

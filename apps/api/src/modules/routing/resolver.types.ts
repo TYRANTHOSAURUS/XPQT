@@ -14,6 +14,12 @@ export type ChosenBy =
   | 'space_group_team'
   | 'domain_fallback'
   | 'request_type_default'
+  // Scope-override provenance (2026-04-23). `scope_override` carries a concrete
+  // team/vendor target; `scope_override_unassigned` is handler_kind='none' —
+  // the admin explicitly says "no handler at this scope, stop". Both
+  // short-circuit the normal resolver chain.
+  | 'scope_override'
+  | 'scope_override_unassigned'
   // Routing v2 values (Artifact A.4). Stored in routing_decisions.chosen_by
   // (text column, no check constraint) once the v2 engine serves traffic.
   | 'policy_row'

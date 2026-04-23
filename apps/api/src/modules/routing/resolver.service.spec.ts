@@ -29,7 +29,7 @@ function ctx(over: Partial<ResolverContext> = {}): ResolverContext {
 
 describe('ResolverService', () => {
   it('returns unassigned when no context and no fallbacks', async () => {
-    const svc = new ResolverService(stubRepo() as never);
+    const svc = new ResolverService(stubRepo() as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
     const decision = await svc.resolve(ctx());
     expect(decision.target).toBeNull();
     expect(decision.chosen_by).toBe('unassigned');
@@ -55,7 +55,7 @@ describe('ResolverService', () => {
           type: { id: 'at1', default_team_id: 'at-team', default_vendor_id: null },
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt1', asset_id: 'a1' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'override-team' });
       expect(d.chosen_by).toBe('asset_override');
@@ -70,7 +70,7 @@ describe('ResolverService', () => {
           type: { id: 'at1', default_team_id: 'at-team', default_vendor_id: null },
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt1', asset_id: 'a1' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'at-team' });
       expect(d.chosen_by).toBe('asset_type_default');
@@ -85,7 +85,7 @@ describe('ResolverService', () => {
           type: { id: 'at1', default_team_id: null, default_vendor_id: 'acme' },
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt1', asset_id: 'a1' }));
       expect(d.target).toEqual({ kind: 'vendor', vendor_id: 'acme' });
       expect(d.chosen_by).toBe('asset_type_default');
@@ -100,7 +100,7 @@ describe('ResolverService', () => {
           type: { id: 'at1', default_team_id: null, default_vendor_id: null },
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt1', asset_id: 'a1' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'default-team' });
       expect(d.chosen_by).toBe('request_type_default');
@@ -126,7 +126,7 @@ describe('ResolverService', () => {
           return null;
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt2', location_id: 's1', domain: 'fm' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'floor-team' });
       expect(d.chosen_by).toBe('location_team');
@@ -141,7 +141,7 @@ describe('ResolverService', () => {
           return null;
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt2', location_id: 's1', domain: 'fm' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'building-team' });
       expect(d.chosen_by).toBe('parent_location_team');
@@ -153,7 +153,7 @@ describe('ResolverService', () => {
         locationChain: jest.fn().mockResolvedValue(['s1']),
         locationTeam: jest.fn().mockResolvedValue(null),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt2', location_id: 's1', domain: 'fm' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'fallback-team' });
       expect(d.chosen_by).toBe('request_type_default');
@@ -175,7 +175,7 @@ describe('ResolverService', () => {
         locationChain: jest.fn().mockResolvedValue(['s1']),
         locationTeam: jest.fn().mockResolvedValue({ team_id: 'loc-team', vendor_id: null }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt3', asset_id: 'a1', domain: 'fm' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'loc-team' });
       expect(d.chosen_by).toBe('location_team');
@@ -190,7 +190,7 @@ describe('ResolverService', () => {
           default_team_id: 'it-team', default_vendor_id: null, asset_type_filter: [],
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt4', domain: 'it' }));
       expect(d.target).toEqual({ kind: 'team', team_id: 'it-team' });
       expect(d.chosen_by).toBe('request_type_default');
@@ -212,7 +212,7 @@ describe('ResolverService', () => {
           default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 'urgent' }));
       expect(d.chosen_by).toBe('rule');
       expect(d.rule_id).toBe('r1');
@@ -233,7 +233,7 @@ describe('ResolverService', () => {
           default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(
         ctx({ request_type_id: 'rt', priority: 'urgent', excluded_rule_ids: ['r1'] }),
       );
@@ -255,7 +255,7 @@ describe('ResolverService', () => {
           default_team_id: 'normal-team', default_vendor_id: null, asset_type_filter: [],
         }),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 'medium' }));
       expect(d.chosen_by).toBe('request_type_default');
       expect(d.target).toEqual({ kind: 'team', team_id: 'normal-team' });
@@ -274,7 +274,7 @@ describe('ResolverService', () => {
         spaceGroupTeam: jest.fn(async (sid: string, dom: string) =>
           sid === 'locB' && dom === 'fm' ? { team_id: 'fm-shared', vendor_id: null } : null),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt', location_id: 'locB', domain: 'fm' }));
       expect(d.chosen_by).toBe('space_group_team');
       expect(d.target).toEqual({ kind: 'team', team_id: 'fm-shared' });
@@ -293,7 +293,7 @@ describe('ResolverService', () => {
         locationTeam: jest.fn(async (sid: string, dom: string) =>
           sid === 'region-west' && dom === 'fm' ? { team_id: 'region-west-fm', vendor_id: null } : null),
       });
-      const svc = new ResolverService(repo as never);
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null) } as never);
       const d = await svc.resolve(ctx({ request_type_id: 'rt', location_id: 'locC', domain: 'doors' }));
       expect(d.chosen_by).toBe('domain_fallback');
       expect(d.target).toEqual({ kind: 'team', team_id: 'region-west-fm' });

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/com
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
+import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
 import { SlaService } from '../sla/sla.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
@@ -32,6 +33,7 @@ export class DispatchService {
     private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
     private readonly visibility: TicketVisibilityService,
+    private readonly scopeOverrides: ScopeOverrideResolverService,
   ) {}
 
   async dispatch(parentId: string, dto: DispatchDto, actorAuthUid: string) {
@@ -159,8 +161,12 @@ export class DispatchService {
 
   /**
    * Resolve which sla_policy_id to attach to a child work order.
-   * Order: explicit dto.sla_id → vendor default → team default → user.team default → null.
+   * Order: explicit dto.sla_id → scope-override executor_sla_policy_id →
+   * vendor default → team default → user.team default → null.
    * `dto.sla_id === null` is a deliberate "No SLA" choice and short-circuits.
+   *
+   * Scope override is looked up against the child's location (falls back to
+   * parent location when the child inherits). See live-doc §5.5 + §7.4.
    */
   private async resolveChildSla(
     dto: DispatchDto,
@@ -169,6 +175,13 @@ export class DispatchService {
     if (dto.sla_id !== undefined) return dto.sla_id; // explicit (string | null)
 
     const tenantId = TenantContext.current().id;
+
+    const requestTypeId = row.ticket_type_id as string | null;
+    if (requestTypeId) {
+      const childLocation = (row.location_id as string | null) ?? null;
+      const override = await this.scopeOverrides.resolve(tenantId, requestTypeId, childLocation);
+      if (override?.executor_sla_policy_id) return override.executor_sla_policy_id;
+    }
 
     const vendorId = row.assigned_vendor_id as string | null;
     if (vendorId) {

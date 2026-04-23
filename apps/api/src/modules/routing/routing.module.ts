@@ -19,6 +19,7 @@ import { IntakeScopingService } from './intake-scoping.service';
 import { CaseOwnerEngineService } from './case-owner-engine.service';
 import { SplitOrchestrationService } from './split-orchestration.service';
 import { ChildExecutionResolverService } from './child-execution-resolver.service';
+import { ScopeOverrideResolverService } from './scope-override-resolver.service';
 import { PermissionGuard } from '../../common/permission-guard';
 
 @Module({
@@ -37,6 +38,7 @@ import { PermissionGuard } from '../../common/permission-guard';
     CaseOwnerEngineService,
     SplitOrchestrationService,
     ChildExecutionResolverService,
+    ScopeOverrideResolverService,
   ],
   controllers: [
     RoutingRuleController,
@@ -56,6 +58,7 @@ import { PermissionGuard } from '../../common/permission-guard';
     CaseOwnerEngineService,
     SplitOrchestrationService,
     ChildExecutionResolverService,
+    ScopeOverrideResolverService,
   ],
 })
 export class RoutingModule {}

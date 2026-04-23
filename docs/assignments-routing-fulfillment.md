@@ -85,6 +85,7 @@ Every step appends a `TraceEntry` to the decision's trace — whether it matched
 | Manual reassign with rerun | `TicketService.reassign({ rerun_resolver: true })` | Clears current assignment, re-evaluates, records a new `routing_decisions` row. |
 | Workflow-spawned child | `WorkflowEngineService.create_child_tasks` → `DispatchService.dispatch` | Goes through the full resolver + SLA + audit pipeline, same as manual dispatch. |
 | Manual dispatch | `DispatchService.dispatch` (called by `POST /tickets/:id/dispatch`) | Runs when the DTO doesn't supply an assignee. |
+| Inbound webhook | `WebhookIngestService.ingest` → `TicketService.create` → `runPostCreateAutomation` | Webhook auth + mapping → normal create path. Routing + SLA + workflow all fire identically to any other create source. Webhooks with `workflow_id` override start that workflow instead of the request type's via the `skipWorkflow` create option. |
 
 The resolver does **not** run on generic `PATCH /tickets/:id`. Changing priority, status, tags, watchers, cost, etc. does not re-route.
 
@@ -569,7 +570,8 @@ Trigger list:
 - `apps/api/src/modules/approval/` — anything that changes the `pending_approval` state semantics.
 - `apps/api/src/modules/workflow/workflow-engine.service.ts` — especially the `create_child_tasks` node, anything that inserts `tickets` rows, and `cancelInstanceForTicket`.
 - `apps/api/src/modules/ticket/reclassify.service.ts` or `reclassify.controller.ts` — the whole reclassification surface is routing-adjacent (see §12a).
-- Any migration that adds or alters: `tickets`, `request_types`, `request_type_coverage_rules`, `request_type_audience_rules`, `request_type_form_variants`, `request_type_on_behalf_rules`, `request_type_scope_overrides`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`, `workflow_instances`.
+- `apps/api/src/modules/webhook/**` — inbound webhooks call `TicketService.create`, which routes. Mapping/validator changes can silently under-specify routing context.
+- Any migration that adds or alters: `tickets`, `request_types`, `request_type_coverage_rules`, `request_type_audience_rules`, `request_type_form_variants`, `request_type_on_behalf_rules`, `request_type_scope_overrides`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`, `workflow_instances`, `workflow_webhooks`, `webhook_events`.
 - Any change to the request-type-native predicates: `public.request_type_visible_ids`, `public.request_type_offering_matches`, `public.request_type_requestable_trace`, `public.request_type_onboardable_space_ids` (see §23).
 
 Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-capable rules, visibility scoping) — entry in Section 13 should move from "not solved" to a new detailed section.
@@ -580,6 +582,7 @@ Also update this doc if you add a **new** behavior (e.g. auto-dispatch, vendor-c
 
 Move items here with a date when a gap from §13 is closed. Keeps the doc honest about what was once broken and when it was fixed.
 
+- **2026-04-23 — Inbound webhooks route through `TicketService.create`.** The previous `workflow_webhooks` receive path inserted directly into `tickets`, skipping routing (no `routing_decisions` row, no assignee, no SLA, no approval gate). Rewritten as `apps/api/src/modules/webhook/` — `WebhookIngestService.ingest` authenticates via API key, maps payload → `CreateTicketDto` (requires `ticket_type_id` + `requester_person_id`), calls `TicketService.create` so routing + SLA + workflow all fire identically to portal-created tickets. Idempotent via unique index on `tickets (tenant_id, external_system, external_id)`. Legacy `POST /webhooks/:token` + `workflow_webhooks.token` column removed. Migration 00095.
 - **2026-04-23 — Service catalog collapsed to request_types.** The split `service_items` / `request_types` model is being retired. Request types now carry portal-facing fields directly (`kb_link`, `disruption_banner`, `on_behalf_policy`, `keywords`, `display_order`) plus five request-type-native satellite tables (`request_type_coverage_rules`, `_audience_rules`, `_form_variants`, `_on_behalf_rules`, `_scope_overrides`). See §23 for the full inventory and the resolver's position on scope overrides. Migrations 00085–00093. Routing/assignment code paths (`runPostCreateAutomation`, `DispatchService`, `ResolverService`, child-SLA resolution) are unchanged.
 - **2026-04-21 — Reclassify existing ticket.** Previously, a ticket's `request_type_id` was effectively immutable after creation — changing it required closing and re-creating the ticket. Now `POST /tickets/:id/reclassify` (with `/preview` counterpart) allows an agent to change the request type in place; all four axes cascade correctly per §12a. Atomic RPC `reclassify_ticket` in migration `00039`.
 - **2026-04-20 — Two-track SLA model.** Children no longer inherit `request_types.sla_policy_id` (that was the *case* policy bleeding into child rows). `DispatchService.resolveChildSla` now resolves child `sla_id` via explicit DTO → `vendors.default_sla_policy_id` → `teams.default_sla_policy_id` → user→team default → none. New schema in migration `00036`. Existing children keep their (incorrectly-inherited) `sla_id` — no backfill, future dispatches are correct. Cases also gain a close guard that refuses `resolved`/`closed` while any child is still open, and children's `sla_id` is now editable post-dispatch via `PATCH /tickets/:id` which calls `SlaService.restartTimers`. Workflow `create_child_tasks` node now forwards per-task `sla_policy_id` through to dispatch.
@@ -712,10 +715,61 @@ Portal predicates are now request-type-native and live alongside the legacy serv
 
 Impact on assignment/routing code:
 
-- `TicketService.runPostCreateAutomation`, `DispatchService.dispatch`, `DispatchService.resolveChildSla` — **no change.** They keep reading `request_types` columns (`domain`, `domain_id`, `sla_policy_id`, `default_team_id`, `default_vendor_id`, `workflow_definition_id`, `case_owner_policy_entity_id`, `child_dispatch_policy_entity_id`). Those columns moved nowhere.
-- `ResolverService.resolve` — **no change.** Coverage/audience concerns never lived on the resolver; they're a portal-visibility concern.
-- Scope overrides (`request_type_scope_overrides`) are NOT YET consulted by the resolver or by `DispatchService.resolveChildSla`. The table + admin API exist; resolver integration to honor per-scope `handler_*`, `workflow_definition_id`, `case_sla_policy_id`, `child_dispatch_policy_entity_id`, `executor_sla_policy_id` is a follow-up slice. Today the admin can set overrides but routing still falls through the existing resolver chain — overrides are advisory only until wired.
+- `TicketService.runPostCreateAutomation`, `DispatchService.dispatch`, `DispatchService.resolveChildSla` — request-type default columns (`domain`, `domain_id`, `sla_policy_id`, `default_team_id`, `default_vendor_id`, `workflow_definition_id`, `case_owner_policy_entity_id`, `child_dispatch_policy_entity_id`) still drive baseline behavior, but per-scope overrides from `request_type_scope_overrides` now win when they match. See §24.
+- `ResolverService.resolve` — gained a scope-override pre-step (see §24). Coverage/audience concerns remain portal-visibility concerns.
+- Scope overrides are live at runtime via `ScopeOverrideResolverService` + `public.request_type_effective_scope_override`. Precedence `exact_space → ancestor_space (inherit) → space_group → tenant`; `handler_kind='none'` is an explicit unassign terminal. Full contract in §24.
 - `PortalSubmitService.resolvePortalSubmit` — now calls `request_type_requestable_trace` directly; DTO is `request_type_id` only (service_item_id removed).
 - `RoutingSimulatorService.evaluatePortalAvailability` — now calls `request_type_requestable_trace` and projects to the slim `PortalAvailabilityTraceView` the simulator UI already consumes.
 
 Phase E (pending) drops `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, the four mirror/auto-pair triggers, the bridge-wrapper predicates (`portal_visible_request_type_ids` as written in 00069, `portal_availability_trace`), the v2 predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`), and the legacy `portal_onboardable_locations`. The `service_catalog:manage` permission is retired at the same time.
+
+## 24. Scope-override runtime integration (2026-04-23)
+
+`request_type_scope_overrides` (migration 00090 + 00091 constraints) is consumed at runtime via a single shared resolver to prevent drift. Migration 00096 ships the SQL precedence walker; `ScopeOverrideResolverService` (`apps/api/src/modules/routing/scope-override-resolver.service.ts`) is the TS wrapper.
+
+### Precedence (live-doc §6.3)
+
+For a given `(tenant, request_type, effective_location)` tuple:
+
+1. `exact_space` — a `scope_kind='space'` override where `space_id = effective_location`.
+2. `ancestor_space` — a `scope_kind='space'` override whose `space_id` is an ancestor of the effective location AND whose `inherit_to_descendants = true`. Closer ancestors win; ties broken by `id`.
+3. `space_group` — a `scope_kind='space_group'` override whose `space_group_id` contains the effective location.
+4. `tenant` — a `scope_kind='tenant'` override.
+
+`starts_at` / `ends_at` filter at evaluation time; `active=false` rows are invisible. Only one row wins. Two active rows at the same tier would have been rejected by the 00091 partial-unique indexes, so precedence is deterministic.
+
+### Consumers
+
+| Caller | Field(s) it consumes | Behavior when null override |
+|---|---|---|
+| `ResolverService.resolve()` (pre-step) | `handler_kind`, `handler_team_id`, `handler_vendor_id` | Falls through to the normal chain (rules → asset → location → RT default → unassigned). |
+| `TicketService.runPostCreateAutomation()` | `workflow_definition_id`, `case_sla_policy_id` | Uses `request_types.workflow_definition_id` / `.sla_policy_id`. |
+| `DispatchService.resolveChildSla()` | `executor_sla_policy_id` | Falls through to vendor default → team default → user→team default → null. |
+| `RoutingEvaluatorService.loadCaseOwnerPolicyEntityId()` | `case_owner_policy_entity_id` | Falls back to `request_types.case_owner_policy_entity_id`. |
+| `RoutingEvaluatorService.loadChildDispatchPolicyEntityId()` | `child_dispatch_policy_entity_id` | Falls back to `request_types.child_dispatch_policy_entity_id`. |
+
+### `handler_kind` semantics
+
+| Value | Meaning | Resolver outcome |
+|---|---|---|
+| `'team'` | Explicit team target | `chosen_by='scope_override'`, `target={kind:'team', team_id: handler_team_id}` — terminal. |
+| `'vendor'` | Explicit vendor target | `chosen_by='scope_override'`, `target={kind:'vendor', vendor_id: handler_vendor_id}` — terminal. |
+| `'none'` | Explicit unassign — "this scope has no coverage" | `chosen_by='scope_override_unassigned'`, `target=null` — terminal. Admin is explicitly blocking auto-routing at this scope. |
+| `null` | No handler-level intent; override only carries workflow/SLA/policy fields | Resolver falls through to the normal chain; downstream callers still consume the non-handler override fields. |
+
+### New `chosen_by` values
+
+- `scope_override` — handler_kind set to team or vendor. Stored on `routing_decisions.chosen_by` (the column has no check constraint).
+- `scope_override_unassigned` — handler_kind='none'. Same storage path.
+
+### Tests
+
+- Unit: `apps/api/src/modules/routing/scope-override-resolver.spec.ts` (5 cases: no override, team, vendor, none, handler-null fall-through).
+- SQL smoke: one-off query against remote confirms `request_type_effective_scope_override(tenant, rt, null)` returns `null` when no overrides are configured. Per-precedence fixtures are TODO before the tests gate Phase E.
+
+### Trigger additions for §15
+
+Any change to these requires a doc update:
+- `apps/api/src/modules/routing/scope-override-resolver.service.ts`
+- `public.request_type_effective_scope_override` (migration 00096 or later replacement)
+- The four loader call sites above (`ResolverService.resolve`, `TicketService.runPostCreateAutomation`, `DispatchService.resolveChildSla`, `RoutingEvaluatorService.loadCaseOwnerPolicyEntityId` / `loadChildDispatchPolicyEntityId`).
