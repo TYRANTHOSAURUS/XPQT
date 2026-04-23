@@ -460,9 +460,14 @@ Plan reference: [`docs/superpowers/plans/2026-04-23-service-catalog-collapse.md`
 - Coverage matrix (§8). Migration 00103 adds `public.request_type_coverage_matrix(tenant, rt)` — a single SQL function that returns per-site rows composed of the first matched coverage rule + the scope-override precedence winner + `request_types` defaults. `GET /request-types/:id/coverage-matrix` hydrates team / vendor / workflow / SLA / config-entity names in one batch per entity type and tags each dimension with a source (`override` · `default` · `routing` · `none`). The coverage tab renders the matrix with source badges; row click opens the scope-override editor prefilled with the target space.
 - Criteria sets CRUD — shipped as a parallel tooling slice (see `33dc7e2`).
 
+**Shipped (2026-04-23 continued — drill-down):**
+
+- Coverage-matrix drill-down drawer (§8 row-click detail). Clicking a row opens a sheet with three sections: offering (matched coverage rule + inheritance path from ancestor space to this site + active window), scope override (precedence badge + per-dimension overridden flags), and effective fulfillment (composed values with source badges). Footer mirrors the quick actions (edit/add override, offer/remove). No new backend — the drawer consumes the matrix payload + cached `detail.offerings` + `detail.scope_overrides`.
+
 **Pending:**
 
-- Coverage-matrix drill-down drawer: the §8 detail panel (matched coverage rule + matched audience state + effective routing trace + inheritance path) is not surfaced yet — row click today jumps straight to the override editor. Reasonable next slice if admins need the "explain this row" view.
+- **Per-requester audience simulation** in the drill-down. Today the drawer doesn't evaluate audience rules (visible/request allow/deny) because the coverage matrix is scope-only — audience is person-scoped. Admins who need "does persona X see this RT at site Y" use the routing-studio simulator. Worth surfacing a shortcut from the drawer if audience-at-site becomes a common question.
+- **Effective routing trace** in the drill-down. Would require a server-side dry-run (synthetic ticket w/ no requester). Not urgent: the effective handler row already reveals override vs. default vs. "routing chain".
 
 ## 12. Performance And Quality Guardrails
 
