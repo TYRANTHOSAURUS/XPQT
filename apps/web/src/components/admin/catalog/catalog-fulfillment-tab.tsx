@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -78,10 +79,14 @@ export function CatalogFulfillmentTab({
   detail,
   onSaved,
   requestTypeId,
+  onDelete,
+  deleting,
 }: {
   detail: ServiceItemDetail;
   onSaved: () => void;
   requestTypeId: string;
+  onDelete?: () => void;
+  deleting?: boolean;
 }) {
   const { data: rt, loading: rtLoading } = useApi<RequestType>(`/request-types/${requestTypeId}`, [requestTypeId]);
   const { data: teams } = useApi<Team[]>('/teams', []);
@@ -422,7 +427,19 @@ export function CatalogFulfillmentTab({
         </FieldSet>
       </FieldGroup>
 
-      <div className="flex justify-end border-t pt-3">
+      <div className="flex items-center justify-between border-t pt-3">
+        {onDelete && detail.active ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+            onClick={onDelete}
+            disabled={deleting}
+          >
+            <Trash2 className="h-4 w-4 mr-1.5" />
+            {deleting ? 'Deleting…' : 'Delete service'}
+          </Button>
+        ) : <span />}
         <Button onClick={save} disabled={saving}>
           {saving ? 'Saving…' : 'Save'}
         </Button>

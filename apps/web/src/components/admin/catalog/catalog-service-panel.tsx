@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertTriangle, MousePointerClick, Trash2 } from 'lucide-react';
+import { AlertTriangle, MousePointerClick } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { CatalogBasicsTab } from './catalog-basics-tab';
@@ -187,7 +187,12 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
         </TabsList>
 
         <TabsContent value="basics" className="mt-4">
-          <CatalogBasicsTab detail={detail} onSaved={reload} />
+          <CatalogBasicsTab
+            detail={detail}
+            onSaved={reload}
+            onDelete={handleDelete}
+            deleting={deleting}
+          />
         </TabsContent>
         <TabsContent value="coverage" className="mt-4">
           <CatalogCoverageTab detail={detail} onSaved={reload} />
@@ -199,23 +204,15 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
           <CatalogFormTab detail={detail} onSaved={reload} />
         </TabsContent>
         <TabsContent value="fulfillment" className="mt-4">
-          <CatalogFulfillmentTab detail={detail} onSaved={reload} requestTypeId={requestTypeId!} />
+          <CatalogFulfillmentTab
+            detail={detail}
+            onSaved={reload}
+            requestTypeId={requestTypeId!}
+            onDelete={handleDelete}
+            deleting={deleting}
+          />
         </TabsContent>
       </Tabs>
-
-      <div className="flex justify-start border-t pt-4 mt-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
-          onClick={handleDelete}
-          disabled={deleting || !detail.active}
-          title={detail.active ? 'Delete service' : 'Already inactive'}
-        >
-          <Trash2 className="h-4 w-4 mr-1.5" />
-          {deleting ? 'Deleting…' : detail.active ? 'Delete service' : 'Already deleted'}
-        </Button>
-      </div>
     </div>
   );
 }
