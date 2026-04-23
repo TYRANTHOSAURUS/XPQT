@@ -22,7 +22,7 @@ import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import { SpaceSelect, type Space } from '@/components/space-select';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
@@ -268,7 +268,7 @@ export function AssetsPage() {
 
               <Field>
                 <FieldLabel htmlFor="asset-assigned-person">Assigned To (Person)</FieldLabel>
-                <PersonCombobox
+                <PersonPicker
                   value={assignedPersonId}
                   onChange={setAssignedPersonId}
                   placeholder="Search persons..."

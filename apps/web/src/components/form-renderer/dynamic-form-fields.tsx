@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
 import { AssetCombobox } from '@/components/asset-combobox';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
@@ -165,7 +165,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
             )}
 
             {field.type === 'person_picker' && (
-              <PersonCombobox
+              <PersonPicker
                 value={asString(value)}
                 onChange={(v) => onChange(field.id, v)}
                 placeholder={field.placeholder ?? 'Select person...'}

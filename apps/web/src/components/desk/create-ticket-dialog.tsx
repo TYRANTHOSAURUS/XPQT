@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/select';
 import { Plus, Send } from 'lucide-react';
 import { toast } from 'sonner';
-import { PersonCombobox, type Person } from '@/components/person-combobox';
+import { PersonPicker, type Person } from '@/components/person-picker';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
 import { RequestTypePicker, type RequestType } from '@/components/request-type-picker';
@@ -131,7 +131,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="new-ticket-requester">Requester</FieldLabel>
-            <PersonCombobox
+            <PersonPicker
               value={requesterId}
               onChange={setRequesterId}
               onSelect={setSelectedRequester}

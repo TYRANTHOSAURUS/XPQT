@@ -22,7 +22,7 @@ import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
 import { OrgNodeCombobox } from '@/components/org-node-combobox';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
@@ -254,7 +254,7 @@ export function PersonsPage() {
 
               <Field>
                 <FieldLabel htmlFor="person-manager">Manager</FieldLabel>
-                <PersonCombobox
+                <PersonPicker
                   value={managerId}
                   onChange={setManagerId}
                   excludeId={editId}

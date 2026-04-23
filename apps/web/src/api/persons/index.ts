@@ -51,3 +51,21 @@ export function personsSearchOptions(search: string) {
 export function usePersonsSearch(search: string) {
   return useQuery(personsSearchOptions(search));
 }
+
+/**
+ * Resolve a single person by id — used by selection controls (pickers) to
+ * reliably render the selected label even when the id is not in the current
+ * list/search page.
+ */
+export function personDetailOptions(id: string | null | undefined) {
+  return queryOptions({
+    queryKey: personKeys.detail(id ?? '__none__'),
+    queryFn: ({ signal }) => apiFetch<Person>(`/persons/${id}`, { signal }),
+    enabled: !!id,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function usePerson(id: string | null | undefined) {
+  return useQuery(personDetailOptions(id));
+}

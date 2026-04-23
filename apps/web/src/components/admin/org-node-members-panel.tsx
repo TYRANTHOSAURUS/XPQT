@@ -3,7 +3,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
 
@@ -68,7 +68,7 @@ export function OrgNodeMembersPanel({ nodeId }: { nodeId: string }) {
           <FieldLabel htmlFor="add-member">Add a member</FieldLabel>
           <div className="flex items-start gap-2">
             <div className="flex-1">
-              <PersonCombobox value={addPersonId} onChange={setAddPersonId} />
+              <PersonPicker value={addPersonId} onChange={setAddPersonId} />
             </div>
             <Button onClick={addMember} disabled={!addPersonId || adding} className="gap-1.5">
               <Plus className="size-4" />

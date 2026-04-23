@@ -18,7 +18,7 @@ import { Plus, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
-import { PersonCombobox } from '@/components/person-combobox';
+import { UserPicker } from '@/components/user-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface Person {
@@ -150,7 +150,7 @@ export function DelegationsPage() {
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="delegation-delegator">Delegator (who is away)</FieldLabel>
-                <PersonCombobox
+                <UserPicker
                   value={delegatorId}
                   onChange={setDelegatorId}
                   placeholder="Search delegator..."
@@ -158,10 +158,11 @@ export function DelegationsPage() {
               </Field>
               <Field>
                 <FieldLabel htmlFor="delegation-delegate">Delegate (who will approve)</FieldLabel>
-                <PersonCombobox
+                <UserPicker
                   value={delegateId}
                   onChange={setDelegateId}
                   placeholder="Search delegate..."
+                  excludeId={delegatorId || null}
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">

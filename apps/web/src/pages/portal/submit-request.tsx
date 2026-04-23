@@ -37,7 +37,7 @@ import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-field
 import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 import { AssetCombobox } from '@/components/asset-combobox';
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import {
   PortalLocationDrilldown,
   satisfiesGranularity,
@@ -360,7 +360,7 @@ export function SubmitRequestPage() {
               {selectedRT && selectedRT.on_behalf_policy !== 'self_only' && (
                 <Field>
                   <FieldLabel htmlFor="portal-requested-for">Requesting for</FieldLabel>
-                  <PersonCombobox
+                  <PersonPicker
                     value={requestedForPersonId ?? ''}
                     onChange={(v) => setRequestedForPersonId(v || null)}
                     placeholder="Leave blank to request for yourself"

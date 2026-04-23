@@ -1,4 +1,4 @@
-import { PersonCombobox } from '@/components/person-combobox';
+import { PersonPicker } from '@/components/person-picker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -83,9 +83,10 @@ export function SlaThresholdRow({ value, onChange, onRemove, index }: SlaThresho
 
       {value.target_type === 'user' && (
         <div className={`flex-1 min-w-[220px] ${targetInvalid ? 'ring-1 ring-red-500 rounded-md' : ''}`}>
-          <PersonCombobox
+          <PersonPicker
             value={value.target_id ?? ''}
             onChange={(id) => patch({ target_id: id || null })}
+            placeholder="Pick a user..."
           />
         </div>
       )}
