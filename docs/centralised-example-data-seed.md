@@ -62,7 +62,6 @@ SQL migrations should seed the fixed, relational, reviewable parts:
 - routing / location-team data
 - request-type scope overrides
 - the fixed named people and public users
-- the 30 hand-crafted historical scenarios
 
 ### 2. A local generator script owns auth users and bulk history
 
@@ -72,6 +71,7 @@ A script is required for the parts SQL is bad at:
 - linking `auth_uid` into `public.users`
 - generating the remaining people up to 500
 - generating bulk assets and assignment history
+- generating the 30 hand-crafted historical scenarios
 - generating a few hundred realistic tickets with comments, approvals, workflow history, child tickets, and timers
 
 ### 3. Forward-only migrations, no history rewriting
@@ -181,8 +181,6 @@ Required fixed accounts:
 - `it.admin@prequest.nl`
 - `hr.agent@prequest.nl`
 - `facilities.amsterdam@prequest.nl`
-- `facilities.denhaag@prequest.nl`
-- `facilities.denbosch@prequest.nl`
 - `cleaning.vendor@prequest.nl`
 
 Recommended extra helpful accounts:
@@ -527,28 +525,15 @@ These do not need to exist exactly like this, but the implementation should keep
 
 ## Phase 5: Developer Commands
 
-### Update root `package.json`
+Current commands:
 
-Add:
-
-- `seed:demo:local`
-- `db:reset:demo:local`
-
-Recommended commands:
-
-- `seed:demo:local`
-  - runs the local generator script
-- `db:reset:demo:local`
-  - runs `pnpm db:reset`
-  - then runs `pnpm seed:demo:local`
-
-### Optional update: `apps/api/package.json`
-
-If cleaner, add:
-
-- `seed:demo`
-
-and call it from the root script.
+- `pnpm seed:centralised-example-data`
+  - seeds the local demo tenant using the generator
+  - auto-discovers local Supabase credentials via `supabase status -o env`
+  - refuses remote seeding unless `ALLOW_REMOTE_DEMO_SEED=true`
+- `pnpm db:reset:centralised-example-data`
+  - runs `supabase db reset`
+  - then runs the centralised example generator
 
 ## Phase 6: Verification
 
