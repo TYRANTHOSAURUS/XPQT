@@ -429,7 +429,10 @@ export function CatalogCoverageTab({ detail, onSaved }: {
                         >
                           Remove
                         </Button>
-                      ) : hasTenantOffering ? (
+                      ) : r.offered ? (
+                        // Coverage comes from tenant-wide, ancestor, or
+                        // space-group rule. Adding a direct rule on top is
+                        // always redundant — the service already offers here.
                         <span className="text-[10px] text-muted-foreground italic">inherited</span>
                       ) : (
                         <Button

@@ -56,6 +56,8 @@ export interface ServiceItemDetail {
     form_schema_id: string;
     priority: number;
     active: boolean;
+    starts_at: string | null;
+    ends_at: string | null;
   }>;
   on_behalf_rules: Array<{ id: string; role: 'actor' | 'target'; criteria_set_id: string }>;
   scope_overrides: Array<{

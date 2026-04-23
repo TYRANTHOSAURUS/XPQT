@@ -24,7 +24,9 @@ create or replace function public.request_type_coverage_matrix(
         'default_team_id', rt.default_team_id,
         'default_vendor_id', rt.default_vendor_id,
         'workflow_definition_id', rt.workflow_definition_id,
-        'sla_policy_id', rt.sla_policy_id
+        'sla_policy_id', rt.sla_policy_id,
+        'case_owner_policy_entity_id', rt.case_owner_policy_entity_id,
+        'child_dispatch_policy_entity_id', rt.child_dispatch_policy_entity_id
       ) as defaults
     from public.request_types rt
     where rt.tenant_id = p_tenant_id and rt.id = p_request_type_id

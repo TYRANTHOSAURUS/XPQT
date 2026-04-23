@@ -393,6 +393,8 @@ export class RequestTypeService {
         default_vendor_id: string | null;
         workflow_definition_id: string | null;
         sla_policy_id: string | null;
+        case_owner_policy_entity_id: string | null;
+        child_dispatch_policy_entity_id: string | null;
       };
     };
     const raw = (rows ?? []) as MatrixRow[];
@@ -421,6 +423,8 @@ export class RequestTypeService {
     if (d?.default_vendor_id) vendorIds.add(d.default_vendor_id);
     if (d?.workflow_definition_id) workflowIds.add(d.workflow_definition_id);
     if (d?.sla_policy_id) slaIds.add(d.sla_policy_id);
+    if (d?.case_owner_policy_entity_id) configEntityIds.add(d.case_owner_policy_entity_id);
+    if (d?.child_dispatch_policy_entity_id) configEntityIds.add(d.child_dispatch_policy_entity_id);
 
     const [teams, vendors, workflows, slas, configEntities] = await Promise.all([
       this.fetchNames('teams', tenant.id, Array.from(teamIds), 'name'),
@@ -434,6 +438,7 @@ export class RequestTypeService {
     const rtDefaults = raw[0]?.rt_defaults ?? {
       default_team_id: null, default_vendor_id: null,
       workflow_definition_id: null, sla_policy_id: null,
+      case_owner_policy_entity_id: null, child_dispatch_policy_entity_id: null,
     };
 
     return {
@@ -451,6 +456,12 @@ export class RequestTypeService {
         sla_policy_id: rtDefaults.sla_policy_id,
         sla_policy_name: rtDefaults.sla_policy_id
           ? slas.get(rtDefaults.sla_policy_id) ?? null : null,
+        case_owner_policy_entity_id: rtDefaults.case_owner_policy_entity_id,
+        case_owner_policy_entity_name: rtDefaults.case_owner_policy_entity_id
+          ? configEntities.get(rtDefaults.case_owner_policy_entity_id) ?? null : null,
+        child_dispatch_policy_entity_id: rtDefaults.child_dispatch_policy_entity_id,
+        child_dispatch_policy_entity_name: rtDefaults.child_dispatch_policy_entity_id
+          ? configEntities.get(rtDefaults.child_dispatch_policy_entity_id) ?? null : null,
       },
       rows: raw.map((r) => {
         const override = (r.override ?? null) as null | {
@@ -543,10 +554,17 @@ export class RequestTypeService {
             rtDefaults.sla_policy_id,
             slas,
           ),
-          // child_dispatch / executor_sla have no request-type default — they
-          // fall through to team/vendor defaults at dispatch time. Show
-          // override-or-none here; the UI labels 'none' as "team/vendor default".
-          child_dispatch: composeId(override?.child_dispatch_policy_entity_id, null, configEntities),
+          // child_dispatch: request_types carries a tenant-level default
+          // (consumed by routing-evaluator.service.ts), so the fallback chain
+          // is override → request-type default → none.
+          child_dispatch: composeId(
+            override?.child_dispatch_policy_entity_id,
+            rtDefaults.child_dispatch_policy_entity_id,
+            configEntities,
+          ),
+          // executor_sla has no request-type default — falls through to the
+          // per-team / per-vendor default at dispatch time. UI labels 'none'
+          // as "team / vendor default".
           executor_sla: composeId(override?.executor_sla_policy_id, null, slas),
         };
       }),

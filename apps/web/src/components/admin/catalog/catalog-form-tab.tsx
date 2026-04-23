@@ -19,12 +19,16 @@ interface CriteriaSet { id: string; name: string; active: boolean }
 
 interface DefaultDraft {
   form_schema_id: string | null;   // null = no default (standard fields only)
+  starts_at: string | null;
+  ends_at: string | null;
 }
 interface ConditionalDraft {
   criteria_set_id: string;
   form_schema_id: string;
   priority: number;
   active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
 }
 
 /**
@@ -54,7 +58,11 @@ export function CatalogFormTab({ detail, onSaved }: {
   // ── Seed drafts from detail ─────────────────────────────────────────────
   const initialDefault = useMemo<DefaultDraft>(() => {
     const d = detail.form_variants.find((v) => v.criteria_set_id === null && v.active);
-    return { form_schema_id: d?.form_schema_id ?? null };
+    return {
+      form_schema_id: d?.form_schema_id ?? null,
+      starts_at: d?.starts_at ?? null,
+      ends_at: d?.ends_at ?? null,
+    };
   }, [detail.id, detail.form_variants]);
 
   const initialConditional = useMemo<ConditionalDraft[]>(
@@ -65,6 +73,8 @@ export function CatalogFormTab({ detail, onSaved }: {
         form_schema_id: v.form_schema_id,
         priority: v.priority,
         active: v.active,
+        starts_at: v.starts_at ?? null,
+        ends_at: v.ends_at ?? null,
       }))
       .sort((a, b) => b.priority - a.priority),
     [detail.id, detail.form_variants],
@@ -89,7 +99,14 @@ export function CatalogFormTab({ detail, onSaved }: {
     const nextPriority = conditional.reduce((max, c) => Math.max(max, c.priority), 0) + 10;
     setConditional((prev) => [
       ...prev,
-      { criteria_set_id, form_schema_id: '', priority: nextPriority, active: true },
+      {
+        criteria_set_id,
+        form_schema_id: '',
+        priority: nextPriority,
+        active: true,
+        starts_at: null,
+        ends_at: null,
+      },
     ]);
   };
   const updateConditional = (idx: number, patch: Partial<ConditionalDraft>) => {
@@ -125,6 +142,8 @@ export function CatalogFormTab({ detail, onSaved }: {
         form_schema_id: string;
         priority: number;
         active: boolean;
+        starts_at: string | null;
+        ends_at: string | null;
       }> = [];
       if (defaultDraft.form_schema_id) {
         payload.push({
@@ -132,6 +151,8 @@ export function CatalogFormTab({ detail, onSaved }: {
           form_schema_id: defaultDraft.form_schema_id,
           priority: 0,
           active: true,
+          starts_at: defaultDraft.starts_at,
+          ends_at: defaultDraft.ends_at,
         });
       }
       for (const c of conditional) {
@@ -140,6 +161,8 @@ export function CatalogFormTab({ detail, onSaved }: {
           form_schema_id: c.form_schema_id,
           priority: c.priority,
           active: c.active,
+          starts_at: c.starts_at,
+          ends_at: c.ends_at,
         });
       }
       await apiFetch(`/request-types/${detail.id}/form-variants`, {
@@ -171,7 +194,7 @@ export function CatalogFormTab({ detail, onSaved }: {
           <Select
             value={defaultDraft.form_schema_id ?? '__none'}
             onValueChange={(v) =>
-              setDefaultDraft({ form_schema_id: v === '__none' ? null : v })
+              setDefaultDraft((d) => ({ ...d, form_schema_id: v === '__none' ? null : v }))
             }
           >
             <SelectTrigger id="default-schema">
