@@ -454,11 +454,15 @@ Plan reference: [`docs/superpowers/plans/2026-04-23-service-catalog-collapse.md`
 - Phase E — hard cleanup. Migration 00097 dropped `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, the four mirror/auto-pair triggers, the service-item-backed predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`), the bridge-wrapper predicates (`portal_visible_request_type_ids`, `portal_availability_trace`), and the legacy `portal_onboardable_locations`. `service_catalog:manage` removed from role permissions; `service_catalog_read` tenant feature-flag key cleared. `apps/api/src/modules/service-catalog/` module deleted; `ServiceCatalogModule` unregistered. The `/service-catalog/tree` + `/service-catalog/categories` endpoints live under `apps/api/src/modules/config-engine/service-catalog.controller.ts` and stay put.
 - Phase G — scope-override resolver integration. Migration 00096 adds `public.request_type_effective_scope_override`; `ScopeOverrideResolverService` wraps it and centralizes effective-location derivation (`locationId → asset.assigned_space_id → null`). Consumers: `ResolverService` (pre-step), `TicketService.runPostCreateAutomation` (workflow + case SLA), `DispatchService.resolveChildSla` (executor SLA — includes asset-only children), `RoutingEvaluatorService` policy-entity loaders. `handler_kind='none'` = explicit unassign terminal. 5 resolver + 4 dispatch unit tests + 8-case SQL precedence fixture in `supabase/tests/scope_override_precedence.test.sql`. See [`docs/assignments-routing-fulfillment.md §24`](./assignments-routing-fulfillment.md).
 
+**Shipped (2026-04-23 continued — post-Phase-G):**
+
+- Writable audience + on-behalf editor, writable conditional form-variant authoring (default + conditional rows), and the inline scope-override editor landed on the catalog side panel. The RT dialog's Linked Form Schema select co-edits the default variant through the same replace-set endpoint.
+- Coverage matrix (§8). Migration 00103 adds `public.request_type_coverage_matrix(tenant, rt)` — a single SQL function that returns per-site rows composed of the first matched coverage rule + the scope-override precedence winner + `request_types` defaults. `GET /request-types/:id/coverage-matrix` hydrates team / vendor / workflow / SLA / config-entity names in one batch per entity type and tags each dimension with a source (`override` · `default` · `routing` · `none`). The coverage tab renders the matrix with source badges; row click opens the scope-override editor prefilled with the target space.
+- Criteria sets CRUD — shipped as a parallel tooling slice (see `33dc7e2`).
+
 **Pending:**
 
-- Coverage matrix UI (§8) — net-new. Effective handler / workflow / case SLA / child dispatch / executor SLA per location, with override drawer calling `PUT /request-types/:id/scope-overrides`. Tracked as a dedicated slice.
-- On-behalf rules + scope-overrides inline authoring UI. The admin can read both via the satellite endpoints; PUT-replace is wired; no inline editor surfaces today.
-- Criteria-sets CRUD UI. Table + `criteria_matches` function stay; today admins can only use pre-seeded sets.
+- Coverage-matrix drill-down drawer: the §8 detail panel (matched coverage rule + matched audience state + effective routing trace + inheritance path) is not surfaced yet — row click today jumps straight to the override editor. Reasonable next slice if admins need the "explain this row" view.
 
 ## 12. Performance And Quality Guardrails
 
