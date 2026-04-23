@@ -142,7 +142,7 @@ export function ReclassifyTicketDialog({
                 <>
                   <ReclassifyImpactPanel impact={impact} />
                   {hasInProgressChildren && (
-                    <div className="mt-5 rounded-md border border-amber-300 bg-amber-50 p-3">
+                    <div className="mt-5 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
                       <FieldGroup>
                         <Field orientation="horizontal">
                           <Checkbox
