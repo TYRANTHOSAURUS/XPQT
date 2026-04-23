@@ -26,8 +26,8 @@ import { UserManagementModule } from './modules/user-management/user-management.
 import { VendorModule } from './modules/vendor/vendor.module';
 import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
 import { PortalModule } from './modules/portal/portal.module';
-import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
 import { OrgNodeModule } from './modules/org-node/org-node.module';
+import { WebhookModule } from './modules/webhook/webhook.module';
 
 @Module({
   imports: [
@@ -57,8 +57,8 @@ import { OrgNodeModule } from './modules/org-node/org-node.module';
     VendorModule,
     CatalogMenuModule,
     PortalModule,
-    ServiceCatalogModule,
     OrgNodeModule,
+    WebhookModule,
   ],
   controllers: [HealthController],
   providers: [
@@ -71,7 +71,7 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(TenantMiddleware)
-      .exclude('api/health', 'api/webhooks/:token')
+      .exclude('api/health', 'api/webhooks/ingest')
       .forRoutes('*');
   }
 }
