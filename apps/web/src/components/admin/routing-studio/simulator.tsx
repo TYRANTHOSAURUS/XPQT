@@ -148,7 +148,7 @@ export function RoutingSimulator() {
   const [disabledRules, setDisabledRules] = useState<Record<string, string>>({});
 
   // Portal-scope simulation inputs. When simulateAsPersonId is set, the backend
-  // runs portal_availability_trace as a prefix and returns .portal_availability.
+  // runs request_type_requestable_trace as a prefix and returns .portal_availability.
   const [simulateAsPersonId, setSimulateAsPersonId] = useState<string>('');
   const [currentLocationId, setCurrentLocationId] = useState<string>('');
   const [actingForLocationId, setActingForLocationId] = useState<string>('');
@@ -177,7 +177,7 @@ export function RoutingSimulator() {
         priority,
         disabled_rule_ids: Object.keys(disabledRules),
         include_v2: true,
-        // Portal-scope extension — backend runs portal_availability_trace
+        // Portal-scope extension — backend runs request_type_requestable_trace
         // as a prefix when simulate_as_person_id is set.
         simulate_as_person_id: simulateAsPersonId || null,
         current_location_id: currentLocationId || null,

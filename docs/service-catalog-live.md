@@ -429,13 +429,14 @@ Canonical endpoints should become request-type-native:
 - `PUT /request-types/:id/scope-overrides`
 - `GET /request-types/:id/coverage-matrix`
 
-Canonical portal functions should become:
+Canonical portal functions as shipped:
 
-- `portal_visible_request_type_ids`
-- `portal_requestable_trace`
-- `portal_onboardable_request_type_locations`
+- `public.request_type_visible_ids(actor, selected_space, tenant)` — visibility.
+- `public.request_type_offering_matches(rt_id, selected_space, tenant)` — matched coverage rule(s) at a location.
+- `public.request_type_requestable_trace(actor, rt_id, requested_for, selected_space, asset, tenant)` — full submit / simulator trace.
+- `public.request_type_onboardable_space_ids(tenant, actor)` — onboardable site/building list.
 
-These are primary APIs again, not wrappers.
+These are primary RPCs, not wrappers. Migrations `00092`–`00093`. The bridge-wrapper variants named `portal_visible_request_type_ids` + `portal_availability_trace` still exist and are scheduled for deletion in Phase E.
 
 ## 11. Implementation Status
 
@@ -450,7 +451,7 @@ Plan reference: [`docs/superpowers/plans/2026-04-23-service-catalog-collapse.md`
 
 **Pending:**
 
-- Phase E — hard cleanup. Drop `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, and the mirror/auto-pair triggers. Drop the service-item-backed predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`) and the bridge-wrapper predicates (`portal_visible_request_type_ids` bridge version, `portal_availability_trace`). Drop the `portal_onboardable_locations` legacy function. Retire the `service_catalog:manage` permission. Delete the `apps/api/src/modules/service-catalog` module (preserving the tree/categories endpoints by moving them under the config-engine surface).
+- Phase E — hard cleanup. Drop `service_items`, `service_item_categories`, `service_item_offerings`, `service_item_criteria`, `service_item_form_variants`, `service_item_on_behalf_rules`, `request_type_service_item_bridge`, the `fulfillment_types` view, and the mirror/auto-pair triggers. Drop the service-item-backed predicates (`portal_visible_service_item_ids`, `portal_requestable_trace`, `portal_onboardable_space_ids_v2`, `service_item_offering_matches`) and the bridge-wrapper predicates (`portal_visible_request_type_ids` bridge version, `portal_availability_trace`). Drop the `portal_onboardable_locations` legacy function. Retire the `service_catalog:manage` permission. Delete the `apps/api/src/modules/service-catalog` module. (The `/service-catalog/tree` + `/service-catalog/categories` endpoints already live under `apps/api/src/modules/config-engine/service-catalog.controller.ts` and stay put — only the split-era `apps/api/src/modules/service-catalog/` module is dropped.)
 - Coverage matrix UI (§8) — net-new. Effective handler / workflow / case SLA / child dispatch / executor SLA per location, with override drawer calling `PUT /request-types/:id/scope-overrides`. Tracked as a dedicated slice.
 - Scope-override resolver integration — the table + admin API exist; `ResolverService` and `DispatchService.resolveChildSla` do NOT yet consult `request_type_scope_overrides`. Wiring them is its own slice (breaks no existing behavior but enables the override contract).
 

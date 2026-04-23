@@ -108,8 +108,9 @@ export interface SimulatorResult {
   };
   /**
    * Portal availability trace — present only when simulate_as_person_id is supplied.
-   * Uses the same portal_availability_trace() RPC as POST /portal/tickets validation,
+   * Uses the same request_type_requestable_trace() RPC as POST /portal/tickets validation,
    * guaranteeing the simulator and the submit path see identical availability logic.
+   * Projects the superset jsonb to the slim PortalAvailabilityTraceView the UI consumes.
    */
   portal_availability?: PortalAvailabilityView;
   duration_ms: number;

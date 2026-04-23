@@ -19,7 +19,7 @@ import {
  * Single path: the DTO carries request_type_id; validation is a single call to
  * public.request_type_requestable_trace(). tickets.requested_for_person_id is
  * populated from the DTO (defaults to the auth-bound requester).
- * See docs/service-catalog-live.md §6.
+ * See docs/service-catalog-live.md §6 for the runtime rules.
  */
 @Injectable()
 export class PortalSubmitService {
