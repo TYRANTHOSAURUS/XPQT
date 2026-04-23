@@ -1,20 +1,34 @@
 import { useMemo, useCallback, useRef } from 'react';
 import ReactFlow, {
-  Background, Controls, MiniMap,
-  type Node, type Edge, type Connection, type NodeTypes, type OnSelectionChangeParams,
+  Background, Controls, MiniMap, MarkerType,
+  type Node, type Edge, type Connection, type NodeTypes, type EdgeTypes, type OnSelectionChangeParams,
 } from 'reactflow';
 import { useGraphStore } from './graph-store';
 import { applyDagreLayout } from './layout';
 import { validate } from './validation';
 import { WorkflowNodeCard } from './workflow-node';
+import { WorkflowEdge, type WorkflowEdgeData } from './workflow-edge';
 import { summarizeNode } from './node-summary';
 import { useEditorContextMenu } from './context-menu';
 
 const nodeTypes: NodeTypes = { workflow: WorkflowNodeCard };
+const edgeTypes: EdgeTypes = { workflow: WorkflowEdge };
 
 export interface CanvasProps {
   readOnly?: boolean;
   runtime?: Record<string, 'visited' | 'current' | 'upcoming'>;
+}
+
+function edgeTone(condition: string | undefined): WorkflowEdgeData['tone'] {
+  if (condition === 'true' || condition === 'approved') return 'success';
+  if (condition === 'false' || condition === 'rejected') return 'danger';
+  return 'default';
+}
+
+function edgeLabel(condition: string | undefined): string | undefined {
+  if (!condition) return undefined;
+  if (['true', 'false', 'approved', 'rejected'].includes(condition)) return condition;
+  return condition;
 }
 
 export function Canvas({ readOnly = false, runtime }: CanvasProps) {
@@ -54,17 +68,30 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
     );
   }, [nodes, edges, invalidIds, runtime, selectedIds]);
 
-  const rfEdges: Edge[] = useMemo(
-    () => edges.map((e, i) => ({
-      id: `e_${i}_${e.from}_${e.to}_${e.condition ?? 'default'}`,
-      source: e.from,
-      target: e.to,
-      sourceHandle: e.condition && ['true', 'false', 'approved', 'rejected'].includes(e.condition) ? e.condition : undefined,
-      label: e.condition && !['true', 'false', 'approved', 'rejected'].includes(e.condition) ? e.condition : undefined,
-      animated: runtime?.[e.from] === 'visited' && runtime?.[e.to] !== 'upcoming',
-      style: { stroke: e.condition === 'false' || e.condition === 'rejected' ? '#ef4444' : e.condition === 'true' || e.condition === 'approved' ? '#10b981' : '#888' },
-    })),
-    [edges, runtime],
+  const rfEdges: Edge<WorkflowEdgeData>[] = useMemo(
+    () => edges.map((e, i) => {
+      const tone = edgeTone(e.condition);
+      const label = edgeLabel(e.condition);
+      const runtimeActive = runtime ? runtime[e.from] === 'visited' && runtime[e.to] !== 'upcoming' : false;
+      return {
+        id: `e_${i}_${e.from}_${e.to}_${e.condition ?? 'default'}`,
+        source: e.from,
+        target: e.to,
+        type: 'workflow',
+        sourceHandle: e.condition && ['true', 'false', 'approved', 'rejected'].includes(e.condition) ? e.condition : undefined,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 16,
+          height: 16,
+          color:
+            tone === 'success' ? '#10b981'
+              : tone === 'danger' ? '#ef4444'
+                : '#94a3b8',
+        },
+        data: { condition: e.condition, label, tone, runtimeActive, readOnly },
+      };
+    }),
+    [edges, runtime, readOnly],
   );
 
   const handleConnect = useCallback((c: Connection) => {
@@ -99,6 +126,8 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        defaultEdgeOptions={{ type: 'workflow' }}
         onConnect={handleConnect}
         onEdgesDelete={handleEdgesDelete}
         onNodesDelete={handleNodesDelete}
@@ -111,12 +140,17 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
         edgesUpdatable={!readOnly}
         deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
+        fitViewOptions={{ padding: 0.25 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={16} />
-        <Controls showInteractive={false} />
-        <MiniMap pannable zoomable />
+        <Background gap={24} size={1} color="var(--border)" />
+        <Controls showInteractive={false} className="!shadow-none !border !rounded overflow-hidden" />
+        <MiniMap
+          pannable
+          zoomable
+          maskColor="rgba(0,0,0,0.04)"
+          className="!rounded !border !shadow-none"
+        />
       </ReactFlow>
       {menu}
     </>

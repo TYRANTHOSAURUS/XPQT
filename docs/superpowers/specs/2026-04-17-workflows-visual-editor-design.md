@@ -19,7 +19,7 @@ Replace the placeholder on `/admin/workflows` with a real visual editor for buil
 
 - Multi-user collaborative editing (presence, CRDT, locking). Deferred.
 - Workflow templates / marketplace / sharing across tenants.
-- Conditional expressions beyond the existing equals/not_equals/in operators.
+- Arbitrary scriptable expressions or a free-form formula language.
 - Versioning with simultaneous running v1 and v2 instances — "unpublish to edit" is the chosen lifecycle.
 - Trigger-binding UI (deciding when a workflow fires based on ticket events). Today `startForTicket` is called externally; this spec does not change that.
 
@@ -96,12 +96,130 @@ end:                { label?: string }
 assign:             { team_id?: uuid, user_id?: uuid }                   // at least one required
 approval:           { approver_person_id?: uuid, approver_team_id?: uuid }  // at least one required
 notification:       { notification_type?: string, subject: string, body: string }  // engine hardcodes in-app channel today
-condition:          { field: string, operator: 'equals'|'not_equals'|'in', value: unknown }
+condition:          { field_key: string, operator: string, value: unknown }
 update_ticket:      { fields: Record<string, unknown> }                  // e.g. { status: 'in_progress', priority: 'high' }
 create_child_tasks: { tasks: Array<{ title, description?, assigned_team_id?, interaction_mode?, priority? }> }
 wait_for:           { wait_type: 'child_tasks'|'status'|'event' }
 timer:              { delay_minutes: number }
 ```
+
+### 6.2a Condition field registry (amendment 2026-04-23)
+
+The current implementation is too weak if it only compares a small hardcoded list of raw ticket columns with a free-text input.
+
+The editor must use a **condition field registry**. Each field entry defines:
+
+- `key`
+- `label`
+- `source`
+- `data_type`
+- supported operators
+- lookup source when values come from real entities
+- optional normalization strategy
+
+Example shape:
+
+```ts
+type WorkflowConditionField = {
+  key: string;
+  label: string;
+  source: 'ticket' | 'request_type' | 'requester' | 'requested_for' | 'asset' | 'location' | 'assignment';
+  data_type: 'enum' | 'text' | 'number' | 'boolean' | 'uuid_ref' | 'uuid_array';
+  operators: string[];
+  lookup?: {
+    entity: 'spaces' | 'teams' | 'vendors' | 'request_types' | 'asset_types';
+    endpoint: string;
+    label_field: string;
+    value_field: string;
+  };
+  normalize?: 'location_scope' | 'asset_type' | 'request_type' | 'none';
+};
+```
+
+Minimum useful field set:
+
+- Ticket:
+  - `priority`
+  - `status`
+  - `status_category`
+  - `interaction_mode`
+  - `source_channel`
+- Request:
+  - `request_type_id`
+  - `domain`
+- Location:
+  - `location_id`
+  - `site_id`
+  - `building_id`
+- Asset:
+  - `asset_id`
+  - `asset_type_id`
+  - `has_asset`
+- People:
+  - `requester_person_id`
+  - `requested_for_person_id`
+  - requester/requested-for attributes such as `department`, `division`, `type`
+- Assignment:
+  - `assigned_team_id`
+  - `assigned_vendor_id`
+
+This is still a bounded condition system. It is not an open scripting engine.
+
+### 6.2b Typed operators
+
+Operators must be driven by field type, not shown as one global flat list.
+
+- Enum / reference:
+  - `equals`
+  - `not_equals`
+  - `in`
+  - `not_in`
+- Boolean:
+  - `is_true`
+  - `is_false`
+- Text:
+  - `equals`
+  - `not_equals`
+  - `contains`
+  - `not_contains`
+- Number:
+  - `equals`
+  - `not_equals`
+  - `gt`
+  - `gte`
+  - `lt`
+  - `lte`
+- Location/reference hierarchy:
+  - `equals`
+  - `not_equals`
+  - `within_scope_of`
+  - `not_within_scope_of`
+- Nullable/reference:
+  - `exists`
+  - `not_exists`
+
+### 6.2c Value picker UX
+
+The editor UX should be metadata-driven:
+
+1. User selects a condition field.
+2. The UI loads the allowed operators for that field type.
+3. The value control changes automatically:
+   - enum -> select
+   - boolean -> toggle
+   - reference -> async combobox loading real rows
+   - multi-reference -> multi-select
+   - text/number -> typed input
+
+For reference-backed fields, values should come from real data sources instead of free-text typing:
+
+- location -> spaces lookup
+- team -> teams lookup
+- vendor -> vendors lookup
+- request type -> request types lookup
+- asset type -> asset types lookup
+
+This is materially better UX and avoids invalid ids, naming drift, and typo-driven conditions.
 
 ### 6.3 Edge semantics (existing, formalized)
 
@@ -166,11 +284,73 @@ validate(graph: WorkflowGraph): { ok: boolean; errors: ValidationError[] }
 | `assign` has `team_id` or `user_id` | error |
 | `approval` has `approver_person_id` or `approver_team_id` | error |
 | `notification` has `subject` and `body` | error |
-| `condition` has `field`, `operator`, `value` | error |
+| `condition` has `field_key`, `operator`, `value` when the chosen operator requires one | error |
 | `timer` has `delay_minutes > 0` | error |
 | `create_child_tasks` has at least one `tasks[]` entry with a `title` | error |
 | `update_ticket` has a non-empty `fields` object | error |
 | `wait_for` has `wait_type` set | error |
+
+### 7.1a `WorkflowConditionEvaluatorService` (amendment 2026-04-23)
+
+Condition evaluation should not read only `tickets.*` and compare one raw field.
+
+Introduce a small runtime service that builds a **normalized workflow condition context** before evaluating a condition node.
+
+Example normalized context:
+
+```ts
+type WorkflowConditionContext = {
+  ticket: {
+    id: string;
+    priority: string | null;
+    status: string | null;
+    status_category: string | null;
+    interaction_mode: string | null;
+    source_channel: string | null;
+  };
+  request: {
+    request_type_id: string | null;
+    domain: string | null;
+  };
+  location: {
+    location_id: string | null;
+    site_id: string | null;
+    building_id: string | null;
+    scope_chain: string[];
+  };
+  asset: {
+    asset_id: string | null;
+    asset_type_id: string | null;
+    has_asset: boolean;
+  };
+  requester: {
+    person_id: string | null;
+    type?: string | null;
+    department?: string | null;
+    division?: string | null;
+  };
+  requested_for: {
+    person_id: string | null;
+    type?: string | null;
+    department?: string | null;
+    division?: string | null;
+  };
+  assignment: {
+    assigned_team_id: string | null;
+    assigned_vendor_id: string | null;
+  };
+};
+```
+
+Rules:
+
+- `location_id` should resolve from the effective ticket location, not just `tickets.location_id`. If the ticket has no explicit location but does have an asset with `assigned_space_id`, the context should use that resolved location.
+- `site_id` and `building_id` should be derived from the space hierarchy.
+- `asset_type_id` should be joined from the linked asset.
+- requester/requested-for attributes should come from `persons`.
+- assignment values should reflect the current ticket state.
+
+This keeps the builder and the engine aligned: if the UI offers `site_id` or `requester.department`, the engine must know how to evaluate it.
 
 ### 7.2 `WorkflowService` additions
 

@@ -130,3 +130,27 @@
     @apply font-sans;
     }
 }
+
+/* Workflow editor — subtle animated flow on edges */
+@keyframes wf-edge-dash {
+  from { stroke-dashoffset: 20; }
+  to   { stroke-dashoffset: 0; }
+}
+.wf-edge-flow {
+  animation: wf-edge-dash 1.6s linear infinite;
+}
+.wf-edge-flow-fast {
+  animation: wf-edge-dash 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-edge-flow, .wf-edge-flow-fast { animation: none; }
+}
+
+/* React Flow — cleaner handle focus rings, hide the default square chrome */
+.react-flow__handle {
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  outline: none;
+}
