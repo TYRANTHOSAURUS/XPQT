@@ -8,11 +8,12 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertTriangle, Plus, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, Plus, SlidersHorizontal, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import type { ServiceItemDetail } from './catalog-service-panel';
 import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
+import { CoverageMatrixDrillDown } from './coverage-matrix-drill-down';
 
 /**
  * Per-site coverage matrix. Columns: offered, handler, workflow, case SLA,
@@ -140,6 +141,13 @@ export function CatalogCoverageTab({ detail, onSaved }: {
   const [editingOverride, setEditingOverride] = useState<ScopeOverrideRow | null>(null);
   const [editorInitialDraft, setEditorInitialDraft] =
     useState<Partial<ScopeOverrideRow> | null>(null);
+
+  const [drillDownOpen, setDrillDownOpen] = useState(false);
+  const [drillRow, setDrillRow] = useState<MatrixRow | null>(null);
+  const openDrillDown = (r: MatrixRow) => {
+    setDrillRow(r);
+    setDrillDownOpen(true);
+  };
 
   const openNewOverride = () => {
     setEditingOverride(null);
@@ -304,7 +312,11 @@ export function CatalogCoverageTab({ detail, onSaved }: {
           </Field>
         </FieldGroup>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
-          <span>{offeredCount} / {rows.length} offered</span>
+          <span className="flex items-center gap-1">
+            <Info className="h-3 w-3" />
+            Click a row to explain
+          </span>
+          <span>· {offeredCount} / {rows.length} offered</span>
           <Button
             size="sm"
             variant={hasTenantOffering ? 'default' : 'outline'}
@@ -343,7 +355,11 @@ export function CatalogCoverageTab({ detail, onSaved }: {
                         : 'inherited')
                 : 'not offered';
               return (
-                <tr key={r.site.id} className={r.offered ? '' : 'opacity-60'}>
+                <tr
+                  key={r.site.id}
+                  className={`cursor-pointer hover:bg-muted/30 ${r.offered ? '' : 'opacity-60'}`}
+                  onClick={() => openDrillDown(r)}
+                >
                   <td className="border-b px-3 py-1.5 align-top">
                     <div className="flex flex-col gap-0.5">
                       <span className="font-medium">{r.site.name}</span>
@@ -393,7 +409,10 @@ export function CatalogCoverageTab({ detail, onSaved }: {
                       sourceNoneLabel="team / vendor default"
                     />
                   </td>
-                  <td className="border-b px-3 py-1.5 text-right align-top">
+                  <td
+                    className="border-b px-3 py-1.5 text-right align-top"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <div className="flex items-center justify-end gap-1">
                       {r.override_id ? (
                         <Button
@@ -518,6 +537,18 @@ export function CatalogCoverageTab({ detail, onSaved }: {
         editing={editingOverride}
         initialDraft={editorInitialDraft}
         onSaved={() => { onSaved(); refetch(); }}
+      />
+
+      <CoverageMatrixDrillDown
+        open={drillDownOpen}
+        onOpenChange={setDrillDownOpen}
+        row={drillRow}
+        detail={detail}
+        onEditOverride={openEditOverride}
+        onAddOverride={openOverrideForSite}
+        onToggleOffering={toggleSite}
+        hasTenantOffering={hasTenantOffering}
+        directOffered={drillRow ? directOfferedIds.has(drillRow.site.id) : false}
       />
     </div>
   );
