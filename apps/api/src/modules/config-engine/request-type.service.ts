@@ -146,23 +146,12 @@ export class RequestTypeService {
     const tenant = TenantContext.current();
     await this.assertRequestTypeExists(requestTypeId);
     await this.assertIdsInTenant('service_catalog_categories', categoryIds, 'category_id');
-
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_categories')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (categoryIds.length > 0) {
-      const rows = categoryIds.map((category_id) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        category_id,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_categories').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_categories', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_category_ids: categoryIds ?? [],
+    });
+    if (error) throw error;
     return this.listCategories(requestTypeId);
   }
 
@@ -187,28 +176,12 @@ export class RequestTypeService {
     await this.assertIdsInTenant('spaces', rules.map((r) => r.space_id ?? null), 'space_id');
     await this.assertIdsInTenant('space_groups', rules.map((r) => r.space_group_id ?? null), 'space_group_id');
 
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_coverage_rules')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (rules.length > 0) {
-      const rows = rules.map((r) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        scope_kind: r.scope_kind,
-        space_id: r.space_id ?? null,
-        space_group_id: r.space_group_id ?? null,
-        inherit_to_descendants: r.inherit_to_descendants ?? true,
-        starts_at: r.starts_at ?? null,
-        ends_at: r.ends_at ?? null,
-        active: r.active ?? true,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_coverage_rules').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_coverage', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_rules: rules,
+    });
+    if (error) throw error;
     return this.listCoverage(requestTypeId);
   }
 
@@ -231,26 +204,12 @@ export class RequestTypeService {
     await this.assertRequestTypeExists(requestTypeId);
     await this.assertIdsInTenant('criteria_sets', rules.map((r) => r.criteria_set_id), 'criteria_set_id');
 
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_audience_rules')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (rules.length > 0) {
-      const rows = rules.map((r) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        criteria_set_id: r.criteria_set_id,
-        mode: r.mode,
-        starts_at: r.starts_at ?? null,
-        ends_at: r.ends_at ?? null,
-        active: r.active ?? true,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_audience_rules').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_audience', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_rules: rules,
+    });
+    if (error) throw error;
     return this.listAudience(requestTypeId);
   }
 
@@ -290,27 +249,12 @@ export class RequestTypeService {
       'form_schema_id',
     );
 
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_form_variants')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (variants.length > 0) {
-      const rows = variants.map((v) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        criteria_set_id: v.criteria_set_id,
-        form_schema_id: v.form_schema_id,
-        priority: v.priority ?? 0,
-        starts_at: v.starts_at ?? null,
-        ends_at: v.ends_at ?? null,
-        active: v.active ?? true,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_form_variants').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_form_variants', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_variants: variants,
+    });
+    if (error) throw error;
     return this.listFormVariants(requestTypeId);
   }
 
@@ -334,23 +278,12 @@ export class RequestTypeService {
     await this.assertRequestTypeExists(requestTypeId);
     await this.assertIdsInTenant('criteria_sets', rules.map((r) => r.criteria_set_id), 'criteria_set_id');
 
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_on_behalf_rules')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (rules.length > 0) {
-      const rows = rules.map((r) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        role: r.role,
-        criteria_set_id: r.criteria_set_id,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_on_behalf_rules').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_on_behalf_rules', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_rules: rules,
+    });
+    if (error) throw error;
     return this.listOnBehalfRules(requestTypeId);
   }
 
@@ -399,36 +332,12 @@ export class RequestTypeService {
       'case_owner_policy_entity_id / child_dispatch_policy_entity_id',
     );
 
-    const { error: delErr } = await this.supabase.admin
-      .from('request_type_scope_overrides')
-      .delete()
-      .eq('tenant_id', tenant.id)
-      .eq('request_type_id', requestTypeId);
-    if (delErr) throw delErr;
-
-    if (overrides.length > 0) {
-      const rows = overrides.map((o) => ({
-        tenant_id: tenant.id,
-        request_type_id: requestTypeId,
-        scope_kind: o.scope_kind,
-        space_id: o.space_id ?? null,
-        space_group_id: o.space_group_id ?? null,
-        inherit_to_descendants: o.inherit_to_descendants ?? true,
-        starts_at: o.starts_at ?? null,
-        ends_at: o.ends_at ?? null,
-        active: o.active ?? true,
-        handler_kind: o.handler_kind ?? null,
-        handler_team_id: o.handler_team_id ?? null,
-        handler_vendor_id: o.handler_vendor_id ?? null,
-        workflow_definition_id: o.workflow_definition_id ?? null,
-        case_sla_policy_id: o.case_sla_policy_id ?? null,
-        case_owner_policy_entity_id: o.case_owner_policy_entity_id ?? null,
-        child_dispatch_policy_entity_id: o.child_dispatch_policy_entity_id ?? null,
-        executor_sla_policy_id: o.executor_sla_policy_id ?? null,
-      }));
-      const { error } = await this.supabase.admin.from('request_type_scope_overrides').insert(rows);
-      if (error) throw error;
-    }
+    const { error } = await this.supabase.admin.rpc('request_type_replace_scope_overrides', {
+      p_request_type_id: requestTypeId,
+      p_tenant_id: tenant.id,
+      p_overrides: overrides,
+    });
+    if (error) throw error;
     return this.listScopeOverrides(requestTypeId);
   }
 
