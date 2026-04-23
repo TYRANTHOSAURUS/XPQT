@@ -153,20 +153,7 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
             {!detail.active && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive hover:text-destructive hover:bg-destructive/10"
-            onClick={handleDelete}
-            disabled={deleting || !detail.active}
-            title={detail.active ? 'Delete service' : 'Already inactive'}
-          >
-            <Trash2 className="h-4 w-4 mr-1" />
-            {deleting ? 'Deleting…' : 'Delete'}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
-        </div>
+        <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -215,6 +202,20 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
           <CatalogFulfillmentTab detail={detail} onSaved={reload} requestTypeId={requestTypeId!} />
         </TabsContent>
       </Tabs>
+
+      <div className="flex justify-start border-t pt-4 mt-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+          onClick={handleDelete}
+          disabled={deleting || !detail.active}
+          title={detail.active ? 'Delete service' : 'Already inactive'}
+        >
+          <Trash2 className="h-4 w-4 mr-1.5" />
+          {deleting ? 'Deleting…' : detail.active ? 'Delete service' : 'Already deleted'}
+        </Button>
+      </div>
     </div>
   );
 }
