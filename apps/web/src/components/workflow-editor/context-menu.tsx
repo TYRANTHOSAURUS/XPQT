@@ -4,7 +4,7 @@ import { useGraphStore } from './graph-store';
 import { NODE_TYPE_LIST } from './node-types';
 import { cn } from '@/lib/utils';
 import {
-  Trash2, Copy, Files, Undo2, Redo2, Plus, ChevronRight,
+  Trash2, Copy, Files, Undo2, Redo2, Plus, ChevronRight, SlidersHorizontal,
 } from 'lucide-react';
 
 type MenuMode = 'node' | 'pane';
@@ -147,11 +147,29 @@ function PaneItems({ onClose }: { onClose: () => void }) {
 }
 
 function NodeItems({ onClose }: { onClose: () => void }) {
+  const selectedIds = useGraphStore((s) => s.selectedIds);
+  const setSelection = useGraphStore((s) => s.setSelection);
   const copy = useGraphStore((s) => s.copySelection);
   const duplicate = useGraphStore((s) => s.duplicateSelection);
   const del = useGraphStore((s) => s.deleteSelection);
+
+  const inspect = () => {
+    // Re-assert selection so the inspector panel reflects this node.
+    if (selectedIds.length > 0) setSelection([...selectedIds]);
+    onClose();
+    // Focus the first editable field in the inspector panel for fast keyboard editing.
+    requestAnimationFrame(() => {
+      const first = document.querySelector<HTMLElement>('aside [id^="inspector-"]');
+      first?.focus();
+    });
+  };
+
   return (
     <>
+      <MenuRow icon={<SlidersHorizontal className="h-3.5 w-3.5" />} onClick={inspect}>
+        Inspect
+      </MenuRow>
+      <Separator />
       <MenuRow icon={<Copy className="h-3.5 w-3.5" />} onClick={() => { copy(); onClose(); }} shortcut="⌘C">
         Copy
       </MenuRow>
