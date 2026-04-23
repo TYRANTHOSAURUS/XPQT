@@ -17,7 +17,22 @@ export interface Branding {
   primary_color: string;
   accent_color: string;
   theme_mode_default: 'light' | 'dark' | 'system';
+  background_light: string | null;
+  background_dark: string | null;
+  sidebar_light: string | null;
+  sidebar_dark: string | null;
 }
+
+export type UpdateBrandingDto = Pick<
+  Branding,
+  | 'primary_color'
+  | 'accent_color'
+  | 'theme_mode_default'
+  | 'background_light'
+  | 'background_dark'
+  | 'sidebar_light'
+  | 'sidebar_dark'
+>;
 
 const DEFAULT_BRANDING: Branding = {
   logo_light_url: null,
@@ -26,6 +41,10 @@ const DEFAULT_BRANDING: Branding = {
   primary_color: '#2563eb',
   accent_color: '#7c3aed',
   theme_mode_default: 'light',
+  background_light: null,
+  background_dark: null,
+  sidebar_light: null,
+  sidebar_dark: null,
 };
 
 interface BrandingContextValue {
@@ -33,9 +52,7 @@ interface BrandingContextValue {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
-  updateBranding: (
-    dto: Pick<Branding, 'primary_color' | 'accent_color' | 'theme_mode_default'>,
-  ) => Promise<void>;
+  updateBranding: (dto: UpdateBrandingDto) => Promise<void>;
   uploadLogo: (kind: 'light' | 'dark' | 'favicon', file: File) => Promise<void>;
   removeLogo: (kind: 'light' | 'dark' | 'favicon') => Promise<void>;
 }
@@ -96,17 +113,14 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     refetch();
   }, [refetch]);
 
-  const updateBranding = useCallback(
-    async (dto: Pick<Branding, 'primary_color' | 'accent_color' | 'theme_mode_default'>) => {
-      const next = await apiFetch<Branding>('/tenants/branding', {
-        method: 'PUT',
-        body: JSON.stringify(dto),
-      });
-      setBranding(next);
-      writeCached(next);
-    },
-    [],
-  );
+  const updateBranding = useCallback(async (dto: UpdateBrandingDto) => {
+    const next = await apiFetch<Branding>('/tenants/branding', {
+      method: 'PUT',
+      body: JSON.stringify(dto),
+    });
+    setBranding(next);
+    writeCached(next);
+  }, []);
 
   const uploadLogo = useCallback(
     async (kind: 'light' | 'dark' | 'favicon', file: File) => {
