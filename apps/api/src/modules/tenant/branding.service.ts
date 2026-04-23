@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { assertValidHex, assertUsablePrimary } from './color-utils';
+import { assertValidHex, assertUsablePrimary, assertValidHexOrNull } from './color-utils';
 import { sanitizeSvg } from './svg-sanitizer';
 
 const BUCKET = 'tenant-branding';
@@ -24,18 +24,26 @@ const FAVICON_MIMES = new Set([
 export type LogoKind = 'light' | 'dark' | 'favicon';
 
 export interface Branding {
-  logo_light_url: string | null;
-  logo_dark_url: string | null;
-  favicon_url: string | null;
-  primary_color: string;
-  accent_color: string;
+  logo_light_url:     string | null;
+  logo_dark_url:      string | null;
+  favicon_url:        string | null;
+  primary_color:      string;
+  accent_color:       string;
   theme_mode_default: 'light' | 'dark' | 'system';
+  background_light:   string | null;
+  background_dark:    string | null;
+  sidebar_light:      string | null;
+  sidebar_dark:       string | null;
 }
 
 export interface UpdateBrandingDto {
   primary_color: string;
   accent_color: string;
   theme_mode_default: 'light' | 'dark' | 'system';
+  background_light: string | null;
+  background_dark:  string | null;
+  sidebar_light:    string | null;
+  sidebar_dark:     string | null;
 }
 
 const KIND_TO_FIELD: Record<LogoKind, keyof Branding> = {
@@ -74,14 +82,22 @@ export class BrandingService {
     if (!['light', 'dark', 'system'].includes(dto.theme_mode_default)) {
       throw new BadRequestException('theme_mode_default must be light, dark, or system');
     }
+    assertValidHexOrNull(dto.background_light, 'background_light');
+    assertValidHexOrNull(dto.background_dark,  'background_dark');
+    assertValidHexOrNull(dto.sidebar_light,    'sidebar_light');
+    assertValidHexOrNull(dto.sidebar_dark,     'sidebar_dark');
 
     const tenant = TenantContext.current();
     const current = await this.get();
     const next: Branding = {
       ...current,
-      primary_color: dto.primary_color.toLowerCase(),
-      accent_color: dto.accent_color.toLowerCase(),
+      primary_color:      dto.primary_color.toLowerCase(),
+      accent_color:       dto.accent_color.toLowerCase(),
       theme_mode_default: dto.theme_mode_default,
+      background_light:   dto.background_light?.toLowerCase() ?? null,
+      background_dark:    dto.background_dark?.toLowerCase()  ?? null,
+      sidebar_light:      dto.sidebar_light?.toLowerCase()    ?? null,
+      sidebar_dark:       dto.sidebar_dark?.toLowerCase()     ?? null,
     };
     const { error } = await this.supabase.admin
       .from('tenants')
