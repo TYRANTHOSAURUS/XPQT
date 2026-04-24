@@ -34,6 +34,7 @@ import {
   Calendar,
   FormInput,
   UserCog,
+  Shield,
   PersonStanding,
   Package,
   GitBranch,
@@ -77,9 +78,13 @@ const configNav = [
 const peopleNav = [
   { title: 'Organisations', path: '/admin/organisations', icon: Building2 },
   { title: 'Teams', path: '/admin/teams', icon: Users },
-  { title: 'Users & Roles', path: '/admin/users', icon: UserCog },
   { title: 'Persons', path: '/admin/persons', icon: PersonStanding },
   { title: 'Delegations', path: '/admin/delegations', icon: HandCoins },
+];
+
+const authorizationNav = [
+  { title: 'Users', path: '/admin/users', icon: UserCog },
+  { title: 'User roles', path: '/admin/user-roles', icon: Shield },
 ];
 
 const operationsNav = [
@@ -107,7 +112,8 @@ const pageTitles: Record<string, string> = {
   '/admin/notifications': 'Notifications',
   '/admin/workflow-templates': 'Workflow Templates',
   '/admin/webhooks': 'Webhooks',
-  '/admin/users': 'Users & Roles',
+  '/admin/users': 'Users',
+  '/admin/user-roles': 'User roles',
   '/admin/persons': 'Persons',
   '/admin/organisations': 'Organisations',
   '/admin/delegations': 'Delegations',
@@ -178,6 +184,26 @@ export function AdminLayout() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {peopleNav.map((item) => (
+                  <SidebarMenuItem key={item.path}>
+                    <SidebarMenuButton
+                      isActive={location.pathname.startsWith(item.path)}
+                      onClick={() => navigate(item.path)}
+                      className="cursor-pointer"
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          <SidebarGroup>
+            <SidebarGroupLabel>Authorisation &amp; Permissions</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {authorizationNav.map((item) => (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
                       isActive={location.pathname.startsWith(item.path)}

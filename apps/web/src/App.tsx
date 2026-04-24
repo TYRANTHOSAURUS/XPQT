@@ -29,6 +29,7 @@ import { SpaceGroupsPage } from '@/pages/admin/space-groups';
 import { DomainParentsPage } from '@/pages/admin/domain-parents';
 import { FormSchemasPage } from '@/pages/admin/form-schemas';
 import { UsersPage } from '@/pages/admin/users';
+import { UserRolesPage } from '@/pages/admin/user-roles';
 import { RoleDetailPage } from '@/pages/admin/role-detail';
 import { UserDetailPage } from '@/pages/admin/user-detail';
 import { PersonsPage } from '@/pages/admin/persons';
@@ -180,9 +181,10 @@ export function App() {
             <Route path="webhooks/:id/events" element={<WebhookEventsPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
-            <Route path="users/roles/new" element={<RoleDetailPage />} />
-            <Route path="users/roles/:id" element={<RoleDetailPage />} />
             <Route path="users/:id" element={<UserDetailPage />} />
+            <Route path="user-roles" element={<UserRolesPage />} />
+            <Route path="user-roles/new" element={<RoleDetailPage />} />
+            <Route path="user-roles/:id" element={<RoleDetailPage />} />
             <Route path="persons" element={<PersonsPage />} />
             <Route path="organisations" element={<OrganisationsPage />} />
             <Route path="organisations/new" element={<OrganisationCreatePage />} />

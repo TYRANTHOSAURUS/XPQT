@@ -210,7 +210,7 @@ export function RoleDetailPage() {
       if (isNew) {
         const created = await createMut.mutateAsync(body);
         toast.success('Role created');
-        navigate(`/admin/users/roles/${created.id}`);
+        navigate(`/admin/user-roles/${created.id}`);
       } else {
         await updateMut.mutateAsync(body);
         toast.success('Role saved');
@@ -224,7 +224,7 @@ export function RoleDetailPage() {
   if (isLoading) {
     return (
       <SettingsPageShell width="xwide">
-        <SettingsPageHeader title="Role" backTo="/admin/users" />
+        <SettingsPageHeader title="Role" backTo="/admin/user-roles" />
         <Skeleton className="h-[600px] w-full" />
       </SettingsPageShell>
     );
@@ -233,7 +233,7 @@ export function RoleDetailPage() {
   return (
     <SettingsPageShell width="xwide">
       <SettingsPageHeader
-        backTo="/admin/users"
+        backTo="/admin/user-roles"
         title={isNew ? 'New role' : name || 'Role'}
         description={
           isNew
@@ -289,124 +289,118 @@ export function RoleDetailPage() {
       </SettingsSection>
 
       <SettingsSection title="Permissions" density="tight">
-        <div className="grid grid-cols-[1fr_380px] gap-6">
-          {/* Left: picker */}
-          <div className="flex flex-col gap-4 min-w-0">
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search modules or actions"
-                  className="pl-8"
-                />
-              </div>
-              <label
-                className={cn(
-                  'flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer',
-                  hasFullWildcard
-                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-100'
-                    : 'hover:bg-muted/60',
-                )}
-              >
-                <Checkbox
-                  checked={hasFullWildcard}
-                  onCheckedChange={(v) => toggleFullWildcard(v === true)}
-                />
-                <Shield className="size-4" />
-                Full admin (<code className="text-xs">*.*</code>)
-              </label>
+        <div className="flex flex-col gap-4 min-w-0">
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search modules or actions"
+                className="pl-8"
+              />
             </div>
+            <label
+              className={cn(
+                'flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer',
+                hasFullWildcard
+                  ? 'border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-100'
+                  : 'hover:bg-muted/60',
+              )}
+            >
+              <Checkbox
+                checked={hasFullWildcard}
+                onCheckedChange={(v) => toggleFullWildcard(v === true)}
+              />
+              <Shield className="size-4" />
+              Full admin (<code className="text-xs">*.*</code>)
+            </label>
+          </div>
 
-            <div className="flex flex-col gap-3">
-              {filteredModules.map(({ resource, mod, relevant }) => (
-                <PermissionModuleCard
-                  key={resource}
-                  resource={resource}
-                  mod={mod}
-                  relevant={relevant}
-                  permissions={permissions}
-                  disabled={hasFullWildcard}
-                  onToggleAction={togglePermission}
-                  onToggleResourceWildcard={toggleResourceWildcard}
-                />
-              ))}
-              {filteredModules.length === 0 && (
-                <p className="text-sm text-muted-foreground px-1">
-                  No modules match "{search}".
-                </p>
+          <div className="flex flex-col gap-3">
+            {filteredModules.map(({ resource, mod, relevant }) => (
+              <PermissionModuleCard
+                key={resource}
+                resource={resource}
+                mod={mod}
+                relevant={relevant}
+                permissions={permissions}
+                disabled={hasFullWildcard}
+                onToggleAction={togglePermission}
+                onToggleResourceWildcard={toggleResourceWildcard}
+              />
+            ))}
+            {filteredModules.length === 0 && (
+              <p className="text-sm text-muted-foreground px-1">
+                No modules match "{search}".
+              </p>
+            )}
+          </div>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Preview">
+        <div className="rounded-lg border bg-card p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">
+              What this role will grant once saved.
+            </div>
+            <Badge variant="secondary">
+              {sortedPermissions.length} {sortedPermissions.length === 1 ? 'key' : 'keys'} · grants {expanded.length}
+            </Badge>
+          </div>
+          {hasDanger && (
+            <div className="flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/30 p-2 text-xs text-amber-900 dark:text-amber-100">
+              <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+              <span>
+                This role includes destructive or scope-bypassing permissions.
+                Assign it carefully.
+              </span>
+            </div>
+          )}
+          <Separator />
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <div className="text-xs font-medium text-muted-foreground mb-2">
+                Stored permissions
+              </div>
+              {sortedPermissions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No permissions selected.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {sortedPermissions.map((p) => (
+                    <code
+                      key={p}
+                      className={cn(
+                        'text-[11px] rounded border px-1.5 py-0.5 bg-muted/50',
+                        p === '*.*' || p.endsWith('_all') || p.startsWith('*.')
+                          ? 'border-amber-500/40'
+                          : 'border-transparent',
+                      )}
+                    >
+                      {p}
+                    </code>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="text-xs font-medium text-muted-foreground mb-2">
+                Effectively grants ({expanded.length})
+              </div>
+              {expanded.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nothing.</p>
+              ) : (
+                <div className="max-h-56 overflow-auto flex flex-col gap-0.5 pr-1">
+                  {expanded.map((k) => (
+                    <div key={k} className="text-[11px] text-muted-foreground font-mono">
+                      {k}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
-
-          {/* Right: preview */}
-          <aside className="flex flex-col gap-3 sticky top-6 self-start">
-            <div className="rounded-lg border bg-card p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">Preview</h3>
-                <Badge variant="secondary">
-                  {sortedPermissions.length} {sortedPermissions.length === 1 ? 'key' : 'keys'}
-                </Badge>
-              </div>
-              <Separator />
-              {hasDanger && (
-                <div className="flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/30 p-2 text-xs text-amber-900 dark:text-amber-100">
-                  <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
-                  <span>
-                    This role includes destructive or scope-bypassing permissions.
-                    Assign it carefully.
-                  </span>
-                </div>
-              )}
-              <div>
-                <div className="text-xs text-muted-foreground mb-1.5">
-                  Stored permissions
-                </div>
-                {sortedPermissions.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No permissions selected.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1">
-                    {sortedPermissions.map((p) => (
-                      <code
-                        key={p}
-                        className={cn(
-                          'text-[11px] rounded border px-1.5 py-0.5 bg-muted/50',
-                          p === '*.*' || p.endsWith('_all') || p.startsWith('*.')
-                            ? 'border-amber-500/40'
-                            : 'border-transparent',
-                        )}
-                      >
-                        {p}
-                      </code>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <Separator />
-              <div>
-                <div className="text-xs text-muted-foreground mb-1.5">
-                  Effectively grants ({expanded.length})
-                </div>
-                {expanded.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">Nothing.</p>
-                ) : (
-                  <div className="max-h-56 overflow-auto flex flex-col gap-0.5 pr-1">
-                    {expanded.map((k) => (
-                      <div
-                        key={k}
-                        className="text-[11px] text-muted-foreground font-mono"
-                      >
-                        {k}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
         </div>
       </SettingsSection>
 
@@ -428,7 +422,7 @@ export function RoleDetailPage() {
           loading: createMut.isPending || updateMut.isPending,
           disabled: !name.trim(),
         }}
-        secondary={{ label: 'Cancel', href: '/admin/users' }}
+        secondary={{ label: 'Cancel', href: '/admin/user-roles' }}
       />
     </SettingsPageShell>
   );
