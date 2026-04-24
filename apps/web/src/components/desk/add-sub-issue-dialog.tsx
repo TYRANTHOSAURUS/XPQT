@@ -13,7 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { EntityPicker, EntityOption } from '@/components/desk/editors/entity-picker';
 import { useDispatchWorkOrder } from '@/hooks/use-work-orders';
-import { useApi } from '@/hooks/use-api';
+import { useSlaPolicies } from '@/api/sla-policies';
+import { useVendors } from '@/api/vendors';
+import { useTeams } from '@/api/teams';
 
 interface AddSubIssueDialogProps {
   open: boolean;
@@ -25,10 +27,6 @@ interface AddSubIssueDialogProps {
   vendorOptions: EntityOption[];
   onDispatched: () => void;
 }
-
-interface SlaPolicy { id: string; name: string }
-interface VendorWithDefault { id: string; name: string; default_sla_policy_id: string | null }
-interface TeamWithDefault { id: string; name: string; default_sla_policy_id: string | null }
 
 type AssignTab = 'team' | 'user' | 'vendor';
 
@@ -67,9 +65,9 @@ export function AddSubIssueDialog({
   const [assigneeError, setAssigneeError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const { data: slaPolicies } = useApi<SlaPolicy[]>('/sla-policies', []);
-  const { data: vendorsWithDefaults } = useApi<VendorWithDefault[]>('/vendors', []);
-  const { data: teamsWithDefaults } = useApi<TeamWithDefault[]>('/teams', []);
+  const { data: slaPolicies } = useSlaPolicies();
+  const { data: vendorsWithDefaults } = useVendors();
+  const { data: teamsWithDefaults } = useTeams();
 
   const { dispatch, submitting } = useDispatchWorkOrder(parentId);
 

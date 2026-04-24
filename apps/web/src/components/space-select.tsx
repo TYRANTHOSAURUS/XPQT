@@ -5,13 +5,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useApi } from '@/hooks/use-api';
-
-export interface Space {
-  id: string;
-  name: string;
-  type: string;
-}
+import { useSpaces } from '@/api/spaces';
+export type { Space } from '@/api/spaces';
 
 interface SpaceSelectProps {
   value: string;
@@ -36,7 +31,7 @@ export function SpaceSelect({
   id,
   className,
 }: SpaceSelectProps) {
-  const { data: spaces } = useApi<Space[]>('/spaces', []);
+  const { data: spaces } = useSpaces();
 
   const options = (spaces ?? []).filter(
     (s) => !typeFilter || typeFilter.length === 0 || typeFilter.includes(s.type),

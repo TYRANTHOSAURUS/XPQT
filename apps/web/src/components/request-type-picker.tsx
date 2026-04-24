@@ -13,7 +13,8 @@ import {
   CommandSeparator,
 } from '@/components/ui/command';
 import { Spinner } from '@/components/ui/spinner';
-import { useApi } from '@/hooks/use-api';
+import { useCatalogTree, type CatalogCategoryNode } from '@/api/catalog';
+import { useRequestTypes } from '@/api/request-types';
 
 export interface RequestType {
   id: string;
@@ -25,26 +26,6 @@ export interface RequestType {
   asset_type_filter: string[];
   requires_location: boolean;
   location_required: boolean;
-}
-
-interface CatalogRequestType {
-  id: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  display_order: number;
-  domain: string | null;
-}
-
-interface CatalogCategoryNode {
-  id: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  display_order: number;
-  parent_category_id: string | null;
-  children: CatalogCategoryNode[];
-  request_types: CatalogRequestType[];
 }
 
 interface FlatGroup {
@@ -107,11 +88,8 @@ export function RequestTypePicker({
 }: RequestTypePickerProps) {
   const [open, setOpen] = useState(false);
 
-  const { data: tree, loading: treeLoading } = useApi<CatalogCategoryNode[]>(
-    '/service-catalog/tree',
-    [],
-  );
-  const { data: flat } = useApi<RequestType[]>('/request-types', []);
+  const { data: tree, isPending: treeLoading } = useCatalogTree();
+  const { data: flat } = useRequestTypes() as { data: RequestType[] | undefined };
 
   const scopedTree = useMemo(() => {
     if (!tree) return [];

@@ -1,9 +1,12 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
 export interface Team {
   id: string;
   name: string;
+  description?: string | null;
+  default_sla_policy_id?: string | null;
+  active?: boolean;
 }
 
 export const teamKeys = {
@@ -24,4 +27,26 @@ export function teamsListOptions() {
 
 export function useTeams() {
   return useQuery(teamsListOptions());
+}
+
+export type UpsertTeamPayload = Partial<Omit<Team, 'id'>> & { name: string };
+
+export function useUpsertTeam() {
+  const qc = useQueryClient();
+  return useMutation<Team, Error, { id: string | null; payload: UpsertTeamPayload }>({
+    mutationFn: ({ id, payload }) =>
+      apiFetch<Team>(
+        id ? `/teams/${id}` : '/teams',
+        { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+  });
+}
+
+export function useDeleteTeam() {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, string>({
+    mutationFn: (id) => apiFetch(`/teams/${id}`, { method: 'DELETE' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+  });
 }

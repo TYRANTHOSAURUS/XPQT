@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, ChevronsUpDown, Building2 } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useOrgNodes } from '@/api/org-nodes';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -17,12 +17,8 @@ import {
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 
-export interface OrgNode {
-  id: string;
-  name: string;
-  code: string | null;
-  parent_id: string | null;
-}
+export type { OrgNode } from '@/api/org-nodes';
+import type { OrgNode } from '@/api/org-nodes';
 
 interface Props {
   value: string | null;
@@ -56,7 +52,7 @@ export function OrgNodeCombobox({
   filter,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const { data, loading } = useApi<OrgNode[]>('/org-nodes');
+  const { data, isPending: loading } = useOrgNodes();
 
   const byId = useMemo(() => {
     const m = new Map<string, OrgNode>();

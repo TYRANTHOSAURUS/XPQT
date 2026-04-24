@@ -11,15 +11,8 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
-import { useApi } from '@/hooks/use-api';
-
-export interface CatalogItem {
-  id: string;
-  name: string;
-  category: string;
-  subcategory: string | null;
-  unit: string;
-}
+import { useCatalogItems, type CatalogItem } from '@/api/catalog';
+export type { CatalogItem };
 
 interface CatalogItemComboboxProps {
   value: string;
@@ -40,7 +33,7 @@ export function CatalogItemCombobox({
   className,
   inline = false,
 }: CatalogItemComboboxProps) {
-  const { data: items } = useApi<CatalogItem[]>('/catalog-items', []);
+  const { data: items } = useCatalogItems();
   const [open, setOpen] = useState(false);
 
   const selected = items?.find((i) => i.id === value);
