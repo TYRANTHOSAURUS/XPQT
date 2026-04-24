@@ -5,7 +5,7 @@
 
 -- 1. Extend the type check constraint.
 alter table public.spaces
-  drop constraint spaces_type_check;
+  drop constraint if exists spaces_type_check;
 
 alter table public.spaces
   add constraint spaces_type_check check (type in (
