@@ -20,7 +20,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { apiFetch } from '@/lib/api';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { useVendors } from '@/api/vendors';
 import { SpaceSelect } from '@/components/space-select';
 import { MenuItemsGrid, MenuItemRow } from '@/components/admin/menu-items-grid';
 import { MENU_STATUS_VARIANT, MenuStatus, humanize } from '@/lib/menu-constants';
@@ -56,15 +57,22 @@ export function VendorMenuDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const { data: menu, refetch: refetchMenu, loading: menuLoading } = useApi<Menu>(
-    `/catalog-menus/${id}`,
-    [id],
-  );
-  const { data: items, refetch: refetchItems } = useApi<MenuItemRow[]>(
-    `/catalog-menus/${id}/items`,
-    [id],
-  );
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
+  const qc = useQueryClient();
+  const { data: menu, isPending: menuLoading } = useQuery(queryOptions({
+    queryKey: ['catalog-menus', 'detail', id] as const,
+    queryFn: ({ signal }) => apiFetch<Menu>(`/catalog-menus/${id}`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+  }));
+  const refetchMenu = () => qc.invalidateQueries({ queryKey: ['catalog-menus', 'detail', id] });
+  const { data: items } = useQuery(queryOptions({
+    queryKey: ['catalog-menus', 'items', id] as const,
+    queryFn: ({ signal }) => apiFetch<MenuItemRow[]>(`/catalog-menus/${id}/items`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+  }));
+  const refetchItems = () => qc.invalidateQueries({ queryKey: ['catalog-menus', 'items', id] });
+  const { data: vendors } = useVendors() as { data: Vendor[] | undefined };
 
   const [duplicateOpen, setDuplicateOpen] = useState(false);
 

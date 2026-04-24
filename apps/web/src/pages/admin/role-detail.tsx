@@ -41,7 +41,7 @@ import {
   type RoleType,
 } from '@/api/roles';
 import { RoleAuditFeed } from '@/components/admin/role-audit-feed';
-import { useApi } from '@/hooks/use-api';
+import { useUsers } from '@/api/users';
 
 /**
  * Templates surfaced as chips at the top of the New Role page. Names match
@@ -139,7 +139,7 @@ export function RoleDetailPage() {
   const cloneQuery = useRole(cloneFromId ?? undefined);
   const auditQuery = useRoleAudit(isNew ? undefined : id);
   const rolesListQuery = useRoles();
-  const { data: allUsers } = useApi<UserWithAssignments[]>('/users', []);
+  const { data: allUsers } = useUsers() as { data: UserWithAssignments[] | undefined };
   const createMut = useCreateRole();
   const updateMut = useUpdateRole(id ?? '');
 

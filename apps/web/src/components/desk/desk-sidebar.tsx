@@ -37,7 +37,8 @@ import {
   SettingsIcon,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
-import { useApi } from "@/hooks/use-api"
+import { useQuery, queryOptions } from "@tanstack/react-query"
+import { apiFetch } from "@/lib/api"
 
 const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
@@ -154,7 +155,11 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
 
   const isInboxPage = location.pathname.startsWith("/desk/inbox")
 
-  const { data: inboxData } = useApi<InboxResponse>("/tickets/inbox?limit=20", [])
+  const { data: inboxData } = useQuery(queryOptions({
+    queryKey: ['tickets', 'inbox', { limit: 20 }] as const,
+    queryFn: ({ signal }) => apiFetch<InboxResponse>('/tickets/inbox', { signal, query: { limit: 20 } }),
+    staleTime: 30_000,
+  }))
   const inboxTickets = inboxData?.items ?? []
   const filteredInboxTickets = inboxTickets.filter((ticket) => {
     const query = inboxSearch.trim().toLowerCase()

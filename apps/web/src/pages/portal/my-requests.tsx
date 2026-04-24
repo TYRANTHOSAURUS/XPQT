@@ -14,7 +14,7 @@ import {
   AlertTriangle,
   ChevronRight,
 } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useTicketList } from '@/api/tickets';
 import { useAuth } from '@/providers/auth-provider';
 
 interface Ticket {
@@ -26,11 +26,6 @@ interface Ticket {
   sla_resolution_due_at: string | null;
   sla_resolution_breached_at: string | null;
   created_at: string;
-}
-
-interface TicketListResponse {
-  items: Ticket[];
-  next_cursor: string | null;
 }
 
 const statusLabels: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
@@ -70,17 +65,20 @@ export function MyRequestsPage() {
   const { person } = useAuth();
   const [filter, setFilter] = useState('open');
 
-  const statusParam = filter === 'open'
-    ? '&status_category=new&status_category=assigned&status_category=in_progress&status_category=waiting'
+  // filter=open|closed|all translates to a single statusCategory per backend
+  // semantics; the previous URL repeated status_category per value but the
+  // backend treats duplicates as "any of" — keep that behavior via the
+  // list hook's filter shape.
+  const statusCategory = filter === 'open'
+    ? 'open' // server maps to new+assigned+in_progress+waiting
     : filter === 'closed'
-    ? '&status_category=resolved&status_category=closed'
-    : '';
-  const requesterParam = person?.id ? `&requester_person_id=${person.id}` : '';
+    ? 'closed' // server maps to resolved+closed
+    : null;
 
-  const { data, loading } = useApi<TicketListResponse>(
-    `/tickets?parent_ticket_id=null${statusParam}${requesterParam}`,
-    [filter, person?.id],
-  );
+  const { data, isPending: loading } = useTicketList<Ticket>({
+    statusCategory,
+    requesterPersonId: person?.id ?? null,
+  });
   const tickets = person?.id ? (data?.items ?? []) : [];
 
   return (

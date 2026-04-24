@@ -11,7 +11,7 @@ import { ArrowLeft, Plus, FolderOpen, ChevronRight } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
-import { useApi } from '@/hooks/use-api';
+import { useCatalogCategories } from '@/api/catalog';
 
 interface CatalogRequestType {
   id: string;
@@ -44,7 +44,7 @@ export function CatalogCategoryPage() {
   const navigate = useNavigate();
   const { categoryId } = useParams();
   const { data: portal } = usePortal();
-  const { data: dbCategories } = useApi<DbCategory[]>('/service-catalog/categories', []);
+  const { data: dbCategories } = useCatalogCategories() as { data: DbCategory[] | undefined };
 
   const currentLocation = portal?.current_location ?? null;
   const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);

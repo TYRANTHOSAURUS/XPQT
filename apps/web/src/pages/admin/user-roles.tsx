@@ -10,7 +10,9 @@ import {
   SettingsPageShell,
 } from '@/components/ui/settings-page';
 import { cn } from '@/lib/utils';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, queryOptions } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import { useUsers } from '@/api/users';
 import { formatCount } from '@/lib/format';
 
 type RoleType = 'admin' | 'agent' | 'employee';
@@ -50,8 +52,12 @@ function countUsersWithRole(users: UserWithAssignments[] | null, roleId: string)
 }
 
 export function UserRolesPage() {
-  const { data: roles, loading: rolesLoading } = useApi<Role[]>('/roles', []);
-  const { data: users } = useApi<UserWithAssignments[]>('/users', []);
+  const { data: roles, isPending: rolesLoading } = useQuery(queryOptions({
+    queryKey: ['roles', 'list'] as const,
+    queryFn: ({ signal }) => apiFetch<Role[]>('/roles', { signal }),
+    staleTime: 5 * 60_000,
+  }));
+  const { data: users } = useUsers() as { data: UserWithAssignments[] | undefined };
 
   const isEmpty = !rolesLoading && (roles?.length ?? 0) === 0;
 

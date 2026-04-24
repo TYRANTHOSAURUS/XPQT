@@ -25,7 +25,8 @@ import {
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useSpaces, spaceKeys } from '@/api/spaces';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
@@ -53,7 +54,9 @@ const amenityOptions = [
 ];
 
 export function LocationsPage() {
-  const { data, loading, refetch } = useApi<Space[]>('/spaces', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useSpaces() as { data: Space[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: spaceKeys.all });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');

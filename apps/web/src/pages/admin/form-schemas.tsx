@@ -27,7 +27,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, Eye, Link2 } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useFormSchemas, configEntityKeys } from '@/api/config-entities';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import type { FieldType, FormField } from '@/components/admin/form-builder/premade-fields';
@@ -135,7 +136,9 @@ function FieldPreview({ field }: { field: FormField }) {
 }
 
 export function FormSchemasPage() {
-  const { data, loading, refetch } = useApi<FormSchema[]>('/config-entities?type=form_schema', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useFormSchemas() as { data: FormSchema[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: configEntityKeys.all });
 
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingSchema, setEditingSchema] = useState<FormSchema | null>(null);

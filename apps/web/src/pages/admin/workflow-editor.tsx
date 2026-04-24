@@ -30,7 +30,7 @@ import {
 export function WorkflowEditorPage() {
   const { id = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: wf, loading, refetch } = useWorkflow(id);
+  const { data: wf, isPending: loading, refetch } = useWorkflow(id);
   const { saveGraph, publish, unpublish, simulate } = useWorkflowMutations(id);
 
   const setGraph = useGraphStore((s) => s.setGraph);

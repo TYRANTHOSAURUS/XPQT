@@ -24,7 +24,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { useApi } from '@/hooks/use-api';
+import { useCatalogCategories } from '@/api/catalog';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 
@@ -80,7 +80,7 @@ const colorMap: Record<string, string> = {
 export function PortalHome() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
-  const { data: dbCategories, loading } = useApi<CatalogCategory[]>('/service-catalog/categories', []);
+  const { data: dbCategories, isPending: loading } = useCatalogCategories() as { data: CatalogCategory[] | undefined; isPending: boolean };
   const { data: portal } = usePortal();
   const currentLocation = portal?.current_location ?? null;
 

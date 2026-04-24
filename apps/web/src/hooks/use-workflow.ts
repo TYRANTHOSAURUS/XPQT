@@ -1,10 +1,15 @@
 import { useCallback } from 'react';
+import { useQuery, queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { useApi } from './use-api';
 import type { WorkflowDefinition, WorkflowGraph } from '@/components/workflow-editor/types';
 
 export function useWorkflow(id: string) {
-  return useApi<WorkflowDefinition>(`/workflows/${id}`, [id]);
+  return useQuery(queryOptions({
+    queryKey: ['workflows', 'definitions', 'detail', id] as const,
+    queryFn: ({ signal }) => apiFetch<WorkflowDefinition>(`/workflows/${id}`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+  }));
 }
 
 export interface SimulateResult {

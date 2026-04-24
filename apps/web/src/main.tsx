@@ -7,13 +7,15 @@ import { App } from './App';
 import { queryClient } from './lib/query-client';
 import './index.css';
 
+const isDev = import.meta.env.DEV;
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <App />
       </BrowserRouter>
-      <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
+      {isDev && <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />}
     </QueryClientProvider>
   </StrictMode>,
 );

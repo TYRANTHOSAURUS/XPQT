@@ -1047,47 +1047,70 @@ Don't migrate a file unless you're already touching it for other reasons, or it'
 
 ## 18. Migration status — priority surfaces
 
-### ✅ Done (shipped on `feat/react-query-migration`)
+### ✅ Complete — `useApi` fully removed
 
-1. **`apiFetch` → typed `ApiError`** (commit `7ea5547`). `apps/web/src/lib/api.ts`. Adds `status`/`code`/`details`, `signal` threading for cancellation, `query` builder, 204 handling. Pre-req for everything below.
-2. **`QueryClientProvider` at app root** (commit `a23156d`). `apps/web/src/main.tsx` + `apps/web/src/lib/query-client.ts`. Global `QueryCache`/`MutationCache` `onError` listeners warn on 401; retry policy skips 4xx client errors.
-3. **`api/tickets/` module** (commit `4e68657`). Key factory + `queryOptions` helpers (`ticketDetailOptions`, `ticketActivitiesOptions`, `ticketTagSuggestionsOptions`) + mutations (`useUpdateTicket`, `useReassignTicket`, `useAddActivity`) + types.
-4. **Eight shared API modules** (commit `8c6ce20`): `teams`, `users`, `vendors`, `persons` (+ `usePersonsSearch`), `sla-policies`, `request-types`, `config-entities`, `workflows`. Cache tiers per §7.2.
-5. **`ticket-detail.tsx` fully migrated** (commits `d1c8ca7` + `a54bad6`). Zero `useApi`, zero raw `apiFetch`. Fixes the full-screen reload bug. `use-ticket-mutation.ts` deleted.
-6. **Review fixes** (commit `4388839`) — mention debounce regression, T4 cache staleness, key-factory normalization, activity over-invalidation.
+**`apps/web/src/hooks/use-api.ts` no longer exists.** Every data fetch on
+the web app is now keyed, cached, and invalidatable through React Query.
+Status:
 
-### ⬜ Next priorities
+```
+Files importing `@/hooks/use-api` before: 50
+Files importing `@/hooks/use-api` now:      0
+```
 
-In order of value (unchanged from original plan):
+Shipped in two PRs:
 
-1. **`tickets.tsx` list page** — biggest remaining UX win. Shared `ticketKeys.detail(id)` cache with the already-migrated detail view means clicking a row renders instantly. Adds `ticketListOptions(filters)` with `keepPreviousData` for paginate-forward.
-2. **`use-work-orders.ts`** — already has caller-driven refetch. Move to `api/tickets/queries.ts` → `useTicketChildren(parentId)` under `ticketKeys.children(parentId)`.
-3. **Admin mutation sites** (MUST do to raise T4 caches back to `Infinity`):
-   - `apps/web/src/components/admin/request-type-dialog.tsx` → `useCreateRequestType` / `useUpdateRequestType` → invalidate `requestTypeKeys.lists()` + `requestTypeKeys.detail(id)`.
-   - `apps/web/src/pages/admin/form-schemas.tsx` → `useUpdateFormSchema` → invalidate `configEntityKeys.detail(id)`.
-   - `apps/web/src/pages/admin/sla-policies.tsx` → `useCreateSlaPolicy` / `useUpdateSlaPolicy` / `useDeleteSlaPolicy` → invalidate `slaPolicyKeys.lists()` + `slaPolicyKeys.detail(id)`.
-   - Once these are done, raise `staleTime` back to `Infinity` in `api/request-types`, `api/config-entities`, `api/sla-policies`.
-4. **Admin list pages** that share entities (`teams`, `users`, `vendors`, `persons`, `routing-rules`, `location-teams`, `domain-parents`, `space-groups`, `notifications`, `delegations`, `webhooks`, `business-hours`, `workflow-templates`, `assets`, `locations`, `catalog-hierarchy`, `vendor-menus`, `vendor-menu-detail`) — each gets mutation hooks in its module.
-5. **Routing-studio surfaces** (`apps/web/src/components/admin/routing-studio/*`) — simulator, coverage-matrix, child-dispatch-editor, case-ownership-editor, domain-fallbacks-editor, location-teams-editor, domains-editor, routing-rules-editor, space-groups-editor, edit-cell-dialog, audit-tab, routing-map. Create `api/routing/` with `routingRuleKeys`, `routingDecisionKeys`, `coverageKeys`, `simulatorKeys`.
-6. **Portal pages** last (`home`, `submit-request`, `my-requests`, `catalog-category`) — usually read-only, lowest pain. Add `api/catalog/` + `api/approvals/` modules.
+- **PR #1 — `feat/react-query-migration`** — foundation + ticket-detail:
+  - `7ea5547` typed `ApiError` (status/code/signal/query)
+  - `a23156d` `QueryClientProvider` + tuned defaults
+  - `4e68657` `api/tickets` module
+  - `d1c8ca7` ticket-detail migrated (fixes full-screen reload bug)
+  - `8c6ce20` 8 shared modules
+  - `a54bad6` ticket-detail completion
+  - `4388839` codex review fixes
+  - `04a1f1a` doc status + backlog
+
+- **PR #2 — `feat/rq-wave-2`** — everything else:
+  - Wave A: admin mutation sites (request-type-dialog, form-schemas, sla-policies)
+  - Wave B: shared pickers (space-select, catalog-item-combobox, org-node, request-type-picker, add-sub-issue)
+  - Wave C: workflow editor inspector forms (approval/assign/create-child-tasks)
+  - Wave D: routing studio (13 files + full `api/routing` module)
+  - Wave E: desk surfaces (tickets list, approvals, reports, ticket-sla-escalations)
+  - Wave F: admin list pages (vendors, teams, users, persons, assets, business-hours, delegations, notifications, organisations, vendor-menus, workflow-templates, catalog-hierarchy, locations, form-schemas, workflow-instance, vendor-menu-detail, user-roles, role-detail) + catalog tabs + sla-threshold-row
+  - Wave G: portal pages (home, my-requests, catalog-category)
+  - Wave H: delete `use-api.ts`, migrate `use-workflow.ts` + `desk-sidebar.tsx` (caught by `tsc` after deletion), `ReactQueryDevtools` dev-only gate
+
+### API module inventory
+
+`apps/web/src/api/`:
+
+- `tickets/` — list, detail, activities, children (via dispatch), reclassify-preview, tag-suggestions + optimistic mutations (update, reassign, add-activity)
+- `teams`, `vendors`, `users`, `persons` (+ `personFullName`), `spaces`, `org-nodes`, `assets` (+ asset types), `locations` (via spaces) — directory data, T3 (5min)
+- `sla-policies` (+ business-hours calendars + per-ticket SLA crossings) — admin config, T4
+- `request-types` (+ default form variant + upsert/toggle) — admin config, T3 until admin-site migration lands (then raise to T4)
+- `config-entities` (+ form-schemas list + upsert/delete) — T3 for same reason
+- `workflows` (definitions, per-ticket instances, instance detail, upsert/delete) — mixed tiers: T1 for live instances, T3 for definitions
+- `routing/` — full namespace (rules, location-teams, space-groups + members, domain-registry v2, domain-parents legacy, studio decisions + dualrun logs, coverage, simulator, policy entities + published policies, routing mode). Generic `useRoutingMutation` for any write.
+- `criteria-sets` — audience matching (pre-existing, kept as-is)
+- `catalog` — items, tree, categories, coverage-for-RT
+- `approvals` — pending list, respond with optimistic removal
+- `reports` — tickets overview, SLA performance, by team
+- `delegations`, `notifications` (templates) — small CRUD modules
+
+### ⬜ Next priorities (post-migration)
+
+1. **Raise T4 caches to `Infinity`** — now that admin sites invalidate correctly. `api/request-types`, `api/config-entities`, `api/sla-policies`: drop the TODO comments, bump `staleTime` from `5 * 60_000` to `Infinity` with matching `gcTime`.
+2. **List → detail cache seeding** (§9.6) — ticket-list row hover prefetches `ticketKeys.detail(id)`. Same pattern for admin list → admin detail.
+3. **Chunk split** — bundle is now larger. `build.rollupOptions.output.manualChunks` should split `@tanstack/*` + `reactflow` + `@dnd-kit/*` into vendor chunks.
+4. **Realtime `setQueryData`** — when Supabase realtime fires for a ticket, patch `ticketKeys.detail(id)` + `setQueriesData` over `ticketKeys.lists()` instead of invalidating. Biggest win for multi-agent desk UX.
+5. **Centralize remaining ad-hoc `useQuery` calls** — a few surfaces still inline `useQuery(queryOptions({...}))` because the endpoint is only used once (catalog-menus, catalog coverage matrix, role list, workflow instance events, inbox). Each could graduate to a module when a second consumer appears.
 
 ### Known cleanups (LOW-priority follow-ups)
 
 - **Type drift in `ticket-detail.tsx`** — local `Activity` + `MentionPerson` interfaces duplicate `TicketActivity` (`api/tickets/types.ts`) and `Person` (`api/persons/index.ts`). Currently bridged by `as { data: ... }` casts. Delete the local interfaces, import the module types.
-- **`ReactQueryDevtools` ships to prod** — guard the import with `import.meta.env.DEV` in `main.tsx`.
-- **Vestigial `displayedTicket = ticket` alias** in `ticket-detail.tsx` — leftover from the old overlay pattern. Inline `ticket`, drop the alias.
-- **Sequential mutation in `useAddActivity`** — if attachment upload succeeds and activity POST fails, attachments are orphaned on the server. Identical to pre-migration behavior, but worth a server-side cleanup endpoint or a two-stage saga.
-- **Chunk size** — bundle is 1672KB (495KB gzipped), up ~2KB post-migration. `build.rollupOptions.output.manualChunks` should split `@tanstack/*` out.
-- **`vercel.json`** — review once Vercel deploy is confirmed working.
-
-### Roll-up metric
-
-```
-Files importing `@/hooks/use-api` before this PR: 50
-Files importing `@/hooks/use-api` after  this PR: 49
-```
-
-This PR is a **foundation + first real migration**. The next PRs should cost proportionally less per file because the API modules are reusable.
+- **Vestigial `displayedTicket = ticket` alias** in `ticket-detail.tsx` — leftover from the old overlay pattern. Inline `ticket`, drop the alias (~100 renames in one file).
+- **Sequential mutation in `useAddActivity`** — if attachment upload succeeds and activity POST fails, attachments are orphaned server-side. Identical to pre-migration behavior; worth a server-side cleanup endpoint.
+- **Per-list-surface mutation hooks** — many admin list pages still call `apiFetch` directly for creates/updates and rely on `refetch = qc.invalidateQueries(...)`. Pragmatic and works, but each could adopt its module's `useUpsert*` + let the mutation invalidate automatically.
 
 ---
 

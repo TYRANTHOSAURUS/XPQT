@@ -1,5 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, queryOptions } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import { workflowKeys } from '@/api/workflows';
 import { RuntimeViewer } from '@/components/workflow-editor/runtime-viewer';
 import { HistoryTimeline, type InstanceEvent } from '@/components/workflow-editor/history-timeline';
 import type { WorkflowGraph } from '@/components/workflow-editor/types';
@@ -19,8 +21,18 @@ interface Instance {
 export function WorkflowInstancePage() {
   const { id = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: instance, loading } = useApi<Instance>(`/workflows/instances/${id}`, [id]);
-  const { data: events } = useApi<InstanceEvent[]>(`/workflows/instances/${id}/events`, [id]);
+  const { data: instance, isPending: loading } = useQuery(queryOptions({
+    queryKey: workflowKeys.instanceDetail(id),
+    queryFn: ({ signal }) => apiFetch<Instance>(`/workflows/instances/${id}`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+  }));
+  const { data: events } = useQuery(queryOptions({
+    queryKey: [...workflowKeys.instanceDetail(id), 'events'] as const,
+    queryFn: ({ signal }) => apiFetch<InstanceEvent[]>(`/workflows/instances/${id}/events`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+  }));
 
   if (loading || !instance) return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
