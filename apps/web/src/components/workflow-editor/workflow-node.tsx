@@ -59,11 +59,18 @@ export function WorkflowNodeCard({ data, selected }: NodeProps<NodeData>) {
     <div
       className={cn(
         'group relative flex w-[216px] items-stretch overflow-hidden rounded-md border border-border/80 bg-card text-card-foreground',
-        'transition-[border-color,box-shadow] duration-100',
-        'hover:border-foreground/30',
-        selected && 'border-foreground/60 shadow-[0_0_0_1px_var(--foreground)]',
+        // Elevation — the canvas pane is tinted so nodes need a soft drop to
+        // read as lifted. Double layer for softness; stronger in dark mode
+        // because a light-mode-tuned shadow disappears on black.
+        'shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_12px_rgba(0,0,0,0.03)]',
+        'dark:shadow-[0_2px_4px_rgba(0,0,0,0.4),0_8px_24px_rgba(0,0,0,0.2)]',
+        'transition-[border-color,box-shadow,transform] duration-100',
+        'hover:border-foreground/30 hover:-translate-y-px',
+        // Selected / runtime states use ring (outer, doesn't override the
+        // base elevation shadow) instead of stacking box-shadows.
+        selected && 'border-foreground/60 ring-1 ring-foreground/60',
         data.invalid && !selected && 'border-red-500/70',
-        data.runtime === 'current' && 'border-emerald-500 shadow-[0_0_0_1px_rgb(16_185_129)]',
+        data.runtime === 'current' && 'border-emerald-500 ring-1 ring-emerald-500',
         data.runtime === 'visited' && 'opacity-80',
         data.runtime === 'upcoming' && 'opacity-45',
       )}

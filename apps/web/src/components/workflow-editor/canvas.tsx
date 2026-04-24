@@ -142,6 +142,9 @@ export function Canvas({ readOnly = false, runtime }: CanvasProps) {
         fitView
         fitViewOptions={{ padding: 0.25 }}
         proOptions={{ hideAttribution: true }}
+        /* Canvas is the one place we deliberately tint the backdrop — nodes need
+           to read as "lifted" on it, which a flat bg-background can't give. */
+        className="[&_.react-flow__pane]:bg-muted/40 dark:[&_.react-flow__pane]:bg-background/60"
       >
         <Background gap={24} size={1} color="var(--border)" />
         <Controls showInteractive={false} className="!shadow-none !border !rounded overflow-hidden" />
