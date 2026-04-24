@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import { RoutingSimulator } from '@/components/admin/routing-studio/simulator';
 import { RoutingAuditTab } from '@/components/admin/routing-studio/audit-tab';
 import { CaseOwnershipEditor } from '@/components/admin/routing-studio/case-ownership-editor';
@@ -87,13 +91,11 @@ export function RoutingStudioPage() {
   const initialRtId = searchParams.get('rt') ?? null;
 
   return (
-    <div className="flex flex-col gap-5 py-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Routing Studio</h1>
-        <p className="text-sm text-muted-foreground">
-          One surface for how tickets get assigned. The resolver runs the steps below in order — first match wins.
-        </p>
-      </div>
+    <SettingsPageShell width="full">
+      <SettingsPageHeader
+        title="Routing Studio"
+        description="One surface for how tickets get assigned. The resolver runs the steps below in order — first match wins."
+      />
 
       <Tabs value={tab} onValueChange={(v) => setTab(coerceTab(v))}>
         <TabsList>
@@ -137,6 +139,6 @@ export function RoutingStudioPage() {
           <RoutingAuditTab />
         </TabsContent>
       </Tabs>
-    </div>
+    </SettingsPageShell>
   );
 }

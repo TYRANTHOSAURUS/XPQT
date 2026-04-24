@@ -22,6 +22,10 @@ import {
   FieldLabel,
 } from '@/components/ui/field';
 import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -153,15 +157,11 @@ export function CatalogHierarchyPage() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Service Catalog</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Each request type is a service. Click one to configure coverage, audience, form, and fulfillment.
-          </p>
-        </div>
-      </div>
+    <SettingsPageShell width="full" className="h-full min-h-0">
+      <SettingsPageHeader
+        title="Service catalog"
+        description="Each request type is a service. Click one to configure coverage, audience, form, and fulfilment."
+      />
 
       <div className="flex-1 min-h-0 flex flex-col gap-4 items-stretch lg:flex-row">
         {/* Tree column — full width on mobile, capped at 640px on lg+ */}
@@ -250,6 +250,6 @@ export function CatalogHierarchyPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </SettingsPageShell>
   );
 }

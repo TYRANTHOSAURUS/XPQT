@@ -143,6 +143,17 @@ Every admin / settings-style page is built with `SettingsPageShell` + `SettingsP
 
 Extremes are intentional. Don't smuggle a dashboard into `xwide` by padding it with whitespace, and don't turn a normal settings page into `full` because "more room looks better". The enum exists to keep pages visually coherent across the app.
 
+**Exceptions — don't use the shell at all:**
+
+A very small class of pages is a true "app within the admin" that needs to claim the viewport with zero shell chrome. These do NOT wrap in `SettingsPageShell`:
+
+- **React Flow / Reactflow canvases** that mount their own toolbar, palette, and inspector panels (`/admin/workflow-editor`, `/admin/workflow-instance`). They already have custom top-bars and use `h-[calc(100vh-…)]` to fill the viewport. Shell padding fights the canvas's pixel-hungry layout.
+- **Live runtime viewers** with a split-pane chrome they manage themselves.
+
+Every other admin page — including dashboards, data grids, and complex consoles — **should** use `SettingsPageShell width="full"`. The padding difference is small (`px-4 py-6`) and the consistent `SettingsPageHeader` makes title + description + back navigation uniform across the product. `full` is an opt-in full-bleed shell, not an escape hatch.
+
+When skipping the shell, render a minimal custom top-bar that still includes the feature title and, where relevant, a "Back to …" link so the user isn't stranded.
+
 **Compose the page from grouped blocks.** Each feature on a settings page is a `<SettingsSection title="…" [description] [density] [bordered]>`. Within a section, the block shape is chosen for the *specific* element being configured — a form uses `FieldGroup` + `Field`, a table uses `Table`, a dense picker uses the two-column preview pattern. Don't force a generic card template when the data deserves bespoke UX.
 
 **Go deeper or go modal — don't bloat a section.**
