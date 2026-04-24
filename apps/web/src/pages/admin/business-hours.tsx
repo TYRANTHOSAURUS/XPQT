@@ -7,8 +7,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldDescription,
@@ -23,7 +27,8 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useBusinessHoursCalendars, slaPolicyKeys } from '@/api/sla-policies';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
@@ -82,7 +87,9 @@ const defaultWorkingHours = (): WorkingHours => ({
 });
 
 export function BusinessHoursPage() {
-  const { data, loading, refetch } = useApi<BusinessHoursCalendar[]>('/business-hours', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useBusinessHoursCalendars() as { data: BusinessHoursCalendar[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: slaPolicyKeys.calendars() });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -168,17 +175,19 @@ export function BusinessHoursPage() {
     DAYS.filter((d) => wh[d.key] !== null).map((d) => d.label).join(', ');
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Business Hours</h1>
-          <p className="text-muted-foreground mt-1">Define working hours calendars used by SLA policies</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Calendar
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[580px]">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Business hours"
+        description="Working-hours calendars used by SLA policies to pause timers outside business hours."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add calendar
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Business Hours Calendar</DialogTitle>
               <DialogDescription>Define working hours and holidays used by SLA policies.</DialogDescription>
@@ -319,9 +328,8 @@ export function BusinessHoursPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -356,6 +364,6 @@ export function BusinessHoursPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

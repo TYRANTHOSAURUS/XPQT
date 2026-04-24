@@ -6,8 +6,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldGroup,
@@ -16,7 +20,8 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Ban } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useDelegations, delegationKeys } from '@/api/delegations';
 import { apiFetch } from '@/lib/api';
 import { UserPicker } from '@/components/user-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
@@ -73,7 +78,9 @@ function getPersonName(p?: DelegationUser | null) {
 
 
 export function DelegationsPage() {
-  const { data, loading, refetch } = useApi<Delegation[]>('/delegations', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useDelegations() as { data: Delegation[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: delegationKeys.all });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [delegatorId, setDelegatorId] = useState('');
@@ -130,17 +137,19 @@ export function DelegationsPage() {
   const sorted = [...(data ?? [])].sort((a, b) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime());
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Delegations</h1>
-          <p className="text-muted-foreground mt-1">Manage approval delegations for out-of-office coverage</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Delegation
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Delegations"
+        description="Approval delegations for out-of-office coverage. The delegate acts on behalf of the delegator during the window."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add delegation
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Create Delegation</DialogTitle>
               <DialogDescription>
@@ -195,9 +204,8 @@ export function DelegationsPage() {
                 Create
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -248,6 +256,6 @@ export function DelegationsPage() {
           })}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

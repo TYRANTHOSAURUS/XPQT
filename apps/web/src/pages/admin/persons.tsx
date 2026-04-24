@@ -6,8 +6,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldGroup,
@@ -20,7 +24,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { usePersons, personKeys } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
 import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
@@ -89,9 +94,10 @@ const typeColors: Record<string, 'default' | 'secondary' | 'outline'> = {
 
 
 export function PersonsPage() {
+  const qc = useQueryClient();
   const [typeFilter, setTypeFilter] = useState('all');
-  const filterPath = typeFilter !== 'all' ? `/persons?type=${typeFilter}` : '/persons';
-  const { data, loading, refetch } = useApi<Person[]>(filterPath, [typeFilter]);
+  const { data, isPending: loading } = usePersons(typeFilter) as { data: Person[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: personKeys.all });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -199,17 +205,19 @@ export function PersonsPage() {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Persons</h1>
-          <p className="text-muted-foreground mt-1">Manage employee, contractor, and vendor contact records</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Person
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[540px]">
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        title="Persons"
+        description="Employee, contractor, and vendor contact records. Invite a person to the platform from here to create a linked user account."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add person
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[540px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Add'} Person</DialogTitle>
               <DialogDescription>Manage employee, contractor, and vendor contact records.</DialogDescription>
@@ -334,10 +342,9 @@ export function PersonsPage() {
               </Button>
             </DialogFooter>
           </DialogContent>
-        </Dialog>
-      </div>
+      </Dialog>
 
-      <Tabs value={typeFilter} onValueChange={setTypeFilter} className="mb-6">
+      <Tabs value={typeFilter} onValueChange={setTypeFilter} className="mb-2">
         <TabsList>
           <TabsTrigger value="all">All</TabsTrigger>
           <TabsTrigger value="employee">Employees</TabsTrigger>
@@ -411,6 +418,6 @@ export function PersonsPage() {
           })}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

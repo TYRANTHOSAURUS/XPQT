@@ -6,8 +6,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldGroup,
@@ -20,7 +24,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAssetsFiltered, useAssetTypes, assetKeys } from '@/api/assets';
 import { apiFetch } from '@/lib/api';
 import { PersonPicker } from '@/components/person-picker';
 import { SpaceSelect, type Space } from '@/components/space-select';
@@ -72,12 +77,13 @@ const roleVariant: Record<string, 'default' | 'secondary' | 'outline'> = {
 
 export function AssetsPage() {
   const [roleFilter, setRoleFilter] = useState('all');
-  const queryParams = new URLSearchParams();
-  if (roleFilter !== 'all') queryParams.set('asset_role', roleFilter);
-  const query = queryParams.toString();
 
-  const { data, loading, refetch } = useApi<Asset[]>(`/assets${query ? `?${query}` : ''}`, [roleFilter]);
-  const { data: assetTypes } = useApi<AssetType[]>('/asset-types', []);
+  // Assets page has a role filter param not covered by the base api/assets list —
+  // useAssetsFiltered keys each role view independently for clean caching.
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useAssetsFiltered(roleFilter) as { data: Asset[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: assetKeys.all });
+  const { data: assetTypes } = useAssetTypes() as { data: AssetType[] | undefined };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -166,17 +172,19 @@ export function AssetsPage() {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Asset Registry</h1>
-          <p className="text-muted-foreground mt-1">Track fixed, personal, and pooled assets across your organization</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Asset
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-2xl">
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        title="Assets"
+        description="Track fixed, personal, and pooled assets across your organization."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add asset
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Add'} Asset</DialogTitle>
               <DialogDescription>
@@ -301,11 +309,10 @@ export function AssetsPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
-      <Tabs value={roleFilter} onValueChange={setRoleFilter} className="mb-6">
+      <Tabs value={roleFilter} onValueChange={setRoleFilter} className="mb-2">
         <TabsList>
           <TabsTrigger value="all">All</TabsTrigger>
           <TabsTrigger value="fixed">Fixed</TabsTrigger>
@@ -350,6 +357,6 @@ export function AssetsPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }
