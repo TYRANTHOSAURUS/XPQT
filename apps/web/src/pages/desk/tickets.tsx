@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Search, X, LayoutList, Table as TableIcon } from 'lucide-react';
-import { useTicketList } from '@/api/tickets';
+import { useTicketList, usePrefetchTicket } from '@/api/tickets';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
 import { TicketListRow } from '@/components/desk/ticket-list-row';
@@ -58,6 +58,7 @@ function TicketTable({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
+  const prefetchTicket = usePrefetchTicket();
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -139,6 +140,8 @@ function TicketTable({
                     : 'hover:bg-muted/40',
                 )}
                 onClick={() => setSelectedTicketId(ticket.id)}
+                onMouseEnter={() => prefetchTicket(ticket.id)}
+                onFocus={() => prefetchTicket(ticket.id)}
               >
                 <TableCell
                   className={`px-3 py-2 ${
@@ -213,6 +216,7 @@ function TicketList({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
+  const prefetchTicket = usePrefetchTicket();
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -259,14 +263,19 @@ function TicketList({
 
       <div className="divide-y">
         {tickets.map((ticket) => (
-          <TicketListRow
+          <div
             key={ticket.id}
-            ticket={ticket}
-            selected={selectedTicketId === ticket.id}
-            checked={selectedIds.has(ticket.id)}
-            onSelect={setSelectedTicketId}
-            onToggleCheck={toggleSelect}
-          />
+            onMouseEnter={() => prefetchTicket(ticket.id)}
+            onFocus={() => prefetchTicket(ticket.id)}
+          >
+            <TicketListRow
+              ticket={ticket}
+              selected={selectedTicketId === ticket.id}
+              checked={selectedIds.has(ticket.id)}
+              onSelect={setSelectedTicketId}
+              onToggleCheck={toggleSelect}
+            />
+          </div>
         ))}
       </div>
     </div>

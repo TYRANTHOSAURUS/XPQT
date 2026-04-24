@@ -1,4 +1,4 @@
-import { queryOptions, useQuery, keepPreviousData } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { ticketKeys, type TicketListFilters } from './keys';
 import type { TicketActivity, TicketDetail } from './types';
@@ -83,4 +83,20 @@ export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilte
 
 export function useTicketList<TItem = TicketDetail>(filters: TicketListFilters) {
   return useQuery(ticketListOptions<TItem>(filters));
+}
+
+/**
+ * Prefetch a ticket's detail + activity feed. Call from row hover/focus so
+ * the detail view paints from cache when the user clicks.
+ *
+ * `staleTime` is set inside prefetchQuery so a hover on a row whose detail
+ * is already fresh is a no-op — no request storm on mouse sweep.
+ */
+export function usePrefetchTicket() {
+  const qc = useQueryClient();
+  return (id: string) => {
+    if (!id) return;
+    qc.prefetchQuery({ ...ticketDetailOptions(id), staleTime: 30_000 });
+    qc.prefetchQuery({ ...ticketActivitiesOptions(id), staleTime: 30_000 });
+  };
 }

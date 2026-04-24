@@ -38,7 +38,6 @@ export const queryClient = new QueryClient({
         // for Supabase session changes and will redirect; no action needed here
         // beyond logging. Avoid forcing a redirect inside a cache callback —
         // it can fire mid-render.
-        // eslint-disable-next-line no-console
         console.warn('[query] 401 — session likely expired');
       }
     },
@@ -47,7 +46,6 @@ export const queryClient = new QueryClient({
   mutationCache: new MutationCache({
     onError: (error) => {
       if (error instanceof ApiError && error.status === 401) {
-        // eslint-disable-next-line no-console
         console.warn('[mutation] 401 — session likely expired');
       }
     },
