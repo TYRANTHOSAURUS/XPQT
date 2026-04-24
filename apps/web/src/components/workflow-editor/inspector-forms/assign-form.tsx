@@ -1,6 +1,7 @@
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
-import { useApi } from '@/hooks/use-api';
+import { useTeams } from '@/api/teams';
+import { useUsers, userLabel } from '@/api/users';
 import {
   Field,
   FieldDescription,
@@ -9,13 +10,10 @@ import {
 } from '@/components/ui/field';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-interface Team { id: string; name: string }
-interface User { id: string; email: string; full_name?: string }
-
 export function AssignForm({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) {
   const update = useGraphStore((s) => s.updateNodeConfig);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: users } = useApi<User[]>('/users', []);
+  const { data: teams } = useTeams();
+  const { data: users } = useUsers();
   const c = node.config as { team_id?: string | null; user_id?: string | null };
 
   return (
@@ -44,7 +42,7 @@ export function AssignForm({ node, readOnly }: { node: WorkflowNode; readOnly: b
           <SelectTrigger id={`assign-${node.id}-user`}><SelectValue placeholder="— none —" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="">— none —</SelectItem>
-            {(users ?? []).map((u) => <SelectItem key={u.id} value={u.id}>{u.full_name ?? u.email}</SelectItem>)}
+            {(users ?? []).map((u) => <SelectItem key={u.id} value={u.id}>{userLabel(u)}</SelectItem>)}
           </SelectContent>
         </Select>
         <FieldDescription>Pick one or the other.</FieldDescription>

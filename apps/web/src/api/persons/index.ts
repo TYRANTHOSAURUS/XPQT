@@ -5,8 +5,14 @@ export interface Person {
   id: string;
   first_name: string;
   last_name: string;
+  /** Convenience field returned by some endpoints. Derive `${first} ${last}` if absent. */
+  full_name?: string;
   email?: string | null;
   department?: string | null;
+}
+
+export function personFullName(p: Pick<Person, 'first_name' | 'last_name' | 'full_name'>): string {
+  return p.full_name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
 }
 
 export const personKeys = {

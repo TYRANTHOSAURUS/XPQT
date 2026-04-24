@@ -1,6 +1,7 @@
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
-import { useApi } from '@/hooks/use-api';
+import { useTeams } from '@/api/teams';
+import { useSlaPolicies } from '@/api/sla-policies';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -17,9 +18,6 @@ interface Task {
   sla_policy_id?: string | null;
 }
 
-interface Team { id: string; name: string }
-interface SlaPolicy { id: string; name: string }
-
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const SLA_INHERIT = '';
 const SLA_NONE = '__none__';
@@ -27,8 +25,8 @@ const SLA_NONE = '__none__';
 export function CreateChildTasksForm({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) {
   const update = useGraphStore((s) => s.updateNodeConfig);
   const tasks = ((node.config as { tasks?: Task[] }).tasks ?? []) as Task[];
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: slaPolicies } = useApi<SlaPolicy[]>('/sla-policies', []);
+  const { data: teams } = useTeams();
+  const { data: slaPolicies } = useSlaPolicies();
 
   const setTasks = (t: Task[]) => update(node.id, { tasks: t });
   const patchTask = (i: number, patch: Partial<Task>) =>

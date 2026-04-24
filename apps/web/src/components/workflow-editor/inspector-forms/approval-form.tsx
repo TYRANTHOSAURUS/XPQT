@@ -1,6 +1,7 @@
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
-import { useApi } from '@/hooks/use-api';
+import { useTeams } from '@/api/teams';
+import { usePersons, personFullName } from '@/api/persons';
 import {
   Field,
   FieldDescription,
@@ -9,13 +10,10 @@ import {
 } from '@/components/ui/field';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-interface Team { id: string; name: string }
-interface Person { id: string; full_name: string; email?: string }
-
 export function ApprovalForm({ node, readOnly }: { node: WorkflowNode; readOnly: boolean }) {
   const update = useGraphStore((s) => s.updateNodeConfig);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: persons } = useApi<Person[]>('/persons', []);
+  const { data: teams } = useTeams();
+  const { data: persons } = usePersons();
   const c = node.config as { approver_person_id?: string | null; approver_team_id?: string | null };
 
   return (
@@ -30,7 +28,7 @@ export function ApprovalForm({ node, readOnly }: { node: WorkflowNode; readOnly:
           <SelectTrigger id={`approval-${node.id}-person`}><SelectValue placeholder="— none —" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="">— none —</SelectItem>
-            {(persons ?? []).map((p) => <SelectItem key={p.id} value={p.id}>{p.full_name}</SelectItem>)}
+            {(persons ?? []).map((p) => <SelectItem key={p.id} value={p.id}>{personFullName(p)}</SelectItem>)}
           </SelectContent>
         </Select>
       </Field>
