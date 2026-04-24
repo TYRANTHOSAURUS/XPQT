@@ -256,8 +256,10 @@ export function CoverageMatrixDrillDown({
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                No scope override matches this site. The resolver uses the request-type defaults
-                for every dimension.
+                No scope override matches this site. Workflow, case SLA, and child-dispatch
+                policy fall through to the request-type defaults; executor SLA falls through to
+                each vendor or team's own default at dispatch time; handler falls through to
+                the routing chain (rules → asset → location-team chain → request-type default).
               </p>
             )}
           </section>
@@ -309,7 +311,7 @@ export function CoverageMatrixDrillDown({
               <Row label="Child dispatch">
                 <div className="flex items-center gap-2">
                   <span>{row.child_dispatch.name ?? (row.child_dispatch.id ? row.child_dispatch.id.slice(0, 8) : '—')}</span>
-                  <SourceLabel source={row.child_dispatch.source} fallback="team / vendor default" />
+                  <SourceLabel source={row.child_dispatch.source} fallback="not configured" />
                 </div>
               </Row>
               <Row label="Executor SLA">

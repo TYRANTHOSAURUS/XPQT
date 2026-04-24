@@ -19,12 +19,22 @@ import { CoverageMatrixDrillDown, type MatrixDefaults } from './coverage-matrix-
  * Per-site coverage matrix. Columns: offered, handler, workflow, case SLA,
  * child dispatch, executor SLA — each with a source badge so the admin sees
  * whether an override wins, the request-type default applies, or the
- * resolver falls through to the routing chain.
+ * resolver falls through.
  *
- * Backend: GET /request-types/:id/coverage-matrix composes the row with:
- *   override (request_type_effective_scope_override precedence walker) >
- *   request_types defaults > null (= routing-dependent for handler, or
- *   "team/vendor default" for child_dispatch / executor_sla). See live-doc §8.
+ * Source semantics per dimension:
+ * - handler        : override > routing (= rules → asset → location-team →
+ *                    request-type default). The matrix deliberately doesn't
+ *                    simulate routing per site — the drill-down surfaces
+ *                    the RT default as the explicit ultimate fallback.
+ * - workflow       : override > request-type default > none
+ * - case SLA       : override > request-type default > none
+ * - child dispatch : override > request-type default > none
+ * - executor SLA   : override > vendor/team default at dispatch time
+ *                    (no request-type default exists for this dimension)
+ *
+ * Backend: GET /request-types/:id/coverage-matrix composes each row from
+ * request_type_effective_scope_override + request_types defaults. See
+ * live-doc §8.
  */
 
 type SourceTag = 'override' | 'default' | 'override_unassigned' | 'none' | 'routing';
@@ -405,16 +415,14 @@ export function CatalogCoverageTab({ detail, onSaved }: {
                     <DimensionCell v={r.case_sla} />
                   </td>
                   <td className="border-b px-3 py-1.5 align-top">
-                    <DimensionCell
-                      v={r.child_dispatch}
-                      sourceNoneLabel="team / vendor default"
-                    />
+                    {/* child_dispatch supports override > request-type default
+                        > none; the "none" label means neither is set. */}
+                    <DimensionCell v={r.child_dispatch} sourceNoneLabel="not configured" />
                   </td>
                   <td className="border-b px-3 py-1.5 align-top">
-                    <DimensionCell
-                      v={r.executor_sla}
-                      sourceNoneLabel="team / vendor default"
-                    />
+                    {/* executor_sla has no request-type default — the fallback
+                        is the team or vendor's own default at dispatch time. */}
+                    <DimensionCell v={r.executor_sla} sourceNoneLabel="team / vendor default" />
                   </td>
                   <td
                     className="border-b px-3 py-1.5 text-right align-top"
