@@ -137,9 +137,11 @@ Every admin / settings-style page is built with `SettingsPageShell` + `SettingsP
 | `narrow` | 480px | Single short form with one decision. Rename a team, confirm a destructive op. |
 | `default` | 640px | The Linear-style column. Most settings pages — person detail, team settings, tenant branding. |
 | `wide` | 960px | Rule builders, dense tables, side-by-side content that feels cramped in 640. |
-| `xwide` | 1152px | Two-column editors (picker + live preview), multi-column admin tables, effective-permissions debuggers. **This is the absolute maximum for any settings page.** |
+| `xwide` | 1152px | Two-column editors (picker + live preview), multi-column admin tables, effective-permissions debuggers. The default maximum for typical admin pages. |
+| `ultra` | 1600px | Complex overview dashboards, operational consoles, analytics screens where admins genuinely need the horizontal canvas to read the data. Still centered with padding. Rare — most pages that feel cramped at `xwide` should split into a detail + child page flow instead. |
+| `full` | — | Edge-to-edge, no max-width. **Only** for true full-screen tools: workflow editor (React Flow), routing studio canvas, giant data grids with 20+ columns or virtualised rows. Padding is reduced because the content *is* the page. If you're reaching for `full` on a settings page, you almost certainly want `ultra` instead. |
 
-Anything larger isn't a settings page — reach for a dedicated layout, not a new width.
+Extremes are intentional. Don't smuggle a dashboard into `xwide` by padding it with whitespace, and don't turn a normal settings page into `full` because "more room looks better". The enum exists to keep pages visually coherent across the app.
 
 **Compose the page from grouped blocks.** Each feature on a settings page is a `<SettingsSection title="…" [description] [density] [bordered]>`. Within a section, the block shape is chosen for the *specific* element being configured — a form uses `FieldGroup` + `Field`, a table uses `Table`, a dense picker uses the two-column preview pattern. Don't force a generic card template when the data deserves bespoke UX.
 
@@ -154,7 +156,7 @@ Reference implementations: `/admin/organisations/*`, `/admin/users/roles/:id` (x
 **Canonical exemplars:** `/admin/webhooks` (list) + `/admin/webhooks/:id` (detail), `/admin/criteria-sets` + `/admin/criteria-sets/:id`. Read both before adding a new settings feature. Every new admin page MUST follow this shape unless there's a concrete reason it can't — and in that case, document the reason inline.
 
 **Index page (`/admin/<feature>`):**
-- `SettingsPageShell` (pick width from `narrow|default|wide|xwide` per §Settings page layout).
+- `SettingsPageShell` (pick width from `narrow|default|wide|xwide|ultra|full` per §Settings page layout).
 - `SettingsPageHeader` — title, one-sentence description of what the feature is for, `actions={<primary "New X" button>}`.
 - Loading state: `<div className="text-sm text-muted-foreground">Loading…</div>`.
 - Populated state: `Table` with name linking to `/admin/<feature>/:id` (hover underline), 2–4 meaningful columns (status, last updated, rule summary, etc.). **No action column.** Actions live on the detail page.
@@ -260,7 +262,7 @@ Never call `toLocaleString` / `Intl.NumberFormat` / `Intl.RelativeTimeFormat` di
 
 ### Widths
 
-- **Settings pages use the fixed `SettingsPageWidth` enum (`narrow` / `default` / `wide` / `xwide`).** Never invent an arbitrary `max-w-[1180px]`. See §Settings page layout for which to pick.
+- **Settings pages use the fixed `SettingsPageWidth` enum (`narrow` / `default` / `wide` / `xwide` / `ultra` / `full`).** Never invent an arbitrary `max-w-[1180px]`. See §Settings page layout for which to pick.
 - **Portal content is centred in `max-w-6xl` (1152px)** — the portal layout handles it. Page-level components inside the portal should not set their own max-w.
 
 ### Platform

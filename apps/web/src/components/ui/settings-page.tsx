@@ -7,24 +7,49 @@ import { Button, buttonVariants } from '@/components/ui/button';
  * Width options for a centered settings page. See CLAUDE.md /
  * AGENTS.md "Settings page layout" for when to use which.
  *
- * - `narrow` (480px) — short forms, one-decision pages.
- * - `default` (640px) — the Linear-style column used by most settings pages.
- * - `wide` (960px) — rule builders, dense tables, side-by-side content.
- * - `xwide` (1152px) — two-column editors with a dense picker + live
- *   preview panel, or multi-column admin tables (role editor, users list).
- *   Matches the portal's max-w-6xl column and is the absolute maximum
- *   for any settings-style page.
+ * Pick the smallest that works. Going wider than necessary makes pages
+ * feel unfocused; narrower makes dense content feel cramped.
  *
- * Keep this list fixed. If a page needs something else, it's probably not a
- * settings page anymore — reach for a dedicated layout, not a new width.
+ * - `narrow` (480px)  — short forms, one-decision pages.
+ * - `default` (640px) — the Linear-style column used by most settings pages.
+ * - `wide` (960px)    — rule builders, dense tables, side-by-side content.
+ * - `xwide` (1152px)  — two-column editors with a dense picker + preview,
+ *                       multi-column admin tables (role editor, users list).
+ *                       Matches the portal's max-w-6xl column.
+ * - `ultra` (1600px)  — complex overview / analytics dashboards, dense
+ *                       operational consoles. Still has horizontal padding,
+ *                       just a very wide column. Use sparingly — a single
+ *                       admin management page almost never needs this.
+ * - `full` (none)     — edge-to-edge, no max-width. Only for full-screen
+ *                       tools: workflow editor, routing studio canvas,
+ *                       giant data grids with 20+ columns. Padding is
+ *                       reduced because the content IS the page.
+ *
+ * If you can't pick, use `wide`. If you're reaching for `full`, justify
+ * it — most pages that feel cramped at `xwide` should instead split
+ * into a detail + child page flow.
  */
-export type SettingsPageWidth = 'narrow' | 'default' | 'wide' | 'xwide';
+export type SettingsPageWidth = 'narrow' | 'default' | 'wide' | 'xwide' | 'ultra' | 'full';
 
 const WIDTH_CLASS: Record<SettingsPageWidth, string> = {
   narrow: 'max-w-[480px]',
   default: 'max-w-[640px]',
   wide: 'max-w-[960px]',
   xwide: 'max-w-[1152px]',
+  ultra: 'max-w-[1600px]',
+  full: 'max-w-none',
+};
+
+// `full` uses reduced side padding because the content already spans the
+// viewport; keeping 24px would waste precious canvas space on the things
+// that actually need `full` (editors, large grids).
+const PADDING_CLASS: Record<SettingsPageWidth, string> = {
+  narrow: 'px-6 py-10',
+  default: 'px-6 py-10',
+  wide: 'px-6 py-10',
+  xwide: 'px-6 py-10',
+  ultra: 'px-8 py-10',
+  full: 'px-4 py-6',
 };
 
 interface SettingsPageShellProps {
@@ -35,7 +60,14 @@ interface SettingsPageShellProps {
 
 export function SettingsPageShell({ children, className, width = 'default' }: SettingsPageShellProps) {
   return (
-    <div className={cn('mx-auto w-full px-6 py-10 flex flex-col gap-8', WIDTH_CLASS[width], className)}>
+    <div
+      className={cn(
+        'mx-auto w-full flex flex-col gap-8',
+        WIDTH_CLASS[width],
+        PADDING_CLASS[width],
+        className,
+      )}
+    >
       {children}
     </div>
   );
