@@ -88,7 +88,7 @@ begin
       t,
       'Admin',
       'Full tenant administration',
-      '["people:manage","request_types:manage","routing_studio:access","organisations:manage"]'::jsonb,
+      '["people:manage","request_types:manage","routing_studio:access","organisations:manage","tickets:read_all","tickets:write_all"]'::jsonb,
       'admin',
       true
     ),
