@@ -1,9 +1,14 @@
 import { useEffect, type ReactNode } from 'react';
 import { hexToOklch, pickForeground } from '@/lib/color-utils';
-import { useBranding } from '@/hooks/use-branding';
+import { useBranding, type Branding } from '@/hooks/use-branding';
 
 const STYLE_ID = 'tenant-theme';
 const USER_OVERRIDE_KEY = 'pq.theme_mode';
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+
+function safeHex(value: string | null): string | null {
+  return value && HEX_RE.test(value) ? value : null;
+}
 
 function resolveThemeMode(tenantDefault: 'light' | 'dark' | 'system'): 'light' | 'dark' {
   const userOverride = (() => {
@@ -21,11 +26,50 @@ function resolveThemeMode(tenantDefault: 'light' | 'dark' | 'system'): 'light' |
   return mode;
 }
 
-function injectStyle(primaryHex: string, accentHex: string) {
-  const primary = hexToOklch(primaryHex);
-  const accent = hexToOklch(accentHex);
-  const primaryFg = pickForeground(primaryHex);
-  const accentFg = pickForeground(accentHex);
+// Belt-and-braces guard: even though the API validates hex on write, this is the
+// last hop before raw interpolation into a global <style>. A malformed value
+// (manual DB edit, future seed) gets dropped here rather than allowing CSS injection.
+function buildSurfaceBlock(opts: {
+  bg: string | null;
+  sidebar: string | null;
+}): string {
+  const lines: string[] = [];
+
+  const bg = safeHex(opts.bg);
+  if (bg) {
+    const fg = pickForeground(bg);
+    lines.push(`--background: ${bg};`);
+    lines.push(`--foreground: ${fg};`);
+    lines.push(`--border: color-mix(in oklch, ${bg} 88%, ${fg} 12%);`);
+  }
+
+  const sidebar = safeHex(opts.sidebar);
+  if (sidebar) {
+    const fg = pickForeground(sidebar);
+    lines.push(`--sidebar: ${sidebar};`);
+    lines.push(`--sidebar-foreground: ${fg};`);
+    lines.push(`--sidebar-accent: color-mix(in oklch, ${sidebar} 92%, ${fg} 8%);`);
+    lines.push(`--sidebar-accent-foreground: ${fg};`);
+    lines.push(`--sidebar-border: color-mix(in oklch, ${sidebar} 90%, ${fg} 10%);`);
+  }
+
+  return lines.join('\n      ');
+}
+
+function injectStyle(branding: Branding) {
+  const primary = hexToOklch(branding.primary_color);
+  const accent = hexToOklch(branding.accent_color);
+  const primaryFg = pickForeground(branding.primary_color);
+  const accentFg = pickForeground(branding.accent_color);
+
+  const lightSurfaces = buildSurfaceBlock({
+    bg: branding.background_light,
+    sidebar: branding.sidebar_light,
+  });
+  const darkSurfaces = buildSurfaceBlock({
+    bg: branding.background_dark,
+    sidebar: branding.sidebar_dark,
+  });
 
   const css = `
     :root {
@@ -36,6 +80,7 @@ function injectStyle(primaryHex: string, accentHex: string) {
       --ring: ${primary};
       --sidebar-primary: ${primary};
       --sidebar-primary-foreground: ${primaryFg};
+      ${lightSurfaces}
     }
     .dark {
       --primary: ${primary};
@@ -45,6 +90,7 @@ function injectStyle(primaryHex: string, accentHex: string) {
       --ring: ${primary};
       --sidebar-primary: ${primary};
       --sidebar-primary-foreground: ${primaryFg};
+      ${darkSurfaces}
     }
   `;
 
@@ -76,7 +122,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const { branding } = useBranding();
 
   useEffect(() => {
-    injectStyle(branding.primary_color, branding.accent_color);
+    injectStyle(branding);
     setFavicon(branding.favicon_url);
     applyThemeClass(resolveThemeMode(branding.theme_mode_default));
   }, [branding]);

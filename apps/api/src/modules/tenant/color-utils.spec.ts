@@ -1,4 +1,9 @@
-import { isValidHex, contrastAgainstWhite, assertUsablePrimary } from './color-utils';
+import {
+  isValidHex,
+  contrastAgainstWhite,
+  assertUsablePrimary,
+  assertValidHexOrNull,
+} from './color-utils';
 
 describe('isValidHex', () => {
   it('accepts lowercase 6-digit hex', () => expect(isValidHex('#2563eb')).toBe(true));
@@ -29,5 +34,21 @@ describe('assertUsablePrimary', () => {
   });
   it('throws for very light colors', () => {
     expect(() => assertUsablePrimary('#ffff99')).toThrow(/contrast/i);
+  });
+});
+
+describe('assertValidHexOrNull', () => {
+  it('accepts null', () => {
+    expect(() => assertValidHexOrNull(null, 'background_light')).not.toThrow();
+  });
+  it('accepts a valid hex', () => {
+    expect(() => assertValidHexOrNull('#1a1a1f', 'background_dark')).not.toThrow();
+  });
+  it('throws for an invalid hex', () => {
+    expect(() => assertValidHexOrNull('not-a-color', 'sidebar_light')).toThrow(/hex color/i);
+  });
+  it('throws for undefined (not the same as null)', () => {
+    // Treat undefined as a missing field — the DTO must explicitly send null to clear.
+    expect(() => assertValidHexOrNull(undefined as unknown as null, 'sidebar_dark')).toThrow();
   });
 });

@@ -38,3 +38,11 @@ export function assertUsablePrimary(hex: string): void {
     );
   }
 }
+
+export function assertValidHexOrNull(value: string | null, field: string): void {
+  if (value === null) return;
+  if (typeof value !== 'string') {
+    throw new BadRequestException(`${field} must be a hex color string or null`);
+  }
+  assertValidHex(value, field);
+}

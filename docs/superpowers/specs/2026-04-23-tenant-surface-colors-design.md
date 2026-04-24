@@ -84,21 +84,20 @@ No controller changes needed — the existing `PUT /tenants/branding` endpoint t
 
 - Extend `Branding` interface to mirror backend.
 - Update `DEFAULT_BRANDING` so all four new fields default to `null`.
-- Update the `updateBranding` signature to accept the four new fields:
+- Export a named `UpdateBrandingDto` type alias (mirrors the backend vocabulary, avoids duplicating the `Pick<...>` shape between the context interface and the `useCallback` signature):
   ```ts
-  updateBranding: (
-    dto: Pick<
-      Branding,
-      | 'primary_color'
-      | 'accent_color'
-      | 'theme_mode_default'
-      | 'background_light'
-      | 'background_dark'
-      | 'sidebar_light'
-      | 'sidebar_dark'
-    >,
-  ) => Promise<void>;
+  export type UpdateBrandingDto = Pick<
+    Branding,
+    | 'primary_color'
+    | 'accent_color'
+    | 'theme_mode_default'
+    | 'background_light'
+    | 'background_dark'
+    | 'sidebar_light'
+    | 'sidebar_dark'
+  >;
   ```
+  Use this alias for both the `BrandingContextValue.updateBranding` parameter and the implementation `useCallback`.
 
 ## Frontend — theme provider
 
@@ -125,6 +124,8 @@ No controller changes needed — the existing `PUT /tenants/branding` endpoint t
 `color-mix` is supported in Chromium 111+, Safari 16.2+, Firefox 113+ — covers the browser baseline this project targets. No JS-side color math needed.
 
 When a tenant sets only one mode (say only `background_light`), switching to dark mode just falls back to the default `--background` for `.dark`.
+
+**Defense-in-depth hex guard.** `theme-provider` interpolates raw hex values into a global `<style>` element. The API validates on write, but to keep the DOM boundary safe against future paths (manual DB edits, seeds), a small `safeHex` helper inside the provider re-checks `/^#[0-9a-f]{6}$/i` and silently drops malformed values rather than emitting them.
 
 ## Frontend — admin page
 
@@ -157,7 +158,7 @@ Add a new `SettingsSection` titled **"Surfaces"** below the existing "Colors" se
 Where `SurfaceColorField` is a small local component (kept in the same file unless it grows) wrapping a `Field` with:
 - A color picker swatch (native `<input type="color">`).
 - A hex `<Input>` (font-mono, w-32).
-- When value is `null`: show a muted "Default" pill in place of the swatch + a "Customize" ghost button. Clicking "Customize" seeds the picker with the corresponding baked-in default hex (`#ffffff` for light background, `#1a1a1f` for dark background, `#fafafa` for light sidebar, `#1e1e24` for dark sidebar — sourced from `index.css`) so the user has a sensible starting point to nudge from.
+- When value is `null`: show a muted "Default" pill in place of the swatch + a "Customize" ghost button. Clicking "Customize" seeds the picker with the value passed via the `seed` prop. The four call sites pass module-level `DEFAULT_BG_LIGHT` / `DEFAULT_BG_DARK` / `DEFAULT_SB_LIGHT` / `DEFAULT_SB_DARK` constants (`#ffffff`, `#1a1a1f`, `#fafafa`, `#1e1e24` — matching `index.css`) so the user has a sensible starting point to nudge from.
 - When value is set: show "Use default" ghost button that sets back to `null`.
 
 State management mirrors the existing pattern: `useEffect` syncs local state from `branding`, `dirty` calc compares lowercased hex / null, save / discard wired up. Hex validation: same `HEX_RE` already in the file. Save button stays disabled when any non-null value fails `HEX_RE`.
