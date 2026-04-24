@@ -1,5 +1,11 @@
 import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
-import { SpaceService, CreateSpaceDto, UpdateSpaceDto } from './space.service';
+import {
+  SpaceService,
+  CreateSpaceDto,
+  UpdateSpaceDto,
+  MoveSpaceDto,
+  BulkUpdateDto,
+} from './space.service';
 
 @Controller('spaces')
 export class SpaceController {
@@ -29,6 +35,11 @@ export class SpaceController {
     return this.spaceService.getHierarchy(rootId);
   }
 
+  @Patch('bulk')
+  async bulk(@Body() dto: BulkUpdateDto) {
+    return this.spaceService.bulkUpdate(dto);
+  }
+
   @Get(':id')
   async getById(@Param('id') id: string) {
     return this.spaceService.getById(id);
@@ -42,5 +53,10 @@ export class SpaceController {
   @Patch(':id')
   async update(@Param('id') id: string, @Body() dto: UpdateSpaceDto) {
     return this.spaceService.update(id, dto);
+  }
+
+  @Post(':id/move')
+  async move(@Param('id') id: string, @Body() dto: MoveSpaceDto) {
+    return this.spaceService.move(id, dto);
   }
 }
