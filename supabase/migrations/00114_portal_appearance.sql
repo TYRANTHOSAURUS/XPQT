@@ -31,7 +31,7 @@ alter table public.portal_appearance enable row level security;
 create policy "portal_appearance tenant read"
   on public.portal_appearance for select
   using (
-    tenant_id = (auth.jwt() ->> 'tenant_id')::uuid
+    tenant_id = public.current_tenant_id()
   );
 
 comment on table public.portal_appearance is
