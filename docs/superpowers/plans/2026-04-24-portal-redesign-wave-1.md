@@ -201,10 +201,14 @@ create table public.portal_announcements (
 );
 
 -- "One active per location": an announcement is active iff expires_at is
--- null OR expires_at > now(). Enforce via a partial unique index.
+-- null OR expires_at > now(). Postgres partial-index predicates must be
+-- IMMUTABLE, so we enforce only the permanent-active case (expires_at IS NULL)
+-- at the DB level. The service layer in portal-announcements.service.ts
+-- retires any existing active row before publishing, covering the
+-- time-windowed case (expires_at > now()) at the application layer.
 create unique index portal_announcements_one_active_per_location
   on public.portal_announcements (tenant_id, location_id)
-  where (expires_at is null or expires_at > now());
+  where (expires_at is null);
 
 create index portal_announcements_tenant_location_published_idx
   on public.portal_announcements (tenant_id, location_id, published_at desc);
