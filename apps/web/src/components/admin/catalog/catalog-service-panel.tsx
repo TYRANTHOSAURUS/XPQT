@@ -20,7 +20,7 @@ import { CatalogFulfillmentTab } from './catalog-fulfillment-tab';
  * assembled by the panel from separate GETs on the request-type satellite
  * endpoints. See docs/service-catalog-live.md §5 + §10.
  */
-export interface ServiceItemDetail {
+export interface RequestTypeDetail {
   id: string;                  // request_type_id
   key: string;                 // synthetic: first 8 chars of id — kept for display
   name: string;
@@ -30,7 +30,6 @@ export interface ServiceItemDetail {
   kb_link: string | null;
   disruption_banner: string | null;
   on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
-  fulfillment_type_id: string;     // same as id (no split)
   display_order: number;
   active: boolean;
   categories: Array<{ id: string; category_id: string; display_order: number }>;
@@ -86,7 +85,7 @@ interface RequestTypeRow {
   keywords: string[] | null;
   kb_link: string | null;
   disruption_banner: string | null;
-  on_behalf_policy: ServiceItemDetail['on_behalf_policy'];
+  on_behalf_policy: RequestTypeDetail['on_behalf_policy'];
   display_order: number;
   active: boolean;
 }
@@ -97,18 +96,18 @@ interface Props {
   onClose: () => void;
 }
 
-async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
+async function loadDetail(requestTypeId: string): Promise<RequestTypeDetail> {
   const [rt, categoryIds, coverage, audience, variants, onBehalfRules, scopeOverrides] =
     await Promise.all([
       apiFetch<RequestTypeRow>(`/request-types/${requestTypeId}`),
       apiFetch<string[]>(`/request-types/${requestTypeId}/categories`),
-      apiFetch<ServiceItemDetail['offerings']>(`/request-types/${requestTypeId}/coverage`),
-      apiFetch<ServiceItemDetail['criteria']>(`/request-types/${requestTypeId}/audience`),
-      apiFetch<ServiceItemDetail['form_variants']>(`/request-types/${requestTypeId}/form-variants`),
-      apiFetch<ServiceItemDetail['on_behalf_rules']>(
+      apiFetch<RequestTypeDetail['offerings']>(`/request-types/${requestTypeId}/coverage`),
+      apiFetch<RequestTypeDetail['criteria']>(`/request-types/${requestTypeId}/audience`),
+      apiFetch<RequestTypeDetail['form_variants']>(`/request-types/${requestTypeId}/form-variants`),
+      apiFetch<RequestTypeDetail['on_behalf_rules']>(
         `/request-types/${requestTypeId}/on-behalf-rules`,
       ),
-      apiFetch<ServiceItemDetail['scope_overrides']>(
+      apiFetch<RequestTypeDetail['scope_overrides']>(
         `/request-types/${requestTypeId}/scope-overrides`,
       ),
     ]);
@@ -123,7 +122,6 @@ async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
     kb_link: rt.kb_link,
     disruption_banner: rt.disruption_banner,
     on_behalf_policy: rt.on_behalf_policy ?? 'self_only',
-    fulfillment_type_id: rt.id,
     display_order: rt.display_order ?? 0,
     active: rt.active,
     categories: categoryIds.map((cid) => ({ id: cid, category_id: cid, display_order: 0 })),
@@ -138,7 +136,7 @@ async function loadDetail(requestTypeId: string): Promise<ServiceItemDetail> {
 export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ServiceItemDetail | null>(null);
+  const [detail, setDetail] = useState<RequestTypeDetail | null>(null);
   const [activeTab, setActiveTab] = useState('basics');
 
   useEffect(() => {

@@ -16,7 +16,7 @@ import {
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useApi } from '@/hooks/use-api';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
 
 interface Category { id: string; name: string }
 
@@ -26,7 +26,7 @@ export function CatalogBasicsTab({
   onDelete,
   deleting,
 }: {
-  detail: ServiceItemDetail;
+  detail: RequestTypeDetail;
   onSaved: () => void;
   onDelete?: () => void;
   deleting?: boolean;

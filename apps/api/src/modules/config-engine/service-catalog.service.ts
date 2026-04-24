@@ -45,19 +45,6 @@ export class ServiceCatalogService {
     return data;
   }
 
-  async getCategoryWithRequestTypes(categoryId: string) {
-    const tenant = TenantContext.current();
-
-    const { data: links, error } = await this.supabase.admin
-      .from('request_type_categories')
-      .select('request_type:request_types(*)')
-      .eq('category_id', categoryId)
-      .eq('tenant_id', tenant.id);
-
-    if (error) throw error;
-    return (links ?? []).map((l) => l.request_type);
-  }
-
   // Full hierarchy with request types attached at each level. Single round-trip worth of queries,
   // assembled in memory — fine at expected scale (tenant has O(10) categories, O(100) request types).
   async getTree(): Promise<CatalogTreeNode[]> {
@@ -119,95 +106,6 @@ export class ServiceCatalogService {
     }
 
     return roots;
-  }
-
-  // Unified search across categories and request types. Returns each result with its breadcrumb
-  // path(s) so the portal can render "IT › Hardware › Laptop Request" without a second round-trip.
-  async search(query: string) {
-    const tenant = TenantContext.current();
-    const q = query.trim();
-    if (!q) return { categories: [], request_types: [] };
-
-    const pattern = `%${q.replace(/[%_]/g, '\\$&')}%`;
-
-    const [categoriesRes, requestTypesRes, allCategoriesRes, linksRes] = await Promise.all([
-      this.supabase.admin
-        .from('service_catalog_categories')
-        .select('id, name, description, icon, parent_category_id')
-        .eq('tenant_id', tenant.id)
-        .eq('active', true)
-        .or(`name.ilike.${pattern},description.ilike.${pattern}`)
-        .limit(20),
-      this.supabase.admin
-        .from('request_types')
-        .select('id, name, description, icon, domain, keywords')
-        .eq('tenant_id', tenant.id)
-        .eq('active', true)
-        .or(`name.ilike.${pattern},description.ilike.${pattern}`)
-        .limit(20),
-      this.supabase.admin
-        .from('service_catalog_categories')
-        .select('id, name, parent_category_id')
-        .eq('tenant_id', tenant.id),
-      this.supabase.admin
-        .from('request_type_categories')
-        .select('request_type_id, category_id')
-        .eq('tenant_id', tenant.id),
-    ]);
-
-    if (categoriesRes.error) throw categoriesRes.error;
-    if (requestTypesRes.error) throw requestTypesRes.error;
-    if (allCategoriesRes.error) throw allCategoriesRes.error;
-    if (linksRes.error) throw linksRes.error;
-
-    const allCategories = allCategoriesRes.data ?? [];
-    const categoryById = new Map(allCategories.map((c) => [c.id, c]));
-
-    const breadcrumbOf = (id: string): { id: string; name: string }[] => {
-      const path: { id: string; name: string }[] = [];
-      let current = categoryById.get(id);
-      let guard = 0;
-      while (current && guard++ < 10) {
-        path.unshift({ id: current.id, name: current.name });
-        if (!current.parent_category_id) break;
-        current = categoryById.get(current.parent_category_id);
-      }
-      return path;
-    };
-
-    const linksByRequestType = new Map<string, string[]>();
-    for (const link of linksRes.data ?? []) {
-      const bucket = linksByRequestType.get(link.request_type_id) ?? [];
-      bucket.push(link.category_id);
-      linksByRequestType.set(link.request_type_id, bucket);
-    }
-
-    // Also match request types whose keywords array contains the query token.
-    const keywordMatches = await this.supabase.admin
-      .from('request_types')
-      .select('id, name, description, icon, domain, keywords')
-      .eq('tenant_id', tenant.id)
-      .eq('active', true)
-      .contains('keywords', [q.toLowerCase()])
-      .limit(20);
-
-    if (keywordMatches.error) throw keywordMatches.error;
-
-    const requestTypeHits = new Map<string, RequestTypeRow>();
-    for (const rt of [...(requestTypesRes.data ?? []), ...(keywordMatches.data ?? [])]) {
-      requestTypeHits.set(rt.id, rt as RequestTypeRow);
-    }
-
-    return {
-      categories: (categoriesRes.data ?? []).map((c) => ({
-        ...c,
-        breadcrumb: breadcrumbOf(c.id),
-      })),
-      request_types: Array.from(requestTypeHits.values()).map((rt) => ({
-        ...rt,
-        breadcrumbs: (linksByRequestType.get(rt.id) ?? []).map(breadcrumbOf),
-      })),
-    };
   }
 
   // Translate the category hierarchy trigger errors into actionable validation messages.
@@ -302,13 +200,4 @@ export class ServiceCatalogService {
     return { deleted: true };
   }
 
-  async linkRequestTypeToCategory(requestTypeId: string, categoryId: string) {
-    const tenant = TenantContext.current();
-    const { error } = await this.supabase.admin
-      .from('request_type_categories')
-      .insert({ tenant_id: tenant.id, request_type_id: requestTypeId, category_id: categoryId });
-
-    if (error) throw error;
-    return { linked: true };
-  }
 }

@@ -57,9 +57,11 @@ export class RequestTypeController {
   // cross-tenant FK validation for every referenced id.
   // See docs/service-catalog-live.md §10.
   //
-  // Both GET and PUT require request_types:manage. The satellite rows expose
-  // handler/vendor/workflow/SLA/policy identifiers that are not user-safe to
-  // enumerate without the admin grant — no separate read-permission today.
+  // All PUTs require request_types:manage. GETs are admin-only except for
+  // GET form-variants, which desk + portal flows call to render the submit
+  // form; its payload (form_schema_id + criteria_set_id + priority + window)
+  // is not sensitive, and the read path has no handler/vendor/SLA/policy
+  // identifiers.
 
   @Get(':id/categories')
   async listCategories(@Req() request: Request, @Param('id') id: string) {
@@ -110,8 +112,11 @@ export class RequestTypeController {
   }
 
   @Get(':id/form-variants')
-  async listFormVariants(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+  async listFormVariants(@Param('id') id: string) {
+    // Desk + portal read this to render the submit form. No permission
+    // guard — the payload is {form_schema_id, criteria_set_id, priority,
+    // active, starts_at, ends_at}, none sensitive. Write guard stays on
+    // PUT below.
     return this.requestTypeService.listFormVariants(id);
   }
 

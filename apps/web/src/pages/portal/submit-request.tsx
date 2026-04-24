@@ -43,7 +43,7 @@ import {
   satisfiesGranularity,
 } from '@/components/portal/portal-location-drilldown';
 
-interface CatalogServiceItem {
+interface CatalogRequestType {
   id: string;
   name: string;
   description: string | null;
@@ -67,7 +67,7 @@ interface CatalogCategory {
   id: string;
   name: string;
   icon: string | null;
-  request_types: CatalogServiceItem[];
+  request_types: CatalogRequestType[];
 }
 
 interface PortalCatalogResponse {
@@ -139,8 +139,8 @@ export function SubmitRequestPage() {
       .finally(() => setCatalogLoading(false));
   }, [currentLocation?.id, currentLocation]);
 
-  // Flatten visible service items; optionally filter by categoryId from URL.
-  const serviceItems = useMemo<CatalogServiceItem[]>(() => {
+  // Flatten visible request types; optionally filter by categoryId from URL.
+  const requestTypes = useMemo<CatalogRequestType[]>(() => {
     if (!catalog) return [];
     if (categoryId) {
       const cat = catalog.categories.find((c) => c.id === categoryId);
@@ -149,7 +149,7 @@ export function SubmitRequestPage() {
     return catalog.categories.flatMap((c) => c.request_types);
   }, [catalog, categoryId]);
 
-  const selectedRT = serviceItems.find((r) => r.id === requestTypeId);
+  const selectedRT = requestTypes.find((r) => r.id === requestTypeId);
 
   // Reflect ?type=<id> into the form state.
   useEffect(() => {
@@ -302,14 +302,14 @@ export function SubmitRequestPage() {
                           placeholder={
                             catalogLoading
                               ? 'Loading…'
-                              : serviceItems.length === 0
+                              : requestTypes.length === 0
                                 ? 'No services available here'
                                 : 'Select a service'
                           }
                         />
                       </SelectTrigger>
                       <SelectContent>
-                        {serviceItems.map((rt) => (
+                        {requestTypes.map((rt) => (
                           <SelectItem key={rt.id} value={rt.id}>
                             {rt.name}
                           </SelectItem>

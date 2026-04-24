@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { SlidersHorizontal, ChevronRight } from 'lucide-react';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
+import { SourceLabel, type SourceTag, type DimensionValue } from './source-badge';
 
 /**
  * "Explain this row" drawer for the coverage matrix. Renders the three
@@ -17,14 +18,6 @@ import type { ServiceItemDetail } from './catalog-service-panel';
  * Data sources: the matrix row (already hydrated with names + sources) plus
  * the tab's detail (offerings + scope_overrides). No extra fetches.
  */
-
-type SourceTag = 'override' | 'default' | 'override_unassigned' | 'none' | 'routing';
-
-interface DimensionValue {
-  id: string | null;
-  name: string | null;
-  source: SourceTag;
-}
 
 interface HandlerValue {
   kind: 'team' | 'vendor' | 'none' | null;
@@ -63,7 +56,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   row: MatrixRow | null;
   defaults: MatrixDefaults | null;
-  detail: ServiceItemDetail;
+  detail: RequestTypeDetail;
   onEditOverride: (overrideId: string) => void;
   onAddOverride: (siteId: string) => void;
   onToggleOffering: (siteId: string) => void;
@@ -77,19 +70,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span className="w-36 shrink-0 text-xs text-muted-foreground">{label}</span>
       <div className="flex-1 min-w-0">{children}</div>
     </div>
-  );
-}
-
-function SourceLabel({ source, fallback }: { source: SourceTag; fallback?: string }) {
-  const map: Record<SourceTag, string> = {
-    override: 'override',
-    override_unassigned: 'override · unassigned',
-    default: 'request-type default',
-    routing: 'routing chain',
-    none: fallback ?? 'not set',
-  };
-  return (
-    <Badge variant="outline" className="text-[10px] font-normal">{map[source]}</Badge>
   );
 }
 
@@ -311,13 +291,13 @@ export function CoverageMatrixDrillDown({
               <Row label="Child dispatch">
                 <div className="flex items-center gap-2">
                   <span>{row.child_dispatch.name ?? (row.child_dispatch.id ? row.child_dispatch.id.slice(0, 8) : '—')}</span>
-                  <SourceLabel source={row.child_dispatch.source} fallback="not configured" />
+                  <SourceLabel source={row.child_dispatch.source} fallbackForNone="not configured" />
                 </div>
               </Row>
               <Row label="Executor SLA">
                 <div className="flex items-center gap-2">
                   <span>{row.executor_sla.name ?? (row.executor_sla.id ? row.executor_sla.id.slice(0, 8) : '—')}</span>
-                  <SourceLabel source={row.executor_sla.source} fallback="team / vendor default" />
+                  <SourceLabel source={row.executor_sla.source} fallbackForNone="team / vendor default" />
                 </div>
               </Row>
             </div>

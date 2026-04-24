@@ -1061,11 +1061,12 @@ Defines behavior of a ticket category.
 - tenant_id
 - name
 - domain
-- form_schema_id
 - workflow_definition_id
 - default_assignment_policy_id
 - sla_policy_id
 - active
+
+(The original spec listed `form_schema_id` directly on `request_types`. That column was removed in migration 00098; the default form now lives on `request_type_form_variants` — see `docs/service-catalog-live.md §5.3`.)
 
 ### 9.9.1 Ticket Status Model
 

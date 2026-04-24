@@ -11,9 +11,10 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, Plus, SlidersHorizontal, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
 import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
 import { CoverageMatrixDrillDown, type MatrixDefaults } from './coverage-matrix-drill-down';
+import { SourceBadge, DimensionCell, type SourceTag, type DimensionValue } from './source-badge';
 
 /**
  * Per-site coverage matrix. Columns: offered, handler, workflow, case SLA,
@@ -36,14 +37,6 @@ import { CoverageMatrixDrillDown, type MatrixDefaults } from './coverage-matrix-
  * request_type_effective_scope_override + request_types defaults. See
  * live-doc §8.
  */
-
-type SourceTag = 'override' | 'default' | 'override_unassigned' | 'none' | 'routing';
-
-interface DimensionValue {
-  id: string | null;
-  name: string | null;
-  source: SourceTag;
-}
 
 interface HandlerValue {
   kind: 'team' | 'vendor' | 'none' | null;
@@ -81,63 +74,8 @@ interface MatrixResponse {
 
 type Filter = 'all' | 'offered' | 'uncovered';
 
-function SourceBadge({ source, childLabelForNone }: {
-  source: SourceTag;
-  childLabelForNone?: string;
-}) {
-  const cfg: Record<SourceTag, { label: string; className: string }> = {
-    override: {
-      label: 'override',
-      className: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/30',
-    },
-    override_unassigned: {
-      label: 'override · unassigned',
-      className: 'bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/30',
-    },
-    default: {
-      label: 'default',
-      className: 'bg-muted text-muted-foreground border-border',
-    },
-    routing: {
-      label: 'routing',
-      className: 'bg-background text-muted-foreground border-dashed',
-    },
-    none: {
-      label: childLabelForNone ?? '—',
-      className: 'bg-background text-muted-foreground border-dashed',
-    },
-  };
-  const c = cfg[source];
-  return (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] border ${c.className}`}
-    >
-      {c.label}
-    </span>
-  );
-}
-
-function DimensionCell({
-  v,
-  noneLabel = 'not set',
-  sourceNoneLabel,
-}: {
-  v: DimensionValue;
-  noneLabel?: string;
-  sourceNoneLabel?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className={v.id ? '' : 'text-muted-foreground italic text-xs'}>
-        {v.name ?? (v.id ? v.id.slice(0, 8) : noneLabel)}
-      </span>
-      <SourceBadge source={v.source} childLabelForNone={sourceNoneLabel} />
-    </div>
-  );
-}
-
 export function CatalogCoverageTab({ detail, onSaved }: {
-  detail: ServiceItemDetail;
+  detail: RequestTypeDetail;
   onSaved: () => void;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
@@ -196,7 +134,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
   );
 
   const putCoverage = useCallback(
-    async (next: ServiceItemDetail['offerings']) => {
+    async (next: RequestTypeDetail['offerings']) => {
       await apiFetch(`/request-types/${detail.id}/coverage`, {
         method: 'PUT',
         body: JSON.stringify({
@@ -218,7 +156,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
   const toggleSite = async (siteId: string) => {
     if (saving) return;
     setSaving(siteId);
-    const next: ServiceItemDetail['offerings'] = directOfferedIds.has(siteId)
+    const next: RequestTypeDetail['offerings'] = directOfferedIds.has(siteId)
       ? localOfferings.filter((o) => !(o.scope_kind === 'space' && o.space_id === siteId))
       : [
           ...localOfferings,

@@ -123,7 +123,7 @@ export function PortalHome() {
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
 
-  // Search across the full tree + all visible service items, so results
+  // Search across the full tree + all visible request types, so results
   // include deeply-nested categories and individual leaf services.
   const searchResults = useMemo(() => {
     if (!trimmedQuery) return null;

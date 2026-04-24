@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
 import { ServiceCatalogService } from './service-catalog.service';
 
 @Controller('service-catalog')
@@ -15,16 +15,6 @@ export class ServiceCatalogController {
     return this.catalogService.getTree();
   }
 
-  @Get('search')
-  async search(@Query('q') q: string) {
-    return this.catalogService.search(q ?? '');
-  }
-
-  @Get('categories/:id/request-types')
-  async getCategoryRequestTypes(@Param('id') id: string) {
-    return this.catalogService.getCategoryWithRequestTypes(id);
-  }
-
   @Post('categories')
   async createCategory(@Body() dto: { name: string; description?: string; icon?: string; parent_category_id?: string; display_order?: number }) {
     return this.catalogService.createCategory(dto);
@@ -38,11 +28,6 @@ export class ServiceCatalogController {
   @Delete('categories/:id')
   async deleteCategory(@Param('id') id: string) {
     return this.catalogService.deleteCategory(id);
-  }
-
-  @Post('categories/:categoryId/link/:requestTypeId')
-  async linkRequestType(@Param('categoryId') categoryId: string, @Param('requestTypeId') requestTypeId: string) {
-    return this.catalogService.linkRequestTypeToCategory(requestTypeId, categoryId);
   }
 
   @Post('categories/reorder')

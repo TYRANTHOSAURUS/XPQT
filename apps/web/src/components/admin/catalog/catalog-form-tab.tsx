@@ -12,7 +12,7 @@ import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/co
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
 
 interface FormSchemaRow { id: string; display_name: string }
 interface CriteriaSet { id: string; name: string; active: boolean }
@@ -41,7 +41,7 @@ interface ConditionalDraft {
  * tab always sends the complete set it currently shows.
  */
 export function CatalogFormTab({ detail, onSaved }: {
-  detail: ServiceItemDetail;
+  detail: RequestTypeDetail;
   onSaved: () => void;
 }) {
   const { data: schemas } = useApi<FormSchemaRow[]>('/config-entities?type=form_schema', []);
@@ -338,7 +338,7 @@ export function CatalogFormTab({ detail, onSaved }: {
             value=""
             onValueChange={(v) => { if (v) addConditional(v); }}
           >
-            <SelectTrigger className="h-8 text-xs w-56">
+            <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="+ add conditional variant" />
             </SelectTrigger>
             <SelectContent>

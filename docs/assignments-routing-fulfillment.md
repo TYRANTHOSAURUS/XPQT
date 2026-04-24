@@ -55,8 +55,9 @@ Every operational decision derives from the ticket's request type. Key columns:
 | `default_team_id` / `default_vendor_id` | Terminal fallback assignee when every other branch misses. |
 | `sla_policy_id` | SLA applied on **case** creation. **Never** consulted for child work orders — children resolve their own SLA via `DispatchService.resolveChildSla` (see §7). |
 | `workflow_definition_id` | Workflow that orchestrates approvals, notifications, sub-task fan-out. |
-| `form_schema_id` | Form fields on the requester-facing portal. |
 | `requires_asset` / `requires_location` (+ `_required`) | Portal form gates. |
+
+The default form schema now lives on `request_type_form_variants` (the row where `criteria_set_id IS NULL`); `request_types.form_schema_id` was removed in migration 00098. Conditional variants on the same table pick a different schema when the requester matches a bound `criteria_set`.
 
 A single request type can therefore say: *"This is a `doors` request. Route by location (with `fm` fallback). If nothing specific, goes to Facilities. SLA is 4h response / 24h resolution. Start the door-repair workflow."*
 

@@ -19,10 +19,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useApi } from '@/hooks/use-api';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
 
 type FulfillmentStrategy = 'asset' | 'location' | 'fixed' | 'auto';
-type OnBehalfPolicy = ServiceItemDetail['on_behalf_policy'];
+type OnBehalfPolicy = RequestTypeDetail['on_behalf_policy'];
 
 interface RequestType {
   id: string;
@@ -81,7 +81,7 @@ export function CatalogFulfillmentTab({
   onDelete,
   deleting,
 }: {
-  detail: ServiceItemDetail;
+  detail: RequestTypeDetail;
   onSaved: () => void;
   requestTypeId: string;
   onDelete?: () => void;
@@ -218,9 +218,9 @@ export function CatalogFulfillmentTab({
             </Field>
           </div>
 
-          <Field>
-            <FieldLabel htmlFor="ff-default-kind">Default handler</FieldLabel>
-            <div className="grid grid-cols-[160px_1fr] gap-2">
+          <div className="grid grid-cols-[160px_1fr] gap-3">
+            <Field>
+              <FieldLabel htmlFor="ff-default-kind">Default handler</FieldLabel>
               <Select
                 value={defaultKind}
                 onValueChange={(v) => {
@@ -235,12 +235,18 @@ export function CatalogFulfillmentTab({
                   <SelectItem value="vendor">Vendor</SelectItem>
                 </SelectContent>
               </Select>
+              <FieldDescription>Used when the resolver finds no location or asset match.</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="ff-default-target" className="sr-only">
+                {defaultKind === 'vendor' ? 'Vendor' : 'Team'}
+              </FieldLabel>
               <Select
                 value={defaultId}
                 onValueChange={(v) => setDefaultId(v ?? '')}
                 disabled={defaultKind === 'none'}
               >
-                <SelectTrigger>
+                <SelectTrigger id="ff-default-target">
                   <SelectValue placeholder={defaultKind === 'none' ? '—' : `Pick a ${defaultKind}…`} />
                 </SelectTrigger>
                 <SelectContent>
@@ -249,9 +255,8 @@ export function CatalogFulfillmentTab({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <FieldDescription>Used when the resolver finds no location or asset match.</FieldDescription>
-          </Field>
+            </Field>
+          </div>
         </FieldSet>
 
         <FieldSeparator />

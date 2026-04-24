@@ -83,7 +83,7 @@ Routing remains a separate engine, but it is a fulfillment dependency, not a sec
   - `display_order`
   - `active`
 - Intake:
-  - `form_schema_id` as default form
+  - default form lives on `request_type_form_variants` (criteria_set_id IS NULL). `request_types.form_schema_id` was removed in migration 00098.
   - `requires_location`
   - `location_required`
   - `location_granularity`

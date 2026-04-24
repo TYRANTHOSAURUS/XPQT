@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Plus, X, Info } from 'lucide-react';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
-import type { ServiceItemDetail } from './catalog-service-panel';
+import type { RequestTypeDetail } from './catalog-service-panel';
 
 interface CriteriaSet { id: string; name: string; description: string | null; active: boolean }
 
@@ -33,7 +33,7 @@ interface OnBehalfBinding { role: OnBehalfRole; criteria_set_id: string }
  * are semantic — the resolver handles them without per-set bindings.
  */
 export function CatalogAudienceTab({ detail, onSaved }: {
-  detail: ServiceItemDetail & { on_behalf_policy?: string };
+  detail: RequestTypeDetail & { on_behalf_policy?: string };
   onSaved: () => void;
 }) {
   const { data: criteriaSets } = useApi<CriteriaSet[]>('/criteria-sets', []);

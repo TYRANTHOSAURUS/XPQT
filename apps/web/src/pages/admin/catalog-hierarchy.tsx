@@ -160,9 +160,9 @@ export function CatalogHierarchyPage() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex gap-4 items-stretch">
-        {/* Tree column */}
-        <div className="w-full max-w-[640px] shrink-0 overflow-auto">
+      <div className="flex-1 min-h-0 flex flex-col gap-4 items-stretch lg:flex-row">
+        {/* Tree column — full width on mobile, capped at 640px on lg+ */}
+        <div className="w-full lg:max-w-[640px] lg:shrink-0 overflow-auto">
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="size-5 text-muted-foreground" />
@@ -181,7 +181,7 @@ export function CatalogHierarchyPage() {
           )}
         </div>
 
-        {/* Panel column */}
+        {/* Panel column — stacks below tree on mobile, side-by-side on lg+ */}
         <div className="flex-1 min-w-0 overflow-auto rounded-lg border bg-card p-4">
           <CatalogServicePanel
             requestTypeId={selectedRtId}
