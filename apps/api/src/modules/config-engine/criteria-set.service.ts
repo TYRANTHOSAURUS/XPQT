@@ -3,76 +3,97 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
 /**
- * criteria_sets authoring. The expression grammar + evaluation live in
- * `public.criteria_matches(p_set_id, p_person_id, p_tenant_id)` and
- * `_criteria_eval_node` (migration 00060). Supported shape (live-doc §3.4a,
- * bounded depth = 3):
+ * criteria_sets authoring. The canonical evaluator is plpgsql —
+ * `public.criteria_matches(p_set_id, p_person_id, p_tenant_id)` +
+ * `public._criteria_eval_node` (migration 00099, superseding 00060 once the
+ * persons.department / persons.division columns were dropped in 00079).
+ *
+ * Supported grammar (bounded depth = 3):
  *
  *   composites: { all_of: [...] } | { any_of: [...] } | { not: <node> }
- *   leaves:     { attr: string, op: 'eq'|'neq'|'in'|'not_in', value: any }
+ *   scalar leaf: { attr, op: 'eq'|'neq', value }
+ *   list leaf:   { attr, op: 'in'|'not_in', values: [...] }
  *
- * Supported `attr` values: type, department, division, cost_center,
- * manager_person_id. The service rejects malformed expressions up front so
- * admins don't have to wait for the first evaluation to discover a typo.
+ * Supported `attr` values: type, cost_center, manager_person_id,
+ * org_node_id, org_node_code, org_node_name. The TS preview evaluator
+ * below mirrors the plpgsql, so the admin UI can sanity-check an
+ * unsaved expression against the live tenant without inserting a row.
  */
 
-type Leaf = {
-  attr: string;
-  op: 'eq' | 'neq' | 'in' | 'not_in';
-  value: unknown;
-};
+type ScalarLeaf = { attr: string; op: 'eq' | 'neq'; value: unknown };
+type ListLeaf = { attr: string; op: 'in' | 'not_in'; values: unknown[] };
+type Leaf = ScalarLeaf | ListLeaf;
 type Node = Leaf | { all_of: Node[] } | { any_of: Node[] } | { not: Node };
 
 const ALLOWED_ATTRS = new Set([
-  'type', 'department', 'division', 'cost_center', 'manager_person_id',
+  'type',
+  'cost_center',
+  'manager_person_id',
+  'org_node_id',
+  'org_node_code',
+  'org_node_name',
 ]);
-const ALLOWED_OPS = new Set(['eq', 'neq', 'in', 'not_in']);
+const SCALAR_OPS = new Set(['eq', 'neq']);
+const LIST_OPS = new Set(['in', 'not_in']);
 const MAX_DEPTH = 3;
 
 function validateExpression(expr: unknown, depth = 0): asserts expr is Node {
   if (depth > MAX_DEPTH) {
     throw new BadRequestException(`expression nesting exceeds max depth ${MAX_DEPTH}`);
   }
-  if (expr === null || typeof expr !== 'object') {
+  if (expr === null || typeof expr !== 'object' || Array.isArray(expr)) {
     throw new BadRequestException('expression must be an object');
   }
-  const keys = Object.keys(expr as Record<string, unknown>);
-  if (keys.length !== 1) {
-    throw new BadRequestException(`expression node must have exactly one key, got ${keys.length}`);
-  }
-  const key = keys[0];
-  const val = (expr as Record<string, unknown>)[key];
+  const obj = expr as Record<string, unknown>;
 
-  if (key === 'all_of' || key === 'any_of') {
+  if ('all_of' in obj) {
+    const val = obj.all_of;
     if (!Array.isArray(val) || val.length === 0) {
-      throw new BadRequestException(`${key} must be a non-empty array`);
+      throw new BadRequestException('all_of must be a non-empty array');
     }
     for (const child of val) validateExpression(child, depth + 1);
     return;
   }
-  if (key === 'not') {
-    validateExpression(val, depth + 1);
+  if ('any_of' in obj) {
+    const val = obj.any_of;
+    if (!Array.isArray(val) || val.length === 0) {
+      throw new BadRequestException('any_of must be a non-empty array');
+    }
+    for (const child of val) validateExpression(child, depth + 1);
     return;
   }
-  // Leaf: treat `expr` itself as { attr, op, value }. Guard via shape check.
-  const leaf = expr as Record<string, unknown>;
-  if (!('attr' in leaf) || !('op' in leaf) || !('value' in leaf)) {
+  if ('not' in obj) {
+    validateExpression(obj.not, depth + 1);
+    return;
+  }
+
+  // Leaf node.
+  if (!('attr' in obj) || !('op' in obj)) {
     throw new BadRequestException(
-      'leaf node must have `attr`, `op`, `value` (or use all_of / any_of / not)',
+      'leaf node must have `attr` and `op` (or use all_of / any_of / not)',
     );
   }
-  if (typeof leaf.attr !== 'string' || !ALLOWED_ATTRS.has(leaf.attr)) {
+  if (typeof obj.attr !== 'string' || !ALLOWED_ATTRS.has(obj.attr)) {
     throw new BadRequestException(
-      `attr '${String(leaf.attr)}' not supported. Allowed: ${[...ALLOWED_ATTRS].join(', ')}`,
+      `attr '${String(obj.attr)}' not supported. Allowed: ${[...ALLOWED_ATTRS].join(', ')}`,
     );
   }
-  if (typeof leaf.op !== 'string' || !ALLOWED_OPS.has(leaf.op)) {
+  const op = obj.op;
+  if (typeof op !== 'string' || (!SCALAR_OPS.has(op) && !LIST_OPS.has(op))) {
     throw new BadRequestException(
-      `op '${String(leaf.op)}' not supported. Allowed: ${[...ALLOWED_OPS].join(', ')}`,
+      `op '${String(op)}' not supported. Allowed: eq, neq, in, not_in`,
     );
   }
-  if ((leaf.op === 'in' || leaf.op === 'not_in') && !Array.isArray(leaf.value)) {
-    throw new BadRequestException(`op '${leaf.op}' requires value to be an array`);
+  if (SCALAR_OPS.has(op)) {
+    if (!('value' in obj)) {
+      throw new BadRequestException(`op '${op}' requires a \`value\` field`);
+    }
+  } else {
+    if (!('values' in obj) || !Array.isArray(obj.values) || obj.values.length === 0) {
+      throw new BadRequestException(
+        `op '${op}' requires a non-empty \`values\` array`,
+      );
+    }
   }
 }
 
@@ -160,65 +181,162 @@ export class CriteriaSetService {
   async remove(id: string) {
     // Soft-delete: flip active=false. Hard-delete would break FKs on
     // request_type_audience_rules / form_variants / on_behalf_rules that
-    // still reference this set. Admin can use update({active:false}) too;
-    // expose this as the destructive shorthand.
+    // still reference this set.
     return this.update(id, { active: false });
   }
 
   /**
    * Preview how many persons in the tenant match this expression right now.
-   * Useful when authoring audience/on-behalf rules so admins can sanity-check
-   * their criteria without saving it first. Returns count + up to 5 sample
-   * persons (id + first/last name) for display.
+   * Mirrors public._criteria_eval_node (migration 00099). Returns count + up
+   * to `limit` sample persons (default 10, max 500) so admins can
+   * sanity-check criteria without saving.
    */
-  async preview(expression: unknown): Promise<{ count: number; sample: Array<{ id: string; first_name: string; last_name: string }> }> {
-    const tenant = TenantContext.current();
+  async preview(
+    expression: unknown,
+    limit = 10,
+  ): Promise<{
+    count: number;
+    sample: MatchRow[];
+  }> {
     validateExpression(expression);
-
-    // We can't pass the expression to criteria_matches without first inserting
-    // a row (the function takes p_set_id). For MVP, insert a throwaway row
-    // in a transaction and rollback — but Supabase JS doesn't expose txns.
-    // Instead, evaluate the expression in TS against person attributes.
-    // `criteria_matches` does the same logic in plpgsql; we duplicate the
-    // evaluator here to stay consistent.
-    const { data: persons, error } = await this.supabase.admin
-      .from('persons')
-      .select('id, first_name, last_name, type, department, division, cost_center, manager_person_id, active')
-      .eq('tenant_id', tenant.id)
-      .eq('active', true);
-    if (error) throw error;
-    const rows = (persons ?? []) as Array<Record<string, unknown>>;
-
-    const matches = rows.filter((p) => evalNode(expression as Node, p));
+    const matches = await this.evaluateTenantMatches(expression as Node);
+    const capped = Math.max(1, Math.min(limit, 500));
     return {
       count: matches.length,
-      sample: matches.slice(0, 5).map((m) => ({
-        id: m.id as string,
-        first_name: (m.first_name as string) ?? '',
-        last_name: (m.last_name as string) ?? '',
-      })),
+      sample: matches.slice(0, capped),
     };
+  }
+
+  /**
+   * Full match list for a saved criteria set — used by the detail page's
+   * "show all matches" drill-down. Returns up to `limit` rows (default 500)
+   * so we don't ship tens of thousands of persons over the wire. Count is
+   * the true total, not capped.
+   */
+  async getMatches(
+    id: string,
+    limit = 500,
+  ): Promise<{
+    criteriaSet: { id: string; name: string; description: string | null };
+    count: number;
+    matches: MatchRow[];
+  }> {
+    const set = await this.getById(id);
+    validateExpression(set.expression);
+    const matches = await this.evaluateTenantMatches(set.expression);
+    const capped = Math.max(1, Math.min(limit, 2000));
+    return {
+      criteriaSet: { id: set.id, name: set.name, description: set.description },
+      count: matches.length,
+      matches: matches.slice(0, capped),
+    };
+  }
+
+  /**
+   * Shared matcher used by `preview` (unsaved expression) and `getMatches`
+   * (saved set). Loads every active person in the tenant with their primary
+   * org membership, then filters in TS using the mirror of
+   * `public._criteria_eval_node`.
+   */
+  private async evaluateTenantMatches(expression: Node): Promise<MatchRow[]> {
+    const tenant = TenantContext.current();
+
+    const [{ data: persons, error: pErr }, { data: memberships, error: mErr }] = await Promise.all([
+      this.supabase.admin
+        .from('persons')
+        .select('id, first_name, last_name, email, type, cost_center, manager_person_id')
+        .eq('tenant_id', tenant.id)
+        .eq('active', true)
+        .order('first_name'),
+      this.supabase.admin
+        .from('person_org_memberships')
+        .select('person_id, org_nodes(id, code, name)')
+        .eq('tenant_id', tenant.id)
+        .eq('is_primary', true),
+    ]);
+    if (pErr) throw pErr;
+    if (mErr) throw mErr;
+
+    // Supabase types `org_nodes` as an array when joined, even though the FK
+    // is single-valued — unwrap it manually.
+    type OrgNode = { id: string; code: string | null; name: string | null };
+    const orgByPersonId = new Map<string, OrgNode>();
+    for (const row of (memberships ?? []) as Array<{
+      person_id: string;
+      org_nodes: OrgNode | OrgNode[] | null;
+    }>) {
+      const org = Array.isArray(row.org_nodes) ? row.org_nodes[0] : row.org_nodes;
+      if (org) orgByPersonId.set(row.person_id, org);
+    }
+
+    type Person = {
+      id: string;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      type: string | null;
+      cost_center: string | null;
+      manager_person_id: string | null;
+    };
+
+    return ((persons ?? []) as Person[])
+      .map((p) => {
+        const org = orgByPersonId.get(p.id) ?? null;
+        const evalPerson = {
+          ...p,
+          org_node_id: org?.id ?? null,
+          org_node_code: org?.code ?? null,
+          org_node_name: org?.name ?? null,
+        };
+        return { person: p, org, evalPerson };
+      })
+      .filter(({ evalPerson }) => evalNode(expression, evalPerson as unknown as Record<string, unknown>))
+      .map(({ person, org }) => ({
+        id: person.id,
+        first_name: person.first_name ?? '',
+        last_name: person.last_name ?? '',
+        email: person.email ?? null,
+        type: person.type ?? null,
+        primary_org: org
+          ? { id: org.id, code: org.code ?? null, name: org.name ?? null }
+          : null,
+      }));
   }
 }
 
+export interface MatchRow {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string | null;
+  type: string | null;
+  primary_org: { id: string; code: string | null; name: string | null } | null;
+}
+
 /**
- * Mirrors public._criteria_eval_node (migration 00060) for TS-side preview.
- * Absent-attribute semantics (live-doc §3.4a):
- *   eq/in → false when attr is null on the actor
- *   neq/not_in → true when attr is null
+ * Mirrors public._criteria_eval_node (migration 00099). Absent-attribute
+ * semantics: eq/in → false when attr is null on the actor; neq/not_in → true
+ * when attr is null. All comparisons are done as strings, matching the
+ * plpgsql `::text` casts.
  */
 function evalNode(node: Node, person: Record<string, unknown>): boolean {
   if ('all_of' in node) return node.all_of.every((c) => evalNode(c, person));
   if ('any_of' in node) return node.any_of.some((c) => evalNode(c, person));
   if ('not' in node) return !evalNode(node.not, person);
-  const actual = person[node.attr];
-  const missing = actual === null || actual === undefined;
+
+  const raw = person[node.attr];
+  if (raw === null || raw === undefined) {
+    return node.op === 'neq' || node.op === 'not_in';
+  }
+  const actual = String(raw);
   switch (node.op) {
-    case 'eq': return missing ? false : actual === node.value;
-    case 'neq': return missing ? true : actual !== node.value;
+    case 'eq':
+      return actual === String((node as ScalarLeaf).value ?? '');
+    case 'neq':
+      return actual !== String((node as ScalarLeaf).value ?? '');
     case 'in':
-      return missing ? false : Array.isArray(node.value) && (node.value as unknown[]).includes(actual);
+      return (node as ListLeaf).values.map((v) => String(v ?? '')).includes(actual);
     case 'not_in':
-      return missing ? true : Array.isArray(node.value) && !(node.value as unknown[]).includes(actual);
+      return !(node as ListLeaf).values.map((v) => String(v ?? '')).includes(actual);
   }
 }

@@ -16,6 +16,8 @@ import { CatalogCategoryPage } from '@/pages/portal/catalog-category';
 import { SubmitRequestPage } from '@/pages/portal/submit-request';
 import { RequestTypesPage } from '@/pages/admin/request-types';
 import { CriteriaSetsPage } from '@/pages/admin/criteria-sets';
+import { CriteriaSetDetailPage } from '@/pages/admin/criteria-set-detail';
+import { CriteriaSetMatchesPage } from '@/pages/admin/criteria-set-matches';
 import { TeamsPage } from '@/pages/admin/teams';
 import { LocationsPage } from '@/pages/admin/locations';
 import { SlaPoliciesPage } from '@/pages/admin/sla-policies';
@@ -27,6 +29,8 @@ import { SpaceGroupsPage } from '@/pages/admin/space-groups';
 import { DomainParentsPage } from '@/pages/admin/domain-parents';
 import { FormSchemasPage } from '@/pages/admin/form-schemas';
 import { UsersPage } from '@/pages/admin/users';
+import { RoleDetailPage } from '@/pages/admin/role-detail';
+import { UserDetailPage } from '@/pages/admin/user-detail';
 import { PersonsPage } from '@/pages/admin/persons';
 import { OrganisationsPage } from '@/pages/admin/organisations';
 import { OrganisationCreatePage } from '@/pages/admin/organisation-create';
@@ -165,6 +169,8 @@ export function App() {
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />
             <Route path="criteria-sets" element={<CriteriaSetsPage />} />
+            <Route path="criteria-sets/:id" element={<CriteriaSetDetailPage />} />
+            <Route path="criteria-sets/:id/matches" element={<CriteriaSetMatchesPage />} />
             <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
             <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
             <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
@@ -174,6 +180,9 @@ export function App() {
             <Route path="webhooks/:id/events" element={<WebhookEventsPage />} />
             {/* People */}
             <Route path="users" element={<UsersPage />} />
+            <Route path="users/roles/new" element={<RoleDetailPage />} />
+            <Route path="users/roles/:id" element={<RoleDetailPage />} />
+            <Route path="users/:id" element={<UserDetailPage />} />
             <Route path="persons" element={<PersonsPage />} />
             <Route path="organisations" element={<OrganisationsPage />} />
             <Route path="organisations/new" element={<OrganisationCreatePage />} />
