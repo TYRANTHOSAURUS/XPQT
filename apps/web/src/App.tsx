@@ -127,6 +127,7 @@ export function App() {
             <Route path="form-schemas" element={<FormSchemasPage />} />
             <Route path="teams" element={<TeamsPage />} />
             <Route path="locations" element={<LocationsPage />} />
+            <Route path="locations/:spaceId" element={<LocationsPage />} />
             <Route path="sla-policies" element={<SlaPoliciesPage />} />
             <Route path="sla-policies/new" element={<SlaPolicyCreatePage />} />
             <Route path="sla-policies/:id" element={<SlaPolicyDetailPage />} />
