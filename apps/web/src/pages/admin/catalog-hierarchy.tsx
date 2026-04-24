@@ -29,7 +29,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useCatalogTree, catalogKeys } from '@/api/catalog';
 import { apiFetch } from '@/lib/api';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -55,7 +56,9 @@ const emptyForm: CategoryFormState = {
 };
 
 export function CatalogHierarchyPage() {
-  const { data: tree, loading, refetch } = useApi<CatalogCategoryNode[]>('/service-catalog/tree', []);
+  const qc = useQueryClient();
+  const { data: tree, isPending: loading } = useCatalogTree() as { data: CatalogCategoryNode[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: catalogKeys.all });
 
   const [form, setForm] = useState<CategoryFormState>(emptyForm);
   const [dialogOpen, setDialogOpen] = useState(false);

@@ -24,7 +24,10 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Plus, Pencil, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useVendors, vendorKeys } from '@/api/vendors';
+import { useTeams } from '@/api/teams';
+import { useSlaPolicies } from '@/api/sla-policies';
 import { apiFetch } from '@/lib/api';
 import { SpaceSelect } from '@/components/space-select';
 import { TableLoading, TableEmpty } from '@/components/table-states';
@@ -60,9 +63,11 @@ interface ServiceArea {
 }
 
 export function VendorsPage() {
-  const { data: vendors, loading, refetch } = useApi<Vendor[]>('/vendors', []);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
+  const qc = useQueryClient();
+  const { data: vendors, isPending: loading } = useVendors() as { data: Vendor[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: vendorKeys.all });
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
+  const { data: slaPolicies } = useSlaPolicies() as { data: Array<{ id: string; name: string }> | undefined };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);

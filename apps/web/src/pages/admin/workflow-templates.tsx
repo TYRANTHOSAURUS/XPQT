@@ -20,7 +20,8 @@ import {
 } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Send, Pencil, Copy } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useWorkflowDefinitions, workflowKeys } from '@/api/workflows';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { emptyGraph } from '@/components/workflow-editor/graph-utils';
@@ -51,7 +52,9 @@ function formatDate(iso: string | null) {
 
 export function WorkflowTemplatesPage() {
   const navigate = useNavigate();
-  const { data, loading, refetch } = useApi<WorkflowTemplate[]>('/workflows', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useWorkflowDefinitions() as { data: WorkflowTemplate[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: workflowKeys.definitions() });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState('');

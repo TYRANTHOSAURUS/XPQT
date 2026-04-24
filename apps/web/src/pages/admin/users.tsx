@@ -21,7 +21,9 @@ import {
   SettingsPageHeader,
   SettingsPageShell,
 } from '@/components/ui/settings-page';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useUsers, userKeys } from '@/api/users';
+import { usePersons } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
 
 interface Person {
@@ -48,8 +50,10 @@ interface User {
 }
 
 export function UsersPage() {
-  const { data: users, loading: usersLoading, refetch: refetchUsers } = useApi<User[]>('/users', []);
-  const { data: persons } = useApi<Person[]>('/persons', []);
+  const qc = useQueryClient();
+  const { data: users, isPending: usersLoading } = useUsers() as { data: User[] | undefined; isPending: boolean };
+  const refetchUsers = () => qc.invalidateQueries({ queryKey: userKeys.all });
+  const { data: persons } = usePersons() as { data: Person[] | undefined };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newUserPersonId, setNewUserPersonId] = useState('');

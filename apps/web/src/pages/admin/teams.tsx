@@ -23,7 +23,11 @@ import {
 } from '@/components/ui/select';
 import { Plus, Pencil, X, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useTeams, teamKeys } from '@/api/teams';
+import { useSpaces } from '@/api/spaces';
+import { useUsers } from '@/api/users';
+import { useSlaPolicies } from '@/api/sla-policies';
 import { apiFetch } from '@/lib/api';
 import { SpaceSelect } from '@/components/space-select';
 import { OrgNodeCombobox } from '@/components/org-node-combobox';
@@ -61,10 +65,12 @@ interface TeamMember {
 const domains = ['fm', 'it', 'visitor', 'catering', 'security', 'all'];
 
 export function TeamsPage() {
-  const { data, loading, refetch } = useApi<Team[]>('/teams', []);
-  const { data: spaces } = useApi<Space[]>('/spaces', []);
-  const { data: users } = useApi<User[]>('/users', []);
-  const { data: slaPolicies } = useApi<Array<{ id: string; name: string }>>('/sla-policies', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useTeams() as { data: Team[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: teamKeys.all });
+  const { data: spaces } = useSpaces() as { data: Space[] | undefined };
+  const { data: users } = useUsers() as { data: User[] | undefined };
+  const { data: slaPolicies } = useSlaPolicies() as { data: Array<{ id: string; name: string }> | undefined };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);

@@ -31,15 +31,23 @@ export const assetKeys = {
   typesList: () => [...assetKeys.types(), 'list'] as const,
 } as const;
 
-export function assetsListOptions() {
+export function assetsListOptions(filters?: { roleFilter?: string | null }) {
+  const role = filters?.roleFilter && filters.roleFilter !== 'all' ? filters.roleFilter : null;
   return queryOptions({
-    queryKey: assetKeys.list(),
-    queryFn: ({ signal }) => apiFetch<Asset[]>('/assets', { signal }),
+    queryKey: [...assetKeys.lists(), { role }] as const,
+    queryFn: ({ signal }) =>
+      apiFetch<Asset[]>('/assets', {
+        signal,
+        query: role ? { asset_role: role } : undefined,
+      }),
     staleTime: 60_000, // T2 — more volatile than teams/vendors.
   });
 }
 export function useAssets() {
   return useQuery(assetsListOptions());
+}
+export function useAssetsFiltered(roleFilter: string | null) {
+  return useQuery(assetsListOptions({ roleFilter }));
 }
 
 export function assetTypesListOptions() {

@@ -24,7 +24,8 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Mail, Bell } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useNotificationTemplates, notificationKeys } from '@/api/notifications';
 import { apiFetch } from '@/lib/api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
@@ -60,7 +61,9 @@ const AVAILABLE_TOKENS = [
 ];
 
 export function NotificationsPage() {
-  const { data, loading, refetch } = useApi<NotificationTemplate[]>('/notification-templates', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useNotificationTemplates() as { data: NotificationTemplate[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: notificationKeys.all });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);

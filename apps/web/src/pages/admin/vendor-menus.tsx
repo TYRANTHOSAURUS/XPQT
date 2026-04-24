@@ -22,7 +22,8 @@ import {
 import { SpaceSelect } from '@/components/space-select';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { ServiceTypeSelect } from '@/components/service-type-select';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { useVendors } from '@/api/vendors';
 import { apiFetch } from '@/lib/api';
 import { MENU_STATUS_VARIANT, MenuStatus, humanize } from '@/lib/menu-constants';
 
@@ -43,7 +44,7 @@ interface Menu {
 
 export function VendorMenusPage() {
   const navigate = useNavigate();
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
+  const { data: vendors } = useVendors() as { data: Vendor[] | undefined };
 
   const [filterVendor, setFilterVendor] = useState('');
   const [filterService, setFilterService] = useState('');
@@ -61,10 +62,14 @@ export function VendorMenusPage() {
           .filter(Boolean)
           .join('&')
       : '');
-  const { data: menus, loading, refetch } = useApi<Menu[]>(
-    listPath,
-    [filterVendor, filterService, filterStatus],
-  );
+  const qc = useQueryClient();
+  const menuListKey = ['catalog-menus', 'list', { filterVendor, filterService, filterStatus }] as const;
+  const { data: menus, isPending: loading } = useQuery(queryOptions({
+    queryKey: menuListKey,
+    queryFn: ({ signal }) => apiFetch<Menu[]>(listPath, { signal }),
+    staleTime: 30_000,
+  }));
+  const refetch = () => qc.invalidateQueries({ queryKey: ['catalog-menus'] });
 
   const [createOpen, setCreateOpen] = useState(false);
 

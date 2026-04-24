@@ -25,18 +25,24 @@ export const personKeys = {
 
 /**
  * Full persons directory. Used for @mention suggestions; cached aggressively
- * since the directory rarely changes during a session.
+ * since the directory rarely changes during a session. Optional type filter
+ * for the admin persons page (employee / contractor / vendor_contact / etc).
  */
-export function personsListOptions() {
+export function personsListOptions(typeFilter?: string | null) {
+  const typed = typeFilter && typeFilter !== 'all' ? typeFilter : null;
   return queryOptions({
-    queryKey: personKeys.list(null),
-    queryFn: ({ signal }) => apiFetch<Person[]>('/persons', { signal }),
+    queryKey: [...personKeys.lists(), { type: typed }] as const,
+    queryFn: ({ signal }) =>
+      apiFetch<Person[]>('/persons', {
+        signal,
+        query: typed ? { type: typed } : undefined,
+      }),
     staleTime: 5 * 60_000, // T3
   });
 }
 
-export function usePersons() {
-  return useQuery(personsListOptions());
+export function usePersons(typeFilter?: string | null) {
+  return useQuery(personsListOptions(typeFilter));
 }
 
 /**
