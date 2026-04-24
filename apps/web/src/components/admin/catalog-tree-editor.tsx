@@ -209,10 +209,14 @@ function Row({ item, onToggleCollapse, onEdit, onDelete, onAddChild, isOverlay, 
 
       <Icon className={`h-4 w-4 shrink-0 ${iconColor}`} />
 
-      <span className="font-medium text-sm truncate">{item.name}</span>
+      {/* Name is the primary label; it never shrinks so the description
+          (which is secondary context) yields first when the row narrows. */}
+      <span className="font-medium text-sm shrink-0 truncate max-w-[60%]">
+        {item.name}
+      </span>
 
       {item.description && (
-        <span className="text-xs text-muted-foreground truncate hidden md:inline">
+        <span className="text-xs text-muted-foreground truncate flex-1 min-w-0 hidden md:inline">
           — {item.description}
         </span>
       )}
