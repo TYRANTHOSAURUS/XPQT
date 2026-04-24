@@ -5,15 +5,13 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Trash2 } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useTeams, type Team } from '@/api/teams';
 import type {
   EscalationThreshold,
   ThresholdAction,
   ThresholdTargetType,
   ThresholdTimerScope,
 } from '@/api/sla-policies';
-
-interface Team { id: string; name: string }
 
 interface SlaThresholdRowProps {
   value: EscalationThreshold;
@@ -23,7 +21,7 @@ interface SlaThresholdRowProps {
 }
 
 export function SlaThresholdRow({ value, onChange, onRemove, index }: SlaThresholdRowProps) {
-  const { data: teams } = useApi<Team[]>('/teams', []);
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
 
   const patch = (partial: Partial<EscalationThreshold>) => onChange({ ...value, ...partial });
 

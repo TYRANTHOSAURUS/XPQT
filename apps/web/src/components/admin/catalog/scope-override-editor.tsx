@@ -15,7 +15,11 @@ import {
 } from '@/components/ui/select';
 import { LocationCombobox } from '@/components/location-combobox';
 import { apiFetch } from '@/lib/api';
-import { useApi } from '@/hooks/use-api';
+import { useTeams } from '@/api/teams';
+import { useVendors } from '@/api/vendors';
+import { useSlaPolicies } from '@/api/sla-policies';
+import { useWorkflowDefinitions } from '@/api/workflows';
+import { useSpaceGroups, usePolicyEntities } from '@/api/routing';
 import { Trash2, Plus } from 'lucide-react';
 
 type ScopeKind = 'tenant' | 'space' | 'space_group';
@@ -121,17 +125,13 @@ export function ScopeOverrideEditor({
   initialDraft,
   onSaved,
 }: EditorProps) {
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
-  const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
-  const { data: workflows } = useApi<Workflow[]>('/workflows', []);
-  const { data: spaceGroups } = useApi<SpaceGroup[]>('/space-groups', []);
-  const { data: caseOwnerPolicies } = useApi<PolicyEntity[]>(
-    '/admin/routing/policies/case_owner_policy', [],
-  );
-  const { data: childDispatchPolicies } = useApi<PolicyEntity[]>(
-    '/admin/routing/policies/child_dispatch_policy', [],
-  );
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
+  const { data: vendors } = useVendors() as { data: Vendor[] | undefined };
+  const { data: slas } = useSlaPolicies() as { data: SlaPolicy[] | undefined };
+  const { data: workflows } = useWorkflowDefinitions() as { data: Workflow[] | undefined };
+  const { data: spaceGroups } = useSpaceGroups() as { data: SpaceGroup[] | undefined };
+  const { data: caseOwnerPolicies } = usePolicyEntities<PolicyEntity>('case-owner');
+  const { data: childDispatchPolicies } = usePolicyEntities<PolicyEntity>('child-dispatch');
 
   const [draft, setDraft] = useState<Draft>(toDraft(null));
   const [saving, setSaving] = useState(false);

@@ -10,12 +10,10 @@ import {
 } from '@/components/ui/select';
 import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useApi } from '@/hooks/use-api';
+import { useFormSchemas, type FormSchemaListItem as FormSchemaRow } from '@/api/config-entities';
+import { useCriteriaSets, type CriteriaSet } from '@/api/criteria-sets';
 import { apiFetch } from '@/lib/api';
 import type { RequestTypeDetail } from './catalog-service-panel';
-
-interface FormSchemaRow { id: string; display_name: string }
-interface CriteriaSet { id: string; name: string; active: boolean }
 
 interface DefaultDraft {
   form_schema_id: string | null;   // null = no default (standard fields only)
@@ -44,8 +42,8 @@ export function CatalogFormTab({ detail, onSaved }: {
   detail: RequestTypeDetail;
   onSaved: () => void;
 }) {
-  const { data: schemas } = useApi<FormSchemaRow[]>('/config-entities?type=form_schema', []);
-  const { data: criteriaSets } = useApi<CriteriaSet[]>('/criteria-sets', []);
+  const { data: schemas } = useFormSchemas() as { data: FormSchemaRow[] | undefined };
+  const { data: criteriaSets } = useCriteriaSets() as { data: CriteriaSet[] | undefined };
   const setsById = useMemo(
     () => new Map((criteriaSets ?? []).map((s) => [s.id, s])),
     [criteriaSets],

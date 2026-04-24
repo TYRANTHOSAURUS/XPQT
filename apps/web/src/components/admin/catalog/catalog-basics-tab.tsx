@@ -15,10 +15,8 @@ import {
 } from '@/components/ui/field';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
-import { useApi } from '@/hooks/use-api';
+import { useCatalogCategories } from '@/api/catalog';
 import type { RequestTypeDetail } from './catalog-service-panel';
-
-interface Category { id: string; name: string }
 
 export function CatalogBasicsTab({
   detail,
@@ -31,7 +29,7 @@ export function CatalogBasicsTab({
   onDelete?: () => void;
   deleting?: boolean;
 }) {
-  const { data: categories } = useApi<Category[]>('/service-catalog/categories', []);
+  const { data: categories } = useCatalogCategories();
 
   const [name, setName] = useState(detail.name);
   const [description, setDescription] = useState(detail.description ?? '');

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -113,11 +113,19 @@ export function CatalogCoverageTab({ detail, onSaved }: {
     setOverrideEditorOpen(true);
   };
 
-  // Matrix — one call per request type per mount/reload.
-  const { data: matrix, loading, error, refetch } = useApi<MatrixResponse>(
-    `/request-types/${detail.id}/coverage-matrix`,
-    [detail.id, detail.scope_overrides.length, localOfferings.length],
-  );
+  // Matrix — keyed by the dependencies that mutate the response server-side.
+  const qc = useQueryClient();
+  const matrixKey = ['request-types', detail.id, 'coverage-matrix', {
+    overrides: detail.scope_overrides.length,
+    offerings: localOfferings.length,
+  }] as const;
+  const { data: matrix, isPending: loading, error } = useQuery(queryOptions({
+    queryKey: matrixKey,
+    queryFn: ({ signal }) =>
+      apiFetch<MatrixResponse>(`/request-types/${detail.id}/coverage-matrix`, { signal }),
+    staleTime: 30_000,
+  }));
+  const refetch = () => qc.invalidateQueries({ queryKey: ['request-types', detail.id, 'coverage-matrix'] });
 
   const hasTenantOffering = useMemo(
     () => localOfferings.some((o) => o.active && o.scope_kind === 'tenant'),
@@ -226,7 +234,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
       <Alert variant="destructive">
         <AlertTriangle className="size-4" />
         <AlertTitle>Coverage matrix failed to load</AlertTitle>
-        <AlertDescription>{error}</AlertDescription>
+        <AlertDescription>{error instanceof Error ? error.message : String(error)}</AlertDescription>
       </Alert>
     );
   }

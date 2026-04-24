@@ -8,11 +8,9 @@ import {
 import { FieldDescription, FieldLegend, FieldSet } from '@/components/ui/field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Plus, X, Info } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useCriteriaSets } from '@/api/criteria-sets';
 import { apiFetch } from '@/lib/api';
 import type { RequestTypeDetail } from './catalog-service-panel';
-
-interface CriteriaSet { id: string; name: string; description: string | null; active: boolean }
 
 type AudienceMode = 'visible_allow' | 'visible_deny' | 'request_allow' | 'request_deny';
 type OnBehalfRole = 'actor' | 'target';
@@ -36,7 +34,7 @@ export function CatalogAudienceTab({ detail, onSaved }: {
   detail: RequestTypeDetail & { on_behalf_policy?: string };
   onSaved: () => void;
 }) {
-  const { data: criteriaSets } = useApi<CriteriaSet[]>('/criteria-sets', []);
+  const { data: criteriaSets } = useCriteriaSets();
   const setsById = useMemo(
     () => new Map((criteriaSets ?? []).map((s) => [s.id, s])),
     [criteriaSets],

@@ -18,7 +18,12 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
-import { useApi } from '@/hooks/use-api';
+import { useQuery, queryOptions } from '@tanstack/react-query';
+import { useTeams } from '@/api/teams';
+import { useVendors } from '@/api/vendors';
+import { useSlaPolicies } from '@/api/sla-policies';
+import { useWorkflowDefinitions } from '@/api/workflows';
+import { requestTypeKeys } from '@/api/request-types';
 import type { RequestTypeDetail } from './catalog-service-panel';
 
 type FulfillmentStrategy = 'asset' | 'location' | 'fixed' | 'auto';
@@ -87,11 +92,16 @@ export function CatalogFulfillmentTab({
   onDelete?: () => void;
   deleting?: boolean;
 }) {
-  const { data: rt, loading: rtLoading } = useApi<RequestType>(`/request-types/${requestTypeId}`, [requestTypeId]);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
-  const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
-  const { data: workflows } = useApi<Workflow[]>('/workflows', []);
+  const { data: rt, isPending: rtLoading } = useQuery(queryOptions({
+    queryKey: requestTypeKeys.detail(requestTypeId),
+    queryFn: ({ signal }) => apiFetch<RequestType>(`/request-types/${requestTypeId}`, { signal }),
+    enabled: Boolean(requestTypeId),
+    staleTime: 60_000,
+  }));
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
+  const { data: vendors } = useVendors() as { data: Vendor[] | undefined };
+  const { data: slas } = useSlaPolicies() as { data: SlaPolicy[] | undefined };
+  const { data: workflows } = useWorkflowDefinitions() as { data: Workflow[] | undefined };
 
   const [domain, setDomain] = useState<string>('general');
   const [strategy, setStrategy] = useState<FulfillmentStrategy>('fixed');
