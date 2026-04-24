@@ -23,6 +23,20 @@ export interface AuthorizedLocation extends SpaceSummary {
   note: string | null;
 }
 
+export interface PortalAppearance {
+  greeting_enabled: boolean;
+  welcome_headline: string | null;
+  supporting_line: string | null;
+  hero_image_url: string | null;
+}
+
+export interface PortalAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  published_at: string;
+}
+
 export interface PortalMeResponse {
   person: { id: string; first_name: string; last_name: string; email: string | null; type: string };
   user: { id: string; email: string | null };
@@ -36,6 +50,8 @@ export interface PortalMeResponse {
   }>;
   can_submit: boolean;
   can_self_onboard: boolean;
+  appearance: PortalAppearance | null;
+  announcement: PortalAnnouncement | null;
 }
 
 interface PortalContextValue {
