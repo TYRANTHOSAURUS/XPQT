@@ -4,7 +4,7 @@
 
 **Goal:** Ship the foundation + home page of the portal redesign: new top-nav shell (desktop + mobile bottom tabs), data model + admin surfaces for hero images / category covers / announcements, and the new home page with hero + activity panel + announcements.
 
-**Architecture:** Swap the `/portal/*` layout from the operator sidebar shell to a dedicated top-nav shell with mobile bottom tabs. Add three new pieces of content config (portal_appearance, portal_announcements, catalog_categories cover columns) driven by admin surfaces that extend `/admin/branding` and the existing catalog category dialog. Redesign the home page to use the new config (hero image or gradient fallback + greeting + search overlay, two-column body with catalog + activity panel, announcement card).
+**Architecture:** Swap the `/portal/*` layout from the operator sidebar shell to a dedicated top-nav shell with mobile bottom tabs. Add three new pieces of content config (portal_appearance, portal_announcements, service_catalog_categories cover columns) driven by admin surfaces that extend `/admin/branding` and the existing catalog category dialog. Redesign the home page to use the new config (hero image or gradient fallback + greeting + search overlay, two-column body with catalog + activity panel, announcement card).
 
 **Tech Stack:** React 19 + Vite + Tailwind v4 + shadcn/ui (frontend); NestJS 11 + Supabase (backend); Supabase PostgreSQL migrations; React Query 5; Jest (API tests); manual browser + TS build for web (per repo norms — no existing web test runner).
 
@@ -273,21 +273,21 @@ git commit -m "feat(portal): add portal_announcements with one-active-per-locati
 
 ```sql
 -- 00116_catalog_category_covers.sql
--- Adds cover image + source toggle to catalog_categories. 'icon' is the default
+-- Adds cover image + source toggle to service_catalog_categories. 'icon' is the default
 -- visual mode (current behaviour); switching to 'image' requires cover_image_url.
 
-alter table public.catalog_categories
+alter table public.service_catalog_categories
   add column cover_image_url text,
   add column cover_source    text not null default 'icon'
     check (cover_source in ('image', 'icon'));
 
 -- Invariant: if cover_source='image', cover_image_url must not be null.
 -- Use a check constraint so both API and direct DB edits fail loudly.
-alter table public.catalog_categories
-  add constraint catalog_categories_cover_consistent
+alter table public.service_catalog_categories
+  add constraint service_catalog_categories_cover_consistent
   check (cover_source <> 'image' or cover_image_url is not null);
 
-comment on column public.catalog_categories.cover_source is
+comment on column public.service_catalog_categories.cover_source is
   'How the category is visualized on the portal: icon (default) or image (requires cover_image_url).';
 ```
 
@@ -296,7 +296,7 @@ comment on column public.catalog_categories.cover_source is
 Run:
 ```bash
 pnpm db:reset
-psql "$SUPABASE_LOCAL_DB_URL" -c "select count(*) filter (where cover_source='icon') from public.catalog_categories;"
+psql "$SUPABASE_LOCAL_DB_URL" -c "select count(*) filter (where cover_source='icon') from public.service_catalog_categories;"
 ```
 Expected: count equals total categories (all default to 'icon').
 
@@ -308,7 +308,7 @@ psql "$SUPABASE_LOCAL_DB_URL" <<'SQL'
 do $$
 begin
   begin
-    update public.catalog_categories set cover_source='image' where id = (select id from public.catalog_categories limit 1);
+    update public.service_catalog_categories set cover_source='image' where id = (select id from public.service_catalog_categories limit 1);
     raise exception 'check constraint did not fire';
   exception when check_violation then
     raise notice 'OK: check_violation fired as expected';
@@ -372,7 +372,7 @@ Per memory `supabase_remote_push`, `pnpm db:push` has failed in practice and use
 - [ ] **Step 1: Confirm with user**
 
 Message the user:
-> "Ready to push migrations 00114–00117 to the remote Supabase project. These add portal_appearance, portal_announcements, catalog_categories cover columns, and the portal-assets storage bucket. Confirm to proceed with `pnpm db:push`, or ask me to use the psql fallback."
+> "Ready to push migrations 00114–00117 to the remote Supabase project. These add portal_appearance, portal_announcements, service_catalog_categories cover columns, and the portal-assets storage bucket. Confirm to proceed with `pnpm db:push`, or ask me to use the psql fallback."
 
 Wait for explicit confirmation. Do NOT proceed without it.
 
@@ -1062,7 +1062,7 @@ async uploadCover(
   const url = `${pub.publicUrl}?v=${Date.now()}`;
 
   const { data, error } = await this.supabase.admin
-    .from('catalog_categories')
+    .from('service_catalog_categories')
     .update({ cover_image_url: url, cover_source: 'image' })
     .eq('id', categoryId)
     .eq('tenant_id', tenant.id)

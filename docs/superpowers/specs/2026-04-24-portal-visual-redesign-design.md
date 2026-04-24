@@ -46,7 +46,7 @@ The portal needs its own visual language, its own shell, and a content-upload pi
 **I — Data model + storage.**
 - `portal_appearance` — per-location settings: `hero_image_url`, `welcome_headline`, `supporting_line`, `greeting_enabled`.
 - `portal_announcements` — per-location: `title`, `body`, `published_at`, `expires_at`.
-- `catalog_categories`: add `cover_image_url text`, `cover_source text check (cover_source in ('image','icon')) default 'icon'`.
+- `service_catalog_categories`: add `cover_image_url text`, `cover_source text check (cover_source in ('image','icon')) default 'icon'`.
 - Re-use the Supabase storage bucket already used by `/admin/branding` for uploads.
 
 ### Out of scope (v1)
@@ -262,7 +262,7 @@ Route: stays at `/admin/branding`. No tab navigation added — section scroll is
 
 Extend the existing dialog in `catalog-hierarchy.tsx`. Add a **Visual** section (as a `FieldSet` with `FieldLegend`) *before* the current icon picker:
 
-- `Field` — Visual mode (radio group: "Cover image" / "Icon only"). Stored on `catalog_categories.cover_source`.
+- `Field` — Visual mode (radio group: "Cover image" / "Icon only"). Stored on `service_catalog_categories.cover_source`.
 - When "Cover image" is selected:
   - `Field` — Cover picker: 4 platform-default thumbnail tiles + 1 upload slot (`+` tile). Clicking a default sets `cover_image_url` to a preset asset URL; clicking upload opens file picker → Supabase storage → sets `cover_image_url`.
   - `FieldDescription`: "Pick from our defaults or upload a custom image. Recommended 1200 × 600 px."
@@ -333,10 +333,10 @@ create index on public.portal_announcements (tenant_id, location_id, published_a
 
 The partial unique index enforces the permanent-active case at the DB; time-windowed active enforcement lives in the publish service (retire existing active before insert).
 
-### 7.3 `catalog_categories` — add cover columns
+### 7.3 `service_catalog_categories` — add cover columns
 
 ```sql
-alter table public.catalog_categories
+alter table public.service_catalog_categories
   add column cover_image_url text,
   add column cover_source text not null default 'icon'
     check (cover_source in ('image', 'icon'));
@@ -385,7 +385,7 @@ Bottom tab bar visible on all portal pages below `md`. Active tab updated based 
 **Exit criteria:** `/portal/*` has a top nav on desktop and bottom tabs on mobile. Agent/admin users can still jump to `/desk` via the account menu. No visual difference in page *content* yet.
 
 ### Slice 2 — Data model + admin surfaces (enables content)
-1. Migration: `portal_appearance`, `portal_announcements`, `catalog_categories.cover_image_url` + `cover_source`.
+1. Migration: `portal_appearance`, `portal_announcements`, `service_catalog_categories.cover_image_url` + `cover_source`.
 2. Backend: CRUD endpoints per §6.3. Storage path for `portal-assets`.
 3. `/admin/branding` new Portal section (all three `SettingsGroup`s).
 4. `/admin/catalog-hierarchy` category dialog — add Visual section + cover picker + fallback icon.
