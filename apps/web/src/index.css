@@ -125,6 +125,20 @@
   * {
     @apply border-border outline-ring/50;
     }
+  :root {
+    /* Spring-like easings — use with `transition-timing-function: var(--ease-...)`
+       or via the utility classes at the bottom of this file. Calibrated
+       against Framer Motion's spring presets so in-motion CSS matches
+       what a designer prototypes in Figma.
+       - snap: fast hover/press feedback (80-150ms).
+       - smooth: layout changes, dropdown opens (200-300ms).
+       - spring: celebratory moments, modals, first render (300-500ms).
+       - swift-out: closing/dismissing (150-220ms). */
+    --ease-snap: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-smooth: cubic-bezier(0.32, 0.72, 0, 1);
+    --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1.1);
+    --ease-swift-out: cubic-bezier(0.4, 0, 1, 1);
+    }
   body {
     @apply bg-background text-foreground antialiased;
     -webkit-font-smoothing: antialiased;
@@ -156,6 +170,37 @@
   code.chip, [data-chip] {
     user-select: all;
     }
+}
+
+/* ─── Cross-document / route view transitions ──────────────────────────
+   Paints a cross-fade between route renders in Chromium/Safari.
+   React Router doesn't use MPA navigation so the global `auto` keyword
+   is ignored there — individual routers opt in via unstable_viewTransition.
+   Elements that should morph across routes set `view-transition-name` on
+   a stable identifier. We name the admin header's title container so
+   switching between /admin/user-roles/:id pages crossfades the title.
+   Wrapped in motion-safe so users who ask for reduced motion never see it. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 240ms;
+    animation-timing-function: var(--ease-smooth);
+  }
+}
+
+/* ─── Respect reduced-motion globally ──────────────────────────────────
+   Users with vestibular sensitivity (and macOS "Reduce motion" users)
+   should get essential transitions only — no slide-ins, no animated
+   accordions, no scale springs. Framer Motion and tailwindcss-animate
+   both honour this already for marked elements; this rule catches the
+   rest. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Workflow editor — subtle animated flow on edges */
