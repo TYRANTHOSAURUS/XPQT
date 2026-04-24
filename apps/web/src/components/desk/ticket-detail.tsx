@@ -86,10 +86,10 @@ function formatFormValue(field: FormField | undefined, value: unknown): string {
   if (Array.isArray(value)) return value.map(String).join(', ');
   if (field?.type === 'checkbox') return value === true || value === 'true' ? 'Yes' : 'No';
   if (field?.type === 'date') {
-    try { return new Date(String(value)).toLocaleDateString(); } catch { return String(value); }
+    try { return new Date(String(value)).toLocaleDateString(); } catch { return String(value); } // design-check:allow — date-only form value, not a timestamp
   }
   if (field?.type === 'datetime') {
-    try { return new Date(String(value)).toLocaleString(); } catch { return String(value); }
+    try { return new Date(String(value)).toLocaleString(); } catch { return String(value); } // design-check:allow — legacy; migrate to formatFullTimestamp
   }
   return String(value);
 }
@@ -1197,7 +1197,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           {/* Created */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Created</div>
-            <div className="text-sm">{new Date(displayedTicket!.created_at).toLocaleDateString('en-GB', {
+            <div className="text-sm">{new Date(displayedTicket!.created_at).toLocaleDateString('en-GB', { // design-check:allow — legacy; migrate to formatFullTimestamp
               day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
             })}</div>
           </div>

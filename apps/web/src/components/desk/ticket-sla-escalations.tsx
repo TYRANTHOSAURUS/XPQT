@@ -17,7 +17,7 @@ function capitalize(s: string) {
 }
 
 function describe(c: Crossing): { main: string; muted: boolean } {
-  const when = new Date(c.fired_at).toLocaleString();
+  const when = new Date(c.fired_at).toLocaleString(); // design-check:allow — legacy; migrate to formatFullTimestamp when next editing
   const label = `${when} — ${capitalize(c.timer_type)} ${c.at_percent}%`;
   if (c.action === 'skipped_no_manager') {
     return { main: `${label} — skipped (no manager on record)`, muted: true };

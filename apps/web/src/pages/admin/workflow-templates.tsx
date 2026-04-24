@@ -40,7 +40,7 @@ const entityTypes = [
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-US', {
+  return new Date(iso).toLocaleDateString('en-US', { // design-check:allow — legacy; migrate to formatFullTimestamp
     year: 'numeric',
     month: 'short',
     day: 'numeric',

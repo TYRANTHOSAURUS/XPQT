@@ -5,6 +5,7 @@
   "description": "Unified Workplace Operations Platform",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "dev": "pnpm --filter @prequest/shared run build && pnpm --parallel -r run dev",
     "dev:api": "pnpm --filter @prequest/shared run build && pnpm --filter @prequest/api run dev",
     "dev:web": "pnpm --filter @prequest/shared run build && pnpm --filter @prequest/web run dev",
@@ -13,6 +14,7 @@
     "build:web": "pnpm --filter @prequest/web run build",
     "lint": "pnpm -r run lint",
     "test": "pnpm -r run test",
+    "design:check": "bash scripts/check-design.sh",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",

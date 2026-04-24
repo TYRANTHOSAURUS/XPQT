@@ -58,7 +58,7 @@ function SlaIndicator({ dueAt, breachedAt }: { dueAt: string | null; breachedAt:
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-GB', {
+  return new Date(dateStr).toLocaleDateString('en-GB', { // design-check:allow — legacy; migrate to formatFullTimestamp from @/lib/format
     day: 'numeric',
     month: 'short',
     year: 'numeric',

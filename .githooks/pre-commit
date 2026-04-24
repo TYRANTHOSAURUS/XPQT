@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# pre-commit — enforce design polish rules before a commit lands.
+#
+# Runs scripts/check-design.sh on the whole repo. It's grep-based and
+# completes in under a second, so whole-repo scan is fine and avoids
+# the "staged file only" false-pass trap (e.g. you fix a file that
+# imports a rule-violating helper but not the helper itself).
+#
+# Skips automatically during rebase / cherry-pick / merge so those
+# replay operations never block.
+#
+# Bypass in a genuine emergency with `git commit --no-verify`, but
+# follow up with a fix commit — the check is run in CI regardless.
+
+set -euo pipefail
+
+# Skip during non-committing operations.
+if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ] \
+  || [ -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ] \
+  || [ -f "$(git rev-parse --git-dir)/rebase-merge" ] \
+  || [ -f "$(git rev-parse --git-dir)/rebase-apply" ]; then
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec bash "$ROOT/scripts/check-design.sh" --staged

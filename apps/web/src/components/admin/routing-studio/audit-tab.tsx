@@ -12,7 +12,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { AlertTriangle, CheckCircle2, CircleSlash } from 'lucide-react';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useRoutingStudioDecisions, useRoutingDualRunLogs } from '@/api/routing';
 
 type ChosenBy =
   | 'rule'
@@ -125,17 +125,15 @@ function DecisionsAudit() {
 
   const since = useMemo(() => sinceIso(sincePreset), [sincePreset]);
 
-  const path = useMemo(() => {
-    const qs = new URLSearchParams();
-    qs.set('limit', String(PAGE_SIZE));
-    qs.set('offset', String(offset));
-    if (chosenByFilter) qs.set('chosen_by', chosenByFilter);
-    if (ticketIdFilter.trim()) qs.set('ticket_id', ticketIdFilter.trim());
-    if (since) qs.set('since', since);
-    return `/routing/studio/decisions?${qs.toString()}`;
+  const filters = useMemo(() => {
+    const f: Record<string, unknown> = { limit: PAGE_SIZE, offset };
+    if (chosenByFilter) f.chosen_by = chosenByFilter;
+    if (ticketIdFilter.trim()) f.ticket_id = ticketIdFilter.trim();
+    if (since) f.since = since;
+    return f;
   }, [chosenByFilter, ticketIdFilter, since, offset]);
 
-  const { data, loading } = useApi<{ rows: DecisionRow[]; total: number }>(path, [path]);
+  const { data, isPending: loading } = useRoutingStudioDecisions<{ rows: DecisionRow[]; total: number }>(filters);
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
 
@@ -237,17 +235,15 @@ function DualRunAudit() {
 
   const since = useMemo(() => sinceIso(sincePreset), [sincePreset]);
 
-  const path = useMemo(() => {
-    const qs = new URLSearchParams();
-    qs.set('limit', String(PAGE_SIZE));
-    qs.set('offset', String(offset));
-    if (hookFilter) qs.set('hook', hookFilter);
-    if (onlyDivergent) qs.set('only_divergent', 'true');
-    if (since) qs.set('since', since);
-    return `/routing/studio/dualrun-logs?${qs.toString()}`;
+  const filters = useMemo(() => {
+    const f: Record<string, unknown> = { limit: PAGE_SIZE, offset };
+    if (hookFilter) f.hook = hookFilter;
+    if (onlyDivergent) f.only_divergent = true;
+    if (since) f.since = since;
+    return f;
   }, [hookFilter, onlyDivergent, since, offset]);
 
-  const { data, loading } = useApi<{ rows: DualRunLogRow[]; total: number }>(path, [path]);
+  const { data, isPending: loading } = useRoutingDualRunLogs<{ rows: DualRunLogRow[]; total: number }>(filters);
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
 
@@ -363,7 +359,7 @@ function DecisionRowView({ row }: { row: DecisionRow }) {
     <TableRow>
       <TableCell>
         <div className="text-sm">{ago}</div>
-        <div className="text-xs text-muted-foreground">{new Date(row.decided_at).toLocaleString()}</div>
+        <div className="text-xs text-muted-foreground">{new Date(row.decided_at).toLocaleString()/* design-check:allow — legacy; migrate to formatFullTimestamp */}</div>
       </TableCell>
       <TableCell>
         <code className="text-xs">{row.ticket_id.slice(0, 8)}</code>
@@ -407,7 +403,7 @@ function DualRunRowView({ row }: { row: DualRunLogRow }) {
     <TableRow>
       <TableCell>
         <div className="text-sm">{safeRelative(row.evaluated_at)}</div>
-        <div className="text-xs text-muted-foreground">{new Date(row.evaluated_at).toLocaleString()}</div>
+        <div className="text-xs text-muted-foreground">{new Date(row.evaluated_at).toLocaleString()/* design-check:allow — legacy; migrate to formatFullTimestamp */}</div>
       </TableCell>
       <TableCell>
         <Badge variant="outline">{row.hook.replace('_', ' ')}</Badge>

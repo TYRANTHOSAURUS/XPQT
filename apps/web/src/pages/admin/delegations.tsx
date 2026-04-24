@@ -62,7 +62,7 @@ const statusVariant: Record<string, 'default' | 'secondary' | 'outline'> = {
 };
 
 function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); // design-check:allow — legacy; migrate to formatFullTimestamp
 }
 
 function getPersonName(p?: DelegationUser | null) {

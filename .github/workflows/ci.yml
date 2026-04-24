@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit lands on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Design check + typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        # The web + api packages import from @prequest/shared at runtime, so
+        # we need the compiled dist/ before any typecheck.
+        run: pnpm --filter @prequest/shared run build
+
+      - name: Design check (fonts, motion, format helpers, widths)
+        run: pnpm design:check
+
+      - name: Typecheck web
+        run: pnpm --filter @prequest/web run lint
+
+      - name: Typecheck api
+        run: pnpm --filter @prequest/api run lint

@@ -2,10 +2,14 @@
 #
 # check-design.sh — grep-based guardrails against design drift.
 #
-# Cheap, brittle, fast. Run as `pnpm design:check` or in CI. Each check is a
-# single grep; the script exits non-zero on the first violation so failures
-# are easy to scan. Add an explicit allow-comment (`// design-check:allow`)
-# to a line to whitelist a legitimate deviation.
+# Modes:
+#   check-design.sh             scan the whole repo (CI default)
+#   check-design.sh --staged    scan only staged files + diffs (pre-commit)
+#
+# Cheap, brittle, fast. Each check is a single grep; the script exits
+# non-zero on the first violation so failures are easy to scan. Add an
+# explicit allow-comment (`// design-check:allow`) to a line to whitelist
+# a legitimate deviation.
 #
 # See CLAUDE.md §"Design polish rules" for why each rule exists.
 
@@ -13,6 +17,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+MODE="all"
+if [ "${1:-}" = "--staged" ]; then
+  MODE="staged"
+fi
 
 # Scope — everything in apps/web/src except already-approved tokens and the
 # format helpers themselves (which obviously DO use Intl.*).
@@ -23,6 +32,20 @@ INDEX_CSS="apps/web/src/index.css"
 
 violations=0
 
+# In --staged mode we build the list of files to scan from the git index,
+# filtering to the paths our rules care about. If nothing interesting is
+# staged, exit cleanly.
+STAGED_FILES=""
+if [ "$MODE" = "staged" ]; then
+  STAGED_FILES=$(git diff --cached --name-only --diff-filter=AM 2>/dev/null \
+    | grep -E "^(apps/web/src|apps/web/index\.html)" \
+    || true)
+  if [ -z "$STAGED_FILES" ]; then
+    echo "Design checks skipped — no web files staged."
+    exit 0
+  fi
+fi
+
 run_check() {
   local name="$1"
   local pattern="$2"
@@ -30,12 +53,37 @@ run_check() {
   local excludes="$4"
   local hint="$5"
 
-  # shellcheck disable=SC2086
-  local matches
-  matches=$(grep -rnE "$pattern" $scope 2>/dev/null \
-    | grep -v "design-check:allow" \
-    | { [ -n "$excludes" ] && grep -v -E "$excludes" || cat; } \
-    || true)
+  local matches=""
+  if [ "$MODE" = "staged" ]; then
+    # Build the set of staged files that fall inside this rule's scope.
+    local targets=""
+    local file dir
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      for dir in $scope; do
+        case "$file" in "$dir"*)
+          targets+="$file"$'\n'
+          break
+          ;;
+        esac
+      done
+    done <<< "$STAGED_FILES"
+    targets="${targets%$'\n'}"
+    if [ -z "$targets" ]; then
+      echo "✓ $name (no staged files in scope)"
+      return
+    fi
+    matches=$(echo "$targets" | xargs -I{} grep -HnE "$pattern" {} 2>/dev/null \
+      | grep -v "design-check:allow" \
+      | { [ -n "$excludes" ] && grep -v -E "$excludes" || cat; } \
+      || true)
+  else
+    # shellcheck disable=SC2086
+    matches=$(grep -rnE "$pattern" $scope 2>/dev/null \
+      | grep -v "design-check:allow" \
+      | { [ -n "$excludes" ] && grep -v -E "$excludes" || cat; } \
+      || true)
+  fi
 
   if [ -n "$matches" ]; then
     echo "✗ $name"

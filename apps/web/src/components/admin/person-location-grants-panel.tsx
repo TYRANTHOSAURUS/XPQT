@@ -154,7 +154,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
                   )}
                   {row.source === 'grant' && row.granted_at && (
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Granted {new Date(row.granted_at).toLocaleDateString()}
+                      Granted {new Date(row.granted_at).toLocaleDateString()/* design-check:allow — legacy; migrate to formatFullTimestamp */}
                     </p>
                   )}
                 </div>
