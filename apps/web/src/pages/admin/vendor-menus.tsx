@@ -9,8 +9,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldGroup,
@@ -74,28 +78,27 @@ export function VendorMenusPage() {
   const [createOpen, setCreateOpen] = useState(false);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Vendor Menus</h1>
-          <p className="text-muted-foreground mt-1">
-            Price sheets per vendor per building. Click a menu to edit.
-          </p>
-        </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger render={<Button className="gap-2" />}>
-            <Plus className="h-4 w-4" /> New Menu
-          </DialogTrigger>
-          <CreateMenuDialog
-            vendors={vendors ?? []}
-            onCreated={(id) => {
-              setCreateOpen(false);
-              refetch();
-              navigate(`/admin/vendor-menus/${id}`);
-            }}
-          />
-        </Dialog>
-      </div>
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Vendor menus"
+        description="Price sheets per vendor per building. Click a menu to edit items."
+        actions={
+          <Button className="gap-1.5" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" /> New menu
+          </Button>
+        }
+      />
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <CreateMenuDialog
+          vendors={vendors ?? []}
+          onCreated={(id) => {
+            setCreateOpen(false);
+            refetch();
+            navigate(`/admin/vendor-menus/${id}`);
+          }}
+        />
+      </Dialog>
 
       <div className="flex items-center gap-2 mb-4">
         <Select value={filterVendor} onValueChange={(v) => setFilterVendor(v ?? '')}>
@@ -172,7 +175,7 @@ export function VendorMenusPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }
 

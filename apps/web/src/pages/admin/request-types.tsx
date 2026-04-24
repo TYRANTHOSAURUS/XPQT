@@ -9,6 +9,10 @@ import { Plus, Pencil } from 'lucide-react';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { RequestTypeDialog } from '@/components/admin/request-type-dialog';
 import { requestTypeKeys, useRequestTypes } from '@/api/request-types';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 
 export function RequestTypesPage() {
   const qc = useQueryClient();
@@ -34,19 +38,16 @@ export function RequestTypesPage() {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Request Types</h1>
-          <p className="text-muted-foreground mt-1">
-            Fulfillment configuration. Portal-facing fields (categories, coverage, audience, form variants) live on{' '}
-            <span className="font-medium">/admin/catalog-hierarchy</span>.
-          </p>
-        </div>
-        <Button className="gap-2" onClick={openCreate}>
-          <Plus className="h-4 w-4" /> Add Request Type
-        </Button>
-      </div>
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        title="Request types"
+        description="Fulfilment configuration for each requestable service. Portal-facing fields (categories, coverage, audience, form variants) live under /admin/catalog-hierarchy."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add request type
+          </Button>
+        }
+      />
 
       <RequestTypeDialog
         open={dialogOpen}
@@ -92,6 +93,6 @@ export function RequestTypesPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

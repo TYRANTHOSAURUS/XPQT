@@ -7,8 +7,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldDescription,
@@ -194,22 +198,22 @@ export function VendorsPage() {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Vendors</h1>
-          <p className="text-muted-foreground mt-1">
-            External parties that fulfill catering, AV, supplies, and other services.
-          </p>
-        </div>
-        <Dialog
-          open={dialogOpen}
-          onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}
-        >
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Vendor
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[620px]">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Vendors"
+        description="External parties that fulfil catering, AV, supplies, and other services. Each vendor serves specific buildings."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add vendor
+          </Button>
+        }
+      />
+
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}
+      >
+        <DialogContent className="sm:max-w-[620px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Vendor</DialogTitle>
               <DialogDescription>
@@ -396,9 +400,8 @@ export function VendorsPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -438,6 +441,6 @@ export function VendorsPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }
