@@ -33,6 +33,7 @@ export function CriteriaSetsPage() {
   return (
     <SettingsPageShell width="wide">
       <SettingsPageHeader
+        backTo="/admin"
         title="Criteria sets"
         description="Reusable audience rules over person attributes. Bind them from request type audience, conditional form variants, or configured on-behalf lists."
         actions={

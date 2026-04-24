@@ -55,6 +55,7 @@ import { RoutingStudioPage } from '@/pages/admin/routing-studio';
 import { ReportsPage } from '@/pages/desk/reports';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { BrandingPage } from '@/pages/admin/branding';
+import { AdminIndexPage } from '@/pages/admin';
 import { useTheme } from '@/hooks/use-theme';
 import { features } from '@/lib/features';
 import { BrandingProvider } from '@/hooks/use-branding';
@@ -108,7 +109,7 @@ export function App() {
             <Route path="tickets" element={<TicketsPage />} />
             <Route path="approvals" element={<ApprovalsPage />} />
             <Route path="reports" element={<ReportsPage />} />
-            <Route path="settings" element={<Navigate to="/admin/request-types" replace />} />
+            <Route path="settings" element={<Navigate to="/admin" replace />} />
           </Route>
 
           {/* Admin — requires auth + admin role */}
@@ -120,7 +121,7 @@ export function App() {
               </ProtectedRoute>
             }
           >
-            <Route index element={<Navigate to="/admin/request-types" replace />} />
+            <Route index element={<AdminIndexPage />} />
             {/* Config */}
             <Route path="request-types" element={<RequestTypesPage />} />
             <Route path="form-schemas" element={<FormSchemasPage />} />

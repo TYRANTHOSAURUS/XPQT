@@ -6,17 +6,18 @@ import {
   SettingsPageHeader,
 } from '@/components/ui/settings-page';
 import { OrgNodeTree, type OrgNodeListItem } from '@/components/admin/org-node-tree';
-import { useApi } from '@/hooks/use-api';
+import { useOrgNodes } from '@/api/org-nodes';
 import { cn } from '@/lib/utils';
 
 export function OrganisationsPage() {
-  const { data, loading } = useApi<OrgNodeListItem[]>('/org-nodes');
+  const { data, isPending: loading } = useOrgNodes() as { data: OrgNodeListItem[] | undefined; isPending: boolean };
 
   const isEmpty = !loading && (data?.length ?? 0) === 0;
 
   return (
     <SettingsPageShell>
       <SettingsPageHeader
+        backTo="/admin"
         title="Organisations"
         description="The requester-side hierarchy. Members of a node inherit its location grants."
         actions={

@@ -267,7 +267,7 @@ export function BrandingPage() {
   if (loading && !branding.primary_color) {
     return (
       <SettingsPageShell>
-        <SettingsPageHeader title="Branding" description="Loading…" />
+        <SettingsPageHeader backTo="/admin" title="Branding" description="Loading…" />
       </SettingsPageShell>
     );
   }
@@ -275,6 +275,7 @@ export function BrandingPage() {
   return (
     <SettingsPageShell>
       <SettingsPageHeader
+        backTo="/admin"
         title="Branding"
         description="Logos, colors, and the default theme mode for your workspace."
       />

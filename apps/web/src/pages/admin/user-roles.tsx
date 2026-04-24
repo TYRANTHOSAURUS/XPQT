@@ -58,6 +58,7 @@ export function UserRolesPage() {
   return (
     <SettingsPageShell width="xwide">
       <SettingsPageHeader
+        backTo="/admin"
         title="User roles"
         description="Permission bundles you can attach to a user. Scope a role by domain and location at assignment time — one role, many scoped uses."
         actions={

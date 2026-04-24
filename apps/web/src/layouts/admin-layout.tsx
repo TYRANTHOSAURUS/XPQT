@@ -1,4 +1,4 @@
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { NavUser } from '@/components/nav-user';
 import { WorkspaceSwitcher } from '@/components/workspace-switcher';
 import { useAuth } from '@/providers/auth-provider';
@@ -21,107 +21,18 @@ import { Separator } from '@/components/ui/separator';
 import {
   Breadcrumb,
   BreadcrumbItem,
+  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import {
-  Users,
-  MapPin,
-  Clock,
-  Route,
-  Bell,
-  Calendar,
-  FormInput,
-  UserCog,
-  Shield,
-  PersonStanding,
-  Package,
-  GitBranch,
-  Webhook,
-  HandCoins,
-  ListTree,
-  Filter,
-  Store,
-  BookOpen,
-  Network,
-  Layers,
-  Compass,
-  ArrowLeft,
-  Building2,
-  Palette,
-} from 'lucide-react';
-import { features } from '@/lib/features';
+import { ArrowLeft } from 'lucide-react';
+import { adminNavGroups } from '@/lib/admin-nav';
 
-const legacyRoutingNav = [
-  { title: 'Routing Rules', path: '/admin/routing-rules', icon: Route },
-  { title: 'Location Teams', path: '/admin/location-teams', icon: MapPin },
-  { title: 'Space Groups', path: '/admin/space-groups', icon: Layers },
-  { title: 'Domain Hierarchy', path: '/admin/domain-parents', icon: Network },
-];
-
-const configNav = [
-  { title: 'Service Catalog', path: '/admin/catalog-hierarchy', icon: ListTree },
-  { title: 'Form Schemas', path: '/admin/form-schemas', icon: FormInput },
-  { title: 'Criteria Sets', path: '/admin/criteria-sets', icon: Filter },
-  { title: 'SLA Policies', path: '/admin/sla-policies', icon: Clock },
-  ...(features.routingStudio
-    ? [{ title: 'Routing Studio', path: '/admin/routing-studio', icon: Compass }]
-    : legacyRoutingNav),
-  { title: 'Business Hours', path: '/admin/business-hours', icon: Calendar },
-  { title: 'Notifications', path: '/admin/notifications', icon: Bell },
-  { title: 'Workflows', path: '/admin/workflow-templates', icon: GitBranch },
-  { title: 'Webhooks', path: '/admin/webhooks', icon: Webhook },
-  { title: 'Branding', path: '/admin/branding', icon: Palette },
-];
-
-const peopleNav = [
-  { title: 'Organisations', path: '/admin/organisations', icon: Building2 },
-  { title: 'Teams', path: '/admin/teams', icon: Users },
-  { title: 'Persons', path: '/admin/persons', icon: PersonStanding },
-  { title: 'Delegations', path: '/admin/delegations', icon: HandCoins },
-];
-
-const authorizationNav = [
-  { title: 'Users', path: '/admin/users', icon: UserCog },
-  { title: 'User roles', path: '/admin/user-roles', icon: Shield },
-];
-
-const operationsNav = [
-  { title: 'Locations', path: '/admin/locations', icon: MapPin },
-  { title: 'Assets', path: '/admin/assets', icon: Package },
-  { title: 'Vendors', path: '/admin/vendors', icon: Store },
-  { title: 'Vendor Menus', path: '/admin/vendor-menus', icon: BookOpen },
-];
-
-
-const pageTitles: Record<string, string> = {
-  '/admin/catalog-hierarchy': 'Catalog Hierarchy',
-  '/admin/request-types': 'Request Types',
-  '/admin/form-schemas': 'Form Schemas',
-  '/admin/criteria-sets': 'Criteria Sets',
-  '/admin/teams': 'Teams',
-  '/admin/locations': 'Locations',
-  '/admin/sla-policies': 'SLA Policies',
-  '/admin/routing-studio': 'Routing Studio',
-  '/admin/routing-rules': 'Routing Rules',
-  '/admin/location-teams': 'Location Teams',
-  '/admin/space-groups': 'Space Groups',
-  '/admin/domain-parents': 'Domain Hierarchy',
-  '/admin/business-hours': 'Business Hours',
-  '/admin/notifications': 'Notifications',
-  '/admin/workflow-templates': 'Workflow Templates',
-  '/admin/webhooks': 'Webhooks',
-  '/admin/users': 'Users',
-  '/admin/user-roles': 'User roles',
-  '/admin/persons': 'Persons',
-  '/admin/organisations': 'Organisations',
-  '/admin/delegations': 'Delegations',
-  '/admin/assets': 'Assets',
-  '/admin/vendors': 'Vendors',
-  '/admin/vendor-menus': 'Vendor Menus',
-  '/admin/branding': 'Branding',
-};
+const pageTitles: Record<string, string> = Object.fromEntries(
+  adminNavGroups.flatMap((group) => group.items.map((item) => [item.path, item.title])),
+);
+pageTitles['/admin/request-types'] = 'Request Types';
 
 export function AdminLayout() {
   const navigate = useNavigate();
@@ -159,85 +70,27 @@ export function AdminLayout() {
             </SidebarGroupContent>
           </SidebarGroup>
 
-          <SidebarGroup>
-            <SidebarGroupLabel>Configuration</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {configNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={location.pathname.startsWith(item.path)}
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup>
-            <SidebarGroupLabel>People</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {peopleNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={location.pathname.startsWith(item.path)}
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup>
-            <SidebarGroupLabel>Authorisation &amp; Permissions</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {authorizationNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={location.pathname.startsWith(item.path)}
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup>
-            <SidebarGroupLabel>Operations</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {operationsNav.map((item) => (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={location.pathname.startsWith(item.path)}
-                      onClick={() => navigate(item.path)}
-                      className="cursor-pointer"
-                    >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          {adminNavGroups.map((group) => (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {group.items.map((item) => (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton
+                        isActive={location.pathname.startsWith(item.path)}
+                        onClick={() => navigate(item.path)}
+                        className="cursor-pointer"
+                      >
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
 
         </SidebarContent>
 
@@ -252,7 +105,9 @@ export function AdminLayout() {
           <Separator orientation="vertical" className="mr-2 h-4" />
           <Breadcrumb>
             <BreadcrumbList>
-              <BreadcrumbItem>Admin</BreadcrumbItem>
+              <BreadcrumbItem>
+                <BreadcrumbLink render={<Link to="/admin" />}>Admin</BreadcrumbLink>
+              </BreadcrumbItem>
               <BreadcrumbSeparator />
               <BreadcrumbItem>
                 <BreadcrumbPage>{pageTitle}</BreadcrumbPage>

@@ -26,6 +26,7 @@ export function WebhooksPage() {
   return (
     <SettingsPageShell>
       <SettingsPageHeader
+        backTo="/admin"
         title="Webhooks"
         description="Public endpoints that create tickets and start workflows when an external system POSTs a payload."
         actions={

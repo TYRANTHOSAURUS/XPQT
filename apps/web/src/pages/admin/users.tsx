@@ -104,6 +104,7 @@ export function UsersPage() {
   return (
     <SettingsPageShell width="xwide">
       <SettingsPageHeader
+        backTo="/admin"
         title="Users"
         description="Platform accounts linked to a person. Use this list to see who can sign in; manage what each user can do by assigning roles on their detail page."
         actions={
