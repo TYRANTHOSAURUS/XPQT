@@ -126,6 +126,29 @@ Every form — dialog, sheet, drawer, page-level, inspector panel — must be bu
 
 Before writing any new form or touching an existing one, confirm it follows the above. If you find a form that doesn't, migrate it rather than copying its pattern.
 
+### Settings page layout (mandatory)
+
+Every admin / settings-style page is built with `SettingsPageShell` + `SettingsPageHeader` + `SettingsSection` + `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx`. Widths are a fixed enum — do not invent new ones.
+
+**Pick the smallest width that works:**
+
+| Width | Max | When to use |
+|---|---|---|
+| `narrow` | 480px | Single short form with one decision. Rename a team, confirm a destructive op. |
+| `default` | 640px | The Linear-style column. Most settings pages — person detail, team settings, tenant branding. |
+| `wide` | 960px | Rule builders, dense tables, side-by-side content that feels cramped in 640. |
+| `xwide` | 1152px | Two-column editors (picker + live preview), multi-column admin tables, effective-permissions debuggers. **This is the absolute maximum for any settings page.** |
+
+Anything larger isn't a settings page — reach for a dedicated layout, not a new width.
+
+**Compose the page from grouped blocks.** Each feature on a settings page is a `<SettingsSection title="…" [description] [density] [bordered]>`. Within a section, the block shape is chosen for the *specific* element being configured — a form uses `FieldGroup` + `Field`, a table uses `Table`, a dense picker uses the two-column preview pattern. Don't force a generic card template when the data deserves bespoke UX.
+
+**Go deeper or go modal — don't bloat a section.**
+- If a block needs substantial configuration (its own preview, multi-step flow, dependent data), navigate to a dedicated child page (e.g. `/admin/users/roles/:id`) rather than expanding the parent section. Reach back to the parent via the `backTo` prop on `SettingsPageHeader`.
+- If a block only needs a small focused input (rename, confirm, invite, add-by-id), use a `Dialog` — keep the user on the parent page.
+
+Reference implementations: `/admin/organisations/*`, `/admin/users/roles/:id` (xwide two-column), `/admin/users/:id` (xwide with effective-permissions panel). Before adding a new setting, scan these for a block pattern you can lift or extend.
+
 ## Spec Documents
 All in `docs/`:
 - `docs/spec.md` — main product specification (~3000 lines, comprehensive)

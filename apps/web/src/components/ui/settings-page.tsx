@@ -4,19 +4,19 @@ import { cn } from '@/lib/utils';
 import { Button, buttonVariants } from '@/components/ui/button';
 
 /**
- * Width options for a centered settings page.
+ * Width options for a centered settings page. See CLAUDE.md /
+ * AGENTS.md "Settings page layout" for when to use which.
  *
  * - `narrow` (480px) — short forms, one-decision pages.
  * - `default` (640px) — the Linear-style column used by most settings pages.
- * - `wide` (960px) — pages where a single column feels cramped, e.g. tables,
- *   rule builders, or anything with side-by-side content. Still centered.
- * - `xwide` (1180px) — two-column editors with a dense picker + live preview
- *   panel, or multi-column admin tables (role editor, users list, asset
- *   inventory). The standard for rich admin pages; matches the Linear and
- *   Vercel dashboard widths.
+ * - `wide` (960px) — rule builders, dense tables, side-by-side content.
+ * - `xwide` (1152px) — two-column editors with a dense picker + live
+ *   preview panel, or multi-column admin tables (role editor, users list).
+ *   Matches the portal's max-w-6xl column and is the absolute maximum
+ *   for any settings-style page.
  *
- * Keep this list short. If a page needs something else, it's probably not a
- * settings page anymore.
+ * Keep this list fixed. If a page needs something else, it's probably not a
+ * settings page anymore — reach for a dedicated layout, not a new width.
  */
 export type SettingsPageWidth = 'narrow' | 'default' | 'wide' | 'xwide';
 
@@ -24,7 +24,7 @@ const WIDTH_CLASS: Record<SettingsPageWidth, string> = {
   narrow: 'max-w-[480px]',
   default: 'max-w-[640px]',
   wide: 'max-w-[960px]',
-  xwide: 'max-w-[1180px]',
+  xwide: 'max-w-[1152px]',
 };
 
 interface SettingsPageShellProps {
