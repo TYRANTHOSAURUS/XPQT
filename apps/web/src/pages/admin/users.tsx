@@ -102,7 +102,7 @@ export function UsersPage() {
   const isEmpty = !usersLoading && (users?.length ?? 0) === 0;
 
   return (
-    <SettingsPageShell width="wide">
+    <SettingsPageShell width="xwide">
       <SettingsPageHeader
         title="Users"
         description="Platform accounts linked to a person. Use this list to see who can sign in; manage what each user can do by assigning roles on their detail page."

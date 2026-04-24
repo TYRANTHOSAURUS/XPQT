@@ -55,7 +55,7 @@ export function UserRolesPage() {
   const isEmpty = !rolesLoading && (roles?.length ?? 0) === 0;
 
   return (
-    <SettingsPageShell width="wide">
+    <SettingsPageShell width="xwide">
       <SettingsPageHeader
         title="User roles"
         description="Permission bundles you can attach to a user. Scope a role by domain and location at assignment time — one role, many scoped uses."
