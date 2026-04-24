@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
@@ -23,6 +23,17 @@ export function LocationsPage() {
 
   const handleAddChild = (parentId: string, parentType: SpaceType) =>
     setChildCreate({ id: parentId, type: parentType });
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        document.querySelector<HTMLInputElement>('input[placeholder="Search name or code…"]')?.focus();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const matchCount = useMemo(() => {
     if (state.mode !== 'flat' || !state.searchQuery.trim()) return null;

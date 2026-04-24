@@ -36,12 +36,48 @@ export function SpaceTree({ tree, state, onAddChild }: Props) {
     overscan: 12,
   });
 
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!state.selectedId) return;
+    const index = rows.findIndex((r) => r.id === state.selectedId);
+    if (index === -1) return;
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault();
+        const next = rows[Math.min(index + 1, rows.length - 1)];
+        if (next) state.setSelectedId(next.id);
+        break;
+      }
+      case 'ArrowUp': {
+        e.preventDefault();
+        const prev = rows[Math.max(index - 1, 0)];
+        if (prev) state.setSelectedId(prev.id);
+        break;
+      }
+      case 'ArrowRight': {
+        e.preventDefault();
+        if (!state.expandedIds.has(state.selectedId)) state.toggleExpanded(state.selectedId);
+        break;
+      }
+      case 'ArrowLeft': {
+        e.preventDefault();
+        if (state.expandedIds.has(state.selectedId)) state.toggleExpanded(state.selectedId);
+        else {
+          const parentId = rows[index].parentId;
+          if (parentId) state.setSelectedId(parentId);
+        }
+        break;
+      }
+    }
+  };
+
   return (
     <div
       ref={parentRef}
       role="tree"
       aria-label="Spaces"
-      className="relative overflow-auto flex-1"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      className="relative overflow-auto flex-1 outline-none"
     >
       <div style={{ height: rowVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
         {rowVirtualizer.getVirtualItems().map((vi) => {
