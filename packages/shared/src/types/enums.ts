@@ -122,6 +122,7 @@ export type PersonType = (typeof PersonType)[keyof typeof PersonType];
 export const SpaceType = {
   SITE: 'site',
   BUILDING: 'building',
+  WING: 'wing',
   FLOOR: 'floor',
   ROOM: 'room',
   DESK: 'desk',
