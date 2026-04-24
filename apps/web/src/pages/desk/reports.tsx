@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { TableEmpty, TableLoading } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useTicketsOverview, useSlaPerformance, useTicketsByTeam } from '@/api/reports';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -144,14 +144,9 @@ export function ReportsPage() {
   const [days, setDays] = useState('30');
   const daysNum = parseInt(days, 10);
 
-  const { data: overview, loading: overviewLoading } =
-    useApi<OverviewResponse>('/reports/tickets/overview');
-
-  const { data: slaPerf, loading: slaLoading } =
-    useApi<SlaPerformanceResponse>(`/reports/sla/performance?days=${daysNum}`, [daysNum]);
-
-  const { data: byTeam, loading: teamsLoading } =
-    useApi<ByTeamResponse>('/reports/tickets/by-team');
+  const { data: overview, isPending: overviewLoading } = useTicketsOverview<OverviewResponse>();
+  const { data: slaPerf, isPending: slaLoading } = useSlaPerformance<SlaPerformanceResponse>(daysNum);
+  const { data: byTeam, isPending: teamsLoading } = useTicketsByTeam<ByTeamResponse>();
 
   const sla = overview?.sla;
   const byStatus = overview?.by_status ?? {};

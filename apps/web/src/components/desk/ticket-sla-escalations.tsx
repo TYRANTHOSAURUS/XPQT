@@ -1,16 +1,4 @@
-import { useApi } from '@/hooks/use-api';
-
-interface Crossing {
-  id: string;
-  fired_at: string;
-  timer_type: 'response' | 'resolution';
-  at_percent: number;
-  action: 'notify' | 'escalate' | 'skipped_no_manager';
-  target_type: 'user' | 'team' | 'manager_of_requester';
-  target_id: string | null;
-  target_name: string | null;
-  notification_id: string | null;
-}
+import { useTicketSlaCrossings, type SlaCrossing as Crossing } from '@/api/sla-policies';
 
 function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -32,7 +20,7 @@ interface Props {
 }
 
 export function TicketSlaEscalations({ ticketId }: Props) {
-  const { data, loading } = useApi<Crossing[]>(`/sla/tickets/${ticketId}/crossings`, [ticketId]);
+  const { data, isPending: loading } = useTicketSlaCrossings(ticketId);
   if (loading) return null;
   if (!data || data.length === 0) return null;
 

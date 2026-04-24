@@ -96,3 +96,34 @@ export function useUpdateSlaPolicy(id: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: slaPolicyKeys.lists() }),
   });
 }
+
+// ---------- SLA threshold crossings (per-ticket audit) ----------
+
+export interface SlaCrossing {
+  id: string;
+  fired_at: string;
+  timer_type: 'response' | 'resolution';
+  at_percent: number;
+  action: 'notify' | 'escalate' | 'skipped_no_manager';
+  target_type: 'user' | 'team' | 'manager_of_requester';
+  target_id: string | null;
+  target_name: string | null;
+  notification_id: string | null;
+}
+
+export const slaCrossingKeys = {
+  all: ['sla-crossings'] as const,
+  forTicket: (ticketId: string) => [...slaCrossingKeys.all, 'ticket', ticketId] as const,
+} as const;
+
+export function ticketSlaCrossingsOptions(ticketId: string) {
+  return queryOptions({
+    queryKey: slaCrossingKeys.forTicket(ticketId),
+    queryFn: ({ signal }) => apiFetch<SlaCrossing[]>(`/sla/tickets/${ticketId}/crossings`, { signal }),
+    enabled: Boolean(ticketId),
+    staleTime: 30_000,
+  });
+}
+export function useTicketSlaCrossings(ticketId: string) {
+  return useQuery(ticketSlaCrossingsOptions(ticketId));
+}

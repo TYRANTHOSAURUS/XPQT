@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Search, X, LayoutList, Table as TableIcon } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
+import { useTicketList } from '@/api/tickets';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
 import { TicketListRow } from '@/components/desk/ticket-list-row';
@@ -33,11 +33,6 @@ import {
   timeAgo,
 } from '@/components/desk/ticket-row-cells';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-
-interface TicketListResponse {
-  items: Ticket[];
-  next_cursor: string | null;
-}
 
 type ViewMode = 'table' | 'list';
 const VIEW_STORAGE_KEY = 'tickets:view';
@@ -410,11 +405,9 @@ export function TicketsPage() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const searchParam = searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : '';
-  const { data, loading } = useApi<TicketListResponse>(
-    `/tickets?parent_ticket_id=null${searchParam}`,
-    [searchQuery],
-  );
+  const { data, isPending: loading } = useTicketList<Ticket>({
+    q: searchQuery || null,
+  });
   const tickets = data?.items ?? [];
 
   const viewProps = {

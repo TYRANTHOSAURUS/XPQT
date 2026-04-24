@@ -12,27 +12,9 @@ import {
 } from '@/components/ui/table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, XCircle, Inbox } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
-import { apiFetch } from '@/lib/api';
+import { usePendingApprovals, useRespondApproval } from '@/api/approvals';
 import { useAuth } from '@/providers/auth-provider';
 
-/* ---------- Types ---------- */
-
-interface Approval {
-  id: string;
-  target_entity_type: string;
-  target_entity_id: string;
-  approval_chain_id: string | null;
-  step_number: number | null;
-  parallel_group: string | null;
-  approver_person_id: string | null;
-  approver_team_id: string | null;
-  status: string;
-  requested_at: string;
-  responded_at: string | null;
-  comments: string | null;
-  created_at: string;
-}
 
 /* ---------- Helpers ---------- */
 
@@ -57,37 +39,31 @@ export function ApprovalsPage() {
   const { person } = useAuth();
   const personId = person?.id;
 
-  const { data: approvals, loading, error, refetch } = useApi<Approval[]>(
-    personId ? `/approvals/pending/${personId}` : '',
-    [personId],
-  );
+  const { data: approvals, isPending: loading, error } = usePendingApprovals(personId);
+  const respond = useRespondApproval(personId);
 
   const [comments, setComments] = useState<Record<string, string>>({});
+  // Track per-approval in-flight so individual Approve/Reject buttons disable
+  // independently. RQ's single respond.isPending flag would disable every row
+  // at once during a mutation.
   const [responding, setResponding] = useState<Record<string, boolean>>({});
 
-  const handleRespond = async (approvalId: string, status: 'approved' | 'rejected') => {
+  const handleRespond = (approvalId: string, status: 'approved' | 'rejected') => {
     if (!personId) return;
     setResponding((prev) => ({ ...prev, [approvalId]: true }));
-    try {
-      await apiFetch(`/approvals/${approvalId}/respond`, {
-        method: 'POST',
-        body: JSON.stringify({
-          status,
-          comments: comments[approvalId] || undefined,
-          responding_person_id: personId,
-        }),
-      });
-      setComments((prev) => {
-        const next = { ...prev };
-        delete next[approvalId];
-        return next;
-      });
-      refetch();
-    } catch {
-      // Error handled silently for now — apiFetch will throw on non-OK
-    } finally {
-      setResponding((prev) => ({ ...prev, [approvalId]: false }));
-    }
+    respond.mutate(
+      { approvalId, status, comments: comments[approvalId], responding_person_id: personId },
+      {
+        onSuccess: () => {
+          setComments((prev) => {
+            const next = { ...prev };
+            delete next[approvalId];
+            return next;
+          });
+        },
+        onSettled: () => setResponding((prev) => ({ ...prev, [approvalId]: false })),
+      },
+    );
   };
 
   // No person loaded yet (auth still hydrating)
@@ -104,7 +80,7 @@ export function ApprovalsPage() {
   if (error) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <p className="text-destructive">Failed to load approvals: {error}</p>
+        <p className="text-destructive">Failed to load approvals: {error instanceof Error ? error.message : String(error)}</p>
       </div>
     );
   }

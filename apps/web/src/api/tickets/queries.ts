@@ -1,7 +1,12 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { ticketKeys } from './keys';
+import { ticketKeys, type TicketListFilters } from './keys';
 import type { TicketActivity, TicketDetail } from './types';
+
+export interface TicketListResponse<TItem = TicketDetail> {
+  items: TItem[];
+  next_cursor?: string | null;
+}
 
 /**
  * Open-ticket detail view. Cache tier T1 (§7.2) — short staleTime because the
@@ -43,4 +48,39 @@ export function ticketTagSuggestionsOptions() {
 
 export function useTicketTagSuggestions() {
   return useQuery(ticketTagSuggestionsOptions());
+}
+
+/**
+ * Ticket list (desk queues + inbox). Filters are deep-equal-compared by RQ so
+ * toggling between the same filter set hits the cache. keepPreviousData keeps
+ * the current list visible while a new filter is in flight — no flash to empty.
+ */
+export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilters) {
+  return queryOptions({
+    queryKey: ticketKeys.list(filters),
+    queryFn: ({ signal }) =>
+      apiFetch<TicketListResponse<TItem>>('/tickets', {
+        signal,
+        query: {
+          parent_ticket_id: filters.requesterPersonId ? undefined : 'null',
+          status: filters.status ?? undefined,
+          status_category: filters.statusCategory ?? undefined,
+          priority: filters.priority ?? undefined,
+          assigned_team_id: filters.assignedTeamId ?? undefined,
+          assigned_user_id: filters.assignedUserId ?? undefined,
+          assigned_vendor_id: filters.assignedVendorId ?? undefined,
+          request_type_id: filters.requestTypeId ?? undefined,
+          requester_person_id: filters.requesterPersonId ?? undefined,
+          location_id: filters.locationId ?? undefined,
+          search: filters.q ?? undefined,
+          page: filters.page ?? undefined,
+        },
+      }),
+    staleTime: 30_000, // T2
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useTicketList<TItem = TicketDetail>(filters: TicketListFilters) {
+  return useQuery(ticketListOptions<TItem>(filters));
 }
