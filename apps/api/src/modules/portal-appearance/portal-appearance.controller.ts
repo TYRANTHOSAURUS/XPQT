@@ -45,6 +45,8 @@ export class PortalAppearanceController {
     @Query('location_id') locationId: string,
     @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
+    if (!locationId) throw new BadRequestException('location_id is required');
+    if (!file) throw new BadRequestException('file is required');
     return this.service.uploadHero(locationId, file);
   }
 
