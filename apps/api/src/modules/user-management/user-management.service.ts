@@ -17,6 +17,7 @@ export interface CreateRoleDto {
   description?: string;
   permissions?: string[];
   type?: RoleType;
+  active?: boolean;
 }
 
 export interface CreateRoleAssignmentDto {

@@ -172,7 +172,7 @@ Reference implementations: `/admin/organisations/*`, `/admin/users/roles/:id` (x
   3. **Operations** — testing, recent events, observability (if applicable).
   4. **Auth / limits** — keys, rate limits, allowlists (if applicable).
   5. **Danger zone** — delete, archive, reset. Always last.
-- No page-level Save button. Everything auto-saves (see below).
+- Save model is chosen per page — see **Save modes** below. Auto-save is the default; batch-save is the right call for consequential atomic edits.
 
 **Within a group — use `SettingsRow`, not form fields:**
 Each configurable thing on a detail page is one `SettingsRow label="…" description="…"` with the control on the right. Rows are divided by a single hairline inside one bordered `SettingsGroup` card. This is Linear's "list of decisions" pattern — **do not replace it with a `FieldGroup`**. Field primitives are for grouped forms submitted together; `SettingsRow` is for independent, individually-saved decisions.
@@ -182,11 +182,24 @@ Each configurable thing on a detail page is one `SettingsRow label="…" descrip
 2. **Clickable row → sub-dialog** — anything complex: picker over a large list, rules builder, key-value map, multi-row editor. `onClick` on the row opens the dialog; `SettingsRowValue` on the right shows a summary ("`3 rules`", "`8 fields`", the selected name). The dialog owns draft state + a single Save button.
 3. **Clickable row → child page** — only when the nested thing itself needs multiple groups, its own test/preview, or its own audit feed. Navigate via `<Link>`-wrapping the row. Use sparingly; most things fit in a dialog.
 
-**Auto-save, not a submit button:**
+**Save modes — pick the right one per page:**
+
+**1. Auto-save (default for most pages).** Each row/control is an independent decision; saving one doesn't imply saving the rest. Use for: Identity (name, description, active), Auth & limits (rate limit, allowlist), Operations. Examples: `/admin/webhooks/:id`, `/admin/criteria-sets/:id`.
 - Text inputs: wrap with `useDebouncedSave(value, (v) => save({ field: v }, { silent: true }))`. No toast on silent save.
 - Switches / selects that trigger immediately: `save({ field: next })` — toast on success is OK but optional.
 - Dialog-driven saves: call `save({ field: next })` inside `onSave`, then close the dialog. Toast is acceptable here since the user clicked Save.
-- Server-side validation problems (e.g. 422 with a `validation.problems` payload) surface as a single warning card directly below the header — not as per-field errors — because SettingsRow has no error slot.
+
+**2. Batch save (page-level Save button).** The edit is an atomic, consequential decision that admins expect to commit once. The audit log should treat it as one event, not N toggles. Use for: role permissions, workflow definitions, form schemas — anything where "I'm adjusting many fields at once, then committing" is the real workflow. Examples: `/admin/user-roles/:id`.
+- `SettingsFooterActions` at the bottom with primary Save + secondary Cancel.
+- **Always** show unsaved-changes state (sticky bar or enabled/disabled Save) and a **diff preview** (what's being added/removed since last save) before the user commits. Without that, batch-save becomes "fire and forget" — no worse than auto-save but with extra clicks.
+- Cancel confirms before discarding unsaved changes.
+- Route to detail page after create.
+
+**3. Per-section save (hybrid — when a page mixes both).** Some pages have auto-save primitives in most sections but one section that's a batch decision (e.g. a JSON policy editor, a permissions matrix, a CRON expression). Put the Save button **inside that section's container**, not at the page bottom. Keeps the rest of the page auto-saving; makes the batched block's atomicity obvious.
+
+**Validation errors:** server-side problems (e.g. 422 with a `validation.problems` payload) surface as a single warning card directly below the header — not as per-field errors — because SettingsRow has no error slot. For batch-save pages, the warning can also mention what will fail on submit.
+
+**Audit log coupling:** batch-save pages should emit **one** audit event per save with a before/after diff in the payload. Auto-save pages emit one event per field change. Don't mix — it muddies the audit timeline.
 
 **Danger group — always:**
 - Final group on every detail page. Title: `"Danger zone"`.
