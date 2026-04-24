@@ -379,6 +379,22 @@ function daysAgo(dayOffset, minuteOffset = 0) {
   return now.toISOString();
 }
 
+function compactId(value, length = 8) {
+  return value.replace(/-/g, '').slice(0, length).toUpperCase();
+}
+
+function personalAssetLabel(assetTypeName, assetId) {
+  const suffix = compactId(assetId, 6);
+  if (assetTypeName === 'Laptop') return `Corporate Laptop ${suffix}`;
+  if (assetTypeName === 'Dock') return `USB-C Dock ${suffix}`;
+  if (assetTypeName === 'Monitor') return `Desk Monitor ${suffix}`;
+  return `${assetTypeName} ${suffix}`;
+}
+
+function personalAssetTag(prefix, assetId) {
+  return `${prefix}-${compactId(assetId, 8)}`;
+}
+
 function localFacilitiesTeam(locationId) {
   if ([SPACE_IDS.amsA, SPACE_IDS.amsB, SPACE_IDS.amsC, SPACE_IDS.amsSite].includes(locationId)) return TEAM_IDS.facilitiesAmsterdam;
   if ([SPACE_IDS.dhgA, SPACE_IDS.dhgB].includes(locationId)) return TEAM_IDS.facilitiesDenHaag;
@@ -680,8 +696,8 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName.Laptop.id,
       asset_role: 'personal',
-      name: `${person.first_name} ${person.last_name} Laptop`,
-      tag: `LAP-${person.id.slice(0, 6).toUpperCase()}`,
+      name: personalAssetLabel('Laptop', laptopId),
+      tag: personalAssetTag('LAP', laptopId),
       serial_number: `SN-${laptopId.slice(0, 8).toUpperCase()}`,
       status: person.active ? 'assigned' : 'retired',
       assigned_person_id: person.id,
@@ -696,8 +712,8 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName.Dock.id,
       asset_role: 'personal',
-      name: `${person.first_name} ${person.last_name} Dock`,
-      tag: `DCK-${person.id.slice(0, 6).toUpperCase()}`,
+      name: personalAssetLabel('Dock', dockId),
+      tag: personalAssetTag('DCK', dockId),
       serial_number: `SN-${dockId.slice(0, 8).toUpperCase()}`,
       status: person.active ? 'assigned' : 'retired',
       assigned_person_id: person.id,
@@ -712,8 +728,8 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName.Monitor.id,
       asset_role: 'personal',
-      name: `${person.first_name} ${person.last_name} Monitor`,
-      tag: `MON-${person.id.slice(0, 6).toUpperCase()}`,
+      name: personalAssetLabel('Monitor', monitorPrimaryId),
+      tag: personalAssetTag('MON', monitorPrimaryId),
       serial_number: `SN-${monitorPrimaryId.slice(0, 8).toUpperCase()}`,
       status: person.active ? 'assigned' : 'retired',
       assigned_person_id: person.id,
@@ -729,8 +745,8 @@ function buildAssets(refs, people) {
         tenant_id: TENANT_ID,
         asset_type_id: refs.assetTypesByName.Monitor.id,
         asset_role: 'personal',
-        name: `${person.first_name} ${person.last_name} Secondary Monitor`,
-        tag: `MON-${person.id.slice(0, 4).toUpperCase()}-2`,
+        name: personalAssetLabel('Monitor', monitorSecondaryId),
+        tag: personalAssetTag('MON', monitorSecondaryId),
         serial_number: `SN-${monitorSecondaryId.slice(0, 8).toUpperCase()}`,
         status: person.active ? 'assigned' : 'retired',
         assigned_person_id: person.id,
@@ -773,7 +789,7 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName['Meeting Room Display'].id,
       asset_role: 'fixed',
-      name: `${room.name} Display`,
+      name: `Meeting Room Display ${room.code}`,
       tag: `MRD-${room.code}`,
       serial_number: `SN-${displayId.slice(0, 8).toUpperCase()}`,
       status: 'assigned',
@@ -789,7 +805,7 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName['AV Kit'].id,
       asset_role: 'fixed',
-      name: `${room.name} AV Kit`,
+      name: `AV Kit ${room.code}`,
       tag: `AVK-${room.code}`,
       serial_number: `SN-${avKitId.slice(0, 8).toUpperCase()}`,
       status: 'assigned',
@@ -810,7 +826,7 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName.Printer.id,
       asset_role: 'fixed',
-      name: `${room.name} Printer`,
+      name: `Printer ${room.code}`,
       tag: `PRN-${room.code}`,
       serial_number: `SN-${printerId.slice(0, 8).toUpperCase()}`,
       status: 'assigned',
@@ -832,7 +848,7 @@ function buildAssets(refs, people) {
         tenant_id: TENANT_ID,
         asset_type_id: refs.assetTypesByName['HVAC Unit'].id,
         asset_role: 'fixed',
-        name: `HVAC ${suffix} ${refs.spaceById[buildingId].name}`,
+        name: `HVAC Unit ${refs.spaceById[buildingId].code}-${suffix}`,
         tag: `HVAC-${refs.spaceById[buildingId].code}-${suffix}`,
         serial_number: `SN-${hvacId.slice(0, 8).toUpperCase()}`,
         status: 'assigned',
@@ -850,7 +866,7 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName.Elevator.id,
       asset_role: 'fixed',
-      name: `Lift ${refs.spaceById[buildingId].name}`,
+      name: `Lift ${refs.spaceById[buildingId].code}`,
       tag: `LFT-${refs.spaceById[buildingId].code}`,
       serial_number: `SN-${elevatorId.slice(0, 8).toUpperCase()}`,
       status: 'assigned',
@@ -867,7 +883,7 @@ function buildAssets(refs, people) {
       tenant_id: TENANT_ID,
       asset_type_id: refs.assetTypesByName['Door Controller'].id,
       asset_role: 'fixed',
-      name: `Door Controller ${refs.spaceById[buildingId].name}`,
+      name: `Door Controller ${refs.spaceById[buildingId].code}`,
       tag: `ACC-${refs.spaceById[buildingId].code}`,
       serial_number: `SN-${controllerId.slice(0, 8).toUpperCase()}`,
       status: 'assigned',
@@ -886,8 +902,8 @@ function buildAssets(refs, people) {
     tenant_id: TENANT_ID,
     asset_type_id: refs.assetTypesByName.Laptop.id,
     asset_role: 'personal',
-    name: 'Legacy Executive Laptop',
-    tag: 'LAP-LEGACY-001',
+    name: `Retired Laptop ${compactId(retiredAssetId, 6)}`,
+    tag: personalAssetTag('LAP', retiredAssetId),
     serial_number: 'SN-LEGACY-001',
     status: 'retired',
     assigned_person_id: null,
@@ -1471,6 +1487,26 @@ function hasMeaningfulDescription(text) {
   return typeof text === 'string' && text.trim().length >= 70;
 }
 
+function assertAssetGuardrails(assets) {
+  const tagCounts = new Map();
+  const nameCounts = new Map();
+
+  for (const asset of assets) {
+    if (asset.tag) tagCounts.set(asset.tag, (tagCounts.get(asset.tag) ?? 0) + 1);
+    nameCounts.set(asset.name, (nameCounts.get(asset.name) ?? 0) + 1);
+  }
+
+  const duplicateTags = Array.from(tagCounts.entries()).filter(([, count]) => count > 1);
+  if (duplicateTags.length > 0) {
+    throw new Error(`Seed guardrail failed: duplicate asset tags detected (${duplicateTags.slice(0, 8).map(([tag]) => tag).join(', ')}).`);
+  }
+
+  const duplicateNames = Array.from(nameCounts.entries()).filter(([, count]) => count > 1);
+  if (duplicateNames.length > 0) {
+    throw new Error(`Seed guardrail failed: duplicate asset names detected (${duplicateNames.slice(0, 8).map(([name]) => name).join(', ')}).`);
+  }
+}
+
 async function assertSeedGuardrails(admin, refs) {
   const roles = await fetchAll(admin, 'roles', 'name, permissions', [['eq', 'tenant_id', TENANT_ID], ['eq', 'active', true]]);
   const adminRole = roles.find((role) => role.name === 'Admin');
@@ -1589,6 +1625,7 @@ async function main() {
   await upsertMany(admin, 'person_location_grants', generatedPeople.locationGrants);
 
   const { assets, history, personAssets, roomAssets } = buildAssets(refs, allPeople);
+  assertAssetGuardrails(assets);
   refs.printerAssets = roomAssets.map((roomAsset) => roomAsset.printerId).filter(Boolean);
   await upsertMany(admin, 'assets', assets);
   await upsertMany(admin, 'asset_assignment_history', history);
