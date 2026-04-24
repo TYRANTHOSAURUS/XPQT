@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { PersonAvatar } from '@/components/person-avatar';
 import { useWorkOrders, WorkOrderRow } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
+import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 
 interface AssigneeOption {
   id: string;
@@ -40,14 +41,6 @@ const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'outline'> = {
   waiting: 'secondary',
   resolved: 'secondary',
   closed: 'outline',
-};
-
-const PRIORITY_DOT: Record<string, string> = {
-  critical: 'bg-red-500',
-  high: 'bg-orange-500',
-  medium: 'bg-blue-500',
-  low: 'bg-muted-foreground/40',
-  urgent: 'bg-red-500',
 };
 
 function assigneeLabel(
@@ -183,10 +176,7 @@ export function SubIssuesSection({
                 className="flex items-center gap-3 px-3 py-2 hover:bg-muted/50 cursor-pointer"
                 onClick={() => openRow(row.id)}
               >
-                <span
-                  className={cn('h-2 w-2 rounded-full shrink-0', PRIORITY_DOT[row.priority] ?? 'bg-muted-foreground/40')}
-                  title={`Priority: ${row.priority}`}
-                />
+                <PriorityIcon priority={row.priority} iconClassName="h-3.5 w-3.5" className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
                 <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                   {person && <PersonAvatar size="sm" className="size-4" person={person} />}

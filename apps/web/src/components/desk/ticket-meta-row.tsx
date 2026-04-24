@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { useWorkOrders } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 
 interface TicketMetaRowProps {
   ticketId: string;
@@ -43,14 +44,6 @@ const DOMAIN_TONE: Record<string, string> = {
   security: 'bg-red-500',
   legal: 'bg-violet-500',
   procurement: 'bg-orange-500',
-};
-
-const PRIORITY_TONE: Record<string, { dot: string; label: string }> = {
-  critical: { dot: 'bg-red-500', label: 'Critical' },
-  high: { dot: 'bg-orange-500', label: 'High' },
-  medium: { dot: 'bg-blue-500', label: 'Medium' },
-  low: { dot: 'bg-muted-foreground/40', label: 'Low' },
-  urgent: { dot: 'bg-red-500', label: 'Urgent' },
 };
 
 function DomainDot({ domain }: { domain: string }) {
@@ -146,12 +139,8 @@ export function TicketMetaRow({
     );
   }
 
-  const priorityCfg = PRIORITY_TONE[priority] ?? { dot: 'bg-muted-foreground/40', label: priority };
   items.push(
-    <span key="priority" className="inline-flex items-center gap-1.5 text-muted-foreground">
-      <span className={cn('h-1.5 w-1.5 rounded-full', priorityCfg.dot)} aria-hidden="true" />
-      <span className="text-foreground/90">{priorityCfg.label}</span>
-    </span>,
+    <PriorityIcon key="priority" priority={priority} withLabel iconClassName="h-3.5 w-3.5" />,
   );
 
   items.push(

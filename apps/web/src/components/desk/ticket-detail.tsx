@@ -72,6 +72,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
+import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
 import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
@@ -642,7 +643,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                       <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
                     </div>
                     {(activity.content || (activity.attachments?.length ?? 0) > 0) ? (
-                      <div className="mt-2 overflow-hidden rounded-2xl border border-border/70 bg-card/80">
+                      <div className="mt-2 overflow-hidden rounded-lg border border-border/70 bg-card/80">
                         {activity.content && (
                           <div className="px-4 py-3">
                             <p className="text-[15px] leading-relaxed text-foreground/85 whitespace-pre-wrap">{activity.content}</p>
@@ -661,7 +662,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                                     href={attachment.url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="group overflow-hidden rounded-xl border border-border/70 bg-muted/20 transition-colors hover:bg-muted/40"
+                                    className="group overflow-hidden rounded-lg border border-border/70 bg-muted/20 transition-colors hover:bg-muted/40"
                                   >
                                     <img
                                       src={attachment.url}
@@ -699,14 +700,14 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                                   href={attachment.url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3 py-2 transition-colors hover:bg-muted/40"
+                                  className="flex items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-2 transition-colors hover:bg-muted/40"
                                 >
                                   {attachmentContent}
                                 </a>
                               ) : (
                                 <div
                                   key={key}
-                                  className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3 py-2"
+                                  className="flex items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-2"
                                 >
                                   {attachmentContent}
                                 </div>
@@ -767,7 +768,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                   <TabsTrigger value="external"><Send className="h-4 w-4 mr-1.5" /> Reply</TabsTrigger>
                 </TabsList>
               </Tabs>
-              <div className="rounded-xl border border-border/70 bg-card/70 transition-shadow focus-within:shadow-md">
+              <div className="rounded-lg border border-border/70 bg-card/70 transition-shadow focus-within:shadow-md">
                 <Popover open={mentionOpen} onOpenChange={(open) => { if (!open) closeMentionMenu(); }}>
                   <div className="relative">
                     <PopoverTrigger
@@ -819,7 +820,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                     />
                   </div>
                   <PopoverContent
-                    className="w-[340px] gap-0 rounded-xl border border-border/70 bg-popover p-1 shadow-lg"
+                    className="w-[340px] gap-0 rounded-lg border border-border/70 bg-popover p-1 shadow-lg"
                     align="start"
                     sideOffset={8}
                   >
@@ -971,11 +972,13 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               value={displayedTicket!.priority}
               onValueChange={(v) => { if (v) patch({ priority: v }); }}
             >
-              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
-                {Object.entries(priorityConfig).map(([key, cfg]) => (
+                {Object.entries(priorityConfig).map(([key]) => (
                   <SelectItem key={key} value={key}>
-                    <span className={cfg.color}>{cfg.label}</span>
+                    <PriorityIcon priority={key} withLabel />
                   </SelectItem>
                 ))}
               </SelectContent>
