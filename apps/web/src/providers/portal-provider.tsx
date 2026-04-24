@@ -35,6 +35,7 @@ export interface PortalAnnouncement {
   title: string;
   body: string;
   published_at: string;
+  expires_at: string | null;
 }
 
 export interface PortalMeResponse {

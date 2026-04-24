@@ -59,7 +59,7 @@ export class ServiceCatalogService {
     const [categoriesRes, requestTypesRes, linksRes] = await Promise.all([
       this.supabase.admin
         .from('service_catalog_categories')
-        .select('id, name, description, icon, display_order, parent_category_id, active')
+        .select('id, name, description, icon, display_order, parent_category_id, active, cover_image_url, cover_source')
         .eq('tenant_id', tenant.id)
         .eq('active', true)
         .order('display_order'),
