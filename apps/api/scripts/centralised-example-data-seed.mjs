@@ -201,6 +201,19 @@ const HANDCRAFTED_CASES = [
   { title: 'Printer failure blocks morning payroll run', requestType: 'Printer Problem', requester: 'employee.requester@prequest.nl', locationId: SPACE_IDS.amsA, status: 'resolved' },
 ];
 
+const REQUIRED_PORTAL_REQUEST_TYPES = [
+  'Laptop Broken',
+  'Email & Calendar Issue',
+  'Mobile Device Issue',
+  'Shared Mailbox Request',
+  'Office Move',
+  'Waste & Recycling Pickup',
+  'Room Temperature Complaint',
+  'Payroll Question',
+  'Travel Expense Issue',
+  'Event Support',
+];
+
 const CHILD_PLAN_BY_REQUEST_TYPE = {
   'Laptop Broken': ({ refs }) => [
     { title: 'Remote diagnosis', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
@@ -269,6 +282,45 @@ const CHILD_PLAN_BY_REQUEST_TYPE = {
   ],
   'CRM Access Request': ({ refs }) => [
     { title: 'Review request and required access', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'Email & Calendar Issue': ({ refs }) => [
+    { title: 'Remote diagnosis and mailbox review', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'Mobile Device Issue': ({ refs }) => [
+    { title: 'Remote mobile support triage', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+    { title: 'Replacement or repair logistics', vendorId: refs.vendorsByName['DeviceCycle Logistics'].id, slaId: refs.slas.executorStandard.id },
+  ],
+  'Software Access Change': ({ refs }) => [
+    { title: 'Review required entitlements', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'Shared Mailbox Request': ({ refs }) => [
+    { title: 'Review shared mailbox request', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'Distribution List Request': ({ refs }) => [
+    { title: 'Review distribution list request', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'VPN Access Request': ({ refs }) => [
+    { title: 'Review secure remote access request', teamId: TEAM_IDS.it, slaId: refs.slas.executorStandard.id },
+  ],
+  'Furniture Request': ({ refs, locationId }) => [
+    { title: 'Regional workplace assessment', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorStandard.id },
+    { title: 'Furniture supply and delivery', vendorId: refs.vendorsByName['Dutch Office Furnishings'].id, slaId: refs.slas.executorScheduled.id },
+  ],
+  'Waste & Recycling Pickup': ({ refs, locationId }) => [
+    { title: 'Regional waste handling check', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorStandard.id },
+    { title: 'Waste and recycling pickup', vendorId: refs.vendorsByName['GreenWaste Services'].id, slaId: refs.slas.executorScheduled.id },
+  ],
+  'Room Temperature Complaint': ({ refs, locationId }) => [
+    { title: 'Regional HVAC assessment', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorStandard.id },
+    { title: 'HVAC specialist dispatch', vendorId: refs.vendorsByName['Klimaat Partners'].id, slaId: refs.slas.executorStandard.id },
+  ],
+  'Power / Outlet Issue': ({ refs, locationId }) => [
+    { title: 'Regional electrical assessment', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorStandard.id },
+    { title: 'Electrical specialist dispatch', vendorId: refs.vendorsByName['VoltWorks Electrical'].id, slaId: refs.slas.executorStandard.id },
+  ],
+  'Lock / Key Issue': ({ refs, locationId }) => [
+    { title: 'Regional access control assessment', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorStandard.id },
+    { title: 'Locksmith and access specialist dispatch', vendorId: refs.vendorsByName['SecureEntry Systems'].id, slaId: refs.slas.executorStandard.id },
   ],
   'Event Support': ({ refs, locationId }) => [
     { title: 'Regional event setup', teamId: localFacilitiesTeam(locationId), slaId: refs.slas.executorScheduled.id },
@@ -866,11 +918,16 @@ function pickRequestTypeForGenerated(rand, refs) {
   const weighted = [
     ['Laptop Broken', 8], ['Monitor Issue', 6], ['Docking Station Issue', 4], ['Printer Problem', 5],
     ['Software Installation', 5], ['Network Connectivity Issue', 6], ['Meeting Room AV Issue', 4],
-    ['New Hardware Request', 3], ['Password Reset', 4], ['Badge Access Request', 3], ['CRM Access Request', 2],
+    ['New Hardware Request', 3], ['Email & Calendar Issue', 5], ['Mobile Device Issue', 3],
+    ['Password Reset', 4], ['Badge Access Request', 3], ['CRM Access Request', 2], ['Software Access Change', 3],
+    ['Shared Mailbox Request', 2], ['Distribution List Request', 2], ['VPN Access Request', 2],
     ['Office Move', 4], ['Workstation Setup Change', 5], ['Cleaning Request', 6], ['Spill Cleanup', 3],
-    ['Deep Cleaning', 2], ['Lighting Issue', 6], ['Plumbing Issue', 6], ['HVAC Issue', 6], ['Elevator Issue', 3],
-    ['Access Control Fault', 3], ['Leave Request', 4], ['Employment Letter Request', 3], ['New Starter Setup', 2],
-    ['Meeting Catering', 3], ['Event Support', 2], ['Expense Question', 2], ['Company Card Issue', 2],
+    ['Deep Cleaning', 2], ['Furniture Request', 3], ['Waste & Recycling Pickup', 2],
+    ['Lighting Issue', 6], ['Plumbing Issue', 6], ['HVAC Issue', 6], ['Room Temperature Complaint', 4],
+    ['Elevator Issue', 3], ['Access Control Fault', 3], ['Power / Outlet Issue', 3], ['Lock / Key Issue', 2],
+    ['Leave Request', 4], ['Employment Letter Request', 3], ['New Starter Setup', 2], ['Payroll Question', 2],
+    ['Employee Data Change', 2], ['HR Policy Question', 1], ['Meeting Catering', 3], ['Event Support', 2],
+    ['Expense Question', 2], ['Company Card Issue', 2], ['Invoice / Supplier Payment Question', 1], ['Travel Expense Issue', 2],
   ];
   return refs.requestTypesByName[weightedPick(weighted.map(([name, weight]) => ({ name, weight })), rand).name];
 }
@@ -1355,7 +1412,7 @@ async function loadReferences(admin) {
     fetchAll(admin, 'org_nodes', 'id, code, name', [['eq', 'tenant_id', TENANT_ID]]),
     fetchAll(admin, 'teams', 'id, name', [['eq', 'tenant_id', TENANT_ID]]),
     fetchAll(admin, 'vendors', 'id, name', [['eq', 'tenant_id', TENANT_ID]]),
-    fetchAll(admin, 'request_types', 'id, name, domain, workflow_definition_id, sla_policy_id, requires_approval, approval_approver_team_id, approval_approver_person_id, on_behalf_policy, fulfillment_strategy, location_required', [['eq', 'tenant_id', TENANT_ID], ['eq', 'active', true]]),
+    fetchAll(admin, 'request_types', 'id, name, description, keywords, domain, workflow_definition_id, sla_policy_id, requires_approval, approval_approver_team_id, approval_approver_person_id, on_behalf_policy, fulfillment_strategy, location_required', [['eq', 'tenant_id', TENANT_ID], ['eq', 'active', true]]),
     fetchAll(admin, 'asset_types', 'id, name', [['eq', 'tenant_id', TENANT_ID]]),
     fetchAll(admin, 'persons', 'id, first_name, last_name, email, type, manager_person_id, default_location_id, active', [['eq', 'tenant_id', TENANT_ID], ['in', 'email', FIXED_LOGIN_EMAILS]]),
     fetchAll(admin, 'users', 'id, email', [['eq', 'tenant_id', TENANT_ID], ['in', 'email', FIXED_LOGIN_EMAILS]]),
@@ -1367,14 +1424,15 @@ async function loadReferences(admin) {
     fetchAll(admin, 'spaces', 'id, name, code, parent_id', [['eq', 'tenant_id', TENANT_ID], ['eq', 'type', 'meeting_room']]),
     fetchAll(admin, 'spaces', 'id, name, code, parent_id, attributes', [['eq', 'tenant_id', TENANT_ID], ['eq', 'type', 'common_area']]),
   ]);
-  const variants = await fetchAll(admin, 'request_type_form_variants', 'request_type_id, form_schema_id', [['eq', 'tenant_id', TENANT_ID], ['in', 'request_type_id', requestTypeIds]]);
-
   const spaceById = Object.fromEntries(spaces.map((space) => [space.id, space]));
   const orgNodesByCode = Object.fromEntries(orgNodes.map((node) => [node.code, node]));
   const orgNodesById = Object.fromEntries(orgNodes.map((node) => [node.id, node]));
   const teamsByName = Object.fromEntries(teams.map((team) => [team.name, team]));
   const vendorsByName = Object.fromEntries(vendors.map((vendor) => [vendor.name, vendor]));
-  const requestTypesByName = Object.fromEntries(requestTypes.map((rt) => [rt.name, { ...rt, form_schema_id: variants.find((variant) => variant.request_type_id === rt.id)?.form_schema_id ?? null }]));
+  // Request-type form schemas now live on request_type_form_variants, not
+  // on request_types itself (migration 00098). Nothing downstream in this
+  // seed reads a per-rt form_schema_id, so we don't fabricate one here.
+  const requestTypesByName = Object.fromEntries(requestTypes.map((rt) => [rt.name, rt]));
   const assetTypesByName = Object.fromEntries(assetTypes.map((assetType) => [assetType.name, assetType]));
   const fixedPersonsByEmail = Object.fromEntries(fixedPersons.map((person) => [person.email.toLowerCase(), person]));
   const fixedUsersByEmail = Object.fromEntries(fixedUsers.map((user) => [user.email.toLowerCase(), user]));
@@ -1407,6 +1465,41 @@ async function loadReferences(admin) {
       executorScheduled: { id: 'a3000000-0000-0000-0000-000000000009' },
     },
   };
+}
+
+function hasMeaningfulDescription(text) {
+  return typeof text === 'string' && text.trim().length >= 70;
+}
+
+async function assertSeedGuardrails(admin, refs) {
+  const roles = await fetchAll(admin, 'roles', 'name, permissions', [['eq', 'tenant_id', TENANT_ID], ['eq', 'active', true]]);
+  const adminRole = roles.find((role) => role.name === 'Admin');
+  const adminPermissions = Array.isArray(adminRole?.permissions) ? adminRole.permissions : [];
+  const requiredPermissions = ['tickets:read_all', 'tickets:write_all'];
+  const missingAdminPermissions = requiredPermissions.filter((permission) => !adminPermissions.includes(permission));
+  if (missingAdminPermissions.length > 0) {
+    throw new Error(`Seed guardrail failed: Admin role is missing required ticket permissions (${missingAdminPermissions.join(', ')}).`);
+  }
+
+  const requestTypes = Object.values(refs.requestTypesByName);
+  if (requestTypes.length < 40) {
+    throw new Error(`Seed guardrail failed: expected at least 40 active request types, found ${requestTypes.length}.`);
+  }
+
+  const missingRequiredTypes = REQUIRED_PORTAL_REQUEST_TYPES.filter((name) => !refs.requestTypesByName[name]);
+  if (missingRequiredTypes.length > 0) {
+    throw new Error(`Seed guardrail failed: required portal request types are missing (${missingRequiredTypes.join(', ')}).`);
+  }
+
+  const weakDescriptions = requestTypes.filter((requestType) => !hasMeaningfulDescription(requestType.description));
+  if (weakDescriptions.length > 0) {
+    throw new Error(`Seed guardrail failed: request types need stronger descriptions (${weakDescriptions.slice(0, 8).map((requestType) => requestType.name).join(', ')}).`);
+  }
+
+  const missingKeywords = requestTypes.filter((requestType) => !Array.isArray(requestType.keywords) || requestType.keywords.length < 3);
+  if (missingKeywords.length > 0) {
+    throw new Error(`Seed guardrail failed: request types are missing discovery keywords (${missingKeywords.slice(0, 8).map((requestType) => requestType.name).join(', ')}).`);
+  }
 }
 
 function parseStatusEnv(text) {
@@ -1478,6 +1571,7 @@ async function main() {
   const admin = createClient(url, secret, { auth: { persistSession: false, autoRefreshToken: false } });
 
   const refs = await loadReferences(admin);
+  await assertSeedGuardrails(admin, refs);
   await ensureFixedAuthUsers(admin, refs);
 
   const generatedPeople = buildGeneratedPeople(refs);
