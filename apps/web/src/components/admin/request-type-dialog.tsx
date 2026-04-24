@@ -18,8 +18,13 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useSlaPolicies } from '@/api/sla-policies';
+import { useFormSchemas } from '@/api/config-entities';
+import { useTeams } from '@/api/teams';
+import { requestTypeKeys } from '@/api/request-types';
+import { configEntityKeys } from '@/api/config-entities';
 
 type FulfillmentStrategy = 'asset' | 'location' | 'fixed' | 'auto';
 
@@ -58,10 +63,6 @@ interface FormVariantRow {
   active: boolean;
 }
 
-interface SlaPolicy { id: string; name: string }
-interface Team { id: string; name: string }
-interface FormSchemaListItem { id: string; display_name: string }
-
 const domains = ['it', 'fm', 'workplace', 'visitor', 'catering', 'security', 'general'];
 
 // Matches spaces.type check constraint in 00004_spaces.sql. Presented with
@@ -93,9 +94,10 @@ export function RequestTypeDialog({
   editingId,
   onSaved,
 }: RequestTypeDialogProps) {
-  const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
-  const { data: formSchemas } = useApi<FormSchemaListItem[]>('/config-entities?type=form_schema', []);
-  const { data: teams } = useApi<Team[]>('/teams', []);
+  const qc = useQueryClient();
+  const { data: slas } = useSlaPolicies();
+  const { data: formSchemas } = useFormSchemas();
+  const { data: teams } = useTeams();
 
   const [name, setName] = useState('');
   const [domain, setDomain] = useState('general');
@@ -261,6 +263,13 @@ export function RequestTypeDialog({
       }
 
       toast.success(editingId ? 'Request type updated' : 'Request type created');
+      // Propagate to every consumer: list pages, ticket detail, portal submit,
+      // routing studio. Skipping an explicit invalidation here used to mean
+      // admins had to reload to see their change (T4 staleness bug).
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: requestTypeKeys.all }),
+        qc.invalidateQueries({ queryKey: configEntityKeys.all }),
+      ]);
       onOpenChange(false);
       onSaved();
     } catch (err) {

@@ -1,27 +1,19 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { Plus, Pencil } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 import { RequestTypeDialog } from '@/components/admin/request-type-dialog';
-
-interface RequestType {
-  id: string;
-  name: string;
-  domain: string;
-  active: boolean;
-  sla_policy?: { id: string; name: string } | null;
-  fulfillment_strategy?: 'asset' | 'location' | 'fixed' | 'auto';
-  location_granularity?: string | null;
-  requires_approval?: boolean;
-}
+import { requestTypeKeys, useRequestTypes } from '@/api/request-types';
 
 export function RequestTypesPage() {
-  const { data, loading, refetch } = useApi<RequestType[]>('/request-types', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useRequestTypes();
+  const refetch = () => qc.invalidateQueries({ queryKey: requestTypeKeys.all });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
