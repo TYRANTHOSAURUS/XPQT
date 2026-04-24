@@ -183,10 +183,12 @@ function PortalLayoutInner() {
             <PortalLocationPicker />
           </div>
         </header>
-        <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
-          {!portalLoading && portal && !portal.can_submit
-            ? <PortalNoScopeBlocker />
-            : <Outlet />}
+        <div className="flex-1 min-h-0 overflow-auto">
+          <div className="mx-auto w-full max-w-6xl px-6 pb-6">
+            {!portalLoading && portal && !portal.can_submit
+              ? <PortalNoScopeBlocker />
+              : <Outlet />}
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>

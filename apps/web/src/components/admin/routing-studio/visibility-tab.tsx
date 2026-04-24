@@ -50,8 +50,8 @@ export function VisibilityTab() {
           </li>
           <li>
             <strong className="text-foreground">Overrides:</strong>{' '}
-            <code className="rounded bg-muted px-1">tickets:read_all</code> /{' '}
-            <code className="rounded bg-muted px-1">tickets:write_all</code> permissions on a
+            <code className="rounded bg-muted px-1">tickets.read_all</code> /{' '}
+            <code className="rounded bg-muted px-1">tickets.write_all</code> permissions on a
             role
           </li>
         </ul>

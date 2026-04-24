@@ -12,7 +12,11 @@ import type { Request } from 'express';
 import { OrgNodeService } from './org-node.service';
 import { PermissionGuard } from '../../common/permission-guard';
 
-const PERMISSION = 'organisations:manage';
+const READ = 'organisations.read';
+const CREATE = 'organisations.create';
+const UPDATE = 'organisations.update';
+const DELETE = 'organisations.delete';
+const MANAGE_GRANTS = 'organisations.manage_grants';
 
 @Controller('org-nodes')
 export class OrgNodeController {
@@ -23,13 +27,13 @@ export class OrgNodeController {
 
   @Get()
   async list(@Req() req: Request) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, READ);
     return this.service.list();
   }
 
   @Get(':id')
   async get(@Req() req: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, READ);
     // Detail-page panels (Members, Location grants) own their own data and
     // refresh independently after each mutation. Only attached teams are
     // included here because the panel renders them inline without a refetch.
@@ -45,7 +49,7 @@ export class OrgNodeController {
     @Req() req: Request,
     @Body() dto: { name: string; parent_id?: string | null; code?: string | null; description?: string | null },
   ) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, CREATE);
     return this.service.create(dto);
   }
 
@@ -55,20 +59,20 @@ export class OrgNodeController {
     @Param('id') id: string,
     @Body() dto: { name?: string; parent_id?: string | null; code?: string | null; description?: string | null; active?: boolean },
   ) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, UPDATE);
     return this.service.update(id, dto);
   }
 
   @Delete(':id')
   async remove(@Req() req: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, DELETE);
     return this.service.remove(id);
   }
 
   // ── Members ──────────────────────────────────────────────────────────
   @Get(':id/members')
   async listMembers(@Req() req: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, READ);
     return this.service.listMembers(id);
   }
 
@@ -78,7 +82,7 @@ export class OrgNodeController {
     @Param('id') id: string,
     @Body() dto: { person_id: string; is_primary?: boolean },
   ) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, UPDATE);
     return this.service.addMember(id, dto.person_id, dto.is_primary ?? true);
   }
 
@@ -88,14 +92,14 @@ export class OrgNodeController {
     @Param('id') id: string,
     @Param('personId') personId: string,
   ) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, UPDATE);
     return this.service.removeMember(id, personId);
   }
 
   // ── Location grants ──────────────────────────────────────────────────
   @Get(':id/location-grants')
   async listGrants(@Req() req: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, READ);
     return this.service.listGrants(id);
   }
 
@@ -105,7 +109,7 @@ export class OrgNodeController {
     @Param('id') id: string,
     @Body() dto: { space_id: string; note?: string },
   ) {
-    const { userId } = await this.permissions.requirePermission(req, PERMISSION);
+    const { userId } = await this.permissions.requirePermission(req, MANAGE_GRANTS);
     return this.service.addGrant(id, dto.space_id, dto.note, userId);
   }
 
@@ -115,7 +119,7 @@ export class OrgNodeController {
     @Param('id') id: string,
     @Param('grantId') grantId: string,
   ) {
-    await this.permissions.requirePermission(req, PERMISSION);
+    await this.permissions.requirePermission(req, MANAGE_GRANTS);
     return this.service.removeGrant(id, grantId);
   }
 }

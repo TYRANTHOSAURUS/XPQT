@@ -50,7 +50,7 @@ export class PersonController {
     manager_person_id?: string;
     primary_org_node_id?: string | null;
   }) {
-    await this.permissions.requirePermission(request, 'people:manage');
+    await this.permissions.requirePermission(request, 'people.create');
     return this.personService.create(dto);
   }
 
@@ -60,7 +60,7 @@ export class PersonController {
     @Param('id') id: string,
     @Body() dto: Record<string, unknown>,
   ) {
-    await this.permissions.requirePermission(request, 'people:manage');
+    await this.permissions.requirePermission(request, 'people.update');
     return this.personService.update(id, dto);
   }
 
@@ -68,7 +68,7 @@ export class PersonController {
 
   @Get(':id/location-grants')
   async listGrants(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'people:manage');
+    await this.permissions.requirePermission(request, 'people.read');
     return this.personService.listLocationGrants(id);
   }
 
@@ -78,7 +78,7 @@ export class PersonController {
     @Param('id') id: string,
     @Body() dto: { space_id: string; note?: string },
   ) {
-    const { userId } = await this.permissions.requirePermission(request, 'people:manage');
+    const { userId } = await this.permissions.requirePermission(request, 'people.update');
     return this.personService.addLocationGrant(id, dto, userId);
   }
 
@@ -88,13 +88,13 @@ export class PersonController {
     @Param('id') id: string,
     @Param('grantId') grantId: string,
   ) {
-    await this.permissions.requirePermission(request, 'people:manage');
+    await this.permissions.requirePermission(request, 'people.update');
     return this.personService.removeLocationGrant(id, grantId);
   }
 
   @Get(':id/effective-authorization')
   async listEffectiveAuthorization(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'people:manage');
+    await this.permissions.requirePermission(request, 'people.read');
     return this.personService.listEffectiveAuthorization(id);
   }
 }

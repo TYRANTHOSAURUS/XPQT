@@ -8,7 +8,7 @@ import { TenantContext } from './tenant-context';
  * permission key. Throws 403 if missing.
  *
  * Typical callers:
- *   await this.requirePermission(req, 'people:manage');
+ *   await this.requirePermission(req, 'people.update');
  */
 @Injectable()
 export class PermissionGuard {

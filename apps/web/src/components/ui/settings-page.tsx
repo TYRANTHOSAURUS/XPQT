@@ -3,14 +3,39 @@ import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Button, buttonVariants } from '@/components/ui/button';
 
+/**
+ * Width options for a centered settings page.
+ *
+ * - `narrow` (480px) — short forms, one-decision pages.
+ * - `default` (640px) — the Linear-style column used by most settings pages.
+ * - `wide` (960px) — pages where a single column feels cramped, e.g. tables,
+ *   rule builders, or anything with side-by-side content. Still centered.
+ * - `xwide` (1180px) — two-column editors with a dense picker + live preview
+ *   panel, or multi-column admin tables (role editor, users list, asset
+ *   inventory). The standard for rich admin pages; matches the Linear and
+ *   Vercel dashboard widths.
+ *
+ * Keep this list short. If a page needs something else, it's probably not a
+ * settings page anymore.
+ */
+export type SettingsPageWidth = 'narrow' | 'default' | 'wide' | 'xwide';
+
+const WIDTH_CLASS: Record<SettingsPageWidth, string> = {
+  narrow: 'max-w-[480px]',
+  default: 'max-w-[640px]',
+  wide: 'max-w-[960px]',
+  xwide: 'max-w-[1180px]',
+};
+
 interface SettingsPageShellProps {
   children: React.ReactNode;
   className?: string;
+  width?: SettingsPageWidth;
 }
 
-export function SettingsPageShell({ children, className }: SettingsPageShellProps) {
+export function SettingsPageShell({ children, className, width = 'default' }: SettingsPageShellProps) {
   return (
-    <div className={cn('mx-auto w-full max-w-[640px] px-6 py-10 flex flex-col gap-8', className)}>
+    <div className={cn('mx-auto w-full px-6 py-10 flex flex-col gap-8', WIDTH_CLASS[width], className)}>
       {children}
     </div>
   );

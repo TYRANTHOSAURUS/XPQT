@@ -52,15 +52,33 @@ export class UsersController {
 
   @Post(':id/roles')
   async addRole(
+    @Req() request: Request,
     @Param('id') id: string,
-    @Body() dto: { role_id: string; domain_scope?: string[]; location_scope?: string[] },
+    @Body() dto: {
+      role_id: string;
+      domain_scope?: string[];
+      location_scope?: string[];
+      starts_at?: string | null;
+      ends_at?: string | null;
+    },
   ) {
-    return this.service.addUserRole(id, dto);
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.addUserRole(id, dto, actor);
   }
 
   @Delete(':id/roles/:roleId')
-  async removeRole(@Param('id') id: string, @Param('roleId') roleId: string) {
-    return this.service.removeUserRole(id, roleId);
+  async removeRole(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Param('roleId') roleId: string,
+  ) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.removeUserRole(id, roleId, actor);
+  }
+
+  @Get(':id/audit')
+  async audit(@Param('id') id: string) {
+    return this.service.listRoleAuditEvents({ user_id: id });
   }
 }
 
@@ -74,13 +92,24 @@ export class RolesController {
   }
 
   @Post()
-  async create(@Body() dto: CreateRoleDto) {
-    return this.service.createRole(dto);
+  async create(@Req() request: Request, @Body() dto: CreateRoleDto) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.createRole(dto, actor);
   }
 
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateRoleDto>) {
-    return this.service.updateRole(id, dto);
+  async update(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateRoleDto>,
+  ) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.updateRole(id, dto, actor);
+  }
+
+  @Get(':id/audit')
+  async audit(@Param('id') id: string) {
+    return this.service.listRoleAuditEvents({ role_id: id });
   }
 }
 
@@ -89,13 +118,31 @@ export class RoleAssignmentsController {
   constructor(private readonly service: UserManagementService) {}
 
   @Post()
-  async assign(@Body() dto: CreateRoleAssignmentDto) {
-    return this.service.assignRole(dto);
+  async assign(@Req() request: Request, @Body() dto: CreateRoleAssignmentDto) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.assignRole(dto, actor);
+  }
+
+  @Patch(':id')
+  async update(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: Partial<{
+      domain_scope: string[];
+      location_scope: string[];
+      starts_at: string | null;
+      ends_at: string | null;
+      active: boolean;
+    }>,
+  ) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.updateRoleAssignment(id, dto, actor);
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    return this.service.removeRoleAssignment(id);
+  async remove(@Req() request: Request, @Param('id') id: string) {
+    const actor = await this.service.actorFromRequest(request);
+    return this.service.removeRoleAssignment(id, actor);
   }
 }
 

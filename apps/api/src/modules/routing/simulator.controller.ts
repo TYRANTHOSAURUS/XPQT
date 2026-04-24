@@ -30,7 +30,7 @@ export class RoutingSimulatorController {
   private async assertStudioAccess(request: Request) {
     // Every routing-studio endpoint exposes tenant-sensitive config, audit logs,
     // or cross-person portal trace data. Gate all of them behind a single key.
-    await this.permissions.requirePermission(request, 'routing_studio:access');
+    await this.permissions.requirePermission(request, 'routing.read');
   }
 
   /**

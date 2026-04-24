@@ -6,10 +6,17 @@ import {
   RoleAssignmentsController,
   PersonsAdminController,
 } from './user-management.controller';
+import { PermissionsController } from './permissions.controller';
 
 @Module({
   providers: [UserManagementService],
-  controllers: [UsersController, RolesController, RoleAssignmentsController, PersonsAdminController],
+  controllers: [
+    UsersController,
+    RolesController,
+    RoleAssignmentsController,
+    PersonsAdminController,
+    PermissionsController,
+  ],
   exports: [UserManagementService],
 })
 export class UserManagementModule {}

@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Pencil } from 'lucide-react';
+import { Plus, Pencil, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
@@ -35,6 +35,12 @@ interface PrimaryMembership {
   org_node: { id: string; name: string; code: string | null } | { id: string; name: string; code: string | null }[] | null;
 }
 
+interface PersonLinkedUser {
+  id: string;
+  email: string;
+  status: string;
+}
+
 interface Person {
   id: string;
   first_name: string;
@@ -48,6 +54,7 @@ interface Person {
   default_location_id: string | null;
   active: boolean;
   primary_membership?: PrimaryMembership[] | null;
+  user?: PersonLinkedUser[] | PersonLinkedUser | null;
 }
 
 function getPrimaryOrgNode(person: Person): { id: string; name: string; code: string | null } | null {
@@ -56,6 +63,14 @@ function getPrimaryOrgNode(person: Person): { id: string; name: string; code: st
   if (!primary) return null;
   const node = Array.isArray(primary.org_node) ? primary.org_node[0] : primary.org_node;
   return node ?? null;
+}
+
+function getLinkedUser(person: Person): PersonLinkedUser | null {
+  // Supabase returns a one-to-one reverse FK as an array when the column
+  // has no unique constraint. Normalise to a single value.
+  const u = person.user;
+  if (!u) return null;
+  return Array.isArray(u) ? u[0] ?? null : u;
 }
 
 const personTypes = [
@@ -129,6 +144,32 @@ export function PersonsPage() {
       refetch();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save person');
+    }
+  };
+
+  const handleInvite = async (person: Person) => {
+    if (!person.email) {
+      toast.error('Add an email to this person before inviting.');
+      return;
+    }
+    if (!window.confirm(
+      `Create a platform account for ${person.first_name} ${person.last_name} at ${person.email}?`,
+    )) {
+      return;
+    }
+    try {
+      await apiFetch('/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          person_id: person.id,
+          email: person.email,
+          status: 'active',
+        }),
+      });
+      toast.success(`${person.first_name} can now sign in. Assign them a role on the Users page.`);
+      refetch();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create account');
     }
   };
 
@@ -313,14 +354,16 @@ export function PersonsPage() {
             <TableHead className="w-[130px]">Phone</TableHead>
             <TableHead className="w-[120px]">Type</TableHead>
             <TableHead className="w-[200px]">Organisation</TableHead>
+            <TableHead className="w-[160px]">Platform access</TableHead>
             <TableHead className="w-[60px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading && <TableLoading cols={6} />}
-          {!loading && (!data || data.length === 0) && <TableEmpty cols={6} message="No persons found." />}
+          {loading && <TableLoading cols={7} />}
+          {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No persons found." />}
           {(data ?? []).map((person) => {
             const orgNode = getPrimaryOrgNode(person);
+            const linkedUser = getLinkedUser(person);
             return (
               <TableRow key={person.id}>
                 <TableCell className="font-medium">{person.first_name} {person.last_name}</TableCell>
@@ -328,6 +371,36 @@ export function PersonsPage() {
                 <TableCell className="text-muted-foreground text-sm">{person.phone ?? '---'}</TableCell>
                 <TableCell>{getTypeBadge(person.type)}</TableCell>
                 <TableCell className="text-muted-foreground text-sm">{orgNode?.name ?? '---'}</TableCell>
+                <TableCell>
+                  {linkedUser ? (
+                    <a
+                      href={`/admin/users/${linkedUser.id}`}
+                      className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                    >
+                      <Badge
+                        variant={linkedUser.status === 'active' ? 'default' : 'secondary'}
+                        className="text-[10px] capitalize"
+                      >
+                        {linkedUser.status}
+                      </Badge>
+                      View user
+                    </a>
+                  ) : person.email ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => handleInvite(person)}
+                    >
+                      <UserPlus className="h-3 w-3" />
+                      Invite
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground" title="Add an email first">
+                      No email
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell>
                   <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(person)}>
                     <Pencil className="h-4 w-4" />

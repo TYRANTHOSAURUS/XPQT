@@ -36,7 +36,8 @@ export class PersonService {
       .from('persons')
       .select(
         `*, manager:persons!manager_person_id(id, first_name, last_name),
-         primary_membership:person_org_memberships(org_node_id, is_primary, org_node:org_nodes(id, name, code))`,
+         primary_membership:person_org_memberships(org_node_id, is_primary, org_node:org_nodes(id, name, code)),
+         user:users!person_id(id, email, status)`,
       )
       .eq('tenant_id', tenant.id)
       .eq('active', true)

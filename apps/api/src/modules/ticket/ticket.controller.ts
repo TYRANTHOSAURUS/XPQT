@@ -188,7 +188,7 @@ export class TicketController {
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
     if (!ctx.has_read_all) {
-      throw new ForbiddenException('visibility-trace requires tickets:read_all');
+      throw new ForbiddenException('visibility-trace requires tickets.read_all');
     }
     return this.visibility.trace(id, ctx);
   }

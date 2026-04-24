@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -22,7 +23,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Pencil, Trash2, Shield } from 'lucide-react';
+import { Plus, Pencil, Trash2, Shield, Copy } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
@@ -68,11 +70,14 @@ const roleTypeLabels: Record<RoleType, string> = {
   employee: 'Employee',
 };
 
-const roleTypeDescriptions: Record<RoleType, string> = {
-  admin: 'Full access to configuration and service desk',
-  agent: 'Service desk access — handle tickets, approvals, reports',
-  employee: 'Portal-only — submit and track own requests',
-};
+function countUsersWithRole(users: User[] | undefined, roleId: string): number {
+  if (!users) return 0;
+  let n = 0;
+  for (const u of users) {
+    if ((u.role_assignments ?? []).some((ra) => ra.role?.id === roleId)) n += 1;
+  }
+  return n;
+}
 
 interface Space {
   id: string;
@@ -84,7 +89,7 @@ const domains = ['fm', 'it', 'visitor', 'catering', 'security', 'all'];
 
 export function UsersPage() {
   const { data: users, loading: usersLoading, refetch: refetchUsers } = useApi<User[]>('/users', []);
-  const { data: roles, loading: rolesLoading, refetch: refetchRoles } = useApi<Role[]>('/roles', []);
+  const { data: roles, loading: rolesLoading } = useApi<Role[]>('/roles', []);
   const { data: allSpaces } = useApi<Space[]>('/spaces', []);
   const { data: persons } = useApi<Person[]>('/persons', []);
   const spaces = allSpaces?.filter(s => ['site', 'building'].includes(s.type)) ?? [];
@@ -137,60 +142,26 @@ export function UsersPage() {
     }
   };
 
-  // Role dialog
-  const [roleDialogOpen, setRoleDialogOpen] = useState(false);
-  const [editRoleId, setEditRoleId] = useState<string | null>(null);
-  const [roleName, setRoleName] = useState('');
-  const [roleDesc, setRoleDesc] = useState('');
-  const [roleType, setRoleType] = useState<RoleType>('employee');
-
   // Assign role dialog
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState('');
   const [assignRoleId, setAssignRoleId] = useState('');
   const [assignDomains, setAssignDomains] = useState<string[]>([]);
   const [assignLocations, setAssignLocations] = useState<string[]>([]);
+  const [assignTemporary, setAssignTemporary] = useState(false);
+  const [assignStartsAt, setAssignStartsAt] = useState('');
+  const [assignEndsAt, setAssignEndsAt] = useState('');
 
   const locationOptions = spaces;
-
-  const resetRoleForm = () => {
-    setEditRoleId(null);
-    setRoleName('');
-    setRoleDesc('');
-    setRoleType('employee');
-  };
-
-  const handleSaveRole = async () => {
-    if (!roleName.trim()) return;
-    try {
-      const body = JSON.stringify({ name: roleName, description: roleDesc, type: roleType });
-      if (editRoleId) {
-        await apiFetch(`/roles/${editRoleId}`, { method: 'PATCH', body });
-      } else {
-        await apiFetch('/roles', { method: 'POST', body });
-      }
-      resetRoleForm();
-      setRoleDialogOpen(false);
-      refetchRoles();
-      toast.success(editRoleId ? 'Role updated' : 'Role created');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save role');
-    }
-  };
-
-  const openEditRole = (role: Role) => {
-    setEditRoleId(role.id);
-    setRoleName(role.name);
-    setRoleDesc(role.description ?? '');
-    setRoleType(role.type ?? 'employee');
-    setRoleDialogOpen(true);
-  };
 
   const openAssignRole = (userId: string) => {
     setAssignUserId(userId);
     setAssignRoleId('');
     setAssignDomains([]);
     setAssignLocations([]);
+    setAssignTemporary(false);
+    setAssignStartsAt('');
+    setAssignEndsAt('');
     setAssignDialogOpen(true);
   };
 
@@ -203,6 +174,14 @@ export function UsersPage() {
           role_id: assignRoleId,
           domain_scope: assignDomains.length > 0 ? assignDomains : null,
           location_scope: assignLocations.length > 0 ? assignLocations : null,
+          starts_at:
+            assignTemporary && assignStartsAt
+              ? new Date(assignStartsAt).toISOString()
+              : null,
+          ends_at:
+            assignTemporary && assignEndsAt
+              ? new Date(assignEndsAt).toISOString()
+              : null,
         }),
       });
       setAssignDialogOpen(false);
@@ -273,7 +252,14 @@ export function UsersPage() {
               {!usersLoading && (!users || users.length === 0) && <TableEmpty cols={5} message="No users found." />}
               {(users ?? []).map((user) => (
                 <TableRow key={user.id}>
-                  <TableCell className="font-medium">{getUserName(user)}</TableCell>
+                  <TableCell className="font-medium">
+                    <Link
+                      to={`/admin/users/${user.id}`}
+                      className="hover:underline"
+                    >
+                      {getUserName(user)}
+                    </Link>
+                  </TableCell>
                   <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
                   <TableCell>
                     <Badge variant={user.status === 'active' ? 'default' : 'secondary'} className="capitalize">{user.status}</Badge>
@@ -315,41 +301,79 @@ export function UsersPage() {
 
         <TabsContent value="roles">
           <div className="flex justify-end mb-4">
-            <Button
-              className="gap-2"
-              onClick={() => { resetRoleForm(); setRoleDialogOpen(true); }}
+            <Link
+              to="/admin/users/roles/new"
+              className={cn(buttonVariants({ variant: 'default' }), 'gap-2')}
             >
               <Plus className="h-4 w-4" /> Add Role
-            </Button>
+            </Link>
           </div>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead className="w-[160px]">Type</TableHead>
+                <TableHead className="w-[120px]">Type</TableHead>
                 <TableHead>Description</TableHead>
+                <TableHead className="w-[90px]">Users</TableHead>
+                <TableHead className="w-[110px]">Permissions</TableHead>
                 <TableHead className="w-[80px]">Status</TableHead>
                 <TableHead className="w-[60px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rolesLoading && <TableLoading cols={5} />}
-              {!rolesLoading && (!roles || roles.length === 0) && <TableEmpty cols={5} message="No roles yet." />}
-              {(roles ?? []).map((role) => (
-                <TableRow key={role.id}>
-                  <TableCell className="font-medium">{role.name}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="text-xs">{roleTypeLabels[role.type] ?? role.type}</Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">{role.description ?? '---'}</TableCell>
-                  <TableCell><Badge variant={role.active ? 'default' : 'secondary'}>{role.active ? 'Active' : 'Inactive'}</Badge></TableCell>
-                  <TableCell>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditRole(role)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {rolesLoading && <TableLoading cols={7} />}
+              {!rolesLoading && (!roles || roles.length === 0) && <TableEmpty cols={7} message="No roles yet." />}
+              {(roles ?? []).map((role) => {
+                const userCount = countUsersWithRole(users ?? undefined, role.id);
+                const permCount = role.permissions?.length ?? 0;
+                return (
+                  <TableRow key={role.id}>
+                    <TableCell className="font-medium">
+                      <Link
+                        to={`/admin/users/roles/${role.id}`}
+                        className="hover:underline"
+                      >
+                        {role.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs">{roleTypeLabels[role.type] ?? role.type}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm truncate max-w-[280px]">{role.description ?? '---'}</TableCell>
+                    <TableCell>
+                      <Badge variant={userCount > 0 ? 'secondary' : 'outline'} className="text-xs">
+                        {userCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {permCount === 0 ? 'none' : `${permCount} key${permCount === 1 ? '' : 's'}`}
+                      </span>
+                    </TableCell>
+                    <TableCell><Badge variant={role.active ? 'default' : 'secondary'}>{role.active ? 'Active' : 'Inactive'}</Badge></TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        <Link
+                          to={`/admin/users/roles/new?from=${role.id}`}
+                          aria-label="Duplicate role"
+                          title="Duplicate"
+                          className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8')}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Link>
+                        <Link
+                          to={`/admin/users/roles/${role.id}`}
+                          aria-label="Edit role"
+                          title="Edit"
+                          className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8')}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Link>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </TabsContent>
@@ -437,61 +461,6 @@ export function UsersPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Role create/edit dialog */}
-      <Dialog open={roleDialogOpen} onOpenChange={(open) => { setRoleDialogOpen(open); if (!open) resetRoleForm(); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{editRoleId ? 'Edit' : 'Create'} Role</DialogTitle>
-            <DialogDescription>
-              Roles group permissions. Assign roles to users to grant access across domains and locations.
-            </DialogDescription>
-          </DialogHeader>
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="role-name">Name</FieldLabel>
-              <Input
-                id="role-name"
-                value={roleName}
-                onChange={(e) => setRoleName(e.target.value)}
-                placeholder="e.g. Admin, Service Desk, FM Approver..."
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="role-type">Type</FieldLabel>
-              <Select value={roleType} onValueChange={(v) => setRoleType((v as RoleType) ?? 'employee')}>
-                <SelectTrigger id="role-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(roleTypeLabels) as RoleType[]).map((t) => (
-                    <SelectItem key={t} value={t}>
-                      <div className="flex flex-col">
-                        <span>{roleTypeLabels[t]}</span>
-                        <span className="text-xs text-muted-foreground">{roleTypeDescriptions[t]}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FieldDescription>Type controls which areas of the app this role unlocks.</FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="role-desc">Description</FieldLabel>
-              <Input
-                id="role-desc"
-                value={roleDesc}
-                onChange={(e) => setRoleDesc(e.target.value)}
-                placeholder="Optional description..."
-              />
-            </Field>
-          </FieldGroup>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRoleDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSaveRole} disabled={!roleName.trim()}>
-              {editRoleId ? 'Save' : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Assign role dialog */}
       <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
         <DialogContent className="sm:max-w-md">
@@ -565,6 +534,55 @@ export function UsersPage() {
                       </FieldLabel>
                     </Field>
                   ))}
+                </FieldGroup>
+              )}
+            </FieldSet>
+
+            <FieldSet>
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="assign-temporary"
+                  checked={assignTemporary}
+                  onCheckedChange={(v) => setAssignTemporary(v === true)}
+                />
+                <FieldLabel htmlFor="assign-temporary" className="font-normal">
+                  Temporary access
+                  <FieldDescription>
+                    Grant this role only for a specific time window (contractor,
+                    on-call rotation, vacation cover).
+                  </FieldDescription>
+                </FieldLabel>
+              </Field>
+              {assignTemporary && (
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="assign-starts-at">
+                      Starts at{' '}
+                      <span className="text-muted-foreground font-normal">
+                        (optional — defaults to now)
+                      </span>
+                    </FieldLabel>
+                    <Input
+                      id="assign-starts-at"
+                      type="datetime-local"
+                      value={assignStartsAt}
+                      onChange={(e) => setAssignStartsAt(e.target.value)}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="assign-ends-at">
+                      Ends at{' '}
+                      <span className="text-muted-foreground font-normal">
+                        (optional — indefinite if empty)
+                      </span>
+                    </FieldLabel>
+                    <Input
+                      id="assign-ends-at"
+                      type="datetime-local"
+                      value={assignEndsAt}
+                      onChange={(e) => setAssignEndsAt(e.target.value)}
+                    />
+                  </Field>
                 </FieldGroup>
               )}
             </FieldSet>

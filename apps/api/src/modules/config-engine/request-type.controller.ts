@@ -29,7 +29,7 @@ export class RequestTypeController {
 
   @Post()
   async create(@Req() request: Request, @Body() dto: Record<string, unknown>) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.create');
     return this.requestTypeService.create(dto as Parameters<RequestTypeService['create']>[0]);
   }
 
@@ -39,14 +39,14 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() dto: Record<string, unknown>,
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.update(id, dto);
   }
 
   @Delete(':id')
   async remove(@Req() request: Request, @Param('id') id: string) {
     // Soft-delete: mark inactive. Hard deletion would orphan tickets/history.
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.delete');
     return this.requestTypeService.update(id, { active: false });
   }
 
@@ -57,7 +57,7 @@ export class RequestTypeController {
   // cross-tenant FK validation for every referenced id.
   // See docs/service-catalog-live.md §10.
   //
-  // All PUTs require request_types:manage. GETs are admin-only except for
+  // All PUTs require request_types.update. GETs are admin-only except for
   // GET form-variants, which desk + portal flows call to render the submit
   // form; its payload (form_schema_id + criteria_set_id + priority + window)
   // is not sensitive, and the read path has no handler/vendor/SLA/policy
@@ -65,7 +65,7 @@ export class RequestTypeController {
 
   @Get(':id/categories')
   async listCategories(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.listCategories(id);
   }
 
@@ -75,13 +75,13 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { category_ids: string[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putCategories(id, body.category_ids ?? []);
   }
 
   @Get(':id/coverage')
   async listCoverage(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.listCoverage(id);
   }
 
@@ -91,13 +91,13 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { rules: CoverageRuleInput[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putCoverage(id, body.rules ?? []);
   }
 
   @Get(':id/audience')
   async listAudience(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.listAudience(id);
   }
 
@@ -107,7 +107,7 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { rules: AudienceRuleInput[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putAudience(id, body.rules ?? []);
   }
 
@@ -126,13 +126,13 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { variants: FormVariantInput[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putFormVariants(id, body.variants ?? []);
   }
 
   @Get(':id/on-behalf-rules')
   async listOnBehalfRules(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.listOnBehalfRules(id);
   }
 
@@ -142,19 +142,19 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { rules: OnBehalfRuleInput[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putOnBehalfRules(id, body.rules ?? []);
   }
 
   @Get(':id/scope-overrides')
   async listScopeOverrides(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.listScopeOverrides(id);
   }
 
   @Get(':id/coverage-matrix')
   async getCoverageMatrix(@Req() request: Request, @Param('id') id: string) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.read');
     return this.requestTypeService.getCoverageMatrix(id);
   }
 
@@ -164,7 +164,7 @@ export class RequestTypeController {
     @Param('id') id: string,
     @Body() body: { overrides: ScopeOverrideInput[] },
   ) {
-    await this.permissions.requirePermission(request, 'request_types:manage');
+    await this.permissions.requirePermission(request, 'request_types.update');
     return this.requestTypeService.putScopeOverrides(id, body.overrides ?? []);
   }
 }

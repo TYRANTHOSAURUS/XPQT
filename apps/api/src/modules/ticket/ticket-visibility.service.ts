@@ -64,10 +64,10 @@ export class TicketVisibilityService {
         .eq('user_id', userRow.id)
         .eq('active', true),
       this.supabase.admin.rpc('user_has_permission', {
-        p_user_id: userRow.id, p_tenant_id: tenantId, p_permission: 'tickets:read_all',
+        p_user_id: userRow.id, p_tenant_id: tenantId, p_permission: 'tickets.read_all',
       }),
       this.supabase.admin.rpc('user_has_permission', {
-        p_user_id: userRow.id, p_tenant_id: tenantId, p_permission: 'tickets:write_all',
+        p_user_id: userRow.id, p_tenant_id: tenantId, p_permission: 'tickets.write_all',
       }),
     ]);
 

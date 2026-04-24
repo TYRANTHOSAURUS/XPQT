@@ -5,9 +5,9 @@
   "description": "Unified Workplace Operations Platform",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "pnpm --parallel -r run dev",
-    "dev:api": "pnpm --filter @prequest/api run dev",
-    "dev:web": "pnpm --filter @prequest/web run dev",
+    "dev": "pnpm --filter @prequest/shared run build && pnpm --parallel -r run dev",
+    "dev:api": "pnpm --filter @prequest/shared run build && pnpm --filter @prequest/api run dev",
+    "dev:web": "pnpm --filter @prequest/shared run build && pnpm --filter @prequest/web run dev",
     "build": "pnpm -r run build",
     "build:api": "pnpm --filter @prequest/api run build",
     "build:web": "pnpm --filter @prequest/web run build",
