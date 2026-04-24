@@ -21,6 +21,7 @@
     "@prequest/shared": "workspace:*",
     "@supabase/supabase-js": "^2.49.0",
     "@tanstack/react-query": "^5.99.2",
+    "@tanstack/react-virtual": "^3.13.24",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
