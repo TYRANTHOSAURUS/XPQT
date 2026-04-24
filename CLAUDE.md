@@ -149,6 +149,59 @@ Anything larger isn't a settings page — reach for a dedicated layout, not a ne
 
 Reference implementations: `/admin/organisations/*`, `/admin/users/roles/:id` (xwide two-column), `/admin/users/:id` (xwide with effective-permissions panel). Before adding a new setting, scan these for a block pattern you can lift or extend.
 
+### Index + detail shape (mandatory for all admin config)
+
+**Canonical exemplars:** `/admin/webhooks` (list) + `/admin/webhooks/:id` (detail), `/admin/criteria-sets` + `/admin/criteria-sets/:id`. Read both before adding a new settings feature. Every new admin page MUST follow this shape unless there's a concrete reason it can't — and in that case, document the reason inline.
+
+**Index page (`/admin/<feature>`):**
+- `SettingsPageShell` (pick width from `narrow|default|wide|xwide` per §Settings page layout).
+- `SettingsPageHeader` — title, one-sentence description of what the feature is for, `actions={<primary "New X" button>}`.
+- Loading state: `<div className="text-sm text-muted-foreground">Loading…</div>`.
+- Populated state: `Table` with name linking to `/admin/<feature>/:id` (hover underline), 2–4 meaningful columns (status, last updated, rule summary, etc.). **No action column.** Actions live on the detail page.
+- Empty state: centred `flex-col items-center gap-3 py-16`, icon + title + one paragraph + primary CTA.
+- Creation: either a lightweight `Dialog` (name + description → `POST` → navigate to `/admin/<feature>/:id`) OR a dedicated `/admin/<feature>/new` page. Dialog is the default.
+
+**Detail page (`/admin/<feature>/:id`):**
+- `SettingsPageShell` with `backTo="/admin/<feature>"`.
+- `SettingsPageHeader` — title is the entity name (not the feature name), description is "what this specific entity does", `actions` holds a compact status badge (`active` / `draft` / etc.) — not more buttons.
+- Loading state: the shell + header + "Loading…" title. No spinner overlay.
+- Not-found state: the shell + header with `"Not found"` + a one-line explanation.
+- Body is a stack of `SettingsGroup` blocks, each a thematic bucket of related decisions. Typical groups in order:
+  1. **Identity** — name, description, active toggle.
+  2. **Primary config** — the thing this feature exists for (rules, expression, mapping).
+  3. **Operations** — testing, recent events, observability (if applicable).
+  4. **Auth / limits** — keys, rate limits, allowlists (if applicable).
+  5. **Danger zone** — delete, archive, reset. Always last.
+- No page-level Save button. Everything auto-saves (see below).
+
+**Within a group — use `SettingsRow`, not form fields:**
+Each configurable thing on a detail page is one `SettingsRow label="…" description="…"` with the control on the right. Rows are divided by a single hairline inside one bordered `SettingsGroup` card. This is Linear's "list of decisions" pattern — **do not replace it with a `FieldGroup`**. Field primitives are for grouped forms submitted together; `SettingsRow` is for independent, individually-saved decisions.
+
+**Three control placements, pick the right one:**
+1. **Inline control** — short primitives only: `Input` (width-capped), `Switch`, small `Select`. Saves on change.
+2. **Clickable row → sub-dialog** — anything complex: picker over a large list, rules builder, key-value map, multi-row editor. `onClick` on the row opens the dialog; `SettingsRowValue` on the right shows a summary ("`3 rules`", "`8 fields`", the selected name). The dialog owns draft state + a single Save button.
+3. **Clickable row → child page** — only when the nested thing itself needs multiple groups, its own test/preview, or its own audit feed. Navigate via `<Link>`-wrapping the row. Use sparingly; most things fit in a dialog.
+
+**Auto-save, not a submit button:**
+- Text inputs: wrap with `useDebouncedSave(value, (v) => save({ field: v }, { silent: true }))`. No toast on silent save.
+- Switches / selects that trigger immediately: `save({ field: next })` — toast on success is OK but optional.
+- Dialog-driven saves: call `save({ field: next })` inside `onSave`, then close the dialog. Toast is acceptable here since the user clicked Save.
+- Server-side validation problems (e.g. 422 with a `validation.problems` payload) surface as a single warning card directly below the header — not as per-field errors — because SettingsRow has no error slot.
+
+**Danger group — always:**
+- Final group on every detail page. Title: `"Danger zone"`.
+- Destructive actions route through `ConfirmDialog` with `destructive` styling and a specific description that names the consequence ("The external system will receive 401 on any future request").
+- Key rotations / similar one-shots also go here (not in Identity).
+
+**Primitives to use — don't reinvent:**
+- `SettingsPageShell`, `SettingsPageHeader` — `apps/web/src/components/ui/settings-page.tsx`.
+- `SettingsGroup`, `SettingsRow`, `SettingsRowValue` — `apps/web/src/components/ui/settings-row.tsx`.
+- `ConfirmDialog` — `apps/web/src/components/confirm-dialog.tsx`.
+- `useDebouncedSave` — `apps/web/src/hooks/use-debounced-save.ts`.
+- `Dialog` + `FieldGroup`/`Field` — for sub-dialogs (still mandatory per §Form composition).
+
+**Before writing a new settings page, copy the skeleton of `/admin/webhooks/:id` and adapt.** If you're tempted to deviate (e.g. replace `SettingsRow` with a 2-column form, or add a page-level Save button), re-read this section first — the deviation is almost never justified.
+
 ## Spec Documents
 All in `docs/`:
 - `docs/spec.md` — main product specification (~3000 lines, comprehensive)
