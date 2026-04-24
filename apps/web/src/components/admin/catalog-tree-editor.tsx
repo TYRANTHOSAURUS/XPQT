@@ -48,6 +48,8 @@ export interface CatalogCategoryNode {
   name: string;
   description: string | null;
   icon: string | null;
+  cover_source: 'image' | 'icon' | null;
+  cover_image_url: string | null;
   display_order: number;
   parent_category_id: string | null;
   children: CatalogCategoryNode[];
@@ -62,6 +64,8 @@ export interface FlatItem {
   name: string;
   description: string | null;
   icon: string | null;
+  cover_source: 'image' | 'icon' | null;
+  cover_image_url: string | null;
   hasChildren: boolean;
   collapsed: boolean;
 }
@@ -90,6 +94,8 @@ function flatten(
       name: node.name,
       description: node.description,
       icon: node.icon,
+      cover_source: node.cover_source,
+      cover_image_url: node.cover_image_url,
       hasChildren,
       collapsed: isCollapsed,
     });
@@ -108,6 +114,8 @@ function flatten(
         name: rt.name,
         description: rt.description,
         icon: rt.icon,
+        cover_source: null,
+        cover_image_url: null,
         hasChildren: false,
         collapsed: false,
       });

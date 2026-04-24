@@ -23,6 +23,8 @@ export interface CatalogCategoryNode {
   name: string;
   description: string | null;
   icon: string | null;
+  cover_source: 'image' | 'icon' | null;
+  cover_image_url: string | null;
   display_order: number;
   parent_category_id: string | null;
   children: CatalogCategoryNode[];
