@@ -6,8 +6,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldDescription,
@@ -190,17 +194,19 @@ export function TeamsPage() {
   const availableUsers = (users ?? []).filter((u) => !existingMemberUserIds.has(u.id));
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Teams</h1>
-          <p className="text-muted-foreground mt-1">Manage assignment groups for ticket routing</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Team
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[520px]">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Teams"
+        description="Assignment groups for ticket routing. A team owns cases; its members fulfil work orders."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add team
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Team</DialogTitle>
               <DialogDescription>Manage assignment groups and members for ticket routing.</DialogDescription>
@@ -328,9 +334,8 @@ export function TeamsPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -360,6 +365,6 @@ export function TeamsPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

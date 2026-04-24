@@ -8,8 +8,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldDescription,
@@ -136,17 +140,19 @@ export function NotificationsPage() {
     eventTypes.find((e) => e.value === val)?.label ?? val;
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Notification Templates</h1>
-          <p className="text-muted-foreground mt-1">Configure automated notifications sent on platform events</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Template
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[580px]">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Notifications"
+        description="Message templates fired on platform events. Bind channels, edit subject and body per template."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add template
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[580px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Notification Template</DialogTitle>
               <DialogDescription>Configure the message sent when this event fires.</DialogDescription>
@@ -231,9 +237,8 @@ export function NotificationsPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -270,6 +275,6 @@ export function NotificationsPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }

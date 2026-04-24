@@ -7,8 +7,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+} from '@/components/ui/settings-page';
 import {
   Field,
   FieldGroup,
@@ -125,17 +129,19 @@ export function LocationsPage() {
   const parentOptions = spaces.filter((s) => ['site', 'building', 'floor'].includes(s.type));
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Locations & Spaces</h1>
-          <p className="text-muted-foreground mt-1">Manage your sites, buildings, floors, rooms, and desks</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
-          <DialogTrigger render={<Button className="gap-2" onClick={openCreate} />}>
-            <Plus className="h-4 w-4" /> Add Space
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[520px]">
+    <SettingsPageShell width="wide">
+      <SettingsPageHeader
+        title="Locations"
+        description="Sites, buildings, floors, rooms, and desks. Together they form the physical hierarchy tickets are routed through."
+        actions={
+          <Button className="gap-1.5" onClick={openCreate}>
+            <Plus className="size-4" /> Add space
+          </Button>
+        }
+      />
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[520px]">
             <DialogHeader>
               <DialogTitle>{editId ? 'Edit' : 'Create'} Space</DialogTitle>
               <DialogDescription>Manage sites, buildings, floors, rooms, and desks.</DialogDescription>
@@ -234,9 +240,8 @@ export function LocationsPage() {
                 {editId ? 'Save' : 'Create'}
               </Button>
             </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       <Table>
         <TableHeader>
@@ -277,6 +282,6 @@ export function LocationsPage() {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </SettingsPageShell>
   );
 }
