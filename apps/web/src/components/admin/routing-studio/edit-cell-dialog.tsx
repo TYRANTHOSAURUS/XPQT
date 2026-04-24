@@ -9,10 +9,8 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
-import { useApi } from '@/hooks/use-api';
-
-interface Team { id: string; name: string }
-interface Vendor { id: string; name: string }
+import { useTeams } from '@/api/teams';
+import { useVendors } from '@/api/vendors';
 
 type AssigneeKind = 'team' | 'vendor' | 'unset';
 
@@ -38,8 +36,8 @@ interface Props {
 }
 
 export function EditCellDialog({ input, open, onOpenChange, onSaved }: Props) {
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
+  const { data: teams } = useTeams();
+  const { data: vendors } = useVendors();
 
   const [kind, setKind] = useState<AssigneeKind>('team');
   const [targetId, setTargetId] = useState<string>('');

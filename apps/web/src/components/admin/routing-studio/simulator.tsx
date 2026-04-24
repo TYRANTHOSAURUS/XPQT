@@ -25,8 +25,11 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, CheckCircle2, ChevronDown, CircleSlash, Clock, PlayCircle, X } from 'lucide-react';
-import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { useRequestTypes } from '@/api/request-types';
+import { useSpaces } from '@/api/spaces';
+import { usePersons } from '@/api/persons';
+import { useAssets } from '@/api/assets';
 
 // ---- DTO types (mirror backend `SimulatorResult`) ----
 type Kind = 'team' | 'user' | 'vendor';
@@ -141,10 +144,10 @@ const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 type Priority = (typeof PRIORITIES)[number];
 
 export function RoutingSimulator() {
-  const { data: requestTypes } = useApi<RequestTypeDTO[]>('/request-types', []);
-  const { data: spaces } = useApi<SpaceDTO[]>('/spaces', []);
-  const { data: assets } = useApi<AssetDTO[]>('/assets', []);
-  const { data: persons } = useApi<PersonDTO[]>('/persons', []);
+  const { data: requestTypes } = useRequestTypes() as { data: RequestTypeDTO[] | undefined };
+  const { data: spaces } = useSpaces() as { data: SpaceDTO[] | undefined };
+  const { data: assets } = useAssets() as { data: AssetDTO[] | undefined };
+  const { data: persons } = usePersons() as { data: PersonDTO[] | undefined };
 
   const [requestTypeId, setRequestTypeId] = useState<string>('');
   const [locationId, setLocationId] = useState<string>('');

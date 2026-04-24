@@ -15,8 +15,9 @@ import {
 } from '@/components/ui/select';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { TableEmpty, TableLoading } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useDomainRegistry, routingKeys } from '@/api/routing';
 
 interface Domain {
   id: string;
@@ -40,7 +41,9 @@ interface Domain {
  * free-text columns and the legacy fallbacks editor retires.
  */
 export function DomainsEditor() {
-  const { data, loading, refetch } = useApi<Domain[]>('/admin/routing/domains', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useDomainRegistry() as { data: Domain[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: routingKeys.domainRegistry() });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);

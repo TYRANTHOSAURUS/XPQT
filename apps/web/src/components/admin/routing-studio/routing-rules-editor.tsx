@@ -14,8 +14,10 @@ import {
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useTeams } from '@/api/teams';
+import { useRoutingRules, routingKeys } from '@/api/routing';
 import { TableLoading, TableEmpty } from '@/components/table-states';
 
 interface RoutingRule {
@@ -27,13 +29,13 @@ interface RoutingRule {
   active: boolean;
 }
 
-interface Team { id: string; name: string }
-
 interface Props { compact?: boolean }
 
 export function RoutingRulesEditor({ compact = false }: Props) {
-  const { data, loading, refetch } = useApi<RoutingRule[]>('/routing-rules', []);
-  const { data: teams } = useApi<Team[]>('/teams', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useRoutingRules() as { data: RoutingRule[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: routingKeys.all });
+  const { data: teams } = useTeams();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');

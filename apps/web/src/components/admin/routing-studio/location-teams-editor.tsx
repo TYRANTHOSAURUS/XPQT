@@ -14,10 +14,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useTeams } from '@/api/teams';
+import { useVendors } from '@/api/vendors';
+import { useSpaces } from '@/api/spaces';
+import { useLocationTeams, useSpaceGroups, routingKeys } from '@/api/routing';
 
-interface LocationTeam {
+interface LocationTeamRow {
   id: string;
   space_id: string | null;
   space_group_id: string | null;
@@ -41,11 +45,13 @@ type AssigneeTab = 'team' | 'vendor';
 interface Props { compact?: boolean }
 
 export function LocationTeamsEditor({ compact = false }: Props) {
-  const { data, loading, refetch } = useApi<LocationTeam[]>('/location-teams', []);
-  const { data: spaces } = useApi<SpaceOption[]>('/spaces', []);
-  const { data: groups } = useApi<GroupOption[]>('/space-groups', []);
-  const { data: teams } = useApi<TeamOption[]>('/teams', []);
-  const { data: vendors } = useApi<VendorOption[]>('/vendors', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useLocationTeams() as { data: LocationTeamRow[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: routingKeys.all });
+  const { data: spaces } = useSpaces() as { data: SpaceOption[] | undefined };
+  const { data: groups } = useSpaceGroups() as { data: GroupOption[] | undefined };
+  const { data: teams } = useTeams() as { data: TeamOption[] | undefined };
+  const { data: vendors } = useVendors() as { data: VendorOption[] | undefined };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -63,7 +69,7 @@ export function LocationTeamsEditor({ compact = false }: Props) {
   };
   const openCreate = () => { reset(); setDialogOpen(true); };
 
-  const openEdit = (row: LocationTeam) => {
+  const openEdit = (row: LocationTeamRow) => {
     setEditId(row.id);
     setScopeTab(row.space_group_id ? 'group' : 'space');
     setSpaceId(row.space_id);
@@ -118,7 +124,7 @@ export function LocationTeamsEditor({ compact = false }: Props) {
     }
   }
 
-  async function handleDelete(row: LocationTeam) {
+  async function handleDelete(row: LocationTeamRow) {
     if (!confirm(`Delete routing entry for domain "${row.domain}"?`)) return;
     try {
       await apiFetch(`/location-teams/${row.id}`, { method: 'DELETE' });

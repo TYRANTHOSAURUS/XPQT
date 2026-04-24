@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useCoverage, routingKeys } from '@/api/routing';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -48,14 +49,11 @@ interface CoverageResponse {
 type Filter = 'all' | 'gaps' | 'explicit';
 
 export function CoverageMatrix() {
+  const qc = useQueryClient();
   const [filter, setFilter] = useState<Filter>('all');
   const [editCell, setEditCell] = useState<EditCellInput | null>(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
-
-  const { data, loading, error } = useApi<CoverageResponse>(
-    `/routing/studio/coverage?_=${reloadNonce}`,
-    [reloadNonce],
-  );
+  const { data, isPending: loading, error } = useCoverage<CoverageResponse>({});
+  const reloadCoverage = () => qc.invalidateQueries({ queryKey: routingKeys.coverage() });
 
   const cellIndex = useMemo(() => {
     const map = new Map<string, CoverageCell>();
@@ -94,7 +92,7 @@ export function CoverageMatrix() {
       <Alert variant="destructive">
         <AlertTriangle className="size-4" />
         <AlertTitle>Coverage failed</AlertTitle>
-        <AlertDescription>{error}</AlertDescription>
+        <AlertDescription>{error instanceof Error ? error.message : String(error)}</AlertDescription>
       </Alert>
     );
   }
@@ -207,7 +205,7 @@ export function CoverageMatrix() {
         input={editCell}
         open={!!editCell}
         onOpenChange={(open) => { if (!open) setEditCell(null); }}
-        onSaved={() => setReloadNonce((n) => n + 1)}
+        onSaved={reloadCoverage}
       />
     </div>
   );

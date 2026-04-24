@@ -13,7 +13,11 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { TableEmpty, TableLoading } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useRequestTypes, requestTypeKeys } from '@/api/request-types';
+import { useTeams } from '@/api/teams';
+import { useSpaces } from '@/api/spaces';
+import { usePolicyEntities } from '@/api/routing';
 import { apiFetch } from '@/lib/api';
 
 interface RequestType {
@@ -88,10 +92,12 @@ interface Props {
 }
 
 export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
-  const { data: requestTypes, loading: rtLoading, refetch: refetchRts } = useApi<RequestType[]>('/request-types', []);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: spaces } = useApi<SpaceOption[]>('/spaces', []);
-  const { data: policyEntities } = useApi<PolicyEntity[]>('/admin/routing/policies/case_owner_policy', []);
+  const qc = useQueryClient();
+  const { data: requestTypes, isPending: rtLoading } = useRequestTypes() as { data: RequestType[] | undefined; isPending: boolean };
+  const refetchRts = () => qc.invalidateQueries({ queryKey: requestTypeKeys.all });
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
+  const { data: spaces } = useSpaces() as { data: SpaceOption[] | undefined };
+  const { data: policyEntities } = usePolicyEntities<PolicyEntity>('case-owner');
 
   const [selectedRtId, setSelectedRtId] = useState<string>(initialRequestTypeId ?? '');
 

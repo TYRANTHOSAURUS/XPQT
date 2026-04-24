@@ -14,12 +14,14 @@ import {
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { EntityPicker } from '@/components/desk/editors/entity-picker';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useSpaces, spaceKeys } from '@/api/spaces';
+import { useSpaceGroups, routingKeys } from '@/api/routing';
 
 interface SpaceOption { id: string; name: string; type?: string }
 interface GroupMember { space_id: string; space: { id: string; name: string; type?: string } | null }
-interface SpaceGroup {
+interface SpaceGroupWithMembers {
   id: string;
   name: string;
   description: string | null;
@@ -29,8 +31,13 @@ interface SpaceGroup {
 interface Props { compact?: boolean }
 
 export function SpaceGroupsEditor({ compact = false }: Props) {
-  const { data, loading, refetch } = useApi<SpaceGroup[]>('/space-groups', []);
-  const { data: spaces } = useApi<SpaceOption[]>('/spaces', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useSpaceGroups() as { data: SpaceGroupWithMembers[] | undefined; isPending: boolean };
+  const refetch = () => Promise.all([
+    qc.invalidateQueries({ queryKey: routingKeys.spaceGroups() }),
+    qc.invalidateQueries({ queryKey: spaceKeys.all }),
+  ]);
+  const { data: spaces } = useSpaces() as { data: SpaceOption[] | undefined };
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -43,7 +50,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
   };
   const openCreate = () => { resetForm(); setDialogOpen(true); };
 
-  const openEdit = (group: SpaceGroup) => {
+  const openEdit = (group: SpaceGroupWithMembers) => {
     setEditId(group.id);
     setName(group.name);
     setDescription(group.description ?? '');
@@ -102,7 +109,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
     }
   }
 
-  async function handleDelete(group: SpaceGroup) {
+  async function handleDelete(group: SpaceGroupWithMembers) {
     if (!confirm(`Delete space group "${group.name}"? Any location_teams rows using it will be removed.`)) return;
     try {
       await apiFetch(`/space-groups/${group.id}`, { method: 'DELETE' });

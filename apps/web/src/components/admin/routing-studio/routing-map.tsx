@@ -17,8 +17,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { useApi } from '@/hooks/use-api';
 import { apiFetch } from '@/lib/api';
+import { useTeams } from '@/api/teams';
+import { useVendors } from '@/api/vendors';
+import { useRequestTypes } from '@/api/request-types';
 import { ResolverPipelineStrip } from './resolver-pipeline-strip';
 import { RoutingModeToggle } from './routing-mode-toggle';
 
@@ -90,9 +92,9 @@ interface Props {
  * checklist the old Overview carried.
  */
 export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
-  const { data: requestTypes, loading: rtLoading } = useApi<RequestType[]>('/request-types', []);
-  const { data: teams } = useApi<Team[]>('/teams', []);
-  const { data: vendors } = useApi<Vendor[]>('/vendors', []);
+  const { data: requestTypes, isPending: rtLoading } = useRequestTypes() as { data: RequestType[] | undefined; isPending: boolean };
+  const { data: teams } = useTeams() as { data: Team[] | undefined };
+  const { data: vendors } = useVendors() as { data: Vendor[] | undefined };
 
   // Per-RT published policy cache. One fetch per attached entity on mount;
   // the policy store controller already re-validates via zod on read.

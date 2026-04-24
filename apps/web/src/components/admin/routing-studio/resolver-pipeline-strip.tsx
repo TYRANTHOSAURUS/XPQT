@@ -1,11 +1,10 @@
 import { ArrowRight, CircleSlash, ExternalLink, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { useApi } from '@/hooks/use-api';
+import { useRoutingRules, useLocationTeams } from '@/api/routing';
+import { useRequestTypes } from '@/api/request-types';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
-interface RoutingRule { id: string; active: boolean }
-interface LocationTeam { id: string }
-interface RequestType { id: string; default_team_id: string | null; default_vendor_id: string | null }
+interface RequestTypePipelineRow { id: string; default_team_id: string | null; default_vendor_id: string | null }
 
 /** Destinations a step can lead to. Studio tabs stay in-page; external hops
  *  go to admin pages outside the Studio (Assets, Request Types). */
@@ -29,9 +28,9 @@ export type PipelineStep = 'rules' | 'asset' | 'coverage' | 'defaults' | 'unassi
  */
 export function ResolverPipelineStrip({ onTabClick }: Props) {
   const navigate = useNavigate();
-  const { data: rules } = useApi<RoutingRule[]>('/routing-rules', []);
-  const { data: mappings } = useApi<LocationTeam[]>('/location-teams', []);
-  const { data: requestTypes } = useApi<RequestType[]>('/request-types', []);
+  const { data: rules } = useRoutingRules();
+  const { data: mappings } = useLocationTeams();
+  const { data: requestTypes } = useRequestTypes() as { data: RequestTypePipelineRow[] | undefined };
 
   const rulesCount = (rules ?? []).filter((r) => r.active).length;
   const mappingsCount = (mappings ?? []).length;

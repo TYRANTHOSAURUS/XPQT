@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -7,6 +8,7 @@ import {
 } from '@/components/ui/select';
 import { Info } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import { useRoutingMode, routingKeys } from '@/api/routing';
 
 type RoutingV2Mode = 'off' | 'dualrun' | 'shadow' | 'v2_only';
 
@@ -32,16 +34,13 @@ interface ModeResponse { mode: RoutingV2Mode; cache_ttl_ms: number }
  * and v2_only turns that into user-visible behavior.
  */
 export function RoutingModeToggle() {
-  const [mode, setMode] = useState<RoutingV2Mode | null>(null);
-  const [loading, setLoading] = useState(true);
+  const qc = useQueryClient();
+  const { data: modeData, isPending: loading } = useRoutingMode() as {
+    data: ModeResponse | undefined;
+    isPending: boolean;
+  };
+  const mode = modeData?.mode ?? null;
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    apiFetch<ModeResponse>('/routing/studio/mode')
-      .then((res) => setMode(res.mode))
-      .catch((err) => toast.error(err instanceof Error ? err.message : 'Failed to load mode'))
-      .finally(() => setLoading(false));
-  }, []);
 
   async function handleChange(next: RoutingV2Mode) {
     if (!mode || mode === next) return;
@@ -57,8 +56,8 @@ export function RoutingModeToggle() {
         method: 'PATCH',
         body: JSON.stringify({ mode: next }),
       });
-      setMode(res.mode);
       toast.success(`routing_v2_mode = ${res.mode}. Evaluator cache refreshes within ~30s.`);
+      await qc.invalidateQueries({ queryKey: routingKeys.all });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to set mode');
     } finally {

@@ -11,8 +11,9 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { TableLoading, TableEmpty } from '@/components/table-states';
-import { useApi } from '@/hooks/use-api';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useDomainParents, routingKeys } from '@/api/routing';
 
 interface DomainParent {
   id: string;
@@ -30,7 +31,9 @@ interface Props {
 }
 
 export function DomainFallbacksEditor({ compact = false }: Props) {
-  const { data, loading, refetch } = useApi<DomainParent[]>('/domain-parents', []);
+  const qc = useQueryClient();
+  const { data, isPending: loading } = useDomainParents() as { data: DomainParent[] | undefined; isPending: boolean };
+  const refetch = () => qc.invalidateQueries({ queryKey: routingKeys.domainParents() });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [domain, setDomain] = useState('');
   const [parentDomain, setParentDomain] = useState('');
