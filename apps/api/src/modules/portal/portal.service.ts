@@ -1,6 +1,8 @@
 import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { PortalAppearanceService } from '../portal-appearance/portal-appearance.service';
+import { PortalAnnouncementsService } from '../portal-announcements/portal-announcements.service';
 
 interface SpaceSummary {
   id: string;
@@ -41,6 +43,19 @@ export interface PortalMeResponse {
    * enabled, person has type='employee', person has no default and no grants.
    */
   can_self_onboard: boolean;
+  appearance: {
+    hero_image_url: string | null;
+    welcome_headline: string | null;
+    supporting_line: string | null;
+    greeting_enabled: boolean;
+  } | null;
+  announcement: {
+    id: string;
+    title: string;
+    body: string;
+    published_at: string;
+    expires_at: string | null;
+  } | null;
 }
 
 /**
@@ -102,7 +117,11 @@ export interface PortalSpacesResponse {
  */
 @Injectable()
 export class PortalService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly appearance: PortalAppearanceService,
+    private readonly announcements: PortalAnnouncementsService,
+  ) {}
 
   /**
    * Resolves authUid → { user, person } in the current tenant, or throws 401.
@@ -223,6 +242,32 @@ export class PortalService {
     const can_self_onboard =
       self_onboard_flag_on && zero_scope && person.type === 'employee';
 
+    let appearance: PortalMeResponse['appearance'] = null;
+    let announcement: PortalMeResponse['announcement'] = null;
+    if (currentLocation) {
+      const [app, ann] = await Promise.all([
+        this.appearance.get(currentLocation.id),
+        this.announcements.getActiveForLocation(currentLocation.id),
+      ]);
+      appearance = app
+        ? {
+            hero_image_url: app.hero_image_url,
+            welcome_headline: app.welcome_headline,
+            supporting_line: app.supporting_line,
+            greeting_enabled: app.greeting_enabled,
+          }
+        : null;
+      announcement = ann
+        ? {
+            id: ann.id,
+            title: ann.title,
+            body: ann.body,
+            published_at: ann.published_at,
+            expires_at: ann.expires_at,
+          }
+        : null;
+    }
+
     return {
       person: {
         id: person.id,
@@ -240,6 +285,8 @@ export class PortalService {
       role_scopes: userRolesRes,
       can_submit,
       can_self_onboard,
+      appearance,
+      announcement,
     };
   }
 
