@@ -14,14 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { PersonAvatar } from '@/components/person-avatar';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { PickerItemBody } from '@/components/desk/editors/picker-item';
 import {
   Clock,
   MapPin,
@@ -769,102 +762,111 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 </TabsList>
               </Tabs>
               <div className="rounded-lg border border-border/70 bg-card/70 transition-shadow focus-within:shadow-md">
-                <Popover open={mentionOpen} onOpenChange={(open) => { if (!open) closeMentionMenu(); }}>
-                  <div className="relative">
-                    <PopoverTrigger
-                      render={<div aria-hidden="true" className="pointer-events-none absolute left-4 top-4 size-px opacity-0" />}
-                    />
-                    <Textarea
-                      ref={textareaRef}
-                      className="min-h-[116px] resize-none border-0 bg-transparent px-4 py-3 text-[15px] leading-6 shadow-none focus-visible:ring-0"
-                      placeholder={commentVisibility === 'internal' ? 'Add internal note... Use @ to mention someone.' : 'Reply to requester...'}
-                      rows={4}
-                      value={commentText}
-                      onChange={(e) => {
-                        const nextText = e.target.value;
-                        setCommentText(nextText);
-                        syncMentionMatch(nextText, e.target.selectionStart);
-                      }}
-                      onSelect={(e) => syncMentionMatch(commentText, e.currentTarget.selectionStart)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                          handleSubmitComment();
-                          return;
-                        }
+                <div className="relative">
+                  <Textarea
+                    ref={textareaRef}
+                    className="min-h-[116px] resize-none border-0 bg-transparent px-4 py-3 text-[15px] leading-6 shadow-none focus-visible:ring-0"
+                    placeholder={commentVisibility === 'internal' ? 'Add internal note... Use @ to mention someone.' : 'Reply to requester...'}
+                    rows={4}
+                    value={commentText}
+                    onChange={(e) => {
+                      const nextText = e.target.value;
+                      const nextCaret = e.target.selectionStart;
+                      setCommentText(nextText);
+                      syncMentionMatch(nextText, nextCaret);
+                    }}
+                    onKeyUp={(e) => {
+                      // Caret-only moves (arrows / home / end) don't fire onChange, so
+                      // keep the mention state in sync from the keyboard too.
+                      if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') {
+                        syncMentionMatch(e.currentTarget.value, e.currentTarget.selectionStart);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Close on blur, but defer so a mouse-click on a suggestion item
+                      // (which blurs the textarea before its onMouseDown) still registers.
+                      setTimeout(closeMentionMenu, 120);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        handleSubmitComment();
+                        return;
+                      }
 
-                        if (!mentionOpen) return;
+                      if (!mentionOpen) return;
 
-                        if (e.key === 'ArrowDown' && mentionResults.length > 0) {
-                          e.preventDefault();
-                          setMentionIndex((current) => (current + 1) % mentionResults.length);
-                          return;
-                        }
+                      if (e.key === 'ArrowDown' && mentionResults.length > 0) {
+                        e.preventDefault();
+                        setMentionIndex((current) => (current + 1) % mentionResults.length);
+                        return;
+                      }
 
-                        if (e.key === 'ArrowUp' && mentionResults.length > 0) {
-                          e.preventDefault();
-                          setMentionIndex((current) => (current - 1 + mentionResults.length) % mentionResults.length);
-                          return;
-                        }
+                      if (e.key === 'ArrowUp' && mentionResults.length > 0) {
+                        e.preventDefault();
+                        setMentionIndex((current) => (current - 1 + mentionResults.length) % mentionResults.length);
+                        return;
+                      }
 
-                        if ((e.key === 'Enter' || e.key === 'Tab') && mentionResults[mentionIndex]) {
-                          e.preventDefault();
-                          selectMention(mentionResults[mentionIndex]);
-                          return;
-                        }
+                      if ((e.key === 'Enter' || e.key === 'Tab') && mentionResults[mentionIndex]) {
+                        e.preventDefault();
+                        selectMention(mentionResults[mentionIndex]);
+                        return;
+                      }
 
-                        if (e.key === 'Escape') {
-                          e.preventDefault();
-                          closeMentionMenu();
-                        }
-                      }}
-                    />
-                  </div>
-                  <PopoverContent
-                    className="w-[340px] gap-0 rounded-lg border border-border/70 bg-popover p-1 shadow-lg"
-                    align="start"
-                    sideOffset={8}
-                  >
-                    <Command shouldFilter={false} className="rounded-lg bg-transparent p-0">
-                      <CommandList className="max-h-64">
-                        {mentionLoading && (
-                          <div className="flex items-center justify-center py-6">
-                            <Spinner />
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        closeMentionMenu();
+                      }
+                    }}
+                  />
+                  {mentionOpen && (
+                    <div
+                      role="listbox"
+                      aria-label="Mention suggestions"
+                      className="absolute left-3 top-full z-20 mt-1 w-[340px] overflow-hidden rounded-lg border border-border/70 bg-popover p-1 shadow-lg"
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      {mentionLoading && (
+                        <div className="flex items-center justify-center py-6">
+                          <Spinner />
+                        </div>
+                      )}
+                      {!mentionLoading && mentionResults.length === 0 && (
+                        <div className="px-2 py-3 text-left text-xs text-muted-foreground">
+                          No people found.
+                        </div>
+                      )}
+                      {!mentionLoading && mentionResults.length > 0 && (
+                        <>
+                          <div className="px-2 pt-2 pb-1 text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                            {mentionMatch?.query ? 'People' : 'Suggested'}
                           </div>
-                        )}
-                        {!mentionLoading && mentionResults.length === 0 && (
-                          <CommandEmpty className="py-4 text-left text-xs text-muted-foreground">
-                            No people found.
-                          </CommandEmpty>
-                        )}
-                        {!mentionLoading && mentionResults.length > 0 && (
-                          <CommandGroup heading={mentionMatch?.query ? 'People' : 'Suggested'} className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.08em]">
+                          <div className="max-h-64 overflow-y-auto">
                             {mentionResults.map((person, index) => (
-                              <CommandItem
+                              <div
                                 key={person.id}
-                                value={`${getPersonLabel(person)} ${person.email ?? ''}`}
+                                role="option"
+                                aria-selected={index === mentionIndex}
                                 className={cn(
-                                  'mx-1 h-7 gap-2.5 rounded-sm px-2 text-sm',
+                                  'mx-1 flex cursor-pointer items-center rounded-sm px-2 py-1.5',
                                   index === mentionIndex && 'bg-accent text-accent-foreground',
                                 )}
                                 onMouseEnter={() => setMentionIndex(index)}
-                                onMouseDown={(e) => e.preventDefault()}
-                                onSelect={() => selectMention(person)}
+                                onClick={() => selectMention(person)}
                               >
-                                <PersonAvatar size="sm" className="size-5" person={person} />
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate font-medium">{getPersonLabel(person)}</div>
-                                </div>
-                                <div className="truncate text-[11px] text-muted-foreground">
-                                  {person.email ?? person.department ?? 'Person'}
-                                </div>
-                              </CommandItem>
+                                <PickerItemBody
+                                  leading={<PersonAvatar size="sm" person={person} />}
+                                  label={getPersonLabel(person)}
+                                  sublabel={person.email ?? person.department ?? null}
+                                />
+                              </div>
                             ))}
-                          </CommandGroup>
-                        )}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {attachmentFiles.length > 0 && (
                   <div className="flex flex-wrap gap-2 px-3 pb-2">
                     {attachmentFiles.map((file, index) => (
