@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import type { ServiceItemDetail } from './catalog-service-panel';
 import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
-import { CoverageMatrixDrillDown } from './coverage-matrix-drill-down';
+import { CoverageMatrixDrillDown, type MatrixDefaults } from './coverage-matrix-drill-down';
 
 /**
  * Per-site coverage matrix. Columns: offered, handler, workflow, case SLA,
@@ -58,15 +58,13 @@ interface MatrixRow {
 
 interface MatrixResponse {
   request_type_id: string;
-  defaults: {
+  defaults: MatrixDefaults & {
     default_team_id: string | null;
-    default_team_name: string | null;
     default_vendor_id: string | null;
-    default_vendor_name: string | null;
     workflow_definition_id: string | null;
-    workflow_definition_name: string | null;
     sla_policy_id: string | null;
-    sla_policy_name: string | null;
+    case_owner_policy_entity_id: string | null;
+    child_dispatch_policy_entity_id: string | null;
   };
   rows: MatrixRow[];
 }
@@ -552,6 +550,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
         open={drillDownOpen}
         onOpenChange={setDrillDownOpen}
         row={drillRow}
+        defaults={matrix?.defaults ?? null}
         detail={detail}
         onEditOverride={openEditOverride}
         onAddOverride={openOverrideForSite}

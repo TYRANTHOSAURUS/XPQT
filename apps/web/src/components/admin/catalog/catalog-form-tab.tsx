@@ -238,6 +238,7 @@ export function CatalogFormTab({ detail, onSaved }: {
                 <th className="border-b px-3 py-2 text-left font-medium">Form schema</th>
                 <th className="border-b px-3 py-2 text-left font-medium w-24">Priority</th>
                 <th className="border-b px-3 py-2 text-left font-medium w-20">Active</th>
+                <th className="border-b px-3 py-2 text-left font-medium w-48">Schedule</th>
                 <th className="border-b px-3 py-2 w-10" aria-label="Remove" />
               </tr>
             </thead>
@@ -286,6 +287,30 @@ export function CatalogFormTab({ detail, onSaved }: {
                     />
                   </td>
                   <td className="border-b px-3 py-1.5 align-top">
+                    <div className="flex flex-col gap-1">
+                      <Input
+                        type="datetime-local"
+                        className="h-7 text-[11px] font-mono"
+                        value={c.starts_at ? c.starts_at.slice(0, 16) : ''}
+                        onChange={(e) => updateConditional(idx, {
+                          starts_at: e.target.value ? new Date(e.target.value).toISOString() : null,
+                        })}
+                        aria-label="Starts at"
+                        title="Starts at (optional — leave blank for always-on)"
+                      />
+                      <Input
+                        type="datetime-local"
+                        className="h-7 text-[11px] font-mono"
+                        value={c.ends_at ? c.ends_at.slice(0, 16) : ''}
+                        onChange={(e) => updateConditional(idx, {
+                          ends_at: e.target.value ? new Date(e.target.value).toISOString() : null,
+                        })}
+                        aria-label="Ends at"
+                        title="Ends at (optional — leave blank for always-on)"
+                      />
+                    </div>
+                  </td>
+                  <td className="border-b px-3 py-1.5 align-top">
                     <button
                       type="button"
                       className="opacity-60 hover:opacity-100"
@@ -299,7 +324,7 @@ export function CatalogFormTab({ detail, onSaved }: {
               ))}
               {conditional.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-4 text-center text-sm text-muted-foreground">
                     No conditional variants configured.
                   </td>
                 </tr>

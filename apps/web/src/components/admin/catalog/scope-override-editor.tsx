@@ -87,6 +87,7 @@ interface Vendor { id: string; name: string }
 interface SlaPolicy { id: string; name: string }
 interface Workflow { id: string; name: string }
 interface SpaceGroup { id: string; name: string }
+interface PolicyEntity { id: string; slug: string; display_name: string; current_published_version_id: string | null }
 
 interface EditorProps {
   requestTypeId: string;
@@ -125,6 +126,12 @@ export function ScopeOverrideEditor({
   const { data: slas } = useApi<SlaPolicy[]>('/sla-policies', []);
   const { data: workflows } = useApi<Workflow[]>('/workflows', []);
   const { data: spaceGroups } = useApi<SpaceGroup[]>('/space-groups', []);
+  const { data: caseOwnerPolicies } = useApi<PolicyEntity[]>(
+    '/admin/routing/policies/case_owner_policy', [],
+  );
+  const { data: childDispatchPolicies } = useApi<PolicyEntity[]>(
+    '/admin/routing/policies/child_dispatch_policy', [],
+  );
 
   const [draft, setDraft] = useState<Draft>(toDraft(null));
   const [saving, setSaving] = useState(false);
@@ -410,6 +417,54 @@ export function ScopeOverrideEditor({
                     ))}
                   </SelectContent>
                 </Select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel htmlFor="sov-case-owner-policy">Case-owner policy</FieldLabel>
+                <Select
+                  value={draft.case_owner_policy_entity_id ?? ''}
+                  onValueChange={(v) => patch('case_owner_policy_entity_id', v || null)}
+                >
+                  <SelectTrigger id="sov-case-owner-policy"><SelectValue placeholder="Use request type default" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Use request type default</SelectItem>
+                    {(caseOwnerPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.display_name}
+                        {!p.current_published_version_id && (
+                          <span className="ml-1 text-[10px] text-muted-foreground">(draft)</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Replaces the request-type's owner-resolution policy for this scope.
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="sov-child-dispatch-policy">Child-dispatch policy</FieldLabel>
+                <Select
+                  value={draft.child_dispatch_policy_entity_id ?? ''}
+                  onValueChange={(v) => patch('child_dispatch_policy_entity_id', v || null)}
+                >
+                  <SelectTrigger id="sov-child-dispatch-policy"><SelectValue placeholder="Use request type default" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Use request type default</SelectItem>
+                    {(childDispatchPolicies ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.display_name}
+                        {!p.current_published_version_id && (
+                          <span className="ml-1 text-[10px] text-muted-foreground">(draft)</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Replaces the request-type's dispatch policy for this scope.
+                </FieldDescription>
               </Field>
             </div>
           </FieldSet>

@@ -47,10 +47,22 @@ export interface MatrixRow {
   executor_sla: DimensionValue;
 }
 
+export interface MatrixDefaults {
+  default_team_id: string | null;
+  default_team_name: string | null;
+  default_vendor_id: string | null;
+  default_vendor_name: string | null;
+  workflow_definition_name: string | null;
+  sla_policy_name: string | null;
+  case_owner_policy_entity_name: string | null;
+  child_dispatch_policy_entity_name: string | null;
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   row: MatrixRow | null;
+  defaults: MatrixDefaults | null;
   detail: ServiceItemDetail;
   onEditOverride: (overrideId: string) => void;
   onAddOverride: (siteId: string) => void;
@@ -85,6 +97,7 @@ export function CoverageMatrixDrillDown({
   open,
   onOpenChange,
   row,
+  defaults,
   detail,
   onEditOverride,
   onAddOverride,
@@ -257,14 +270,27 @@ export function CoverageMatrixDrillDown({
             </div>
             <div className="flex flex-col gap-2">
               <Row label="Handler">
-                <div className="flex items-center gap-2">
-                  <span>
-                    {row.handler.kind === 'none'
-                      ? 'Unassigned'
-                      : row.handler.name
-                        ?? (row.handler.id ? row.handler.id.slice(0, 8) : 'routing chain')}
-                  </span>
-                  <SourceLabel source={row.handler.source} />
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span>
+                      {row.handler.kind === 'none'
+                        ? 'Unassigned (explicit)'
+                        : row.handler.name
+                          ?? (row.handler.id ? row.handler.id.slice(0, 8) : 'routing chain')}
+                    </span>
+                    <SourceLabel source={row.handler.source} />
+                  </div>
+                  {row.handler.source === 'routing' && (
+                    <p className="text-[11px] text-muted-foreground leading-snug">
+                      No scope override here. Resolver walks: routing rules →
+                      asset → location-team chain →
+                      {defaults?.default_team_name
+                        ? <> request-type default (team <span className="font-medium">{defaults.default_team_name}</span>)</>
+                        : defaults?.default_vendor_name
+                          ? <> request-type default (vendor <span className="font-medium">{defaults.default_vendor_name}</span>)</>
+                          : <> unassigned.</>}
+                    </p>
+                  )}
                 </div>
               </Row>
               <Separator />

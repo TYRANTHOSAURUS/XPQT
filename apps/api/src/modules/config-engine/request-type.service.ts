@@ -245,9 +245,9 @@ export class RequestTypeService {
       variants.map((v) => v.criteria_set_id),
       'criteria_set_id',
     );
-    await this.assertIdsInTenant(
-      'config_entities',
+    await this.assertConfigEntitiesOfType(
       variants.map((v) => v.form_schema_id),
+      'form_schema',
       'form_schema_id',
     );
 
@@ -335,13 +335,15 @@ export class RequestTypeService {
       overrides.flatMap((o) => [o.case_sla_policy_id ?? null, o.executor_sla_policy_id ?? null]),
       'case_sla_policy_id / executor_sla_policy_id',
     );
-    await this.assertIdsInTenant(
-      'config_entities',
-      overrides.flatMap((o) => [
-        o.case_owner_policy_entity_id ?? null,
-        o.child_dispatch_policy_entity_id ?? null,
-      ]),
-      'case_owner_policy_entity_id / child_dispatch_policy_entity_id',
+    await this.assertConfigEntitiesOfType(
+      overrides.map((o) => o.case_owner_policy_entity_id ?? null),
+      'case_owner_policy',
+      'case_owner_policy_entity_id',
+    );
+    await this.assertConfigEntitiesOfType(
+      overrides.map((o) => o.child_dispatch_policy_entity_id ?? null),
+      'child_dispatch_policy',
+      'child_dispatch_policy_entity_id',
     );
 
     const { error } = await this.supabase.admin.rpc('request_type_replace_scope_overrides', {
@@ -487,41 +489,34 @@ export class RequestTypeService {
         };
 
         // Handler composition -------------------------------------------------
+        // Only a scope override lets us state the effective handler with
+        // certainty. When no override wins the resolver walks: routing rules
+        // → asset → location-team chain → request-type default → unassigned.
+        // The matrix cannot cheaply simulate that chain per site (it would
+        // need a synthetic requester context for each row), so we honestly
+        // report `routing` and let the drill-down drawer expose the RT
+        // default as the "ultimate fallback". Lying with `default` here
+        // would paint a picture the resolver doesn't actually produce.
         let handler: {
           kind: 'team' | 'vendor' | 'none' | null;
           id: string | null;
           name: string | null;
           source: Source;
         };
-        if (override?.handler_kind) {
-          const kind = override.handler_kind;
-          if (kind === 'team') {
-            handler = {
-              kind: 'team', id: override.handler_team_id,
-              name: override.handler_team_id ? teams.get(override.handler_team_id) ?? null : null,
-              source: 'override',
-            };
-          } else if (kind === 'vendor') {
-            handler = {
-              kind: 'vendor', id: override.handler_vendor_id,
-              name: override.handler_vendor_id ? vendors.get(override.handler_vendor_id) ?? null : null,
-              source: 'override',
-            };
-          } else {
-            handler = { kind: 'none', id: null, name: null, source: 'override_unassigned' };
-          }
-        } else if (rtDefaults.default_team_id) {
+        if (override?.handler_kind === 'team') {
           handler = {
-            kind: 'team', id: rtDefaults.default_team_id,
-            name: teams.get(rtDefaults.default_team_id) ?? null,
-            source: 'default',
+            kind: 'team', id: override.handler_team_id,
+            name: override.handler_team_id ? teams.get(override.handler_team_id) ?? null : null,
+            source: 'override',
           };
-        } else if (rtDefaults.default_vendor_id) {
+        } else if (override?.handler_kind === 'vendor') {
           handler = {
-            kind: 'vendor', id: rtDefaults.default_vendor_id,
-            name: vendors.get(rtDefaults.default_vendor_id) ?? null,
-            source: 'default',
+            kind: 'vendor', id: override.handler_vendor_id,
+            name: override.handler_vendor_id ? vendors.get(override.handler_vendor_id) ?? null : null,
+            source: 'override',
           };
+        } else if (override?.handler_kind === 'none') {
+          handler = { kind: 'none', id: null, name: null, source: 'override_unassigned' };
         } else {
           handler = { kind: null, id: null, name: null, source: 'routing' };
         }
@@ -636,6 +631,46 @@ export class RequestTypeService {
     if (missing.length > 0) {
       throw new BadRequestException(
         `${label}: ${missing.length} referenced id(s) not found in this tenant — ${missing.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * Stricter config_entities guard. `assertIdsInTenant('config_entities',
+   * ids)` only checks tenant membership — a well-formed admin request can
+   * still bind a `space_levels` entity into a `form_schema_id` slot, which
+   * downstream consumers treat as a typed reference. Enforce the subtype
+   * here: the referenced row must exist in the tenant AND have the exact
+   * `config_type` the column expects.
+   */
+  private async assertConfigEntitiesOfType(
+    ids: Array<string | null | undefined>,
+    expectedConfigType: string,
+    label: string,
+  ): Promise<void> {
+    const nonEmpty = Array.from(new Set(ids.filter((x): x is string => !!x)));
+    if (nonEmpty.length === 0) return;
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('config_entities')
+      .select('id, config_type')
+      .eq('tenant_id', tenant.id)
+      .in('id', nonEmpty);
+    if (error) throw error;
+    const rows = (data ?? []) as Array<{ id: string; config_type: string }>;
+    const byId = new Map(rows.map((r) => [r.id, r.config_type]));
+    const problems: string[] = [];
+    for (const id of nonEmpty) {
+      const type = byId.get(id);
+      if (!type) {
+        problems.push(`${id} (not found in this tenant)`);
+      } else if (type !== expectedConfigType) {
+        problems.push(`${id} (config_type=${type}, expected ${expectedConfigType})`);
+      }
+    }
+    if (problems.length > 0) {
+      throw new BadRequestException(
+        `${label}: ${problems.length} invalid id(s) — ${problems.join(', ')}`,
       );
     }
   }
