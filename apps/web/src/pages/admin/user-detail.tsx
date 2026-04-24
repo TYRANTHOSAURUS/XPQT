@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { queryOptions, useQuery } from '@tanstack/react-query';
 import { Shield, AlertTriangle, Clock, MapPin, Building2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import { formatFullTimestamp } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import {
   SettingsPageHeader,
@@ -241,16 +242,7 @@ function formatBounds(startsAt: string | null, endsAt: string | null): string {
 }
 
 function fmt(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return iso;
-  }
+  return formatFullTimestamp(iso);
 }
 
 function EffectivePermissionsPanel({

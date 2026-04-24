@@ -220,3 +220,59 @@ All in `docs/`:
 - `docs/spec.md` — main product specification (~3000 lines, comprehensive)
 - `docs/build-strategy.md` — build strategy (phase UI, not architecture)
 - `docs/phase-1.md` through `docs/phase-4.md` — phase plans with detailed scope per phase
+
+## Design polish rules (mandatory — baked into apps/web/src/index.css)
+
+These are established app-wide defaults. Don't override them per component unless the design genuinely calls for it. If you find yourself hand-rolling one, stop — use the token / helper instead.
+
+### Typography
+
+- **Fonts.** Geist Sans + Geist Mono are loaded globally. Never add another typeface without discussing it — Geist everywhere is a deliberate cohesive choice matching Linear / Vercel / shadcn.
+- **Antialiasing.** `body` is `antialiased` with `-webkit-font-smoothing: antialiased` + `-moz-osx-font-smoothing: grayscale`. Grayscale AA, not subpixel. Don't override.
+- **Heading wrap.** `h1/h2/h3/h4` use `text-wrap: balance` (no orphans). Paragraphs use `text-wrap: pretty`. Auto.
+- **Tabular numerals.** `table`, `time`, `.tabular-nums`, and `[data-tabular-nums]` elements get tabular-nums app-wide. Any counter / metric / digit that changes over time should be inside one of those — or add the class when you render a number that might change.
+
+### Numbers + time — always via `@/lib/format`
+
+Never call `toLocaleString` / `Intl.NumberFormat` / `Intl.RelativeTimeFormat` directly in page code. The helpers in `apps/web/src/lib/format.ts` exist so every user-visible number / timestamp reads cohesively:
+
+- **`formatCount(n)`** — plain for < 1000, compact (`1.5K`, `23M`) above. Use on every counter/badge.
+- **`formatRelativeTime(input)`** — `"2 minutes ago"` / `"in 3 days"`. Use as the visible label on timestamps in lists, audit feeds, activity streams.
+- **`formatFullTimestamp(input)`** — "Apr 24, 2026, 3:14 PM". Use as `title` tooltip on a `<time>` that displays relative time, so power users can hover for the exact value.
+
+### Motion
+
+- **Easing tokens on `:root`.** `--ease-snap` (fast feedback), `--ease-smooth` (layout), `--ease-spring` (modals/celebratory), `--ease-swift-out` (dismiss). Use via `transition-timing-function: var(--ease-smooth)` — never hand-roll a `cubic-bezier(...)` in TSX files.
+- **Duration guidelines.** Hover/press: 80–150ms with snap. Layout/dropdown: 200–300ms with smooth. Modal/sheet: 300–500ms with spring. Dismiss: 150–220ms with swift-out.
+- **Reduced-motion.** Globally handled — `@media (prefers-reduced-motion: reduce)` clamps every animation/transition to 0.001ms. Don't wrap individual components — the global rule already covers them.
+- **Active press on buttons.** The shared `Button` uses `translate-y-px` on active — do NOT replace with `scale`, which blurs text mid-press. For non-button clickable rows (e.g. a `SettingsRow`), don't add any press feedback; the row background hover is the affordance.
+- **View transitions.** A global 240ms crossfade is set for same-document view transitions in browsers that support them. To actually trigger it on a route change, pass `unstable_viewTransition` to the React Router `<Link>` — one prop, per link as appropriate.
+
+### Elevation + borders
+
+- **Shadows are last resort.** Prefer `border border/50` + optional `ring-1 ring-black/5` over `shadow-*`. Heavy drop shadows read "dated website", not "app". Exceptions: popover/dropdown/sheet overlays (already shipped), and drag-overlays for dnd (use `shadow-lg`).
+- **Focus rings.** Use `focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50` — the Button baseline. Matches across controls; never show focus on mouse click (don't use plain `:focus`).
+
+### Copy chips
+
+- **Permission keys / JSONPath / any token a user might copy:** wrap in `<code className="chip">…</code>` or add `data-chip` on a larger element so triple-click selects it atomically. The global `code.chip, [data-chip] { user-select: all }` handles the rest.
+- **Code elements default to `user-select: text`** (not the browser default `none` that some themes set) — don't override unless you need different behaviour.
+
+### Widths
+
+- **Settings pages use the fixed `SettingsPageWidth` enum (`narrow` / `default` / `wide` / `xwide`).** Never invent an arbitrary `max-w-[1180px]`. See §Settings page layout for which to pick.
+- **Portal content is centred in `max-w-6xl` (1152px)** — the portal layout handles it. Page-level components inside the portal should not set their own max-w.
+
+### Platform
+
+- **`<meta name="color-scheme" content="light dark" />`** is set in `index.html`. Don't remove it — it makes browser chrome (scrollbars, pre-paint inputs) match the theme.
+- **Focus management on dialogs.** The shadcn `Dialog` primitives handle trap + restore correctly. Don't hand-roll focus logic on top of them.
+
+### When you're tempted to deviate
+
+- Adding a font? → stop, use Geist.
+- Picking a cubic-bezier? → stop, use `--ease-*`.
+- Calling `.toLocaleString()` in page code? → stop, use `@/lib/format`.
+- Setting `max-w-[NNNpx]` on a settings page? → stop, use the enum.
+- Adding `shadow-lg` to a card? → stop, think about whether a border works.
+- Setting `transition duration-300 ease-in-out` on a text element? → `transition-all duration-200 ease-[var(--ease-smooth)]` or drop the transition.

@@ -14,6 +14,7 @@ import {
   SettingsPageShell,
 } from '@/components/ui/settings-page';
 import { useWebhookEvents, useWebhooks } from '@/api/webhooks';
+import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 
 export function WebhookEventsPage() {
   const { id } = useParams<{ id: string }>();
@@ -75,9 +76,13 @@ export function WebhookEventsPage() {
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <span className="text-xs text-muted-foreground">HTTP {ev.http_status}</span>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(ev.received_at).toLocaleString()}
-                </span>
+                <time
+                  dateTime={ev.received_at}
+                  title={formatFullTimestamp(ev.received_at)}
+                  className="text-xs text-muted-foreground"
+                >
+                  {formatRelativeTime(ev.received_at)}
+                </time>
               </div>
             </button>
           ))}
@@ -92,7 +97,7 @@ export function WebhookEventsPage() {
             </DialogTitle>
             <DialogDescription>
               {openEvent
-                ? `Received ${new Date(openEvent.received_at).toLocaleString()} — HTTP ${openEvent.http_status}`
+                ? `Received ${formatFullTimestamp(openEvent.received_at)} — HTTP ${openEvent.http_status}`
                 : ''}
             </DialogDescription>
           </DialogHeader>

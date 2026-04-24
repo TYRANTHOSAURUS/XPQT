@@ -15,12 +15,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { useWebhooks, type Webhook } from '@/api/webhooks';
-
-function formatDate(iso: string | null) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString();
-}
 
 export function WebhooksPage() {
   const { data, isLoading } = useWebhooks();
@@ -71,7 +67,16 @@ export function WebhooksPage() {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDate(wh.last_used_at)}
+                  {wh.last_used_at ? (
+                    <time
+                      dateTime={wh.last_used_at}
+                      title={formatFullTimestamp(wh.last_used_at)}
+                    >
+                      {formatRelativeTime(wh.last_used_at)}
+                    </time>
+                  ) : (
+                    '—'
+                  )}
                 </TableCell>
               </TableRow>
             ))}

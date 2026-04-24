@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
@@ -132,9 +133,16 @@ function TicketTable({
             return (
               <TableRow
                 key={ticket.id}
-                className={`cursor-pointer hover:bg-muted/30 ${
-                  isSelected ? 'bg-accent' : ''
-                }`}
+                data-selected={isSelected ? 'true' : undefined}
+                className={cn(
+                  'cursor-pointer transition-colors',
+                  // Selected uses primary with low alpha so it layers over
+                  // zebra stripes + hover without flickering. Hover goes
+                  // one step deeper so the intent still reads.
+                  isSelected
+                    ? 'bg-primary/10 hover:bg-primary/15'
+                    : 'hover:bg-muted/40',
+                )}
                 onClick={() => setSelectedTicketId(ticket.id)}
               >
                 <TableCell
