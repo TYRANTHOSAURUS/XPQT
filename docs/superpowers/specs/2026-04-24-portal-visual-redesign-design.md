@@ -322,13 +322,16 @@ create table public.portal_announcements (
   created_by uuid references users(id),
   created_at timestamptz not null default now()
 );
+-- Postgres partial-index predicates must be IMMUTABLE, so the DB-level
+-- constraint only covers the permanent-active case. The service's
+-- retire-and-insert pattern covers time-windowed (expires_at > now()).
 create unique index portal_announcements_one_active_per_location
   on public.portal_announcements (tenant_id, location_id)
-  where (expires_at is null or expires_at > now());
+  where (expires_at is null);
 create index on public.portal_announcements (tenant_id, location_id, published_at desc);
 ```
 
-The unique partial index enforces the "one active per location" rule at the DB level.
+The partial unique index enforces the permanent-active case at the DB; time-windowed active enforcement lives in the publish service (retire existing active before insert).
 
 ### 7.3 `catalog_categories` — add cover columns
 
