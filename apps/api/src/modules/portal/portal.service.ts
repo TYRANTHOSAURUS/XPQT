@@ -92,6 +92,9 @@ interface CatalogCategory {
   name: string;
   icon: string | null;
   parent_category_id: string | null;
+  description: string | null;
+  cover_image_url: string | null;
+  cover_source: 'image' | 'icon' | null;
   request_types: CatalogRequestType[];
 }
 
@@ -478,7 +481,7 @@ export class PortalService {
         .in('request_type_id', visibleIds),
       this.supabase.admin
         .from('service_catalog_categories')
-        .select('id, name, icon, parent_category_id, display_order')
+        .select('id, name, icon, parent_category_id, description, cover_image_url, cover_source, display_order')
         .eq('tenant_id', tenant.id)
         .eq('active', true)
         .order('display_order'),
@@ -494,6 +497,7 @@ export class PortalService {
     const rtCats = ((rtCatRes.data ?? []) as Array<{ request_type_id: string; category_id: string }>);
     const categories = ((categoriesRes.data ?? []) as Array<{
       id: string; name: string; icon: string | null; parent_category_id: string | null;
+      description: string | null; cover_image_url: string | null; cover_source: 'image' | 'icon' | null;
     }>);
 
     // Form variant resolution — conditional beats default (matches
@@ -606,6 +610,9 @@ export class PortalService {
         name: cat.name,
         icon: cat.icon,
         parent_category_id: cat.parent_category_id,
+        description: cat.description,
+        cover_image_url: cat.cover_image_url,
+        cover_source: cat.cover_source,
         request_types: rts,
       });
     }
@@ -616,6 +623,9 @@ export class PortalService {
         name: 'Other',
         icon: null,
         parent_category_id: null,
+        description: null,
+        cover_image_url: null,
+        cover_source: null,
         request_types: uncategorized.sort((a, b) => a.display_order - b.display_order),
       });
     }
