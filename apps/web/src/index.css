@@ -135,6 +135,27 @@
   html {
     @apply font-sans;
     }
+  /* Balanced wrapping for titles (no orphans) + pretty wrapping for paragraphs
+     (last line doesn't dangle a single word). Modern Safari/Chrome/Firefox. */
+  h1, h2, h3, h4 {
+    text-wrap: balance;
+    }
+  p {
+    text-wrap: pretty;
+    }
+  /* Tabular numbers app-wide on tables, metrics, counters, timestamps.
+     Stops digit-width wobble row to row. */
+  table, time, .tabular-nums, [data-tabular-nums] {
+    font-variant-numeric: tabular-nums;
+    }
+  /* Code chips are copy targets — triple-click or pick-and-paste without
+     having to drag-select character by character. */
+  code {
+    user-select: text;
+    }
+  code.chip, [data-chip] {
+    user-select: all;
+    }
 }
 
 /* Workflow editor — subtle animated flow on edges */

@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/settings-page';
 import { cn } from '@/lib/utils';
 import { useApi } from '@/hooks/use-api';
+import { formatCount } from '@/lib/format';
 
 type RoleType = 'admin' | 'agent' | 'employee';
 
@@ -108,13 +109,13 @@ export function UserRolesPage() {
                     {role.description ?? '—'}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={userCount > 0 ? 'secondary' : 'outline'} className="text-xs">
-                      {userCount}
+                    <Badge variant={userCount > 0 ? 'secondary' : 'outline'} className="text-xs tabular-nums">
+                      {formatCount(userCount)}
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <span className="text-xs text-muted-foreground">
-                      {permCount === 0 ? 'none' : `${permCount} key${permCount === 1 ? '' : 's'}`}
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {permCount === 0 ? 'none' : `${formatCount(permCount)} key${permCount === 1 ? '' : 's'}`}
                     </span>
                   </TableCell>
                   <TableCell>

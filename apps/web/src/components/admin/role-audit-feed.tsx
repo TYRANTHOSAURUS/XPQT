@@ -2,6 +2,7 @@ import { UserCircle, PencilLine, Trash2, Shield, Plus, ShieldAlert } from 'lucid
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import type { RoleAuditEvent } from '@/api/roles';
 
 interface RoleAuditFeedProps {
@@ -60,8 +61,12 @@ export function RoleAuditFeed({
               )}
             </div>
             <AuditPayload type={ev.event_type} payload={ev.payload} />
-            <time className="text-[11px] text-muted-foreground">
-              {formatTimestamp(ev.created_at)}
+            <time
+              dateTime={ev.created_at}
+              title={formatFullTimestamp(ev.created_at)}
+              className="text-[11px] text-muted-foreground tabular-nums"
+            >
+              {formatRelativeTime(ev.created_at)}
             </time>
           </div>
         </li>
@@ -116,16 +121,7 @@ function formatActor(ev: RoleAuditEvent): string {
   return a.email ?? 'Unknown';
 }
 
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    });
-  } catch {
-    return iso;
-  }
-}
+const formatTimestamp = formatFullTimestamp;
 
 function AuditPayload({
   type,
