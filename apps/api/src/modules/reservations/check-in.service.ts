@@ -3,6 +3,8 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { TenantContext } from '../../common/tenant-context';
+import { TenantService } from '../tenant/tenant.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import type { Reservation } from './dto/types';
 
@@ -26,6 +28,7 @@ export class CheckInService {
   constructor(
     private readonly supabase: SupabaseService,
     @Optional() private readonly notifications?: BookingNotificationsService,
+    @Optional() private readonly tenants?: TenantService,
   ) {}
 
   /**
@@ -138,17 +141,16 @@ export class CheckInService {
       if (!updated.data) continue;           // someone checked in just before us — fine
 
       // Self-explaining release notification (spec §12 differentiator).
-      if (this.notifications) {
+      if (this.notifications && this.tenants) {
         try {
-          // The service uses TenantContext.current() in its supabase queries,
-          // so wrap the call in a TenantContext.run.
-          const { TenantContext } = await import('../../common/tenant-context');
-          await TenantContext.run(
-            { id: r.tenant_id, slug: '', tier: 'standard' },
-            async () => {
+          // The notifications service uses TenantContext.current() in its
+          // supabase queries — look up the real tenant + wrap the call.
+          const tenant = await this.tenants.resolveById(r.tenant_id);
+          if (tenant) {
+            await TenantContext.run(tenant, async () => {
               await this.notifications!.onReleased(updated.data as unknown as Reservation);
-            },
-          );
+            });
+          }
         } catch (err) {
           this.log.warn(`onReleased ${r.id} failed: ${(err as Error).message}`);
         }

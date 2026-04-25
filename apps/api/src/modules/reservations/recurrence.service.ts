@@ -1,6 +1,8 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { TenantContext } from '../../common/tenant-context';
+import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
 import type { ActorContext, RecurrenceRule, RecurrenceScope, Reservation } from './dto/types';
 import type { BookingFlowService } from './booking-flow.service';
@@ -56,6 +58,7 @@ export class RecurrenceService {
   constructor(
     @Optional() private readonly supabase?: SupabaseService,
     @Optional() private readonly conflict?: ConflictGuardService,
+    @Optional() private readonly tenants?: TenantService,
   ) {}
 
   /** Wire the booking flow lazily to break the circular dep. */
@@ -395,14 +398,24 @@ export class RecurrenceService {
     this.log.log(`recurrenceRollover: extending ${data.length} series`);
 
     const horizon = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-    for (const row of data as Array<{ id: string }>) {
+    for (const row of data as Array<{ id: string; tenant_id: string }>) {
+      // The cron fires outside any HTTP request — there's no TenantContext.
+      // materialize() → bookingFlow.create() reads TenantContext.current(),
+      // so we must look up the live tenant + run the materialization inside it.
       try {
-        const result = await this.materialize(row.id, horizon);
-        if (result.created.length || result.skipped_conflicts) {
-          this.log.log(
-            `recurrenceRollover ${row.id}: created=${result.created.length} skipped=${result.skipped_conflicts}`,
-          );
+        const tenant = this.tenants ? await this.tenants.resolveById(row.tenant_id) : null;
+        if (!tenant) {
+          this.log.warn(`recurrenceRollover ${row.id}: tenant ${row.tenant_id} not found, skipping`);
+          continue;
         }
+        await TenantContext.run(tenant, async () => {
+          const result = await this.materialize(row.id, horizon);
+          if (result.created.length || result.skipped_conflicts) {
+            this.log.log(
+              `recurrenceRollover ${row.id}: created=${result.created.length} skipped=${result.skipped_conflicts}`,
+            );
+          }
+        });
       } catch (err) {
         this.log.warn(`recurrenceRollover ${row.id} failed: ${(err as Error).message}`);
       }

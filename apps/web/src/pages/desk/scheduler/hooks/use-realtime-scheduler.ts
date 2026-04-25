@@ -48,8 +48,16 @@ export function useRealtimeScheduler(
       }, 200);
     };
 
+    // Stable channel name keyed on a hash of the sorted space-id set so two
+    // schedulers open with different spaces don't share a channel and
+    // cross-invalidate each other.
+    const channelKey = [...spaceIds].sort().join(',');
+    let hash = 0;
+    for (let i = 0; i < channelKey.length; i++) {
+      hash = ((hash << 5) - hash + channelKey.charCodeAt(i)) | 0;
+    }
     const channel = supabase
-      .channel(`desk-scheduler:${spaceIds.length}`)
+      .channel(`desk-scheduler:${Math.abs(hash).toString(36)}:${spaceIds.length}`)
       .on(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- supabase-js v2 has loose typing for postgres_changes
         'postgres_changes' as any,

@@ -118,15 +118,24 @@ export class ConflictGuardService {
       requester_person_id: string;
     }>).filter((r) => !args.exclude_ids?.includes(r.id));
 
+    // Use a 1-second tolerance for adjacency: client-side rounding or manual
+    // time edits can introduce sub-second skew that string-equality misses,
+    // and the spec's intent ("immediately-prior") is logical-adjacency, not
+    // exact-equality.
+    const newStart = new Date(args.start_at).getTime();
+    const newEnd = new Date(args.end_at).getTime();
+    const TOL_MS = 1000;
     for (const r of rows) {
       const sameRequester = r.requester_person_id === args.requester_person_id;
       if (!sameRequester) continue;
-      if (r.end_at === args.start_at) {
-        // prior booking ends exactly when ours starts → zero our setup buffer
+      const priorEnd = new Date(r.end_at).getTime();
+      const followingStart = new Date(r.start_at).getTime();
+      if (Math.abs(priorEnd - newStart) <= TOL_MS) {
+        // prior booking ends roughly when ours starts → zero our setup buffer
         setup = 0;
       }
-      if (r.start_at === args.end_at) {
-        // following booking starts exactly when ours ends → zero our teardown buffer
+      if (Math.abs(followingStart - newEnd) <= TOL_MS) {
+        // following booking starts roughly when ours ends → zero our teardown buffer
         teardown = 0;
       }
     }

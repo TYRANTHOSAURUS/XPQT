@@ -24,6 +24,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { TenantService } from '../tenant/tenant.service';
 import type { ActorContext, CreateReservationInput } from './dto/types';
 
 @Module({
@@ -64,6 +65,7 @@ export class ReservationsModule implements OnModuleInit {
     private readonly bookingFlow: BookingFlowService,
     private readonly recurrence: RecurrenceService,
     private readonly supabase: SupabaseService,
+    private readonly tenants: TenantService,
   ) {}
 
   onModuleInit() {
@@ -77,8 +79,13 @@ export class ReservationsModule implements OnModuleInit {
     // person_ids and run the booking pipeline with source='calendar_sync'.
     this.roomMailbox.registerIntercept(async ({ draft, tenantId }) => {
       try {
+        const tenant = await this.tenants.resolveById(tenantId);
+        if (!tenant) {
+          this.log.warn(`Outlook intercept: tenant ${tenantId} not found`);
+          return { outcome: 'deferred' as const };
+        }
         return await TenantContext.run(
-          { id: tenantId, slug: '', tier: 'standard' },
+          tenant,
           async () => this.handleOutlookIntercept(draft, tenantId),
         );
       } catch (err) {

@@ -55,6 +55,7 @@ export function useMultiRoomBooking() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
     },
   });
 }
