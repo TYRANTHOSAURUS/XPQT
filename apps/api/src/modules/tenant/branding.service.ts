@@ -23,7 +23,10 @@ const FAVICON_MIMES = new Set([
 
 export type LogoKind = 'light' | 'dark' | 'favicon';
 
+const NAME_MAX_LENGTH = 80;
+
 export interface Branding {
+  name:               string;
   logo_light_url:     string | null;
   logo_dark_url:      string | null;
   favicon_url:        string | null;
@@ -37,6 +40,7 @@ export interface Branding {
 }
 
 export interface UpdateBrandingDto {
+  name: string;
   primary_color: string;
   accent_color: string;
   theme_mode_default: 'light' | 'dark' | 'system';
@@ -51,6 +55,12 @@ const KIND_TO_FIELD: Record<LogoKind, keyof Branding> = {
   dark: 'logo_dark_url',
   favicon: 'favicon_url',
 };
+
+function stripName(b: Branding): Omit<Branding, 'name'> {
+  // The `name` field lives on tenants.name, not in the branding JSONB column.
+  const { name: _name, ...rest } = b;
+  return rest;
+}
 
 const EXT_BY_MIME: Record<string, string> = {
   'image/svg+xml': 'svg',
@@ -68,14 +78,22 @@ export class BrandingService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('tenants')
-      .select('branding')
+      .select('name, branding')
       .eq('id', tenant.id)
       .single();
     if (error || !data) throw new NotFoundException('Tenant not found');
-    return data.branding as Branding;
+    const branding = (data.branding ?? {}) as Omit<Branding, 'name'>;
+    return { ...branding, name: data.name as string };
   }
 
   async update(dto: UpdateBrandingDto): Promise<Branding> {
+    const trimmedName = typeof dto.name === 'string' ? dto.name.trim() : '';
+    if (!trimmedName) {
+      throw new BadRequestException('name is required');
+    }
+    if (trimmedName.length > NAME_MAX_LENGTH) {
+      throw new BadRequestException(`name must be ${NAME_MAX_LENGTH} characters or fewer`);
+    }
     assertValidHex(dto.primary_color, 'primary_color');
     assertValidHex(dto.accent_color, 'accent_color');
     assertUsablePrimary(dto.primary_color);
@@ -89,8 +107,10 @@ export class BrandingService {
 
     const tenant = TenantContext.current();
     const current = await this.get();
-    const next: Branding = {
-      ...current,
+    const nextBranding: Omit<Branding, 'name'> = {
+      logo_light_url:     current.logo_light_url,
+      logo_dark_url:      current.logo_dark_url,
+      favicon_url:        current.favicon_url,
       primary_color:      dto.primary_color.toLowerCase(),
       accent_color:       dto.accent_color.toLowerCase(),
       theme_mode_default: dto.theme_mode_default,
@@ -101,12 +121,12 @@ export class BrandingService {
     };
     const { error } = await this.supabase.admin
       .from('tenants')
-      .update({ branding: next })
+      .update({ name: trimmedName, branding: nextBranding })
       .eq('id', tenant.id);
     if (error) throw new InternalServerErrorException(error.message);
 
     await this.writeAuditEvent('tenant.branding.updated', { fields: Object.keys(dto) });
-    return next;
+    return { ...nextBranding, name: trimmedName };
   }
 
   async uploadLogo(
@@ -141,7 +161,7 @@ export class BrandingService {
     const next: Branding = { ...current, [KIND_TO_FIELD[kind]]: bustedUrl };
     const { error: updateError } = await this.supabase.admin
       .from('tenants')
-      .update({ branding: next })
+      .update({ branding: stripName(next) })
       .eq('id', tenant.id);
     if (updateError) throw new InternalServerErrorException(updateError.message);
 
@@ -163,7 +183,7 @@ export class BrandingService {
     const next: Branding = { ...current, [KIND_TO_FIELD[kind]]: null };
     const { error } = await this.supabase.admin
       .from('tenants')
-      .update({ branding: next })
+      .update({ branding: stripName(next) })
       .eq('id', tenant.id);
     if (error) throw new InternalServerErrorException(error.message);
 

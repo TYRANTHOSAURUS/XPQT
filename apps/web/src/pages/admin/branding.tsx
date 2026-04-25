@@ -181,9 +181,12 @@ function SurfaceColorField({
   );
 }
 
+const NAME_MAX_LENGTH = 80;
+
 export function BrandingPage() {
   const { branding, loading, updateBranding, uploadLogo, removeLogo } = useBranding();
 
+  const [name, setName] = useState(branding.name);
   const [primary, setPrimary] = useState(branding.primary_color);
   const [accent, setAccent] = useState(branding.accent_color);
   const [mode, setMode] = useState<Branding['theme_mode_default']>(branding.theme_mode_default);
@@ -194,6 +197,7 @@ export function BrandingPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setName(branding.name);
     setPrimary(branding.primary_color);
     setAccent(branding.accent_color);
     setMode(branding.theme_mode_default);
@@ -202,6 +206,7 @@ export function BrandingPage() {
     setSbLight(branding.sidebar_light);
     setSbDark(branding.sidebar_dark);
   }, [
+    branding.name,
     branding.primary_color,
     branding.accent_color,
     branding.theme_mode_default,
@@ -214,7 +219,11 @@ export function BrandingPage() {
   const surfaceEqual = (local: string | null, server: string | null) =>
     (local?.toLowerCase() ?? null) === (server?.toLowerCase() ?? null);
 
+  const trimmedName = name.trim();
+  const nameValid = trimmedName.length > 0 && trimmedName.length <= NAME_MAX_LENGTH;
+
   const dirty =
+    trimmedName !== branding.name.trim() ||
     primary.toLowerCase() !== branding.primary_color.toLowerCase() ||
     accent.toLowerCase() !== branding.accent_color.toLowerCase() ||
     mode !== branding.theme_mode_default ||
@@ -227,6 +236,7 @@ export function BrandingPage() {
 
   const canSave =
     dirty &&
+    nameValid &&
     HEX_RE.test(primary) &&
     HEX_RE.test(accent) &&
     surfaceValid(bgLight) &&
@@ -239,6 +249,7 @@ export function BrandingPage() {
     setSaving(true);
     try {
       await updateBranding({
+        name: trimmedName,
         primary_color: primary.toLowerCase(),
         accent_color:  accent.toLowerCase(),
         theme_mode_default: mode,
@@ -256,6 +267,7 @@ export function BrandingPage() {
   };
 
   const handleDiscard = () => {
+    setName(branding.name);
     setPrimary(branding.primary_color);
     setAccent(branding.accent_color);
     setMode(branding.theme_mode_default);
@@ -280,6 +292,28 @@ export function BrandingPage() {
         title="Branding"
         description="Logos, colors, and the default theme mode for your workspace."
       />
+
+      <SettingsSection
+        title="Workspace identity"
+        description="The name shown in the portal top bar and across tenant-facing surfaces."
+      >
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="tenant-name">Display name</FieldLabel>
+            <Input
+              id="tenant-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={NAME_MAX_LENGTH}
+              placeholder="Your company name"
+              aria-invalid={!nameValid && name.length > 0}
+            />
+            <FieldDescription>
+              Up to {NAME_MAX_LENGTH} characters. Saved when you click Save changes below.
+            </FieldDescription>
+          </Field>
+        </FieldGroup>
+      </SettingsSection>
 
       <SettingsSection
         title="Logo assets"

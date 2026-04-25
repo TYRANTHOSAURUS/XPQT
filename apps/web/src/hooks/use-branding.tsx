@@ -11,6 +11,7 @@ import { apiFetch } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
 
 export interface Branding {
+  name: string;
   logo_light_url: string | null;
   logo_dark_url: string | null;
   favicon_url: string | null;
@@ -25,6 +26,7 @@ export interface Branding {
 
 export type UpdateBrandingDto = Pick<
   Branding,
+  | 'name'
   | 'primary_color'
   | 'accent_color'
   | 'theme_mode_default'
@@ -35,6 +37,7 @@ export type UpdateBrandingDto = Pick<
 >;
 
 const DEFAULT_BRANDING: Branding = {
+  name: '',
   logo_light_url: null,
   logo_dark_url: null,
   favicon_url: null,
@@ -64,7 +67,9 @@ const STORAGE_KEY = 'pq.branding';
 function readCached(): Branding | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Branding) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Branding>;
+    return { ...DEFAULT_BRANDING, ...parsed, name: parsed.name ?? '' };
   } catch {
     return null;
   }
