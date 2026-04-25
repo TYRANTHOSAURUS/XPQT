@@ -28,12 +28,27 @@ export interface PickerState {
 }
 
 function nextRoundedSlot(date = new Date()): { date: string; time: string } {
-  // Round up to the next 30-min slot in local tz.
+  // Snap to the next 30-min slot, then nudge into business hours so the
+  // default doesn't land on Sunday 21:30 — which fires every off-hours
+  // rule and floods the picker with "Needs approval".
+  //
+  // Heuristic — server resolves the actual rules; this is just a UX nudge
+  // for the initial view. Conservative envelope: 09:00–17:00 Mon–Fri.
   const rounded = new Date(date);
   rounded.setSeconds(0, 0);
   const minutes = rounded.getMinutes();
   const add = minutes >= 30 ? 60 - minutes : 30 - minutes;
   rounded.setMinutes(minutes + add);
+
+  const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
+  const hour = rounded.getHours();
+  if (isWeekend(rounded) || hour < 9 || hour >= 17) {
+    do {
+      rounded.setDate(rounded.getDate() + 1);
+    } while (isWeekend(rounded));
+    rounded.setHours(9, 0, 0, 0);
+  }
+
   const yyyy = rounded.getFullYear();
   const mm = String(rounded.getMonth() + 1).padStart(2, '0');
   const dd = String(rounded.getDate()).padStart(2, '0');

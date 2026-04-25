@@ -58,7 +58,12 @@ export class ListBookableRoomsService {
       this.criteriaToContext(input),
     );
 
-    // 4. Score + assemble
+    // 4. Hydrate parent chains (floor → building → site) for all candidates
+    //    in one pass. Without this, rooms with the same name like "Meeting
+    //    Room 2.12" are visually indistinguishable.
+    const parentChains = await this.loadParentChains(tenantId, candidates);
+
+    // 5. Score + assemble
     const ranked: RankedRoom[] = [];
     for (const space of candidates) {
       const overlap = conflictBySpace.get(space.id) ?? [];
@@ -89,7 +94,7 @@ export class ListBookableRoomsService {
         capacity: (space as { capacity: number | null }).capacity,
         min_attendees: (space as { min_attendees: number | null }).min_attendees,
         amenities: (space as { amenities: string[] | null }).amenities ?? [],
-        parent_chain: [],         // TODO: chain via space.parent_id; out of v1 minimum
+        parent_chain: parentChains.get(space.id) ?? [],
         rule_outcome: outcome,
         ranking_score: ranking.score,
         ranking_reasons: ranking.reasons,
@@ -106,7 +111,68 @@ export class ListBookableRoomsService {
       return b.ranking_score - a.ranking_score;
     });
 
-    return { rooms: ranked.slice(0, input.limit ?? 20) };
+    // Default cap: 12 rooms. The picker is meant to surface the BEST
+    // candidates, not enumerate the whole inventory; we only widen if the
+    // caller asks via input.limit.
+    return { rooms: ranked.slice(0, input.limit ?? 12) };
+  }
+
+  /**
+   * Walk each candidate up the spaces tree (parent_id) up to 3 levels and
+   * return the chain (floor / building / site) for disambiguation in the UI.
+   * One round-trip: fetch all unique ancestor ids in a single IN query.
+   */
+  private async loadParentChains(
+    tenantId: string,
+    candidates: Array<{ id: string; parent_id: string | null }>,
+  ): Promise<Map<string, Array<{ id: string; name: string; type: string }>>> {
+    const out = new Map<string, Array<{ id: string; name: string; type: string }>>();
+    const parentIds = new Set<string>();
+    for (const c of candidates) {
+      if (c.parent_id) parentIds.add(c.parent_id);
+    }
+    if (parentIds.size === 0) {
+      for (const c of candidates) out.set(c.id, []);
+      return out;
+    }
+
+    // Fetch up to 3 levels of ancestors. Two iterations cover floor →
+    // building → site for the typical 3-level hierarchy.
+    const fetched = new Map<string, { id: string; name: string; type: string; parent_id: string | null }>();
+    let frontier = Array.from(parentIds);
+    for (let i = 0; i < 3 && frontier.length > 0; i++) {
+      const { data, error } = await this.supabase.admin
+        .from('spaces')
+        .select('id, name, type, parent_id')
+        .eq('tenant_id', tenantId)
+        .in('id', frontier);
+      if (error) {
+        this.log.warn(`loadParentChains error: ${error.message}`);
+        break;
+      }
+      const next: string[] = [];
+      for (const row of (data ?? []) as Array<{
+        id: string; name: string; type: string; parent_id: string | null;
+      }>) {
+        fetched.set(row.id, row);
+        if (row.parent_id && !fetched.has(row.parent_id)) next.push(row.parent_id);
+      }
+      frontier = next;
+    }
+
+    for (const c of candidates) {
+      const chain: Array<{ id: string; name: string; type: string }> = [];
+      let cursor = c.parent_id;
+      let safety = 4;
+      while (cursor && safety-- > 0) {
+        const row = fetched.get(cursor);
+        if (!row) break;
+        chain.push({ id: row.id, name: row.name, type: row.type });
+        cursor = row.parent_id;
+      }
+      out.set(c.id, chain);
+    }
+    return out;
   }
 
   // === helpers ===
