@@ -179,8 +179,9 @@ controller injects `WHERE` clauses via `filterIds(ctx)` to avoid N+1.
 
 | Job | Cadence | Purpose |
 |---|---|---|
-| `autoReleaseScan` | every 5 min during business hours | flip uncheckedin → released |
-| `recurrenceRollover` | nightly | extend `materialized_through` for active series |
+| `autoReleaseScan` | every 5 min | flip uncheckedin → released; emits self-explaining release email |
+| `checkInRemindersScan` | every 5 min | send reminder + magic-link 5 min before start |
+| `recurrenceRollover` | nightly (3 am) | extend `materialized_through` for active series, capped 100 occurrences/tick |
 | `outlookSyncPoll` | every 5 min | pull deltas from Microsoft Graph for active links |
 | `outlookWebhookRenew` | hourly | renew Graph webhook subscriptions before expiry |
 | `roomMailboxWebhookRenew` | hourly | renew Pattern-A room mailbox webhooks |
@@ -188,7 +189,61 @@ controller injects `WHERE` clauses via `filterIds(ctx)` to avoid N+1.
 | `cancellationGraceCleanup` | hourly | clear past-due `cancellation_grace_until` |
 | `impactPreviewWarmer` | nightly | precompute aggregate stats for rule analytics |
 
-All cron registrations live in `room-booking-cron.module.ts`.
+Cron registrations live alongside their owning service (`CheckInService`,
+`RecurrenceService`, `BookingNotificationsService`, `WebhookRenewalService`,
+`ReconcilerService`).
+
+## Notifications
+
+The `BookingNotificationsService` is the single seam for booking-lifecycle
+notifications. Each event maps to a `notification_type`:
+
+| Trigger | notification_type | Audience |
+|---|---|---|
+| `BookingFlowService.create` (status='confirmed') | `reservation_created` | requester |
+| `BookingFlowService.create` (status='pending_approval') | `reservation_approval_requested` | approvers |
+| Approval decided (Phase J) | `reservation_approved` / `reservation_rejected` | requester |
+| `ReservationService.cancelOne` | `reservation_cancelled` | requester |
+| `CheckInService.autoReleaseScan` flips → released | `reservation_released` | requester (self-explaining) |
+| `BookingNotificationsService.checkInRemindersScan` (T-5 min) | `reservation_check_in_reminder` | requester (with magic link) |
+
+The release email is the differentiator (spec §12): tells the user *why* (no
+check-in within grace), with deep-links to rebook this slot or see
+alternatives.
+
+## Magic-link check-in
+
+Endpoint: `POST /reservations/:id/check-in/magic?token=<HMAC>` — `@Public()`.
+
+Token shape (URL-safe base64): `${reservation_id}.${requester_person_id}.${expiry_ms}.${HMAC-SHA256}`
+
+- Signed with `CHECK_IN_MAGIC_SECRET` env var.
+- 30-minute expiry; mismatch / signature-fail / expired all reject with 400.
+- Verifier asserts that the token's `requester_person_id` matches the
+  reservation's `requester_person_id`, so a token can't be reused on another
+  booking even if the IDs were swapped in the URL.
+
+The reminder email includes this link so users can check in without logging
+in. See `apps/api/src/modules/reservations/magic-check-in.token.ts`.
+
+## Outlook intercept (Pattern A)
+
+Wired in `ReservationsModule.onModuleInit` via
+`RoomMailboxService.registerIntercept`. The handler:
+
+1. Resolves `draft.organizer_email` → `persons.id` (case-insensitive `ilike`,
+   tenant-scoped). Unknown organizer → `{ outcome: 'denied', denialMessage: 'Organizer email is not a registered Prequest user.' }`.
+2. Resolves attendees the same way; missing emails are dropped silently
+   from the internal-attendee list.
+3. Calls `BookingFlowService.create` with `source='calendar_sync'` and a
+   synthetic actor (no override).
+4. Maps booking outcome → intercept outcome:
+   - success → `{ outcome: 'accepted' }`
+   - `ForbiddenException` (rule deny) → `{ outcome: 'denied', denialMessage }`
+   - `ConflictException` (slot taken) → `{ outcome: 'conflict' }`
+   - any other error → `{ outcome: 'deferred' }` (audit + retry on next tick)
+
+The `RoomMailboxService` then writes accept/reject back to the room calendar.
 
 ## MANDATORY — keep this doc in sync
 

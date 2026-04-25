@@ -1,11 +1,13 @@
 import {
-  BadRequestException, ForbiddenException, Injectable, NotFoundException,
+  BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ConflictGuardService } from './conflict-guard.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
-import type { ActorContext, Reservation } from './dto/types';
+import { RecurrenceService } from './recurrence.service';
+import { BookingNotificationsService } from './booking-notifications.service';
+import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
 
 /**
  * ReservationService — read paths, simple lifecycle, and edit/cancel/restore.
@@ -21,6 +23,8 @@ export class ReservationService {
     private readonly supabase: SupabaseService,
     private readonly conflict: ConflictGuardService,
     private readonly visibility: ReservationVisibilityService,
+    @Optional() private readonly recurrence?: RecurrenceService,
+    @Optional() private readonly notifications?: BookingNotificationsService,
   ) {}
 
   // === Reads ===
@@ -141,7 +145,8 @@ export class ReservationService {
   async cancelOne(id: string, actor: ActorContext, opts: {
     reason?: string;
     grace_minutes?: number;
-  }): Promise<Reservation> {
+    scope?: RecurrenceScope;
+  }): Promise<Reservation | { scope: RecurrenceScope; cancelled: number; pivot: Reservation }> {
     const tenantId = TenantContext.current().id;
     const r = await this.findOne(id, actor.user_id);
 
@@ -149,6 +154,33 @@ export class ReservationService {
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
     if (r.status === 'cancelled') return r;
     if (r.status === 'completed') throw new BadRequestException('reservation_completed');
+
+    // Recurrence-scoped cancel: fan-out cancel for this and following / series.
+    if (opts.scope && opts.scope !== 'this') {
+      if (!this.recurrence) {
+        throw new BadRequestException('recurrence_unavailable');
+      }
+      if (!r.recurrence_series_id) {
+        throw new BadRequestException('not_a_recurring_occurrence');
+      }
+      const result = await this.recurrence.cancelForward(id, opts.scope, { reason: opts.reason });
+      // Notify on the pivot only (single email rather than N).
+      if (this.notifications) void this.notifications.onCancelled(r, opts.reason);
+      // Audit event
+      try {
+        await this.supabase.admin.from('audit_events').insert({
+          tenant_id: tenantId,
+          event_type: 'reservation.cancelled',
+          entity_type: 'reservation',
+          entity_id: id,
+          details: {
+            reservation_id: id, scope: opts.scope, cancelled_count: result.cancelled,
+            reason: opts.reason ?? null,
+          },
+        });
+      } catch { /* best-effort */ }
+      return { scope: opts.scope, cancelled: result.cancelled, pivot: r };
+    }
 
     const grace = opts.grace_minutes ?? 5;
     const cancellationGraceUntil = new Date(Date.now() + grace * 60 * 1000).toISOString();
@@ -163,8 +195,19 @@ export class ReservationService {
 
     if (error) throw new BadRequestException(`cancel_failed:${error.message}`);
 
-    // TODO(phase-J): emit reservation.cancelled event + notify + audit (with reason)
-    return data as unknown as Reservation;
+    const updated = data as unknown as Reservation;
+    if (this.notifications) void this.notifications.onCancelled(updated, opts.reason);
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'reservation.cancelled',
+        entity_type: 'reservation',
+        entity_id: id,
+        details: { reservation_id: id, scope: 'this', reason: opts.reason ?? null },
+      });
+    } catch { /* best-effort */ }
+
+    return updated;
   }
 
   /**
@@ -278,7 +321,17 @@ export class ReservationService {
       throw new BadRequestException(`edit_failed:${error.message}`);
     }
 
-    // TODO(phase-J): emit reservation.updated event + notify + audit
-    return data as unknown as Reservation;
+    const updated = data as unknown as Reservation;
+    if (this.notifications) void this.notifications.onCreated(updated);
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'reservation.updated',
+        entity_type: 'reservation',
+        entity_id: id,
+        details: { reservation_id: id, patch: next },
+      });
+    } catch { /* best-effort */ }
+    return updated;
   }
 }

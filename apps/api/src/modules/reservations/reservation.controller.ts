@@ -1,6 +1,6 @@
 import {
   Body, Controller, Get, Param, Patch, Post, Query, Req,
-  UnauthorizedException, NotImplementedException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { ReservationService } from './reservation.service';
@@ -8,6 +8,9 @@ import { CheckInService } from './check-in.service';
 import { BookingFlowService } from './booking-flow.service';
 import { ListBookableRoomsService } from './list-bookable-rooms.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
+import { MultiRoomBookingService } from './multi-room-booking.service';
+import { MultiAttendeeFinder } from './multi-attendee.service';
+import { Public } from '../auth/public.decorator';
 import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
@@ -24,6 +27,8 @@ export class ReservationController {
     private readonly bookingFlow: BookingFlowService,
     private readonly picker: ListBookableRoomsService,
     private readonly visibility: ReservationVisibilityService,
+    private readonly multiRoom: MultiRoomBookingService,
+    private readonly findTime: MultiAttendeeFinder,
     private readonly supabase: SupabaseService,
   ) {}
 
@@ -86,9 +91,19 @@ export class ReservationController {
   }
 
   @Post('multi-room')
-  async createMultiRoom(@Req() _request: Request, @Body() _dto: MultiRoomBookingDto) {
-    // TODO(phase-G): atomic create across multiple rooms
-    throw new NotImplementedException('multi_room_booking_phase_g_pending');
+  async createMultiRoom(@Req() request: Request, @Body() dto: MultiRoomBookingDto) {
+    const actor = await this.actorFromRequest(request);
+    return this.multiRoom.createGroup(
+      {
+        space_ids: dto.space_ids,
+        requester_person_id: dto.requester_person_id ?? actor.person_id ?? '',
+        start_at: dto.start_at,
+        end_at: dto.end_at,
+        attendee_count: dto.attendee_count,
+        attendee_person_ids: dto.attendee_person_ids,
+      },
+      actor,
+    );
   }
 
   @Post('picker')
@@ -110,9 +125,18 @@ export class ReservationController {
   }
 
   @Post('find-time')
-  async findTime(@Req() _request: Request, @Body() _dto: FindTimeDto) {
-    // TODO(phase-G): multi-attendee scheduling
-    throw new NotImplementedException('find_time_phase_g_pending');
+  async findTimeEndpoint(@Req() request: Request, @Body() dto: FindTimeDto) {
+    const actor = await this.actorFromRequest(request);
+    return this.findTime.findFreeSlots(
+      {
+        person_ids: dto.person_ids,
+        duration_minutes: dto.duration_minutes,
+        window_start: dto.window_start,
+        window_end: dto.window_end,
+        criteria: dto.criteria,
+      },
+      actor,
+    );
   }
 
   /**
@@ -147,13 +171,31 @@ export class ReservationController {
     @Body() dto: CancelReservationDto,
   ) {
     const actor = await this.actorFromRequest(request);
-    if (dto.scope && dto.scope !== 'this') {
-      // TODO(phase-G): recurrence-aware cancel (this_and_following / series)
-      throw new NotImplementedException('cancel_scope_phase_g_pending');
-    }
     return this.service.cancelOne(id, actor, {
       reason: dto.reason,
       grace_minutes: dto.grace_minutes,
+      scope: dto.scope,
+    });
+  }
+
+  /**
+   * Edit a recurring reservation at series scope ('this_and_following' or
+   * 'series'). Single-occurrence edits go through PATCH /:id (the regular
+   * edit path).
+   */
+  @Post(':id/edit-scope')
+  async editScope(
+    @Req() _request: Request,
+    @Param('id') id: string,
+    @Body() dto: { scope: 'this_and_following' | 'series' } & UpdateReservationDto,
+  ) {
+    return this.bookingFlow.editScope(id, dto.scope, {
+      space_id: dto.space_id,
+      start_at: dto.start_at,
+      end_at: dto.end_at,
+      attendee_count: dto.attendee_count,
+      attendee_person_ids: dto.attendee_person_ids,
+      host_person_id: dto.host_person_id,
     });
   }
 
@@ -167,6 +209,20 @@ export class ReservationController {
   async checkIn(@Req() _request: Request, @Param('id') id: string) {
     const tenantId = TenantContext.current().id;
     return this.checkInService.checkIn(id, tenantId);
+  }
+
+  /**
+   * Magic-link check-in. The token authorises by itself (HMAC over
+   * reservation_id + requester_person_id + expiry). Public — no Bearer
+   * required, per spec §J3. Token comes from the check-in reminder email.
+   */
+  @Public()
+  @Post(':id/check-in/magic')
+  async checkInMagic(
+    @Param('id') id: string,
+    @Query('token') token: string,
+  ) {
+    return this.checkInService.checkInMagic(id, token ?? '');
   }
 
   // ---- helpers ----

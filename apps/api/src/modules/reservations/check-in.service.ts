@@ -1,6 +1,10 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable, Logger, NotFoundException, BadRequestException, Optional,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { BookingNotificationsService } from './booking-notifications.service';
+import type { Reservation } from './dto/types';
 
 /**
  * CheckInService — handles the explicit check-in action and the
@@ -19,7 +23,10 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 export class CheckInService {
   private readonly log = new Logger(CheckInService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    @Optional() private readonly notifications?: BookingNotificationsService,
+  ) {}
 
   /**
    * Explicit check-in action. Called by the portal "My bookings" button,
@@ -121,7 +128,7 @@ export class CheckInService {
         .eq('id', r.id)
         .eq('status', 'confirmed')           // optimistic: avoid races with concurrent check-in
         .is('checked_in_at', null)
-        .select('id')
+        .select('*')
         .maybeSingle();
 
       if (updated.error) {
@@ -130,8 +137,76 @@ export class CheckInService {
       }
       if (!updated.data) continue;           // someone checked in just before us — fine
 
-      // TODO(phase-J): emit reservation.released event + send self-explaining
-      // release notification with rebook deep link.
+      // Self-explaining release notification (spec §12 differentiator).
+      if (this.notifications) {
+        try {
+          // The service uses TenantContext.current() in its supabase queries,
+          // so wrap the call in a TenantContext.run.
+          const { TenantContext } = await import('../../common/tenant-context');
+          await TenantContext.run(
+            { id: r.tenant_id, slug: '', tier: 'standard' },
+            async () => {
+              await this.notifications!.onReleased(updated.data as unknown as Reservation);
+            },
+          );
+        } catch (err) {
+          this.log.warn(`onReleased ${r.id} failed: ${(err as Error).message}`);
+        }
+      }
+
+      // Audit event
+      try {
+        await this.supabase.admin.from('audit_events').insert({
+          tenant_id: r.tenant_id,
+          event_type: 'reservation.auto_released',
+          entity_type: 'reservation',
+          entity_id: r.id,
+          details: { space_id: r.space_id, requester_person_id: r.requester_person_id },
+        });
+      } catch {
+        // best-effort; don't block the loop
+      }
     }
+  }
+
+  /**
+   * Magic-link check-in. Used by the check-in reminder email so users can
+   * check in without a login round-trip. The token is HMAC over
+   * (reservation_id, requester_person_id, expiry); see
+   * `magic-check-in.token.ts` for the wire format. 30-min expiry.
+   */
+  async checkInMagic(
+    reservationId: string,
+    token: string,
+  ): Promise<{ id: string; checked_in_at: string }> {
+    const { verifyMagicCheckInToken } = await import('./magic-check-in.token');
+    const verified = verifyMagicCheckInToken(token);
+    if (!verified.ok) {
+      throw new BadRequestException(`magic_link_${verified.reason}`);
+    }
+    if (verified.payload.reservationId !== reservationId) {
+      throw new BadRequestException('magic_link_reservation_mismatch');
+    }
+
+    // Look up the reservation directly (no tenant context — the token *is*
+    // the auth). We deliberately scope to the requester_person_id baked into
+    // the token to avoid use across resies.
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .select('id, tenant_id, status, start_at, end_at, check_in_required, checked_in_at, requester_person_id')
+      .eq('id', reservationId)
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new NotFoundException('reservation_not_found');
+    }
+    const r = data as {
+      id: string; tenant_id: string; status: string; start_at: string; end_at: string;
+      check_in_required: boolean; checked_in_at: string | null; requester_person_id: string;
+    };
+    if (r.requester_person_id !== verified.payload.requesterPersonId) {
+      throw new BadRequestException('magic_link_person_mismatch');
+    }
+    return this.checkIn(r.id, r.tenant_id);
   }
 }

@@ -1,12 +1,15 @@
 import {
   BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
 import { ConflictGuardService } from './conflict-guard.service';
+import { RecurrenceService } from './recurrence.service';
+import { BookingNotificationsService } from './booking-notifications.service';
 import type {
-  ActorContext, CreateReservationInput, PolicySnapshot, Reservation,
+  ActorContext, CreateReservationInput, PolicySnapshot, RecurrenceScope, Reservation,
 } from './dto/types';
 
 /**
@@ -35,6 +38,8 @@ export class BookingFlowService {
     private readonly supabase: SupabaseService,
     private readonly conflict: ConflictGuardService,
     private readonly ruleResolver: RuleResolverService,
+    @Optional() private readonly recurrence?: RecurrenceService,
+    @Optional() private readonly notifications?: BookingNotificationsService,
   ) {}
 
   /**
@@ -178,10 +183,182 @@ export class BookingFlowService {
     if (status === 'pending_approval' && ruleOutcome.approvalConfig) {
       await this.createApprovalRows(data.id, ruleOutcome.approvalConfig, tenantId);
     }
-    // TODO(phase-J): emit reservation.created + notify
+
+    const reservation = data as unknown as Reservation;
+
+    // - Notifications (Phase J)
+    if (this.notifications) {
+      if (status === 'pending_approval' && ruleOutcome.approvalConfig) {
+        // Fire-and-forget: don't block the response on the notification round-trip.
+        void this.notifications.onApprovalRequested(reservation, ruleOutcome.approvalConfig);
+      } else {
+        void this.notifications.onCreated(reservation);
+      }
+    }
+
+    // - Audit
+    void this.audit(tenantId, 'reservation.created', {
+      reservation_id: reservation.id,
+      space_id: reservation.space_id,
+      source: reservation.source,
+      requester_person_id: reservation.requester_person_id,
+      status: reservation.status,
+      matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+    });
+
+    // - Recurrence series materialisation (master row + first 90d of rows).
+    //   Fire-and-forget so the user gets their first booking back immediately.
+    if (
+      input.recurrence_rule &&
+      !input.recurrence_series_id &&  // not itself an occurrence being materialised
+      this.recurrence &&
+      reservation.status !== 'pending_approval'
+    ) {
+      void this.startSeries(reservation, input.recurrence_rule).catch((err) => {
+        this.log.warn(`startSeries failed for ${reservation.id}: ${(err as Error).message}`);
+      });
+    }
+
     // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
 
-    return data as unknown as Reservation;
+    return reservation;
+  }
+
+  /**
+   * Create the recurrence_series row + materialise the next 90 days.
+   * Called fire-and-forget after a recurring booking's master row is written.
+   * If materialisation fails partially (conflict-guard skips), the series is
+   * still alive — the rollover cron will keep extending it nightly.
+   */
+  private async startSeries(master: Reservation, rule: NonNullable<CreateReservationInput['recurrence_rule']>): Promise<void> {
+    if (!this.recurrence) return;
+
+    // Insert series row anchored at the master.
+    const horizon = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: seriesRow, error: seriesErr } = await this.supabase.admin
+      .from('recurrence_series')
+      .insert({
+        tenant_id: master.tenant_id,
+        recurrence_rule: rule,
+        series_start_at: master.start_at,
+        series_end_at: rule.until ?? null,
+        max_occurrences: rule.count ?? 365,
+        materialized_through: horizon,
+        parent_reservation_id: master.id,
+      })
+      .select('id')
+      .single();
+    if (seriesErr || !seriesRow) {
+      this.log.warn(`series insert failed: ${seriesErr?.message ?? 'unknown'}`);
+      return;
+    }
+    const seriesId = (seriesRow as { id: string }).id;
+
+    // Link the master row to the series.
+    await this.supabase.admin
+      .from('reservations')
+      .update({
+        recurrence_series_id: seriesId,
+        recurrence_master_id: master.id,
+        recurrence_index: 0,
+      })
+      .eq('id', master.id);
+
+    // Materialise the rolling 90-day window.
+    try {
+      await this.recurrence.materialize(seriesId, new Date(horizon));
+    } catch (err) {
+      this.log.warn(`materialize failed for series ${seriesId}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Edit at series scope. The 'this' scope is handled by ReservationService.editOne
+   * directly. 'this_and_following' splits the series at this occurrence and
+   * applies the patch to the new series. 'series' re-materialises the entire
+   * series with the patch (cancels future occurrences and creates new ones).
+   *
+   * For v1 we implement the structural change (split) and leave the patch
+   * application as field-by-field updates. Time-shape changes (recurrence_rule
+   * itself) are out of scope for this seam — emit a warning and degrade.
+   */
+  async editScope(
+    reservationId: string,
+    scope: RecurrenceScope,
+    patch: {
+      space_id?: string;
+      start_at?: string;
+      end_at?: string;
+      attendee_count?: number;
+      attendee_person_ids?: string[];
+      host_person_id?: string;
+    },
+  ): Promise<{ scope: RecurrenceScope; new_series_id?: string; updated: number }> {
+    if (scope === 'this') {
+      // Caller should use ReservationService.editOne; we don't duplicate it here.
+      throw new BadRequestException({
+        code: 'wrong_endpoint',
+        message: "Use the regular edit endpoint for scope='this'.",
+      });
+    }
+    if (!this.recurrence) {
+      throw new BadRequestException({
+        code: 'recurrence_unavailable',
+        message: 'Recurrence service not configured.',
+      });
+    }
+
+    const tenantId = TenantContext.current().id;
+
+    if (scope === 'this_and_following') {
+      const newSeriesId = await this.recurrence.splitSeries(reservationId);
+      // Apply patch to all rows in the new series (forward).
+      const next: Record<string, unknown> = {};
+      if (patch.space_id) next.space_id = patch.space_id;
+      if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
+      if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
+      if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
+
+      let updated = 0;
+      if (Object.keys(next).length > 0) {
+        const { data, error } = await this.supabase.admin
+          .from('reservations')
+          .update(next)
+          .eq('tenant_id', tenantId)
+          .eq('recurrence_series_id', newSeriesId)
+          .select('id');
+        if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
+        updated = (data ?? []).length;
+      }
+      return { scope, new_series_id: newSeriesId, updated };
+    }
+
+    // 'series' — apply patch to all rows in the series, forward & past.
+    // Pull the source series id from the pivot.
+    const { data: pivot } = await this.supabase.admin
+      .from('reservations')
+      .select('recurrence_series_id')
+      .eq('id', reservationId)
+      .maybeSingle();
+    const seriesId = (pivot as { recurrence_series_id?: string } | null)?.recurrence_series_id;
+    if (!seriesId) {
+      throw new BadRequestException({ code: 'not_recurring', message: 'Not part of a series.' });
+    }
+    const next: Record<string, unknown> = {};
+    if (patch.space_id) next.space_id = patch.space_id;
+    if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
+    if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
+    if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
+    if (Object.keys(next).length === 0) return { scope, updated: 0 };
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .update(next)
+      .eq('tenant_id', tenantId)
+      .eq('recurrence_series_id', seriesId)
+      .select('id');
+    if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
+    return { scope, updated: (data ?? []).length };
   }
 
   /**
@@ -304,5 +481,19 @@ export class BookingFlowService {
   }
   private subtractMinutes(iso: string, minutes: number): string {
     return new Date(new Date(iso).getTime() - minutes * 60_000).toISOString();
+  }
+
+  private async audit(tenantId: string, eventType: string, details: Record<string, unknown>) {
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: eventType,
+        entity_type: 'reservation',
+        entity_id: (details.reservation_id as string) ?? null,
+        details,
+      });
+    } catch (err) {
+      this.log.warn(`audit insert failed for ${eventType}: ${(err as Error).message}`);
+    }
   }
 }
