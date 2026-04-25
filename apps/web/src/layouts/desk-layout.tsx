@@ -14,6 +14,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { DeskSidebar } from '@/components/desk/desk-sidebar';
+import { ShellSwitcher } from '@/components/shell-switcher';
 
 const pageTitles: Record<string, string> = {
   '/desk/inbox': 'Inbox',
@@ -60,6 +61,9 @@ export function DeskLayout() {
               )}
             </BreadcrumbList>
           </Breadcrumb>
+          <div className="ml-auto">
+            <ShellSwitcher />
+          </div>
         </header>
         <div className="flex-1 min-h-0 min-w-0">
           <Outlet />

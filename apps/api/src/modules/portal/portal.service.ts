@@ -32,6 +32,7 @@ export interface PortalMeResponse {
     type: string;
   };
   user: { id: string; email: string | null };
+  tenant: { id: string; name: string };
   default_location: SpaceSummary | null;
   authorized_locations: AuthorizedLocation[];
   current_location: SpaceSummary | null;
@@ -167,7 +168,7 @@ export class PortalService {
       this.loadRoleScopes(userId),
       this.supabase.admin
         .from('tenants')
-        .select('feature_flags')
+        .select('name, feature_flags')
         .eq('id', tenant.id)
         .single(),
     ]);
@@ -280,6 +281,10 @@ export class PortalService {
         type: person.type,
       },
       user: { id: userRow.id, email: userRow.email ?? userEmail },
+      tenant: {
+        id: tenant.id,
+        name: ((tenantFlagsRes.data as { name?: string } | null)?.name) ?? '',
+      },
       default_location: defaultLocation,
       authorized_locations: authorized,
       current_location: currentLocation
