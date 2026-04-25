@@ -221,9 +221,11 @@ begin
     now(), now()
   ) on conflict (id) do nothing;
 
-  -- 3c-approval rows — two pending approvals on the same reservation so
-  -- whichever of Noor (it.admin) or Liam (servicedesk.agent) opens
-  -- /desk/approvals first sees + acts on it. First-to-respond wins.
+  -- 3c-approval rows — three pending approvals on the same reservation
+  -- so whichever of Noor (it.admin), Liam (servicedesk.agent), or Thomas
+  -- (dev@prequest.nl) opens /desk/approvals first sees + acts on it.
+  -- First-to-respond wins; the others get a "no longer needs your action"
+  -- on next refresh.
   insert into public.approvals (
     id, tenant_id, target_entity_type, target_entity_id,
     approver_person_id, status, requested_at, created_at
@@ -237,6 +239,11 @@ begin
       'a0030003-0000-0000-0000-000000000002'::uuid,
       v_tenant, 'reservation', 'a0020003-0000-0000-0000-000000000001'::uuid,
       v_liam, 'pending', now(), now()
+    ),
+    (
+      'a0030003-0000-0000-0000-000000000003'::uuid,
+      v_tenant, 'reservation', 'a0020003-0000-0000-0000-000000000001'::uuid,
+      v_thomas, 'pending', now(), now()
     )
   on conflict (id) do nothing;
 
