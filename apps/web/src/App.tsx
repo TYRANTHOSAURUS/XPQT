@@ -95,12 +95,16 @@ export function App() {
             }
           >
             <Route index element={<PortalHome />} />
-            <Route path="my-requests" element={<MyRequestsPage />} />
+            <Route path="requests" element={<MyRequestsPage />} />
+            <Route path="my-requests" element={<Navigate to="/portal/requests" replace />} />
             <Route path="catalog/:categoryId" element={<CatalogCategoryPage />} />
             <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
-            <Route path="book" element={<Navigate to="/portal" replace />} />
+            {/* Phase 2 placeholders — top nav + bottom tabs link here; redirect home until built */}
+            <Route path="rooms"    element={<Navigate to="/portal" replace />} />
             <Route path="visitors" element={<Navigate to="/portal" replace />} />
-            <Route path="order" element={<Navigate to="/portal" replace />} />
+            <Route path="order"    element={<Navigate to="/portal" replace />} />
+            <Route path="account"  element={<Navigate to="/portal" replace />} />
+            <Route path="book" element={<Navigate to="/portal/rooms" replace />} />
           </Route>
 
           {/* Service Desk — requires auth + agent role */}

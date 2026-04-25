@@ -118,7 +118,7 @@ export function MyRequestsPage() {
         {tickets.map((ticket) => {
           const status = statusLabels[ticket.status_category] ?? statusLabels.new;
           return (
-            <Card key={ticket.id} className="cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => navigate(`/portal/my-requests/${ticket.id}`)}>
+            <Card key={ticket.id} className="cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => navigate(`/portal/requests/${ticket.id}`)}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">

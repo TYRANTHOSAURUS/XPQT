@@ -253,7 +253,7 @@ export function SubmitRequestPage() {
           Your request has been submitted and our team will get back to you shortly.
         </p>
         <div className="flex gap-3 justify-center mt-8">
-          <Button variant="outline" onClick={() => navigate('/portal/my-requests')}>
+          <Button variant="outline" onClick={() => navigate('/portal/requests')}>
             View My Requests
           </Button>
           <Button onClick={() => navigate('/portal')}>
