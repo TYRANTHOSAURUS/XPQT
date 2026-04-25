@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { ArrowLeft } from 'lucide-react';
 import { adminNavGroups } from '@/lib/admin-nav';
+import { ShellSwitcher } from '@/components/shell-switcher';
 
 const pageTitles: Record<string, string> = Object.fromEntries(
   adminNavGroups.flatMap((group) => group.items.map((item) => [item.path, item.title])),
@@ -114,6 +115,9 @@ export function AdminLayout() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
+          <div className="ml-auto">
+            <ShellSwitcher />
+          </div>
         </header>
         <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
           <Outlet />
