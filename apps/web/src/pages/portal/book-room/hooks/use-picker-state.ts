@@ -89,20 +89,27 @@ export function usePickerState(init: PickerStateInit = {}) {
     return new Date(new Date(startAtIso).getTime() + state.durationMinutes * 60_000).toISOString();
   }, [startAtIso, state.durationMinutes]);
 
+  // Server expects criteria nested under `criteria` (matches PickerDto).
+  // Top-level must_have_amenities etc. are silently ignored by the backend.
   const input: PickerInput = useMemo(
-    () => ({
-      start_at: startAtIso,
-      end_at: endAtIso,
-      attendee_count: Math.max(1, state.attendeeCount),
-      site_id: state.siteId ?? undefined,
-      building_id: state.buildingId ?? undefined,
-      floor_id: state.floorId ?? undefined,
-      must_have_amenities: state.mustHaveAmenities.length ? state.mustHaveAmenities : undefined,
-      has_video: state.hasVideo || undefined,
-      wheelchair_accessible: state.wheelchairAccessible || undefined,
-      smart_keywords: state.smartKeywords.length ? state.smartKeywords : undefined,
-      sort: state.sort,
-    }),
+    () => {
+      const criteria = {
+        ...(state.mustHaveAmenities.length ? { must_have_amenities: state.mustHaveAmenities } : {}),
+        ...(state.hasVideo ? { has_video: true } : {}),
+        ...(state.wheelchairAccessible ? { wheelchair_accessible: true } : {}),
+        ...(state.smartKeywords.length ? { smart_keywords: state.smartKeywords } : {}),
+      };
+      return {
+        start_at: startAtIso,
+        end_at: endAtIso,
+        attendee_count: Math.max(1, state.attendeeCount),
+        site_id: state.siteId ?? undefined,
+        building_id: state.buildingId ?? undefined,
+        floor_id: state.floorId ?? undefined,
+        criteria: Object.keys(criteria).length ? criteria : undefined,
+        sort: state.sort,
+      };
+    },
     [
       startAtIso,
       endAtIso,

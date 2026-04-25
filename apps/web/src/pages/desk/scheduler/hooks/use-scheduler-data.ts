@@ -38,7 +38,7 @@ export function useSchedulerData(args: {
     attendee_count: 1,
     building_id: args.buildingId ?? undefined,
     floor_id: args.floorId ?? undefined,
-    must_have_amenities: args.amenities.length > 0 ? args.amenities : undefined,
+    criteria: args.amenities.length > 0 ? { must_have_amenities: args.amenities } : undefined,
     requester_id: args.bookForPersonId ?? undefined,
     sort: 'best_match',
     limit: 200,

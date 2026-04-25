@@ -20,6 +20,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { Toggle } from '@/components/ui/toggle';
+import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { cn } from '@/lib/utils';
 import type { PickerState } from '../hooks/use-picker-state';
 
@@ -81,22 +82,13 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
         {/* When (date + start + duration) */}
         <Field className="md:col-span-5">
           <FieldLabel htmlFor="picker-date">When</FieldLabel>
-          <div className="grid grid-cols-[1.2fr_0.8fr_1fr] gap-2">
-            <Input
+          <div className="grid grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)] gap-2">
+            <DateTimePicker
               id="picker-date"
-              type="date"
-              value={state.date}
-              onChange={(e) => onChange('date', e.target.value)}
-              className="text-sm tabular-nums"
-            />
-            <Input
-              id="picker-time"
-              type="time"
-              value={state.startTime}
-              onChange={(e) => onChange('startTime', e.target.value)}
-              step={900}
-              className="text-sm tabular-nums"
-              aria-label="Start time"
+              date={state.date}
+              time={state.startTime}
+              onDateChange={(d) => onChange('date', d)}
+              onTimeChange={(t) => onChange('startTime', t)}
             />
             <Select
               value={String(state.durationMinutes)}

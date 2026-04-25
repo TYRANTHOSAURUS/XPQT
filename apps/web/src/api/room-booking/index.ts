@@ -1,6 +1,6 @@
 // Re-export everything; types vs runtime split keeps tree-shaking clean.
 export type {
-  ReservationListFilters, PickerInput, FindTimeInput, SchedulerWindowInput,
+  ReservationListFilters, PickerInput, PickerCriteria, FindTimeInput, SchedulerWindowInput,
 } from './keys';
 export { roomBookingKeys } from './keys';
 

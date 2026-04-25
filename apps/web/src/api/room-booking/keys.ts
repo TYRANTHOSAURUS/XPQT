@@ -31,6 +31,14 @@ export interface ReservationListFilters {
   limit?: number | null;
 }
 
+export interface PickerCriteria {
+  must_have_amenities?: string[];
+  preferred_amenities?: string[];
+  has_video?: boolean;
+  wheelchair_accessible?: boolean;
+  smart_keywords?: string[];
+}
+
 export interface PickerInput {
   start_at: string;
   end_at: string;
@@ -38,10 +46,12 @@ export interface PickerInput {
   site_id?: string;
   building_id?: string;
   floor_id?: string;
-  must_have_amenities?: string[];
-  has_video?: boolean;
-  wheelchair_accessible?: boolean;
-  smart_keywords?: string[];
+  /**
+   * Filter / boost criteria. Mirrors the backend's `PickerDto.criteria`
+   * shape — the must-haves and smart-keywords live here, NOT at the top
+   * level. Backend ignores top-level criteria fields if any are sent.
+   */
+  criteria?: PickerCriteria;
   requester_id?: string;
   sort?: 'best_match' | 'closest' | 'smallest_fit' | 'most_underused';
   limit?: number;

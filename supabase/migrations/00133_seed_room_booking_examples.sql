@@ -63,7 +63,7 @@ select
   jsonb_build_object(
     'not', jsonb_build_object(
       'fn', 'in_business_hours',
-      'args', jsonb_build_array('start_at', cal.id::text)
+      'args', jsonb_build_array('$.booking.start_at', cal.id::text)
     )
   ),
   'require_approval',
@@ -92,13 +92,15 @@ insert into public.room_booking_rules (
   'Long bookings need manager approval',
   'Bookings over 4 hours route to the requester''s manager for approval.',
   'tenant', null,
-  '{"op":"gt","left":{"fn":"duration_hours","args":["start_at","end_at"]},"right":4}'::jsonb,
+  -- duration_minutes_gt(start_at, end_at, 240) — 4 hours = 240 minutes.
+  -- Predicate engine has duration_minutes_gt; duration_hours doesn't exist.
+  '{"fn":"duration_minutes_gt","args":["$.booking.start_at","$.booking.end_at",240]}'::jsonb,
   'require_approval',
   '{"required_approvers":[{"type":"person","id":"95000000-0000-0000-0000-000000000004"}],"threshold":"any"}'::jsonb,
   'Bookings over 4 hours need manager approval.',
   90,
   'long_bookings_need_manager_approval',
-  '{"interval":"4 hours"}'::jsonb,
+  '{"interval_minutes":240}'::jsonb,
   true,
   now(), now()
 )
@@ -116,7 +118,7 @@ insert into public.room_booking_rules (
   'Over-capacity warning',
   'Bookings whose attendee count exceeds the room capacity show a soft warning.',
   'tenant', null,
-  '{"fn":"attendees_over_capacity_factor","args":[1.0]}'::jsonb,
+  '{"fn":"attendees_over_capacity_factor","args":["$.booking.attendee_count","$.space.capacity",1.0]}'::jsonb,
   'warn',
   'This room is smaller than your attendee count — consider a larger room.',
   50,
