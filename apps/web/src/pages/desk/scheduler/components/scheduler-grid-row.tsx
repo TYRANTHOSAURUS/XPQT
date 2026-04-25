@@ -90,21 +90,46 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
 
   const bgStyle = cellOutcomes ? buildCellBackground(cellOutcomes, totalColumns) : undefined;
 
+  // Pull the floor/building label off the parent_chain for the room column
+  // sub-line. The chain is ordered root→leaf so the last element is the
+  // closest enclosing space (typically a floor).
+  const parentLabel = (() => {
+    const chain = room.parent_chain ?? [];
+    if (chain.length === 0) return null;
+    return chain[chain.length - 1]?.name ?? null;
+  })();
+
   return (
     <div
-      className="grid border-b hover:bg-muted/20 transition-colors duration-100"
+      className="grid border-b transition-colors duration-100 hover:bg-muted/20"
       style={{
         gridTemplateColumns: `${rowLabelWidth}px 1fr`,
         transitionTimingFunction: 'var(--ease-snap)',
       }}
     >
       {/* Room name column */}
-      <div className="sticky left-0 z-10 bg-background border-r px-3 py-2 flex items-center gap-2 min-w-0">
+      <div className="sticky left-0 z-10 flex min-w-0 items-center gap-2 border-r bg-background px-3 py-2">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium truncate">{room.name}</div>
-          <div className="text-[11px] text-muted-foreground truncate">
-            {room.capacity ? `${room.capacity} cap` : 'No capacity'}
-            {room.amenities.length > 0 && ` · ${room.amenities.slice(0, 3).join(', ')}`}
+          <div className="truncate text-sm font-medium">{room.name}</div>
+          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span className="tabular-nums">
+              {room.capacity ? `${room.capacity} seats` : '—'}
+            </span>
+            {parentLabel && (
+              <>
+                <span aria-hidden className="text-muted-foreground/50">·</span>
+                <span className="truncate">{parentLabel}</span>
+              </>
+            )}
+            {room.amenities.length > 0 && (
+              <>
+                <span aria-hidden className="text-muted-foreground/50">·</span>
+                <span className="truncate">
+                  {room.amenities.slice(0, 2).join(', ')}
+                  {room.amenities.length > 2 && ` +${room.amenities.length - 2}`}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -143,13 +168,23 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
           }
         }}
       >
-        {/* Vertical cell hairlines — pure CSS background to avoid N divs */}
+        {/* Vertical cell hairlines + heavier hour gridlines — pure CSS
+            background to avoid N divs. The thinner line every cell, plus a
+            darker line every two cells (= one hour at 30-min granularity),
+            gives the operator a quick visual anchor for hour boundaries
+            without clutter. */}
         <div
           aria-hidden
-          className="absolute inset-0 pointer-events-none"
+          className="pointer-events-none absolute inset-0"
           style={{
-            backgroundImage: `linear-gradient(to right, rgba(127,127,127,0.10) 1px, transparent 1px)`,
-            backgroundSize: `${100 / totalColumns}% 100%`,
+            backgroundImage: [
+              `linear-gradient(to right, rgba(127,127,127,0.18) 1px, transparent 1px)`,
+              `linear-gradient(to right, rgba(127,127,127,0.07) 1px, transparent 1px)`,
+            ].join(', '),
+            backgroundSize: [
+              `${(100 / totalColumns) * 2}% 100%`,
+              `${100 / totalColumns}% 100%`,
+            ].join(', '),
           }}
         />
 

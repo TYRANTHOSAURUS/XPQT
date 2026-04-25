@@ -125,7 +125,12 @@ export function useDragResize(opts: {
               newStartCell: ctx.fixedStartCell,
               newEndCell: Math.max(cell, ctx.fixedStartCell),
             };
-      onComplete(next);
+      // Skip the API round-trip if the user grabbed the handle but didn't
+      // actually move it — otherwise every accidental click on a handle
+      // fires a no-op PATCH.
+      const moved =
+        next.newStartCell !== ctx.fixedStartCell || next.newEndCell !== ctx.fixedEndCell;
+      if (moved) onComplete(next);
       ctxRef.current = null;
       setActive(null);
     },

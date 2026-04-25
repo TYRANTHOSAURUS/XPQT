@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/lib/api';
 import { useEditBooking, type RankedRoom, type Reservation } from '@/api/room-booking';
+import { usePerson } from '@/api/persons';
 import { formatDayLabel } from '@/lib/format';
 import { useSchedulerWindow } from './hooks/use-scheduler-window';
 import { useSchedulerData } from './hooks/use-scheduler-data';
@@ -39,6 +40,15 @@ export function DeskSchedulerPage() {
   const requesterPersonId = person?.id ?? '';
 
   const win = useSchedulerWindow();
+
+  // Resolve display name for "Booking for: <person>" so the create / override
+  // popovers can say "For Sarah Lee." instead of "For yourself."
+  const bookFor = usePerson(win.state.bookForPersonId);
+  const bookForName = bookFor.data
+    ? `${bookFor.data.first_name ?? ''} ${bookFor.data.last_name ?? ''}`.trim() ||
+      bookFor.data.email ||
+      null
+    : null;
   const data = useSchedulerData({
     startAtIso: win.startAtIso,
     endAtIso: win.endAtIso,
@@ -340,9 +350,15 @@ export function DeskSchedulerPage() {
         <div className="flex flex-1 items-center justify-center text-sm text-destructive">
           {data.error instanceof Error ? data.error.message : 'Scheduler failed to load'}
         </div>
-      ) : data.rooms.length === 0 && !data.isLoading ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          No rooms match the current filters.
+      ) : data.isLoading ? (
+        <SchedulerSkeleton />
+      ) : data.rooms.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <div className="text-sm font-medium">No rooms match the current filters.</div>
+          <div className="max-w-sm text-xs text-muted-foreground">
+            Try clearing the building / floor / type filters above, or widen
+            the search term.
+          </div>
         </div>
       ) : (
         <SchedulerGrid
@@ -397,6 +413,7 @@ export function DeskSchedulerPage() {
         startAtIso={createPayload?.startAtIso ?? ''}
         endAtIso={createPayload?.endAtIso ?? ''}
         requesterPersonId={win.state.bookForPersonId ?? requesterPersonId}
+        bookForName={bookForName}
       />
 
       <SchedulerEventPopover
@@ -416,6 +433,7 @@ export function DeskSchedulerPage() {
         startAtIso={overridePayload?.startAtIso ?? ''}
         endAtIso={overridePayload?.endAtIso ?? ''}
         requesterPersonId={win.state.bookForPersonId ?? requesterPersonId}
+        bookForName={bookForName}
         denialMessage={overrideRoom?.rule_outcome.denial_message ?? null}
       />
 
@@ -445,4 +463,44 @@ function findSpaceForReservation(
     }
   }
   return null;
+}
+
+/**
+ * Skeleton placeholder for the grid while the picker + window queries
+ * resolve. Mirrors the row layout (room column + time area) so the swap
+ * to real content is visually stable — no layout shift.
+ */
+function SchedulerSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden">
+      <div className="border-b">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div
+            key={i}
+            className="grid border-b"
+            style={{ gridTemplateColumns: '220px 1fr', height: 48 }}
+          >
+            <div className="flex flex-col justify-center gap-1 border-r px-3">
+              <div className="h-3 w-32 animate-pulse rounded bg-muted/70" />
+              <div className="h-2 w-20 animate-pulse rounded bg-muted/40" />
+            </div>
+            <div className="relative">
+              {i % 2 === 0 && (
+                <div
+                  className="absolute top-2 bottom-2 animate-pulse rounded bg-muted/60"
+                  style={{ left: '12%', width: '20%' }}
+                />
+              )}
+              {i % 3 === 0 && (
+                <div
+                  className="absolute top-2 bottom-2 animate-pulse rounded bg-muted/40"
+                  style={{ left: '50%', width: '15%' }}
+                />
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

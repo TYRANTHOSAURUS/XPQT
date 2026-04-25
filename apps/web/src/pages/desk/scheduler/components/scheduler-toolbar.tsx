@@ -42,20 +42,24 @@ export function SchedulerToolbar({
   const floors = useFloorsForBuilding(tree.data, state.buildingId);
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b bg-background">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b bg-background px-4 py-2.5">
       {/* Date paginator */}
       <div className="flex items-center gap-1">
         <Button variant="ghost" size="icon-sm" onClick={onPrev} aria-label="Previous">
           <ChevronLeft className="size-4" />
         </Button>
-        <Button variant="outline" size="sm" onClick={onToday}>Today</Button>
+        <Button variant="outline" size="sm" onClick={onToday} className="h-8">
+          Today
+        </Button>
         <Button variant="ghost" size="icon-sm" onClick={onNext} aria-label="Next">
           <ChevronRight className="size-4" />
         </Button>
-        <div className="ml-2 text-sm font-medium tabular-nums">{visibleDateLabel}</div>
+        <div className="ml-2 min-w-[8ch] text-sm font-medium tabular-nums">
+          {visibleDateLabel}
+        </div>
       </div>
 
-      <div className="mx-2 h-6 w-px bg-border" />
+      <div className="mx-1 h-6 w-px bg-border" />
 
       {/* View mode */}
       <ToggleGroup
@@ -66,11 +70,11 @@ export function SchedulerToolbar({
         }}
         size="sm"
       >
-        <ToggleGroupItem value="day" className="h-7 px-2 text-xs">Day</ToggleGroupItem>
-        <ToggleGroupItem value="week" className="h-7 px-2 text-xs">Week</ToggleGroupItem>
+        <ToggleGroupItem value="day" className="h-8 px-3 text-xs">Day</ToggleGroupItem>
+        <ToggleGroupItem value="week" className="h-8 px-3 text-xs">Week</ToggleGroupItem>
       </ToggleGroup>
 
-      <div className="mx-2 h-6 w-px bg-border" />
+      <div className="mx-1 h-6 w-px bg-border" />
 
       {/* Building filter */}
       <Select
@@ -80,7 +84,7 @@ export function SchedulerToolbar({
           update('floorId', null);
         }}
       >
-        <SelectTrigger size="sm" className="w-[180px]">
+        <SelectTrigger size="sm" className="h-8 w-[160px]">
           <SelectValue placeholder="Any building" />
         </SelectTrigger>
         <SelectContent>
@@ -97,7 +101,7 @@ export function SchedulerToolbar({
         onValueChange={(v) => update('floorId', v === 'any' ? null : v)}
         disabled={floors.length === 0}
       >
-        <SelectTrigger size="sm" className="w-[140px]">
+        <SelectTrigger size="sm" className="h-8 w-[130px]">
           <SelectValue placeholder="Any floor" />
         </SelectTrigger>
         <SelectContent>
@@ -113,7 +117,7 @@ export function SchedulerToolbar({
         value={state.roomTypeFilter ?? ''}
         onValueChange={(v) => update('roomTypeFilter', v === '' ? null : v)}
       >
-        <SelectTrigger size="sm" className="w-[160px]">
+        <SelectTrigger size="sm" className="h-8 w-[150px]">
           <SelectValue placeholder="Any type" />
         </SelectTrigger>
         <SelectContent>
@@ -135,7 +139,10 @@ export function SchedulerToolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
+        <div
+          className="flex h-8 items-center gap-1.5 rounded-md border bg-muted/40 pl-2 pr-1"
+          aria-label="Booking on behalf of"
+        >
           <Users className="size-3.5 text-muted-foreground" />
           <span className="text-xs text-muted-foreground">Booking for</span>
           <div className="min-w-[180px]">

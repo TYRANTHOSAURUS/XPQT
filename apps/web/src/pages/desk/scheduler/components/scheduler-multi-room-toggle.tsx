@@ -31,9 +31,13 @@ export function SchedulerMultiRoomToggle({ selectedSpaceIds, onClear, onBookAll 
       <Tooltip>
         <TooltipTrigger
           render={
-            <Button size="sm" disabled onClick={onBookAll}>
-              Book all as multi-room
-            </Button>
+            // Wrap the disabled button in a span — disabled buttons don't fire
+            // pointer events, so the tooltip would never open without this.
+            <span tabIndex={0} className="inline-flex">
+              <Button size="sm" disabled onClick={onBookAll}>
+                Book all as multi-room
+              </Button>
+            </span>
           }
         />
         <TooltipContent>Multi-room atomic create ships in Phase G.</TooltipContent>
