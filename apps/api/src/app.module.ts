@@ -31,6 +31,8 @@ import { WebhookModule } from './modules/webhook/webhook.module';
 import { PortalAppearanceModule } from './modules/portal-appearance/portal-appearance.module';
 import { PortalAnnouncementsModule } from './modules/portal-announcements/portal-announcements.module';
 import { RoomBookingRulesModule } from './modules/room-booking-rules/room-booking-rules.module';
+import { CalendarSyncModule } from './modules/calendar-sync/calendar-sync.module';
+import { ReservationsModule } from './modules/reservations/reservations.module';
 
 @Module({
   imports: [
@@ -65,6 +67,8 @@ import { RoomBookingRulesModule } from './modules/room-booking-rules/room-bookin
     PortalAppearanceModule,
     PortalAnnouncementsModule,
     RoomBookingRulesModule,
+    CalendarSyncModule,
+    ReservationsModule,
   ],
   controllers: [HealthController],
   providers: [
@@ -77,7 +81,7 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(TenantMiddleware)
-      .exclude('api/health', 'api/webhooks/ingest')
+      .exclude('api/health', 'api/webhooks/ingest', 'api/webhooks/outlook')
       .forRoutes('*');
   }
 }
