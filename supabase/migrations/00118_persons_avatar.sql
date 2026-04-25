@@ -6,6 +6,6 @@
 -- the resolved public URL plus a cache-bust query string.
 
 alter table public.persons
-  add column avatar_url text;
+  add column if not exists avatar_url text;
 
 notify pgrst, 'reload schema';
