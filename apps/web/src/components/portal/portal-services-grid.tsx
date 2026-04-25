@@ -27,7 +27,9 @@ export function PortalServicesGrid({ services, categoryIdForOther, className }: 
           return (
             <Link
               key={s.id}
-              to={`/portal/submit?type=${encodeURIComponent(s.id)}`}
+              to={categoryIdForOther
+                ? `/portal/submit/${encodeURIComponent(categoryIdForOther)}?type=${encodeURIComponent(s.id)}`
+                : `/portal/submit?type=${encodeURIComponent(s.id)}`}
               className="flex items-start gap-3 rounded-xl border bg-card p-4 transition-colors hover:bg-accent/40"
               style={{ transitionTimingFunction: 'var(--ease-smooth)', transitionDuration: '180ms' }}
             >

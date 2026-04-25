@@ -7,6 +7,7 @@ import { PortalPage } from '@/components/portal/portal-page';
 import { PortalFormHeader } from '@/components/portal/portal-form-header';
 import { PortalRequestThread, type ThreadEvent } from '@/components/portal/portal-request-thread';
 import { PortalRequestSidebar } from '@/components/portal/portal-request-sidebar';
+import { derivePortalStatus } from '@/lib/portal-status';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -218,7 +219,7 @@ export function RequestDetailPage() {
 
         <PortalRequestSidebar
           status={{
-            label: ticket.status_category.replaceAll('_', ' '),
+            label: derivePortalStatus(ticket.status_category, ticket.sla_resolution_breached_at).label,
             sla: sla ?? undefined,
           }}
           blocks={[

@@ -15,7 +15,7 @@ interface Props {
 
 export function PortalFormFooter({ slaHint, onCancel, onSubmit, submitLabel, cancelLabel, submitting, disabled, className }: Props) {
   return (
-    <footer className={cn('sticky bottom-0 -mx-4 md:-mx-6 lg:-mx-8 mt-10 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85', className)}>
+    <footer className={cn('sticky bottom-0 z-50 -mx-4 md:-mx-6 lg:-mx-8 mt-10 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85', className)}>
       <div className="mx-auto max-w-[920px] px-4 md:px-6 lg:px-8 py-3 flex items-center justify-between gap-3">
         {slaHint ? (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
