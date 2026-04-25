@@ -221,15 +221,24 @@ begin
     now(), now()
   ) on conflict (id) do nothing;
 
-  -- 3c-approval row (single-step) — manager Noor.
+  -- 3c-approval rows — two pending approvals on the same reservation so
+  -- whichever of Noor (it.admin) or Liam (servicedesk.agent) opens
+  -- /desk/approvals first sees + acts on it. First-to-respond wins.
   insert into public.approvals (
     id, tenant_id, target_entity_type, target_entity_id,
     approver_person_id, status, requested_at, created_at
-  ) values (
-    'a0030003-0000-0000-0000-000000000001'::uuid,
-    v_tenant, 'reservation', 'a0020003-0000-0000-0000-000000000001'::uuid,
-    v_noor, 'pending', now(), now()
-  ) on conflict (id) do nothing;
+  ) values
+    (
+      'a0030003-0000-0000-0000-000000000001'::uuid,
+      v_tenant, 'reservation', 'a0020003-0000-0000-0000-000000000001'::uuid,
+      v_noor, 'pending', now(), now()
+    ),
+    (
+      'a0030003-0000-0000-0000-000000000002'::uuid,
+      v_tenant, 'reservation', 'a0020003-0000-0000-0000-000000000001'::uuid,
+      v_liam, 'pending', now(), now()
+    )
+  on conflict (id) do nothing;
 
   -- 3d. CANCELLED — past meeting cancelled with reason.
   insert into public.reservations (

@@ -16,7 +16,9 @@ export {
   pickerOptions, usePicker,
   findTimeOptions, useFindTime,
   schedulerWindowOptions, useSchedulerReservations,
+  operatorReservationListOptions, useOperatorReservations,
 } from './queries';
+export type { OperatorReservationItem } from './queries';
 
 export {
   useCreateBooking, useDryRunBooking, useMultiRoomBooking,

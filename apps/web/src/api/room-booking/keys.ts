@@ -22,13 +22,15 @@ export type ReservationStatus =
   | 'completed';
 
 export interface ReservationListFilters {
-  scope?: 'upcoming' | 'past' | 'cancelled' | 'all';
+  scope?: 'upcoming' | 'past' | 'cancelled' | 'all' | 'pending_approval';
   status?: ReservationStatus | ReservationStatus[];
   space_id?: string | null;
   requester_person_id?: string | null;
   from?: string | null;
   to?: string | null;
   limit?: number | null;
+  /** 'operator' triggers the cross-tenant operator list (requires rooms.read_all). */
+  as?: 'mine' | 'operator';
 }
 
 export interface PickerCriteria {

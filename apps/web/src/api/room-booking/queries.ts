@@ -9,8 +9,15 @@ import {
 } from './keys';
 import type { Reservation, RankedRoom, FreeSlot } from './types';
 
+/** Operator response includes denormalized space + requester for the list view. */
+export interface OperatorReservationItem extends Reservation {
+  space_name?: string | null;
+  requester_first_name?: string | null;
+  requester_last_name?: string | null;
+}
+
 interface ReservationListResponse {
-  items: Reservation[];
+  items: (Reservation | OperatorReservationItem)[];
   next_cursor?: string | null;
 }
 
@@ -31,11 +38,27 @@ export function reservationListOptions(filters: ReservationListFilters) {
           from: filters.from ?? undefined,
           to: filters.to ?? undefined,
           limit: filters.limit ?? undefined,
+          as: filters.as ?? undefined,
         },
       }),
     staleTime: 10_000,
     placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * Operator-scope list — returns every reservation in the tenant + the
+ * denormalized space_name / requester names for inline display.
+ * Backend gates on rooms.read_all or rooms.admin; non-operators get 403.
+ */
+export function operatorReservationListOptions(filters: Omit<ReservationListFilters, 'as'> = {}) {
+  return reservationListOptions({ ...filters, as: 'operator' }) as ReturnType<
+    typeof queryOptions<{ items: OperatorReservationItem[] }>
+  >;
+}
+
+export function useOperatorReservations(filters: Omit<ReservationListFilters, 'as'> = {}) {
+  return useQuery(operatorReservationListOptions(filters));
 }
 
 export function useReservationList(filters: ReservationListFilters) {

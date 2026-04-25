@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -13,7 +14,9 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, XCircle, Inbox } from 'lucide-react';
 import { usePendingApprovals, useRespondApproval } from '@/api/approvals';
+import { useReservationDetail } from '@/api/room-booking';
 import { useAuth } from '@/providers/auth-provider';
+import { formatFullTimestamp } from '@/lib/format';
 
 
 /* ---------- Helpers ---------- */
@@ -136,12 +139,10 @@ export function ApprovalsPage() {
                 {items.map((approval) => (
                   <TableRow key={approval.id}>
                     <TableCell>
-                      <div>
-                        <span className="font-medium">{entityTypeLabel(approval.target_entity_type)}</span>
-                        <span className="block text-xs text-muted-foreground font-mono mt-0.5">
-                          {approval.target_entity_id.slice(0, 8)}...
-                        </span>
-                      </div>
+                      <ApprovalEntityCell
+                        type={approval.target_entity_type}
+                        id={approval.target_entity_id}
+                      />
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {timeAgo(approval.requested_at)}
@@ -200,6 +201,76 @@ export function ApprovalsPage() {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+/**
+ * Renders the entity column. For reservations, fetches the booking detail
+ * so the approver sees room + time + requester instead of "Reservation:
+ * 12345..." with no context.
+ */
+function ApprovalEntityCell({ type, id }: { type: string; id: string }) {
+  if (type === 'reservation') return <ReservationEntityCell id={id} />;
+  if (type === 'ticket') {
+    return (
+      <div>
+        <Link to={`/desk/tickets/${id}`} className="font-medium hover:underline">
+          Ticket
+        </Link>
+        <span className="block text-xs text-muted-foreground font-mono mt-0.5">
+          {id.slice(0, 8)}…
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <span className="font-medium">{entityTypeLabel(type)}</span>
+      <span className="block text-xs text-muted-foreground font-mono mt-0.5">
+        {id.slice(0, 8)}…
+      </span>
+    </div>
+  );
+}
+
+function ReservationEntityCell({ id }: { id: string }) {
+  const { data: r, isLoading } = useReservationDetail(id);
+  if (isLoading) {
+    return (
+      <div>
+        <span className="font-medium">Reservation</span>
+        <span className="block text-xs text-muted-foreground mt-0.5">Loading…</span>
+      </div>
+    );
+  }
+  if (!r) {
+    return (
+      <div>
+        <span className="font-medium">Reservation</span>
+        <span className="block text-xs text-muted-foreground font-mono mt-0.5">
+          {id.slice(0, 8)}…
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <Link
+        to={`/portal/me/bookings/${r.id}`}
+        className="font-medium hover:underline"
+      >
+        Booking
+      </Link>
+      <div className="text-xs text-muted-foreground tabular-nums mt-0.5">
+        <time dateTime={r.start_at}>{formatFullTimestamp(r.start_at)}</time>
+        {' · '}
+        {typeof r.attendee_count === 'number' && (
+          <span>
+            {r.attendee_count} {r.attendee_count === 1 ? 'attendee' : 'attendees'}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

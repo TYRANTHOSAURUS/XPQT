@@ -37,12 +37,25 @@ export class ReservationController {
   @Get()
   async list(
     @Req() request: Request,
-    @Query('scope') scope?: 'upcoming' | 'past' | 'cancelled' | 'all',
+    @Query('scope') scope?: 'upcoming' | 'past' | 'cancelled' | 'all' | 'pending_approval',
     @Query('limit') limitStr?: string,
+    @Query('as') as?: 'mine' | 'operator',
+    @Query('status') status?: string | string[],
   ) {
     const authUid = this.getAuthUid(request);
-    const limit = limitStr ? parseInt(limitStr, 10) : 20;
-    return this.service.listMine(authUid, { scope, limit });
+    const limit = limitStr ? parseInt(limitStr, 10) : undefined;
+    if (as === 'operator') {
+      const statusArr = status === undefined
+        ? undefined
+        : Array.isArray(status) ? status : [status];
+      return this.service.listForOperator(authUid, {
+        scope, status: statusArr, limit,
+      });
+    }
+    return this.service.listMine(authUid, {
+      scope: scope === 'pending_approval' ? 'all' : scope,
+      limit: limit ?? 20,
+    });
   }
 
   @Get(':id')

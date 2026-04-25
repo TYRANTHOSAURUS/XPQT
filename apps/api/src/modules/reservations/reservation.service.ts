@@ -88,6 +88,63 @@ export class ReservationService {
   }
 
   /**
+   * Operator/admin list — every reservation in the tenant, filterable by
+   * scope + status. Used by /desk/bookings (the operator list view).
+   * Throws ForbiddenException if the caller has no rooms.read_all/admin.
+   *
+   * Joins room name + requester name in one round-trip so the desk page
+   * doesn't hydrate per-row.
+   */
+  async listForOperator(authUid: string, opts: {
+    scope?: 'upcoming' | 'past' | 'cancelled' | 'all' | 'pending_approval';
+    status?: string[];
+    limit?: number;
+  }): Promise<{ items: Array<Reservation & {
+    space_name?: string | null;
+    requester_first_name?: string | null;
+    requester_last_name?: string | null;
+  }>; }> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    this.visibility.assertOperatorOrAdmin(ctx);
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+
+    let q = this.supabase.admin
+      .from('reservations')
+      .select('*, space:spaces(id,name,type), requester:persons!requester_person_id(id,first_name,last_name)')
+      .eq('tenant_id', tenantId)
+      .order('start_at', { ascending: false })
+      .limit(limit);
+
+    const now = new Date().toISOString();
+    if (opts.scope === 'upcoming') {
+      q = q.gte('end_at', now).not('status', 'in', '(cancelled,released)');
+    } else if (opts.scope === 'past') {
+      q = q.lt('end_at', now);
+    } else if (opts.scope === 'cancelled') {
+      q = q.in('status', ['cancelled', 'released']);
+    } else if (opts.scope === 'pending_approval') {
+      q = q.eq('status', 'pending_approval');
+    }
+    if (opts.status?.length) q = q.in('status', opts.status);
+
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(`list_for_operator_failed:${error.message}`);
+
+    type Row = Reservation & {
+      space?: { id: string; name: string; type: string } | null;
+      requester?: { id: string; first_name: string | null; last_name: string | null } | null;
+    };
+    const items = ((data ?? []) as unknown as Row[]).map((r) => ({
+      ...r,
+      space_name: r.space?.name ?? null,
+      requester_first_name: r.requester?.first_name ?? null,
+      requester_last_name: r.requester?.last_name ?? null,
+    }));
+    return { items };
+  }
+
+  /**
    * Desk-scheduler window read. Returns every reservation on `spaceIds`
    * whose effective_*_at range overlaps [start_at, end_at). Operator-or-admin
    * only — caller verifies via `assertOperatorOrAdmin`.
