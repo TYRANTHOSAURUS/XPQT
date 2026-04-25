@@ -1,4 +1,4 @@
-import { Outlet, useLocation } from 'react-router-dom';
+import { Link, Outlet, useLocation, useMatch } from 'react-router-dom';
 import {
   SidebarProvider,
   SidebarInset,
@@ -8,6 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   Breadcrumb,
   BreadcrumbItem,
+  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
@@ -24,6 +25,7 @@ const pageTitles: Record<string, string> = {
 
 export function DeskLayout() {
   const location = useLocation();
+  const ticketDetailMatch = useMatch('/desk/tickets/:id');
   const pageTitle =
     pageTitles[location.pathname] ??
     (location.pathname.startsWith('/desk/reports') ? 'Reports' : 'Service Desk');
@@ -41,9 +43,21 @@ export function DeskLayout() {
                 Service Desk
               </BreadcrumbItem>
               <BreadcrumbSeparator />
-              <BreadcrumbItem>
-                <BreadcrumbPage>{pageTitle}</BreadcrumbPage>
-              </BreadcrumbItem>
+              {ticketDetailMatch ? (
+                <>
+                  <BreadcrumbItem>
+                    <BreadcrumbLink render={<Link to="/desk/tickets" />}>Tickets</BreadcrumbLink>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>Ticket</BreadcrumbPage>
+                  </BreadcrumbItem>
+                </>
+              ) : (
+                <BreadcrumbItem>
+                  <BreadcrumbPage>{pageTitle}</BreadcrumbPage>
+                </BreadcrumbItem>
+              )}
             </BreadcrumbList>
           </Breadcrumb>
         </header>
