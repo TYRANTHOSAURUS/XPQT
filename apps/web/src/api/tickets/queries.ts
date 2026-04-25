@@ -1,4 +1,4 @@
-import { queryOptions, useQuery, keepPreviousData } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { ticketKeys, type TicketListFilters } from './keys';
 import type { TicketActivity, TicketDetail } from './types';
@@ -54,24 +54,36 @@ export function useTicketTagSuggestions() {
  * Ticket list (desk queues + inbox). Filters are deep-equal-compared by RQ so
  * toggling between the same filter set hits the cache. keepPreviousData keeps
  * the current list visible while a new filter is in flight — no flash to empty.
+ *
+ * Null vs undefined:
+ * - `undefined` / omitted ⇒ no filter
+ * - explicit `null` on an assignee field ⇒ "unassigned" (IS NULL on the server)
  */
 export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilters) {
+  // Server reads the literal `'null'` string to mean IS NULL on nullable filters.
+  const nullable = (v: string | null | undefined): string | undefined =>
+    v === null ? 'null' : (v ?? undefined);
+
   return queryOptions({
     queryKey: ticketKeys.list(filters),
     queryFn: ({ signal }) =>
       apiFetch<TicketListResponse<TItem>>('/tickets', {
         signal,
         query: {
+          // Default scope: top-level tickets only. Portal views that filter by
+          // requester drop this constraint so users see their full history
+          // (cases AND their work orders).
           parent_ticket_id: filters.requesterPersonId ? undefined : 'null',
-          status: filters.status ?? undefined,
-          status_category: filters.statusCategory ?? undefined,
+          status_category: filters.status ?? undefined,
           priority: filters.priority ?? undefined,
-          assigned_team_id: filters.assignedTeamId ?? undefined,
-          assigned_user_id: filters.assignedUserId ?? undefined,
-          assigned_vendor_id: filters.assignedVendorId ?? undefined,
-          request_type_id: filters.requestTypeId ?? undefined,
+          kind: filters.ticketKind ?? undefined,
+          assigned_team_id: nullable(filters.assignedTeamId),
+          assigned_user_id: nullable(filters.assignedUserId),
+          assigned_vendor_id: nullable(filters.assignedVendorId),
           requester_person_id: filters.requesterPersonId ?? undefined,
           location_id: filters.locationId ?? undefined,
+          sla_at_risk: filters.slaAtRisk ? 'true' : undefined,
+          sla_breached: filters.slaBreached ? 'true' : undefined,
           search: filters.q ?? undefined,
           page: filters.page ?? undefined,
         },
@@ -83,4 +95,20 @@ export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilte
 
 export function useTicketList<TItem = TicketDetail>(filters: TicketListFilters) {
   return useQuery(ticketListOptions<TItem>(filters));
+}
+
+/**
+ * Prefetch a ticket's detail + activity feed. Call from row hover/focus so
+ * the detail view paints from cache when the user clicks.
+ *
+ * `staleTime` is set inside prefetchQuery so a hover on a row whose detail
+ * is already fresh is a no-op — no request storm on mouse sweep.
+ */
+export function usePrefetchTicket() {
+  const qc = useQueryClient();
+  return (id: string) => {
+    if (!id) return;
+    qc.prefetchQuery({ ...ticketDetailOptions(id), staleTime: 30_000 });
+    qc.prefetchQuery({ ...ticketActivitiesOptions(id), staleTime: 30_000 });
+  };
 }

@@ -12,16 +12,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Search, X, LayoutList, Table as TableIcon } from 'lucide-react';
-import { useTicketList } from '@/api/tickets';
+import { useTicketList, usePrefetchTicket } from '@/api/tickets';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
 import { TicketListRow } from '@/components/desk/ticket-list-row';
@@ -32,6 +25,8 @@ import {
   statusConfig,
   timeAgo,
 } from '@/components/desk/ticket-row-cells';
+import { TicketFilterBar } from '@/components/desk/ticket-filter-bar';
+import { useTicketFilters, viewPresets } from '@/pages/desk/use-ticket-filters';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 
 type ViewMode = 'table' | 'list';
@@ -58,6 +53,7 @@ function TicketTable({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
+  const prefetchTicket = usePrefetchTicket();
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -139,6 +135,8 @@ function TicketTable({
                     : 'hover:bg-muted/40',
                 )}
                 onClick={() => setSelectedTicketId(ticket.id)}
+                onMouseEnter={() => prefetchTicket(ticket.id)}
+                onFocus={() => prefetchTicket(ticket.id)}
               >
                 <TableCell
                   className={`px-3 py-2 ${
@@ -213,6 +211,7 @@ function TicketList({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
+  const prefetchTicket = usePrefetchTicket();
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -259,43 +258,56 @@ function TicketList({
 
       <div className="divide-y">
         {tickets.map((ticket) => (
-          <TicketListRow
+          <div
             key={ticket.id}
-            ticket={ticket}
-            selected={selectedTicketId === ticket.id}
-            checked={selectedIds.has(ticket.id)}
-            onSelect={setSelectedTicketId}
-            onToggleCheck={toggleSelect}
-          />
+            onMouseEnter={() => prefetchTicket(ticket.id)}
+            onFocus={() => prefetchTicket(ticket.id)}
+          >
+            <TicketListRow
+              ticket={ticket}
+              selected={selectedTicketId === ticket.id}
+              checked={selectedIds.has(ticket.id)}
+              onSelect={setSelectedTicketId}
+              onToggleCheck={toggleSelect}
+            />
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function TicketsView({
-  tickets,
-  loading,
-  searchQuery,
-  setSearchQuery,
-  selectedTicketId,
-  setSelectedTicketId,
-  selectedIds,
-  setSelectedIds,
-  view,
-  setView,
-}: {
+interface TicketsViewProps {
   tickets: Ticket[];
   loading: boolean;
-  searchQuery: string;
-  setSearchQuery: (q: string) => void;
   selectedTicketId: string | null;
   setSelectedTicketId: (id: string | null) => void;
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   view: ViewMode;
   setView: (v: ViewMode) => void;
-}) {
+  filtersHook: ReturnType<typeof useTicketFilters>;
+  /** Local debounced text the user is typing into the toolbar search. */
+  searchInput: string;
+  setSearchInput: (v: string) => void;
+  /** Label for the active named view, if any (shown inline in the toolbar). */
+  activeViewLabel: string | null;
+}
+
+function TicketsView({
+  tickets,
+  loading,
+  selectedTicketId,
+  setSelectedTicketId,
+  selectedIds,
+  setSelectedIds,
+  view,
+  setView,
+  filtersHook,
+  searchInput,
+  setSearchInput,
+  activeViewLabel,
+}: TicketsViewProps) {
   const tableProps = {
     tickets,
     loading,
@@ -305,49 +317,38 @@ function TicketsView({
     setSelectedIds,
   };
 
+  const { raw, patch, currentUserId, activeCount, clearAll } = filtersHook;
+
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-6 py-4 shrink-0">
+        {activeViewLabel && (
+          <Badge variant="secondary" className="h-7 gap-1 text-xs font-medium">
+            {activeViewLabel}
+          </Badge>
+        )}
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             placeholder="Search tickets..."
             className="pl-9"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
 
         {selectedIds.size > 0 ? (
           <div className="flex items-center gap-2">
             <Badge variant="secondary">{selectedIds.size} selected</Badge>
-            <Select>
-              <SelectTrigger className="w-[120px] h-8">
-                <SelectValue placeholder="Assign" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="team-a">FM Team A</SelectItem>
-                <SelectItem value="team-b">IT Desk</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select>
-              <SelectTrigger className="w-[120px] h-8">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="waiting">Waiting</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-              </SelectContent>
-            </Select>
             <Button
               variant="ghost"
-              size="icon"
-              className="h-8 w-8"
+              size="sm"
+              className="h-8"
               onClick={() => setSelectedIds(new Set())}
             >
               <X className="h-4 w-4" />
+              Clear selection
             </Button>
           </div>
         ) : (
@@ -376,6 +377,15 @@ function TicketsView({
         )}
       </div>
 
+      {/* Filter chip bar */}
+      <TicketFilterBar
+        raw={raw}
+        patch={patch}
+        currentUserId={currentUserId}
+        activeCount={activeCount}
+        onClearAll={clearAll}
+      />
+
       {/* Table or List */}
       <div className="flex-1 overflow-auto pb-4">
         {view === 'list' ? <TicketList {...tableProps} /> : <TicketTable {...tableProps} />}
@@ -385,7 +395,7 @@ function TicketsView({
 }
 
 export function TicketsPage() {
-  const [searchQuery, setSearchQuery] = useState('');
+  const filtersHook = useTicketFilters();
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setViewState] = useState<ViewMode>(readStoredView);
@@ -405,22 +415,41 @@ export function TicketsPage() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const { data, isPending: loading } = useTicketList<Ticket>({
-    q: searchQuery || null,
-  });
+  // Keep an immediate input string so typing doesn't ping-pong through the URL
+  // every keystroke. Push to the URL after a short debounce.
+  const [searchInput, setSearchInput] = useState(filtersHook.raw.q);
+  useEffect(() => {
+    setSearchInput(filtersHook.raw.q);
+  }, [filtersHook.raw.q]);
+
+  useEffect(() => {
+    if (searchInput === filtersHook.raw.q) return;
+    const handle = window.setTimeout(() => {
+      filtersHook.patch({ q: searchInput || null });
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [searchInput, filtersHook]);
+
+  const { data, isPending: loading } = useTicketList<Ticket>(filtersHook.filters);
   const tickets = data?.items ?? [];
 
-  const viewProps = {
+  const activeViewLabel = filtersHook.raw.view
+    ? viewPresets[filtersHook.raw.view]?.label ?? null
+    : null;
+
+  const viewProps: TicketsViewProps = {
     tickets,
     loading,
-    searchQuery,
-    setSearchQuery,
     selectedTicketId,
     setSelectedTicketId,
     selectedIds,
     setSelectedIds,
     view,
     setView,
+    filtersHook,
+    searchInput,
+    setSearchInput,
+    activeViewLabel,
   };
 
   return (

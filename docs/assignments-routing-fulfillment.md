@@ -489,8 +489,21 @@ API: `GET /tickets/:id/children` returns the same shape including `ticket_kind` 
 
 - `POST /tickets` — creates a case (or a work order if DTO sets `ticket_kind = 'work_order'`, though dispatch is the proper path).
 - `POST /tickets/:id/dispatch` — body = `DispatchDto`. Creates a child work order, returns it.
-- `GET /tickets?kind=case` / `?kind=work_order` — filters by ticket kind. No default filter applied; clients must pass `kind` to separate cases from work orders in queue views.
 - `GET /tickets/:id/children` — returns all direct children (work orders + any workflow-spawned sub-tasks).
+- `GET /tickets` — list with filters. All query params are optional; multiple values for `status_category` and `priority` use repeated keys (`?status_category=new&status_category=assigned`).
+  - `status_category=<value>` (repeatable) — filters by status category. Values: `new`, `assigned`, `in_progress`, `waiting`, `pending_approval`, `resolved`, `closed`.
+  - `priority=<value>` (repeatable) — filters by priority. Values: `critical`, `urgent`, `high`, `medium`, `low`.
+  - `kind=case` / `kind=work_order` — filters by ticket kind. No default applied; clients must pass `kind` if they want to separate cases from work orders.
+  - `assigned_team_id=<uuid>` — exact team. Pass `assigned_team_id=null` to filter to tickets with no team.
+  - `assigned_user_id=<uuid>` — exact user. Pass `assigned_user_id=null` to filter to tickets with no assignee.
+  - `assigned_vendor_id=<uuid>` — exact vendor. Pass `assigned_vendor_id=null` to filter to tickets with no vendor.
+  - `requester_person_id=<uuid>` — exact requester.
+  - `location_id=<uuid>` — exact location (no descendant traversal — use `expand_space_closure` upstream if needed).
+  - `parent_ticket_id=<uuid>` — children of a specific parent. `parent_ticket_id=null` (the **default** when no `requester_person_id` is set) restricts to top-level tickets only. The default is dropped when filtering by requester so portal users see their full history (cases plus work orders).
+  - `sla_at_risk=true` — tickets currently at risk of breaching resolution SLA.
+  - `sla_breached=true` — tickets where `sla_resolution_breached_at` is set (already missed).
+  - `search=<text>` — case-insensitive ILIKE on `title` and `description`.
+  - `cursor=<ticket_id>` / `limit=<n>` — cursor-based pagination, max 100 per page.
 
 ---
 

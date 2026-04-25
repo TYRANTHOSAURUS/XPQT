@@ -35,10 +35,20 @@ import {
   PanelLeftCloseIcon,
   LayoutDashboardIcon,
   SettingsIcon,
+  GaugeIcon,
+  TimerIcon,
+  BoxIcon,
+  MapPinIcon,
+  ListTreeIcon,
+  BuildingIcon,
 } from "lucide-react"
-import { Checkbox } from "@/components/ui/checkbox"
 import { useQuery, queryOptions } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
+import {
+  VIEW_ORDER,
+  viewPresets,
+  type ViewId,
+} from "@/pages/desk/use-ticket-filters"
 
 const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
@@ -47,13 +57,51 @@ const navItems = [
   { title: "Reports", icon: BarChart3Icon, path: "/desk/reports" },
 ]
 
-const ticketViews = [
-  { id: "assigned-to-me", label: "Assigned to me", icon: UserIcon },
-  { id: "all", label: "All tickets", icon: FilterIcon },
-  { id: "unassigned", label: "Unassigned", icon: UsersIcon },
-  { id: "sla-at-risk", label: "SLA at risk", icon: AlertTriangleIcon },
-  { id: "my-team", label: "My team", icon: UsersIcon },
-  { id: "recent", label: "Recent", icon: ClockIcon },
+// View ids match `useTicketFilters` preset ids. Icons live in the sidebar so
+// the hook stays UI-framework-agnostic.
+const viewIcons: Record<ViewId, typeof UserIcon> = {
+  me: UserIcon,
+  all: FilterIcon,
+  unassigned: UsersIcon,
+  sla_at_risk: AlertTriangleIcon,
+  recent: ClockIcon,
+}
+
+const viewLabels: Record<ViewId, string> = {
+  me: "Assigned to me",
+  all: "All tickets",
+  unassigned: "Unassigned",
+  sla_at_risk: "SLA at risk",
+  recent: "Recent",
+}
+
+const reportGroups: Array<{
+  title: string
+  items: Array<{ to: string; label: string; icon: typeof LayoutDashboardIcon }>
+}> = [
+  {
+    title: "Service desk",
+    items: [
+      { to: "/desk/reports/overview", label: "Overview", icon: LayoutDashboardIcon },
+      { to: "/desk/reports/sla", label: "SLA performance", icon: GaugeIcon },
+      { to: "/desk/reports/teams", label: "Team workload", icon: UsersIcon },
+      { to: "/desk/reports/resolution", label: "Resolution times", icon: TimerIcon },
+    ],
+  },
+  {
+    title: "Operations",
+    items: [
+      { to: "/desk/reports/assets", label: "Asset analysis", icon: BoxIcon },
+      { to: "/desk/reports/locations", label: "Location analysis", icon: MapPinIcon },
+      { to: "/desk/reports/request-types", label: "Request types", icon: ListTreeIcon },
+    ],
+  },
+  {
+    title: "Financials",
+    items: [
+      { to: "/desk/reports/vendors", label: "Vendor performance", icon: BuildingIcon },
+    ],
+  },
 ]
 
 type InboxReason = "mentioned" | "assigned_to_me" | "my_team" | "watching"
@@ -319,55 +367,34 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
             </SidebarContent>
           </>
         ) : activeNav.path === "/desk/tickets" ? (
+          <TicketsSidebarPanel />
+        ) : activeNav.path === "/desk/reports" ? (
           <>
             <SidebarHeader className="gap-3.5 border-b p-4">
-              <div className="text-base font-medium text-foreground">Tickets</div>
-              <SidebarInput placeholder="Search..." />
+              <div className="text-base font-medium text-foreground">Reports</div>
             </SidebarHeader>
             <SidebarContent>
-              <SidebarGroup>
-                <SidebarGroupLabel>Views</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {ticketViews.map((view) => (
-                      <SidebarMenuItem key={view.id}>
-                        <SidebarMenuButton className="text-sm">
-                          <view.icon className="size-4" />
-                          <span>{view.label}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-
-              <SidebarGroup>
-                <SidebarGroupLabel>Filters</SidebarGroupLabel>
-                <SidebarGroupContent className="px-4 space-y-4">
-                  <div>
-                    <p className="text-xs font-medium mb-2">Status</p>
-                    {["new", "assigned", "in_progress", "waiting", "resolved"].map((s) => (
-                      <div key={s} className="flex items-center gap-2.5 py-1.5">
-                        <Checkbox id={`status-${s}`} />
-                        <Label htmlFor={`status-${s}`} className="text-sm capitalize font-normal cursor-pointer">
-                          {s.replace("_", " ")}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                  <div>
-                    <p className="text-xs font-medium mb-2">Priority</p>
-                    {["critical", "high", "medium", "low"].map((p) => (
-                      <div key={p} className="flex items-center gap-2.5 py-1.5">
-                        <Checkbox id={`priority-${p}`} />
-                        <Label htmlFor={`priority-${p}`} className="text-sm capitalize font-normal cursor-pointer">
-                          {p}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                </SidebarGroupContent>
-              </SidebarGroup>
+              {reportGroups.map((group) => (
+                <SidebarGroup key={group.title}>
+                  <SidebarGroupLabel>{group.title}</SidebarGroupLabel>
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {group.items.map((item) => (
+                        <SidebarMenuItem key={item.to}>
+                          <SidebarMenuButton
+                            onClick={() => navigate(item.to)}
+                            isActive={location.pathname === item.to}
+                            className="text-sm"
+                          >
+                            <item.icon className="size-4" />
+                            <span>{item.label}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+              ))}
             </SidebarContent>
           </>
         ) : (
@@ -379,5 +406,57 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
         )}
       </Sidebar>
     </Sidebar>
+  )
+}
+
+/**
+ * Sidebar panel shown when /desk/tickets is active. Renders the named view
+ * presets defined in `useTicketFilters`. Clicking a view navigates to the
+ * tickets page with the preset's URL params applied. The active view is
+ * derived from the `view` search param so deep-links highlight correctly.
+ */
+function TicketsSidebarPanel() {
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const activeView = React.useMemo(() => {
+    if (!location.pathname.startsWith("/desk/tickets")) return null
+    const params = new URLSearchParams(location.search)
+    return params.get("view")
+  }, [location.pathname, location.search])
+
+  return (
+    <>
+      <SidebarHeader className="gap-3.5 border-b p-4">
+        <div className="text-base font-medium text-foreground">Tickets</div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Views</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {VIEW_ORDER.map((id) => {
+                const Icon = viewIcons[id]
+                const preset = viewPresets[id].params()
+                const qs = new URLSearchParams(preset).toString()
+                const isActive = activeView === id
+                return (
+                  <SidebarMenuItem key={id}>
+                    <SidebarMenuButton
+                      className="text-sm"
+                      isActive={isActive}
+                      onClick={() => navigate(`/desk/tickets?${qs}`)}
+                    >
+                      <Icon className="size-4" />
+                      <span>{viewLabels[id]}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </>
   )
 }

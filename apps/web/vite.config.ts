@@ -25,4 +25,38 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split large, stable vendor groups into their own chunks so repeat
+        // visitors cache them across deploys — when only app code changes,
+        // these hashes don't. Order matters: more-specific matches win, so
+        // react-query / dnd-kit / reactflow are matched before the generic
+        // react bucket.
+        manualChunks: (id) => {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('@tanstack/react-query')) return 'vendor-query';
+          if (id.includes('reactflow') || id.includes('dagre')) return 'vendor-flow';
+          if (id.includes('@dnd-kit')) return 'vendor-dnd';
+          if (
+            id.includes('@base-ui') ||
+            id.includes('lucide-react') ||
+            id.includes('sonner') ||
+            id.includes('cmdk')
+          ) return 'vendor-ui';
+          if (id.includes('@supabase')) return 'vendor-supabase';
+          if (
+            id.includes('react-router') ||
+            id.includes('react-dom') ||
+            id.includes('/react/') ||
+            id.includes('/scheduler/')
+          ) return 'vendor-react';
+          return 'vendor';
+        },
+      },
+    },
+    // App bundle now sits below this with vendors split out; the original
+    // 500 warning was meaningless noise post-split.
+    chunkSizeWarningLimit: 800,
+  },
 });

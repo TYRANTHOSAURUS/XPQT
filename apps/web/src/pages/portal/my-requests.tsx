@@ -65,18 +65,18 @@ export function MyRequestsPage() {
   const { person } = useAuth();
   const [filter, setFilter] = useState('open');
 
-  // filter=open|closed|all translates to a single statusCategory per backend
-  // semantics; the previous URL repeated status_category per value but the
-  // backend treats duplicates as "any of" — keep that behavior via the
-  // list hook's filter shape.
-  const statusCategory = filter === 'open'
-    ? 'open' // server maps to new+assigned+in_progress+waiting
-    : filter === 'closed'
-    ? 'closed' // server maps to resolved+closed
-    : null;
+  // filter=open|closed|all maps to one or more status_category values. The
+  // server accepts repeated keys (?status_category=new&status_category=…) so
+  // arrays fan out cleanly.
+  const status =
+    filter === 'open'
+      ? ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval']
+      : filter === 'closed'
+      ? ['resolved', 'closed']
+      : null;
 
   const { data, isPending: loading } = useTicketList<Ticket>({
-    statusCategory,
+    status,
     requesterPersonId: person?.id ?? null,
   });
   const tickets = person?.id ? (data?.items ?? []) : [];

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { ticketKeys } from '@/api/tickets';
 
 export interface WorkOrderRow {
   id: string;
@@ -34,73 +35,60 @@ export interface DispatchDto {
   sla_id?: string | null;
 }
 
-export interface UseWorkOrdersResult {
-  data: WorkOrderRow[];
-  loading: boolean;
-  error: Error | null;
-  refetch: () => void;
+/**
+ * Load work-order children of a parent case. Keyed under
+ * `ticketKeys.children(parentId)` so it shares an invalidation subtree with
+ * the parent ticket's detail — changes roll up cleanly.
+ *
+ * API surface matches the pre-RQ hook (`data`, `loading`, `error`, `refetch`)
+ * so existing callers (`ticket-meta-row`, `sub-issues-section`,
+ * `add-sub-issue-dialog`) don't need to change shape.
+ */
+export function useWorkOrders(parentId: string | null) {
+  const qc = useQueryClient();
+  const query = useQuery(queryOptions({
+    queryKey: parentId ? ticketKeys.children(parentId) : ['tickets', 'children', 'disabled'] as const,
+    queryFn: ({ signal }) => apiFetch<WorkOrderRow[]>(`/tickets/${parentId}/children`, { signal }),
+    enabled: Boolean(parentId),
+    staleTime: 10_000, // T1 — rolled up into parent status.
+  }));
+
+  return {
+    data: query.data ?? [],
+    loading: query.isPending && Boolean(parentId),
+    error: query.error,
+    refetch: () => {
+      if (!parentId) return;
+      qc.invalidateQueries({ queryKey: ticketKeys.children(parentId) });
+    },
+  };
 }
 
 /**
- * Loads work-order children of a parent case.
- * Follows the project pattern: apiFetch + useState/useEffect + caller-driven refetch.
+ * Dispatch a new work order under a parent case. Settlement invalidates both
+ * the children list and the parent's detail — parent `status_category` rolls
+ * up when the first child arrives (new → assigned), so the sidebar updates
+ * without the caller having to invalidate manually.
  */
-export function useWorkOrders(parentId: string | null): UseWorkOrdersResult {
-  const [data, setData] = useState<WorkOrderRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const [nonce, setNonce] = useState(0);
-
-  useEffect(() => {
-    if (!parentId) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    apiFetch<WorkOrderRow[]>(`/tickets/${parentId}/children`)
-      .then((rows) => { if (!cancelled) setData(rows); })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e : new Error('Failed to load work orders'));
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [parentId, nonce]);
-
-  const refetch = useCallback(() => setNonce((n) => n + 1), []);
-  return { data, loading, error, refetch };
-}
-
-export interface UseDispatchWorkOrderResult {
-  dispatch: (dto: DispatchDto) => Promise<WorkOrderRow>;
-  submitting: boolean;
-  error: Error | null;
-}
-
-/**
- * Dispatches a new work order under the parent case. Caller is responsible for
- * calling refetch() on both the work-orders list and the parent ticket after success,
- * since the parent's status_category may have rolled up.
- */
-export function useDispatchWorkOrder(parentId: string): UseDispatchWorkOrderResult {
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-
-  const dispatch = useCallback(async (dto: DispatchDto) => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const row = await apiFetch<WorkOrderRow>(`/tickets/${parentId}/dispatch`, {
+export function useDispatchWorkOrder(parentId: string) {
+  const qc = useQueryClient();
+  const mutation = useMutation<WorkOrderRow, Error, DispatchDto>({
+    mutationFn: (dto) =>
+      apiFetch<WorkOrderRow>(`/tickets/${parentId}/dispatch`, {
         method: 'POST',
         body: JSON.stringify(dto),
-      });
-      return row;
-    } catch (e: unknown) {
-      const err = e instanceof Error ? e : new Error('Dispatch failed');
-      setError(err);
-      throw err;
-    } finally {
-      setSubmitting(false);
-    }
-  }, [parentId]);
+      }),
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ticketKeys.children(parentId) }),
+        qc.invalidateQueries({ queryKey: ticketKeys.detail(parentId) }),
+        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
+      ]),
+  });
 
-  return { dispatch, submitting, error };
+  return {
+    dispatch: mutation.mutateAsync,
+    submitting: mutation.isPending,
+    error: mutation.error,
+  };
 }

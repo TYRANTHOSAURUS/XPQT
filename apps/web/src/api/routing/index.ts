@@ -297,11 +297,14 @@ export function useSimulatorPreview<T = unknown>(input: Record<string, unknown>)
 
 // ---------- policies (v2 case ownership + child dispatch) ----------
 
+function policyKindPath(kind: 'case-owner' | 'child-dispatch') {
+  return kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
+}
+
 export function policyEntitiesOptions<T = unknown>(kind: 'case-owner' | 'child-dispatch') {
-  const path = kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
   return queryOptions({
     queryKey: [...routingKeys.policies(), 'entities', kind] as const,
-    queryFn: ({ signal }) => apiFetch<T[]>(path, { signal }),
+    queryFn: ({ signal }) => apiFetch<T[]>(policyKindPath(kind), { signal }),
     staleTime: 60_000,
   });
 }
@@ -313,10 +316,9 @@ export function publishedPolicyOptions<T = unknown>(
   kind: 'case-owner' | 'child-dispatch',
   entityId: string | null | undefined,
 ) {
-  const path = kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
   return queryOptions({
     queryKey: [...routingKeys.policies(), 'published', kind, entityId ?? ''] as const,
-    queryFn: ({ signal }) => apiFetch<T>(`${path}/${entityId}`, { signal }),
+    queryFn: ({ signal }) => apiFetch<T>(`${policyKindPath(kind)}/${entityId}`, { signal }),
     enabled: Boolean(entityId),
     staleTime: 60_000,
   });
