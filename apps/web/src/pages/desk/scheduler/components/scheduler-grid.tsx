@@ -138,6 +138,7 @@ export function SchedulerGrid({
         dayStartHour={dayStartHour}
         dayEndHour={dayEndHour}
         cellMinutes={cellMinutes}
+        rowLabelWidth={rowLabelWidth}
       />
 
       <div

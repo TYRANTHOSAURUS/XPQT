@@ -48,11 +48,18 @@ export function SchedulerCreatePopover({
   const create = useCreateBooking();
 
   useEffect(() => {
-    // Reset when re-opened on a different cell.
-    if (open) setAttendeeCount(2);
-  }, [open, room?.space_id, startAtIso]);
+    // Reset when re-opened on a different cell. Default to the room's
+    // min_attendees if it has one — respects the room's policy floor and
+    // saves the operator a click on rooms gated to ≥ N people.
+    if (open) {
+      const seed = room?.min_attendees && room.min_attendees > 0 ? room.min_attendees : 2;
+      setAttendeeCount(seed);
+    }
+  }, [open, room?.space_id, room?.min_attendees, startAtIso]);
 
   if (!room) return null;
+  const overCapacity =
+    typeof room.capacity === 'number' && room.capacity > 0 && attendeeCount > room.capacity;
 
   const submit = async () => {
     try {
@@ -99,7 +106,21 @@ export function SchedulerCreatePopover({
               className="tabular-nums"
             />
             <FieldDescription>
-              Capacity: {room.capacity ?? 'unspecified'}.
+              {overCapacity ? (
+                <span className="text-destructive">
+                  Over capacity — room seats {room.capacity}.
+                </span>
+              ) : (
+                <>
+                  Capacity: <span className="tabular-nums">{room.capacity ?? '—'}</span>
+                  {room.min_attendees && room.min_attendees > 0 ? (
+                    <>
+                      {' '}· Min:{' '}
+                      <span className="tabular-nums">{room.min_attendees}</span>
+                    </>
+                  ) : null}
+                </>
+              )}
             </FieldDescription>
           </Field>
         </FieldGroup>

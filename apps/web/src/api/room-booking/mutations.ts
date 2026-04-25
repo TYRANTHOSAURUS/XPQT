@@ -1,7 +1,23 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { roomBookingKeys } from './keys';
 import type { BookingPayload, MultiRoomBookingPayload, Reservation } from './types';
+
+/**
+ * Invalidate every cached read that could be affected by a write to a
+ * reservation: the user-facing list, the portal picker, the desk
+ * scheduler window, and the find-time / availability buckets. We
+ * invalidate the whole `scheduler-window` namespace (not a specific key)
+ * because the page may have multiple windows cached across day/week
+ * pages and filter combinations.
+ */
+function invalidateAfterWrite(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
+  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
+  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'availability'] });
+  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'find-time'] });
+}
 
 /**
  * Create a single-room booking. Runs the full pipeline server-side
@@ -18,10 +34,7 @@ export function useCreateBooking() {
         method: 'POST',
         body: JSON.stringify(payload),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
-    },
+    onSuccess: () => invalidateAfterWrite(queryClient),
   });
 }
 
@@ -53,10 +66,7 @@ export function useMultiRoomBooking() {
         '/reservations/multi-room',
         { method: 'POST', body: JSON.stringify(payload) },
       ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
-      queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
-    },
+    onSuccess: () => invalidateAfterWrite(queryClient),
   });
 }
 
@@ -75,7 +85,7 @@ export function useEditBooking() {
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+      invalidateAfterWrite(queryClient);
     },
   });
 }
@@ -94,7 +104,7 @@ export function useCancelBooking() {
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+      invalidateAfterWrite(queryClient);
     },
   });
 }
@@ -106,7 +116,7 @@ export function useRestoreBooking() {
       apiFetch<Reservation>(`/reservations/${id}/restore`, { method: 'POST' }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+      invalidateAfterWrite(queryClient);
     },
   });
 }
@@ -120,7 +130,7 @@ export function useCheckInBooking() {
       }),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
-      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+      invalidateAfterWrite(queryClient);
     },
   });
 }
