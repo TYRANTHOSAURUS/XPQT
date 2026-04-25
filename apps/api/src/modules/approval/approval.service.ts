@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef 
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
+import { BookingNotificationsService } from '../reservations/booking-notifications.service';
+import type { Reservation } from '../reservations/dto/types';
 
 export interface CreateApprovalDto {
   target_entity_type: string;
@@ -23,6 +25,8 @@ export class ApprovalService {
   constructor(
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
+    @Inject(forwardRef(() => BookingNotificationsService))
+    private readonly bookingNotifications: BookingNotificationsService,
   ) {}
 
   /**
@@ -220,7 +224,78 @@ export class ApprovalService {
       }
     }
 
+    // For reservations: transition the reservation status and notify the requester.
+    // Parallel groups: only fire when the whole group is decided (any rejection wins;
+    // otherwise wait for all to approve).
+    // Sequential chains: only fire on the final step's decision.
+    if (approval.target_entity_type === 'reservation') {
+      try {
+        await this.handleReservationApprovalDecided(approval, dto);
+      } catch (err) {
+        console.error('[approval] reservation notification failed', err);
+      }
+    }
+
     return data;
+  }
+
+  /**
+   * Update reservation.status from pending_approval → confirmed | cancelled and
+   * dispatch the requester notification. Respects parallel-group all-must-approve
+   * semantics and sequential-chain final-step semantics.
+   */
+  private async handleReservationApprovalDecided(
+    approval: { id: string; target_entity_id: string; parallel_group: string | null;
+                approval_chain_id: string | null; comments?: string | null },
+    dto: RespondDto,
+  ): Promise<void> {
+    const tenant = TenantContext.current();
+
+    // Determine the final decision for the reservation.
+    let finalDecision: 'approved' | 'rejected';
+    if (dto.status === 'rejected') {
+      // Any rejection ends the approval (parallel or chained).
+      finalDecision = 'rejected';
+    } else if (approval.parallel_group) {
+      const complete = await this.isParallelGroupComplete(
+        approval.parallel_group, approval.target_entity_id,
+      );
+      if (!complete) return;       // still waiting on peers
+      finalDecision = 'approved';
+    } else if (approval.approval_chain_id) {
+      // For sequential chains, advanceChain has already activated the next step
+      // OR completed the chain. Only the final step's approval signals "done".
+      const allComplete = await this.isChainComplete(approval.approval_chain_id);
+      if (!allComplete) return;
+      finalDecision = 'approved';
+    } else {
+      // Single-step approval — decided now.
+      finalDecision = 'approved';
+    }
+
+    // Transition reservation status.
+    const newStatus = finalDecision === 'approved' ? 'confirmed' : 'cancelled';
+    const { data: reservation } = await this.supabase.admin
+      .from('reservations')
+      .update({
+        status: newStatus,
+        ...(newStatus === 'cancelled'
+          ? { cancellation_grace_until: null }
+          : {}),
+      })
+      .eq('id', approval.target_entity_id)
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'pending_approval')        // optimistic — only transition once
+      .select('*')
+      .maybeSingle();
+
+    if (!reservation) return;                  // already transitioned by another path
+
+    await this.bookingNotifications.onApprovalDecided(
+      reservation as unknown as Reservation,
+      finalDecision,
+      approval.comments ?? undefined,
+    );
   }
 
   /**
