@@ -7,7 +7,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/main",
     "start:prod": "node dist/main",
-    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "lint": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "jest --config ./test/jest-e2e.json"

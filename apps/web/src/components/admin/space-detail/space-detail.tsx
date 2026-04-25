@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import type { SpaceType } from '@prequest/shared';
 import {
   useSpaceDetail, useSpaceTree, useDeleteSpace, useMoveSpace,
@@ -105,7 +106,7 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
         </TabsList>
 
         <TabsContent value="overview" className="px-6 py-4 text-sm text-muted-foreground">
-          Created {new Date(space.created_at).toLocaleDateString()}. Last updated {new Date(space.updated_at).toLocaleString()}.
+          Created <time dateTime={space.created_at} title={formatFullTimestamp(space.created_at)}>{formatRelativeTime(space.created_at)}</time>. Last updated <time dateTime={space.updated_at} title={formatFullTimestamp(space.updated_at)}>{formatRelativeTime(space.updated_at)}</time>.
         </TabsContent>
 
         <TabsContent value="children" className="flex-1 overflow-auto">
@@ -118,7 +119,7 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
         </TabsContent>
 
         <TabsContent value="activity" className="px-6 py-8 text-sm text-muted-foreground">
-          Activity feed coming soon. For now: last updated {new Date(space.updated_at).toLocaleString()}.
+          Activity feed coming soon. For now: last updated <time dateTime={space.updated_at} title={formatFullTimestamp(space.updated_at)}>{formatRelativeTime(space.updated_at)}</time>.
         </TabsContent>
       </Tabs>
 

@@ -28,6 +28,8 @@ import { CatalogMenuModule } from './modules/catalog-menu/catalog-menu.module';
 import { PortalModule } from './modules/portal/portal.module';
 import { OrgNodeModule } from './modules/org-node/org-node.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
+import { PortalAppearanceModule } from './modules/portal-appearance/portal-appearance.module';
+import { PortalAnnouncementsModule } from './modules/portal-announcements/portal-announcements.module';
 
 @Module({
   imports: [
@@ -59,6 +61,8 @@ import { WebhookModule } from './modules/webhook/webhook.module';
     PortalModule,
     OrgNodeModule,
     WebhookModule,
+    PortalAppearanceModule,
+    PortalAnnouncementsModule,
   ],
   controllers: [HealthController],
   providers: [

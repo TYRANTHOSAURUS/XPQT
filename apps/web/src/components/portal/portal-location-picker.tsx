@@ -13,12 +13,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { usePortal } from '@/providers/portal-provider';
 
+interface PortalLocationPickerProps {
+  /** When true, show only the location name (no "Submitting for:" label). */
+  compact?: boolean;
+}
+
 /**
  * Portal header control: "Submitting for: [Amsterdam HQ ▾]".
  * Lists the person's authorized scope roots (default + grants).
  * Switching persists server-side via PATCH /portal/me.
  */
-export function PortalLocationPicker() {
+export function PortalLocationPicker({ compact }: PortalLocationPickerProps = {}) {
   const { data, setCurrentLocation } = usePortal();
   const [busy, setBusy] = useState(false);
 
@@ -45,8 +50,10 @@ export function PortalLocationPicker() {
         render={<Button variant="ghost" size="sm" className="gap-2 h-8" disabled={busy} />}
       >
         <MapPin className="h-4 w-4" />
-        <span className="hidden sm:inline text-muted-foreground">Submitting for:</span>
-        <span className="font-medium">{data.current_location.name}</span>
+        {!compact && (
+          <span className="hidden sm:inline text-muted-foreground">Submitting for:</span>
+        )}
+        <span className="font-medium truncate max-w-[10rem]">{data.current_location.name}</span>
         <ChevronDown className="h-3 w-3 opacity-50" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[260px]">

@@ -18,6 +18,7 @@ import {
   SettingsFooterActions,
 } from '@/components/ui/settings-page';
 import { useBranding, type Branding } from '@/hooks/use-branding';
+import { PortalAppearanceSection } from '@/components/admin/portal/portal-appearance-section';
 import { toast } from 'sonner';
 
 type LogoKind = 'light' | 'dark' | 'favicon';
@@ -451,6 +452,8 @@ export function BrandingPage() {
           </Field>
         </RadioGroup>
       </SettingsSection>
+
+      <PortalAppearanceSection />
 
       <SettingsFooterActions
         primary={{

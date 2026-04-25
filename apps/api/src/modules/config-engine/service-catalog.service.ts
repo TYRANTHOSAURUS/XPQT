@@ -1,12 +1,18 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+
+const BUCKET = 'portal-assets';
+const COVER_MAX_BYTES = 2 * 1024 * 1024;
+const COVER_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 interface CategoryRow {
   id: string;
   name: string;
   description: string | null;
   icon: string | null;
+  cover_image_url: string | null;
+  cover_source: 'image' | 'icon' | null;
   display_order: number;
   parent_category_id: string | null;
   active: boolean;
@@ -53,7 +59,7 @@ export class ServiceCatalogService {
     const [categoriesRes, requestTypesRes, linksRes] = await Promise.all([
       this.supabase.admin
         .from('service_catalog_categories')
-        .select('id, name, description, icon, display_order, parent_category_id, active')
+        .select('id, name, description, icon, display_order, parent_category_id, active, cover_image_url, cover_source')
         .eq('tenant_id', tenant.id)
         .eq('active', true)
         .order('display_order'),
@@ -132,7 +138,22 @@ export class ServiceCatalogService {
     return data;
   }
 
-  async updateCategory(id: string, dto: Record<string, unknown>) {
+  async updateCategory(
+    id: string,
+    dto: {
+      name?: string;
+      description?: string | null;
+      icon?: string | null;
+      cover_image_url?: string | null;
+      cover_source?: 'image' | 'icon' | null;
+      parent_category_id?: string | null;
+      display_order?: number;
+      active?: boolean;
+    },
+  ) {
+    if (dto.cover_source !== undefined && dto.cover_source !== null && dto.cover_source !== 'image' && dto.cover_source !== 'icon') {
+      throw new BadRequestException(`cover_source must be 'image', 'icon', or null`);
+    }
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('service_catalog_categories')
@@ -143,6 +164,44 @@ export class ServiceCatalogService {
       .single();
 
     if (error) this.rethrowCategoryError(error);
+    return data;
+  }
+
+  async uploadCategoryCover(
+    categoryId: string,
+    file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  ) {
+    if (!file) throw new BadRequestException('Missing file');
+    if (!COVER_MIMES.has(file.mimetype)) {
+      throw new BadRequestException(`Unsupported mime: ${file.mimetype}. Allowed: jpeg, png, webp`);
+    }
+    if (file.buffer.byteLength > COVER_MAX_BYTES) {
+      throw new BadRequestException(`File too large: ${file.buffer.byteLength} bytes (max ${COVER_MAX_BYTES})`);
+    }
+
+    const tenant = TenantContext.current();
+    const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const)[
+      file.mimetype as 'image/jpeg' | 'image/png' | 'image/webp'
+    ];
+    const path = `${tenant.id}/category-cover/${categoryId}.${ext}`;
+
+    const { error: uploadErr } = await this.supabase.admin.storage
+      .from(BUCKET)
+      .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
+    if (uploadErr) throw new InternalServerErrorException(uploadErr.message);
+
+    const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
+    const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
+
+    const { data, error } = await this.supabase.admin
+      .from('service_catalog_categories')
+      .update({ cover_image_url: bustedUrl, cover_source: 'image' })
+      .eq('id', categoryId)
+      .eq('tenant_id', tenant.id)
+      .select()
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data) throw new NotFoundException('Category not found');
     return data;
   }
 

@@ -20,7 +20,9 @@ import {
   Field,
   FieldGroup,
   FieldLabel,
+  FieldSeparator,
 } from '@/components/ui/field';
+import { CategoryCoverPicker } from '@/components/admin/catalog/category-cover-picker';
 import {
   SettingsPageHeader,
   SettingsPageShell,
@@ -49,6 +51,8 @@ interface CategoryFormState {
   name: string;
   description: string;
   icon: string;
+  cover_source: 'image' | 'icon';
+  cover_image_url: string | null;
 }
 
 const emptyForm: CategoryFormState = {
@@ -57,6 +61,8 @@ const emptyForm: CategoryFormState = {
   name: '',
   description: '',
   icon: '',
+  cover_source: 'icon',
+  cover_image_url: null,
 };
 
 export function CatalogHierarchyPage() {
@@ -84,6 +90,8 @@ export function CatalogHierarchyPage() {
       name: item.name,
       description: item.description ?? '',
       icon: item.icon ?? '',
+      cover_source: item.cover_source ?? 'icon',
+      cover_image_url: item.cover_image_url ?? null,
     });
     setDialogOpen(true);
   };
@@ -95,6 +103,8 @@ export function CatalogHierarchyPage() {
       description: form.description || undefined,
       icon: form.icon || undefined,
       parent_category_id: form.parentId ?? undefined,
+      cover_source: form.cover_source,
+      cover_image_url: form.cover_image_url ?? undefined,
     };
     try {
       if (form.id) {
@@ -241,6 +251,17 @@ export function CatalogHierarchyPage() {
                 </SelectContent>
               </Select>
             </Field>
+            <FieldSeparator />
+            <CategoryCoverPicker
+              categoryId={form.id}
+              categoryName={form.name}
+              coverSource={form.cover_source}
+              coverImageUrl={form.cover_image_url}
+              icon={form.icon}
+              onChange={({ cover_source, cover_image_url }) =>
+                setForm((prev) => ({ ...prev, cover_source, cover_image_url }))
+              }
+            />
           </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>

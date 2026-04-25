@@ -27,6 +27,7 @@ import {
   MonitorIcon,
   PaletteIcon,
   SettingsIcon,
+  ArrowRightLeftIcon,
 } from "lucide-react"
 import { useTheme } from "@/hooks/use-theme"
 import { useAuth } from "@/providers/auth-provider"
@@ -126,6 +127,11 @@ export function NavUser() {
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => navigate('/portal')}>
+              <ArrowRightLeftIcon />
+              Switch to Portal
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSignOut}>
               <LogOutIcon />

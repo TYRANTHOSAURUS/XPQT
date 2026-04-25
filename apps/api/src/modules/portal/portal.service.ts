@@ -1,6 +1,8 @@
 import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { PortalAppearanceService } from '../portal-appearance/portal-appearance.service';
+import { PortalAnnouncementsService } from '../portal-announcements/portal-announcements.service';
 
 interface SpaceSummary {
   id: string;
@@ -41,6 +43,19 @@ export interface PortalMeResponse {
    * enabled, person has type='employee', person has no default and no grants.
    */
   can_self_onboard: boolean;
+  appearance: {
+    hero_image_url: string | null;
+    welcome_headline: string | null;
+    supporting_line: string | null;
+    greeting_enabled: boolean;
+  } | null;
+  announcement: {
+    id: string;
+    title: string;
+    body: string;
+    published_at: string;
+    expires_at: string | null;
+  } | null;
 }
 
 /**
@@ -77,6 +92,9 @@ interface CatalogCategory {
   name: string;
   icon: string | null;
   parent_category_id: string | null;
+  description: string | null;
+  cover_image_url: string | null;
+  cover_source: 'image' | 'icon' | null;
   request_types: CatalogRequestType[];
 }
 
@@ -102,7 +120,11 @@ export interface PortalSpacesResponse {
  */
 @Injectable()
 export class PortalService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly appearance: PortalAppearanceService,
+    private readonly announcements: PortalAnnouncementsService,
+  ) {}
 
   /**
    * Resolves authUid → { user, person } in the current tenant, or throws 401.
@@ -223,6 +245,32 @@ export class PortalService {
     const can_self_onboard =
       self_onboard_flag_on && zero_scope && person.type === 'employee';
 
+    let appearance: PortalMeResponse['appearance'] = null;
+    let announcement: PortalMeResponse['announcement'] = null;
+    if (currentLocation) {
+      const [app, ann] = await Promise.all([
+        this.appearance.get(currentLocation.id),
+        this.announcements.getActiveForLocation(currentLocation.id),
+      ]);
+      appearance = app
+        ? {
+            hero_image_url: app.hero_image_url,
+            welcome_headline: app.welcome_headline,
+            supporting_line: app.supporting_line,
+            greeting_enabled: app.greeting_enabled,
+          }
+        : null;
+      announcement = ann
+        ? {
+            id: ann.id,
+            title: ann.title,
+            body: ann.body,
+            published_at: ann.published_at,
+            expires_at: ann.expires_at,
+          }
+        : null;
+    }
+
     return {
       person: {
         id: person.id,
@@ -240,6 +288,8 @@ export class PortalService {
       role_scopes: userRolesRes,
       can_submit,
       can_self_onboard,
+      appearance,
+      announcement,
     };
   }
 
@@ -431,7 +481,7 @@ export class PortalService {
         .in('request_type_id', visibleIds),
       this.supabase.admin
         .from('service_catalog_categories')
-        .select('id, name, icon, parent_category_id, display_order')
+        .select('id, name, icon, parent_category_id, description, cover_image_url, cover_source, display_order')
         .eq('tenant_id', tenant.id)
         .eq('active', true)
         .order('display_order'),
@@ -447,6 +497,7 @@ export class PortalService {
     const rtCats = ((rtCatRes.data ?? []) as Array<{ request_type_id: string; category_id: string }>);
     const categories = ((categoriesRes.data ?? []) as Array<{
       id: string; name: string; icon: string | null; parent_category_id: string | null;
+      description: string | null; cover_image_url: string | null; cover_source: 'image' | 'icon' | null;
     }>);
 
     // Form variant resolution — conditional beats default (matches
@@ -559,6 +610,9 @@ export class PortalService {
         name: cat.name,
         icon: cat.icon,
         parent_category_id: cat.parent_category_id,
+        description: cat.description,
+        cover_image_url: cat.cover_image_url,
+        cover_source: cat.cover_source,
         request_types: rts,
       });
     }
@@ -569,6 +623,9 @@ export class PortalService {
         name: 'Other',
         icon: null,
         parent_category_id: null,
+        description: null,
+        cover_image_url: null,
+        cover_source: null,
         request_types: uncategorized.sort((a, b) => a.display_order - b.display_order),
       });
     }
