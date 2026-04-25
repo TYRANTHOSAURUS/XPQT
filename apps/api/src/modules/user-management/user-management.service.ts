@@ -95,7 +95,7 @@ export class UserManagementService {
       .from('users')
       .select(`
         *,
-        person:persons(id, first_name, last_name, email, type, default_location_id),
+        person:persons(id, first_name, last_name, email, type, default_location_id, avatar_url),
         role_assignments:user_role_assignments(
           id, domain_scope, location_scope,
           role:roles(id, name, type)

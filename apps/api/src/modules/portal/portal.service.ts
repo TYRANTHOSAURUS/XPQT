@@ -29,7 +29,10 @@ export interface PortalMeResponse {
     first_name: string;
     last_name: string;
     email: string | null;
+    phone: string | null;
     type: string;
+    avatar_url: string | null;
+    primary_org_node: { id: string; name: string; code: string | null } | null;
   };
   user: { id: string; email: string | null };
   tenant: { id: string; name: string };
@@ -155,7 +158,10 @@ export class PortalService {
     const [personRes, userFull, authorizedLocationsRes, userRolesRes, tenantFlagsRes] = await Promise.all([
       this.supabase.admin
         .from('persons')
-        .select('id, first_name, last_name, email, type, default_location_id')
+        .select(
+          `id, first_name, last_name, email, phone, type, default_location_id, avatar_url,
+           primary_membership:person_org_memberships(is_primary, org_node:org_nodes(id, name, code))`,
+        )
         .eq('id', personId)
         .eq('tenant_id', tenant.id)
         .single(),
@@ -174,9 +180,28 @@ export class PortalService {
     ]);
 
     const person = personRes.data as
-      | { id: string; first_name: string; last_name: string; email: string | null; type: string; default_location_id: string | null }
+      | {
+          id: string;
+          first_name: string;
+          last_name: string;
+          email: string | null;
+          phone: string | null;
+          type: string;
+          default_location_id: string | null;
+          avatar_url: string | null;
+          primary_membership:
+            | Array<{
+                is_primary: boolean;
+                org_node: { id: string; name: string; code: string | null } | { id: string; name: string; code: string | null }[] | null;
+              }>
+            | null;
+        }
       | null;
     if (!person) throw new NotFoundException('Person not found');
+
+    const primaryRow = (person.primary_membership ?? []).find((m) => m.is_primary) ?? null;
+    const primaryOrgRaw = primaryRow?.org_node ?? null;
+    const primaryOrg = Array.isArray(primaryOrgRaw) ? primaryOrgRaw[0] ?? null : primaryOrgRaw;
 
     const userRow = userFull.data as { id: string; email: string | null; portal_current_location_id: string | null };
 
@@ -278,7 +303,12 @@ export class PortalService {
         first_name: person.first_name,
         last_name: person.last_name,
         email: person.email,
+        phone: person.phone,
         type: person.type,
+        avatar_url: person.avatar_url,
+        primary_org_node: primaryOrg
+          ? { id: primaryOrg.id, name: primaryOrg.name, code: primaryOrg.code ?? null }
+          : null,
       },
       user: { id: userRow.id, email: userRow.email ?? userEmail },
       tenant: {
@@ -405,6 +435,120 @@ export class PortalService {
     const { error } = await this.supabase.admin
       .from('persons')
       .update({ default_location_id: spaceId })
+      .eq('id', personId)
+      .eq('tenant_id', tenant.id);
+    if (error) throw error;
+
+    return this.getMe(authUid);
+  }
+
+  /**
+   * Profile self-edit: phone and default_location_id.
+   * - phone is free text (no format gate; tenants vary).
+   * - default_location_id, when provided, must be in the caller's authorized
+   *   set. The DB trigger from 00047 additionally enforces site|building +
+   *   tenant + active.
+   */
+  async updateProfile(
+    authUid: string,
+    body: { phone?: string | null; default_location_id?: string | null },
+  ): Promise<PortalMeResponse> {
+    const tenant = TenantContext.current();
+    const { personId } = await this.resolveActor(authUid);
+    if (!personId) throw new UnauthorizedException('No linked person');
+
+    const update: Record<string, unknown> = {};
+    if (body.phone !== undefined) {
+      const trimmed = typeof body.phone === 'string' ? body.phone.trim() : null;
+      update.phone = trimmed && trimmed.length > 0 ? trimmed : null;
+    }
+    if (body.default_location_id !== undefined) {
+      if (body.default_location_id) {
+        const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
+        if (!authorizedIds.includes(body.default_location_id)) {
+          throw new ForbiddenException({
+            code: 'location_not_authorized',
+            message: 'Selected location is not in your authorized scope',
+          });
+        }
+      }
+      update.default_location_id = body.default_location_id ?? null;
+    }
+
+    if (Object.keys(update).length > 0) {
+      const { error } = await this.supabase.admin
+        .from('persons')
+        .update(update)
+        .eq('id', personId)
+        .eq('tenant_id', tenant.id);
+      if (error) throw error;
+    }
+
+    return this.getMe(authUid);
+  }
+
+  async uploadAvatar(
+    authUid: string,
+    file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  ): Promise<PortalMeResponse> {
+    const tenant = TenantContext.current();
+    const { personId } = await this.resolveActor(authUid);
+    if (!personId) throw new UnauthorizedException('No linked person');
+
+    const ALLOWED = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const;
+    const MAX_BYTES = 2 * 1024 * 1024;
+    const ext = ALLOWED[file.mimetype as keyof typeof ALLOWED];
+    if (!ext) {
+      throw new ForbiddenException({
+        code: 'unsupported_media_type',
+        message: 'Avatar must be JPG, PNG, or WebP',
+      });
+    }
+    if (file.buffer.byteLength > MAX_BYTES) {
+      throw new ForbiddenException({
+        code: 'avatar_too_large',
+        message: 'Avatar image must be 2MB or smaller',
+      });
+    }
+
+    // Remove any prior extensions so the bucket never accumulates stale variants.
+    const variants = (['jpg', 'png', 'webp'] as const).map(
+      (e) => `${tenant.id}/avatar/${personId}.${e}`,
+    );
+    await this.supabase.admin.storage.from('portal-assets').remove(variants);
+
+    const path = `${tenant.id}/avatar/${personId}.${ext}`;
+    const { error: uploadErr } = await this.supabase.admin.storage
+      .from('portal-assets')
+      .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
+    if (uploadErr) throw uploadErr;
+
+    const { data: pub } = this.supabase.admin.storage.from('portal-assets').getPublicUrl(path);
+    const url = `${pub.publicUrl}?v=${Date.now()}`;
+
+    const { error: updErr } = await this.supabase.admin
+      .from('persons')
+      .update({ avatar_url: url })
+      .eq('id', personId)
+      .eq('tenant_id', tenant.id);
+    if (updErr) throw updErr;
+
+    return this.getMe(authUid);
+  }
+
+  async removeAvatar(authUid: string): Promise<PortalMeResponse> {
+    const tenant = TenantContext.current();
+    const { personId } = await this.resolveActor(authUid);
+    if (!personId) throw new UnauthorizedException('No linked person');
+
+    const variants = (['jpg', 'png', 'webp'] as const).map(
+      (e) => `${tenant.id}/avatar/${personId}.${e}`,
+    );
+    await this.supabase.admin.storage.from('portal-assets').remove(variants);
+
+    const { error } = await this.supabase.admin
+      .from('persons')
+      .update({ avatar_url: null })
       .eq('id', personId)
       .eq('tenant_id', tenant.id);
     if (error) throw error;

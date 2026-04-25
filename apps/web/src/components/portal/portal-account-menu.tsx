@@ -1,5 +1,5 @@
 import { useAuth } from '@/providers/auth-provider';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { UserMenuContent } from '@/components/user-menu-content';
 
@@ -10,6 +10,7 @@ export function PortalAccountMenu() {
     ? `${person.first_name[0] ?? ''}${person.last_name?.[0] ?? ''}`.toUpperCase()
     : (user?.email?.[0] ?? 'U').toUpperCase();
   const displayName = person ? `${person.first_name} ${person.last_name}` : user?.email ?? 'User';
+  const avatarUrl = person?.avatar_url ?? null;
 
   return (
     <DropdownMenu>
@@ -23,6 +24,7 @@ export function PortalAccountMenu() {
         }
       >
         <Avatar className="size-8">
+          {avatarUrl && <AvatarImage src={avatarUrl} alt={displayName} loading="lazy" />}
           <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-pink-500 text-white text-xs font-semibold">
             {initials}
           </AvatarFallback>

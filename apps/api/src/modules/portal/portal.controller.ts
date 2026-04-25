@@ -2,13 +2,17 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Patch,
   Post,
   Query,
   Req,
   UnauthorizedException,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { PortalService } from './portal.service';
 import { PortalSubmitService } from './portal-submit.service';
@@ -41,6 +45,29 @@ export class PortalController {
       throw new BadRequestException('current_location_id is required');
     }
     return this.portal.setCurrentLocation(this.authUid(request), body.current_location_id);
+  }
+
+  @Patch('me/profile')
+  async patchProfile(
+    @Req() request: Request,
+    @Body() body: { phone?: string | null; default_location_id?: string | null },
+  ) {
+    return this.portal.updateProfile(this.authUid(request), body ?? {});
+  }
+
+  @Post('me/avatar')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
+  async uploadAvatar(
+    @Req() request: Request,
+    @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    return this.portal.uploadAvatar(this.authUid(request), file);
+  }
+
+  @Delete('me/avatar')
+  async deleteAvatar(@Req() request: Request) {
+    return this.portal.removeAvatar(this.authUid(request));
   }
 
   @Get('catalog')

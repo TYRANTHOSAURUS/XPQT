@@ -55,12 +55,26 @@ export function UserMenuContent({ side = 'bottom', align = 'end', className }: P
   const displayName = person ? `${person.first_name} ${person.last_name}` : user?.email ?? 'User';
   const displayEmail = user?.email ?? '';
   const avatarPerson = person
-    ? { first_name: person.first_name, last_name: person.last_name, email: user?.email }
+    ? {
+        first_name: person.first_name,
+        last_name: person.last_name,
+        email: user?.email,
+        avatar_url: person.avatar_url,
+      }
     : { email: user?.email };
 
   const onPortal = location.pathname.startsWith('/portal');
   const onDesk = location.pathname.startsWith('/desk');
   const onAdmin = location.pathname.startsWith('/admin');
+
+  // Account / Notifications / Settings destinations are shell-aware. Today
+  // only the Portal has a profile page; in the other shells the items stay
+  // disabled rather than going to a 404.
+  const accountHref = onPortal
+    ? '/portal/profile'
+    : onAdmin
+      ? '/admin'
+      : '/desk';
 
   const canSeeDesk = hasRole('agent') || hasRole('admin');
   const canSeeAdmin = hasRole('admin');
@@ -90,15 +104,15 @@ export function UserMenuContent({ side = 'bottom', align = 'end', className }: P
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuGroup>
-        <DropdownMenuItem>
+        <DropdownMenuItem onClick={() => navigate(accountHref)}>
           <BadgeCheckIcon />
           Account
         </DropdownMenuItem>
-        <DropdownMenuItem>
+        <DropdownMenuItem disabled>
           <BellIcon />
           Notifications
         </DropdownMenuItem>
-        <DropdownMenuItem>
+        <DropdownMenuItem disabled>
           <SettingsIcon />
           Settings
         </DropdownMenuItem>

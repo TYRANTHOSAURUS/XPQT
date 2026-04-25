@@ -16,7 +16,7 @@ export function PortalPage({ children, className, bleed }: Props) {
     <div
       className={cn(
         'mx-auto w-full max-w-[1600px]',
-        !bleed && 'px-4 md:px-6 lg:px-8',
+        !bleed && 'px-3 md:px-4 lg:px-6',
         'pb-24 md:pb-10',
         className,
       )}

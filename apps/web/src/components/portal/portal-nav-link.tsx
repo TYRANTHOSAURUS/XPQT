@@ -23,11 +23,11 @@ export function PortalNavLink({ to, label, icon: Icon, matchExact }: Props) {
       end={matchExact}
       className={({ isActive }) =>
         cn(
-          'group inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium',
+          'group inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium',
           'transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
           isActive
-            ? 'bg-foreground/10 text-foreground'
-            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+            ? 'bg-foreground/[0.06] text-foreground'
+            : 'text-muted-foreground/90 hover:bg-foreground/[0.04] hover:text-foreground',
         )
       }
       style={{ transitionTimingFunction: 'var(--ease-snap)', transitionDuration: '120ms' }}

@@ -16,6 +16,7 @@ interface Person {
   first_name: string;
   last_name: string;
   email: string;
+  avatar_url?: string | null;
 }
 
 export type RoleType = 'admin' | 'agent' | 'employee';

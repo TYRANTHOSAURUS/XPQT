@@ -56,11 +56,20 @@ export class PortalAnnouncementsService {
   }
 
   /** Publish retires any existing active announcement for the same location. */
-  async publish(dto: PublishAnnouncementDto, authUserId: string): Promise<Announcement> {
+  async publish(dto: PublishAnnouncementDto, authUid: string): Promise<Announcement> {
     if (!dto.location_id || !dto.title?.trim() || !dto.body?.trim()) {
       throw new BadRequestException('location_id, title, body are required');
     }
     const tenant = TenantContext.current();
+
+    // Resolve auth_uid → public.users.id (created_by FK targets public.users).
+    const { data: userRow } = await this.supabase.admin
+      .from('users')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('auth_uid', authUid)
+      .maybeSingle();
+    const createdBy = (userRow as { id: string } | null)?.id ?? null;
 
     // Retire existing active: expire at now()
     const nowIso = new Date().toISOString();
@@ -79,7 +88,7 @@ export class PortalAnnouncementsService {
         title: dto.title.trim(),
         body: dto.body.trim(),
         expires_at: dto.expires_at ?? null,
-        created_by: authUserId,
+        created_by: createdBy,
       })
       .select('id, location_id, title, body, published_at, expires_at, created_by')
       .single();

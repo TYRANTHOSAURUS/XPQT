@@ -13,6 +13,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { features } from '@/lib/features';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
+import { RouteErrorBoundary } from '@/components/route-error-boundary';
 
 /*
  * Route-level code splitting: pages are lazy() so each user only downloads the
@@ -42,6 +43,7 @@ const MyRequestsPage = lazyNamed(() => import('@/pages/portal/my-requests'), 'My
 const RequestDetailPage = lazyNamed(() => import('@/pages/portal/request-detail'), 'RequestDetailPage');
 const CatalogCategoryPage = lazyNamed(() => import('@/pages/portal/catalog-category'), 'CatalogCategoryPage');
 const SubmitRequestPage = lazyNamed(() => import('@/pages/portal/submit-request'), 'SubmitRequestPage');
+const PortalProfilePage = lazyNamed(() => import('@/pages/portal/profile'), 'PortalProfilePage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -118,8 +120,9 @@ export function App() {
         <AuthProvider>
           <TooltipProvider>
             <Toaster position="top-right" richColors />
-            <Suspense fallback={<RouteFallback />}>
-              <Routes>
+            <RouteErrorBoundary>
+              <Suspense fallback={<RouteFallback />}>
+                <Routes>
                 <Route path="/" element={<Navigate to="/portal" replace />} />
 
                 {/* Auth pages — no layout */}
@@ -141,11 +144,12 @@ export function App() {
                   <Route path="my-requests" element={<Navigate to="/portal/requests" replace />} />
                   <Route path="catalog/:categoryId" element={<CatalogCategoryPage />} />
                   <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
+                  <Route path="profile"  element={<PortalProfilePage />} />
                   {/* Phase 2 placeholders — top nav + bottom tabs link here; redirect home until built */}
                   <Route path="rooms"    element={<Navigate to="/portal" replace />} />
                   <Route path="visitors" element={<Navigate to="/portal" replace />} />
                   <Route path="order"    element={<Navigate to="/portal" replace />} />
-                  <Route path="account"  element={<Navigate to="/portal" replace />} />
+                  <Route path="account"  element={<Navigate to="/portal/profile" replace />} />
                   <Route path="book" element={<Navigate to="/portal/rooms" replace />} />
                 </Route>
 
@@ -270,8 +274,9 @@ export function App() {
                   {/* Branding */}
                   <Route path="branding" element={<BrandingPage />} />
                 </Route>
-              </Routes>
-            </Suspense>
+                </Routes>
+              </Suspense>
+            </RouteErrorBoundary>
           </TooltipProvider>
         </AuthProvider>
       </ThemeProvider>

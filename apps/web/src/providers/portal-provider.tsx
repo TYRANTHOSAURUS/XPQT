@@ -39,7 +39,16 @@ export interface PortalAnnouncement {
 }
 
 export interface PortalMeResponse {
-  person: { id: string; first_name: string; last_name: string; email: string | null; type: string };
+  person: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    email: string | null;
+    phone: string | null;
+    type: string;
+    avatar_url: string | null;
+    primary_org_node: { id: string; name: string; code: string | null } | null;
+  };
   user: { id: string; email: string | null };
   tenant: { id: string; name: string };
   default_location: SpaceSummary | null;
@@ -63,6 +72,9 @@ interface PortalContextValue {
   refresh: () => Promise<void>;
   setCurrentLocation: (spaceId: string) => Promise<void>;
   claimDefaultLocation: (spaceId: string) => Promise<void>;
+  updateProfile: (body: { phone?: string | null; default_location_id?: string | null }) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<void>;
+  removeAvatar: () => Promise<void>;
 }
 
 const PortalContext = createContext<PortalContextValue | undefined>(undefined);
@@ -136,9 +148,55 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const updateProfile = useCallback(
+    async (body: { phone?: string | null; default_location_id?: string | null }) => {
+      const updated = await apiFetch<PortalMeResponse>('/portal/me/profile', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      setData(updated);
+    },
+    [],
+  );
+
+  const uploadAvatar = useCallback(async (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const updated = await apiFetch<PortalMeResponse>('/portal/me/avatar', {
+      method: 'POST',
+      body: form,
+    });
+    setData(updated);
+  }, []);
+
+  const removeAvatar = useCallback(async () => {
+    const updated = await apiFetch<PortalMeResponse>('/portal/me/avatar', { method: 'DELETE' });
+    setData(updated);
+  }, []);
+
   const value = useMemo<PortalContextValue>(
-    () => ({ data, loading, error, refresh, setCurrentLocation, claimDefaultLocation }),
-    [data, loading, error, refresh, setCurrentLocation, claimDefaultLocation],
+    () => ({
+      data,
+      loading,
+      error,
+      refresh,
+      setCurrentLocation,
+      claimDefaultLocation,
+      updateProfile,
+      uploadAvatar,
+      removeAvatar,
+    }),
+    [
+      data,
+      loading,
+      error,
+      refresh,
+      setCurrentLocation,
+      claimDefaultLocation,
+      updateProfile,
+      uploadAvatar,
+      removeAvatar,
+    ],
   );
 
   return <PortalContext.Provider value={value}>{children}</PortalContext.Provider>;

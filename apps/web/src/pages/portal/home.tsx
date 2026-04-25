@@ -56,9 +56,9 @@ export function PortalHome() {
   }, [dbCategories, catalog, q]);
 
   return (
-    <PortalPage bleed>
+    <PortalPage>
       <PortalHomeHero />
-      <div className="px-4 md:px-6 lg:px-8 mt-8 md:mt-10">
+      <div className="mt-8 md:mt-10">
         <div className="grid gap-8 md:gap-10 md:grid-cols-[1.8fr_1fr]">
           <section>
             <div className="mb-3 text-xs uppercase tracking-widest text-muted-foreground font-semibold">
