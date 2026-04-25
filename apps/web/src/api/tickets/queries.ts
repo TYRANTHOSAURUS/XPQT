@@ -59,11 +59,13 @@ export function useTicketTagSuggestions() {
  * - `undefined` / omitted ⇒ no filter
  * - explicit `null` on an assignee field ⇒ "unassigned" (IS NULL on the server)
  */
-export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilters) {
-  // Server reads the literal `'null'` string to mean IS NULL on nullable filters.
-  const nullable = (v: string | null | undefined): string | undefined =>
-    v === null ? 'null' : (v ?? undefined);
+// Server reads the literal `'null'` string to mean IS NULL on nullable filters.
+// Pure helper — extracted from ticketListOptions so it's not part of queryFn's
+// closure (otherwise @tanstack/query/exhaustive-deps flags a missing dep).
+const nullable = (v: string | null | undefined): string | undefined =>
+  v === null ? 'null' : (v ?? undefined);
 
+export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilters) {
   return queryOptions({
     queryKey: ticketKeys.list(filters),
     queryFn: ({ signal }) =>
