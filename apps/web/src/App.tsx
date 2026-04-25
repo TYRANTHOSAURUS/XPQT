@@ -44,6 +44,11 @@ const RequestDetailPage = lazyNamed(() => import('@/pages/portal/request-detail'
 const CatalogCategoryPage = lazyNamed(() => import('@/pages/portal/catalog-category'), 'CatalogCategoryPage');
 const SubmitRequestPage = lazyNamed(() => import('@/pages/portal/submit-request'), 'SubmitRequestPage');
 const PortalProfilePage = lazyNamed(() => import('@/pages/portal/profile'), 'PortalProfilePage');
+const BookRoomPage = lazyNamed(() => import('@/pages/portal/book-room'), 'BookRoomPage');
+const MyBookingsPage = lazyNamed(() => import('@/pages/portal/me-bookings'), 'MyBookingsPage');
+const PortalCalendarSyncPage = lazyNamed(() => import('@/pages/portal/me/calendar-sync'), 'PortalCalendarSyncPage');
+const PortalCalendarSyncCallbackPage = lazyNamed(() => import('@/pages/portal/calendar-sync-callback'), 'PortalCalendarSyncCallbackPage');
+const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-sync'), 'AdminCalendarSyncPage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -146,11 +151,17 @@ export function App() {
                   <Route path="submit/:categoryId?" element={<SubmitRequestPage />} />
                   <Route path="profile"  element={<PortalProfilePage />} />
                   {/* Phase 2 placeholders — top nav + bottom tabs link here; redirect home until built */}
-                  <Route path="rooms"    element={<Navigate to="/portal" replace />} />
+                  <Route path="rooms"    element={<BookRoomPage />} />
                   <Route path="visitors" element={<Navigate to="/portal" replace />} />
                   <Route path="order"    element={<Navigate to="/portal" replace />} />
                   <Route path="account"  element={<Navigate to="/portal/profile" replace />} />
                   <Route path="book" element={<Navigate to="/portal/rooms" replace />} />
+                  {/* My bookings — :id auto-opens the right-side detail drawer */}
+                  <Route path="me/bookings" element={<MyBookingsPage />} />
+                  <Route path="me/bookings/:id" element={<MyBookingsPage />} />
+                  {/* Calendar sync (Outlook) */}
+                  <Route path="me/calendar-sync" element={<PortalCalendarSyncPage />} />
+                  <Route path="calendar-sync/callback" element={<PortalCalendarSyncCallbackPage />} />
                 </Route>
 
                 {/* Service Desk — requires auth + agent role */}
@@ -191,6 +202,8 @@ export function App() {
                   }
                 >
                   <Route index element={<AdminIndexPage />} />
+                  {/* Calendar sync (Outlook) — admin sync-health + conflicts inbox */}
+                  <Route path="calendar-sync" element={<AdminCalendarSyncPage />} />
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
                   <Route path="form-schemas" element={<FormSchemasPage />} />
