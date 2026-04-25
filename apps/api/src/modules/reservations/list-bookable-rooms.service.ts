@@ -240,20 +240,16 @@ export class ListBookableRoomsService {
     };
   }
 
-  private buildDayBlocks(input: PickerInput, conflicts: Array<{ start_at: string; end_at: string; status: string }>): Array<{
+  private buildDayBlocks(_input: PickerInput, conflicts: Array<{ start_at: string; end_at: string; status: string }>): Array<{
     start: string; end: string; status: 'busy' | 'pending' | 'requested'; is_yours?: boolean;
   }> {
-    const blocks: Array<{ start: string; end: string; status: 'busy' | 'pending' | 'requested' }> =
-      conflicts.map((c) => ({
-        start: c.start_at,
-        end: c.end_at,
-        status: c.status === 'pending_approval' ? 'pending' : 'busy',
-      }));
-    blocks.push({
-      start: input.start_at,
-      end: input.end_at,
-      status: 'requested',
-    });
-    return blocks;
+    // Only return EXISTING bookings as day-blocks. The user's requested
+    // slot is signaled by the strip's ring overlay, not by a block color —
+    // otherwise rooms without conflicts look like they have one anyway.
+    return conflicts.map((c) => ({
+      start: c.start_at,
+      end: c.end_at,
+      status: c.status === 'pending_approval' ? 'pending' as const : 'busy' as const,
+    }));
   }
 }

@@ -1,11 +1,9 @@
-import { Sparkles, MapPin, Users as UsersIcon, ArrowRight } from 'lucide-react';
+import { ArrowRight, Users as UsersIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { formatCount } from '@/lib/format';
 import type { RankedRoom } from '@/api/room-booking';
 import { MiniTimelineStrip } from './mini-timeline-strip';
-import { RoomTypeIcon } from './room-type-icon';
 
 interface Props {
   room: RankedRoom;
@@ -17,6 +15,17 @@ interface Props {
   onBook: (room: RankedRoom) => void;
 }
 
+/**
+ * One ranked candidate. Compact, two-row design:
+ *   row 1: name · location chip · capacity · status badges · CTA
+ *   row 2: half-height availability strip
+ *
+ * No type-icon tile, no amenity chips, no reason text — when the data is
+ * uniform (typical for this seed where every "Meeting Room X" has the
+ * same amenities + capacity), those decorations make every row read
+ * identical and add visual noise. The location chip from `parent_chain`
+ * is the primary differentiator.
+ */
 export function BookingResultRow({
   room,
   requestedStartIso,
@@ -33,192 +42,141 @@ export function BookingResultRow({
 
   if (isDenied && !showRestricted) return null;
 
-  const floor =
-    room.parent_chain.find((p) => p.type === 'floor')?.name ??
-    room.parent_chain.find((p) => p.type === 'building')?.name;
+  const locationLabel = formatLocation(room.parent_chain);
 
-  const ctaLabel = isDenied
-    ? 'Restricted'
-    : requiresApproval
-      ? 'Request'
-      : 'Book this room';
-
-  const accentBar = isBestMatch && !isDenied;
+  const ctaLabel = isDenied ? 'Restricted' : requiresApproval ? 'Request' : 'Book';
 
   return (
     <article
       className={cn(
-        'group/row relative overflow-hidden rounded-2xl border bg-card transition-all',
-        'hover:border-foreground/15 hover:shadow-[0_2px_24px_-12px_rgba(0,0,0,0.18)]',
-        accentBar && 'border-primary/40',
+        'group/row relative flex flex-col gap-3 rounded-xl border bg-card px-4 py-3.5 transition-all',
+        'hover:border-foreground/20',
+        isBestMatch && !isDenied && 'border-primary/45 shadow-[0_1px_0_0_rgba(0,0,0,0.02),0_8px_24px_-12px_rgba(59,130,246,0.18)]',
         isDenied && 'opacity-55',
       )}
-      style={{ transitionDuration: '180ms', transitionTimingFunction: 'var(--ease-smooth)' }}
+      style={{ transitionDuration: '160ms', transitionTimingFunction: 'var(--ease-smooth)' }}
     >
-      {accentBar && (
-        <div
-          aria-hidden
-          className="absolute left-0 top-0 h-full w-[3px] bg-gradient-to-b from-primary to-primary/40"
-        />
-      )}
-
-      <div className="grid gap-4 p-4 sm:p-5 md:grid-cols-[auto_1fr_auto] md:items-center md:gap-6">
-        {/* Identity */}
-        <div className="flex items-center gap-3 md:items-start">
-          <RoomTypeIcon
-            capacity={room.capacity}
-            keywords={[]} // search keywords not yet in picker payload — TODO when backend exposes
-            className="h-12 w-12 sm:h-14 sm:w-14"
-          />
-          <div className="md:hidden">
-            <h3 className={cn('text-base font-semibold tracking-tight', isDenied && 'line-through')}>
-              {room.name}
-            </h3>
-            <RoomMeta capacity={room.capacity} floor={floor} />
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="min-w-0 space-y-2.5">
-          <div className="hidden flex-wrap items-baseline gap-x-3 gap-y-1 md:flex">
-            <h3
-              className={cn(
-                'text-lg font-semibold tracking-tight',
-                isDenied && 'line-through',
-              )}
-            >
-              {room.name}
-            </h3>
-            {isBestMatch && !isDenied && (
-              <Badge
-                variant="default"
-                className="h-5 rounded-full px-2 text-[10px] uppercase tracking-wider"
-              >
-                Best match
-              </Badge>
-            )}
-            {requiresApproval && (
-              <Badge
-                variant="outline"
-                className="h-5 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
-              >
-                Needs approval
-              </Badge>
-            )}
-            {hasWarning && !requiresApproval && (
-              <Badge
-                variant="outline"
-                className="h-5 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
-              >
-                Warning
-              </Badge>
-            )}
-            {isDenied && (
-              <Badge
-                variant="outline"
-                className="h-5 border-destructive/40 bg-destructive/10 text-[10px] text-destructive"
-              >
-                Restricted
-              </Badge>
-            )}
-            <RoomMeta capacity={room.capacity} floor={floor} />
-          </div>
-
-          {room.amenities.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {room.amenities.slice(0, 6).map((a) => (
-                <span
-                  key={a}
-                  className="inline-flex h-6 items-center rounded-full bg-muted/70 px-2 text-[11px] capitalize text-foreground/70"
-                >
-                  {a.replace(/_/g, ' ')}
-                </span>
-              ))}
-              {room.amenities.length > 6 && (
-                <span className="text-[11px] text-muted-foreground">
-                  +{room.amenities.length - 6}
-                </span>
-              )}
-            </div>
-          )}
-
-          {room.ranking_reasons.length > 0 && !isDenied && (
-            <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-              <Sparkles className="size-3 shrink-0 translate-y-0.5 text-amber-500/70" />
-              <span>{room.ranking_reasons.join(' · ')}</span>
-            </div>
-          )}
-
-          {requiresApproval && room.rule_outcome.denial_message && (
-            <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
-              {room.rule_outcome.denial_message}
-            </p>
-          )}
-          {isDenied && showRestricted && room.rule_outcome.denial_message && (
-            <p className="rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-destructive">
-              {room.rule_outcome.denial_message} <em className="opacity-70">(visible to service desk)</em>
-            </p>
-          )}
-          {hasWarning && (room.rule_outcome.warning_messages?.length || room.rule_outcome.denial_message) && (
-            <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
-              {room.rule_outcome.warning_messages?.length
-                ? room.rule_outcome.warning_messages.join(' · ')
-                : room.rule_outcome.denial_message}
-            </p>
-          )}
-
-          <div className="pt-1">
-            <MiniTimelineStrip
-              blocks={room.day_blocks}
-              requestedStartIso={requestedStartIso}
-              requestedEndIso={requestedEndIso}
-            />
-          </div>
-        </div>
-
-        {/* CTA */}
-        <div className="flex md:flex-col md:items-end md:justify-center md:gap-2">
-          <Button
-            size="lg"
-            variant={isBestMatch && !isDenied ? 'default' : 'outline'}
-            disabled={isDenied}
-            onClick={() => onBook(room)}
+      {/* Header row: name | meta | badges | CTA */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-1 items-baseline gap-3">
+          <h3
             className={cn(
-              'w-full gap-1.5 md:w-auto md:min-w-[148px]',
-              isDenied && 'cursor-not-allowed',
+              'truncate text-[15px] font-semibold tracking-tight',
+              isDenied && 'line-through',
             )}
           >
-            {ctaLabel}
-            {!isDenied && <ArrowRight className="size-4 opacity-70" />}
-          </Button>
+            {room.name}
+          </h3>
+          {locationLabel && (
+            <span
+              className="inline-flex shrink-0 items-center rounded-md bg-muted/60 px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground"
+              title={locationLabel.full}
+            >
+              {locationLabel.short}
+            </span>
+          )}
+          {typeof room.capacity === 'number' && (
+            <span className="inline-flex shrink-0 items-center gap-1 text-[12px] tabular-nums text-muted-foreground">
+              <UsersIcon className="size-3" />
+              {room.capacity}
+            </span>
+          )}
         </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {isBestMatch && !isDenied && (
+            <Badge
+              variant="default"
+              className="h-5 rounded-full px-2 text-[10px] uppercase tracking-wider"
+            >
+              Best match
+            </Badge>
+          )}
+          {requiresApproval && (
+            <Badge
+              variant="outline"
+              className="h-5 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+            >
+              Needs approval
+            </Badge>
+          )}
+          {hasWarning && !requiresApproval && (
+            <Badge
+              variant="outline"
+              className="h-5 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+            >
+              Warning
+            </Badge>
+          )}
+          {isDenied && (
+            <Badge
+              variant="outline"
+              className="h-5 border-destructive/40 bg-destructive/10 text-[10px] text-destructive"
+            >
+              Restricted
+            </Badge>
+          )}
+        </div>
+
+        <Button
+          size="sm"
+          variant={isBestMatch && !isDenied ? 'default' : 'outline'}
+          disabled={isDenied}
+          onClick={() => onBook(room)}
+          className={cn('shrink-0 gap-1', isDenied && 'cursor-not-allowed')}
+        >
+          {ctaLabel}
+          {!isDenied && <ArrowRight className="size-3.5 opacity-70" />}
+        </Button>
       </div>
+
+      {/* Self-explaining message (only when there's something to say) */}
+      {requiresApproval && room.rule_outcome.denial_message && (
+        <p className="rounded-md bg-amber-500/8 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+          {room.rule_outcome.denial_message}
+        </p>
+      )}
+      {isDenied && showRestricted && room.rule_outcome.denial_message && (
+        <p className="rounded-md bg-destructive/8 px-2.5 py-1.5 text-[11px] leading-relaxed text-destructive">
+          {room.rule_outcome.denial_message} <em className="opacity-70">(visible to service desk)</em>
+        </p>
+      )}
+      {hasWarning && (room.rule_outcome.warning_messages?.length || room.rule_outcome.denial_message) && (
+        <p className="rounded-md bg-amber-500/8 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+          {room.rule_outcome.warning_messages?.length
+            ? room.rule_outcome.warning_messages.join(' · ')
+            : room.rule_outcome.denial_message}
+        </p>
+      )}
+
+      {/* Availability strip */}
+      <MiniTimelineStrip
+        blocks={room.day_blocks}
+        requestedStartIso={requestedStartIso}
+        requestedEndIso={requestedEndIso}
+        compact
+      />
     </article>
   );
 }
 
-function RoomMeta({
-  capacity,
-  floor,
-}: {
-  capacity: number | null;
-  floor: string | undefined;
-}) {
-  if (capacity == null && !floor) return null;
-  return (
-    <div className="flex items-center gap-2.5 text-[11px] text-muted-foreground tabular-nums">
-      {capacity != null && (
-        <span className="inline-flex items-center gap-1">
-          <UsersIcon className="size-3" />
-          {formatCount(capacity)}
-        </span>
-      )}
-      {floor && (
-        <span className="inline-flex items-center gap-1">
-          <MapPin className="size-3" />
-          {floor}
-        </span>
-      )}
-    </div>
-  );
+/**
+ * Picks the most-specific location label from the parent chain. Buildings +
+ * floors are the disambiguators; we drop sites because they're typically
+ * already filtered by the criteria bar.
+ */
+function formatLocation(chain: RankedRoom['parent_chain']): { short: string; full: string } | null {
+  if (!chain || chain.length === 0) return null;
+  const floor = chain.find((p) => p.type === 'floor');
+  const building = chain.find((p) => p.type === 'building');
+  const site = chain.find((p) => p.type === 'site');
+  const parts: string[] = [];
+  if (floor) parts.push(floor.name);
+  if (building) parts.push(building.name);
+  if (parts.length === 0 && site) parts.push(site.name);
+  if (parts.length === 0) return null;
+  return {
+    short: parts.join(' · '),
+    full: chain.map((p) => p.name).reverse().join(' › '),
+  };
 }
