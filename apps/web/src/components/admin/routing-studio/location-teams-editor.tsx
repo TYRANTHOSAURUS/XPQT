@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -135,10 +135,22 @@ export function LocationTeamsEditor({ compact = false }: Props) {
     }
   }
 
-  const spaceOptions = (spaces ?? []).map((s) => ({ id: s.id, label: s.name }));
-  const groupOptions = (groups ?? []).map((g) => ({ id: g.id, label: g.name }));
-  const teamOptions = (teams ?? []).map((t) => ({ id: t.id, label: t.name }));
-  const vendorOptions = (vendors ?? []).map((v) => ({ id: v.id, label: v.name }));
+  const spaceOptions = useMemo(
+    () => (spaces ?? []).map((s) => ({ id: s.id, label: s.name })),
+    [spaces],
+  );
+  const groupOptions = useMemo(
+    () => (groups ?? []).map((g) => ({ id: g.id, label: g.name })),
+    [groups],
+  );
+  const teamOptions = useMemo(
+    () => (teams ?? []).map((t) => ({ id: t.id, label: t.name })),
+    [teams],
+  );
+  const vendorOptions = useMemo(
+    () => (vendors ?? []).map((v) => ({ id: v.id, label: v.name })),
+    [vendors],
+  );
 
   return (
     <div className="space-y-4">

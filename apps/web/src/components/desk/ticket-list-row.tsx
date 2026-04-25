@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   type Ticket,
@@ -18,8 +19,12 @@ interface Props {
 /**
  * Linear-style ticket row — flex layout, hairline divider, no table chrome.
  * Column positions match the header strip in the tickets list view.
+ *
+ * Wrapped in `memo` so a row only re-renders when its own ticket / selected /
+ * checked changes — typing in the toolbar search or selecting a different row
+ * doesn't cascade re-renders across all 50+ visible rows.
  */
-export function TicketListRow({ ticket, selected, checked, onSelect, onToggleCheck }: Props) {
+function TicketListRowImpl({ ticket, selected, checked, onSelect, onToggleCheck }: Props) {
   const status = statusConfig[ticket.status_category] ?? statusConfig.new;
 
   return (
@@ -38,6 +43,11 @@ export function TicketListRow({ ticket, selected, checked, onSelect, onToggleChe
           ? 'bg-accent border-l-2 border-l-primary pl-[10px]'
           : 'border-l-2 border-l-transparent hover:bg-muted/30'
       }`}
+      // Skip rendering work for rows scrolled off-screen. Browser-native
+      // virtualization — the column layout uses fixed widths so column drift
+      // (the failure mode for `<tr>` rows) doesn't apply here. The intrinsic
+      // size matches the typical row height so the scrollbar stays stable.
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 52px' }}
     >
       <div className="w-4 shrink-0" onClick={(e) => e.stopPropagation()}>
         <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
@@ -79,3 +89,5 @@ export function TicketListRow({ ticket, selected, checked, onSelect, onToggleChe
     </div>
   );
 }
+
+export const TicketListRow = memo(TicketListRowImpl);

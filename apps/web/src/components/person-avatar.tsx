@@ -35,7 +35,9 @@ export function PersonAvatar({ person, size = 'default', className, alt }: Perso
   const displayAlt = alt ?? (fullName || person?.email || 'User');
   return (
     <Avatar size={size} className={cn(className)}>
-      {person?.avatar_url && <AvatarImage src={person.avatar_url} alt={displayAlt} />}
+      {person?.avatar_url && (
+        <AvatarImage src={person.avatar_url} alt={displayAlt} loading="lazy" decoding="async" />
+      )}
       <AvatarFallback>{getInitials(person)}</AvatarFallback>
     </Avatar>
   );

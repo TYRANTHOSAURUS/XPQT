@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -38,6 +39,87 @@ function readStoredView(): ViewMode {
   return v === 'list' ? 'list' : 'table';
 }
 
+interface TicketTableRowProps {
+  ticket: Ticket;
+  selected: boolean;
+  checked: boolean;
+  onSelect: (id: string) => void;
+  onToggleCheck: (id: string) => void;
+  onPrefetch: (id: string) => void;
+}
+
+/**
+ * Memoized table row. Pulled out of the parent map so a parent re-render (e.g.
+ * the toolbar search input updating debounced state) doesn't re-render every
+ * row. The row only re-renders when its own ticket / selected / checked / one
+ * of the stable callbacks changes.
+ */
+const TicketTableRow = memo(function TicketTableRow({
+  ticket,
+  selected,
+  checked,
+  onSelect,
+  onToggleCheck,
+  onPrefetch,
+}: TicketTableRowProps) {
+  const status = statusConfig[ticket.status_category] ?? statusConfig.new;
+  return (
+    <TableRow
+      data-selected={selected ? 'true' : undefined}
+      className={cn(
+        'cursor-pointer transition-colors',
+        selected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-muted/40',
+      )}
+      onClick={() => onSelect(ticket.id)}
+      onMouseEnter={() => onPrefetch(ticket.id)}
+      onFocus={() => onPrefetch(ticket.id)}
+    >
+      <TableCell
+        className={`px-3 py-2 ${selected ? 'border-l-2 border-l-primary pl-[10px]' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <div className="min-w-0">
+          <span className="text-sm block truncate">{ticket.title}</span>
+          {(ticket.requester || ticket.location) && (
+            <span className="text-xs text-muted-foreground block truncate mt-0.5">
+              {ticket.requester
+                ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
+                : ''}
+              {ticket.location ? ` · ${ticket.location.name}` : ''}
+            </span>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <div className="flex items-center gap-2">
+          <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
+          <span className="text-xs text-muted-foreground">{status.label}</span>
+        </div>
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <PriorityIcon priority={ticket.priority} />
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <span className="text-xs text-muted-foreground truncate block">
+          {ticket.assigned_team?.name ?? '—'}
+        </span>
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <SlaCell
+          dueAt={ticket.sla_resolution_due_at}
+          breachedAt={ticket.sla_resolution_breached_at}
+        />
+      </TableCell>
+      <TableCell className="px-3 py-2">
+        <span className="text-xs text-muted-foreground">{timeAgo(ticket.created_at)}</span>
+      </TableCell>
+    </TableRow>
+  );
+});
+
 function TicketTable({
   tickets,
   loading,
@@ -54,14 +136,20 @@ function TicketTable({
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   const prefetchTicket = usePrefetchTicket();
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  // Stable callbacks so the memoized row doesn't see new function identities
+  // every render and bail out of `memo`'s shallow compare.
+  const onSelect = useCallback((id: string) => setSelectedTicketId(id), [setSelectedTicketId]);
+  const toggleSelect = useCallback(
+    (id: string) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [setSelectedIds],
+  );
 
   const toggleSelectAll = () => {
     if (selectedIds.size === tickets.length) setSelectedIds(new Set());
@@ -117,79 +205,17 @@ function TicketTable({
               </TableCell>
             </TableRow>
           )}
-          {tickets.map((ticket) => {
-            const status = statusConfig[ticket.status_category] ?? statusConfig.new;
-            const isSelected = selectedTicketId === ticket.id;
-
-            return (
-              <TableRow
-                key={ticket.id}
-                data-selected={isSelected ? 'true' : undefined}
-                className={cn(
-                  'cursor-pointer transition-colors',
-                  // Selected uses primary with low alpha so it layers over
-                  // zebra stripes + hover without flickering. Hover goes
-                  // one step deeper so the intent still reads.
-                  isSelected
-                    ? 'bg-primary/10 hover:bg-primary/15'
-                    : 'hover:bg-muted/40',
-                )}
-                onClick={() => setSelectedTicketId(ticket.id)}
-                onMouseEnter={() => prefetchTicket(ticket.id)}
-                onFocus={() => prefetchTicket(ticket.id)}
-              >
-                <TableCell
-                  className={`px-3 py-2 ${
-                    isSelected ? 'border-l-2 border-l-primary pl-[10px]' : ''
-                  }`}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Checkbox
-                    checked={selectedIds.has(ticket.id)}
-                    onCheckedChange={() => toggleSelect(ticket.id)}
-                  />
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <div className="min-w-0">
-                    <span className="text-sm block truncate">{ticket.title}</span>
-                    {(ticket.requester || ticket.location) && (
-                      <span className="text-xs text-muted-foreground block truncate mt-0.5">
-                        {ticket.requester
-                          ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
-                          : ''}
-                        {ticket.location ? ` · ${ticket.location.name}` : ''}
-                      </span>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
-                    <span className="text-xs text-muted-foreground">{status.label}</span>
-                  </div>
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <PriorityIcon priority={ticket.priority} />
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <span className="text-xs text-muted-foreground truncate block">
-                    {ticket.assigned_team?.name ?? '—'}
-                  </span>
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <SlaCell
-                    dueAt={ticket.sla_resolution_due_at}
-                    breachedAt={ticket.sla_resolution_breached_at}
-                  />
-                </TableCell>
-                <TableCell className="px-3 py-2">
-                  <span className="text-xs text-muted-foreground">
-                    {timeAgo(ticket.created_at)}
-                  </span>
-                </TableCell>
-              </TableRow>
-            );
-          })}
+          {tickets.map((ticket) => (
+            <TicketTableRow
+              key={ticket.id}
+              ticket={ticket}
+              selected={selectedTicketId === ticket.id}
+              checked={selectedIds.has(ticket.id)}
+              onSelect={onSelect}
+              onToggleCheck={toggleSelect}
+              onPrefetch={prefetchTicket}
+            />
+          ))}
         </TableBody>
       </Table>
     </div>
@@ -212,14 +238,22 @@ function TicketList({
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   const prefetchTicket = usePrefetchTicket();
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  // Stable callbacks so memoized rows don't re-render when the parent does.
+  const onSelect = useCallback(
+    (id: string) => setSelectedTicketId(id),
+    [setSelectedTicketId],
+  );
+  const toggleSelect = useCallback(
+    (id: string) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [setSelectedIds],
+  );
 
   const toggleSelectAll = () => {
     if (selectedIds.size === tickets.length) setSelectedIds(new Set());
@@ -267,7 +301,7 @@ function TicketList({
               ticket={ticket}
               selected={selectedTicketId === ticket.id}
               checked={selectedIds.has(ticket.id)}
-              onSelect={setSelectedTicketId}
+              onSelect={onSelect}
               onToggleCheck={toggleSelect}
             />
           </div>
@@ -395,6 +429,7 @@ function TicketsView({
 }
 
 export function TicketsPage() {
+  const navigate = useNavigate();
   const filtersHook = useTicketFilters();
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -466,6 +501,7 @@ export function TicketsPage() {
                 ticketId={selectedTicketId}
                 onClose={() => setSelectedTicketId(null)}
                 onOpenTicket={setSelectedTicketId}
+                onExpand={() => navigate(`/desk/tickets/${selectedTicketId}`)}
               />
             </div>
           </Panel>
