@@ -25,10 +25,9 @@ const SORT_LABELS: Record<NonNullable<PickerInput['sort']>, string> = {
 };
 
 /**
- * The "Live · 12 rooms · ranked for you" status pill that sits between the
- * criteria bar and the result list. Per spec §4.1 the dot pulses while the
- * realtime channel is live; we additionally show a subtle ring while the
- * picker query is mid-fetch so refreshes feel responsive.
+ * Toolbar that sits between the criteria card and the result list. Reads
+ * as one decisive line: live state · result count · sort. Avoids the
+ * heavy emerald pill of the old design — this is information, not a CTA.
  */
 export function RealtimeAvailabilityPill({
   matchCount,
@@ -38,37 +37,40 @@ export function RealtimeAvailabilityPill({
   onSortChange,
 }: Props) {
   return (
-    <div
-      className={cn(
-        'mt-4 flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-1.5',
-        'transition-colors',
-      )}
-      style={{ transitionDuration: '200ms', transitionTimingFunction: 'var(--ease-smooth)' }}
-    >
-      <span
-        aria-hidden
-        className={cn(
-          'inline-block size-1.5 rounded-full bg-emerald-500',
-          isLive && 'animate-pulse',
-        )}
-      />
-      <span className="text-[11px] text-muted-foreground tabular-nums">
-        {isLive ? 'Live · ' : 'Idle · '}
-        <span className="text-foreground font-medium">
-          {formatCount(matchCount)} {matchCount === 1 ? 'room' : 'rooms'}
+    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-y py-2.5">
+      <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+        <span aria-hidden className="relative inline-flex">
+          <span
+            className={cn(
+              'inline-block size-1.5 rounded-full',
+              isLive ? 'bg-emerald-500' : 'bg-muted-foreground/40',
+            )}
+          />
+          {isLive && (
+            <span className="absolute inset-0 inline-block animate-ping rounded-full bg-emerald-500/60" />
+          )}
         </span>
-        {' · ranked for you'}
+        <span className="tabular-nums">
+          <span className="font-medium text-foreground">
+            {formatCount(matchCount)}
+          </span>{' '}
+          {matchCount === 1 ? 'room' : 'rooms'} match
+        </span>
         {isFetching && (
-          <span className="ml-2 text-muted-foreground/70">refreshing…</span>
+          <span className="text-muted-foreground/60">· refreshing</span>
         )}
-      </span>
-      <div className="ml-auto flex items-center gap-1.5">
-        <span className="text-[11px] text-muted-foreground">Sort</span>
-        <Select value={sort} onValueChange={(v) => onSortChange(v as NonNullable<PickerInput['sort']>)}>
-          <SelectTrigger className="h-7 px-2 text-[11px]">
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="text-[12px] text-muted-foreground">Sort by</span>
+        <Select
+          value={sort}
+          onValueChange={(v) => onSortChange(v as NonNullable<PickerInput['sort']>)}
+        >
+          <SelectTrigger className="h-8 px-2.5 text-[12px]">
             <SelectValue>{SORT_LABELS[sort]}</SelectValue>
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="end">
             {Object.entries(SORT_LABELS).map(([k, label]) => (
               <SelectItem key={k} value={k} className="text-xs">
                 {label}

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { PortalPage } from '@/components/portal/portal-page';
 import { usePortal } from '@/providers/portal-provider';
 import { useAuth } from '@/providers/auth-provider';
@@ -17,13 +17,8 @@ import { useRealtimeAvailability } from './hooks/use-realtime-availability';
 
 /**
  * Portal hybrid-C booking flow per spec §4.1. The picker is a single page;
- * results are ranked + live, and progressive disclosure footers expand into
- * find-time / multi-room / recurring without leaving the page.
- *
- * Today: backend `/reservations/picker` returns NotImplementedException, so
- * the page renders criteria bar + a clean empty state. The realtime hook +
- * confirm-dialog flow + cancellation/restore are wired to the backend as
- * soon as the picker is shipped (Phase H).
+ * results are ranked + live, and progressive disclosure footers expand
+ * into find-time / multi-room / recurring without leaving the page.
  */
 export function BookRoomPage() {
   const { data: portal } = usePortal();
@@ -49,13 +44,9 @@ export function BookRoomPage() {
   const picker = usePicker(input);
   const rooms = picker.data?.rooms ?? [];
 
-  // Realtime: subscribe to changes for the spaces currently visible in the
-  // picker. The hook is a no-op until rooms exist (so the first paint
-  // doesn't open a wasted WS connection).
   const visibleSpaceIds = useMemo(() => rooms.map((r) => r.space_id), [rooms]);
   useRealtimeAvailability(visibleSpaceIds, input, picker.isSuccess);
 
-  // Confirm dialog state
   const [pendingPrimary, setPendingPrimary] = useState<RankedRoom | null>(null);
   const [pendingExtras, setPendingExtras] = useState<RankedRoom[]>([]);
   const [dialogFocus, setDialogFocus] = useState<
@@ -68,17 +59,18 @@ export function BookRoomPage() {
     setDialogFocus('identity');
   };
 
-  // Service-desk shadowing — admins/agents see denied rooms with a Restricted
-  // badge per §4.1. The authoritative gate would be the
-  // `rooms.read_all` permission, but in v1 we approximate via role type
-  // ('agent' or 'admin') from the auth context — same as the desk shells.
   const showRestricted = hasRole('agent');
-
   const requesterPersonId = person?.id ?? '';
+
+  const widenSearch = () => {
+    update('mustHaveAmenities', []);
+    update('attendeeCount', 1);
+  };
 
   return (
     <PortalPage>
-      <div className="mb-3 flex items-center justify-between">
+      {/* Top breadcrumb row */}
+      <div className="mb-4 flex items-center justify-between">
         <Link
           to="/portal"
           className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -87,19 +79,23 @@ export function BookRoomPage() {
         </Link>
         <Link
           to="/portal/me/bookings"
-          className="text-xs text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
-          My bookings →
+          My bookings
+          <ArrowRight className="size-3.5" />
         </Link>
       </div>
 
-      <div className="mb-5">
-        <h1 className="text-2xl font-semibold tracking-tight">Book a room</h1>
-        <p className="mt-1 text-sm text-muted-foreground text-pretty">
+      {/* Hero */}
+      <header className="mb-6 max-w-2xl">
+        <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
+          Book a room
+        </h1>
+        <p className="mt-2 text-base text-muted-foreground text-pretty">
           Pick a time and we'll rank rooms by what fits — capacity, amenities,
           and how often your team uses each space.
         </p>
-      </div>
+      </header>
 
       <BookingCriteriaBar state={state} onChange={update} sites={sites} />
 
@@ -120,6 +116,7 @@ export function BookRoomPage() {
           requestedEndIso={endAtIso}
           showRestricted={showRestricted}
           onBook={onBook}
+          onWidenSearch={widenSearch}
         />
       ) : (
         <FloorPlanPicker
@@ -132,7 +129,7 @@ export function BookRoomPage() {
       {picker.isError && (
         <div
           role="alert"
-          className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-xs text-destructive"
         >
           {picker.error instanceof Error ? picker.error.message : 'Picker error'}
         </div>
@@ -178,8 +175,7 @@ export function BookRoomPage() {
         requesterPersonId={requesterPersonId}
         initialFocus={dialogFocus}
         onBooked={() => {
-          // Success path — picker auto-invalidates via the mutation hook.
-          // Page-level cleanup happens in onOpenChange.
+          // Success — picker auto-invalidates via the mutation hook.
         }}
       />
     </PortalPage>
