@@ -3,27 +3,66 @@ import { supabase } from './supabase';
 const API_BASE = '/api';
 
 /**
- * Thrown by `apiFetch` when the server responds with a non-2xx status, or when
- * the request fails at the network layer. Consumers discriminate on `status`
- * (never on `message` — backend copy is not part of the API contract).
+ * Thrown by `apiFetch` for any non-2xx response. The runtime body is
+ * preserved so callers can decode validation problem details (RFC 9457),
+ * 401 / 403 messages, etc. without re-issuing the request.
+ *
+ * Many callers do `error instanceof ApiError ? error.message : 'fallback'`.
  */
 export class ApiError extends Error {
-  public readonly name = 'ApiError';
-  constructor(
-    /** HTTP status, or 0 for network/parse failures before a response arrived. */
-    public readonly status: number,
-    /** Machine-readable backend code when provided (NestJS `error` field), otherwise null. */
-    public readonly code: string | null,
-    message: string,
-    /** Raw error body for field-level details (e.g. zod / class-validator output). */
-    public readonly details?: unknown,
-  ) {
-    super(message);
+  readonly status: number;
+  readonly body: unknown;
+  /**
+   * Alias for `body`. Most call sites read `error.details` for the structured
+   * error payload (e.g. picker 409 conflict alternatives). Kept as a separate
+   * getter so the contract is clear at the boundary.
+   */
+  get details(): unknown {
+    return this.body;
+  }
+  private readonly _isNetworkError: boolean;
+
+  constructor(opts: {
+    status: number;
+    message: string;
+    body?: unknown;
+    isNetworkError?: boolean;
+  }) {
+    super(opts.message);
+    this.name = 'ApiError';
+    this.status = opts.status;
+    this.body = opts.body;
+    this._isNetworkError = opts.isNetworkError ?? false;
   }
 
-  isClientError(): boolean { return this.status >= 400 && this.status < 500; }
-  isServerError(): boolean { return this.status >= 500; }
-  isNetworkError(): boolean { return this.status === 0; }
+  isNetworkError(): boolean {
+    return this._isNetworkError;
+  }
+
+  isClientError(): boolean {
+    return this.status >= 400 && this.status < 500;
+  }
+
+  isServerError(): boolean {
+    return this.status >= 500;
+  }
+}
+
+export type QueryParam =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Array<string | number>;
+
+export interface ApiFetchOptions extends RequestInit {
+  /**
+   * Object encoded as a URL query string. `null` / `undefined` values are
+   * dropped so callers can pass partial filter objects without manually
+   * scrubbing them. Arrays are repeated (`?status=open&status=in_progress`).
+   */
+  query?: Record<string, QueryParam>;
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
@@ -32,16 +71,9 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export interface ApiFetchOptions extends RequestInit {
-  /**
-   * Query string params. `null` and `undefined` values are omitted. Arrays are
-   * repeated (`foo=1&foo=2`). Pass primitives — everything is coerced to string.
-   */
-  query?: Record<string, string | number | boolean | null | undefined | Array<string | number>>;
-}
-
-function buildQueryString(query: ApiFetchOptions['query']): string {
-  if (!query) return '';
+function buildUrl(path: string, query?: Record<string, QueryParam>): string {
+  const base = `${API_BASE}${path}`;
+  if (!query) return base;
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value === null || value === undefined) continue;
@@ -52,46 +84,50 @@ function buildQueryString(query: ApiFetchOptions['query']): string {
     }
   }
   const qs = params.toString();
-  return qs ? `?${qs}` : '';
+  return qs ? `${base}?${qs}` : base;
 }
 
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { query, ...init } = options;
   const authHeaders = await getAuthHeaders();
-  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+  const url = buildUrl(path, query);
 
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}${buildQueryString(query)}`, {
+    res = await fetch(url, {
       ...init,
       headers: {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        'Content-Type': 'application/json',
         ...authHeaders,
         ...init.headers,
       },
     });
-  } catch (err) {
-    // AbortError — propagate as-is so React Query's cancellation semantics work.
-    if (err instanceof DOMException && err.name === 'AbortError') throw err;
-    const message = err instanceof Error ? err.message : 'Network error';
-    throw new ApiError(0, null, message);
+  } catch (e) {
+    // Aborts (React Query cancelling a stale query) bubble unchanged so the
+    // query layer can recognise them.
+    if (
+      e instanceof Error &&
+      (e.name === 'AbortError' || (init.signal as AbortSignal | undefined)?.aborted)
+    ) {
+      throw e;
+    }
+    throw new ApiError({
+      status: 0,
+      message: e instanceof Error ? e.message : 'Network error',
+      isNetworkError: true,
+    });
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null) as
-      | { message?: string | string[]; error?: string; code?: string; details?: unknown }
-      | null;
-    const message = Array.isArray(body?.message)
-      ? body!.message.join(', ')
-      : body?.message || body?.error || `Request failed with status ${res.status}`;
-    const code = body?.code ?? body?.error ?? null;
-    throw new ApiError(res.status, code, message, body?.details ?? body);
+    const body = await res.json().catch(() => ({}));
+    const message =
+      body && typeof body === 'object' && 'message' in body &&
+      typeof (body as { message?: unknown }).message === 'string'
+        ? (body as { message: string }).message
+        : `API error: ${res.status}`;
+    throw new ApiError({ status: res.status, message, body });
   }
 
-  // 204 No Content, or empty-body success. Cast empty object to T — caller typed it.
-  if (res.status === 204 || res.headers.get('content-length') === '0') {
-    return undefined as T;
-  }
-
-  return res.json() as Promise<T>;
+  if (res.status === 204) return undefined as T;
+  return res.json();
 }

@@ -9,6 +9,14 @@ import {
 } from './keys';
 import type { Reservation, RankedRoom, FreeSlot } from './types';
 
+/**
+ * "My bookings" rows include a denormalized `space_name` so the portal
+ * page can label rows without fetching the full spaces list.
+ */
+export interface MyReservationItem extends Reservation {
+  space_name?: string | null;
+}
+
 /** Operator response includes denormalized space + requester for the list view. */
 export interface OperatorReservationItem extends Reservation {
   space_name?: string | null;
@@ -17,7 +25,7 @@ export interface OperatorReservationItem extends Reservation {
 }
 
 interface ReservationListResponse {
-  items: (Reservation | OperatorReservationItem)[];
+  items: Array<Reservation | MyReservationItem | OperatorReservationItem>;
   next_cursor?: string | null;
 }
 
@@ -62,7 +70,11 @@ export function useOperatorReservations(filters: Omit<ReservationListFilters, 'a
 }
 
 export function useReservationList(filters: ReservationListFilters) {
-  return useQuery(reservationListOptions(filters));
+  return useQuery(
+    reservationListOptions(filters) as ReturnType<
+      typeof queryOptions<{ items: MyReservationItem[] }>
+    >,
+  );
 }
 
 export function reservationDetailOptions(id: string) {

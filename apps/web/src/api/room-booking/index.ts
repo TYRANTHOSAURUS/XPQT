@@ -18,7 +18,7 @@ export {
   schedulerWindowOptions, useSchedulerReservations,
   operatorReservationListOptions, useOperatorReservations,
 } from './queries';
-export type { OperatorReservationItem } from './queries';
+export type { OperatorReservationItem, MyReservationItem } from './queries';
 
 export {
   useCreateBooking, useDryRunBooking, useMultiRoomBooking,

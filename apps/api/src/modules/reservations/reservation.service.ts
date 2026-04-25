@@ -50,16 +50,22 @@ export class ReservationService {
     scope?: 'upcoming' | 'past' | 'cancelled' | 'all';
     limit?: number;
     cursor?: string;
-  }): Promise<{ items: Reservation[]; next_cursor?: string }> {
+  }): Promise<{ items: Array<Reservation & { space_name?: string | null }>; next_cursor?: string }> {
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
     const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
 
+    // Upcoming should sort closest-first (ascending start). Past / cancelled
+    // read more naturally with most-recent first.
+    const ascending = opts.scope === 'upcoming';
+
     let q = this.supabase.admin
       .from('reservations')
-      .select('*')
+      // Join the room name in the same round-trip so the portal "my bookings"
+      // page doesn't have to fetch the spaces list just to label rows.
+      .select('*, space:spaces(id,name,type)')
       .eq('tenant_id', tenantId)
-      .order('start_at', { ascending: false })
+      .order('start_at', { ascending })
       .limit(limit + 1);
 
     if (ctx.person_id) {
@@ -83,8 +89,12 @@ export class ReservationService {
     const { data, error } = await q;
     if (error) throw new BadRequestException(`list_failed:${error.message}`);
 
-    const rows = (data ?? []) as unknown as Reservation[];
-    return { items: rows.slice(0, limit) };
+    type Row = Reservation & { space?: { id: string; name: string; type: string } | null };
+    const rows = ((data ?? []) as unknown as Row[]).slice(0, limit).map((r) => ({
+      ...r,
+      space_name: r.space?.name ?? null,
+    }));
+    return { items: rows };
   }
 
   /**

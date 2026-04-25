@@ -9,6 +9,10 @@ import {
   FieldLegend,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { useEditBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
 import { toast } from 'sonner';
@@ -18,16 +22,12 @@ interface Props {
   onClose: () => void;
 }
 
+const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240];
+
 /**
  * Inline edit form inside the booking detail drawer. Spec §4.3:
  * editing time or room re-runs availability + rules, so we keep this
  * narrow — just the fields that don't need a fresh picker.
- *
- * Time fields are split into local-tz date + start + duration. The form
- * patches via `useEditBooking` (PATCH /reservations/:id), which the API
- * accepts only for non-recurring or for occurrence-overrides; the
- * "this and following / entire series" path lives in a dedicated dialog
- * (Phase G).
  */
 export function BookingEditForm({ reservation, onClose }: Props) {
   const [date, setDate] = useState(toLocalDate(reservation.start_at));
@@ -75,43 +75,36 @@ export function BookingEditForm({ reservation, onClose }: Props) {
   return (
     <FieldGroup>
       <FieldSet>
-        <FieldLegend variant="label">Time</FieldLegend>
-        <div className="grid grid-cols-3 gap-2">
-          <Field>
-            <FieldLabel htmlFor="edit-date">Date</FieldLabel>
-            <Input
-              id="edit-date"
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="text-sm tabular-nums"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="edit-time">Start</FieldLabel>
-            <Input
-              id="edit-time"
-              type="time"
-              step={900}
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="text-sm tabular-nums"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="edit-duration">Duration</FieldLabel>
-            <Input
-              id="edit-duration"
-              type="number"
-              min={15}
-              step={15}
-              value={durationMinutes}
-              onChange={(e) =>
-                setDurationMinutes(Math.max(15, Number(e.target.value || 60)))
-              }
-            />
-          </Field>
-        </div>
+        <FieldLegend variant="label">When</FieldLegend>
+        <Field>
+          <FieldLabel htmlFor="edit-date">Date &amp; start</FieldLabel>
+          <DateTimePicker
+            id="edit-date"
+            date={date}
+            time={startTime}
+            onDateChange={setDate}
+            onTimeChange={setStartTime}
+            minDate={new Date()}
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="edit-duration">Duration</FieldLabel>
+          <Select
+            value={String(durationMinutes)}
+            onValueChange={(v) => setDurationMinutes(Number(v))}
+          >
+            <SelectTrigger id="edit-duration">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DURATION_OPTIONS.map((m) => (
+                <SelectItem key={m} value={String(m)}>
+                  {formatDurationLabel(m)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
         <FieldDescription>Changing time re-runs the rule resolver server-side.</FieldDescription>
       </FieldSet>
 
@@ -136,6 +129,13 @@ export function BookingEditForm({ reservation, onClose }: Props) {
       </div>
     </FieldGroup>
   );
+}
+
+function formatDurationLabel(mins: number): string {
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
 function toLocalDate(iso: string): string {

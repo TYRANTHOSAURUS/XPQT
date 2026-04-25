@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, CalendarPlus } from 'lucide-react';
 import { PortalPage } from '@/components/portal/portal-page';
 import { buttonVariants } from '@/components/ui/button';
 import { useReservationDetail } from '@/api/room-booking';
@@ -15,6 +15,10 @@ type TabValue = 'upcoming' | 'past' | 'cancelled';
  * the right-side detail drawer; closing it `navigate(-1)` or back to the
  * tab base. Tabs are local component state today; if we add per-tab
  * permalinking later, lift to URL.
+ *
+ * The page is intentionally narrow (max-w-3xl) — bookings are a list of
+ * decisions the user reads top-to-bottom, not a data dashboard. The wider
+ * portal canvas would just space everything out unnecessarily.
  */
 export function MyBookingsPage() {
   const { id } = useParams();
@@ -33,34 +37,37 @@ export function MyBookingsPage() {
 
   return (
     <PortalPage>
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mx-auto w-full max-w-3xl">
         <Link
           to="/portal"
           className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" /> Portal home
         </Link>
-        <Link
-          to="/portal/rooms"
-          className={buttonVariants({ size: 'sm' })}
-        >
-          Book a room
-        </Link>
-      </div>
 
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">My bookings</h1>
-        <p className="mt-1 text-sm text-muted-foreground text-pretty">
-          Upcoming, past, and cancelled. Check in near the start, restore inside
-          the cancellation grace window.
-        </p>
-      </div>
+        <div className="mt-3 mb-6 flex items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">My bookings</h1>
+            <p className="mt-1 text-sm text-muted-foreground text-pretty">
+              Upcoming, past, and cancelled. Check in near the start; restore
+              inside the cancellation grace window.
+            </p>
+          </div>
+          <Link
+            to="/portal/rooms"
+            className={buttonVariants({ size: 'sm', className: 'gap-1.5 shrink-0' })}
+          >
+            <CalendarPlus className="size-3.5" />
+            Book a room
+          </Link>
+        </div>
 
-      <BookingsList
-        tab={tab}
-        onTabChange={setTab}
-        buildHref={(rid) => `/portal/me/bookings/${rid}`}
-      />
+        <BookingsList
+          tab={tab}
+          onTabChange={setTab}
+          buildHref={(rid) => `/portal/me/bookings/${rid}`}
+        />
+      </div>
 
       <BookingDetailDrawer
         reservationId={id ?? null}
