@@ -16,6 +16,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
 import { AssetCombobox } from '@/components/asset-combobox';
+import { FieldChips } from '@/components/ui/field-chips';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
 function asString(v: unknown): string {
@@ -30,9 +31,11 @@ interface DynamicFormFieldsProps {
   fields: FormField[];
   values: Record<string, unknown>;
   onChange: (id: string, value: unknown) => void;
+  /** When true, dropdown/multi_select fields with ≤6 options render as chip buttons instead of a Select. */
+  useChips?: boolean;
 }
 
-export function DynamicFormFields({ fields, values, onChange }: DynamicFormFieldsProps) {
+export function DynamicFormFields({ fields, values, onChange, useChips }: DynamicFormFieldsProps) {
   if (fields.length === 0) return null;
 
   return (
@@ -40,9 +43,31 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
       {fields.map((field) => {
         const id = `dyn-${field.id}`;
         const value = values[field.id];
+        const opts = field.options ?? [];
+        const isSmall = opts.length > 0 && opts.length <= 6;
 
         if (field.type === 'multi_select') {
           const arr = asStringArr(value);
+
+          // Chip variant: ≤6 options in portal context
+          if (useChips && isSmall) {
+            return (
+              <Field key={field.id}>
+                <FieldLabel htmlFor={id}>
+                  {field.label}
+                  {field.required && <span className="text-destructive ml-1">*</span>}
+                </FieldLabel>
+                <FieldChips
+                  multi
+                  options={opts.map((o) => ({ value: o, label: o }))}
+                  value={arr}
+                  onChange={(next) => onChange(field.id, next)}
+                />
+                {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
+              </Field>
+            );
+          }
+
           return (
             <FieldSet key={field.id}>
               <FieldLegend variant="label">
@@ -51,7 +76,7 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
               </FieldLegend>
               {field.help_text && <FieldDescription>{field.help_text}</FieldDescription>}
               <FieldGroup data-slot="checkbox-group" className="rounded-md border p-2">
-                {(field.options ?? []).map((opt) => {
+                {opts.map((opt) => {
                   const checked = arr.includes(opt);
                   return (
                     <Field key={opt} orientation="horizontal">
@@ -147,11 +172,19 @@ export function DynamicFormFields({ fields, values, onChange }: DynamicFormField
               />
             )}
 
-            {field.type === 'dropdown' && (
+            {field.type === 'dropdown' && useChips && isSmall && (
+              <FieldChips
+                options={opts.map((o) => ({ value: o, label: o }))}
+                value={asString(value) || null}
+                onChange={(v) => onChange(field.id, v)}
+              />
+            )}
+
+            {field.type === 'dropdown' && !(useChips && isSmall) && (
               <Select value={asString(value)} onValueChange={(v) => onChange(field.id, v ?? '')}>
                 <SelectTrigger id={id}><SelectValue placeholder={field.placeholder ?? 'Select...'} /></SelectTrigger>
                 <SelectContent>
-                  {(field.options ?? []).map((opt) => (
+                  {opts.map((opt) => (
                     <SelectItem key={opt} value={opt}>{opt}</SelectItem>
                   ))}
                 </SelectContent>

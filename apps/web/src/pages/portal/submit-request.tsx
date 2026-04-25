@@ -3,7 +3,6 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -20,16 +19,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { AlertCircle, ArrowLeft, Send, CheckCircle, MapPin } from 'lucide-react';
+import { AlertCircle, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
@@ -42,6 +34,9 @@ import {
   PortalLocationDrilldown,
   satisfiesGranularity,
 } from '@/components/portal/portal-location-drilldown';
+import { PortalPage } from '@/components/portal/portal-page';
+import { PortalFormHeader } from '@/components/portal/portal-form-header';
+import { PortalFormFooter } from '@/components/portal/portal-form-footer';
 
 interface CatalogRequestType {
   id: string;
@@ -102,7 +97,6 @@ export function SubmitRequestPage() {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
 
-  const [submitted, setSubmitted] = useState(false);
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [assetId, setAssetId] = useState<string | null>(null);
@@ -150,6 +144,11 @@ export function SubmitRequestPage() {
   }, [catalog, categoryId]);
 
   const selectedRT = requestTypes.find((r) => r.id === requestTypeId);
+
+  // The parent category metadata for the back-link label.
+  const parentCategory = categoryId
+    ? catalog?.categories.find((c) => c.id === categoryId) ?? null
+    : null;
 
   // Reflect ?type=<id> into the form state.
   useEffect(() => {
@@ -236,7 +235,7 @@ export function SubmitRequestPage() {
         }),
       });
       toast.success('Request submitted');
-      setSubmitted(true);
+      navigate('/portal/requests');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit request';
       setSubmitError(msg);
@@ -244,222 +243,204 @@ export function SubmitRequestPage() {
     }
   };
 
-  if (submitted) {
-    return (
-      <div className="max-w-lg mx-auto text-center py-16">
-        <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
-        <h1 className="text-2xl font-bold">Request Submitted</h1>
-        <p className="text-muted-foreground mt-2">
-          Your request has been submitted and our team will get back to you shortly.
-        </p>
-        <div className="flex gap-3 justify-center mt-8">
-          <Button variant="outline" onClick={() => navigate('/portal/requests')}>
-            View My Requests
-          </Button>
-          <Button onClick={() => navigate('/portal')}>
-            Submit Another
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  const backTo = categoryId ? `/portal/catalog/${categoryId}` : '/portal';
+  const backLabel = parentCategory?.name ? `Back to ${parentCategory.name}` : 'Back';
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <Button variant="ghost" className="mb-4 -ml-2" onClick={() => navigate(-1)}>
-        <ArrowLeft className="h-4 w-4 mr-2" /> Back
-      </Button>
+    <PortalPage>
+      <div className="mx-auto max-w-[920px]">
+        <PortalFormHeader
+          iconName={selectedRT?.icon}
+          name={selectedRT?.name ?? 'Submit a Request'}
+          whatHappensNext={selectedRT?.description}
+          backTo={backTo}
+          backLabel={backLabel}
+        />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Submit a Request</CardTitle>
-          <CardDescription>Describe your issue or request and we'll route it to the right team.</CardDescription>
-        </CardHeader>
-        <CardContent>
+        <form onSubmit={handleSubmit(onSubmit)} className="mt-8">
           {catalogError && (
-            <Alert variant="destructive" className="mb-4">
+            <Alert variant="destructive" className="mb-6">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Catalog failed to load</AlertTitle>
               <AlertDescription>{catalogError}</AlertDescription>
             </Alert>
           )}
 
-          <form onSubmit={handleSubmit(onSubmit)}>
-            <FieldGroup>
+          <FieldGroup>
+            {/* Request type selector — shown when no type is pre-selected or when arriving from a general URL */}
+            <Field>
+              <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
+              <Controller
+                control={control}
+                name="requestTypeId"
+                render={({ field }) => (
+                  <Select
+                    value={field.value ?? ''}
+                    onValueChange={(v) => field.onChange(v ?? '')}
+                    disabled={catalogLoading}
+                  >
+                    <SelectTrigger id="request-type">
+                      <SelectValue
+                        placeholder={
+                          catalogLoading
+                            ? 'Loading…'
+                            : requestTypes.length === 0
+                              ? 'No services available here'
+                              : 'Select a service'
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {requestTypes.map((rt) => (
+                        <SelectItem key={rt.id} value={rt.id}>
+                          {rt.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              {currentLocation && (
+                <FieldDescription>
+                  Showing services for <span className="font-medium">{currentLocation.name}</span>.
+                </FieldDescription>
+              )}
+              {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
+            </Field>
+
+            {selectedRT?.intake.requires_asset && (
               <Field>
-                <FieldLabel htmlFor="request-type">Request Type</FieldLabel>
-                <Controller
-                  control={control}
-                  name="requestTypeId"
-                  render={({ field }) => (
-                    <Select
-                      value={field.value ?? ''}
-                      onValueChange={(v) => field.onChange(v ?? '')}
-                      disabled={catalogLoading}
-                    >
-                      <SelectTrigger id="request-type">
-                        <SelectValue
-                          placeholder={
-                            catalogLoading
-                              ? 'Loading…'
-                              : requestTypes.length === 0
-                                ? 'No services available here'
-                                : 'Select a service'
-                          }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {requestTypes.map((rt) => (
-                          <SelectItem key={rt.id} value={rt.id}>
-                            {rt.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
+                <FieldLabel htmlFor="portal-asset">
+                  Asset
+                  {selectedRT.intake.asset_required && <span className="text-destructive ml-1">*</span>}
+                </FieldLabel>
+                <AssetCombobox
+                  value={assetId}
+                  onChange={(id, asset) => {
+                    setAssetId(id);
+                    if (asset?.assigned_space_id) {
+                      setAssetLocationSummary({
+                        id: asset.assigned_space_id,
+                        name: (asset as { assigned_space?: { name?: string } }).assigned_space?.name ?? 'asset location',
+                      });
+                    } else {
+                      setAssetLocationSummary(null);
+                    }
+                  }}
+                  assetTypeFilter={selectedRT.intake.asset_type_filter ?? []}
                 />
-                {currentLocation && (
-                  <FieldDescription>
-                    Showing services for <span className="font-medium">{currentLocation.name}</span>.
+                {assetLocationSummary && (
+                  <FieldDescription className="flex items-center gap-1">
+                    <MapPin className="h-3 w-3" /> From asset: {assetLocationSummary.name}
                   </FieldDescription>
                 )}
-                {errors.requestTypeId && <FieldError>{errors.requestTypeId.message}</FieldError>}
               </Field>
+            )}
 
-              {selectedRT?.intake.requires_asset && (
-                <Field>
-                  <FieldLabel htmlFor="portal-asset">
-                    Asset
-                    {selectedRT.intake.asset_required && <span className="text-destructive ml-1">*</span>}
-                  </FieldLabel>
-                  <AssetCombobox
-                    value={assetId}
-                    onChange={(id, asset) => {
-                      setAssetId(id);
-                      if (asset?.assigned_space_id) {
-                        setAssetLocationSummary({
-                          id: asset.assigned_space_id,
-                          name: (asset as { assigned_space?: { name?: string } }).assigned_space?.name ?? 'asset location',
-                        });
-                      } else {
-                        setAssetLocationSummary(null);
-                      }
-                    }}
-                    assetTypeFilter={selectedRT.intake.asset_type_filter ?? []}
-                  />
-                  {assetLocationSummary && (
-                    <FieldDescription className="flex items-center gap-1">
-                      <MapPin className="h-3 w-3" /> From asset: {assetLocationSummary.name}
-                    </FieldDescription>
-                  )}
-                </Field>
-              )}
+            {selectedRT && selectedRT.on_behalf_policy !== 'self_only' && (
+              <Field>
+                <FieldLabel htmlFor="portal-requested-for">Requesting for</FieldLabel>
+                <PersonPicker
+                  value={requestedForPersonId ?? ''}
+                  onChange={(v) => setRequestedForPersonId(v || null)}
+                  placeholder="Leave blank to request for yourself"
+                />
+                <FieldDescription>
+                  This service allows submitting on behalf of another person.
+                  {selectedRT.on_behalf_policy === 'direct_reports' && ' Limited to your direct reports.'}
+                  {selectedRT.on_behalf_policy === 'configured_list' && ' Target is validated server-side.'}
+                </FieldDescription>
+              </Field>
+            )}
 
-              {selectedRT && selectedRT.on_behalf_policy !== 'self_only' && (
-                <Field>
-                  <FieldLabel htmlFor="portal-requested-for">Requesting for</FieldLabel>
-                  <PersonPicker
-                    value={requestedForPersonId ?? ''}
-                    onChange={(v) => setRequestedForPersonId(v || null)}
-                    placeholder="Leave blank to request for yourself"
-                  />
-                  <FieldDescription>
-                    This service allows submitting on behalf of another person.
-                    {selectedRT.on_behalf_policy === 'direct_reports' && ' Limited to your direct reports.'}
-                    {selectedRT.on_behalf_policy === 'configured_list' && ' Target is validated server-side.'}
+            {selectedRT?.intake.location_granularity && needsDrilldown && currentLocation && (
+              <Field>
+                <FieldLabel htmlFor="portal-drilldown">
+                  Location
+                  {selectedRT.intake.location_required && <span className="text-destructive ml-1">*</span>}
+                </FieldLabel>
+                <PortalLocationDrilldown
+                  rootSpace={currentLocation}
+                  granularity={selectedRT.intake.location_granularity}
+                  onPick={(s) => setDrilledLocation(s)}
+                  selected={drilledLocation}
+                />
+                {drilledLocation && (
+                  <FieldDescription className="flex items-center gap-1">
+                    <MapPin className="h-3 w-3" /> Selected: {drilledLocation.name}
+                    <Badge variant="outline" className="ml-1 text-xs capitalize">
+                      {drilledLocation.type.replace('_', ' ')}
+                    </Badge>
                   </FieldDescription>
-                </Field>
-              )}
-
-              {selectedRT?.intake.location_granularity && needsDrilldown && currentLocation && (
-                <Field>
-                  <FieldLabel htmlFor="portal-drilldown">
-                    Location
-                    {selectedRT.intake.location_required && <span className="text-destructive ml-1">*</span>}
-                  </FieldLabel>
-                  <PortalLocationDrilldown
-                    rootSpace={currentLocation}
-                    granularity={selectedRT.intake.location_granularity}
-                    onPick={(s) => setDrilledLocation(s)}
-                    selected={drilledLocation}
-                  />
-                  {drilledLocation && (
-                    <FieldDescription className="flex items-center gap-1">
-                      <MapPin className="h-3 w-3" /> Selected: {drilledLocation.name}
-                      <Badge variant="outline" className="ml-1 text-xs capitalize">
-                        {drilledLocation.type.replace('_', ' ')}
-                      </Badge>
-                    </FieldDescription>
-                  )}
-                </Field>
-              )}
-
-              <Field>
-                <FieldLabel htmlFor="title">Title</FieldLabel>
-                <Input
-                  id="title"
-                  placeholder="Brief summary of your request..."
-                  aria-invalid={!!errors.title}
-                  {...register('title')}
-                />
-                {errors.title && <FieldError>{errors.title.message}</FieldError>}
+                )}
               </Field>
+            )}
 
-              <Field>
-                <FieldLabel htmlFor="description">Description</FieldLabel>
-                <Textarea
-                  id="description"
-                  placeholder="Provide details about your request..."
-                  className="min-h-[120px]"
-                  aria-invalid={!!errors.description}
-                  {...register('description')}
-                />
-                {errors.description && <FieldError>{errors.description.message}</FieldError>}
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="priority">Priority</FieldLabel>
-                <Controller
-                  control={control}
-                  name="priority"
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'normal') as SubmitFormValues['priority'])}>
-                      <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low — not urgent</SelectItem>
-                        <SelectItem value="normal">Normal — usual priority</SelectItem>
-                        <SelectItem value="high">High — needs attention soon</SelectItem>
-                        <SelectItem value="urgent">Urgent — blocking my work</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </Field>
-
-              <DynamicFormFields
-                fields={formFields}
-                values={values}
-                onChange={(id, v) => setValues((prev) => ({ ...prev, [id]: v }))}
+            <Field>
+              <FieldLabel htmlFor="title">Title</FieldLabel>
+              <Input
+                id="title"
+                placeholder="Brief summary of your request..."
+                aria-invalid={!!errors.title}
+                {...register('title')}
               />
+              {errors.title && <FieldError>{errors.title.message}</FieldError>}
+            </Field>
 
-              {submitError && (
-                <Alert variant="destructive">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Submission failed</AlertTitle>
-                  <AlertDescription>{submitError}</AlertDescription>
-                </Alert>
-              )}
+            <Field>
+              <FieldLabel htmlFor="description">Description</FieldLabel>
+              <Textarea
+                id="description"
+                placeholder="Provide details about your request..."
+                className="min-h-[120px]"
+                aria-invalid={!!errors.description}
+                {...register('description')}
+              />
+              {errors.description && <FieldError>{errors.description.message}</FieldError>}
+            </Field>
 
-              <div className="flex justify-end pt-2">
-                <Button type="submit" disabled={isSubmitting}>
-                  <Send className="h-4 w-4 mr-2" />
-                  {isSubmitting ? 'Submitting...' : 'Submit Request'}
-                </Button>
-              </div>
-            </FieldGroup>
-          </form>
-        </CardContent>
-      </Card>
-    </div>
+            <Field>
+              <FieldLabel htmlFor="priority">Priority</FieldLabel>
+              <Controller
+                control={control}
+                name="priority"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={(v) => field.onChange((v ?? 'normal') as SubmitFormValues['priority'])}>
+                    <SelectTrigger id="priority"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low — not urgent</SelectItem>
+                      <SelectItem value="normal">Normal — usual priority</SelectItem>
+                      <SelectItem value="high">High — needs attention soon</SelectItem>
+                      <SelectItem value="urgent">Urgent — blocking my work</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </Field>
+
+            <DynamicFormFields
+              fields={formFields}
+              values={values}
+              onChange={(id, v) => setValues((prev) => ({ ...prev, [id]: v }))}
+              useChips
+            />
+
+            {submitError && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Submission failed</AlertTitle>
+                <AlertDescription>{submitError}</AlertDescription>
+              </Alert>
+            )}
+          </FieldGroup>
+
+          <PortalFormFooter
+            onCancel={() => navigate(backTo)}
+            onSubmit={handleSubmit(onSubmit)}
+            submitting={isSubmitting}
+          />
+        </form>
+      </div>
+    </PortalPage>
   );
 }
