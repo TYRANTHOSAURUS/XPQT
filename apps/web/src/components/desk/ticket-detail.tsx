@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Layout } from 'react-resizable-panels';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -20,8 +20,6 @@ import {
   MapPin,
   User,
   AlertTriangle,
-  Download,
-  FileText,
   Paperclip,
   MessageSquare,
   Send,
@@ -30,6 +28,7 @@ import {
   Star,
   XIcon,
   TagIcon,
+  Maximize2,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/lib/api';
@@ -64,6 +63,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { TicketActivityFeed } from '@/components/desk/ticket-activity-feed';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
@@ -180,25 +180,10 @@ function SlaTimer({ dueAt, breachedAt }: { dueAt: string | null; breachedAt: str
   return <span className={`text-sm font-medium flex items-center gap-1.5 ${urgencyClass}`}><Clock className="h-4 w-4" /> {timeStr}</span>;
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
   return `${Math.round(bytes / 1024 / 102.4) / 10} MB`;
-}
-
-function isImageAttachment(attachment: NonNullable<Activity['attachments']>[number]): boolean {
-  if (attachment.type?.startsWith('image/')) return true;
-  return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(attachment.name);
 }
 
 function getActiveMention(text: string, caret: number): MentionMatch | null {
@@ -235,7 +220,7 @@ function filterMentionPeople(people: MentionPerson[], query: string): MentionPer
     .slice(0, MAX_MENTION_RESULTS);
 }
 
-export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: string; onClose?: () => void; onOpenTicket?: (id: string) => void }) {
+export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ticketId: string; onClose?: () => void; onOpenTicket?: (id: string) => void; onExpand?: () => void }) {
   const qc = useQueryClient();
   const { person } = useAuth();
   const {
@@ -253,6 +238,46 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
   const { data: vendors } = useVendors();
   const { data: tagSuggestions } = useTicketTagSuggestions();
   const { data: slaPolicies } = useSlaPolicies();
+
+  // Memoize the option-shape transforms. These feed pickers + dialogs that are
+  // shallow-compared (or could be), so a stable reference per data tick avoids
+  // rebuilding child trees on every keystroke / mutation in this view.
+  const teamOptions = useMemo(
+    () => (teams ?? []).map((t) => ({ id: t.id, label: t.name })),
+    [teams],
+  );
+  const vendorOptions = useMemo(
+    () => (vendors ?? []).map((v) => ({ id: v.id, label: v.name })),
+    [vendors],
+  );
+  const activeVendorOptions = useMemo(
+    () => (vendors ?? []).filter((v) => v.active !== false).map((v) => ({ id: v.id, label: v.name })),
+    [vendors],
+  );
+  const userOptions = useMemo(
+    () => (users ?? []).map((u) => ({
+      id: u.id,
+      label: u.person
+        ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email
+        : u.email,
+      sublabel: u.email,
+      leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
+    })),
+    [users],
+  );
+  const tagOptions = useMemo(
+    () => (tagSuggestions ?? []).map((t) => ({ id: t, label: t })),
+    [tagSuggestions],
+  );
+  const watcherOptions = useMemo(
+    () => (people ?? []).map((p) => ({
+      id: p.id,
+      label: `${p.first_name} ${p.last_name}`.trim(),
+      sublabel: p.email ?? null,
+      leading: <PersonAvatar size="sm" person={p} />,
+    })),
+    [people],
+  );
   // Default form schema lives on request_type_form_variants now
   // (request_types.form_schema_id was dropped in migration 00098).
   const { data: defaultFormVariant } = useRequestTypeDefaultFormSchema(
@@ -488,6 +513,18 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
             </Button>
           )}
           <div className="flex-1" />
+          {onExpand && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onExpand}
+              title="Open full view"
+              aria-label="Open full view"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" className="h-8 w-8"><Star className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><BellOff className="h-4 w-4" /></Button>
           <DropdownMenu>
@@ -580,9 +617,9 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 parentId={displayedTicket.id}
                 onAddClick={() => setAddWorkOrderOpen(true)}
                 refreshNonce={workOrdersNonce}
-                teams={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+                teams={teamOptions}
                 users={users ?? []}
-                vendors={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
+                vendors={vendorOptions}
                 onOpenTicket={onOpenTicket}
               />
             )}
@@ -594,127 +631,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
               <span className="text-sm font-medium">Activity</span>
             </div>
 
-            <div className="space-y-6">
-              {(activities ?? []).map((activity) => {
-                if (activity.visibility === 'system') {
-                  const eventText =
-                    (activity.metadata as Record<string, unknown> | null)?.event as string | undefined
-                    ?? activity.content;
-                  const who = activity.author
-                    ? `${activity.author.first_name ?? ''} ${activity.author.last_name ?? ''}`.trim() || 'System'
-                    : 'System';
-                  return (
-                    <div key={activity.id} className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3 shrink-0" />
-                      <span className="text-foreground/80 font-medium shrink-0">{who}</span>
-                      <span className="truncate">{eventText}</span>
-                      <span className="shrink-0">· {timeAgo(activity.created_at)}</span>
-                    </div>
-                  );
-                }
-                return (
-                <div key={activity.id} className="flex gap-4">
-                  <div className="shrink-0 mt-0.5">
-                    <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ${
-                      activity.visibility === 'internal'
-                        ? 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400'
-                        : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                    }`}>
-                      {activity.author?.first_name?.[0] ?? '?'}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 pt-0.5">
-                    <div className="flex items-center gap-2">
-                      {activity.author ? (
-                        <span className="text-sm font-medium">{activity.author.first_name} {activity.author.last_name}</span>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">System</span>
-                      )}
-                      {activity.visibility === 'internal' && (
-                        <span className="text-[11px] text-yellow-600 dark:text-yellow-400">internal</span>
-                      )}
-                      <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
-                    </div>
-                    {(activity.content || (activity.attachments?.length ?? 0) > 0) ? (
-                      <div className="mt-2 overflow-hidden rounded-lg border border-border/70 bg-card/80">
-                        {activity.content && (
-                          <div className="px-4 py-3">
-                            <p className="text-[15px] leading-relaxed text-foreground/85 whitespace-pre-wrap">{activity.content}</p>
-                          </div>
-                        )}
-                        {activity.attachments && activity.attachments.length > 0 && (
-                          <div className={cn('grid gap-2 p-2', activity.content && 'border-t border-border/60')}>
-                            {activity.attachments.map((attachment) => {
-                              const key = `${activity.id}-${attachment.path ?? attachment.url ?? attachment.name}`;
-                              const imageAttachment = isImageAttachment(attachment) && attachment.url;
-
-                              if (imageAttachment) {
-                                return (
-                                  <a
-                                    key={key}
-                                    href={attachment.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="group overflow-hidden rounded-lg border border-border/70 bg-muted/20 transition-colors hover:bg-muted/40"
-                                  >
-                                    <img
-                                      src={attachment.url}
-                                      alt={attachment.name}
-                                      loading="lazy"
-                                      className="max-h-80 w-full bg-muted/40 object-cover"
-                                    />
-                                    <div className="flex items-center justify-between gap-3 px-3 py-2">
-                                      <div className="min-w-0">
-                                        <div className="truncate text-sm font-medium">{attachment.name}</div>
-                                        <div className="text-xs text-muted-foreground">{formatFileSize(attachment.size)}</div>
-                                      </div>
-                                      <Download className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-                                    </div>
-                                  </a>
-                                );
-                              }
-
-                              const attachmentContent = (
-                                <>
-                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-                                    <FileText className="h-4 w-4 text-muted-foreground" />
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="truncate text-sm font-medium">{attachment.name}</div>
-                                    <div className="text-xs text-muted-foreground">{formatFileSize(attachment.size)}</div>
-                                  </div>
-                                  {attachment.url && <Download className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                                </>
-                              );
-
-                              return attachment.url ? (
-                                <a
-                                  key={key}
-                                  href={attachment.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="flex items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-2 transition-colors hover:bg-muted/40"
-                                >
-                                  {attachmentContent}
-                                </a>
-                              ) : (
-                                <div
-                                  key={key}
-                                  className="flex items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-2"
-                                >
-                                  {attachmentContent}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                );
-              })}
-            </div>
+            <TicketActivityFeed activities={activities ?? []} />
 
             {displayedTicket?.ticket_kind === 'case' && (
               <AddSubIssueDialog
@@ -722,16 +639,9 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
                 onOpenChange={setAddWorkOrderOpen}
                 parentId={displayedTicket.id}
                 parentPriority={displayedTicket.priority ?? 'medium'}
-                teamOptions={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
-                userOptions={(users ?? []).map((u) => ({
-                  id: u.id,
-                  label: u.person
-                    ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email
-                    : u.email,
-                  sublabel: u.email,
-                  leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
-                }))}
-                vendorOptions={(vendors ?? []).map((v) => ({ id: v.id, label: v.name }))}
+                teamOptions={teamOptions}
+                userOptions={userOptions}
+                vendorOptions={vendorOptions}
                 onDispatched={() => {
                   setWorkOrdersNonce((n) => n + 1);
                   refetchTicket();
@@ -1008,7 +918,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           <InlineProperty label="Team">
             <EntityPicker
               value={displayedTicket!.assigned_team?.id ?? null}
-              options={(teams ?? []).map((t) => ({ id: t.id, label: t.name }))}
+              options={teamOptions}
               placeholder="team"
               clearLabel="Clear team"
               onChange={(option) => {
@@ -1025,12 +935,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           <InlineProperty label="Assignee" icon={<User className="h-3 w-3 text-muted-foreground" />}>
             <EntityPicker
               value={displayedTicket!.assigned_agent?.id ?? null}
-              options={(users ?? []).map((u) => ({
-                id: u.id,
-                label: u.person ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email : u.email,
-                sublabel: u.email,
-                leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
-              }))}
+              options={userOptions}
               placeholder="assignee"
               clearLabel="Clear assignee"
               onChange={(option) => {
@@ -1110,7 +1015,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           <InlineProperty label="Labels" icon={<TagIcon className="h-3 w-3" />}>
             <MultiSelectPicker
               values={displayedTicket!.tags ?? []}
-              options={(tagSuggestions ?? []).map((t) => ({ id: t, label: t }))}
+              options={tagOptions}
               placeholder="label"
               allowCreate
               onChange={(next) => patch({ tags: next })}
@@ -1120,12 +1025,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
           <InlineProperty label="Watchers">
             <MultiSelectPicker
               values={displayedTicket!.watchers ?? []}
-              options={(people ?? []).map((p) => ({
-                id: p.id,
-                label: `${p.first_name} ${p.last_name}`.trim(),
-                sublabel: p.email ?? null,
-                leading: <PersonAvatar size="sm" person={p} />,
-              }))}
+              options={watcherOptions}
               placeholder="watcher"
               onChange={(next) => patch({ watchers: next })}
             />
@@ -1174,9 +1074,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket }: { ticketId: st
             <InlineProperty label="Vendor">
               <EntityPicker
                 value={displayedTicket!.assigned_vendor?.id ?? null}
-                options={(vendors ?? [])
-                  .filter((v) => v.active !== false)
-                  .map((v) => ({ id: v.id, label: v.name }))}
+                options={activeVendorOptions}
                 placeholder="vendor"
                 clearLabel="Clear vendor"
                 onChange={(option) => {
