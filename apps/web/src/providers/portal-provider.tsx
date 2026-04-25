@@ -41,6 +41,7 @@ export interface PortalAnnouncement {
 export interface PortalMeResponse {
   person: { id: string; first_name: string; last_name: string; email: string | null; type: string };
   user: { id: string; email: string | null };
+  tenant: { id: string; name: string };
   default_location: SpaceSummary | null;
   authorized_locations: AuthorizedLocation[];
   current_location: SpaceSummary | null;
