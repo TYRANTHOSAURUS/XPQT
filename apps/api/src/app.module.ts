@@ -30,6 +30,7 @@ import { OrgNodeModule } from './modules/org-node/org-node.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 import { PortalAppearanceModule } from './modules/portal-appearance/portal-appearance.module';
 import { PortalAnnouncementsModule } from './modules/portal-announcements/portal-announcements.module';
+import { RoomBookingRulesModule } from './modules/room-booking-rules/room-booking-rules.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { PortalAnnouncementsModule } from './modules/portal-announcements/portal
     WebhookModule,
     PortalAppearanceModule,
     PortalAnnouncementsModule,
+    RoomBookingRulesModule,
   ],
   controllers: [HealthController],
   providers: [
