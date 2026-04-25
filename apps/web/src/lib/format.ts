@@ -86,3 +86,34 @@ export function formatFullTimestamp(
   if (!Number.isFinite(ts)) return '';
   return fullFormatter.format(new Date(ts));
 }
+
+const dayLabelFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
+
+const dayRangeLabelFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+});
+
+/**
+ * Navigation header label for a single day ("Mon, Jan 6, 2025") or a
+ * date within a range ("Mon, Jan 6"). The longer form is used when only
+ * one date is shown; the shorter form is used when combining two dates
+ * into a range string (caller joins with " – ").
+ */
+export function formatDayLabel(
+  input: Date | string | null | undefined,
+  form: 'full' | 'range' = 'full',
+): string {
+  if (input == null) return '';
+  const d = input instanceof Date ? input : new Date(input);
+  if (!Number.isFinite(d.getTime())) return '';
+  return form === 'range'
+    ? dayRangeLabelFormatter.format(d)
+    : dayLabelFormatter.format(d);
+}

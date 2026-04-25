@@ -160,7 +160,7 @@ function SavedScenarioRow({ scenarios, value, onChange, onRun, running }: SavedS
           onValueChange={(v) => onChange(v ?? '')}
           disabled={empty}
         >
-          <SelectTrigger id={id} className="w-full max-w-md">
+          <SelectTrigger id={id}>
             <SelectValue placeholder={empty ? 'No scenarios saved yet.' : 'Pick a scenario…'} />
           </SelectTrigger>
           <SelectContent>
@@ -226,7 +226,7 @@ function AdhocScenarioForm({ value, onChange }: AdhocScenarioFormProps) {
             value={value.requester_person_id}
             onValueChange={(v) => onChange({ ...value, requester_person_id: v ?? '' })}
           >
-            <SelectTrigger id={requesterId} className="w-full">
+            <SelectTrigger id={requesterId}>
               <SelectValue placeholder="Pick a person…" />
             </SelectTrigger>
             <SelectContent>
@@ -244,7 +244,7 @@ function AdhocScenarioForm({ value, onChange }: AdhocScenarioFormProps) {
             value={value.space_id}
             onValueChange={(v) => onChange({ ...value, space_id: v ?? '' })}
           >
-            <SelectTrigger id={spaceId} className="w-full">
+            <SelectTrigger id={spaceId}>
               <SelectValue placeholder="Pick a room…" />
             </SelectTrigger>
             <SelectContent>

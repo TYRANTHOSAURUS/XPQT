@@ -44,7 +44,7 @@ export function RoomBookingRulesPage() {
   const isEmpty = !isLoading && (data?.length ?? 0) === 0;
 
   return (
-    <SettingsPageShell>
+    <SettingsPageShell width="wide">
       <SettingsPageHeader
         backTo="/admin"
         title="Room booking rules"

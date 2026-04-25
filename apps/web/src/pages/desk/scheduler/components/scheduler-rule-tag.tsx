@@ -32,21 +32,21 @@ export function SchedulerRuleTag({ outcome, message, className }: Props) {
           label: 'Denied',
           icon: <Lock className="size-3" />,
           className:
-            'bg-destructive/10 text-destructive border-destructive/30',
+            'bg-red-50 text-red-700 border-red-200 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/30',
         };
       case 'require_approval':
         return {
           label: 'Needs approval',
           icon: <AlertTriangle className="size-3" />,
           className:
-            'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/40',
+            'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:border-amber-500/30',
         };
       case 'warn':
         return {
           label: 'Warning',
           icon: <AlertTriangle className="size-3" />,
           className:
-            'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300 border-yellow-500/40',
+            'bg-yellow-50 text-yellow-800 border-yellow-200 dark:bg-yellow-500/10 dark:text-yellow-300 dark:border-yellow-500/30',
         };
     }
   })();

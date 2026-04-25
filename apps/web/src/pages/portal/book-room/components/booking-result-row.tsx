@@ -130,9 +130,11 @@ export function BookingResultRow({
               {room.rule_outcome.denial_message} <em className="opacity-75">(visible to service desk only)</em>
             </p>
           )}
-          {hasWarning && room.rule_outcome.warning_messages?.length ? (
+          {hasWarning && (room.rule_outcome.warning_messages?.length || room.rule_outcome.denial_message) ? (
             <p className="rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-              {room.rule_outcome.warning_messages.join(' · ')}
+              {room.rule_outcome.warning_messages?.length
+                ? room.rule_outcome.warning_messages.join(' · ')
+                : room.rule_outcome.denial_message}
             </p>
           ) : null}
 

@@ -368,7 +368,7 @@ function ScopeDialog({ open, onOpenChange, value, onSave }: ScopeDialogProps) {
             <Field>
               <FieldLabel htmlFor="scope-room">Room</FieldLabel>
               <Select<string> value={targetId ?? ''} onValueChange={(v) => setTargetId(v)}>
-                <SelectTrigger id="scope-room" className="w-full">
+                <SelectTrigger id="scope-room">
                   <SelectValue placeholder="Pick a room…" />
                 </SelectTrigger>
                 <SelectContent>
@@ -387,7 +387,7 @@ function ScopeDialog({ open, onOpenChange, value, onSave }: ScopeDialogProps) {
             <Field>
               <FieldLabel htmlFor="scope-subtree">Subtree root</FieldLabel>
               <Select<string> value={targetId ?? ''} onValueChange={(v) => setTargetId(v)}>
-                <SelectTrigger id="scope-subtree" className="w-full">
+                <SelectTrigger id="scope-subtree">
                   <SelectValue placeholder="Pick a building, floor, or zone…" />
                 </SelectTrigger>
                 <SelectContent>
@@ -406,7 +406,7 @@ function ScopeDialog({ open, onOpenChange, value, onSave }: ScopeDialogProps) {
             <Field>
               <FieldLabel htmlFor="scope-roomtype">Room type</FieldLabel>
               <Select<string> value={targetId ?? ''} onValueChange={(v) => setTargetId(v)}>
-                <SelectTrigger id="scope-roomtype" className="w-full">
+                <SelectTrigger id="scope-roomtype">
                   <SelectValue placeholder="Pick a room type…" />
                 </SelectTrigger>
                 <SelectContent>

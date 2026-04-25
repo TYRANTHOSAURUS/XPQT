@@ -69,7 +69,7 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
       </Tabs>
 
       {isPending && items.length === 0 && (
-        <div className="text-sm text-muted-foreground py-4">Loading your bookings…</div>
+        <div className="text-sm text-muted-foreground">Loading…</div>
       )}
 
       {!isPending && items.length > 0 && (

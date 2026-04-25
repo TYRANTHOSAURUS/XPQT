@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/providers/auth-provider';
 import { ApiError } from '@/lib/api';
 import { useEditBooking, type RankedRoom, type Reservation } from '@/api/room-booking';
+import { formatDayLabel } from '@/lib/format';
 import { useSchedulerWindow } from './hooks/use-scheduler-window';
 import { useSchedulerData } from './hooks/use-scheduler-data';
 import { useRealtimeScheduler } from './hooks/use-realtime-scheduler';
@@ -18,10 +19,6 @@ import { SchedulerEventPopover } from './components/scheduler-event-popover';
 import { SchedulerOverrideDialog } from './components/scheduler-override-dialog';
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
 import type { CellOutcomeMap } from './components/scheduler-grid-cell';
-
-const DAY_LABEL_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
-});
 
 /**
  * `/desk/scheduler` — full-bleed calendar canvas. Per CLAUDE.md "true
@@ -303,10 +300,10 @@ export function DeskSchedulerPage() {
   // ── Header label ───────────────────────────────────────────────────
   const headerLabel = useMemo(() => {
     if (win.state.viewMode === 'day') {
-      return DAY_LABEL_FORMATTER.format(new Date(`${win.dates[0]}T12:00:00`));
+      return formatDayLabel(`${win.dates[0]}T12:00:00`);
     }
-    const first = DAY_LABEL_FORMATTER.format(new Date(`${win.dates[0]}T12:00:00`));
-    const last = DAY_LABEL_FORMATTER.format(new Date(`${win.dates[win.dates.length - 1]}T12:00:00`));
+    const first = formatDayLabel(`${win.dates[0]}T12:00:00`, 'range');
+    const last = formatDayLabel(`${win.dates[win.dates.length - 1]}T12:00:00`, 'range');
     return `${first} – ${last}`;
   }, [win.dates, win.state.viewMode]);
 

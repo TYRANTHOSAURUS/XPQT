@@ -160,6 +160,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
         'OutlookSyncAdapter started without MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET. ' +
           'Calendar sync OAuth will fail until env is set.',
       );
+      return;
     }
 
     const msalConfig: Configuration = {

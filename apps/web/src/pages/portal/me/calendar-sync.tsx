@@ -74,7 +74,7 @@ export function PortalCalendarSyncPage() {
   };
 
   return (
-    <SettingsPageShell>
+    <SettingsPageShell width="default">
       <SettingsPageHeader
         backTo="/portal/profile"
         title="Calendar sync"

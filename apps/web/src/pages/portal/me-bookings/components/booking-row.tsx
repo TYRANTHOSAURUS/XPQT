@@ -60,13 +60,13 @@ export function BookingRow({
   return (
     <div
       className={cn(
-        'group/row flex items-center gap-4 border-b px-4 py-3.5 last:border-b-0 transition-colors',
+        'group/row flex items-center gap-3 border-b px-4 py-3 last:border-b-0 transition-colors',
         'hover:bg-accent/30',
       )}
       style={{ transitionDuration: '120ms', transitionTimingFunction: 'var(--ease-snap)' }}
     >
-      <Link to={href} className="flex flex-1 items-center gap-4 min-w-0">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-purple-500/15 text-purple-500">
+      <Link to={href} className="flex flex-1 items-center gap-3 min-w-0">
+        <span className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-lg bg-purple-500/15 text-purple-500">
           <CalendarDays className="size-4" />
         </span>
         <span className="flex-1 min-w-0">
