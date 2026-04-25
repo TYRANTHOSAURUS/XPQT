@@ -257,7 +257,7 @@ function ReservationEntityCell({ id }: { id: string }) {
   return (
     <div>
       <Link
-        to={`/portal/me/bookings/${r.id}`}
+        to={`/desk/bookings?scope=all&id=${r.id}`}
         className="font-medium hover:underline"
       >
         Booking
