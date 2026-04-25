@@ -54,23 +54,26 @@ export function VendorMenusPage() {
   const [filterService, setFilterService] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
-  const listPath =
-    '/catalog-menus' +
-    (filterVendor || filterService || filterStatus
-      ? '?' +
-        [
-          filterVendor && `vendor_id=${filterVendor}`,
-          filterService && `service_type=${filterService}`,
-          filterStatus && `status=${filterStatus}`,
-        ]
-          .filter(Boolean)
-          .join('&')
-      : '');
   const qc = useQueryClient();
-  const menuListKey = ['catalog-menus', 'list', { filterVendor, filterService, filterStatus }] as const;
   const { data: menus, isPending: loading } = useQuery(queryOptions({
-    queryKey: menuListKey,
-    queryFn: ({ signal }) => apiFetch<Menu[]>(listPath, { signal }),
+    queryKey: ['catalog-menus', 'list', { filterVendor, filterService, filterStatus }] as const,
+    queryFn: ({ signal, queryKey }) => {
+      // Pull filters from the key — keeps exhaustive-deps honest and guarantees
+      // the URL can't drift from what the cache is keyed by.
+      const filters = queryKey[2] as {
+        filterVendor: string;
+        filterService: string;
+        filterStatus: string;
+      };
+      return apiFetch<Menu[]>('/catalog-menus', {
+        signal,
+        query: {
+          vendor_id: filters.filterVendor || undefined,
+          service_type: filters.filterService || undefined,
+          status: filters.filterStatus || undefined,
+        },
+      });
+    },
     staleTime: 30_000,
   }));
   const refetch = () => qc.invalidateQueries({ queryKey: ['catalog-menus'] });

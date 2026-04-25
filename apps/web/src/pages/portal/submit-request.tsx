@@ -33,6 +33,7 @@ import { AlertCircle, ArrowLeft, Send, CheckCircle, MapPin } from 'lucide-react'
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
+import { usePortalCatalog } from '@/api/portal';
 import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
 import { splitFormData, validateRequired } from '@/lib/form-submission';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
@@ -43,37 +44,7 @@ import {
   satisfiesGranularity,
 } from '@/components/portal/portal-location-drilldown';
 
-interface CatalogRequestType {
-  id: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  kb_link: string | null;
-  disruption_banner: string | null;
-  keywords: string[];
-  on_behalf_policy: 'self_only' | 'any_person' | 'direct_reports' | 'configured_list';
-  form_schema_id: string | null;
-  intake: {
-    requires_location: boolean;
-    location_required: boolean;
-    location_granularity: string | null;
-    requires_asset: boolean;
-    asset_required: boolean;
-    asset_type_filter: string[];
-  };
-}
-
-interface CatalogCategory {
-  id: string;
-  name: string;
-  icon: string | null;
-  request_types: CatalogRequestType[];
-}
-
-interface PortalCatalogResponse {
-  selected_location: { id: string; name: string; type: string };
-  categories: CatalogCategory[];
-}
+import type { CatalogRequestType } from '@/api/portal';
 
 interface FormSchemaEntity {
   id: string;
@@ -98,9 +69,12 @@ export function SubmitRequestPage() {
 
   const currentLocation = portal?.current_location ?? null;
 
-  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const {
+    data: catalog,
+    isPending: catalogLoading,
+    error: catalogQueryError,
+  } = usePortalCatalog(currentLocation?.id ?? null);
+  const catalogError = catalogQueryError instanceof Error ? catalogQueryError.message : null;
 
   const [submitted, setSubmitted] = useState(false);
   const [formFields, setFormFields] = useState<FormField[]>([]);
@@ -125,19 +99,9 @@ export function SubmitRequestPage() {
 
   const requestTypeId = watch('requestTypeId');
 
-  // Load catalog scoped to the portal's currently-selected location.
-  useEffect(() => {
-    if (!currentLocation) {
-      setCatalog(null);
-      return;
-    }
-    setCatalogLoading(true);
-    setCatalogError(null);
-    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
-      .then(setCatalog)
-      .catch((e) => setCatalogError(e instanceof Error ? e.message : 'Failed to load catalog'))
-      .finally(() => setCatalogLoading(false));
-  }, [currentLocation?.id, currentLocation]);
+  // Catalog is loaded via usePortalCatalog above — keyed per location, shared
+  // with portal/home and catalog-category so navigating between portal pages
+  // hits the cache.
 
   // Flatten visible request types; optionally filter by categoryId from URL.
   const requestTypes = useMemo<CatalogRequestType[]>(() => {

@@ -47,10 +47,11 @@ export function requestTypeDetailOptions(id: string | null | undefined) {
     queryKey: requestTypeKeys.detail(id ?? ''),
     queryFn: ({ signal }) => apiFetch<RequestTypeDetail>(`/request-types/${id}`, { signal }),
     enabled: Boolean(id),
-    // T3 until apps/web/src/components/admin/request-type-dialog.tsx migrates to
-    // RQ mutations that invalidate requestTypeKeys on save. Once that's done,
-    // raise to Infinity per §7.2 T4.
-    staleTime: 5 * 60_000,
+    // T4 — request types are admin-edited, request-type-dialog calls
+    // useUpsertRequestType which invalidates requestTypeKeys.all. Cache
+    // forever until then.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 
@@ -76,7 +77,10 @@ export function requestTypeDefaultFormSchemaOptions(id: string | null | undefine
       return variants.find((v) => v.criteria_set_id === null && v.active) ?? null;
     },
     enabled: Boolean(id),
-    staleTime: 5 * 60_000,
+    // T4 — variants change only via the request-type dialog, which
+    // invalidates requestTypeKeys.all on save.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 
@@ -84,12 +88,13 @@ export function useRequestTypeDefaultFormSchema(id: string | null | undefined) {
   return useQuery(requestTypeDefaultFormSchemaOptions(id));
 }
 
-/** Full list for admin tables + pickers. T4 once request-type-dialog invalidates. */
+/** Full list for admin tables + pickers. T4 — useUpsertRequestType invalidates. */
 export function requestTypesListOptions() {
   return queryOptions({
     queryKey: requestTypeKeys.list(),
     queryFn: ({ signal }) => apiFetch<RequestTypeListItem[]>('/request-types', { signal }),
-    staleTime: 5 * 60_000,
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 

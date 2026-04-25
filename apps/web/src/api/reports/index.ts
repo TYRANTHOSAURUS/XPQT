@@ -8,11 +8,17 @@ export const reportKeys = {
   byTeam: () => [...reportKeys.all, 'by-team'] as const,
 } as const;
 
+// Reports are aggregations — refetching every 60s is wasteful since the
+// underlying data changes far slower than that and admins don't need
+// minute-fresh dashboards. 5min keeps the cache warm across page nav while
+// still picking up the day's activity.
+const REPORTS_STALE = 5 * 60_000;
+
 export function ticketsOverviewOptions<T = unknown>() {
   return queryOptions({
     queryKey: reportKeys.overview(),
     queryFn: ({ signal }) => apiFetch<T>('/reports/tickets/overview', { signal }),
-    staleTime: 60_000, // T2
+    staleTime: REPORTS_STALE,
   });
 }
 export function useTicketsOverview<T = unknown>() {
@@ -24,7 +30,7 @@ export function slaPerformanceOptions<T = unknown>(days: number) {
     queryKey: reportKeys.slaPerformance(days),
     queryFn: ({ signal }) =>
       apiFetch<T>('/reports/sla/performance', { signal, query: { days } }),
-    staleTime: 60_000,
+    staleTime: REPORTS_STALE,
   });
 }
 export function useSlaPerformance<T = unknown>(days: number) {
@@ -35,7 +41,7 @@ export function ticketsByTeamOptions<T = unknown>() {
   return queryOptions({
     queryKey: reportKeys.byTeam(),
     queryFn: ({ signal }) => apiFetch<T>('/reports/tickets/by-team', { signal }),
-    staleTime: 60_000,
+    staleTime: REPORTS_STALE,
   });
 }
 export function useTicketsByTeam<T = unknown>() {

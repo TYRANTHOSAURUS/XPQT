@@ -39,7 +39,16 @@ export function useUpsertTeam() {
         id ? `/teams/${id}` : '/teams',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      // Targeted invalidation per §6: lists always (count + content changed),
+      // detail only when updating an existing team. Avoids refetching every
+      // OTHER team's detail entry that happens to be cached.
+      const tasks: Promise<unknown>[] = [
+        qc.invalidateQueries({ queryKey: teamKeys.lists() }),
+      ];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: teamKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -47,6 +56,12 @@ export function useDeleteTeam() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/teams/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: teamKeys.lists() }),
+        // Drop the now-deleted detail entry from the cache entirely so a
+        // residual subscriber doesn't end up rendering a 404.
+        qc.removeQueries({ queryKey: teamKeys.detail(id) }),
+      ]),
   });
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -6,15 +6,8 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { apiFetch } from '@/lib/api';
-
-export interface Space {
-  id: string;
-  name: string;
-  type: string;
-  parent_id: string | null;
-  active?: boolean;
-}
+import { useSpaces, useSpaceDetail, type Space } from '@/api/spaces';
+export type { Space };
 
 interface Props {
   value: string | null;
@@ -39,32 +32,23 @@ export function LocationCombobox({
   activeOnly,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [spaces, setSpaces] = useState<Space[]>([]);
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (typesFilter?.length) params.set('types', typesFilter.join(','));
-    if (search) params.set('search', search);
-    if (activeOnly) params.set('active_only', 'true');
-    apiFetch<Space[]>(`/spaces?${params.toString()}`).then(setSpaces).catch(() => setSpaces([]));
-  }, [search, typesFilter?.join(','), activeOnly]);
+  const { data: spacesData } = useSpaces({
+    types: typesFilter ?? null,
+    search: search || null,
+    activeOnly: activeOnly ?? null,
+  });
+  const spaces = spacesData ?? [];
 
   // If `value` is set but isn't in the filtered list — typical case:
   // activeOnly=true and the chosen space was archived after the form was saved
-  // — fetch it explicitly so the user sees their current selection and can
-  // decide to clear it. Without this, an admin loading an old record sees a
-  // blank combobox and loses context for a field that's actually set.
-  const [missingSelected, setMissingSelected] = useState<Space | null>(null);
-  useEffect(() => {
-    if (!value) { setMissingSelected(null); return; }
-    if (spaces.some((s) => s.id === value)) { setMissingSelected(null); return; }
-    let cancelled = false;
-    apiFetch<Space>(`/spaces/${value}`)
-      .then((s) => { if (!cancelled) setMissingSelected(s); })
-      .catch(() => { if (!cancelled) setMissingSelected(null); });
-    return () => { cancelled = true; };
-  }, [value, spaces]);
+  // — fetch it explicitly so the user sees their current selection. Without
+  // this, an admin loading an old record sees a blank combobox and loses
+  // context for a field that's actually set.
+  const valueIsInList = !value || spaces.some((s) => s.id === value);
+  const { data: missingSelectedData } = useSpaceDetail(valueIsInList ? null : value);
+  const missingSelected = valueIsInList ? null : (missingSelectedData ?? null);
 
   const selected = spaces.find((s) => s.id === value) ?? missingSelected;
   const displayList = useMemo(() => {

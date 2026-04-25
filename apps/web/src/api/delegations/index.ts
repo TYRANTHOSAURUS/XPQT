@@ -42,7 +42,7 @@ export function useUpsertDelegation() {
         id ? `/delegations/${id}` : '/delegations',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.all }),
+    onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.lists() }),
   });
 }
 
@@ -50,6 +50,6 @@ export function useDeleteDelegation() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/delegations/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.all }),
+    onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.lists() }),
   });
 }

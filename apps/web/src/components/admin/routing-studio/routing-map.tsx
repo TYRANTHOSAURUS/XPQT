@@ -172,12 +172,9 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
   const teamsById = useMemo(() => new Map((teams ?? []).map((t) => [t.id, t])), [teams]);
   const vendorsById = useMemo(() => new Map((vendors ?? []).map((v) => [v.id, v])), [vendors]);
 
-  // Empty-state onboarding lives inside the Routing Map instead of a separate Overview tab.
-  if (!rtLoading && (requestTypes ?? []).length === 0) {
-    return <RoutingMapEmpty onOpenTab={onOpenTab} />;
-  }
-
   // Group request types by domain for scannability.
+  // Hook must run unconditionally — the empty-state early-return that used
+  // to sit above this block was a rules-of-hooks violation that eslint caught.
   const byDomain = useMemo(() => {
     const map = new Map<string, RequestType[]>();
     for (const rt of requestTypes ?? []) {
@@ -188,6 +185,11 @@ export function RoutingMap({ onOpenTab, onOpenForRequestType }: Props) {
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [requestTypes]);
+
+  // Empty-state onboarding lives inside the Routing Map instead of a separate Overview tab.
+  if (!rtLoading && (requestTypes ?? []).length === 0) {
+    return <RoutingMapEmpty onOpenTab={onOpenTab} />;
+  }
 
   return (
     <div className="flex flex-col gap-4">

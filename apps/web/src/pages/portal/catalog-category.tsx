@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -9,28 +9,9 @@ import {
 } from '@/components/ui/card';
 import { ArrowLeft, Plus, FolderOpen, ChevronRight } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
-import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 import { useCatalogCategories } from '@/api/catalog';
-
-interface CatalogRequestType {
-  id: string;
-  name: string;
-  description: string | null;
-}
-
-interface CatalogCategory {
-  id: string;
-  name: string;
-  icon: string | null;
-  parent_category_id: string | null;
-  request_types: CatalogRequestType[];
-}
-
-interface PortalCatalogResponse {
-  selected_location: { id: string; name: string; type: string };
-  categories: CatalogCategory[];
-}
+import { usePortalCatalog, type CatalogRequestType } from '@/api/portal';
 
 interface DbCategory {
   id: string;
@@ -47,17 +28,7 @@ export function CatalogCategoryPage() {
   const { data: dbCategories } = useCatalogCategories() as { data: DbCategory[] | undefined };
 
   const currentLocation = portal?.current_location ?? null;
-  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!currentLocation) return;
-    setLoading(true);
-    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
-      .then(setCatalog)
-      .catch(() => setCatalog(null))
-      .finally(() => setLoading(false));
-  }, [currentLocation?.id]);
+  const { data: catalog, isPending: loading } = usePortalCatalog(currentLocation?.id ?? null);
 
   const { category, directItems, subcategories } = useMemo(() => {
     if (!catalog || !categoryId || !dbCategories) {

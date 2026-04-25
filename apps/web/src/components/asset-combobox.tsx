@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -6,15 +6,14 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { apiFetch } from '@/lib/api';
+import { useAssets } from '@/api/assets';
+import type { Asset as ApiAsset } from '@/api/assets';
 
-export interface Asset {
-  id: string;
-  name: string;
+export type Asset = ApiAsset & {
   tag: string | null;
   asset_type_id: string;
   assigned_space_id: string | null;
-}
+};
 
 interface Props {
   value: string | null;
@@ -34,16 +33,14 @@ export function AssetCombobox({
   disabled,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [assets, setAssets] = useState<Asset[]>([]);
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (assetTypeFilter.length) params.set('asset_type_ids', assetTypeFilter.join(','));
-    if (spaceScope) params.set('space_id', spaceScope);
-    if (search) params.set('search', search);
-    apiFetch<Asset[]>(`/assets?${params.toString()}`).then(setAssets).catch(() => setAssets([]));
-  }, [search, assetTypeFilter.join(','), spaceScope]);
+  const { data: assetsData } = useAssets({
+    assetTypeIds: assetTypeFilter.length ? assetTypeFilter : null,
+    spaceId: spaceScope ?? null,
+    search: search || null,
+  });
+  const assets = (assetsData ?? []) as Asset[];
 
   const selected = assets.find((a) => a.id === value);
 

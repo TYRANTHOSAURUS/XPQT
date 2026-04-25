@@ -23,9 +23,9 @@ import {
   FolderOpen,
   ChevronRight,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useCatalogCategories } from '@/api/catalog';
-import { apiFetch } from '@/lib/api';
+import { usePortalCatalog } from '@/api/portal';
 import { usePortal } from '@/providers/portal-provider';
 
 interface CatalogCategory {
@@ -37,25 +37,9 @@ interface CatalogCategory {
   parent_category_id: string | null;
 }
 
-interface CatalogRequestType {
-  id: string;
-  name: string;
-  description: string | null;
-  keywords: string[] | null;
-}
-
-interface CatalogCategoryResponse {
-  id: string;
-  name: string;
-  icon: string | null;
-  parent_category_id: string | null;
-  request_types: CatalogRequestType[];
-}
-
-interface PortalCatalogResponse {
-  selected_location: { id: string; name: string; type: string };
-  categories: CatalogCategoryResponse[];
-}
+// Catalog response types live in @/api/portal; importing them keeps shape
+// in sync across portal/home, portal/catalog-category, portal/submit-request.
+import type { CatalogRequestType } from '@/api/portal';
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   Monitor, Wrench, MapPin, Users, CalendarDays, ShieldCheck, HelpCircle,
@@ -84,13 +68,7 @@ export function PortalHome() {
   const { data: portal } = usePortal();
   const currentLocation = portal?.current_location ?? null;
 
-  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
-  useEffect(() => {
-    if (!currentLocation) { setCatalog(null); return; }
-    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
-      .then(setCatalog)
-      .catch(() => setCatalog(null));
-  }, [currentLocation?.id]);
+  const { data: catalog } = usePortalCatalog(currentLocation?.id ?? null);
 
   // Roll visibility up so a parent with only-child items stays visible.
   const visibleCategoryIds = useMemo(() => {

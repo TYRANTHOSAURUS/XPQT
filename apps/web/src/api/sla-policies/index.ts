@@ -53,7 +53,11 @@ export function slaPoliciesListOptions() {
   return queryOptions({
     queryKey: slaPolicyKeys.list(),
     queryFn: ({ signal }) => apiFetch<SlaPolicy[]>('/sla-policies', { signal }),
-    staleTime: 60_000,
+    // T3 — admin-edited; useCreate/useUpdateSlaPolicy invalidate the list.
+    // Not Infinity because escalation thresholds can be edited from a
+    // separate detail screen that doesn't necessarily route through this
+    // module's mutation hooks. 5min keeps drift bounded.
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -65,7 +69,10 @@ export function businessHoursListOptions() {
   return queryOptions({
     queryKey: slaPolicyKeys.calendars(),
     queryFn: ({ signal }) => apiFetch<BusinessHoursCalendar[]>('/business-hours', { signal }),
-    staleTime: 5 * 60_000,
+    // T4 — calendars change ~never. The business-hours admin page
+    // qc.invalidateQueries on save.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 

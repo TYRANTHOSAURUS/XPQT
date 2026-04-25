@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CornerDownRight, History, MapPin, Tag, User } from 'lucide-react';
-import { apiFetch } from '@/lib/api';
+import { useTicketDetail } from '@/api/tickets';
 import { useWorkOrders } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -52,16 +51,12 @@ function DomainDot({ domain }: { domain: string }) {
 }
 
 function useParentTitle(parentId: string | null) {
-  const [title, setTitle] = useState<string | null>(null);
-  useEffect(() => {
-    if (!parentId) { setTitle(null); return; }
-    let cancelled = false;
-    apiFetch<{ id: string; title: string }>(`/tickets/${parentId}`)
-      .then((row) => { if (!cancelled) setTitle(row.title); })
-      .catch(() => { if (!cancelled) setTitle('parent case'); });
-    return () => { cancelled = true; };
-  }, [parentId]);
-  return title;
+  // Reads from the same ticketKeys.detail(id) cache as ticket-detail itself —
+  // if the parent case is open in the ticket viewer, this is free.
+  const { data, error } = useTicketDetail(parentId ?? '');
+  if (!parentId) return null;
+  if (error) return 'parent case';
+  return data?.title ?? null;
 }
 
 function SubIssueProgress({ parentId }: { parentId: string }) {

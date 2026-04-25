@@ -166,6 +166,47 @@ export function useRoutingRules(filters?: Record<string, unknown>) {
   return useQuery(routingRulesListOptions(filters));
 }
 
+/**
+ * Optimistic toggle for routing_rules.active — admins flip rules off/on
+ * frequently when triaging. Should feel instantaneous; rolls back on error.
+ * Patches every cached rules-list variant (different filter shapes share the
+ * cache prefix `routing/rules`).
+ */
+export function useToggleRoutingRuleActive() {
+  const qc = useQueryClient();
+  return useMutation<
+    RoutingRule,
+    Error,
+    { id: string; active: boolean },
+    { snapshots: Array<[readonly unknown[], RoutingRule[] | undefined]> }
+  >({
+    mutationFn: ({ id, active }) =>
+      apiFetch<RoutingRule>(`${PATHS.rules}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      }),
+    onMutate: async ({ id, active }) => {
+      await qc.cancelQueries({ queryKey: routingKeys.rules() });
+      const snapshots = qc.getQueriesData<RoutingRule[]>({ queryKey: routingKeys.rules() });
+      for (const [key, prev] of snapshots) {
+        if (!prev) continue;
+        qc.setQueryData<RoutingRule[]>(
+          key,
+          prev.map((r) => (r.id === id ? { ...r, active } : r)),
+        );
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (!ctx) return;
+      for (const [key, prev] of ctx.snapshots) qc.setQueryData(key, prev);
+    },
+    // Toggling a rule changes who routes — invalidate the whole namespace
+    // so coverage / simulator / decisions reflect the new state.
+    onSettled: () => qc.invalidateQueries({ queryKey: routingKeys.all }),
+  });
+}
+
 // ---------- location_teams ----------
 
 export function locationTeamsListOptions() {
@@ -297,11 +338,14 @@ export function useSimulatorPreview<T = unknown>(input: Record<string, unknown>)
 
 // ---------- policies (v2 case ownership + child dispatch) ----------
 
+function policyKindPath(kind: 'case-owner' | 'child-dispatch') {
+  return kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
+}
+
 export function policyEntitiesOptions<T = unknown>(kind: 'case-owner' | 'child-dispatch') {
-  const path = kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
   return queryOptions({
     queryKey: [...routingKeys.policies(), 'entities', kind] as const,
-    queryFn: ({ signal }) => apiFetch<T[]>(path, { signal }),
+    queryFn: ({ signal }) => apiFetch<T[]>(policyKindPath(kind), { signal }),
     staleTime: 60_000,
   });
 }
@@ -313,10 +357,9 @@ export function publishedPolicyOptions<T = unknown>(
   kind: 'case-owner' | 'child-dispatch',
   entityId: string | null | undefined,
 ) {
-  const path = kind === 'case-owner' ? PATHS.policiesCaseOwner : PATHS.policiesChildDispatch;
   return queryOptions({
     queryKey: [...routingKeys.policies(), 'published', kind, entityId ?? ''] as const,
-    queryFn: ({ signal }) => apiFetch<T>(`${path}/${entityId}`, { signal }),
+    queryFn: ({ signal }) => apiFetch<T>(`${policyKindPath(kind)}/${entityId}`, { signal }),
     enabled: Boolean(entityId),
     staleTime: 60_000,
   });
