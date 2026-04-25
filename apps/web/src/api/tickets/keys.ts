@@ -13,17 +13,26 @@
  *                   └─ reclassify-preview(id, nextRequestTypeId)
  */
 
+/**
+ * Mirrors the server filter surface (`TicketService.list`). Arrays are sent as
+ * repeated query keys (`?status=new&status=assigned`) which NestJS reads as
+ * `string[]`. Pass `null` (not `undefined`) to express "no assignee" /
+ * "no team" / "no vendor".
+ */
 export interface TicketListFilters {
-  assignedTeamId?: string | null;
+  q?: string | null;
+  /** status_category — single or multiple. */
+  status?: string | string[] | null;
+  priority?: string | string[] | null;
+  /** `'me'` / UUID / `null` (unassigned). Resolve `'me'` before passing. */
   assignedUserId?: string | null;
+  assignedTeamId?: string | null;
   assignedVendorId?: string | null;
-  status?: string | null;
-  statusCategory?: string | null;
-  priority?: string | null;
-  requestTypeId?: string | null;
   requesterPersonId?: string | null;
   locationId?: string | null;
-  q?: string | null;
+  ticketKind?: 'case' | 'work_order' | null;
+  slaAtRisk?: boolean | null;
+  slaBreached?: boolean | null;
   page?: number | null;
 }
 

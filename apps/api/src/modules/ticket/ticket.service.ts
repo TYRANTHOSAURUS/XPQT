@@ -79,12 +79,18 @@ export interface TicketListFilters {
   status_category?: string | string[];
   priority?: string | string[];
   ticket_kind?: 'case' | 'work_order';
-  assigned_team_id?: string;
-  assigned_user_id?: string;
+  /**
+   * `null` ⇒ unassigned (IS NULL on the column). `string` ⇒ equals.
+   * `undefined` ⇒ no filter.
+   */
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
   location_id?: string;
   requester_person_id?: string;
   parent_ticket_id?: string | null;
   sla_at_risk?: boolean;
+  sla_breached?: boolean;
   search?: string;
   cursor?: string; // ticket ID for cursor-based pagination
   limit?: number;
@@ -193,11 +199,16 @@ export class TicketService {
       query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
     }
     if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
-    if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
-    if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);
+    if (filters.assigned_team_id === null) query = query.is('assigned_team_id', null);
+    else if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
+    if (filters.assigned_user_id === null) query = query.is('assigned_user_id', null);
+    else if (filters.assigned_user_id) query = query.eq('assigned_user_id', filters.assigned_user_id);
+    if (filters.assigned_vendor_id === null) query = query.is('assigned_vendor_id', null);
+    else if (filters.assigned_vendor_id) query = query.eq('assigned_vendor_id', filters.assigned_vendor_id);
     if (filters.location_id) query = query.eq('location_id', filters.location_id);
     if (filters.requester_person_id) query = query.eq('requester_person_id', filters.requester_person_id);
     if (filters.sla_at_risk === true) query = query.eq('sla_at_risk', true);
+    if (filters.sla_breached === true) query = query.not('sla_resolution_breached_at', 'is', null);
 
     // Parent filter: null = top-level only, specific ID = children of that ticket
     if (filters.parent_ticket_id === null) {

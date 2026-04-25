@@ -53,26 +53,32 @@ export class TicketController {
     @Query('kind') ticketKind?: 'case' | 'work_order',
     @Query('assigned_team_id') assignedTeamId?: string,
     @Query('assigned_user_id') assignedUserId?: string,
+    @Query('assigned_vendor_id') assignedVendorId?: string,
     @Query('location_id') locationId?: string,
     @Query('requester_person_id') requesterPersonId?: string,
     @Query('parent_ticket_id') parentTicketId?: string,
     @Query('sla_at_risk') slaAtRisk?: string,
+    @Query('sla_breached') slaBreached?: string,
     @Query('search') search?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    const nullable = (v?: string): string | null | undefined =>
+      v === undefined ? undefined : v === 'null' ? null : v;
     return this.ticketService.list({
       status_category: statusCategory,
       priority,
       ticket_kind: ticketKind,
-      assigned_team_id: assignedTeamId,
-      assigned_user_id: assignedUserId,
+      assigned_team_id: nullable(assignedTeamId),
+      assigned_user_id: nullable(assignedUserId),
+      assigned_vendor_id: nullable(assignedVendorId),
       location_id: locationId,
       requester_person_id: requesterPersonId,
       parent_ticket_id: parentTicketId === 'null' ? null : parentTicketId,
       sla_at_risk: slaAtRisk === 'true' ? true : undefined,
+      sla_breached: slaBreached === 'true' ? true : undefined,
       search,
       cursor,
       limit: limit ? parseInt(limit, 10) : undefined,
