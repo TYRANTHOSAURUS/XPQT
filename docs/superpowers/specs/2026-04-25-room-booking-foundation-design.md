@@ -173,34 +173,58 @@ The three surfaces share two backend services (`list_bookable_rooms` and the rul
 
 ## 2 · Database schema
 
-### 2.1 Calendars (new — shared primitive shipping first)
+### 2.1 Predicate helpers (no new calendar table — reuse `business_hours_calendars`)
+
+The codebase already has `public.business_hours_calendars` (migration 00006) with `time_zone`, `working_hours jsonb`, and `holidays jsonb` columns. We **reuse** this table for room booking rather than creating a duplicate `calendars` table. References from the room-booking schema:
+
+- `spaces.default_calendar_id` → `business_hours_calendars(id)`
+- `recurrence_series.holiday_calendar_id` → `business_hours_calendars(id)`
+
+Migration 00119 ships the predicate-engine helper functions only:
 
 ```sql
--- Migration 00119_calendars.sql
-CREATE TABLE public.calendars (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id       uuid NOT NULL REFERENCES public.tenants(id),
-  name            text NOT NULL,
-  timezone        text NOT NULL,
-  business_hours  jsonb NOT NULL,    -- { mon: [{start: "08:00", end: "18:00"}], tue: [...], ... }
-  holiday_dates   date[] NOT NULL DEFAULT '{}',
-  is_default      boolean NOT NULL DEFAULT false,
-  created_at      timestamptz NOT NULL DEFAULT now(),
-  updated_at      timestamptz NOT NULL DEFAULT now()
-);
-ALTER TABLE public.calendars ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation ON public.calendars
-  USING (tenant_id = public.current_tenant_id());
-CREATE INDEX idx_calendars_tenant_default ON public.calendars (tenant_id, is_default);
-CREATE TRIGGER set_calendars_updated_at BEFORE UPDATE ON public.calendars
-  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+-- Migration 00119_room_booking_predicates.sql
+CREATE OR REPLACE FUNCTION public.in_business_hours(
+  at timestamptz,
+  calendar_id uuid
+) RETURNS boolean LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  cal record;
+  local_at timestamptz;
+  dow text;
+  hours jsonb;
+  start_time time;
+  end_time time;
+  the_date date;
+  holiday jsonb;
+BEGIN
+  SELECT * INTO cal FROM public.business_hours_calendars WHERE id = calendar_id;
+  IF NOT FOUND THEN RETURN false; END IF;
+  local_at := at AT TIME ZONE cal.time_zone;
+  the_date := local_at::date;
+  -- holiday check
+  FOR holiday IN SELECT value FROM jsonb_array_elements(cal.holidays) LOOP
+    IF (holiday->>'date')::date = the_date THEN RETURN false; END IF;
+  END LOOP;
+  -- working hours for the day-of-week
+  dow := lower(to_char(local_at, 'fmday'));
+  hours := cal.working_hours -> dow;
+  IF hours IS NULL OR hours = 'null'::jsonb THEN RETURN false; END IF;
+  start_time := (hours->>'start')::time;
+  end_time := (hours->>'end')::time;
+  RETURN local_at::time >= start_time AND local_at::time < end_time;
+END
+$$;
 
--- Predicate-engine helper:
-CREATE OR REPLACE FUNCTION public.in_business_hours(at timestamptz, calendar_id uuid)
-  RETURNS boolean LANGUAGE sql STABLE AS $$
-  -- evaluates `at` against the calendar's business_hours and holiday_dates;
-  -- timezone-aware via the calendar's timezone column
-  SELECT … ;
+-- Org-subtree expansion helper used by D rules' `requester.org_node IN descendants(X)`.
+-- Reuses existing org_node hierarchy.
+CREATE OR REPLACE FUNCTION public.org_node_descendants(root_id uuid)
+  RETURNS SETOF uuid LANGUAGE sql STABLE AS $$
+  WITH RECURSIVE tree AS (
+    SELECT id FROM public.org_nodes WHERE id = root_id
+    UNION ALL
+    SELECT n.id FROM public.org_nodes n JOIN tree t ON n.parent_id = t.id
+  ) SELECT id FROM tree;
 $$;
 ```
 
@@ -215,7 +239,7 @@ ALTER TABLE public.spaces
   ADD COLUMN IF NOT EXISTS check_in_required                        boolean  NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS check_in_grace_minutes                   int      NOT NULL DEFAULT 15,
   ADD COLUMN IF NOT EXISTS cost_per_hour                            numeric(10,2),    -- chargeback stub
-  ADD COLUMN IF NOT EXISTS default_calendar_id                      uuid REFERENCES public.calendars(id),
+  ADD COLUMN IF NOT EXISTS default_calendar_id                      uuid REFERENCES public.business_hours_calendars(id),
   ADD COLUMN IF NOT EXISTS default_search_keywords                  text[]   NOT NULL DEFAULT '{}',
   ADD COLUMN IF NOT EXISTS calendar_sync_mode                       text     NOT NULL DEFAULT 'pattern_a'
                                                                      CHECK (calendar_sync_mode IN ('pattern_a','pattern_b')),
@@ -240,7 +264,7 @@ CREATE TABLE public.room_booking_rules (
   target_id           uuid,                                  -- null when target_scope='tenant'
   applies_when        jsonb NOT NULL,                        -- predicate
   effect              text NOT NULL CHECK (effect IN ('deny','require_approval','allow_override','warn')),
-  approval_policy_id  uuid REFERENCES public.approval_policies(id),
+  approval_config     jsonb,    -- {required_approvers: [{type:'team'|'person', id:uuid}], threshold:'all'|'any'} when effect='require_approval'
   denial_message      text,                                  -- self-explaining text shown to users
   priority            int  NOT NULL DEFAULT 100,
   template_id         text,                                  -- which starter template (null if raw)
@@ -365,7 +389,7 @@ CREATE TABLE public.recurrence_series (
   series_start_at          timestamptz NOT NULL,
   series_end_at            timestamptz,                     -- null = open-ended (capped by max_occurrences)
   max_occurrences          int  NOT NULL DEFAULT 365,
-  holiday_calendar_id      uuid REFERENCES public.calendars(id),
+  holiday_calendar_id      uuid REFERENCES public.business_hours_calendars(id),
   materialized_through     timestamptz NOT NULL,            -- rolling window cap
   parent_reservation_id    uuid REFERENCES public.reservations(id),
   created_at               timestamptz NOT NULL DEFAULT now(),
