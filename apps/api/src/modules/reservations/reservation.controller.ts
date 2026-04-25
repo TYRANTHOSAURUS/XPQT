@@ -12,7 +12,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
   CancelReservationDto, CreateReservationDto, FindTimeDto, MultiRoomBookingDto, PickerDto,
-  UpdateReservationDto,
+  SchedulerWindowDto, UpdateReservationDto,
 } from './dto/dtos';
 import type { ActorContext, CreateReservationInput, PickerInput } from './dto/types';
 
@@ -113,6 +113,21 @@ export class ReservationController {
   async findTime(@Req() _request: Request, @Body() _dto: FindTimeDto) {
     // TODO(phase-G): multi-attendee scheduling
     throw new NotImplementedException('find_time_phase_g_pending');
+  }
+
+  /**
+   * Desk-scheduler window fetch — one round-trip for every reservation on
+   * the visible spaces between the requested range. Operator/admin only;
+   * see ReservationService.listForWindow for the visibility gate.
+   */
+  @Post('scheduler-window')
+  async schedulerWindow(@Req() request: Request, @Body() dto: SchedulerWindowDto) {
+    const authUid = this.getAuthUid(request);
+    return this.service.listForWindow(authUid, {
+      space_ids: dto.space_ids,
+      start_at: dto.start_at,
+      end_at: dto.end_at,
+    });
   }
 
   @Patch(':id')

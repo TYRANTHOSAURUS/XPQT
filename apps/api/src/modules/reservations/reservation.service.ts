@@ -83,6 +83,51 @@ export class ReservationService {
     return { items: rows.slice(0, limit) };
   }
 
+  /**
+   * Desk-scheduler window read. Returns every reservation on `spaceIds`
+   * whose effective_*_at range overlaps [start_at, end_at). Operator-or-admin
+   * only — caller verifies via `assertOperatorOrAdmin`.
+   *
+   * Cancelled / released / completed rows are excluded; the grid only renders
+   * blocks for active or pending reservations. (Released slots free the cell.)
+   *
+   * Returns rows in a single query (no N+1) so the page can paint 50 rooms ×
+   * 7 days inside the §5.6 < 1.2 s perceived budget.
+   */
+  async listForWindow(
+    authUid: string,
+    args: { space_ids: string[]; start_at: string; end_at: string },
+  ): Promise<{ items: Reservation[] }> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    this.visibility.assertOperatorOrAdmin(ctx);
+
+    const spaceIds = (args.space_ids ?? []).filter((id) => typeof id === 'string' && id.length > 0);
+    if (spaceIds.length === 0) return { items: [] };
+    // Hard cap to keep the query bounded; the desk grid trims its filter
+    // before sending — this guards against pathological clients.
+    const cappedSpaceIds = spaceIds.slice(0, 200);
+
+    if (!args.start_at || !args.end_at) {
+      throw new BadRequestException('scheduler_window_requires_range');
+    }
+
+    // Range overlap: row.effective_start_at < window_end AND row.effective_end_at > window_start.
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .in('space_id', cappedSpaceIds)
+      .in('status', ['confirmed', 'checked_in', 'pending_approval'])
+      .lt('effective_start_at', args.end_at)
+      .gt('effective_end_at', args.start_at)
+      .order('start_at', { ascending: true })
+      .limit(2000);
+
+    if (error) throw new BadRequestException(`scheduler_window_failed:${error.message}`);
+    return { items: (data ?? []) as unknown as Reservation[] };
+  }
+
   // === Lifecycle ===
 
   /**

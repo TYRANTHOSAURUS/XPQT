@@ -74,3 +74,15 @@ export interface MultiRoomBookingDto {
   attendee_count?: number;
   attendee_person_ids?: string[];
 }
+
+/**
+ * Desk scheduler window query — fetches every reservation on the given
+ * spaces between [start_at, end_at]. Operator/admin only (gated on
+ * rooms.read_all or rooms.admin). One round-trip avoids the N+1 the desk
+ * grid would otherwise hit when rendering 50 rooms × 7 days.
+ */
+export interface SchedulerWindowDto {
+  space_ids: string[];
+  start_at: string;
+  end_at: string;
+}

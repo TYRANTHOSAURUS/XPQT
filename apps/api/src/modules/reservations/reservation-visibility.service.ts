@@ -106,6 +106,16 @@ export class ReservationVisibilityService {
   }
 
   /**
+   * Throws ForbiddenException unless the actor has rooms.admin or
+   * rooms.read_all. Used by operator-only endpoints (desk scheduler window
+   * fetch, admin-only listings, etc).
+   */
+  assertOperatorOrAdmin(ctx: ReservationVisibilityContext): void {
+    if (ctx.has_admin || ctx.has_read_all) return;
+    throw new ForbiddenException('reservation_operator_required');
+  }
+
+  /**
    * Apply a visibility filter to a Supabase query for reservations list.
    * For non-operators, restricts to participant-level rows.
    */

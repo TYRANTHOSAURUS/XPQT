@@ -69,4 +69,15 @@ export const roomBookingKeys = {
 
   availability: (spaceId: string, fromIso: string, toIso: string) =>
     [...roomBookingKeys.all, 'availability', spaceId, fromIso, toIso] as const,
+
+  // Desk scheduler — one bucket per (sortedSpaceIds, range). Sub-key shape:
+  //   ['room-booking','scheduler-window', { space_ids: string[] (sorted), start_at, end_at }]
+  schedulerWindow: (input: SchedulerWindowInput) =>
+    [...roomBookingKeys.all, 'scheduler-window', input] as const,
 } as const;
+
+export interface SchedulerWindowInput {
+  space_ids: string[];
+  start_at: string;
+  end_at: string;
+}

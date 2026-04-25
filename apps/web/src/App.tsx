@@ -49,6 +49,8 @@ const MyBookingsPage = lazyNamed(() => import('@/pages/portal/me-bookings'), 'My
 const PortalCalendarSyncPage = lazyNamed(() => import('@/pages/portal/me/calendar-sync'), 'PortalCalendarSyncPage');
 const PortalCalendarSyncCallbackPage = lazyNamed(() => import('@/pages/portal/calendar-sync-callback'), 'PortalCalendarSyncCallbackPage');
 const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-sync'), 'AdminCalendarSyncPage');
+const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/index'), 'RoomBookingRulesPage');
+const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -204,6 +206,9 @@ export function App() {
                   <Route index element={<AdminIndexPage />} />
                   {/* Calendar sync (Outlook) — admin sync-health + conflicts inbox */}
                   <Route path="calendar-sync" element={<AdminCalendarSyncPage />} />
+                  {/* Room booking rules (D-engine) — index + detail */}
+                  <Route path="room-booking-rules" element={<RoomBookingRulesPage />} />
+                  <Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
                   <Route path="form-schemas" element={<FormSchemasPage />} />

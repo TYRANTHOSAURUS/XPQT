@@ -1,7 +1,11 @@
 import { queryOptions, useQuery, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import {
-  roomBookingKeys, type ReservationListFilters, type PickerInput, type FindTimeInput,
+  roomBookingKeys,
+  type ReservationListFilters,
+  type PickerInput,
+  type FindTimeInput,
+  type SchedulerWindowInput,
 } from './keys';
 import type { Reservation, RankedRoom, FreeSlot } from './types';
 
@@ -101,4 +105,44 @@ export function findTimeOptions(input: FindTimeInput) {
 
 export function useFindTime(input: FindTimeInput) {
   return useQuery(findTimeOptions(input));
+}
+
+interface SchedulerWindowResponse {
+  items: Reservation[];
+}
+
+/**
+ * Desk-scheduler window read. One round-trip for every reservation on the
+ * given space ids inside [start_at, end_at). Operator-or-admin endpoint —
+ * the API rejects callers without rooms.read_all / rooms.admin.
+ *
+ * staleTime is short (10 s) because the page also subscribes to Supabase
+ * Realtime and invalidates on changefeed events. The cache is keyed on the
+ * (sorted) space-id array so paging the calendar forward / scrolling the
+ * room rail re-keys cleanly.
+ */
+export function schedulerWindowOptions(input: SchedulerWindowInput) {
+  // Stable cache key: sort space_ids so equivalent windows hit the same cell.
+  const sortedSpaceIds = [...input.space_ids].sort();
+  const stableInput: SchedulerWindowInput = {
+    space_ids: sortedSpaceIds,
+    start_at: input.start_at,
+    end_at: input.end_at,
+  };
+  return queryOptions({
+    queryKey: roomBookingKeys.schedulerWindow(stableInput),
+    queryFn: ({ signal }) =>
+      apiFetch<SchedulerWindowResponse>('/reservations/scheduler-window', {
+        signal,
+        method: 'POST',
+        body: JSON.stringify(stableInput),
+      }),
+    staleTime: 10_000,
+    placeholderData: keepPreviousData,
+    enabled: input.space_ids.length > 0 && Boolean(input.start_at) && Boolean(input.end_at),
+  });
+}
+
+export function useSchedulerReservations(input: SchedulerWindowInput) {
+  return useQuery(schedulerWindowOptions(input));
 }

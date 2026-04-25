@@ -44,3 +44,54 @@ If you want a top-bar entry to "My bookings" too, add it to the portal top bar
 or the user menu. Today the page is reachable from:
 - `/portal/rooms` → "My bookings →" link in the page header
 - `/portal/me/bookings` directly
+
+---
+
+# Phase F — Admin rule editor routes
+
+Two new pages under `/admin` for the room-booking rule admin (index + detail).
+Follows the canonical `/admin/webhooks` + `/admin/criteria-sets` pattern.
+
+## 1. Add lazy imports (alongside existing admin imports)
+
+```tsx
+const RoomBookingRulesPage = lazyNamed(
+  () => import('@/pages/admin/room-booking-rules/index'),
+  'RoomBookingRulesPage',
+);
+const RoomBookingRuleDetailPage = lazyNamed(
+  () => import('@/pages/admin/room-booking-rules/detail'),
+  'RoomBookingRuleDetailPage',
+);
+```
+
+## 2. Register routes inside the existing `<Route path="/admin">` block
+
+```tsx
+<Route path="room-booking-rules" element={<RoomBookingRulesPage />} />
+<Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
+```
+
+## 3. Admin nav entry
+
+Add a row to `apps/web/src/lib/admin-nav.ts` under the closest existing group
+("Operations" or "Routing"):
+
+```ts
+{
+  title: 'Room booking rules',
+  description: "Govern who can book what, when, and what triggers approval.",
+  path: '/admin/room-booking-rules',
+  icon: ShieldCheck, // from lucide-react
+}
+```
+
+## 4. Notes for follow-up phases
+
+- Phase E (desk scheduler) can reuse `<RuleRowEffectBadge>` and `<RuleScopeSummary>` from
+  `apps/web/src/pages/admin/room-booking-rules/components/`.
+- Phase G/Phase K: revisit the `target_id uuid` schema mismatch for `room_type` scope —
+  the detail page currently maps fixed UUIDs to type-keys in `ROOM_TYPE_OPTIONS` (top of
+  `apps/web/src/pages/admin/room-booking-rules/detail.tsx`). A clean migration switching
+  `target_id` to `text` (or splitting it into `target_type_key` + `target_uuid`) would let
+  us drop that map and use the type-key string directly.
