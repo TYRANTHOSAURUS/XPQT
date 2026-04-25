@@ -54,6 +54,7 @@ const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-boo
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
+const DeskSchedulerPage = lazyNamed(() => import('@/pages/desk/scheduler'), 'DeskSchedulerPage');
 const TicketsPage = lazyNamed(() => import('@/pages/desk/tickets'), 'TicketsPage');
 const TicketDetailPage = lazyNamed(() => import('@/pages/desk/ticket-detail-page'), 'TicketDetailPage');
 const ApprovalsPage = lazyNamed(() => import('@/pages/desk/approvals'), 'ApprovalsPage');
@@ -177,6 +178,7 @@ export function App() {
                 >
                   <Route index element={<Navigate to="/desk/inbox" replace />} />
                   <Route path="inbox" element={<InboxPage />} />
+                  <Route path="scheduler" element={<DeskSchedulerPage />} />
                   <Route path="tickets" element={<TicketsPage />} />
                   <Route path="tickets/:id" element={<TicketDetailPage />} />
                   <Route path="approvals" element={<ApprovalsPage />} />

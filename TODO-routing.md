@@ -90,6 +90,34 @@ Add a row to `apps/web/src/lib/admin-nav.ts` under the closest existing group
 
 - Phase E (desk scheduler) can reuse `<RuleRowEffectBadge>` and `<RuleScopeSummary>` from
   `apps/web/src/pages/admin/room-booking-rules/components/`.
+
+---
+
+# Phase E — Desk scheduler route
+
+One new route under `/desk`. Per CLAUDE.md "true app-within-the-admin"
+exception, the page renders its own minimal top bar (no DeskLayout
+breadcrumb chrome fights its custom toolbar).
+
+## 1. Add lazy import alongside the existing desk imports
+
+```tsx
+const DeskSchedulerPage = lazyNamed(
+  () => import('@/pages/desk/scheduler'),
+  'DeskSchedulerPage',
+);
+```
+
+## 2. Register the route inside the existing `<Route path="/desk">` block
+
+```tsx
+<Route path="scheduler" element={<DeskSchedulerPage />} />
+```
+
+The page is reachable today from anywhere via `/desk/scheduler`. Follow-ups
+may want a sidebar nav entry under the desk shell — add it to
+`apps/web/src/components/desk/desk-sidebar.tsx`'s `navItems` array
+(`{ title: 'Scheduler', icon: CalendarIcon, path: '/desk/scheduler' }`).
 - Phase G/Phase K: revisit the `target_id uuid` schema mismatch for `room_type` scope —
   the detail page currently maps fixed UUIDs to type-keys in `ROOM_TYPE_OPTIONS` (top of
   `apps/web/src/pages/admin/room-booking-rules/detail.tsx`). A clean migration switching
