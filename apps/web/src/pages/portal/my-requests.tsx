@@ -1,146 +1,128 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { buttonVariants } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Clock,
-  AlertTriangle,
-  ChevronRight,
-} from 'lucide-react';
 import { useTicketList } from '@/api/tickets';
 import { useAuth } from '@/providers/auth-provider';
+import { PortalPage } from '@/components/portal/portal-page';
+import { PortalRequestRow } from '@/components/portal/portal-request-row';
 
 interface Ticket {
   id: string;
   title: string;
   status_category: string;
-  priority: string;
-  assigned_team?: { name: string };
-  sla_resolution_due_at: string | null;
+  assigned_team?: { name: string } | null;
+  assigned_user?: { first_name: string; last_name: string } | null;
   sla_resolution_breached_at: string | null;
   created_at: string;
 }
 
-const statusLabels: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
-  new: { label: 'Submitted', variant: 'default' },
-  assigned: { label: 'Assigned', variant: 'default' },
-  in_progress: { label: 'In Progress', variant: 'default' },
-  waiting: { label: 'Pending', variant: 'secondary' },
-  resolved: { label: 'Resolved', variant: 'outline' },
-  closed: { label: 'Closed', variant: 'outline' },
-};
+type TabValue = 'all' | 'open' | 'scheduled' | 'closed';
 
-function SlaIndicator({ dueAt, breachedAt }: { dueAt: string | null; breachedAt: string | null }) {
-  if (!dueAt) return null;
-  if (breachedAt) {
-    return <span className="text-sm text-red-500 flex items-center gap-1"><AlertTriangle className="h-3.5 w-3.5" /> Delayed</span>;
-  }
-  const remaining = new Date(dueAt).getTime() - Date.now();
-  if (remaining <= 0) {
-    return <span className="text-sm text-red-500 flex items-center gap-1"><AlertTriangle className="h-3.5 w-3.5" /> Delayed</span>;
-  }
-  const hours = Math.floor(remaining / 3600000);
-  const minutes = Math.floor((remaining % 3600000) / 60000);
-  const timeStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-  return <span className="text-sm text-muted-foreground flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> Est. {timeStr}</span>;
-}
+const OPEN_STATUSES = new Set(['new', 'assigned', 'in_progress', 'waiting']);
+const CLOSED_STATUSES = new Set(['resolved', 'closed']);
 
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-GB', { // design-check:allow — legacy; migrate to formatFullTimestamp from @/lib/format
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
+function deriveStatus(ticket: Ticket): { label: string; tone: 'inprog' | 'waiting' | 'scheduled' | 'done' | 'breached' } {
+  if (ticket.sla_resolution_breached_at) {
+    return { label: 'Delayed', tone: 'breached' };
+  }
+  switch (ticket.status_category) {
+    case 'new':         return { label: 'Submitted', tone: 'scheduled' };
+    case 'assigned':    return { label: 'Assigned', tone: 'inprog' };
+    case 'in_progress': return { label: 'In progress', tone: 'inprog' };
+    case 'waiting':     return { label: 'Waiting', tone: 'waiting' };
+    case 'resolved':    return { label: 'Resolved', tone: 'done' };
+    case 'closed':      return { label: 'Closed', tone: 'done' };
+    default:            return { label: 'Submitted', tone: 'scheduled' };
+  }
 }
 
 export function MyRequestsPage() {
-  const navigate = useNavigate();
   const { person } = useAuth();
-  const [filter, setFilter] = useState('open');
-
-  // filter=open|closed|all maps to one or more status_category values. The
-  // server accepts repeated keys (?status_category=new&status_category=…) so
-  // arrays fan out cleanly.
-  const status =
-    filter === 'open'
-      ? ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval']
-      : filter === 'closed'
-      ? ['resolved', 'closed']
-      : null;
+  const [tab, setTab] = useState<TabValue>('open');
 
   const { data, isPending: loading } = useTicketList<Ticket>({
-    status,
     requesterPersonId: person?.id ?? null,
   });
-  const tickets = person?.id ? (data?.items ?? []) : [];
+  const allTickets = person?.id ? (data?.items ?? []) : [];
+
+  const counts = useMemo(() => ({
+    all:       allTickets.length,
+    open:      allTickets.filter((t) => OPEN_STATUSES.has(t.status_category)).length,
+    scheduled: 0,
+    closed:    allTickets.filter((t) => CLOSED_STATUSES.has(t.status_category)).length,
+  }), [allTickets]);
+
+  const filtered = useMemo(() => {
+    if (tab === 'all') return allTickets;
+    if (tab === 'open') return allTickets.filter((t) => OPEN_STATUSES.has(t.status_category));
+    if (tab === 'closed') return allTickets.filter((t) => CLOSED_STATUSES.has(t.status_category));
+    return []; // scheduled — empty in Wave 2
+  }, [allTickets, tab]);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <PortalPage>
+      {/* Page header */}
+      <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">My Requests</h1>
-          <p className="text-muted-foreground mt-1">Track the status of your submitted requests</p>
+          <h1 className="text-2xl font-semibold tracking-tight">My Requests</h1>
+          <p className="mt-1 text-sm text-muted-foreground text-pretty">
+            Everything you've submitted, booked, or invited.
+          </p>
         </div>
-        <Button onClick={() => window.location.href = '/portal'}>New Request</Button>
+        <Link to="/portal" className={buttonVariants({ size: 'sm', className: 'shrink-0' })}>
+          + New request
+        </Link>
       </div>
 
-      <Tabs value={filter} onValueChange={setFilter} className="mb-6">
+      {/* Tabs */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)} className="mb-4">
         <TabsList>
-          <TabsTrigger value="open">Open</TabsTrigger>
-          <TabsTrigger value="closed">Closed</TabsTrigger>
-          <TabsTrigger value="all">All</TabsTrigger>
+          {(['open', 'all', 'scheduled', 'closed'] as const).map((t) => (
+            <TabsTrigger key={t} value={t} className="gap-1.5 capitalize">
+              {t}
+              {counts[t] > 0 && (
+                <span className="tabular-nums text-[11px] opacity-60">{counts[t]}</span>
+              )}
+            </TabsTrigger>
+          ))}
         </TabsList>
       </Tabs>
 
-      {loading && tickets.length === 0 && (
-        <div className="text-center py-12 text-muted-foreground">Loading your requests...</div>
+      {/* Loading */}
+      {loading && allTickets.length === 0 && (
+        <div className="text-sm text-muted-foreground py-4">Loading your requests…</div>
       )}
 
-      {!loading && tickets.length === 0 && (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <p className="text-lg font-medium text-muted-foreground">No requests found</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              {filter === 'open' ? "You don't have any open requests" : "No requests match this filter"}
-            </p>
-          </CardContent>
-        </Card>
+      {/* List */}
+      {!loading && filtered.length > 0 && (
+        <div className="rounded-xl border bg-card overflow-hidden divide-y">
+          {filtered.map((ticket) => {
+            const assigneeName = ticket.assigned_user
+              ? `${ticket.assigned_user.first_name} ${ticket.assigned_user.last_name}`.trim() || null
+              : null;
+            return (
+              <PortalRequestRow
+                key={ticket.id}
+                href={`/portal/requests/${ticket.id}`}
+                kind="ticket"
+                title={ticket.title}
+                subtitle={ticket.assigned_team?.name ?? null}
+                timestamp={ticket.created_at}
+                assigneeName={assigneeName}
+                status={deriveStatus(ticket)}
+              />
+            );
+          })}
+        </div>
       )}
 
-      <div className="space-y-3">
-        {tickets.map((ticket) => {
-          const status = statusLabels[ticket.status_category] ?? statusLabels.new;
-          return (
-            <Card key={ticket.id} className="cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => navigate(`/portal/requests/${ticket.id}`)}>
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <CardTitle className="text-base">{ticket.title}</CardTitle>
-                    <div className="flex items-center gap-3 mt-2">
-                      <Badge variant={status.variant}>{status.label}</Badge>
-                      {ticket.assigned_team && (
-                        <span className="text-sm text-muted-foreground">{ticket.assigned_team.name}</span>
-                      )}
-                      <span className="text-sm text-muted-foreground">{formatDate(ticket.created_at)}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <SlaIndicator dueAt={ticket.sla_resolution_due_at} breachedAt={ticket.sla_resolution_breached_at} />
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                </div>
-              </CardHeader>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
+      {/* Empty state */}
+      {!loading && filtered.length === 0 && (
+        <div className="rounded-xl border bg-card px-6 py-16 flex flex-col items-center gap-3 text-center">
+          <p className="text-sm text-muted-foreground">No requests in this view.</p>
+        </div>
+      )}
+    </PortalPage>
   );
 }
