@@ -58,6 +58,22 @@ const fullFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: 'short',
 });
 
+const shortDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+});
+
+/**
+ * Short month + day ("Apr 24"). Use for chart tick labels and dense lists
+ * where a full date would crowd the layout.
+ */
+export function formatShortDate(input: Date | string | number | null | undefined): string {
+  if (input == null) return '';
+  const ts = input instanceof Date ? input.getTime() : new Date(input).getTime();
+  if (!Number.isFinite(ts)) return '';
+  return shortDateFormatter.format(new Date(ts));
+}
+
 /**
  * Full date + time — use as tooltip content when the visible label is a
  * relative time, so power users can hover for the precise timestamp.

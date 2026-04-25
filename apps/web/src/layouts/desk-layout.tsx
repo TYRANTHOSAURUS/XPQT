@@ -24,7 +24,9 @@ const pageTitles: Record<string, string> = {
 
 export function DeskLayout() {
   const location = useLocation();
-  const pageTitle = pageTitles[location.pathname] ?? 'Service Desk';
+  const pageTitle =
+    pageTitles[location.pathname] ??
+    (location.pathname.startsWith('/desk/reports') ? 'Reports' : 'Service Desk');
 
   return (
     <SidebarProvider>

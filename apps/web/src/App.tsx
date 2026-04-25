@@ -52,7 +52,15 @@ import { VendorsPage } from '@/pages/admin/vendors';
 import { VendorMenusPage } from '@/pages/admin/vendor-menus';
 import { VendorMenuDetailPage } from '@/pages/admin/vendor-menu-detail';
 import { RoutingStudioPage } from '@/pages/admin/routing-studio';
-import { ReportsPage } from '@/pages/desk/reports';
+import { ReportsLayout } from '@/layouts/reports-layout';
+import { OverviewReport } from '@/pages/desk/reports/overview';
+import { SlaReport } from '@/pages/desk/reports/sla';
+import { TeamsReport } from '@/pages/desk/reports/teams';
+import { LocationsReport } from '@/pages/desk/reports/locations';
+import { ResolutionReport } from '@/pages/desk/reports/resolution';
+import { RequestTypesReport } from '@/pages/desk/reports/request-types';
+import { AssetsReport } from '@/pages/desk/reports/assets';
+import { VendorsReport } from '@/pages/desk/reports/vendors';
 import { ApprovalsPage } from '@/pages/desk/approvals';
 import { BrandingPage } from '@/pages/admin/branding';
 import { AdminIndexPage } from '@/pages/admin';
@@ -108,7 +116,17 @@ export function App() {
             <Route path="inbox" element={<InboxPage />} />
             <Route path="tickets" element={<TicketsPage />} />
             <Route path="approvals" element={<ApprovalsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
+            <Route path="reports" element={<ReportsLayout />}>
+              <Route index element={<Navigate to="/desk/reports/overview" replace />} />
+              <Route path="overview" element={<OverviewReport />} />
+              <Route path="sla" element={<SlaReport />} />
+              <Route path="teams" element={<TeamsReport />} />
+              <Route path="locations" element={<LocationsReport />} />
+              <Route path="resolution" element={<ResolutionReport />} />
+              <Route path="request-types" element={<RequestTypesReport />} />
+              <Route path="assets" element={<AssetsReport />} />
+              <Route path="vendors" element={<VendorsReport />} />
+            </Route>
             <Route path="settings" element={<Navigate to="/admin" replace />} />
           </Route>
 
