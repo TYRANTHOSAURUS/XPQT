@@ -27,10 +27,10 @@ export function configEntityOptions(id: string | null | undefined) {
     queryKey: configEntityKeys.detail(id ?? ''),
     queryFn: ({ signal }) => apiFetch<ConfigEntity>(`/config-entities/${id}`, { signal }),
     enabled: Boolean(id),
-    // T3 until apps/web/src/pages/admin/form-schemas.tsx migrates to RQ mutations
-    // that invalidate configEntityKeys on save. Once that's done, raise to
-    // Infinity per §7.2 T4.
-    staleTime: 5 * 60_000,
+    // T4 — config entities are admin-edited; useUpsertConfigEntity invalidates
+    // configEntityKeys.all on save.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 
@@ -46,7 +46,9 @@ export function formSchemasListOptions() {
         signal,
         query: { type: 'form_schema' },
       }),
-    staleTime: 5 * 60_000,
+    // T4 — same invalidation chain.
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 

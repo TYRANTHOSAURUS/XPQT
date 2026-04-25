@@ -43,7 +43,11 @@ export function useUpsertVendor() {
         id ? `/vendors/${id}` : '/vendors',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: vendorKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [qc.invalidateQueries({ queryKey: vendorKeys.lists() })];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: vendorKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -51,6 +55,10 @@ export function useDeleteVendor() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/vendors/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: vendorKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: vendorKeys.lists() }),
+        qc.removeQueries({ queryKey: vendorKeys.detail(id) }),
+      ]),
   });
 }

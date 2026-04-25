@@ -43,7 +43,11 @@ export function useUpsertOrgNode() {
         id ? `/org-nodes/${id}` : '/org-nodes',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: orgNodeKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [qc.invalidateQueries({ queryKey: orgNodeKeys.lists() })];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: orgNodeKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -51,6 +55,10 @@ export function useDeleteOrgNode() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/org-nodes/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: orgNodeKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: orgNodeKeys.lists() }),
+        qc.removeQueries({ queryKey: orgNodeKeys.detail(id) }),
+      ]),
   });
 }

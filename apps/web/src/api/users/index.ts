@@ -53,6 +53,10 @@ export function useUpsertUser() {
         id ? `/users/${id}` : '/users',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: userKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [qc.invalidateQueries({ queryKey: userKeys.lists() })];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: userKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }

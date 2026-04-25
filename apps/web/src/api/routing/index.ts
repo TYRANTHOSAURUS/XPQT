@@ -166,6 +166,47 @@ export function useRoutingRules(filters?: Record<string, unknown>) {
   return useQuery(routingRulesListOptions(filters));
 }
 
+/**
+ * Optimistic toggle for routing_rules.active — admins flip rules off/on
+ * frequently when triaging. Should feel instantaneous; rolls back on error.
+ * Patches every cached rules-list variant (different filter shapes share the
+ * cache prefix `routing/rules`).
+ */
+export function useToggleRoutingRuleActive() {
+  const qc = useQueryClient();
+  return useMutation<
+    RoutingRule,
+    Error,
+    { id: string; active: boolean },
+    { snapshots: Array<[readonly unknown[], RoutingRule[] | undefined]> }
+  >({
+    mutationFn: ({ id, active }) =>
+      apiFetch<RoutingRule>(`${PATHS.rules}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      }),
+    onMutate: async ({ id, active }) => {
+      await qc.cancelQueries({ queryKey: routingKeys.rules() });
+      const snapshots = qc.getQueriesData<RoutingRule[]>({ queryKey: routingKeys.rules() });
+      for (const [key, prev] of snapshots) {
+        if (!prev) continue;
+        qc.setQueryData<RoutingRule[]>(
+          key,
+          prev.map((r) => (r.id === id ? { ...r, active } : r)),
+        );
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (!ctx) return;
+      for (const [key, prev] of ctx.snapshots) qc.setQueryData(key, prev);
+    },
+    // Toggling a rule changes who routes — invalidate the whole namespace
+    // so coverage / simulator / decisions reflect the new state.
+    onSettled: () => qc.invalidateQueries({ queryKey: routingKeys.all }),
+  });
+}
+
 // ---------- location_teams ----------
 
 export function locationTeamsListOptions() {

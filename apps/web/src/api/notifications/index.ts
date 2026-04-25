@@ -40,7 +40,11 @@ export function useUpsertNotificationTemplate() {
         id ? `/notification-templates/${id}` : '/notification-templates',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [qc.invalidateQueries({ queryKey: notificationKeys.lists() })];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: notificationKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -48,6 +52,10 @@ export function useDeleteNotificationTemplate() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/notification-templates/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: notificationKeys.lists() }),
+        qc.removeQueries({ queryKey: notificationKeys.detail(id) }),
+      ]),
   });
 }

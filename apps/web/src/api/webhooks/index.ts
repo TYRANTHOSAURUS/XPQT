@@ -135,6 +135,41 @@ export function useUpdateWebhook(id: string) {
   });
 }
 
+/**
+ * Optimistic toggle for `active` — single click in the webhook grid should
+ * flip the row immediately. Auto-rolls back if the server rejects.
+ */
+export function useToggleWebhookActive() {
+  const qc = useQueryClient();
+  return useMutation<
+    WebhookUpdateResponse,
+    Error,
+    { id: string; active: boolean },
+    { previous: Webhook[] | undefined }
+  >({
+    mutationFn: ({ id, active }) =>
+      apiFetch<WebhookUpdateResponse>(`/workflow-webhooks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      }),
+    onMutate: async ({ id, active }) => {
+      await qc.cancelQueries({ queryKey: webhookKeys.list() });
+      const previous = qc.getQueryData<Webhook[]>(webhookKeys.list());
+      if (previous) {
+        qc.setQueryData<Webhook[]>(
+          webhookKeys.list(),
+          previous.map((w) => (w.id === id ? { ...w, active } : w)),
+        );
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(webhookKeys.list(), ctx.previous);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: webhookKeys.lists() }),
+  });
+}
+
 export function useDeleteWebhook() {
   const qc = useQueryClient();
   return useMutation<{ ok: true }, Error, string>({

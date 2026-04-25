@@ -31,20 +31,39 @@ export const assetKeys = {
   typesList: () => [...assetKeys.types(), 'list'] as const,
 } as const;
 
-export function assetsListOptions(filters?: { roleFilter?: string | null }) {
-  const role = filters?.roleFilter && filters.roleFilter !== 'all' ? filters.roleFilter : null;
+export interface AssetListFilters {
+  roleFilter?: string | null;
+  /** Picker filters (asset-combobox). */
+  assetTypeIds?: string[] | null;
+  spaceId?: string | null;
+  search?: string | null;
+}
+
+export function assetsListOptions(filters: AssetListFilters = {}) {
+  const role = filters.roleFilter && filters.roleFilter !== 'all' ? filters.roleFilter : null;
+  const normalized = {
+    role,
+    assetTypeIds: filters.assetTypeIds?.length ? [...filters.assetTypeIds].sort() : undefined,
+    spaceId: filters.spaceId || undefined,
+    search: filters.search || undefined,
+  };
   return queryOptions({
-    queryKey: [...assetKeys.lists(), { role }] as const,
+    queryKey: [...assetKeys.lists(), normalized] as const,
     queryFn: ({ signal }) =>
       apiFetch<Asset[]>('/assets', {
         signal,
-        query: role ? { asset_role: role } : undefined,
+        query: {
+          asset_role: normalized.role ?? undefined,
+          asset_type_ids: normalized.assetTypeIds?.join(','),
+          space_id: normalized.spaceId,
+          search: normalized.search,
+        },
       }),
     staleTime: 60_000, // T2 — more volatile than teams/vendors.
   });
 }
-export function useAssets() {
-  return useQuery(assetsListOptions());
+export function useAssets(filters: AssetListFilters = {}) {
+  return useQuery(assetsListOptions(filters));
 }
 export function useAssetsFiltered(roleFilter: string | null) {
   return useQuery(assetsListOptions({ roleFilter }));
@@ -71,7 +90,11 @@ export function useUpsertAsset() {
         id ? `/assets/${id}` : '/assets',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [qc.invalidateQueries({ queryKey: assetKeys.lists() })];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: assetKeys.detail(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -79,6 +102,10 @@ export function useDeleteAsset() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/assets/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: assetKeys.lists() }),
+        qc.removeQueries({ queryKey: assetKeys.detail(id) }),
+      ]),
   });
 }

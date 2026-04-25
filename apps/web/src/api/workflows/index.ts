@@ -79,7 +79,13 @@ export function useUpsertWorkflow() {
         id ? `/workflows/${id}` : '/workflows',
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
-    onSettled: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
+    onSettled: (_data, _err, vars) => {
+      const tasks: Promise<unknown>[] = [
+        qc.invalidateQueries({ queryKey: workflowKeys.definitionsList() }),
+      ];
+      if (vars.id) tasks.push(qc.invalidateQueries({ queryKey: workflowKeys.definition(vars.id) }));
+      return Promise.all(tasks);
+    },
   });
 }
 
@@ -87,6 +93,10 @@ export function useDeleteWorkflow() {
   const qc = useQueryClient();
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/workflows/${id}`, { method: 'DELETE' }),
-    onSettled: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
+    onSettled: (_data, _err, id) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: workflowKeys.definitionsList() }),
+        qc.removeQueries({ queryKey: workflowKeys.definition(id) }),
+      ]),
   });
 }

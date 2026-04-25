@@ -25,6 +25,61 @@ export function useTicketDetail(id: string) {
   return useQuery(ticketDetailOptions(id));
 }
 
+/**
+ * Sliced subscriptions to a ticket's individual fields. Sidebar pickers
+ * (Status, Priority, Team, Assignee, Vendor, Tags, Watchers, Cost) read just
+ * one field each — using `select` here lets RQ skip the picker's re-render
+ * when an unrelated field changes (e.g. the activity feed appends, or
+ * description is edited). Selectors are module-scope so they stay stable
+ * across renders (anti-pattern §16: inline arrows defeat the optimization).
+ *
+ * Each hook returns just the slice + the standard isPending/error so the
+ * caller can render unchanged.
+ */
+const selectStatusCategory = (t: TicketDetail) => t.status_category;
+const selectStatus = (t: TicketDetail) => t.status;
+const selectPriority = (t: TicketDetail) => t.priority;
+const selectWaitingReason = (t: TicketDetail) => t.waiting_reason;
+const selectAssignedTeam = (t: TicketDetail) => t.assigned_team ?? null;
+const selectAssignedAgent = (t: TicketDetail) => t.assigned_agent ?? null;
+const selectAssignedVendor = (t: TicketDetail) => t.assigned_vendor ?? null;
+const selectTags = (t: TicketDetail) => t.tags;
+const selectWatchers = (t: TicketDetail) => t.watchers ?? [];
+const selectCost = (t: TicketDetail) => t.cost ?? null;
+const selectSlaId = (t: TicketDetail) => t.sla_id;
+const selectSlaDue = (t: TicketDetail) => ({
+  due: t.sla_resolution_due_at,
+  breached: t.sla_resolution_breached_at,
+});
+const selectInteractionMode = (t: TicketDetail) => t.interaction_mode;
+
+export const useTicketStatusCategory = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectStatusCategory });
+export const useTicketStatus = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectStatus });
+export const useTicketPriority = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectPriority });
+export const useTicketWaitingReason = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectWaitingReason });
+export const useTicketAssignedTeam = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectAssignedTeam });
+export const useTicketAssignedAgent = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectAssignedAgent });
+export const useTicketAssignedVendor = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectAssignedVendor });
+export const useTicketTags = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectTags });
+export const useTicketWatchers = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectWatchers });
+export const useTicketCost = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectCost });
+export const useTicketSlaId = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectSlaId });
+export const useTicketSlaDue = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectSlaDue });
+export const useTicketInteractionMode = (id: string) =>
+  useQuery({ ...ticketDetailOptions(id), select: selectInteractionMode });
+
 export function ticketActivitiesOptions(id: string) {
   return queryOptions({
     queryKey: ticketKeys.activities(id),
@@ -76,7 +131,12 @@ export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilte
           page: filters.page ?? undefined,
         },
       }),
-    staleTime: 30_000, // T2
+    // T1 — multi-agent desk. Other agents change ticket status / assignment
+    // all the time; 30s of staleness was confusing. 10s strikes a balance
+    // with focus refetch picking up the rest. Realtime via Supabase channels
+    // would let this go Infinity-with-pushed-patches; that's a separate
+    // workstream.
+    staleTime: 10_000,
     placeholderData: keepPreviousData,
   });
 }
