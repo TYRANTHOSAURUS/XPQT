@@ -1,0 +1,239 @@
+import {
+  BadRequestException, ForbiddenException, Injectable, NotFoundException,
+} from '@nestjs/common';
+import { SupabaseService } from '../../common/supabase/supabase.service';
+import { TenantContext } from '../../common/tenant-context';
+import { ConflictGuardService } from './conflict-guard.service';
+import { ReservationVisibilityService } from './reservation-visibility.service';
+import type { ActorContext, Reservation } from './dto/types';
+
+/**
+ * ReservationService — read paths, simple lifecycle, and edit/cancel/restore.
+ *
+ * Booking-creation pipeline (the orchestrator) lives in BookingFlowService
+ * (file booking-flow.service.ts) which integrates with the rule resolver
+ * from Phase B. This service handles the simpler, rule-resolver-independent
+ * lifecycle methods.
+ */
+@Injectable()
+export class ReservationService {
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly conflict: ConflictGuardService,
+    private readonly visibility: ReservationVisibilityService,
+  ) {}
+
+  // === Reads ===
+
+  async findOne(id: string, authUid: string): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error || !data) throw new NotFoundException('reservation_not_found');
+    const r = data as unknown as Reservation;
+    this.visibility.assertVisible(r, ctx);
+    return r;
+  }
+
+  async listMine(authUid: string, opts: {
+    scope?: 'upcoming' | 'past' | 'cancelled' | 'all';
+    limit?: number;
+    cursor?: string;
+  }): Promise<{ items: Reservation[]; next_cursor?: string }> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+
+    let q = this.supabase.admin
+      .from('reservations')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .order('start_at', { ascending: false })
+      .limit(limit + 1);
+
+    if (ctx.person_id) {
+      // For listMine, restrict to own reservations regardless of read_all.
+      q = q.eq('requester_person_id', ctx.person_id);
+    } else if (ctx.user_id) {
+      q = q.eq('booked_by_user_id', ctx.user_id);
+    } else {
+      return { items: [] };
+    }
+
+    const now = new Date().toISOString();
+    if (opts.scope === 'upcoming') {
+      q = q.gte('end_at', now).not('status', 'in', '(cancelled,released)');
+    } else if (opts.scope === 'past') {
+      q = q.lt('end_at', now).not('status', 'in', '(cancelled)');
+    } else if (opts.scope === 'cancelled') {
+      q = q.in('status', ['cancelled', 'released']);
+    }
+
+    const { data, error } = await q;
+    if (error) throw new BadRequestException(`list_failed:${error.message}`);
+
+    const rows = (data ?? []) as unknown as Reservation[];
+    return { items: rows.slice(0, limit) };
+  }
+
+  // === Lifecycle ===
+
+  /**
+   * Soft cancel. status='cancelled'. Sets cancellation_grace_until so a
+   * follow-up restore can revert within the grace window.
+   *
+   * For recurring scope='this_and_following' or 'series', the caller is
+   * BookingFlowService which knows how to emit impact preview and split
+   * the series. This method handles a single occurrence.
+   */
+  async cancelOne(id: string, actor: ActorContext, opts: {
+    reason?: string;
+    grace_minutes?: number;
+  }): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const r = await this.findOne(id, actor.user_id);
+
+    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+    if (r.status === 'cancelled') return r;
+    if (r.status === 'completed') throw new BadRequestException('reservation_completed');
+
+    const grace = opts.grace_minutes ?? 5;
+    const cancellationGraceUntil = new Date(Date.now() + grace * 60 * 1000).toISOString();
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
+      .eq('tenant_id', tenantId)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw new BadRequestException(`cancel_failed:${error.message}`);
+
+    // TODO(phase-J): emit reservation.cancelled event + notify + audit (with reason)
+    return data as unknown as Reservation;
+  }
+
+  /**
+   * Restore a cancelled reservation if still within cancellation_grace_until.
+   * Re-runs conflict guard (someone else may have booked the slot).
+   */
+  async restore(id: string, actor: ActorContext): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const r = await this.findOne(id, actor.user_id);
+    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+
+    if (r.status !== 'cancelled') throw new BadRequestException('reservation_not_cancelled');
+    if (!r.cancellation_grace_until || new Date(r.cancellation_grace_until) < new Date()) {
+      throw new BadRequestException('cancellation_grace_expired');
+    }
+
+    // Re-check conflict: someone may have booked this slot in the meantime.
+    const conflicts = await this.conflict.preCheck({
+      space_id: r.space_id,
+      effective_start_at: r.effective_start_at,
+      effective_end_at: r.effective_end_at,
+      exclude_ids: [r.id],
+    });
+    if (conflicts.length > 0) {
+      throw new BadRequestException('reservation_slot_taken');
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .update({ status: 'confirmed', cancellation_grace_until: null })
+      .eq('tenant_id', tenantId)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw new BadRequestException(`restore_failed:${error.message}`);
+
+    // TODO(phase-J): emit reservation.restored event + notify
+    return data as unknown as Reservation;
+  }
+
+  /**
+   * Skip a single occurrence (mark recurrence_skipped + cancelled).
+   */
+  async skipOccurrence(id: string, actor: ActorContext): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const r = await this.findOne(id, actor.user_id);
+    if (!r.recurrence_series_id) {
+      throw new BadRequestException('not_a_recurring_occurrence');
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .update({ status: 'cancelled', recurrence_skipped: true })
+      .eq('tenant_id', tenantId)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) throw new BadRequestException(`skip_failed:${error.message}`);
+    return data as unknown as Reservation;
+  }
+
+  /**
+   * Edit a single occurrence. Sets recurrence_overridden=true if part of a series.
+   * Re-runs conflict guard if time/space changed.
+   *
+   * Full edit-this-and-following / edit-entire-series semantics live in
+   * BookingFlowService since they re-run the rule resolver.
+   */
+  async editOne(id: string, actor: ActorContext, patch: {
+    space_id?: string;
+    start_at?: string;
+    end_at?: string;
+    attendee_count?: number;
+    attendee_person_ids?: string[];
+    host_person_id?: string;
+  }): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const r = await this.findOne(id, actor.user_id);
+    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+
+    const next: Record<string, unknown> = {};
+    if (patch.space_id && patch.space_id !== r.space_id) next.space_id = patch.space_id;
+    if (patch.start_at && patch.start_at !== r.start_at) next.start_at = patch.start_at;
+    if (patch.end_at && patch.end_at !== r.end_at) next.end_at = patch.end_at;
+    if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
+    if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
+    if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
+
+    if (r.recurrence_series_id) next.recurrence_overridden = true;
+
+    if (Object.keys(next).length === 0) return r;
+
+    // The exclusion-constraint will catch race conditions. The trigger
+    // recomputes effective_*_at + time_range from the new values.
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .update(next)
+      .eq('tenant_id', tenantId)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (this.conflict.isExclusionViolation(error)) {
+        throw new BadRequestException('reservation_slot_conflict');
+      }
+      throw new BadRequestException(`edit_failed:${error.message}`);
+    }
+
+    // TODO(phase-J): emit reservation.updated event + notify + audit
+    return data as unknown as Reservation;
+  }
+}

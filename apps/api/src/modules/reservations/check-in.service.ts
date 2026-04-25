@@ -1,0 +1,137 @@
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { SupabaseService } from '../../common/supabase/supabase.service';
+
+/**
+ * CheckInService — handles the explicit check-in action and the
+ * background auto-release scan.
+ *
+ * autoReleaseScan: every 5 min during business hours. Selects rows where
+ * check_in_required = true AND status='confirmed' AND checked_in_at is null
+ * AND now() > start_at + grace. Flips status='released' + released_at=now()
+ * and emits self-explaining release notification.
+ *
+ * Concurrency: scheduled via @Cron, single-instance assumed at this scale.
+ * If the platform later runs multiple instances, wrap in a Postgres
+ * advisory-lock acquisition before scanning.
+ */
+@Injectable()
+export class CheckInService {
+  private readonly log = new Logger(CheckInService.name);
+
+  constructor(private readonly supabase: SupabaseService) {}
+
+  /**
+   * Explicit check-in action. Called by the portal "My bookings" button,
+   * the email check-in deep link, and the desk scheduler row action.
+   */
+  async checkIn(reservationId: string, tenantId: string): Promise<{ id: string; checked_in_at: string }> {
+    // Eligibility: status='confirmed' AND now() between start_at - 15m AND end_at
+    const reservationLookup = await this.supabase.admin
+      .from('reservations')
+      .select('id, status, start_at, end_at, check_in_required, checked_in_at')
+      .eq('tenant_id', tenantId)
+      .eq('id', reservationId)
+      .maybeSingle();
+
+    if (reservationLookup.error || !reservationLookup.data) {
+      throw new NotFoundException('reservation_not_found');
+    }
+
+    const r = reservationLookup.data as {
+      id: string; status: string; start_at: string; end_at: string;
+      check_in_required: boolean; checked_in_at: string | null;
+    };
+
+    if (r.status !== 'confirmed') {
+      throw new BadRequestException(
+        r.status === 'checked_in'
+          ? 'reservation_already_checked_in'
+          : `reservation_not_confirmed:${r.status}`,
+      );
+    }
+
+    const now = new Date();
+    const start = new Date(r.start_at);
+    const end = new Date(r.end_at);
+    const earliestCheckIn = new Date(start.getTime() - 15 * 60 * 1000);
+    if (now < earliestCheckIn) throw new BadRequestException('reservation_too_early_to_check_in');
+    if (now > end) throw new BadRequestException('reservation_already_ended');
+
+    const checkedInAt = now.toISOString();
+    const updated = await this.supabase.admin
+      .from('reservations')
+      .update({ status: 'checked_in', checked_in_at: checkedInAt })
+      .eq('tenant_id', tenantId)
+      .eq('id', reservationId)
+      .select('id')
+      .single();
+
+    if (updated.error) {
+      this.log.error(`checkIn failed: ${updated.error.message}`);
+      throw new BadRequestException('check_in_failed');
+    }
+
+    // TODO(phase-J): emit reservation.checked_in workflow event + audit
+    return { id: r.id, checked_in_at: checkedInAt };
+  }
+
+  /**
+   * Cron — every 5 minutes. Scans across all tenants since this is a
+   * platform-level job. The partial index `idx_reservations_pending_check_in`
+   * keeps the working set tiny.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async autoReleaseScan(): Promise<void> {
+    const cutoffNow = new Date().toISOString();
+
+    // Find rows whose grace has expired.
+    // We can't do `start_at + grace_minutes < now` as a single SQL filter
+    // through supabase-js easily, so we fetch candidates with a generous
+    // upper bound and filter in app. The partial index makes this cheap.
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .select('id, tenant_id, start_at, check_in_grace_minutes, requester_person_id, space_id')
+      .eq('check_in_required', true)
+      .eq('status', 'confirmed')
+      .is('checked_in_at', null)
+      .lte('start_at', cutoffNow)
+      .limit(500);
+
+    if (error) {
+      this.log.error(`autoReleaseScan select error: ${error.message}`);
+      return;
+    }
+
+    const due = (data ?? []).filter((r) => {
+      const startAt = new Date((r as { start_at: string }).start_at).getTime();
+      const grace = (r as { check_in_grace_minutes: number }).check_in_grace_minutes;
+      return Date.now() > startAt + grace * 60 * 1000;
+    }) as Array<{ id: string; tenant_id: string; requester_person_id: string; space_id: string }>;
+
+    if (due.length === 0) return;
+
+    this.log.log(`autoReleaseScan: releasing ${due.length} reservations`);
+
+    for (const r of due) {
+      const updated = await this.supabase.admin
+        .from('reservations')
+        .update({ status: 'released', released_at: new Date().toISOString() })
+        .eq('tenant_id', r.tenant_id)
+        .eq('id', r.id)
+        .eq('status', 'confirmed')           // optimistic: avoid races with concurrent check-in
+        .is('checked_in_at', null)
+        .select('id')
+        .maybeSingle();
+
+      if (updated.error) {
+        this.log.warn(`autoReleaseScan: release ${r.id} failed: ${updated.error.message}`);
+        continue;
+      }
+      if (!updated.data) continue;           // someone checked in just before us — fine
+
+      // TODO(phase-J): emit reservation.released event + send self-explaining
+      // release notification with rebook deep link.
+    }
+  }
+}
