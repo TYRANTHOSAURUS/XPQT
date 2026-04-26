@@ -48,7 +48,9 @@ import {
   ArchiveIcon,
   XCircleIcon,
   GlobeIcon,
+  SearchIcon,
 } from "lucide-react"
+import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { useQuery, queryOptions } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
 import {
@@ -216,6 +218,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
   const location = useLocation()
   const navigate = useNavigate()
   const { setOpen } = useSidebar()
+  const { setOpen: setPaletteOpen } = useCommandPalette()
+  const paletteOpen = React.useCallback(() => setPaletteOpen(true), [setPaletteOpen])
 
   const activePage = navItems.find((item) => location.pathname.startsWith(item.path))
   const [activeNav, setActiveNav] = React.useState(activePage ?? navItems[0])
@@ -233,19 +237,23 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
     queryFn: ({ signal }) => apiFetch<InboxResponse>('/tickets/inbox', { signal, query: { limit: 20 } }),
     staleTime: 30_000,
   }))
-  const inboxTickets = inboxData?.items ?? []
-  const filteredInboxTickets = inboxTickets.filter((ticket) => {
+  // Stabilise the items reference so the filter memo only re-runs when the
+  // server payload actually changes. `inboxData?.items ?? []` would allocate a
+  // new array on every render and defeat the memo.
+  const inboxTickets = React.useMemo(() => inboxData?.items ?? [], [inboxData])
+  const filteredInboxTickets = React.useMemo(() => {
     const query = inboxSearch.trim().toLowerCase()
-    if (!query) return true
-
-    return [
-      ticket.title,
-      inboxPreview(ticket),
-      inboxPoster(ticket),
-      inboxReasonLabel[ticket.inbox_reason],
-      personLabel(ticket.requester) ?? "",
-    ].some((value) => value.toLowerCase().includes(query))
-  })
+    if (!query) return inboxTickets
+    return inboxTickets.filter((ticket) =>
+      [
+        ticket.title,
+        inboxPreview(ticket),
+        inboxPoster(ticket),
+        inboxReasonLabel[ticket.inbox_reason],
+        personLabel(ticket.requester) ?? "",
+      ].some((value) => value.toLowerCase().includes(query))
+    )
+  }, [inboxTickets, inboxSearch])
 
   return (
     <Sidebar
@@ -266,6 +274,21 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
           <SidebarGroup>
             <SidebarGroupContent className={railExpanded ? "px-2" : "px-1.5 md:px-0"}>
               <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    tooltip={{ children: "Search (⌘K)", hidden: railExpanded }}
+                    onClick={() => paletteOpen()}
+                    className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                  >
+                    <SearchIcon className="shrink-0" />
+                    {railExpanded && (
+                      <>
+                        <span>Search</span>
+                        <span className="ml-auto text-xs text-muted-foreground">⌘K</span>
+                      </>
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
                 {navItems.map((item) => (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton

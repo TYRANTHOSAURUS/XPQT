@@ -33,6 +33,7 @@ import { PortalAnnouncementsModule } from './modules/portal-announcements/portal
 import { RoomBookingRulesModule } from './modules/room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from './modules/calendar-sync/calendar-sync.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
+import { SearchModule } from './modules/search/search.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { ReservationsModule } from './modules/reservations/reservations.module';
     RoomBookingRulesModule,
     CalendarSyncModule,
     ReservationsModule,
+    SearchModule,
   ],
   controllers: [HealthController],
   providers: [

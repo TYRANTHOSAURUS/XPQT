@@ -1,4 +1,4 @@
--- 00136_reservation_policy_snapshot_merge.sql
+-- 00137_reservation_policy_snapshot_merge.sql
 -- Atomically merge a JSON object into reservations.policy_snapshot.
 --
 -- Without this, the application code would have to:

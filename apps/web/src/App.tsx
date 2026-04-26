@@ -14,6 +14,7 @@ import { features } from '@/lib/features';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
 import { RouteErrorBoundary } from '@/components/route-error-boundary';
+import { CommandPaletteProvider } from '@/components/command-palette/command-palette';
 
 /*
  * Route-level code splitting: pages are lazy() so each user only downloads the
@@ -130,6 +131,7 @@ export function App() {
         <AuthProvider>
           <TooltipProvider>
             <Toaster position="top-right" richColors />
+            <CommandPaletteProvider>
             <RouteErrorBoundary>
               <Suspense fallback={<RouteFallback />}>
                 <Routes>
@@ -301,6 +303,7 @@ export function App() {
                 </Routes>
               </Suspense>
             </RouteErrorBoundary>
+            </CommandPaletteProvider>
           </TooltipProvider>
         </AuthProvider>
       </ThemeProvider>
