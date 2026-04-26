@@ -34,7 +34,7 @@ import type {
   ServiceLinePayload,
 } from '@/api/room-booking';
 import { formatCurrency, formatFullTimestamp } from '@/lib/format';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { Sparkles } from 'lucide-react';
 import { ServiceSection, type ServiceSelection } from './service-section';
 
@@ -59,6 +59,25 @@ interface Props {
    * Phase G will collapse advanced sections and use this to auto-open one.
    */
   initialFocus?: 'identity' | 'attendees' | 'multi-room' | 'recurring';
+  /**
+   * Active bundle template id, when the user picked a template chip on
+   * /portal/rooms. Forwarded to the backend so `bundle.template_id` lands
+   * on the new bundle.
+   */
+  templateId?: string | null;
+  /**
+   * Template-defined service lines staged on the dialog open. Seeded as
+   * pre-selected ServiceSelections without unit prices — the user expands
+   * the section to confirm prices, but quantities show pre-filled.
+   */
+  templateServices?: Array<{
+    catalog_item_id: string;
+    menu_id?: string | null;
+    quantity?: number;
+    quantity_per_attendee?: number;
+  }> | null;
+  /** Default cost center carried in from the active template. */
+  templateCostCenterId?: string | null;
   onBooked: () => void;
 }
 
@@ -85,6 +104,9 @@ export function BookingConfirmDialog({
   recurrenceRule = null,
   requesterPersonId,
   initialFocus: _initialFocus,
+  templateId = null,
+  templateServices = null,
+  templateCostCenterId = null,
   onBooked,
 }: Props) {
   const [recurring, setRecurring] = useState<boolean>(Boolean(recurrenceRule));
@@ -104,20 +126,41 @@ export function BookingConfirmDialog({
   const [setupSelections, setSetupSelections] = useState<ServiceSelection[]>([]);
 
   // Re-seed every time the dialog opens with a new room (cancel-then-reopen
-  // shouldn't carry stale recurrence picks or service selections).
+  // shouldn't carry stale recurrence picks or service selections). When a
+  // bundle template is active, seed all three sections with the template's
+  // pre-selected services — quantities show in the input so the user can
+  // tweak before submitting; unit prices are filled in once they expand a
+  // section and the lazy-fetch lands.
   useEffect(() => {
     if (!open) return;
     setRecurring(Boolean(recurrenceRule));
     setFrequency(recurrenceRule?.frequency ?? 'weekly');
     setIntervalValue(recurrenceRule?.interval ?? 1);
     setCount(recurrenceRule?.count ?? 8);
-    setCateringOpen(false);
+
+    const seeds = (templateServices ?? []).map<ServiceSelection>((s) => ({
+      catalog_item_id: s.catalog_item_id,
+      menu_id: s.menu_id ?? '',
+      quantity:
+        s.quantity_per_attendee != null
+          ? Math.max(1, Math.round(s.quantity_per_attendee * Math.max(1, attendeeCount)))
+          : (s.quantity ?? 1),
+      unit_price: null, // resolved when the user expands the section
+      unit: null,
+      name: 'Template item',
+    }));
+    // For v1 every template service lands in the catering section as a
+    // visual seed — the section component looks up by catalog_item_id when
+    // the user expands it, so the qty input shows correctly there. We could
+    // bucket by service_type with a second probe, but that adds a query
+    // before the user even opens a section.
+    setCateringOpen(seeds.length > 0);
     setAvOpen(false);
     setSetupOpen(false);
-    setCateringSelections([]);
+    setCateringSelections(seeds);
     setAvSelections([]);
     setSetupSelections([]);
-  }, [open, recurrenceRule, primaryRoom?.space_id]);
+  }, [open, recurrenceRule, primaryRoom?.space_id, templateServices, attendeeCount]);
 
   const createBooking = useCreateBooking();
   const multiBooking = useMultiRoomBooking();
@@ -201,21 +244,30 @@ export function BookingConfirmDialog({
           recurrence_rule: recurrencePayload,
           source: 'portal',
           services: servicesPayload.length > 0 ? servicesPayload : undefined,
-          bundle: servicesPayload.length > 0 ? { bundle_type: 'meeting' } : undefined,
+          bundle:
+            servicesPayload.length > 0
+              ? {
+                  bundle_type: 'meeting',
+                  template_id: templateId ?? undefined,
+                  cost_center_id: templateCostCenterId ?? undefined,
+                }
+              : undefined,
         });
       }
-      toast.success(
+      toastSuccess(
         isApprovalRoute
           ? 'Approval requested'
           : hasServices
-            ? `Booked with ${pluralize(servicesPayload.length, 'service')}`
+            ? `Booked · ${pluralize(servicesPayload.length, 'service')} added`
             : 'Booked',
       );
       onBooked();
       onOpenChange(false);
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Failed to create booking';
-      toast.error(message);
+      toastError(isApprovalRoute ? "Couldn't request approval" : "Couldn't book the room", {
+        error: e,
+        retry: onConfirm,
+      });
     }
   };
 

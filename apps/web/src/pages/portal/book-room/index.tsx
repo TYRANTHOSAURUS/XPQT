@@ -8,10 +8,12 @@ import { usePicker } from '@/api/room-booking';
 import type { RankedRoom } from '@/api/room-booking';
 import { BookingCriteriaBar } from './components/booking-criteria-bar';
 import { BookingResultsList } from './components/booking-results-list';
+import { BundleTemplatePicker } from './components/bundle-template-picker';
 import { FloorPlanPicker } from './components/floor-plan-picker';
 import { RealtimeAvailabilityPill } from './components/realtime-availability-pill';
 import { BookingProgressiveActions } from './components/booking-progressive-actions';
 import { BookingConfirmDialog } from './components/booking-confirm-dialog';
+import type { BundleTemplate } from '@/api/bundle-templates';
 import { usePickerState } from './hooks/use-picker-state';
 import { useRealtimeAvailability } from './hooks/use-realtime-availability';
 
@@ -52,6 +54,7 @@ export function BookRoomPage() {
   const [dialogFocus, setDialogFocus] = useState<
     'identity' | 'attendees' | 'multi-room' | 'recurring' | undefined
   >(undefined);
+  const [activeTemplate, setActiveTemplate] = useState<BundleTemplate | null>(null);
 
   const onBook = (room: RankedRoom) => {
     setPendingPrimary(room);
@@ -65,6 +68,21 @@ export function BookRoomPage() {
   const widenSearch = () => {
     update('mustHaveAmenities', []);
     update('attendeeCount', 1);
+  };
+
+  const onPickTemplate = (template: BundleTemplate | null) => {
+    setActiveTemplate(template);
+    if (!template) return;
+    // Apply room-shape defaults from the template payload. Services are
+    // forwarded to the booking-confirm dialog via `initialTemplateServices`
+    // when the user clicks Book on a room.
+    const payload = template.payload ?? {};
+    if (payload.default_duration_minutes != null) {
+      update('durationMinutes', payload.default_duration_minutes);
+    }
+    if (payload.room_criteria?.must_have_amenities?.length) {
+      update('mustHaveAmenities', payload.room_criteria.must_have_amenities);
+    }
   };
 
   return (
@@ -96,6 +114,11 @@ export function BookRoomPage() {
           and how often your team uses each space.
         </p>
       </header>
+
+      <BundleTemplatePicker
+        selectedId={activeTemplate?.id ?? null}
+        onSelect={onPickTemplate}
+      />
 
       <BookingCriteriaBar state={state} onChange={update} sites={sites} />
 
@@ -174,6 +197,9 @@ export function BookRoomPage() {
         attendeeCount={state.attendeeCount}
         attendeePersonIds={[]}
         recurrenceRule={null}
+        templateId={activeTemplate?.id ?? null}
+        templateServices={activeTemplate?.payload?.services ?? null}
+        templateCostCenterId={activeTemplate?.payload?.default_cost_center_id ?? null}
         requesterPersonId={requesterPersonId}
         initialFocus={dialogFocus}
         onBooked={() => {
