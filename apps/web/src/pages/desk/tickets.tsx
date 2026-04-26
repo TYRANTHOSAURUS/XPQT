@@ -421,7 +421,7 @@ function TicketsView({
       />
 
       {/* Table or List */}
-      <div className="flex-1 overflow-auto pb-4">
+      <div className="flex-1 overflow-auto overscroll-contain pb-4">
         {view === 'list' ? <TicketList {...tableProps} /> : <TicketTable {...tableProps} />}
       </div>
     </div>
@@ -496,7 +496,7 @@ export function TicketsPage() {
           </Panel>
           <Separator />
           <Panel id="detail" defaultSize="45%">
-            <div className="h-full overflow-auto border-l">
+            <div className="h-full overflow-auto overscroll-contain border-l">
               <TicketDetail
                 ticketId={selectedTicketId}
                 onClose={() => setSelectedTicketId(null)}

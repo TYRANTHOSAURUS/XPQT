@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Plus, UserCog, Shield } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Plus, UserCog, Shield, Search } from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -18,13 +19,13 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-  SettingsPageHeader,
-  SettingsPageShell,
-} from '@/components/ui/settings-page';
+  TableInspectorLayout, InspectorPanel,
+} from '@/components/ui/table-inspector-layout';
 import { useQueryClient } from '@tanstack/react-query';
 import { useUsers, userKeys } from '@/api/users';
 import { usePersons } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
+import { UserDetailBody, userDisplayName } from './user-detail';
 
 interface Person {
   id: string;
@@ -50,10 +51,16 @@ interface User {
 }
 
 export function UsersPage() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get('u');
+
   const { data: users, isPending: usersLoading } = useUsers() as { data: User[] | undefined; isPending: boolean };
   const refetchUsers = () => qc.invalidateQueries({ queryKey: userKeys.all });
   const { data: persons } = usePersons() as { data: Person[] | undefined };
+
+  const [search, setSearch] = useState('');
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newUserPersonId, setNewUserPersonId] = useState('');
@@ -66,6 +73,25 @@ export function UsersPage() {
     (users ?? []).map((u) => u.person_id ?? u.person?.id).filter(Boolean) as string[],
   );
   const availablePersons = (persons ?? []).filter((p) => !linkedPersonIds.has(p.id));
+
+  const filteredUsers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return users ?? [];
+    return (users ?? []).filter((u) => {
+      const name = u.person ? `${u.person.first_name} ${u.person.last_name}` : '';
+      return (
+        u.email.toLowerCase().includes(q) ||
+        name.toLowerCase().includes(q)
+      );
+    });
+  }, [users, search]);
+
+  const selectUser = (id: string | null) => {
+    const next = new URLSearchParams(searchParams);
+    if (id) next.set('u', id);
+    else next.delete('u');
+    setSearchParams(next, { replace: true });
+  };
 
   const resetCreate = () => {
     setNewUserPersonId('');
@@ -104,87 +130,65 @@ export function UsersPage() {
   };
 
   const isEmpty = !usersLoading && (users?.length ?? 0) === 0;
+  const hasSelection = Boolean(selectedId);
+
+  const tableEl = (
+    <UsersTable
+      users={filteredUsers}
+      loading={usersLoading}
+      isEmpty={isEmpty}
+      selectedId={selectedId}
+      onSelect={selectUser}
+      onAdd={() => { resetCreate(); setCreateOpen(true); }}
+      hasSelection={hasSelection}
+    />
+  );
+
+  const inspectorEl = hasSelection && selectedId ? (
+    <InspectorPanel
+      onClose={() => selectUser(null)}
+      onExpand={() => navigate(`/admin/users/${selectedId}`)}
+    >
+      <UserInspectorContent userId={selectedId} />
+    </InspectorPanel>
+  ) : null;
 
   return (
-    <SettingsPageShell width="xwide">
-      <SettingsPageHeader
-        backTo="/admin"
-        title="Users"
-        description="Platform accounts linked to a person. Use this list to see who can sign in; manage what each user can do by assigning roles on their detail page."
-        actions={
-          <Button className="gap-1.5" onClick={() => { resetCreate(); setCreateOpen(true); }}>
-            <Plus className="size-4" />
-            Add user
-          </Button>
+    <>
+      <TableInspectorLayout
+        header={
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b px-6 py-4">
+            <div className="min-w-0">
+              <h1 className="text-lg font-semibold">Users</h1>
+              <p className="text-xs text-muted-foreground max-w-2xl">
+                Platform accounts linked to a person. Click a row to inspect; manage roles on the detail page.
+              </p>
+            </div>
+            <Button className="gap-1.5 shrink-0" onClick={() => { resetCreate(); setCreateOpen(true); }}>
+              <Plus className="size-4" />
+              Add user
+            </Button>
+          </div>
         }
+        toolbar={
+          <div className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
+            <div className="relative w-full max-w-sm">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name or email…"
+                className="h-8 pl-8"
+              />
+            </div>
+            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+              {filteredUsers.length} {filteredUsers.length === 1 ? 'user' : 'users'}
+            </span>
+          </div>
+        }
+        list={tableEl}
+        inspector={inspectorEl}
       />
-
-      {usersLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-
-      {!usersLoading && users && users.length > 0 && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead className="w-[240px]">Email</TableHead>
-              <TableHead className="w-[100px]">Status</TableHead>
-              <TableHead>Roles</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {users.map((user) => (
-              <TableRow key={user.id}>
-                <TableCell className="font-medium">
-                  <Link
-                    to={`/admin/users/${user.id}`}
-                    className="hover:underline underline-offset-2"
-                  >
-                    {user.person ? `${user.person.first_name} ${user.person.last_name}` : user.email}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
-                <TableCell>
-                  <Badge variant={user.status === 'active' ? 'default' : 'secondary'} className="capitalize">
-                    {user.status}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  {(user.role_assignments ?? []).length === 0 ? (
-                    <span className="text-xs text-muted-foreground">None</span>
-                  ) : (
-                    <div className="flex flex-wrap gap-1">
-                      {(user.role_assignments ?? []).map((ra) => (
-                        <Badge key={ra.id} variant="outline" className="text-xs gap-1">
-                          <Shield className="size-2.5" />
-                          {ra.role?.name ?? 'Unknown'}
-                          {ra.domain_scope && ra.domain_scope.length > 0 && (
-                            <span className="text-muted-foreground">({ra.domain_scope.join(', ')})</span>
-                          )}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-
-      {isEmpty && (
-        <div className="flex flex-col items-center gap-3 py-16 text-center">
-          <UserCog className="size-10 text-muted-foreground" />
-          <div className="text-sm font-medium">No users yet</div>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            Add a user to give a person access to the platform. Assign user roles from the user's
-            detail page after creation.
-          </p>
-          <Button className="gap-1.5" onClick={() => { resetCreate(); setCreateOpen(true); }}>
-            <Plus className="size-4" />
-            Add user
-          </Button>
-        </div>
-      )}
 
       {/* Add user dialog — keeps the user on this page; complex scoping happens on the detail page. */}
       <Dialog open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open) resetCreate(); }}>
@@ -259,6 +263,158 @@ export function UsersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </SettingsPageShell>
+    </>
+  );
+}
+
+function UsersTable({
+  users,
+  loading,
+  isEmpty,
+  selectedId,
+  onSelect,
+  onAdd,
+  hasSelection,
+}: {
+  users: User[];
+  loading: boolean;
+  isEmpty: boolean;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  hasSelection: boolean;
+}) {
+  if (loading) {
+    return <div className="px-6 py-6 text-sm text-muted-foreground">Loading…</div>;
+  }
+
+  if (isEmpty) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <UserCog className="size-10 text-muted-foreground" />
+        <div className="text-sm font-medium">No users yet</div>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Add a user to give a person access to the platform. Assign user roles from the user's
+          detail page after creation.
+        </p>
+        <Button className="gap-1.5" onClick={onAdd}>
+          <Plus className="size-4" />
+          Add user
+        </Button>
+      </div>
+    );
+  }
+
+  if (users.length === 0) {
+    return (
+      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+        No users match the current search.
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader className="bg-muted/30 sticky top-0 z-10">
+        <TableRow>
+          <TableHead className="px-6">Name</TableHead>
+          {!hasSelection && <TableHead className="w-[260px]">Email</TableHead>}
+          <TableHead className="w-[110px]">Status</TableHead>
+          {!hasSelection && <TableHead>Roles</TableHead>}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {users.map((user) => {
+          const selected = selectedId === user.id;
+          return (
+            <TableRow
+              key={user.id}
+              data-selected={selected ? 'true' : undefined}
+              onClick={() => onSelect(user.id)}
+              className={cn(
+                'cursor-pointer transition-colors',
+                selected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-muted/40',
+              )}
+            >
+              <TableCell
+                className={cn(
+                  'font-medium px-6',
+                  selected && 'border-l-2 border-l-primary pl-[22px]',
+                )}
+              >
+                <div className="min-w-0">
+                  <div className="truncate">
+                    {user.person ? `${user.person.first_name} ${user.person.last_name}` : user.email}
+                  </div>
+                  {hasSelection && user.person && (
+                    <div className="text-xs text-muted-foreground truncate mt-0.5">
+                      {user.email}
+                    </div>
+                  )}
+                </div>
+              </TableCell>
+              {!hasSelection && (
+                <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
+              )}
+              <TableCell>
+                <Badge variant={user.status === 'active' ? 'default' : 'secondary'} className="capitalize">
+                  {user.status}
+                </Badge>
+              </TableCell>
+              {!hasSelection && (
+                <TableCell>
+                  {(user.role_assignments ?? []).length === 0 ? (
+                    <span className="text-xs text-muted-foreground">None</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {(user.role_assignments ?? []).map((ra) => (
+                        <Badge key={ra.id} variant="outline" className="text-xs gap-1">
+                          <Shield className="size-2.5" />
+                          {ra.role?.name ?? 'Unknown'}
+                          {ra.domain_scope && ra.domain_scope.length > 0 && (
+                            <span className="text-muted-foreground">({ra.domain_scope.join(', ')})</span>
+                          )}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </TableCell>
+              )}
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+/**
+ * Body of the inspector: identity heading + UserDetailBody sections. Chrome
+ * (close, expand, panel sizing, scroll wrapper) is provided by InspectorPanel.
+ */
+function UserInspectorContent({ userId }: { userId: string }) {
+  const { data: users } = useUsers() as { data: User[] | undefined };
+  const headerUser = users?.find((u) => u.id === userId);
+
+  return (
+    <div className="flex flex-col gap-8 px-6 pt-6 pb-10">
+      {headerUser && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="text-2xl font-semibold tracking-tight truncate">
+              {userDisplayName(headerUser)}
+            </h2>
+            <Badge
+              variant={headerUser.status === 'active' ? 'default' : 'secondary'}
+              className="capitalize shrink-0 mt-1.5"
+            >
+              {headerUser.status}
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground truncate">{headerUser.email}</p>
+        </div>
+      )}
+      <UserDetailBody userId={userId} />
+    </div>
   );
 }

@@ -40,7 +40,7 @@ interface RoleAssignment {
   role: { id: string; name: string; type: string | null } | null;
 }
 
-interface User {
+export interface UserDetail {
   id: string;
   email: string;
   username: string | null;
@@ -52,66 +52,47 @@ interface User {
 
 const userDetailKey = (id: string) => ['users', 'detail', id] as const;
 
-function userDetailOptions(id: string | undefined) {
+export function userDetailOptions(id: string | undefined) {
   return queryOptions({
     queryKey: userDetailKey(id ?? ''),
-    queryFn: ({ signal }) => apiFetch<User>(`/users/${id}`, { signal }),
+    queryFn: ({ signal }) => apiFetch<UserDetail>(`/users/${id}`, { signal }),
     enabled: Boolean(id),
     staleTime: 30_000,
   });
 }
 
-export function UserDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const userQuery = useQuery(userDetailOptions(id));
-  const effectiveQuery = useEffectivePermissions(id);
-  const auditQuery = useUserAudit(id);
+export function userDisplayName(user: Pick<UserDetail, 'email' | 'person'>): string {
+  return user.person
+    ? `${user.person.first_name} ${user.person.last_name}`
+    : user.email;
+}
+
+/**
+ * Body sections for the user detail view. Used by both the dedicated route
+ * (UserDetailPage) and the inspector panel on /admin/users.
+ */
+export function UserDetailBody({ userId }: { userId: string }) {
+  const userQuery = useQuery(userDetailOptions(userId));
+  const effectiveQuery = useEffectivePermissions(userId);
+  const auditQuery = useUserAudit(userId);
 
   const user = userQuery.data;
   const effective = effectiveQuery.data;
 
   if (userQuery.isLoading) {
-    return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader title="User" backTo="/admin/users" />
-        <Skeleton className="h-96" />
-      </SettingsPageShell>
-    );
+    return <Skeleton className="h-96" />;
   }
 
   if (!user) {
     return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader title="User not found" backTo="/admin/users" />
-        <p className="text-sm text-muted-foreground">
-          This user doesn't exist or you don't have access.
-        </p>
-      </SettingsPageShell>
+      <p className="text-sm text-muted-foreground">
+        This user doesn't exist or you don't have access.
+      </p>
     );
   }
 
-  const displayName = user.person
-    ? `${user.person.first_name} ${user.person.last_name}`
-    : user.email;
-
   return (
-    <SettingsPageShell width="xwide">
-      <SettingsPageHeader
-        backTo="/admin/users"
-        title={displayName}
-        description={user.email}
-        actions={
-          user.person ? (
-            <Link
-              to={`/admin/persons?highlight=${user.person.id}`}
-              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
-            >
-              View person
-            </Link>
-          ) : null
-        }
-      />
-
+    <>
       <SettingsSection title="Identity">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <Field label="Email" value={user.email} />
@@ -159,15 +140,62 @@ export function UserDetailPage() {
           emptyLabel="No role changes for this user yet."
         />
       </SettingsSection>
+    </>
+  );
+}
+
+export function UserDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const userQuery = useQuery(userDetailOptions(id));
+  const user = userQuery.data;
+
+  if (userQuery.isLoading) {
+    return (
+      <SettingsPageShell width="xwide">
+        <SettingsPageHeader title="User" backTo="/admin/users" />
+        <Skeleton className="h-96" />
+      </SettingsPageShell>
+    );
+  }
+
+  if (!user || !id) {
+    return (
+      <SettingsPageShell width="xwide">
+        <SettingsPageHeader title="User not found" backTo="/admin/users" />
+        <p className="text-sm text-muted-foreground">
+          This user doesn't exist or you don't have access.
+        </p>
+      </SettingsPageShell>
+    );
+  }
+
+  return (
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        backTo="/admin/users"
+        title={userDisplayName(user)}
+        description={user.email}
+        actions={
+          user.person ? (
+            <Link
+              to={`/admin/persons?highlight=${user.person.id}`}
+              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+            >
+              View person
+            </Link>
+          ) : null
+        }
+      />
+      <UserDetailBody userId={id} />
     </SettingsPageShell>
   );
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex min-w-0 flex-col gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <div className="text-sm">{value}</div>
+      <div className="text-sm break-words">{value}</div>
     </div>
   );
 }
