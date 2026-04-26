@@ -265,6 +265,112 @@ event_type vocabulary (consumed by reporting + activity feeds):
 | `room_booking_rule.{created,updated,deleted}` | `RoomBookingRulesService` | rule lifecycle |
 | `reservation.override_used` | `BookingFlowService.create` (override path) | actor used `rooms.override_rules` to bypass a deny |
 | `outlook.intercept_outcome` | `RoomMailboxService` | one per Pattern-A invite handled, with outcome enum |
+| `bundle.created` | `BundleService.attachServicesToReservation` | composite booking — entity arrays in `details` (orders, lines, asset_reservations, approvals) |
+| `bundle.cancelled` | `BundleCascadeService.cancelBundle` | full or partial cascade; `keep_line_ids`, `fulfilled_line_ids`, and entity-cascade arrays in `details` |
+| `order.created` | `OrderService.createStandalone` | services-only bundle (no reservation) |
+| `order.line_cancelled` | `BundleCascadeService.cancelLine` | single-line cancel; cascaded ticket + asset_reservation ids; `closed_approval_ids` if any approval row dropped to empty scope |
+
+## Bundles + service flow (sub-project 2)
+
+Bundles are the orchestration parent that ties a reservation to one or more
+**service lines** (catering, AV, room setup) and a **standalone-order**
+shape (no reservation). Created lazily on first-service-attach — room-only
+bookings stay simple.
+
+```
+booking_bundles                       (lazy on first attach)
+  ├── primary_reservation_id ?────→  reservations
+  ├── orders[1..N] ─────────────→ order_line_items[1..N]
+  │                                  ├── linked_ticket_id    → tickets (work_order)
+  │                                  └── linked_asset_reservation_id → asset_reservations
+  └── approvals[*] (deduped by approver_person_id, scope_breakdown jsonb)
+```
+
+The four lifecycle methods + their entry points:
+
+| Method | Entry point | Notes |
+|---|---|---|
+| `BundleService.attachServicesToReservation` | `POST /reservations` (with `services[]`) — called from `BookingFlowService.create` post-write | Lazy bundle create; one order per service_type group; per-line asset GiST conflict guard fires here |
+| `OrderService.createStandalone` | `POST /orders/standalone` | Services-only bundle (`primary_reservation_id` null) |
+| `BundleCascadeService.cancelLine` | (internal) | Per-line cancel + cascade to ticket + asset_reservation; auto-close empty-scope approvals |
+| `BundleCascadeService.cancelBundle` | `POST /booking-bundles/:id/cancel` | Smart-default cascade with `keep_line_ids[]` opt-out; fulfilled lines protected |
+
+### Service rule resolver
+
+`ServiceRuleResolverService` shares `PredicateEngineService` with room rules
+through a refactored `BaseEvaluationContext` shape. Service rules carry a
+distinct `ServiceEvaluationContext` (catalog item / menu / order — not
+room / space / booking) so predicates can address `$.line.menu.fulfillment_vendor_id`
+or `$.order.total_per_occurrence` directly.
+
+Specificity (lowest is most specific):
+1. `target_kind='catalog_item'` — `target_id = line.catalog_item_id`
+2. `target_kind='menu'` — `target_id = line.menu_id`
+3. `target_kind='catalog_category'` — `target_id = catalog_items.category`
+4. `target_kind='tenant'` — applies to every line
+
+### Approval dedup
+
+`ApprovalRoutingService.assemble` per spec §4.4:
+
+1. Collect every `require_approval` / `allow_override` outcome across lines.
+2. Resolve each rule's `approver_target` to concrete person_id list:
+   - `person` → `[personId]`
+   - `role` → expanded to active members (first-approver-wins enforced on
+     approval submission, sub-project 5+)
+   - `derived` (`cost_center.default_approver`) → `cost_centers` row lookup
+3. Group by `approver_person_id`; merge `scope_breakdown.{reservation_ids,
+   order_line_item_ids, asset_reservation_ids, ticket_ids, reasons}` arrays
+   in TypeScript (concat + dedupe per key) — the jsonb `||` operator does
+   shallow merge and would lose entries.
+4. Upsert via SELECT-merge-UPDATE inside the bundle transaction; the unique
+   partial index `(target_entity_id, approver_person_id) WHERE status='pending'`
+   (migration 00146) is the safety net — concurrent inserts surface as
+   `23505` and the second writer retries the SELECT-merge path.
+
+### Bundle visibility
+
+Three tiers per spec §3.5, mirrored in TS (`BundleVisibilityService`) and
+SQL (`bundle_is_visible_to_user` from migration 00148). Both implementations
+must agree.
+
+1. **Participant** — `requester_person_id`, `host_person_id`, anyone in any
+   approval row's `approver_person_id` for this bundle, or any work-order
+   ticket's `assigned_user_id`.
+2. **Operator** — `rooms.read_all` permission. Location-grant scoping is a
+   sub-project 4 follow-up.
+3. **Admin** — `rooms.admin` permission. Tenant-wide.
+
+### Asset conflict guard
+
+Asset reservations get the same GiST exclusion treatment as rooms (migration
+00142). Two bookings can never reserve the same projector at overlapping
+times. Cancelled / released reservations don't block new ones — the
+exclusion's `WHERE` clause covers `status='confirmed'` only.
+
+```
+asset_reservations
+  exclude using gist (asset_id with =, time_range with &&) where (status = 'confirmed')
+```
+
+### Status rollup
+
+Bundles don't store a status column — `booking_bundle_status_v` derives it
+at read time from linked entities. The CASE ladder:
+
+```
+no entities yet                     → 'pending'
+any reservation = 'pending_approval' or order = 'submitted'
+                                    → 'pending_approval'
+all reservations cancelled/released AND
+all orders cancelled/fulfilled      → 'partially_cancelled' (if any fulfilled)
+                                       or 'cancelled' (otherwise)
+any reservation/order cancelled     → 'partially_cancelled'
+otherwise                           → 'confirmed'
+```
+
+A 'completed' state is in the spec but not yet emitted by the view — fold
+it in when sub-project 4 (reception) actually consumes it.
 
 Audit emission is best-effort (try/catch wrapping the insert) — the lifecycle
 event commits even if audit insert fails. Audit gaps will show as warning
@@ -303,17 +409,33 @@ Backend:
 - `apps/api/src/modules/room-booking-rules/**`
 - `apps/api/src/modules/calendar-sync/**`
 - `apps/api/src/modules/floor-plans/**`
+- `apps/api/src/modules/booking-bundles/**`
+- `apps/api/src/modules/orders/**`
+- `apps/api/src/modules/service-catalog/**`
+- `apps/api/src/modules/bundle-templates/**`
+- `apps/api/src/modules/cost-centers/**`
 
 Frontend:
 - `apps/web/src/pages/portal/book-room/**`
 - `apps/web/src/pages/portal/me-bookings/**`
+- `apps/web/src/pages/portal/order/**`
 - `apps/web/src/pages/desk/scheduler/**`
 - `apps/web/src/pages/desk/bookings.tsx`
 - `apps/web/src/pages/admin/room-booking-rules/**`
+- `apps/web/src/pages/admin/booking-services/**`
+- `apps/web/src/pages/admin/cost-centers/**`
+- `apps/web/src/pages/admin/bundle-templates/**`
 - `apps/web/src/pages/admin/calendar-sync.tsx`
 - `apps/web/src/api/room-booking/**`
 - `apps/web/src/api/room-booking-rules/**`
 - `apps/web/src/api/calendar-sync/**`
+- `apps/web/src/api/booking-bundles/**`
+- `apps/web/src/api/orders/**`
+- `apps/web/src/api/service-catalog/**`
+- `apps/web/src/api/service-rules/**`
+- `apps/web/src/api/cost-centers/**`
+- `apps/web/src/api/bundle-templates/**`
+- `apps/web/src/api/asset-reservations/**`
 
 Migrations — any add/alter of:
 
@@ -322,6 +444,15 @@ Migrations — any add/alter of:
   `calendar_sync_links`, `calendar_sync_events`,
   `room_calendar_conflicts`, `floor_plans`,
   `room_booking_simulation_scenarios`.
+- `booking_bundles`, `bundle_templates`, `cost_centers`, `service_rules`,
+  `service_rule_versions`, `service_rule_simulation_scenarios`,
+  `service_rule_templates`, `asset_reservations`.
+- `orders` and `order_line_items` columns added in sub-project 2
+  (`booking_bundle_id`, `requested_for_*`, `recurrence_*`, `service_window_*`,
+  `policy_snapshot`, `linked_asset_reservation_id`, `repeats_with_series`).
+- `tickets.booking_bundle_id` / `tickets.linked_order_line_item_id`.
+- `approvals.scope_breakdown` + the dedup unique partial index.
+- `catalog_menus.fulfillment_team_id` + the XOR check + the resolver function.
 - `spaces` columns related to booking config (`min_attendees`,
   buffers, check-in, calendar sync mode, floor_plan_polygon, etc.).
 - `business_hours_calendars` if the working_hours / holidays jsonb shape
