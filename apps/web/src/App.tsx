@@ -53,6 +53,8 @@ const PortalCalendarSyncCallbackPage = lazyNamed(() => import('@/pages/portal/ca
 const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-sync'), 'AdminCalendarSyncPage');
 const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/index'), 'RoomBookingRulesPage');
 const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
+const CostCentersPage = lazyNamed(() => import('@/pages/admin/cost-centers'), 'CostCentersPage');
+const CostCenterDetailPage = lazyNamed(() => import('@/pages/admin/cost-center-detail'), 'CostCenterDetailPage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -222,6 +224,9 @@ export function App() {
                   {/* Room booking rules (D-engine) — index + detail */}
                   <Route path="room-booking-rules" element={<RoomBookingRulesPage />} />
                   <Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
+                  {/* Cost centers (sub-project 2) — GL chargeback codes */}
+                  <Route path="cost-centers" element={<CostCentersPage />} />
+                  <Route path="cost-centers/:id" element={<CostCenterDetailPage />} />
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
                   <Route path="request-types/:id" element={<RequestTypeDetailPage />} />
