@@ -133,6 +133,7 @@ export class ReservationController {
       requester_id: dto.requester_id,
       sort: dto.sort,
       limit: dto.limit,
+      include_unavailable: dto.include_unavailable,
     };
     return this.picker.list(input, actor);
   }

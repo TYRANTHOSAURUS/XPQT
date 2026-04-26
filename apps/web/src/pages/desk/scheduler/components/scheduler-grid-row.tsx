@@ -16,6 +16,12 @@ interface Props {
   totalColumns: number;
   /** Px width of the leading "room name" column. */
   rowLabelWidth: number;
+  /**
+   * Fixed row height (px). The virtualizer paints rows at this height; the
+   * row element clamps both its outer container and the inner slot column
+   * to keep grid lines aligned regardless of label content.
+   */
+  rowHeight?: number;
   /** Cells the operator has shift-selected on this row (multi-room mode). */
   selectedCells: Set<number>;
   /** Per-cell outcomes when "Booking for" is set. */
@@ -55,6 +61,7 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
   windowEndIso,
   totalColumns,
   rowLabelWidth,
+  rowHeight = 56,
   selectedCells,
   cellOutcomes,
   pendingCreate,
@@ -104,14 +111,15 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
       className="grid border-b transition-colors duration-100 hover:bg-muted/20"
       style={{
         gridTemplateColumns: `${rowLabelWidth}px 1fr`,
+        height: `${rowHeight}px`,
         transitionTimingFunction: 'var(--ease-snap)',
       }}
     >
       {/* Room name column */}
-      <div className="sticky left-0 z-10 flex min-w-0 items-center gap-2 border-r bg-background px-3 py-2">
+      <div className="sticky left-0 z-10 flex min-w-0 items-center gap-2 overflow-hidden border-r bg-background px-3">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{room.name}</div>
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          <div className="truncate text-sm font-medium leading-tight">{room.name}</div>
+          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground leading-tight">
             <span className="tabular-nums">
               {room.capacity ? `${room.capacity} seats` : '—'}
             </span>
@@ -136,8 +144,8 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
 
       {/* Slot column */}
       <div
-        className="relative h-12 cursor-cell"
-        style={bgStyle}
+        className="relative cursor-cell overflow-hidden"
+        style={{ ...bgStyle, height: `${rowHeight}px` }}
         onPointerDown={(e) => onCellPointerDown?.(e, room.space_id)}
         onPointerMove={(e) => {
           onCellPointerMove?.(e);

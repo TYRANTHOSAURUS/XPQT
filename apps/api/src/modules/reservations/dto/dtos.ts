@@ -56,6 +56,11 @@ export interface PickerDto {
   requester_id?: string;
   sort?: 'best_match' | 'closest' | 'smallest_fit' | 'most_underused';
   limit?: number;
+  /**
+   * Desk scheduler flag — return every candidate room even if it has
+   * conflicts in the requested window. See PickerInput.include_unavailable.
+   */
+  include_unavailable?: boolean;
 }
 
 export interface FindTimeDto {

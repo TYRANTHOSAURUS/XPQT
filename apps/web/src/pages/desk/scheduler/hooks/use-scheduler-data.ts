@@ -42,6 +42,10 @@ export function useSchedulerData(args: {
     requester_id: args.bookForPersonId ?? undefined,
     sort: 'best_match',
     limit: 200,
+    // The scheduler grid needs every reservable room's row, even ones that
+    // already have conflicts in the visible window. Without this, creating a
+    // booking causes the room (and its bookings) to vanish from the grid.
+    include_unavailable: true,
   });
 
   // Filter on room type + name search client-side (the picker has no

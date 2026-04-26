@@ -6,6 +6,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { PersonPicker } from '@/components/person-picker';
 import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
 import { ApiError } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
@@ -16,23 +17,31 @@ interface Props {
   room: RankedRoom | null;
   startAtIso: string;
   endAtIso: string;
-  requesterPersonId: string;
-  bookForName?: string | null;
+  /**
+   * Operator's own person id — the safe default when the toolbar's
+   * "Booking for" picker is empty. Used as the seed for the per-booking
+   * picker inside this dialog.
+   */
+  currentUserPersonId: string;
+  /**
+   * Toolbar-scoped requester. When set, this dialog seeds with that person
+   * (the common "operator runs through a queue of bookings on someone's
+   * behalf" flow). The dialog still lets the operator override per booking,
+   * because real desks routinely take a request "actually this one is for
+   * Sarah" mid-queue and we don't want to make them go fix the toolbar.
+   */
+  toolbarBookForPersonId: string | null;
   onCreated?: () => void;
 }
 
 /**
  * Quick-create form fired when the operator releases a drag-create on an
  * empty cell. Composed from Field primitives per CLAUDE.md mandate.
- * The popover opens with (space_id, start_at, end_at) pre-filled and a
- * single editable input — attendee count — because the rest is implicit
- * from the gesture.
  *
  * Implementation: rendered as a Dialog (centered) instead of a true
  * positioned Popover because the gesture's release point is unstable
  * during a drag — a centered modal avoids "popover lands off-screen on a
- * fast release". UX-equivalent for keyboard users; better for everyone
- * else.
+ * fast release".
  */
 export function SchedulerCreatePopover({
   open,
@@ -40,28 +49,41 @@ export function SchedulerCreatePopover({
   room,
   startAtIso,
   endAtIso,
-  requesterPersonId,
-  bookForName,
+  currentUserPersonId,
+  toolbarBookForPersonId,
   onCreated,
 }: Props) {
   const [attendeeCount, setAttendeeCount] = useState(2);
+  // Per-dialog requester. Seeded from the toolbar's "Booking for" when set,
+  // else the operator's own person id. Editable inline so a desk agent can
+  // book on behalf of one person without committing the rest of their
+  // session to that requester.
+  const [requesterPersonId, setRequesterPersonId] = useState<string>('');
   const create = useCreateBooking();
 
   useEffect(() => {
-    // Reset when re-opened on a different cell. Default to the room's
-    // min_attendees if it has one — respects the room's policy floor and
-    // saves the operator a click on rooms gated to ≥ N people.
-    if (open) {
-      const seed = room?.min_attendees && room.min_attendees > 0 ? room.min_attendees : 2;
-      setAttendeeCount(seed);
-    }
-  }, [open, room?.space_id, room?.min_attendees, startAtIso]);
+    if (!open) return;
+    const seed = room?.min_attendees && room.min_attendees > 0 ? room.min_attendees : 2;
+    setAttendeeCount(seed);
+    setRequesterPersonId(toolbarBookForPersonId ?? currentUserPersonId);
+  }, [
+    open,
+    room?.space_id,
+    room?.min_attendees,
+    startAtIso,
+    toolbarBookForPersonId,
+    currentUserPersonId,
+  ]);
 
   if (!room) return null;
   const overCapacity =
     typeof room.capacity === 'number' && room.capacity > 0 && attendeeCount > room.capacity;
 
   const submit = async () => {
+    if (!requesterPersonId) {
+      toast.error('Pick who this booking is for.');
+      return;
+    }
     try {
       await create.mutateAsync({
         space_id: room.space_id,
@@ -81,18 +103,34 @@ export function SchedulerCreatePopover({
     }
   };
 
+  const isSelf = requesterPersonId === currentUserPersonId;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Book {room.name}</DialogTitle>
           <DialogDescription>
-            {bookForName ? `For ${bookForName}.` : 'For yourself.'}{' '}
             {formatFullTimestamp(startAtIso)} – {formatFullTimestamp(endAtIso)}
           </DialogDescription>
         </DialogHeader>
 
         <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="scheduler-create-requester">Booking for</FieldLabel>
+            <PersonPicker
+              value={requesterPersonId || null}
+              onChange={(id) => setRequesterPersonId(id || currentUserPersonId)}
+              placeholder="Pick a person"
+              clearLabel={isSelf ? null : 'Book as myself'}
+            />
+            <FieldDescription>
+              {isSelf
+                ? 'You — change to book on behalf of someone else.'
+                : 'Switch back to yourself with the clear button below.'}
+            </FieldDescription>
+          </Field>
+
           <Field>
             <FieldLabel htmlFor="scheduler-create-attendees">Attendees</FieldLabel>
             <Input
@@ -129,7 +167,7 @@ export function SchedulerCreatePopover({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={create.isPending}>
+          <Button onClick={submit} disabled={create.isPending || !requesterPersonId}>
             {create.isPending ? 'Booking…' : 'Book'}
           </Button>
         </DialogFooter>

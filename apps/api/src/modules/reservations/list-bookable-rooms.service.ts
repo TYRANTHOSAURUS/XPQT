@@ -83,8 +83,10 @@ export class ListBookableRoomsService {
 
       // Hide denied rooms from non-service-desk users
       if (outcome.effect === 'deny' && !actor.is_service_desk) continue;
-      // Hide unavailable rooms
-      if (!isAvailable) continue;
+      // Hide unavailable rooms — unless the caller (typically the desk
+      // scheduler) has explicitly asked to keep them, in which case the
+      // grid will paint the conflicting blocks itself.
+      if (!isAvailable && !input.include_unavailable) continue;
 
       const ranking = this.ranking.score(space as never, requesterId, input);
 

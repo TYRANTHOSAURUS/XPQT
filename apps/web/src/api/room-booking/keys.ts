@@ -57,6 +57,13 @@ export interface PickerInput {
   requester_id?: string;
   sort?: 'best_match' | 'closest' | 'smallest_fit' | 'most_underused';
   limit?: number;
+  /**
+   * When true, rooms with conflicts in the window are still returned. The
+   * desk scheduler sets this so the grid keeps every reservable room visible
+   * regardless of bookings — without it, making a booking on a room makes
+   * the row disappear from the scheduler. Portal employees leave it false.
+   */
+  include_unavailable?: boolean;
 }
 
 export interface FindTimeInput {

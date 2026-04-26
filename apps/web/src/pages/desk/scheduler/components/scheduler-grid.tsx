@@ -87,7 +87,7 @@ export function SchedulerGrid({
   dayStartHour,
   dayEndHour,
   cellMinutes,
-  rowHeight = 48,
+  rowHeight = 56,
   rowLabelWidth = 220,
   cellOutcomesByRoom,
   selectedCellsByRoom,
@@ -106,6 +106,11 @@ export function SchedulerGrid({
 }: Props) {
   const parentRef = useRef<HTMLDivElement | null>(null);
 
+  // Fixed-size virtualizer. Every row paints exactly `rowHeight` px because
+  // SchedulerGridRow's own outer element clamps to `h-14` — without that
+  // clamp, the room-name column's two text lines + padding could nudge
+  // rows past the estimate, leaving gaps as the virtualizer translated
+  // each row to its measured top. Stay deterministic, drop measureElement.
   const rowVirtualizer = useVirtualizer({
     count: rooms.length,
     getScrollElement: () => parentRef.current,
@@ -178,12 +183,12 @@ export function SchedulerGrid({
             <div
               key={room.space_id}
               data-index={vr.index}
-              ref={rowVirtualizer.measureElement}
               style={{
                 position: 'absolute',
                 top: 0,
                 left: 0,
                 right: 0,
+                height: `${rowHeight}px`,
                 transform: `translateY(${vr.start}px)`,
               }}
             >
@@ -194,6 +199,7 @@ export function SchedulerGrid({
                 windowEndIso={windowEndIso}
                 totalColumns={totalColumns}
                 rowLabelWidth={rowLabelWidth}
+                rowHeight={rowHeight}
                 selectedCells={selectedCells}
                 cellOutcomes={cellOutcomes}
                 pendingCreate={pendingCreateForRow}

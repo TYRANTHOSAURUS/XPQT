@@ -148,6 +148,16 @@ export interface PickerInput {
   requester_id?: string;        // when service desk is booking on behalf
   sort?: 'best_match' | 'closest' | 'smallest_fit' | 'most_underused';
   limit?: number;
+  /**
+   * When true, rooms with conflicting reservations in [start_at, end_at) are
+   * still returned (with their `rule_outcome` reflecting any rule effects).
+   * The desk scheduler sets this — it needs every reservable room's row
+   * regardless of conflicts, otherwise rooms with bookings vanish from the
+   * grid (and so do the bookings themselves, because the grid only paints
+   * rooms it knows about). Default false: portal employees still see the
+   * "available right now" subset they expect.
+   */
+  include_unavailable?: boolean;
 }
 
 export interface RuleOutcome {

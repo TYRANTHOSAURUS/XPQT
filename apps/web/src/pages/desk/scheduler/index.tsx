@@ -412,8 +412,8 @@ export function DeskSchedulerPage() {
         room={createPayload?.room ?? null}
         startAtIso={createPayload?.startAtIso ?? ''}
         endAtIso={createPayload?.endAtIso ?? ''}
-        requesterPersonId={win.state.bookForPersonId ?? requesterPersonId}
-        bookForName={bookForName}
+        currentUserPersonId={requesterPersonId}
+        toolbarBookForPersonId={win.state.bookForPersonId}
       />
 
       <SchedulerEventPopover
