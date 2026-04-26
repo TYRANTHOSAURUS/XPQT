@@ -34,6 +34,11 @@ import { RoomBookingRulesModule } from './modules/room-booking-rules/room-bookin
 import { CalendarSyncModule } from './modules/calendar-sync/calendar-sync.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
 import { SearchModule } from './modules/search/search.module';
+import { BookingBundlesModule } from './modules/booking-bundles/booking-bundles.module';
+import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.module';
+import { OrdersModule } from './modules/orders/orders.module';
+import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templates.module';
+import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
 
 @Module({
   imports: [
@@ -71,6 +76,11 @@ import { SearchModule } from './modules/search/search.module';
     CalendarSyncModule,
     ReservationsModule,
     SearchModule,
+    BookingBundlesModule,
+    ServiceCatalogModule,
+    OrdersModule,
+    BundleTemplatesModule,
+    CostCentersModule,
   ],
   controllers: [HealthController],
   providers: [
