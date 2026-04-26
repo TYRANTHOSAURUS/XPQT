@@ -55,6 +55,11 @@ const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-
 const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
 const CostCentersPage = lazyNamed(() => import('@/pages/admin/cost-centers'), 'CostCentersPage');
 const CostCenterDetailPage = lazyNamed(() => import('@/pages/admin/cost-center-detail'), 'CostCenterDetailPage');
+const BundleTemplatesPage = lazyNamed(() => import('@/pages/admin/bundle-templates'), 'BundleTemplatesPage');
+const BundleTemplateDetailPage = lazyNamed(() => import('@/pages/admin/bundle-template-detail'), 'BundleTemplateDetailPage');
+const BookingServicesIndexPage = lazyNamed(() => import('@/pages/admin/booking-services'), 'BookingServicesIndexPage');
+const ServiceRulesPage = lazyNamed(() => import('@/pages/admin/service-rules'), 'ServiceRulesPage');
+const ServiceRuleDetailPage = lazyNamed(() => import('@/pages/admin/service-rule-detail'), 'ServiceRuleDetailPage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -227,6 +232,13 @@ export function App() {
                   {/* Cost centers (sub-project 2) — GL chargeback codes */}
                   <Route path="cost-centers" element={<CostCentersPage />} />
                   <Route path="cost-centers/:id" element={<CostCenterDetailPage />} />
+                  {/* Bundle templates (sub-project 2) — pre-filled meeting + service combos */}
+                  <Route path="bundle-templates" element={<BundleTemplatesPage />} />
+                  <Route path="bundle-templates/:id" element={<BundleTemplateDetailPage />} />
+                  {/* Booking services (sub-project 2) — index + service rules */}
+                  <Route path="booking-services" element={<BookingServicesIndexPage />} />
+                  <Route path="booking-services/rules" element={<ServiceRulesPage />} />
+                  <Route path="booking-services/rules/:id" element={<ServiceRuleDetailPage />} />
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
                   <Route path="request-types/:id" element={<RequestTypeDetailPage />} />
