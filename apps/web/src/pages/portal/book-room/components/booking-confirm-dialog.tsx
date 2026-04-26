@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -28,10 +28,15 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useCreateBooking, useMultiRoomBooking } from '@/api/room-booking';
-import type { RankedRoom, RecurrenceRule } from '@/api/room-booking';
-import { formatFullTimestamp } from '@/lib/format';
+import type {
+  RankedRoom,
+  RecurrenceRule,
+  ServiceLinePayload,
+} from '@/api/room-booking';
+import { formatCurrency, formatFullTimestamp } from '@/lib/format';
 import { toast } from 'sonner';
 import { Sparkles } from 'lucide-react';
+import { ServiceSection, type ServiceSelection } from './service-section';
 
 interface Props {
   open: boolean;
@@ -89,15 +94,30 @@ export function BookingConfirmDialog({
   const [interval, setIntervalValue] = useState<number>(recurrenceRule?.interval ?? 1);
   const [count, setCount] = useState<number>(recurrenceRule?.count ?? 8);
 
+  // Service section state — three independent open/selection pairs so each
+  // section fetches + caches its own item list per (location, on_date).
+  const [cateringOpen, setCateringOpen] = useState(false);
+  const [avOpen, setAvOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [cateringSelections, setCateringSelections] = useState<ServiceSelection[]>([]);
+  const [avSelections, setAvSelections] = useState<ServiceSelection[]>([]);
+  const [setupSelections, setSetupSelections] = useState<ServiceSelection[]>([]);
+
   // Re-seed every time the dialog opens with a new room (cancel-then-reopen
-  // shouldn't carry stale recurrence picks).
+  // shouldn't carry stale recurrence picks or service selections).
   useEffect(() => {
     if (!open) return;
     setRecurring(Boolean(recurrenceRule));
     setFrequency(recurrenceRule?.frequency ?? 'weekly');
     setIntervalValue(recurrenceRule?.interval ?? 1);
     setCount(recurrenceRule?.count ?? 8);
-  }, [open, recurrenceRule]);
+    setCateringOpen(false);
+    setAvOpen(false);
+    setSetupOpen(false);
+    setCateringSelections([]);
+    setAvSelections([]);
+    setSetupSelections([]);
+  }, [open, recurrenceRule, primaryRoom?.space_id]);
 
   const createBooking = useCreateBooking();
   const multiBooking = useMultiRoomBooking();
@@ -106,6 +126,40 @@ export function BookingConfirmDialog({
   const isMultiRoom = additionalRooms.length > 0;
   const isApprovalRoute =
     primaryRoom?.rule_outcome?.effect === 'require_approval';
+
+  const allServiceSelections = useMemo(
+    () => [...cateringSelections, ...avSelections, ...setupSelections],
+    [cateringSelections, avSelections, setupSelections],
+  );
+  const hasServices = allServiceSelections.length > 0;
+  const servicesPayload = useMemo<ServiceLinePayload[]>(
+    () =>
+      allServiceSelections.map((s) => ({
+        catalog_item_id: s.catalog_item_id,
+        menu_id: s.menu_id,
+        quantity: s.quantity,
+      })),
+    [allServiceSelections],
+  );
+  const servicesTotal = useMemo(
+    () =>
+      allServiceSelections.reduce((sum, s) => {
+        if (s.unit_price == null) return sum;
+        if (s.unit === 'flat_rate') return sum + s.unit_price;
+        if (s.unit === 'per_person') {
+          return sum + s.unit_price * s.quantity * Math.max(1, attendeeCount);
+        }
+        return sum + s.unit_price * s.quantity;
+      }, 0),
+    [allServiceSelections, attendeeCount],
+  );
+  const annualisedOccurrences = recurring ? estimateOccurrences(frequency, interval, count) : 0;
+  const annualisedTotal = recurring ? servicesTotal * annualisedOccurrences : 0;
+
+  // Service sections only render in single-room mode — composite multi-room
+  // bookings need the sub-project 4 reception flow and we'd rather hide the
+  // affordance entirely than half-support it.
+  const showServiceSections = !isMultiRoom && Boolean(primaryRoom);
 
   const onConfirm = async () => {
     if (!primaryRoom) return;
@@ -146,9 +200,17 @@ export function BookingConfirmDialog({
           attendee_person_ids: attendeePersonIds.length ? attendeePersonIds : undefined,
           recurrence_rule: recurrencePayload,
           source: 'portal',
+          services: servicesPayload.length > 0 ? servicesPayload : undefined,
+          bundle: servicesPayload.length > 0 ? { bundle_type: 'meeting' } : undefined,
         });
       }
-      toast.success(isApprovalRoute ? 'Approval requested' : 'Booked');
+      toast.success(
+        isApprovalRoute
+          ? 'Approval requested'
+          : hasServices
+            ? `Booked with ${pluralize(servicesPayload.length, 'service')}`
+            : 'Booked',
+      );
       onBooked();
       onOpenChange(false);
     } catch (e) {
@@ -162,9 +224,11 @@ export function BookingConfirmDialog({
     createBooking.error ?? multiBooking.error,
   );
 
+  const onDate = startAtIso ? startAtIso.slice(0, 10) : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {isApprovalRoute ? 'Request approval to book' : 'Confirm booking'}
@@ -229,8 +293,69 @@ export function BookingConfirmDialog({
             </FieldSet>
           )}
 
-          {!isMultiRoom && (
+          {showServiceSections && (
             <>
+              <FieldSeparator />
+              <FieldSet>
+                <FieldLegend variant="label">Add to this booking</FieldLegend>
+                <FieldDescription>
+                  Optional. Catering, AV, or room setup — each spawns a work order on submit.
+                </FieldDescription>
+                <div className="space-y-2">
+                  <ServiceSection
+                    serviceType="catering"
+                    title="Catering"
+                    description="Food & drinks"
+                    open={cateringOpen}
+                    onOpenChange={setCateringOpen}
+                    deliverySpaceId={primaryRoom?.space_id ?? null}
+                    onDate={onDate}
+                    attendeeCount={attendeeCount}
+                    selections={cateringSelections}
+                    onChangeSelections={setCateringSelections}
+                  />
+                  <ServiceSection
+                    serviceType="av_equipment"
+                    title="AV / equipment"
+                    description="Projectors, mics, screens"
+                    open={avOpen}
+                    onOpenChange={setAvOpen}
+                    deliverySpaceId={primaryRoom?.space_id ?? null}
+                    onDate={onDate}
+                    attendeeCount={attendeeCount}
+                    selections={avSelections}
+                    onChangeSelections={setAvSelections}
+                  />
+                  <ServiceSection
+                    serviceType="facilities_services"
+                    title="Room setup"
+                    description="Layout, tables, signage"
+                    open={setupOpen}
+                    onOpenChange={setSetupOpen}
+                    deliverySpaceId={primaryRoom?.space_id ?? null}
+                    onDate={onDate}
+                    attendeeCount={attendeeCount}
+                    selections={setupSelections}
+                    onChangeSelections={setSetupSelections}
+                  />
+                </div>
+                {hasServices && (
+                  <div className="mt-3 flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">
+                      {pluralize(allServiceSelections.length, 'service line')} ·{' '}
+                      <span className="tabular-nums">{formatCurrency(servicesTotal)}</span>
+                      {recurring && annualisedOccurrences > 0 ? (
+                        <span
+                          className="ml-2 text-xs text-muted-foreground"
+                          title={`${annualisedOccurrences} occurrences over the next year`}
+                        >
+                          · {formatCurrency(annualisedTotal)} annualised
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                )}
+              </FieldSet>
               <FieldSeparator />
               <FieldSet>
                 <FieldLegend variant="label">Recurrence</FieldLegend>
@@ -354,4 +479,33 @@ function extractAlternatives(error: unknown): RankedRoom[] {
 function formatHuman(iso: string): string {
   if (!iso) return '—';
   return formatFullTimestamp(iso) || '—';
+}
+
+function pluralize(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? '' : 's'}`;
+}
+
+/**
+ * Mirrors the backend's `estimateAnnualisedOccurrences`. Inline so the
+ * dialog can preview annualised cost without an extra round-trip — the
+ * canonical number comes from `CostService.computeBundleCost` after the
+ * bundle lands.
+ */
+function estimateOccurrences(
+  frequency: RecurrenceRule['frequency'],
+  interval: number,
+  count: number,
+): number {
+  if (count > 0) return count;
+  const safeInterval = Math.max(1, interval);
+  switch (frequency) {
+    case 'daily':
+      return Math.floor(365 / safeInterval);
+    case 'weekly':
+      return Math.floor(52 / safeInterval);
+    case 'monthly':
+      return Math.floor(12 / safeInterval);
+    default:
+      return 0;
+  }
 }

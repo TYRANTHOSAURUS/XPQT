@@ -7,7 +7,7 @@ export { roomBookingKeys } from './keys';
 export type {
   ReservationStatus, ReservationSource, ReservationType, CalendarProvider,
   RecurrenceRule, PolicySnapshot, Reservation, RuleOutcome, RankedRoom,
-  FreeSlot, BookingPayload, MultiRoomBookingPayload,
+  FreeSlot, BookingPayload, MultiRoomBookingPayload, ServiceLinePayload,
 } from './types';
 
 export {
