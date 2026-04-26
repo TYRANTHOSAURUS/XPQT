@@ -8,6 +8,7 @@ import { RuleResolverService } from '../room-booking-rules/rule-resolver.service
 import { ConflictGuardService } from './conflict-guard.service';
 import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
+import { BundleService } from '../booking-bundles/bundle.service';
 import type {
   ActorContext, CreateReservationInput, PolicySnapshot, RecurrenceScope, Reservation,
 } from './dto/types';
@@ -40,6 +41,7 @@ export class BookingFlowService {
     private readonly ruleResolver: RuleResolverService,
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
+    @Optional() private readonly bundle?: BundleService,
   ) {}
 
   /**
@@ -220,6 +222,42 @@ export class BookingFlowService {
     }
 
     // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
+
+    // - Service lines → bundle creation (sub-project 2)
+    if (input.services && input.services.length > 0 && this.bundle) {
+      try {
+        // BundleSource is a stricter subset of ReservationSource — drop
+        // 'auto' (calendar-sync polling) since bundle creation is always
+        // user-initiated; otherwise default to 'portal'.
+        const bundleSource = (input.source && input.source !== 'auto'
+          ? input.source
+          : 'portal') as 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception';
+        await this.bundle.attachServicesToReservation({
+          reservation_id: reservation.id,
+          requester_person_id: reservation.requester_person_id,
+          bundle: input.bundle
+            ? {
+                bundle_type: input.bundle.bundle_type,
+                cost_center_id: input.bundle.cost_center_id ?? null,
+                template_id: input.bundle.template_id ?? null,
+                source: bundleSource,
+              }
+            : { source: bundleSource },
+          services: input.services,
+        });
+      } catch (err) {
+        // The bundle service throws structured exceptions for asset
+        // conflict / rule deny — we surface them up. The reservation has
+        // already landed; caller has to decide whether to roll it back.
+        // For v1 we leave the room-only reservation in place and surface
+        // the bundle error. The user can retry attaching services without
+        // re-booking the room.
+        this.log.warn(
+          `bundle attach failed for reservation ${reservation.id}: ${(err as Error).message}`,
+        );
+        throw err;
+      }
+    }
 
     return reservation;
   }

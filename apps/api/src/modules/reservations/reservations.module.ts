@@ -21,6 +21,7 @@ import { BookingNotificationsService } from './booking-notifications.service';
 import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { NotificationModule } from '../notification/notification.module';
+import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -28,7 +29,7 @@ import { TenantService } from '../tenant/tenant.service';
 import type { ActorContext, CreateReservationInput } from './dto/types';
 
 @Module({
-  imports: [RoomBookingRulesModule, CalendarSyncModule, NotificationModule],
+  imports: [RoomBookingRulesModule, CalendarSyncModule, NotificationModule, BookingBundlesModule],
   providers: [
     ReservationService,
     ConflictGuardService,

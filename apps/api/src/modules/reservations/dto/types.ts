@@ -109,6 +109,27 @@ export interface CreateReservationInput {
   source?: ReservationSource;
   multi_room_group_id?: string;
   booking_bundle_id?: string;
+  /**
+   * Optional service lines (catering / AV / setup) attached at booking time.
+   * Triggers `BundleService.attachServicesToReservation` after the
+   * reservation lands. Lazy bundle creation: room-only bookings (services
+   * absent or empty) skip the bundle entirely.
+   */
+  services?: Array<{
+    catalog_item_id: string;
+    menu_id?: string | null;
+    quantity: number;
+    service_window_start_at?: string | null;
+    service_window_end_at?: string | null;
+    repeats_with_series?: boolean;
+    linked_asset_id?: string | null;
+  }>;
+  /** Bundle-level metadata. Honored only when `services` is present. */
+  bundle?: {
+    bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+    cost_center_id?: string | null;
+    template_id?: string | null;
+  };
 }
 
 export interface ActorContext {

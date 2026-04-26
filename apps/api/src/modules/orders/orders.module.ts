@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 
+import { ServiceCatalogModule } from '../service-catalog/service-catalog.module';
 import { OrdersController } from './orders.controller';
 import { OrderService } from './order.service';
 import { ApprovalRoutingService } from './approval-routing.service';
+import { CostService } from './cost.service';
 
 @Module({
-  providers: [OrderService, ApprovalRoutingService],
+  imports: [ServiceCatalogModule],
+  providers: [OrderService, ApprovalRoutingService, CostService],
   controllers: [OrdersController],
-  exports: [OrderService, ApprovalRoutingService],
+  exports: [OrderService, ApprovalRoutingService, CostService],
 })
 export class OrdersModule {}
