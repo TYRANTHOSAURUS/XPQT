@@ -88,12 +88,25 @@ export class ListBookableRoomsService {
 
       const ranking = this.ranking.score(space as never, requesterId, input);
 
+      const s = space as {
+        name: string; type: string; capacity: number | null;
+        min_attendees: number | null; amenities: string[] | null;
+        default_search_keywords: string[] | null;
+        attributes: Record<string, unknown> | null;
+      };
+      const imageUrl =
+        s.attributes && typeof s.attributes === 'object'
+          ? (typeof s.attributes['image_url'] === 'string' ? s.attributes['image_url'] : null)
+          : null;
       ranked.push({
         space_id: space.id,
-        name: (space as { name: string }).name,
-        capacity: (space as { capacity: number | null }).capacity,
-        min_attendees: (space as { min_attendees: number | null }).min_attendees,
-        amenities: (space as { amenities: string[] | null }).amenities ?? [],
+        name: s.name,
+        space_type: s.type,
+        image_url: imageUrl,
+        capacity: s.capacity,
+        min_attendees: s.min_attendees,
+        amenities: s.amenities ?? [],
+        keywords: s.default_search_keywords ?? [],
         parent_chain: parentChains.get(space.id) ?? [],
         rule_outcome: outcome,
         ranking_score: ranking.score,
@@ -185,10 +198,12 @@ export class ListBookableRoomsService {
     min_attendees: number | null;
     amenities: string[] | null;
     parent_id: string | null;
+    default_search_keywords: string[] | null;
+    attributes: Record<string, unknown> | null;
   }>> {
     let q = this.supabase.admin
       .from('spaces')
-      .select('id, name, type, capacity, min_attendees, amenities, parent_id, default_search_keywords')
+      .select('id, name, type, capacity, min_attendees, amenities, parent_id, default_search_keywords, attributes')
       .eq('tenant_id', tenantId)
       .eq('reservable', true)
       .eq('active', true)

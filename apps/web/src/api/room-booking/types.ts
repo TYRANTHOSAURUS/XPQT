@@ -96,9 +96,19 @@ export interface RuleOutcome {
 export interface RankedRoom {
   space_id: string;
   name: string;
+  /** Sub-type — `meeting_room` / `room` / etc. Drives the icon fallback when
+   *  no `image_url` is set. */
+  space_type: string;
+  /** Optional cover image (Supabase Storage URL or any CDN). Surfaces as the
+   *  edge-to-edge tile on the picker / desk row; falls back to a
+   *  RoomTypeIcon when null. */
+  image_url: string | null;
   capacity: number | null;
   min_attendees: number | null;
   amenities: string[];
+  /** Smart keywords (default_search_keywords) — used by RoomTypeIcon to
+   *  pick a more specific glyph. */
+  keywords: string[];
   parent_chain: { id: string; name: string; type: string }[];
   rule_outcome: RuleOutcome;
   ranking_score: number;

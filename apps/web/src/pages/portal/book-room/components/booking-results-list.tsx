@@ -31,16 +31,20 @@ export function BookingResultsList({
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
-            className="overflow-hidden rounded-xl border bg-card"
+            className="flex items-stretch overflow-hidden rounded-xl border bg-card"
             aria-hidden
           >
-            <div className="animate-pulse space-y-3 px-4 py-3.5">
-              <div className="flex items-center gap-3">
-                <div className="h-4 w-32 rounded bg-muted/70" />
-                <div className="h-4 w-24 rounded bg-muted/40" />
-                <div className="ml-auto h-7 w-20 rounded-md bg-muted/60" />
+            {/* Skeleton tile mirrors the real row's edge-to-edge image area. */}
+            <div className="w-20 sm:w-24 shrink-0 self-stretch animate-pulse bg-muted/40" />
+            <div className="flex-1 px-4 py-3.5">
+              <div className="animate-pulse space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="h-4 w-32 rounded bg-muted/70" />
+                  <div className="h-4 w-24 rounded bg-muted/40" />
+                  <div className="ml-auto h-7 w-20 rounded-md bg-muted/60" />
+                </div>
+                <div className="h-3 rounded bg-muted/30" />
               </div>
-              <div className="h-3 rounded bg-muted/30" />
             </div>
           </div>
         ))}

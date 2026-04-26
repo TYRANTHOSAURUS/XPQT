@@ -6,8 +6,17 @@ interface Props {
   capacity?: number | null;
   /** Optional smart-search keywords from spaces.default_search_keywords. */
   keywords?: readonly string[];
-  /** Tailwind size class — h-N w-N. Defaults to 12 (48px). */
+  /** Tailwind size class — h-N w-N. Defaults to h-14 w-14 (56px). Ignored
+   *  when `variant='fill'`. */
   className?: string;
+  /**
+   * Layout variant.
+   *  - `tile` (default) — a small rounded square with a centered icon. Used
+   *    inline in dense lists, drawers, and recap rows.
+   *  - `fill` — fills its container edge-to-edge with no rounding or ring;
+   *    used as the leading visual on a result card next to an `<img>`.
+   */
+  variant?: 'tile' | 'fill';
 }
 
 /**
@@ -15,10 +24,37 @@ interface Props {
  * five categories — huddle, team, board, lounge, generic — and renders a
  * subtle gradient tile with a Lucide icon. This is the visual anchor on
  * each result card; it stops every row from looking the same.
+ *
+ * The `fill` variant is what gets used as the leading element on the
+ * picker / desk-bookings rows when no `image_url` is set on the space —
+ * it fills the parent's content box completely and sizes the icon up to
+ * read at row scale.
  */
-export function RoomTypeIcon({ capacity, keywords = [], className }: Props) {
+export function RoomTypeIcon({
+  capacity,
+  keywords = [],
+  className,
+  variant = 'tile',
+}: Props) {
   const cat = categoryFor(capacity, keywords);
   const { Icon, gradient, ring } = STYLES[cat];
+
+  if (variant === 'fill') {
+    return (
+      <div
+        role="presentation"
+        className={cn(
+          'relative flex size-full items-center justify-center',
+          gradient,
+        )}
+      >
+        <Icon
+          className="size-7 text-foreground/70"
+          strokeWidth={1.6}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

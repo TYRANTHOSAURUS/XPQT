@@ -160,9 +160,21 @@ export interface RuleOutcome {
 export interface RankedRoom {
   space_id: string;
   name: string;
+  /** Sub-type within `type='room'` — e.g. 'meeting_room'. Used by the UI to
+   *  pick a fallback icon when no image_url is set. */
+  space_type: string;
+  /** Optional cover image (lifted from spaces.attributes.image_url). The UI
+   *  falls back to a type-icon tile when null. Stored in attributes today
+   *  rather than its own column to avoid a forced migration; promote to a
+   *  dedicated column when the admin UI lets users upload these. */
+  image_url: string | null;
   capacity: number | null;
   min_attendees: number | null;
   amenities: string[];
+  /** Smart keywords from spaces.default_search_keywords. Surfaced so the
+   *  UI's icon fallback can pick a more specific glyph (huddle / board /
+   *  lounge) without re-fetching. */
+  keywords: string[];
   parent_chain: { id: string; name: string; type: string }[];
   rule_outcome: RuleOutcome;
   ranking_score: number;
