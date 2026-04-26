@@ -31,7 +31,24 @@ import type { Predicate } from './dto';
  *   { fn: 'duration_minutes_lt', args: ['$.start_at', '$.end_at', 60] }
  */
 
-export interface EvaluationContext {
+/**
+ * Minimum context shape the predicate engine itself needs. Any module-specific
+ * context (room rules, service rules, …) must satisfy this base — the engine
+ * only reads `permissions` + `resolved` directly; everything else is reached
+ * via the `$.path` resolver. The `[key: string]: unknown` index lets callers
+ * attach arbitrary nested data (e.g. `$.line.menu.fulfillment_vendor_id`) and
+ * still type-check.
+ */
+export interface BaseEvaluationContext {
+  permissions: Record<string, boolean>;
+  resolved: {
+    org_descendants: Record<string, Set<string>>;
+    in_business_hours: Record<string, boolean>; // key = `${at}|${calendar_id}`
+  };
+  [key: string]: unknown;
+}
+
+export interface EvaluationContext extends BaseEvaluationContext {
   requester: {
     id: string; // person id
     role_ids: string[];
@@ -56,14 +73,6 @@ export interface EvaluationContext {
     lead_time_minutes: number; // start_at - now()
     attendee_count: number | null;
   };
-  // Permission map for the requester user (for service_desk_override_allow etc.)
-  permissions: Record<string, boolean>;
-  // Pre-resolved org-node descendants and helper sets from the DB. Filled
-  // lazily by the resolver before calling evaluate().
-  resolved: {
-    org_descendants: Record<string, Set<string>>;
-    in_business_hours: Record<string, boolean>; // key = `${at}|${calendar_id}`
-  };
 }
 
 @Injectable()
@@ -75,7 +84,7 @@ export class PredicateEngineService {
    * predicate (so admins get a real error in the editor); returns false for
    * runtime mismatches.
    */
-  evaluate(predicate: Predicate, ctx: EvaluationContext, depth = 0): boolean {
+  evaluate(predicate: Predicate, ctx: BaseEvaluationContext, depth = 0): boolean {
     if (depth > 10) throw new BadRequestException('predicate nesting too deep');
 
     if (!predicate || typeof predicate !== 'object') {
@@ -160,7 +169,7 @@ export class PredicateEngineService {
 
   private evalOp(
     node: { op: string; left: unknown; right?: unknown },
-    ctx: EvaluationContext,
+    ctx: BaseEvaluationContext,
   ): boolean {
     const left = this.resolveRef(node.left, ctx);
     const right = this.resolveRef(node.right, ctx);
@@ -191,7 +200,7 @@ export class PredicateEngineService {
     }
   }
 
-  private evalFn(fn: string, rawArgs: unknown[], ctx: EvaluationContext): boolean {
+  private evalFn(fn: string, rawArgs: unknown[], ctx: BaseEvaluationContext): boolean {
     const args = rawArgs.map((a) => this.resolveRef(a, ctx));
     switch (fn) {
       case 'in_business_hours': {
@@ -264,7 +273,7 @@ export class PredicateEngineService {
    * evaluation context. Non-string or non-`$.` values are returned as
    * literals — so predicate authors can mix references and literals freely.
    */
-  private resolveRef(value: unknown, ctx: EvaluationContext): unknown {
+  private resolveRef(value: unknown, ctx: BaseEvaluationContext): unknown {
     if (typeof value !== 'string' || !value.startsWith('$.')) return value;
     const parts = value.slice(2).split('.');
     let cursor: unknown = ctx as unknown as Record<string, unknown>;
@@ -283,7 +292,7 @@ export class PredicateEngineService {
    */
   async hydrateContextHelpers(
     predicates: Predicate[],
-    ctx: EvaluationContext,
+    ctx: BaseEvaluationContext,
   ): Promise<void> {
     // Walk every predicate to collect helper invocations.
     const orgRoots = new Set<string>();
