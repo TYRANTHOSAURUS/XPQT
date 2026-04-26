@@ -13,6 +13,9 @@ interface Props {
   ticket: Ticket;
   selected: boolean;
   checked: boolean;
+  /** When the row's context menu is open, hold a persistent highlight so the
+   *  origin row stays visually attached to the menu. */
+  menuOpen?: boolean;
   onSelect: (id: string) => void;
   onToggleCheck: (id: string) => void;
 }
@@ -25,7 +28,14 @@ interface Props {
  * checked changes — typing in the toolbar search or selecting a different row
  * doesn't cascade re-renders across all 50+ visible rows.
  */
-function TicketListRowImpl({ ticket, selected, checked, onSelect, onToggleCheck }: Props) {
+function TicketListRowImpl({
+  ticket,
+  selected,
+  checked,
+  menuOpen,
+  onSelect,
+  onToggleCheck,
+}: Props) {
   const status = statusConfig[ticket.status_category] ?? statusConfig.new;
 
   return (
@@ -42,7 +52,9 @@ function TicketListRowImpl({ ticket, selected, checked, onSelect, onToggleCheck 
       className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${
         selected
           ? 'bg-accent border-l-2 border-l-primary pl-[10px]'
-          : 'border-l-2 border-l-transparent hover:bg-muted/30'
+          : menuOpen
+            ? 'bg-muted/50 border-l-2 border-l-transparent'
+            : 'border-l-2 border-l-transparent hover:bg-muted/30'
       }`}
       // Skip rendering work for rows scrolled off-screen. Browser-native
       // virtualization — the column layout uses fixed widths so column drift

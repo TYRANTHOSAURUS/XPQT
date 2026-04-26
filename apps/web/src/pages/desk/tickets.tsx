@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -15,10 +15,17 @@ import {
 } from '@/components/ui/table';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Search, X, LayoutList, Table as TableIcon } from 'lucide-react';
-import { useTicketList, usePrefetchTicket } from '@/api/tickets';
+import { useTicketList, usePrefetchTicket, useTicketDetail } from '@/api/tickets';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
 import { TicketListRow } from '@/components/desk/ticket-list-row';
+import { TicketContextMenu } from '@/components/desk/ticket-context-menu';
+import { ReclassifyTicketDialog } from '@/components/desk/reclassify-ticket-dialog';
+import { AddSubIssueDialog } from '@/components/desk/add-sub-issue-dialog';
+import { PersonAvatar } from '@/components/person-avatar';
+import { useTeams } from '@/api/teams';
+import { useUsers } from '@/api/users';
+import { useVendors } from '@/api/vendors';
 import {
   type Ticket,
   PriorityIcon,
@@ -47,6 +54,8 @@ interface TicketTableRowProps {
   onSelect: (id: string) => void;
   onToggleCheck: (id: string) => void;
   onPrefetch: (id: string) => void;
+  onReclassify: (ticket: Ticket) => void;
+  onAddWorkOrder: (ticket: Ticket) => void;
 }
 
 /**
@@ -62,65 +71,81 @@ const TicketTableRow = memo(function TicketTableRow({
   onSelect,
   onToggleCheck,
   onPrefetch,
+  onReclassify,
+  onAddWorkOrder,
 }: TicketTableRowProps) {
   const status = statusConfig[ticket.status_category] ?? statusConfig.new;
   return (
-    <TableRow
-      data-selected={selected ? 'true' : undefined}
-      className={cn(
-        'cursor-pointer transition-colors',
-        selected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-muted/40',
-      )}
-      onClick={() => onSelect(ticket.id)}
-      onMouseEnter={() => onPrefetch(ticket.id)}
-      onFocus={() => onPrefetch(ticket.id)}
+    <TicketContextMenu
+      ticket={ticket}
+      onOpenDetail={onSelect}
+      onReclassify={onReclassify}
+      onAddWorkOrder={onAddWorkOrder}
     >
-      <TableCell
-        className={`px-3 py-2 ${selected ? 'border-l-2 border-l-primary pl-[10px]' : ''}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
-      </TableCell>
-      <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
-        {formatTicketRef(ticket.ticket_kind, ticket.module_number)}
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <div className="min-w-0">
-          <span className="text-sm block truncate">{ticket.title}</span>
-          {(ticket.requester || ticket.location) && (
-            <span className="text-xs text-muted-foreground block truncate mt-0.5">
-              {ticket.requester
-                ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
-                : ''}
-              {ticket.location ? ` · ${ticket.location.name}` : ''}
-            </span>
+      {(triggerProps, { open: menuOpen }) => (
+        <TableRow
+          {...triggerProps}
+          data-selected={selected ? 'true' : undefined}
+          className={cn(
+            'cursor-pointer transition-colors',
+            selected
+              ? 'bg-primary/10 hover:bg-primary/15'
+              : menuOpen
+                ? 'bg-muted/60'
+                : 'hover:bg-muted/40',
           )}
-        </div>
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <div className="flex items-center gap-2">
-          <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
-          <span className="text-xs text-muted-foreground">{status.label}</span>
-        </div>
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <PriorityIcon priority={ticket.priority} />
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <span className="text-xs text-muted-foreground truncate block">
-          {ticket.assigned_team?.name ?? '—'}
-        </span>
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <SlaCell
-          dueAt={ticket.sla_resolution_due_at}
-          breachedAt={ticket.sla_resolution_breached_at}
-        />
-      </TableCell>
-      <TableCell className="px-3 py-2">
-        <span className="text-xs text-muted-foreground">{timeAgo(ticket.created_at)}</span>
-      </TableCell>
-    </TableRow>
+          onClick={() => onSelect(ticket.id)}
+          onMouseEnter={() => onPrefetch(ticket.id)}
+          onFocus={() => onPrefetch(ticket.id)}
+        >
+          <TableCell
+            className={`px-3 py-2 ${selected ? 'border-l-2 border-l-primary pl-[10px]' : ''}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
+          </TableCell>
+          <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
+            {formatTicketRef(ticket.ticket_kind, ticket.module_number)}
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <div className="min-w-0">
+              <span className="text-sm block truncate">{ticket.title}</span>
+              {(ticket.requester || ticket.location) && (
+                <span className="text-xs text-muted-foreground block truncate mt-0.5">
+                  {ticket.requester
+                    ? `${ticket.requester.first_name} ${ticket.requester.last_name}`
+                    : ''}
+                  {ticket.location ? ` · ${ticket.location.name}` : ''}
+                </span>
+              )}
+            </div>
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <div className="flex items-center gap-2">
+              <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
+              <span className="text-xs text-muted-foreground">{status.label}</span>
+            </div>
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <PriorityIcon priority={ticket.priority} />
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <span className="text-xs text-muted-foreground truncate block">
+              {ticket.assigned_team?.name ?? '—'}
+            </span>
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <SlaCell
+              dueAt={ticket.sla_resolution_due_at}
+              breachedAt={ticket.sla_resolution_breached_at}
+            />
+          </TableCell>
+          <TableCell className="px-3 py-2">
+            <span className="text-xs text-muted-foreground">{timeAgo(ticket.created_at)}</span>
+          </TableCell>
+        </TableRow>
+      )}
+    </TicketContextMenu>
   );
 });
 
@@ -131,6 +156,8 @@ function TicketTable({
   setSelectedTicketId,
   selectedIds,
   setSelectedIds,
+  onReclassify,
+  onAddWorkOrder,
 }: {
   tickets: Ticket[];
   loading: boolean;
@@ -138,6 +165,8 @@ function TicketTable({
   setSelectedTicketId: (id: string | null) => void;
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onReclassify: (ticket: Ticket) => void;
+  onAddWorkOrder: (ticket: Ticket) => void;
 }) {
   const prefetchTicket = usePrefetchTicket();
   // Stable callbacks so the memoized row doesn't see new function identities
@@ -161,10 +190,10 @@ function TicketTable({
   };
 
   return (
-    <div className="mx-6 rounded-md border overflow-hidden">
+    <div className="mx-6 rounded-md border">
       <Table>
-        <TableHeader>
-          <TableRow className="hover:bg-transparent bg-muted/30">
+        <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur-sm">
+          <TableRow className="hover:bg-transparent bg-transparent">
             <TableHead className="h-8 w-10 px-3 text-xs uppercase text-muted-foreground">
               <Checkbox
                 checked={tickets.length > 0 && selectedIds.size === tickets.length}
@@ -221,6 +250,8 @@ function TicketTable({
               onSelect={onSelect}
               onToggleCheck={toggleSelect}
               onPrefetch={prefetchTicket}
+              onReclassify={onReclassify}
+              onAddWorkOrder={onAddWorkOrder}
             />
           ))}
         </TableBody>
@@ -236,6 +267,8 @@ function TicketList({
   setSelectedTicketId,
   selectedIds,
   setSelectedIds,
+  onReclassify,
+  onAddWorkOrder,
 }: {
   tickets: Ticket[];
   loading: boolean;
@@ -243,6 +276,8 @@ function TicketList({
   setSelectedTicketId: (id: string | null) => void;
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onReclassify: (ticket: Ticket) => void;
+  onAddWorkOrder: (ticket: Ticket) => void;
 }) {
   const prefetchTicket = usePrefetchTicket();
   // Stable callbacks so memoized rows don't re-render when the parent does.
@@ -270,7 +305,7 @@ function TicketList({
   return (
     <div className="mx-6 rounded-md border">
       {/* Muted column label strip — matches row column widths */}
-      <div className="flex items-center gap-3 px-3 py-1.5 border-b bg-muted/30 text-xs uppercase text-muted-foreground">
+      <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-1.5 border-b bg-muted/30 backdrop-blur-sm text-xs uppercase text-muted-foreground">
         <div className="w-4 shrink-0">
           <Checkbox
             checked={tickets.length > 0 && selectedIds.size === tickets.length}
@@ -300,19 +335,30 @@ function TicketList({
 
       <div className="divide-y">
         {tickets.map((ticket) => (
-          <div
+          <TicketContextMenu
             key={ticket.id}
-            onMouseEnter={() => prefetchTicket(ticket.id)}
-            onFocus={() => prefetchTicket(ticket.id)}
+            ticket={ticket}
+            onOpenDetail={onSelect}
+            onReclassify={onReclassify}
+            onAddWorkOrder={onAddWorkOrder}
           >
-            <TicketListRow
-              ticket={ticket}
-              selected={selectedTicketId === ticket.id}
-              checked={selectedIds.has(ticket.id)}
-              onSelect={onSelect}
-              onToggleCheck={toggleSelect}
-            />
-          </div>
+            {(triggerProps, { open: menuOpen }) => (
+              <div
+                {...triggerProps}
+                onMouseEnter={() => prefetchTicket(ticket.id)}
+                onFocus={() => prefetchTicket(ticket.id)}
+              >
+                <TicketListRow
+                  ticket={ticket}
+                  selected={selectedTicketId === ticket.id}
+                  checked={selectedIds.has(ticket.id)}
+                  menuOpen={menuOpen}
+                  onSelect={onSelect}
+                  onToggleCheck={toggleSelect}
+                />
+              </div>
+            )}
+          </TicketContextMenu>
         ))}
       </div>
     </div>
@@ -334,6 +380,8 @@ interface TicketsViewProps {
   setSearchInput: (v: string) => void;
   /** Label for the active named view, if any (shown inline in the toolbar). */
   activeViewLabel: string | null;
+  onReclassify: (ticket: Ticket) => void;
+  onAddWorkOrder: (ticket: Ticket) => void;
 }
 
 function TicketsView({
@@ -349,6 +397,8 @@ function TicketsView({
   searchInput,
   setSearchInput,
   activeViewLabel,
+  onReclassify,
+  onAddWorkOrder,
 }: TicketsViewProps) {
   const tableProps = {
     tickets,
@@ -357,12 +407,14 @@ function TicketsView({
     setSelectedTicketId,
     selectedIds,
     setSelectedIds,
+    onReclassify,
+    onAddWorkOrder,
   };
 
   const { raw, patch, currentUserId, activeCount, clearAll } = filtersHook;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-6 py-4 shrink-0">
         {activeViewLabel && (
@@ -429,7 +481,7 @@ function TicketsView({
       />
 
       {/* Table or List */}
-      <div className="flex-1 overflow-auto overscroll-contain pb-4">
+      <div className="min-h-0 flex-1 overflow-auto overscroll-contain pb-4">
         {view === 'list' ? <TicketList {...tableProps} /> : <TicketTable {...tableProps} />}
       </div>
     </div>
@@ -442,6 +494,8 @@ export function TicketsPage() {
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setViewState] = useState<ViewMode>(readStoredView);
+  const [reclassifyTarget, setReclassifyTarget] = useState<Ticket | null>(null);
+  const [addWorkOrderTarget, setAddWorkOrderTarget] = useState<Ticket | null>(null);
 
   const setView = (v: ViewMode) => {
     setViewState(v);
@@ -480,6 +534,10 @@ export function TicketsPage() {
     ? viewPresets[filtersHook.raw.view]?.label ?? null
     : null;
 
+  // Stable callbacks so the memoized rows don't bail out of `memo`'s shallow compare.
+  const onReclassify = useCallback((ticket: Ticket) => setReclassifyTarget(ticket), []);
+  const onAddWorkOrder = useCallback((ticket: Ticket) => setAddWorkOrderTarget(ticket), []);
+
   const viewProps: TicketsViewProps = {
     tickets,
     loading,
@@ -493,32 +551,128 @@ export function TicketsPage() {
     searchInput,
     setSearchInput,
     activeViewLabel,
+    onReclassify,
+    onAddWorkOrder,
   };
 
   return (
-    <Group orientation="horizontal" style={{ height: '100%' }}>
-      {selectedTicketId ? (
-        <>
-          <Panel id="table" defaultSize="55%">
+    <>
+      <Group orientation="horizontal" style={{ height: '100%' }}>
+        {selectedTicketId ? (
+          <>
+            <Panel id="table" defaultSize="55%" className="relative">
+              <TicketsView {...viewProps} />
+            </Panel>
+            <Separator />
+            <Panel id="detail" defaultSize="45%" className="relative">
+              <div className="absolute inset-0 overflow-auto overscroll-contain border-l">
+                <TicketDetail
+                  ticketId={selectedTicketId}
+                  onClose={() => setSelectedTicketId(null)}
+                  onOpenTicket={setSelectedTicketId}
+                  onExpand={() => navigate(`/desk/tickets/${selectedTicketId}`)}
+                />
+              </div>
+            </Panel>
+          </>
+        ) : (
+          <Panel id="table" className="relative">
             <TicketsView {...viewProps} />
           </Panel>
-          <Separator />
-          <Panel id="detail" defaultSize="45%">
-            <div className="h-full overflow-auto overscroll-contain border-l">
-              <TicketDetail
-                ticketId={selectedTicketId}
-                onClose={() => setSelectedTicketId(null)}
-                onOpenTicket={setSelectedTicketId}
-                onExpand={() => navigate(`/desk/tickets/${selectedTicketId}`)}
-              />
-            </div>
-          </Panel>
-        </>
-      ) : (
-        <Panel id="table">
-          <TicketsView {...viewProps} />
-        </Panel>
+        )}
+      </Group>
+
+      {reclassifyTarget && (
+        <ReclassifyTargetDialog
+          ticket={reclassifyTarget}
+          onOpenChange={(open) => {
+            if (!open) setReclassifyTarget(null);
+          }}
+        />
       )}
-    </Group>
+
+      {addWorkOrderTarget && (
+        <AddWorkOrderTargetDialog
+          ticket={addWorkOrderTarget}
+          onOpenChange={(open) => {
+            if (!open) setAddWorkOrderTarget(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Wraps `ReclassifyTicketDialog` so it can fetch the target's full detail
+ * (for `currentRequestType`) when invoked from the tickets list. The dialog
+ * mounts only when there's an active target.
+ */
+function ReclassifyTargetDialog({
+  ticket,
+  onOpenChange,
+}: {
+  ticket: Ticket;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { data: detail } = useTicketDetail(ticket.id);
+  return (
+    <ReclassifyTicketDialog
+      open
+      onOpenChange={onOpenChange}
+      ticketId={ticket.id}
+      currentRequestType={detail?.request_type ?? null}
+      onReclassified={() => onOpenChange(false)}
+    />
+  );
+}
+
+/**
+ * Wraps `AddSubIssueDialog` so it can lazily load team / user / vendor options
+ * when triggered from the tickets list (instead of holding them at page level
+ * for every render).
+ */
+function AddWorkOrderTargetDialog({
+  ticket,
+  onOpenChange,
+}: {
+  ticket: Ticket;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { data: teams } = useTeams();
+  const { data: users } = useUsers();
+  const { data: vendors } = useVendors();
+
+  const teamOptions = useMemo(
+    () => (teams ?? []).map((t) => ({ id: t.id, label: t.name })),
+    [teams],
+  );
+  const vendorOptions = useMemo(
+    () => (vendors ?? []).filter((v) => v.active !== false).map((v) => ({ id: v.id, label: v.name })),
+    [vendors],
+  );
+  const userOptions = useMemo(
+    () => (users ?? []).map((u) => ({
+      id: u.id,
+      label: u.person
+        ? `${u.person.first_name ?? ''} ${u.person.last_name ?? ''}`.trim() || u.email
+        : u.email,
+      sublabel: u.email,
+      leading: <PersonAvatar size="sm" person={u.person ?? { email: u.email }} />,
+    })),
+    [users],
+  );
+
+  return (
+    <AddSubIssueDialog
+      open
+      onOpenChange={onOpenChange}
+      parentId={ticket.id}
+      parentPriority={ticket.priority ?? 'medium'}
+      teamOptions={teamOptions}
+      userOptions={userOptions}
+      vendorOptions={vendorOptions}
+      onDispatched={() => onOpenChange(false)}
+    />
   );
 }
