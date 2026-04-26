@@ -93,18 +93,23 @@ export class CheckInService {
    */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async autoReleaseScan(): Promise<void> {
-    const cutoffNow = new Date().toISOString();
+    const now = Date.now();
+    const cutoffNow = new Date(now).toISOString();
+    // Lower bound: only consider bookings that started in the last 24h.
+    // Without this the scan pulls every confirmed past-start-without-
+    // check-in row across every tenant, going back forever — fine on a
+    // small dataset, painful as the table grows. Anything older has
+    // already been released by a previous tick (or the row is broken
+    // in a way the scan can't recover from anyway).
+    const cutoffEarliest = new Date(now - 24 * 60 * 60 * 1000).toISOString();
 
-    // Find rows whose grace has expired.
-    // We can't do `start_at + grace_minutes < now` as a single SQL filter
-    // through supabase-js easily, so we fetch candidates with a generous
-    // upper bound and filter in app. The partial index makes this cheap.
     const { data, error } = await this.supabase.admin
       .from('reservations')
       .select('id, tenant_id, start_at, check_in_grace_minutes, requester_person_id, space_id')
       .eq('check_in_required', true)
       .eq('status', 'confirmed')
       .is('checked_in_at', null)
+      .gte('start_at', cutoffEarliest)
       .lte('start_at', cutoffNow)
       .limit(500);
 

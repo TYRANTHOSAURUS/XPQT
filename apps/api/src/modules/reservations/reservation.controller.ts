@@ -41,6 +41,7 @@ export class ReservationController {
     @Query('limit') limitStr?: string,
     @Query('as') as?: 'mine' | 'operator',
     @Query('status') status?: string | string[],
+    @Query('cursor') cursor?: string,
   ) {
     const authUid = this.getAuthUid(request);
     const limit = limitStr ? parseInt(limitStr, 10) : undefined;
@@ -55,6 +56,7 @@ export class ReservationController {
     return this.service.listMine(authUid, {
       scope: scope === 'pending_approval' ? 'all' : scope,
       limit: limit ?? 20,
+      cursor,
     });
   }
 
@@ -196,13 +198,27 @@ export class ReservationController {
    * Edit a recurring reservation at series scope ('this_and_following' or
    * 'series'). Single-occurrence edits go through PATCH /:id (the regular
    * edit path).
+   *
+   * Authorisation: must pass the same `canEdit` visibility check the
+   * single-occurrence edit applies. Without this check any authenticated
+   * user could mutate any series in their tenant by guessing a UUID
+   * because the underlying `BookingFlowService.editScope` uses the admin
+   * client (RLS bypass) and only filters by `recurrence_series_id`.
    */
   @Post(':id/edit-scope')
   async editScope(
-    @Req() _request: Request,
+    @Req() request: Request,
     @Param('id') id: string,
     @Body() dto: { scope: 'this_and_following' | 'series' } & UpdateReservationDto,
   ) {
+    const actor = await this.actorFromRequest(request);
+    const tenantId = TenantContext.current().id;
+    // Loads the pivot reservation (asserts it's visible) and gates write.
+    const pivot = await this.service.findOne(id, actor.user_id);
+    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    if (!this.visibility.canEdit(pivot, ctx)) {
+      throw new UnauthorizedException('reservation_not_editable');
+    }
     return this.bookingFlow.editScope(id, dto.scope, {
       space_id: dto.space_id,
       start_at: dto.start_at,

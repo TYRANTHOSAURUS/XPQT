@@ -66,6 +66,7 @@ export class ReservationService {
       .select('*, space:spaces(id,name,type)')
       .eq('tenant_id', tenantId)
       .order('start_at', { ascending })
+      .order('id', { ascending: true }) // tiebreaker for stable cursor paging
       .limit(limit + 1);
 
     if (ctx.person_id) {
@@ -86,15 +87,37 @@ export class ReservationService {
       q = q.in('status', ['cancelled', 'released']);
     }
 
+    // Cursor format: `${start_at}__${id}` from the previous page's last row.
+    // We page on `start_at` with `id` as a tiebreaker — without the
+    // tiebreaker, rows sharing a start_at can swap positions across pages
+    // and cause duplicates or skips. Until we wired this, the API quietly
+    // returned the first N rows and never paged, so anyone with more than
+    // limit bookings could not see them.
+    if (opts.cursor) {
+      const sep = opts.cursor.lastIndexOf('__');
+      if (sep > 0) {
+        const cursorStart = opts.cursor.slice(0, sep);
+        const cursorId = opts.cursor.slice(sep + 2);
+        q = ascending
+          ? q.or(`start_at.gt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorId})`)
+          : q.or(`start_at.lt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorId})`);
+      }
+    }
+
     const { data, error } = await q;
     if (error) throw new BadRequestException(`list_failed:${error.message}`);
 
     type Row = Reservation & { space?: { id: string; name: string; type: string } | null };
-    const rows = ((data ?? []) as unknown as Row[]).slice(0, limit).map((r) => ({
+    const all = (data ?? []) as unknown as Row[];
+    const rows = all.slice(0, limit).map((r) => ({
       ...r,
       space_name: r.space?.name ?? null,
     }));
-    return { items: rows };
+    const next_cursor =
+      all.length > limit && rows.length > 0
+        ? `${rows[rows.length - 1].start_at}__${rows[rows.length - 1].id}`
+        : undefined;
+    return { items: rows, next_cursor };
   }
 
   /**

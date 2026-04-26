@@ -231,12 +231,33 @@ export class BookingNotificationsService {
         await TenantContext.run({ id: tenantId, slug: '', tier: 'standard' }, async () => {
           await this.sendCheckInReminder(row);
         });
-        await this.supabase.admin
-          .from('reservations')
-          .update({
-            policy_snapshot: { ...ps, reminder_sent_at: new Date().toISOString() },
-          })
-          .eq('id', row.id);
+        // Atomic JSONB merge via RPC — never read-modify-write the
+        // snapshot in JS, which would clobber any concurrent change to
+        // the same column (other fields are added to policy_snapshot by
+        // the booking pipeline). The RPC merges with `||` at the row
+        // level so this update is safe under concurrent writes.
+        const { error: rpcError } = await this.supabase.admin.rpc(
+          'reservation_merge_policy_snapshot',
+          {
+            p_reservation_id: row.id,
+            p_patch: { reminder_sent_at: new Date().toISOString() },
+          },
+        );
+        if (rpcError) {
+          // Fallback for environments where the migration hasn't been
+          // pushed yet: at least make the write conditional so we don't
+          // race against another reminder scan. We accept that this can
+          // still clobber unrelated fields — the bug we're guarding
+          // against would only fire when the schema is partially
+          // deployed.
+          await this.supabase.admin
+            .from('reservations')
+            .update({
+              policy_snapshot: { ...ps, reminder_sent_at: new Date().toISOString() },
+            })
+            .eq('id', row.id)
+            .is('policy_snapshot->>reminder_sent_at', null);
+        }
       } catch (err) {
         this.log.warn(`checkInRemindersScan ${row.id} failed: ${(err as Error).message}`);
       }

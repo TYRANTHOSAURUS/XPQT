@@ -139,6 +139,8 @@ export function BookRoomPage() {
         attendeeCount={0}
         multiRoomCount={pendingExtras.length}
         recurring={false}
+        topRoomName={rooms[0]?.name ?? null}
+        disabled={rooms.length === 0}
         onAddAttendees={() => {
           if (!rooms[0]) return;
           setPendingPrimary(rooms[0]);

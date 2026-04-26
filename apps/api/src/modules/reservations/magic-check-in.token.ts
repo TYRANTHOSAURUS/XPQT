@@ -16,9 +16,22 @@ const SECRET_ENV = 'CHECK_IN_MAGIC_SECRET';
 
 function secret(): string {
   const s = process.env[SECRET_ENV];
-  // We deliberately fall back to a fixed dev value rather than throwing —
-  // forces tests to run, prod ops are responsible for setting the env.
-  return s && s.length > 0 ? s : 'dev-only-magic-secret-do-not-use-in-prod';
+  // The token is the only gate on the public check-in endpoint, so a
+  // missing/weak secret in production would let anyone forge a check-in
+  // for any reservation. Fail closed at runtime in any non-test
+  // environment.
+  //
+  // Tests need to override with arbitrary values (including short ones to
+  // exercise "different secret" paths). NODE_ENV=test relaxes the length
+  // check; when the env is unset, fall back to a deterministic 32-char
+  // value so unit tests don't have to set it themselves.
+  if (process.env.NODE_ENV === 'test') {
+    return s && s.length > 0 ? s : 'test-magic-secret-32-chars-padding-padding';
+  }
+  if (s && s.length >= 32) return s;
+  throw new Error(
+    `${SECRET_ENV} env var must be set (>=32 chars). Magic check-in tokens cannot be issued or verified safely without it — failing closed.`,
+  );
 }
 
 function sign(payload: string): string {
