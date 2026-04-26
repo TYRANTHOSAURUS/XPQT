@@ -1,29 +1,53 @@
-import { Body, Controller, Delete, Get, NotImplementedException, Param, Patch, Post } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import {
+  BundleTemplatesService,
+  type BundleTemplateUpsertDto,
+} from './bundle-templates.service';
 
 @Controller('admin/bundle-templates')
 export class BundleTemplatesController {
+  constructor(private readonly service: BundleTemplatesService) {}
+
   @Get()
-  list() {
-    throw new NotImplementedException('bundle_templates.list lands in 2E');
+  list(@Query('active') active?: string) {
+    const filter =
+      active === 'true' ? { active: true } : active === 'false' ? { active: false } : undefined;
+    return this.service.list(filter);
   }
 
   @Get(':id')
-  findOne(@Param('id') _id: string) {
-    throw new NotImplementedException('bundle_templates.findOne lands in 2E');
+  findOne(@Param('id') id: string) {
+    return this.service.findOne(id);
   }
 
   @Post()
-  create(@Body() _body: unknown) {
-    throw new NotImplementedException('bundle_templates.create lands in 2E');
+  create(@Body() dto: BundleTemplateUpsertDto) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+    }
+    return this.service.create(dto);
   }
 
   @Patch(':id')
-  update(@Param('id') _id: string, @Body() _body: unknown) {
-    throw new NotImplementedException('bundle_templates.update lands in 2E');
+  update(@Param('id') id: string, @Body() dto: Partial<BundleTemplateUpsertDto>) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+    }
+    return this.service.update(id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id') _id: string) {
-    throw new NotImplementedException('bundle_templates.remove lands in 2E');
+  remove(@Param('id') id: string) {
+    return this.service.remove(id);
   }
 }
