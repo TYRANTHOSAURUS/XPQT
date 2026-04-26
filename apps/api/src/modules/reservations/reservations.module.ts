@@ -22,6 +22,8 @@ import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { NotificationModule } from '../notification/notification.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
+import { OrdersModule } from '../orders/orders.module';
+import { OrderService } from '../orders/order.service';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -29,7 +31,13 @@ import { TenantService } from '../tenant/tenant.service';
 import type { ActorContext, CreateReservationInput } from './dto/types';
 
 @Module({
-  imports: [RoomBookingRulesModule, CalendarSyncModule, NotificationModule, BookingBundlesModule],
+  imports: [
+    RoomBookingRulesModule,
+    CalendarSyncModule,
+    NotificationModule,
+    BookingBundlesModule,
+    OrdersModule,
+  ],
   providers: [
     ReservationService,
     ConflictGuardService,
@@ -67,12 +75,20 @@ export class ReservationsModule implements OnModuleInit {
     private readonly recurrence: RecurrenceService,
     private readonly supabase: SupabaseService,
     private readonly tenants: TenantService,
+    private readonly orders: OrderService,
   ) {}
 
   onModuleInit() {
     // Break the circular dep between BookingFlowService and RecurrenceService:
     // both are constructed independently, then wired here at module-init.
     this.recurrence.setBookingFlow(this.bookingFlow);
+    // Sub-project 2: when a master reservation has a booking_bundle, the
+    // materialiser fans out orders + lines + asset_reservations onto each
+    // new occurrence. Wired here for the same reason — OrdersModule pulls
+    // in ServiceCatalogModule which would otherwise create a cycle.
+    this.recurrence.setOrdersFanOut({
+      cloneOrderForOccurrence: (args) => this.orders.cloneOrderForOccurrence(args),
+    });
 
     // Wire the calendar-sync intercept handler. When a Pattern-A room mailbox
     // receives an Outlook invite, room-mailbox.service translates it to a

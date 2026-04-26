@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   NotImplementedException,
+  Param,
+  Patch,
   Post,
   Req,
   UnauthorizedException,
@@ -60,6 +62,35 @@ export class OrdersController {
     };
 
     return this.orders.createStandalone(args);
+  }
+
+  /**
+   * Per spec §5.2 — per-occurrence overrides + skip + revert. The drawer
+   * on /portal/me-bookings sends one of these when the user tweaks a single
+   * occurrence's service line. Each call sets `recurrence_overridden=true`
+   * (so the materialiser leaves the line alone on series-level edits).
+   */
+  @Patch('order-line-items/:id/override')
+  override(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      quantity?: number;
+      service_window_start_at?: string | null;
+      service_window_end_at?: string | null;
+    },
+  ) {
+    return this.orders.overrideLineForOccurrence(id, body ?? {});
+  }
+
+  @Patch('order-line-items/:id/skip')
+  skip(@Param('id') id: string, @Body() body: { reason?: string }) {
+    return this.orders.skipLineForOccurrence(id, body?.reason);
+  }
+
+  @Patch('order-line-items/:id/revert')
+  revert(@Param('id') id: string) {
+    return this.orders.revertLineForOccurrence(id);
   }
 
   // ── Internals ──────────────────────────────────────────────────────────

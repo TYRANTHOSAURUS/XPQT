@@ -6,6 +6,48 @@ import { ServiceRuleResolverService } from '../service-catalog/service-rule-reso
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
 
 /**
+ * Per spec §5.1: at recurrence-materialisation time, each order on the
+ * master reservation is cloned for the new occurrence. The per-line service
+ * window is stored absolute on every row; the offset comes from the master:
+ *
+ *   delta = master.line.service_window_start_at − master.reservation.start_at
+ *   clone.line.service_window_start_at = new_reservation.start_at + delta
+ *
+ * Lines with `repeats_with_series=false` stay master-only and are skipped
+ * for the clone. Asset GiST exclusion fires per occurrence: if a conflict
+ * occurs, the cloned line is created with `recurrence_skipped=true` and
+ * `skip_reason='asset_conflict'` so siblings still materialise.
+ */
+export interface CloneOrderForOccurrenceArgs {
+  masterOrderId: string;
+  /** New occurrence's reservation row. Required for service-window math. */
+  newReservation: {
+    id: string;
+    start_at: string;
+    end_at: string;
+  };
+  /**
+   * The master reservation's start_at — used to compute the per-line offset
+   * from `service_window_start_at`. Pass the master's row directly so we
+   * don't refetch.
+   */
+  masterReservationStartAt: string;
+  /** Bundle the cloned order should attach to. Required. */
+  bundleId: string;
+  /** Recurrence series id to set on the clone. */
+  recurrenceSeriesId: string | null;
+  requesterPersonId: string;
+}
+
+export interface CloneOrderForOccurrenceResult {
+  cloned_order_id: string;
+  cloned_line_ids: string[];
+  cloned_asset_reservation_ids: string[];
+  /** Lines we marked as recurrence_skipped due to asset conflict. */
+  asset_conflict_line_ids: string[];
+}
+
+/**
  * OrderService — wraps the standalone-order create path. Composite (room +
  * services) flows live in `BundleService`; this is the
  * `/portal/order` flow where there is no reservation.
@@ -59,6 +101,251 @@ export class OrderService {
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
   ) {}
+
+  /**
+   * Clone an order + its line items + their asset reservations for a new
+   * occurrence of a recurring booking. Called by `RecurrenceService.materialize`
+   * once per new occurrence per master order.
+   *
+   * Lines with `repeats_with_series=false` are skipped — used for one-off
+   * items the master alone needed (e.g. opening-day setup that doesn't
+   * recur weekly with the standup).
+   *
+   * If the master line had a `linked_asset_id`, we attempt to clone the
+   * asset_reservations row too. The GiST exclusion fires per occurrence;
+   * a conflict marks the cloned line as recurrence_skipped without
+   * blocking siblings.
+   */
+  async cloneOrderForOccurrence(
+    args: CloneOrderForOccurrenceArgs,
+  ): Promise<CloneOrderForOccurrenceResult> {
+    const tenantId = TenantContext.current().id;
+
+    const masterOrder = await this.supabase.admin
+      .from('orders')
+      .select('id, tenant_id, requester_person_id, delivery_location_id, policy_snapshot, recurrence_rule')
+      .eq('id', args.masterOrderId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (masterOrder.error) throw masterOrder.error;
+    if (!masterOrder.data) {
+      throw new NotFoundException({
+        code: 'master_order_not_found',
+        message: `Master order ${args.masterOrderId} not found.`,
+      });
+    }
+
+    // 1. Create the clone order row, scoped to the new occurrence.
+    const newWindowStart = args.newReservation.start_at;
+    const newWindowEnd = args.newReservation.end_at;
+    const clonedOrder = await this.supabase.admin
+      .from('orders')
+      .insert({
+        tenant_id: tenantId,
+        requester_person_id: args.requesterPersonId,
+        booking_bundle_id: args.bundleId,
+        linked_reservation_id: args.newReservation.id,
+        delivery_location_id: (masterOrder.data as { delivery_location_id: string | null }).delivery_location_id,
+        delivery_date: newWindowStart.slice(0, 10),
+        requested_for_start_at: newWindowStart,
+        requested_for_end_at: newWindowEnd,
+        recurrence_series_id: args.recurrenceSeriesId,
+        status: 'approved', // recurrence skips re-resolving rules in v1
+        policy_snapshot: {
+          ...(masterOrder.data as { policy_snapshot: Record<string, unknown> }).policy_snapshot,
+          cloned_from: args.masterOrderId,
+        },
+      })
+      .select('id')
+      .single();
+    if (clonedOrder.error) throw clonedOrder.error;
+    const clonedOrderId = (clonedOrder.data as { id: string }).id;
+
+    // 2. Pull master's lines that should repeat.
+    const masterLines = await this.supabase.admin
+      .from('order_line_items')
+      .select(
+        'id, catalog_item_id, quantity, unit_price, line_total, fulfillment_status, fulfillment_team_id, linked_asset_id, service_window_start_at, service_window_end_at, repeats_with_series, policy_snapshot',
+      )
+      .eq('order_id', args.masterOrderId)
+      .eq('tenant_id', tenantId)
+      .eq('repeats_with_series', true);
+    if (masterLines.error) throw masterLines.error;
+
+    const masterStartMs = Date.parse(args.masterReservationStartAt);
+    const newStartMs = Date.parse(newWindowStart);
+    const lineDeltaShift = (windowAt: string | null): string | null => {
+      if (!windowAt) return null;
+      const masterLineMs = Date.parse(windowAt);
+      if (!Number.isFinite(masterLineMs) || !Number.isFinite(masterStartMs)) return null;
+      const delta = masterLineMs - masterStartMs;
+      return new Date(newStartMs + delta).toISOString();
+    };
+
+    const clonedLineIds: string[] = [];
+    const clonedAssetReservationIds: string[] = [];
+    const assetConflictLineIds: string[] = [];
+
+    for (const line of (masterLines.data ?? []) as Array<{
+      id: string;
+      catalog_item_id: string;
+      quantity: number;
+      unit_price: number | null;
+      line_total: number | null;
+      fulfillment_status: string | null;
+      fulfillment_team_id: string | null;
+      linked_asset_id: string | null;
+      service_window_start_at: string | null;
+      service_window_end_at: string | null;
+      repeats_with_series: boolean;
+      policy_snapshot: Record<string, unknown>;
+    }>) {
+      const occurrenceStart = lineDeltaShift(line.service_window_start_at);
+      const occurrenceEnd = lineDeltaShift(line.service_window_end_at);
+
+      // 3a. Try to clone the asset reservation if the master had one.
+      let clonedAssetReservationId: string | null = null;
+      let assetConflicted = false;
+      if (line.linked_asset_id) {
+        const assetStart = occurrenceStart ?? newWindowStart;
+        const assetEnd = occurrenceEnd ?? newWindowEnd;
+        const ar = await this.supabase.admin
+          .from('asset_reservations')
+          .insert({
+            tenant_id: tenantId,
+            asset_id: line.linked_asset_id,
+            start_at: assetStart,
+            end_at: assetEnd,
+            status: 'confirmed',
+            requester_person_id: args.requesterPersonId,
+            booking_bundle_id: args.bundleId,
+          })
+          .select('id')
+          .single();
+        if (ar.error) {
+          if ((ar.error as { code?: string }).code === '23P01') {
+            assetConflicted = true;
+          } else {
+            throw ar.error;
+          }
+        } else {
+          clonedAssetReservationId = (ar.data as { id: string }).id;
+          clonedAssetReservationIds.push(clonedAssetReservationId);
+        }
+      }
+
+      // 3b. Insert the cloned line. If the asset conflicted, mark this
+      //     occurrence skipped without blocking the rest of the series.
+      const insertRes = await this.supabase.admin
+        .from('order_line_items')
+        .insert({
+          order_id: clonedOrderId,
+          tenant_id: tenantId,
+          catalog_item_id: line.catalog_item_id,
+          quantity: line.quantity,
+          unit_price: line.unit_price,
+          line_total: line.line_total,
+          fulfillment_status: assetConflicted ? 'cancelled' : 'ordered',
+          fulfillment_team_id: line.fulfillment_team_id,
+          linked_asset_id: line.linked_asset_id,
+          linked_asset_reservation_id: clonedAssetReservationId,
+          service_window_start_at: occurrenceStart,
+          service_window_end_at: occurrenceEnd,
+          repeats_with_series: true,
+          recurrence_skipped: assetConflicted,
+          skip_reason: assetConflicted ? 'asset_conflict' : null,
+          policy_snapshot: {
+            ...line.policy_snapshot,
+            cloned_from: line.id,
+          },
+        })
+        .select('id')
+        .single();
+      if (insertRes.error) throw insertRes.error;
+      const newLineId = (insertRes.data as { id: string }).id;
+      clonedLineIds.push(newLineId);
+      if (assetConflicted) assetConflictLineIds.push(newLineId);
+    }
+
+    void this.audit(tenantId, 'order.line_cloned', {
+      master_order_id: args.masterOrderId,
+      new_order_id: clonedOrderId,
+      bundle_id: args.bundleId,
+      cloned_line_ids: clonedLineIds,
+      cloned_asset_reservation_ids: clonedAssetReservationIds,
+      asset_conflict_line_ids: assetConflictLineIds,
+    });
+
+    return {
+      cloned_order_id: clonedOrderId,
+      cloned_line_ids: clonedLineIds,
+      cloned_asset_reservation_ids: clonedAssetReservationIds,
+      asset_conflict_line_ids: assetConflictLineIds,
+    };
+  }
+
+  /**
+   * Per-occurrence override / skip / revert APIs (spec §5.2). Called from
+   * the `/portal/me-bookings` drawer when the user tweaks one occurrence's
+   * service line.
+   *
+   *   override = "use a different quantity / window for this occurrence"
+   *   skip     = "no service for this occurrence"
+   *   revert   = "drop the override, follow the series"
+   */
+  async overrideLineForOccurrence(
+    lineId: string,
+    patch: { quantity?: number; service_window_start_at?: string | null; service_window_end_at?: string | null },
+  ): Promise<{ id: string; recurrence_overridden: true }> {
+    const tenantId = TenantContext.current().id;
+    const update: Record<string, unknown> = { recurrence_overridden: true };
+    if (patch.quantity != null) update.quantity = Math.max(0, Math.floor(patch.quantity));
+    if ('service_window_start_at' in patch) update.service_window_start_at = patch.service_window_start_at;
+    if ('service_window_end_at' in patch) update.service_window_end_at = patch.service_window_end_at;
+    const { error } = await this.supabase.admin
+      .from('order_line_items')
+      .update(update)
+      .eq('id', lineId)
+      .eq('tenant_id', tenantId);
+    if (error) throw error;
+    return { id: lineId, recurrence_overridden: true };
+  }
+
+  async skipLineForOccurrence(
+    lineId: string,
+    reason?: string,
+  ): Promise<{ id: string; recurrence_skipped: true }> {
+    const tenantId = TenantContext.current().id;
+    const { error } = await this.supabase.admin
+      .from('order_line_items')
+      .update({
+        recurrence_skipped: true,
+        recurrence_overridden: true,
+        skip_reason: reason ?? 'user_skipped',
+        fulfillment_status: 'cancelled',
+      })
+      .eq('id', lineId)
+      .eq('tenant_id', tenantId);
+    if (error) throw error;
+    return { id: lineId, recurrence_skipped: true };
+  }
+
+  async revertLineForOccurrence(
+    lineId: string,
+  ): Promise<{ id: string }> {
+    const tenantId = TenantContext.current().id;
+    const { error } = await this.supabase.admin
+      .from('order_line_items')
+      .update({
+        recurrence_overridden: false,
+        recurrence_skipped: false,
+        skip_reason: null,
+      })
+      .eq('id', lineId)
+      .eq('tenant_id', tenantId);
+    if (error) throw error;
+    return { id: lineId };
+  }
 
   /**
    * `POST /orders/standalone`. Creates a services-only `booking_bundles`

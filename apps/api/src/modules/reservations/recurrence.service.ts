@@ -41,6 +41,20 @@ export class RecurrenceService {
    * exercise pure expansion.
    */
   private bookingFlow: BookingFlowService | null = null;
+  /**
+   * Sub-project 2 fan-out: when a master reservation has a booking_bundle,
+   * we clone its orders + lines + asset_reservations for each new occurrence.
+   * Wired lazily because OrdersModule imports ServiceCatalogModule which
+   * imports RoomBookingRulesModule — a circular dep at the import level.
+   */
+  private orders: { cloneOrderForOccurrence: (args: {
+    masterOrderId: string;
+    newReservation: { id: string; start_at: string; end_at: string };
+    masterReservationStartAt: string;
+    bundleId: string;
+    recurrenceSeriesId: string | null;
+    requesterPersonId: string;
+  }) => Promise<unknown> } | null = null;
 
   // System actor used by the materialiser + rollover cron when there's no
   // human caller. Has no override permission — recurrence-materialised rows
@@ -64,6 +78,15 @@ export class RecurrenceService {
   /** Wire the booking flow lazily to break the circular dep. */
   setBookingFlow(bookingFlow: BookingFlowService) {
     this.bookingFlow = bookingFlow;
+  }
+
+  /**
+   * Wire the orders fan-out lazily — same circular-dep avoidance as
+   * `setBookingFlow`. When unset, recurrence materialises reservations
+   * normally and skips the bundle fan-out (no service cloning).
+   */
+  setOrdersFanOut(handler: NonNullable<RecurrenceService['orders']>) {
+    this.orders = handler;
   }
 
   /**
@@ -360,6 +383,25 @@ export class RecurrenceService {
           RecurrenceService.SYSTEM_ACTOR,
         );
         created.push(created_row.id);
+
+        // Sub-project 2 fan-out: if the master has a bundle, clone its
+        // orders + lines + asset_reservations onto the new occurrence.
+        // Best-effort — a failure here doesn't fail the materialise run;
+        // the user still got their occurrence's reservation.
+        if (master.booking_bundle_id && this.orders && this.supabase) {
+          await this.cloneBundleOrdersToOccurrence({
+            masterReservationId: master.id,
+            masterStartAt: master.start_at,
+            bundleId: master.booking_bundle_id,
+            seriesId,
+            newReservation: {
+              id: created_row.id,
+              start_at: created_row.start_at,
+              end_at: created_row.end_at,
+            },
+            requesterPersonId: master.requester_person_id,
+          });
+        }
       } catch (err) {
         // 23P01 (conflict guard) → skip, don't fail the whole run.
         if (this.conflict && this.conflict.isExclusionViolation(err)) {
@@ -389,6 +431,54 @@ export class RecurrenceService {
     }
 
     return { created, skipped_conflicts: skipped };
+  }
+
+  /**
+   * Per spec §5.1, sub-project 2 fan-out. For each order on the master
+   * reservation's bundle, clone it onto the new occurrence. Best-effort:
+   * a clone failure logs a warning but doesn't fail the materialise loop.
+   * Lines with `repeats_with_series=false` are skipped by the cloner;
+   * asset GiST conflicts surface as `recurrence_skipped=true` per line.
+   */
+  private async cloneBundleOrdersToOccurrence(args: {
+    masterReservationId: string;
+    masterStartAt: string;
+    bundleId: string;
+    seriesId: string;
+    newReservation: { id: string; start_at: string; end_at: string };
+    requesterPersonId: string;
+  }): Promise<void> {
+    if (!this.supabase || !this.orders) return;
+    // Find the master reservation's orders. We use linked_reservation_id
+    // (and not booking_bundle_id) so a bundle whose later occurrences also
+    // got services attached separately doesn't get its later orders re-cloned.
+    const { data: orders, error } = await this.supabase.admin
+      .from('orders')
+      .select('id')
+      .eq('linked_reservation_id', args.masterReservationId)
+      .eq('booking_bundle_id', args.bundleId);
+    if (error) {
+      this.log.warn(
+        `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
+      );
+      return;
+    }
+    for (const o of (orders ?? []) as Array<{ id: string }>) {
+      try {
+        await this.orders.cloneOrderForOccurrence({
+          masterOrderId: o.id,
+          newReservation: args.newReservation,
+          masterReservationStartAt: args.masterStartAt,
+          bundleId: args.bundleId,
+          recurrenceSeriesId: args.seriesId,
+          requesterPersonId: args.requesterPersonId,
+        });
+      } catch (err) {
+        this.log.warn(
+          `bundle fan-out: clone order ${o.id} → reservation ${args.newReservation.id} failed: ${(err as Error).message}`,
+        );
+      }
+    }
   }
 
   /**
