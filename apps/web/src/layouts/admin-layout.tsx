@@ -29,6 +29,7 @@ import {
 import { ArrowLeft } from 'lucide-react';
 import { adminNavGroups } from '@/lib/admin-nav';
 import { ShellSwitcher } from '@/components/shell-switcher';
+import { SearchTrigger } from '@/components/command-palette/search-trigger';
 
 const pageTitles: Record<string, string> = Object.fromEntries(
   adminNavGroups.flatMap((group) => group.items.map((item) => [item.path, item.title])),
@@ -115,7 +116,8 @@ export function AdminLayout() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            <SearchTrigger variant="bar" className="w-[260px]" />
             <ShellSwitcher />
           </div>
         </header>

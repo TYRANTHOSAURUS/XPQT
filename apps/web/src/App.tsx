@@ -74,9 +74,11 @@ const VendorsReport = lazyNamed(() => import('@/pages/desk/reports/vendors'), 'V
 // Admin
 const AdminIndexPage = lazyNamed(() => import('@/pages/admin'), 'AdminIndexPage');
 const RequestTypesPage = lazyNamed(() => import('@/pages/admin/request-types'), 'RequestTypesPage');
+const RequestTypeDetailPage = lazyNamed(() => import('@/pages/admin/request-type-detail'), 'RequestTypeDetailPage');
 const FormSchemasPage = lazyNamed(() => import('@/pages/admin/form-schemas'), 'FormSchemasPage');
 const FormSchemaDetailPage = lazyNamed(() => import('@/pages/admin/form-schema-detail'), 'FormSchemaDetailPage');
 const TeamsPage = lazyNamed(() => import('@/pages/admin/teams'), 'TeamsPage');
+const TeamDetailPage = lazyNamed(() => import('@/pages/admin/team-detail'), 'TeamDetailPage');
 const LocationsPage = lazyNamed(() => import('@/pages/admin/locations'), 'LocationsPage');
 const SlaPoliciesPage = lazyNamed(() => import('@/pages/admin/sla-policies'), 'SlaPoliciesPage');
 const SlaPolicyCreatePage = lazyNamed(() => import('@/pages/admin/sla-policy-create'), 'SlaPolicyCreatePage');
@@ -104,12 +106,15 @@ const UserDetailPage = lazyNamed(() => import('@/pages/admin/user-detail'), 'Use
 const UserRolesPage = lazyNamed(() => import('@/pages/admin/user-roles'), 'UserRolesPage');
 const RoleDetailPage = lazyNamed(() => import('@/pages/admin/role-detail'), 'RoleDetailPage');
 const PersonsPage = lazyNamed(() => import('@/pages/admin/persons'), 'PersonsPage');
+const PersonDetailPage = lazyNamed(() => import('@/pages/admin/person-detail'), 'PersonDetailPage');
 const OrganisationsPage = lazyNamed(() => import('@/pages/admin/organisations'), 'OrganisationsPage');
 const OrganisationCreatePage = lazyNamed(() => import('@/pages/admin/organisation-create'), 'OrganisationCreatePage');
 const OrganisationDetailPage = lazyNamed(() => import('@/pages/admin/organisation-detail'), 'OrganisationDetailPage');
 const DelegationsPage = lazyNamed(() => import('@/pages/admin/delegations'), 'DelegationsPage');
 const AssetsPage = lazyNamed(() => import('@/pages/admin/assets'), 'AssetsPage');
+const AssetDetailPage = lazyNamed(() => import('@/pages/admin/asset-detail'), 'AssetDetailPage');
 const VendorsPage = lazyNamed(() => import('@/pages/admin/vendors'), 'VendorsPage');
+const VendorDetailPage = lazyNamed(() => import('@/pages/admin/vendor-detail'), 'VendorDetailPage');
 const VendorMenusPage = lazyNamed(() => import('@/pages/admin/vendor-menus'), 'VendorMenusPage');
 const VendorMenuDetailPage = lazyNamed(() => import('@/pages/admin/vendor-menu-detail'), 'VendorMenuDetailPage');
 const BrandingPage = lazyNamed(() => import('@/pages/admin/branding'), 'BrandingPage');
@@ -218,9 +223,11 @@ export function App() {
                   <Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
+                  <Route path="request-types/:id" element={<RequestTypeDetailPage />} />
                   <Route path="form-schemas" element={<FormSchemasPage />} />
                   <Route path="form-schemas/:id" element={<FormSchemaDetailPage />} />
                   <Route path="teams" element={<TeamsPage />} />
+                  <Route path="teams/:id" element={<TeamDetailPage />} />
                   <Route path="locations" element={<LocationsPage />} />
                   <Route path="locations/:spaceId" element={<LocationsPage />} />
                   <Route path="sla-policies" element={<SlaPoliciesPage />} />
@@ -283,14 +290,17 @@ export function App() {
                   <Route path="user-roles/new" element={<RoleDetailPage />} />
                   <Route path="user-roles/:id" element={<RoleDetailPage />} />
                   <Route path="persons" element={<PersonsPage />} />
+                  <Route path="persons/:id" element={<PersonDetailPage />} />
                   <Route path="organisations" element={<OrganisationsPage />} />
                   <Route path="organisations/new" element={<OrganisationCreatePage />} />
                   <Route path="organisations/:id" element={<OrganisationDetailPage />} />
                   <Route path="delegations" element={<DelegationsPage />} />
                   {/* Assets */}
                   <Route path="assets" element={<AssetsPage />} />
+                  <Route path="assets/:id" element={<AssetDetailPage />} />
                   {/* Vendors */}
                   <Route path="vendors" element={<VendorsPage />} />
+                  <Route path="vendors/:id" element={<VendorDetailPage />} />
                   <Route path="vendor-menus" element={<VendorMenusPage />} />
                   <Route path="vendor-menus/:id" element={<VendorMenuDetailPage />} />
                   {/* Routing Studio (feature-flagged, phase 1: additive only) */}

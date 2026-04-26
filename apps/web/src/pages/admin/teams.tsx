@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -352,7 +353,11 @@ export function TeamsPage() {
           {!loading && (!data || data.length === 0) && <TableEmpty cols={5} message="No teams yet." />}
           {(data ?? []).map((team) => (
             <TableRow key={team.id}>
-              <TableCell className="font-medium">{team.name}</TableCell>
+              <TableCell className="font-medium">
+                <Link to={`/admin/teams/${team.id}`} className="hover:underline">
+                  {team.name}
+                </Link>
+              </TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{team.domain_scope ?? 'All'}</Badge></TableCell>
               <TableCell className="text-muted-foreground text-sm">{getLocationName(team.location_scope)}</TableCell>
               <TableCell><Badge variant={team.active ? 'default' : 'secondary'}>{team.active ? 'Active' : 'Inactive'}</Badge></TableCell>

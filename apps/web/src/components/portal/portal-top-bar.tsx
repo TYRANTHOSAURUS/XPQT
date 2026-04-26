@@ -10,6 +10,7 @@ import { PortalNavLink } from './portal-nav-link';
 import { PortalLocationPicker } from './portal-location-picker';
 import { PortalAccountMenu } from './portal-account-menu';
 import { ShellSwitcher } from '@/components/shell-switcher';
+import { SearchTrigger } from '@/components/command-palette/search-trigger';
 import { useBranding } from '@/hooks/use-branding';
 import { usePortal } from '@/providers/portal-provider';
 
@@ -49,6 +50,7 @@ export function PortalTopBar() {
         </nav>
 
         <div className="flex items-center gap-2 justify-end">
+          <SearchTrigger variant="bar" className="w-[220px] xl:w-[260px]" />
           <PortalLocationPicker />
           <div className="h-5 w-px bg-border/70" aria-hidden />
           <ShellSwitcher />
@@ -56,7 +58,7 @@ export function PortalTopBar() {
         </div>
       </div>
 
-      {/* Mobile: brand · location · account */}
+      {/* Mobile: brand · search · location · account */}
       <div className="md:hidden flex h-full items-center gap-2 px-3">
         <Link to="/portal" className="flex items-center gap-2 min-w-0 flex-1">
           {branding?.logo_light_url ? (
@@ -69,6 +71,7 @@ export function PortalTopBar() {
           )}
           <span className="truncate text-[13px] font-semibold tracking-tight">{tenantName}</span>
         </Link>
+        <SearchTrigger variant="icon" />
         <PortalLocationPicker compact />
         <PortalAccountMenu />
       </div>

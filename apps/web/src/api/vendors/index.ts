@@ -5,9 +5,17 @@ export interface Vendor {
   id: string;
   name: string;
   active?: boolean;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  website?: string | null;
+  notes?: string | null;
+  owning_team_id?: string | null;
+  owning_team?: { id: string; name: string } | null;
   default_sla_policy_id?: string | null;
   default_team_id?: string | null;
+  /** @deprecated kept for legacy callers — use contact_email. */
   email?: string | null;
+  /** @deprecated kept for legacy callers — use contact_phone. */
   phone?: string | null;
   address?: string | null;
   domain?: string | null;
@@ -31,6 +39,19 @@ export function vendorsListOptions() {
 
 export function useVendors() {
   return useQuery(vendorsListOptions());
+}
+
+export function vendorDetailOptions(id: string | null | undefined) {
+  return queryOptions({
+    queryKey: vendorKeys.detail(id ?? ''),
+    queryFn: ({ signal }) => apiFetch<Vendor>(`/vendors/${id}`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useVendor(id: string | null | undefined) {
+  return useQuery(vendorDetailOptions(id));
 }
 
 export type UpsertVendorPayload = Partial<Omit<Vendor, 'id'>> & { name: string };

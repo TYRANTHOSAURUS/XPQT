@@ -175,6 +175,8 @@ begin
             t.title ilike v_pat
             or coalesce(t.description, '') ilike v_pat
             or t.id::text ilike v_pat
+            or t.title % v_q
+            or coalesce(t.description, '') % v_q
           )
       )
       select
@@ -223,6 +225,8 @@ begin
           p.first_name ilike v_pat
           or p.last_name ilike v_pat
           or coalesce(p.email, '') ilike v_pat
+          or p.first_name % v_q
+          or p.last_name % v_q
         )
       order by score desc
       limit v_limit;
@@ -254,7 +258,11 @@ begin
       from public.spaces s
       where s.tenant_id = p_tenant_id
         and s.active = true
-        and (s.name ilike v_pat or coalesce(s.code, '') ilike v_pat)
+        and (
+          s.name ilike v_pat
+          or coalesce(s.code, '') ilike v_pat
+          or s.name % v_q
+        )
       order by score desc
       limit v_limit;
   end if;
@@ -288,6 +296,7 @@ begin
           a.name ilike v_pat
           or coalesce(a.tag, '') ilike v_pat
           or coalesce(a.serial_number, '') ilike v_pat
+          or a.name % v_q
         )
       order by score desc
       limit v_limit;
@@ -311,7 +320,7 @@ begin
       from public.vendors v
       where v.tenant_id = p_tenant_id
         and v.active = true
-        and v.name ilike v_pat
+        and (v.name ilike v_pat or v.name % v_q)
       order by score desc
       limit v_limit;
   end if;
@@ -333,7 +342,7 @@ begin
       from public.teams t
       where t.tenant_id = p_tenant_id
         and t.active = true
-        and t.name ilike v_pat
+        and (t.name ilike v_pat or t.name % v_q)
       order by score desc
       limit v_limit;
   end if;
@@ -355,7 +364,7 @@ begin
       from public.request_types rt
       where rt.tenant_id = p_tenant_id
         and rt.active = true
-        and rt.name ilike v_pat
+        and (rt.name ilike v_pat or rt.name % v_q)
       order by score desc
       limit v_limit;
   end if;

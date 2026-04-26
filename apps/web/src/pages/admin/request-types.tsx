@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -76,7 +77,9 @@ export function RequestTypesPage() {
           {(data ?? []).map((rt) => (
             <TableRow key={rt.id}>
               <TableCell className="font-medium">
-                {rt.name}
+                <Link to={`/admin/request-types/${rt.id}`} className="hover:underline">
+                  {rt.name}
+                </Link>
                 {rt.requires_approval && <Badge variant="outline" className="ml-2 text-xs">approval</Badge>}
               </TableCell>
               <TableCell><Badge variant="outline" className="capitalize">{rt.domain ?? 'general'}</Badge></TableCell>

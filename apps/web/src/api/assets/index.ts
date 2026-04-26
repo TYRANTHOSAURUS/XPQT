@@ -6,11 +6,21 @@ export interface Asset {
   name: string;
   asset_type_id?: string | null;
   asset_type?: { id: string; name: string; domain?: string | null } | null;
+  asset_role?: 'fixed' | 'personal' | 'pooled';
+  tag?: string | null;
   serial_number?: string | null;
+  status?: 'available' | 'assigned' | 'in_maintenance' | 'retired' | 'disposed' | string;
+  lifecycle_state?: string;
+  assigned_person_id?: string | null;
+  assigned_person?: { id: string; first_name: string; last_name: string } | null;
+  assigned_space_id?: string | null;
+  assigned_space?: { id: string; name: string } | null;
+  /** @deprecated retained for older callers; use assigned_space_id. */
   space_id?: string | null;
   override_team_id?: string | null;
   override_vendor_id?: string | null;
   active?: boolean;
+  purchase_date?: string | null;
 }
 
 export interface AssetType {
@@ -59,6 +69,19 @@ export function assetTypesListOptions() {
 }
 export function useAssetTypes() {
   return useQuery(assetTypesListOptions());
+}
+
+export function assetDetailOptions(id: string | null | undefined) {
+  return queryOptions({
+    queryKey: assetKeys.detail(id ?? ''),
+    queryFn: ({ signal }) => apiFetch<Asset>(`/assets/${id}`, { signal }),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+  });
+}
+
+export function useAsset(id: string | null | undefined) {
+  return useQuery(assetDetailOptions(id));
 }
 
 export type UpsertAssetPayload = Partial<Omit<Asset, 'id' | 'asset_type'>> & { name: string };

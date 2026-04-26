@@ -8,6 +8,11 @@ export class TeamController {
   @Get()
   async list() { return this.teamService.list(); }
 
+  @Get(':id')
+  async getById(@Param('id') id: string) {
+    return this.teamService.getById(id);
+  }
+
   @Post()
   async create(@Body() dto: {
     name: string;

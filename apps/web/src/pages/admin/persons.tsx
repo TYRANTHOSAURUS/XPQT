@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -373,7 +374,11 @@ export function PersonsPage() {
             const linkedUser = getLinkedUser(person);
             return (
               <TableRow key={person.id}>
-                <TableCell className="font-medium">{person.first_name} {person.last_name}</TableCell>
+                <TableCell className="font-medium">
+                  <Link to={`/admin/persons/${person.id}`} className="hover:underline">
+                    {person.first_name} {person.last_name}
+                  </Link>
+                </TableCell>
                 <TableCell className="text-muted-foreground text-sm">{person.email ?? '---'}</TableCell>
                 <TableCell className="text-muted-foreground text-sm">{person.phone ?? '---'}</TableCell>
                 <TableCell>{getTypeBadge(person.type)}</TableCell>

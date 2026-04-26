@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
 export interface Person {
@@ -8,8 +8,19 @@ export interface Person {
   /** Convenience field returned by some endpoints. Derive `${first} ${last}` if absent. */
   full_name?: string;
   email?: string | null;
+  phone?: string | null;
+  cost_center?: string | null;
+  type?: 'employee' | 'visitor' | 'contractor' | 'vendor_contact' | 'temporary_worker' | string;
+  active?: boolean;
+  default_location_id?: string | null;
+  avatar_url?: string | null;
+  /** @deprecated kept for backwards compatibility — column was dropped in 00118+. */
   department?: string | null;
 }
+
+export type UpdatePersonPayload = Partial<
+  Pick<Person, 'first_name' | 'last_name' | 'email' | 'phone' | 'cost_center' | 'type' | 'active' | 'default_location_id'>
+>;
 
 export function personFullName(p: Pick<Person, 'first_name' | 'last_name' | 'full_name'>): string {
   return p.full_name ?? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim();
@@ -80,4 +91,23 @@ export function personDetailOptions(id: string | null | undefined) {
 
 export function usePerson(id: string | null | undefined) {
   return useQuery(personDetailOptions(id));
+}
+
+/**
+ * PATCH a person. Auto-save sites in the detail page call this from
+ * useDebouncedSave. Invalidates everything under personKeys so list rows,
+ * pickers, and the detail page all reflect the change.
+ */
+export function useUpdatePerson(id: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation<Person, Error, UpdatePersonPayload>({
+    mutationFn: (payload) =>
+      apiFetch<Person>(`/persons/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: personKeys.all });
+    },
+  });
 }

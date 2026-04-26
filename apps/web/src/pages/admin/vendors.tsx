@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -420,7 +421,11 @@ export function VendorsPage() {
           )}
           {(vendors ?? []).map((v) => (
             <TableRow key={v.id}>
-              <TableCell className="font-medium">{v.name}</TableCell>
+              <TableCell className="font-medium">
+                <Link to={`/admin/vendors/${v.id}`} className="hover:underline">
+                  {v.name}
+                </Link>
+              </TableCell>
               <TableCell className="text-muted-foreground text-sm">
                 {v.owning_team?.name ?? '—'}
               </TableCell>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -338,7 +339,11 @@ export function AssetsPage() {
           {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No assets found." />}
           {(data ?? []).map((asset) => (
             <TableRow key={asset.id}>
-              <TableCell className="font-medium">{asset.name}</TableCell>
+              <TableCell className="font-medium">
+                <Link to={`/admin/assets/${asset.id}`} className="hover:underline">
+                  {asset.name}
+                </Link>
+              </TableCell>
               <TableCell className="text-muted-foreground text-sm">{asset.asset_type?.name ?? '---'}</TableCell>
               <TableCell><Badge variant={roleVariant[asset.asset_role] ?? 'outline'} className="capitalize text-xs">{asset.asset_role}</Badge></TableCell>
               <TableCell className="text-muted-foreground text-sm font-mono">{asset.serial_number ?? '---'}</TableCell>
