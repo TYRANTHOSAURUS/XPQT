@@ -170,6 +170,54 @@
   code.chip, [data-chip] {
     user-select: all;
     }
+
+  /* ─── Auto-hide overlay scrollbars (Linear / Notion style) ─────────────
+     Scrollbars are invisible by default and fade in on hover/interaction.
+     On macOS with "show scroll bars: when scrolling", the OS handles fade-
+     out automatically; on Windows/Linux this CSS is what makes it work.
+     Track always reserves no extra width — the thumb floats over content. */
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    }
+  *:hover, *:focus-within {
+    scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) transparent;
+    }
+
+  /* WebKit / Chromium */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: transparent;
+    }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+    }
+  ::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    transition: background-color 150ms var(--ease-smooth);
+    }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+    }
+  *:hover::-webkit-scrollbar-thumb,
+  *:focus-within::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+    background-clip: padding-box;
+    }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--foreground) 38%, transparent);
+    background-clip: padding-box;
+    }
+  ::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(in oklab, var(--foreground) 50%, transparent);
+    background-clip: padding-box;
+    }
 }
 
 /* ─── Cross-document / route view transitions ──────────────────────────

@@ -314,8 +314,8 @@ function UsersTable({
   }
 
   return (
-    <Table>
-      <TableHeader className="bg-muted/30 sticky top-0 z-10">
+    <Table containerClassName="overflow-visible">
+      <TableHeader className="bg-muted/30 sticky top-0 z-10 backdrop-blur-sm">
         <TableRow>
           <TableHead className="px-6">Name</TableHead>
           {!hasSelection && <TableHead className="w-[260px]">Email</TableHead>}

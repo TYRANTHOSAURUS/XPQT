@@ -191,7 +191,7 @@ function TicketTable({
 
   return (
     <div className="mx-6 rounded-md border">
-      <Table>
+      <Table containerClassName="overflow-visible">
         <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur-sm">
           <TableRow className="hover:bg-transparent bg-transparent">
             <TableHead className="h-8 w-10 px-3 text-xs uppercase text-muted-foreground">
