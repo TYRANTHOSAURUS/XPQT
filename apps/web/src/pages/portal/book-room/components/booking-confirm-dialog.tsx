@@ -116,6 +116,18 @@ export function BookingConfirmDialog({
 
     try {
       if (isMultiRoom) {
+        // The multi-room endpoint atomically books a group of rooms but
+        // does NOT yet support recurrence (by design — the conflict-guard
+        // semantics for "atomic group across multiple occurrences" need
+        // their own design). The recurrence toggle is hidden in the UI
+        // when isMultiRoom, so this should never fire — but we defend
+        // against future edits (parent prop + state interactions) by
+        // failing loudly here rather than silently dropping the rule.
+        if (recurring) {
+          throw new Error(
+            'Recurrence on multi-room bookings is not supported yet. Book a single room or turn off recurrence.',
+          );
+        }
         await multiBooking.mutateAsync({
           space_ids: [primaryRoom.space_id, ...additionalRooms.map((r) => r.space_id)],
           requester_person_id: requesterPersonId,

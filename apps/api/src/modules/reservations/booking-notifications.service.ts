@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { TenantService } from '../tenant/tenant.service';
 import { NotificationService } from '../notification/notification.service';
 import type { Reservation } from './dto/types';
 
@@ -27,6 +28,10 @@ export class BookingNotificationsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly notifications: NotificationService,
+    // Resolves the live tenant row (slug, tier) for cron-loop iterations
+    // that don't run inside an HTTP request. Optional so unit tests can
+    // construct the service without the tenant module.
+    @Optional() private readonly tenants?: TenantService,
   ) {}
 
   // === Confirmation ===
@@ -225,10 +230,20 @@ export class BookingNotificationsService {
       const ps = (row.policy_snapshot ?? {}) as Record<string, unknown>;
       if (ps['reminder_sent_at']) continue;
 
-      // We need TenantContext for downstream notification calls.
-      const tenantId = row.tenant_id;
+      // The cron fires outside any HTTP request — there's no TenantContext.
+      // sendCheckInReminder + downstream notification code reads
+      // TenantContext.current() (and may rely on slug / tier), so we must
+      // resolve the live tenant row before running the notification.
+      // Mirrors the pattern in RecurrenceService.recurrenceRollover.
       try {
-        await TenantContext.run({ id: tenantId, slug: '', tier: 'standard' }, async () => {
+        const tenant = this.tenants ? await this.tenants.resolveById(row.tenant_id) : null;
+        if (!tenant) {
+          this.log.warn(
+            `checkInRemindersScan ${row.id}: tenant ${row.tenant_id} not found, skipping`,
+          );
+          continue;
+        }
+        await TenantContext.run(tenant, async () => {
           await this.sendCheckInReminder(row);
         });
         // Atomic JSONB merge via RPC — never read-modify-write the

@@ -125,6 +125,24 @@ export class MultiRoomBookingService {
           .eq('id', r.id)
           .eq('status', r.status);
       }
+      // Cancel any approval rows the BookingFlow may have created for the
+      // rolled-back reservations. Without this, approvers receive a
+      // notification + see a pending row in /desk/approvals for a booking
+      // that no longer exists. We update — not delete — so the audit
+      // trail keeps a record of "this approval was opened then voided
+      // because the group rolled back".
+      if (created.length > 0) {
+        await this.supabase.admin
+          .from('approvals')
+          .update({
+            status: 'cancelled',
+            comments: 'Multi-room booking rolled back — sibling reservation failed.',
+          })
+          .eq('tenant_id', tenantId)
+          .eq('target_entity_type', 'reservation')
+          .in('target_entity_id', created.map((r) => r.id))
+          .eq('status', 'pending');
+      }
       // Drop the group row too — easier than leaving an orphan.
       await this.supabase.admin
         .from('multi_room_groups')

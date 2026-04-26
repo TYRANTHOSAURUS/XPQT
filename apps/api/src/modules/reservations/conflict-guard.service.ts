@@ -103,13 +103,32 @@ export class ConflictGuardService {
     if (setup === 0 && teardown === 0) return { setup_buffer_minutes: 0, teardown_buffer_minutes: 0 };
 
     // Find immediately-touching neighbours within a generous window.
+    //
+    // The DB filter widens to a small range around the candidate boundaries
+    // because exact-equality on a timestamp string only matches when both
+    // the writer and the reader rounded identically. Two clients that
+    // round to different precisions (the portal rounds to the minute, the
+    // scheduler grid resizes to 30-min cells) would store back-to-back
+    // bookings with sub-second skew, miss this query entirely, and fail
+    // to collapse the buffer. The JS-side TOL_MS check below was already
+    // intended to cover that case but the DB filter was the gate.
+    const TOL_MS = 1000;
+    const newStart = new Date(args.start_at).getTime();
+    const newEnd = new Date(args.end_at).getTime();
+    const startLow = new Date(newStart - TOL_MS).toISOString();
+    const startHigh = new Date(newStart + TOL_MS).toISOString();
+    const endLow = new Date(newEnd - TOL_MS).toISOString();
+    const endHigh = new Date(newEnd + TOL_MS).toISOString();
     const probe = await this.supabase.admin
       .from('reservations')
       .select('id, start_at, end_at, requester_person_id')
       .eq('tenant_id', tenantId)
       .eq('space_id', args.space_id)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
-      .or(`end_at.eq.${args.start_at},start_at.eq.${args.end_at}`);
+      .or(
+        `and(end_at.gte.${startLow},end_at.lte.${startHigh}),` +
+          `and(start_at.gte.${endLow},start_at.lte.${endHigh})`,
+      );
 
     const rows = ((probe.data ?? []) as Array<{
       id: string;
@@ -118,13 +137,9 @@ export class ConflictGuardService {
       requester_person_id: string;
     }>).filter((r) => !args.exclude_ids?.includes(r.id));
 
-    // Use a 1-second tolerance for adjacency: client-side rounding or manual
-    // time edits can introduce sub-second skew that string-equality misses,
-    // and the spec's intent ("immediately-prior") is logical-adjacency, not
-    // exact-equality.
-    const newStart = new Date(args.start_at).getTime();
-    const newEnd = new Date(args.end_at).getTime();
-    const TOL_MS = 1000;
+    // The JS-side ±TOL_MS check below stays — same reason: the DB filter
+    // can return a row that's 1.5s away if the client rounded into the
+    // window, but only the exact-adjacency math should zero a buffer.
     for (const r of rows) {
       const sameRequester = r.requester_person_id === args.requester_person_id;
       if (!sameRequester) continue;

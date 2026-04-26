@@ -91,6 +91,19 @@ describe('MultiRoomBookingService.createGroup', () => {
             }),
           };
         }
+        if (table === 'approvals') {
+          // Rollback path cancels orphan approval rows so notifications
+          // don't dangle. Test only needs a chainable resolver — the
+          // assertion stack doesn't introspect this table.
+          const resolved = Promise.resolve({ data: null, error: null });
+          const chain: Record<string, unknown> = {};
+          chain.eq = () => chain;
+          chain.in = () => chain;
+          chain.then = resolved.then.bind(resolved);
+          return {
+            update: () => chain,
+          };
+        }
         return {};
       },
     };

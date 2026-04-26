@@ -81,7 +81,12 @@ export function useDragResize(opts: {
       if (!ctx) return;
       const cell = cellFromClientX(ctx.rowEl, e.clientX);
       if (ctx.edge === 'start') {
-        const newStart = Math.min(cell, ctx.fixedEndCell);
+        // Clamp to leave at least one cell of duration. Without -1 the user
+        // could pull the start handle past the fixed end, producing a
+        // start_at === end_at PATCH that the API rejects (400 "end must be
+        // after start"). The grid would then snap the block back without
+        // any visible explanation — looks like a broken drag.
+        const newStart = Math.min(cell, ctx.fixedEndCell - 1);
         setActive({
           reservationId: ctx.reservationId,
           edge: 'start',
@@ -89,7 +94,7 @@ export function useDragResize(opts: {
           newEndCell: ctx.fixedEndCell,
         });
       } else {
-        const newEnd = Math.max(cell, ctx.fixedStartCell);
+        const newEnd = Math.max(cell, ctx.fixedStartCell + 1);
         setActive({
           reservationId: ctx.reservationId,
           edge: 'end',

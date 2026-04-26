@@ -26,11 +26,20 @@ export function useRealtimeAvailability(
   const queryClient = useQueryClient();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleSetRef = useRef(new Set(spaceIds));
+  // Holds the latest pickerInput so the channel handler invalidates the
+  // CURRENT query bucket. Without this, the closure inside `subscribe`
+  // captures the input at subscription time and any keystroke that
+  // changes criteria (date, attendee count, …) would invalidate the OLD
+  // key — leaving the new query untouched until the next refetch.
+  const pickerInputRef = useRef(pickerInput);
 
-  // Keep the ref in sync without resubscribing on every list rerender.
+  // Keep refs in sync without resubscribing on every list rerender.
   useEffect(() => {
     visibleSetRef.current = new Set(spaceIds);
   }, [spaceIds]);
+  useEffect(() => {
+    pickerInputRef.current = pickerInput;
+  }, [pickerInput]);
 
   useEffect(() => {
     if (!enabled || spaceIds.length === 0) return;
@@ -39,7 +48,7 @@ export function useRealtimeAvailability(
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         queryClient.invalidateQueries({
-          queryKey: roomBookingKeys.picker(pickerInput),
+          queryKey: roomBookingKeys.picker(pickerInputRef.current),
         });
       }, 200);
     };
@@ -65,9 +74,9 @@ export function useRealtimeAvailability(
       void supabase.removeChannel(channel);
     };
     // We intentionally do NOT depend on `pickerInput` (it changes on every
-    // criteria edit). The invalidation path uses the latest input via closure,
-    // and resubscribe-on-every-keystroke would thrash the WS connection.
-    // We DO depend on the membership of spaceIds (joined to a string key).
+    // criteria edit) — resubscribing on every keystroke would thrash the WS
+    // connection. The invalidation path reads the latest input via the
+    // pickerInputRef instead. Membership of spaceIds is in the dep key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, spaceIds.join(','), queryClient]);
 }

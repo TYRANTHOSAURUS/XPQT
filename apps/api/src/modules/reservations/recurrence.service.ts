@@ -383,10 +383,16 @@ export class RecurrenceService {
     if (!this.supabase) return;
     const cutoff = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
+    // Only extend live series. Without `series_end_at` filtering, capped /
+    // cancelled series whose materialized_through is older than the cutoff
+    // (always, after a 'series' cancel) starve the 50-row budget and waste
+    // loop iterations on no-ops. `is null` keeps unbounded series eligible.
+    const nowIso = new Date().toISOString();
     const { data, error } = await this.supabase.admin
       .from('recurrence_series')
       .select('id, tenant_id')
       .lt('materialized_through', cutoff)
+      .or(`series_end_at.is.null,series_end_at.gt.${nowIso}`)
       .limit(50);
 
     if (error) {
@@ -548,10 +554,15 @@ export class RecurrenceService {
     const { data, error } = await q.select('id');
     if (error) throw new Error(`cancelForward failed: ${error.message}`);
 
-    // Cap the series so the rollover doesn't re-create.
+    // Cap the series so the rollover doesn't re-create. For 'series' the
+    // pivot start_at is also a safe end-cap because every occurrence at or
+    // after it has been cancelled in the same statement above; using epoch
+    // here would technically work but the rollover scan only filters on
+    // `materialized_through < cutoff`, leaving an epoch row matching every
+    // night and burning loop budget on no-op processing.
     await this.supabase.admin
       .from('recurrence_series')
-      .update({ series_end_at: scope === 'this_and_following' ? p.start_at : new Date(0).toISOString() })
+      .update({ series_end_at: p.start_at })
       .eq('id', p.recurrence_series_id);
 
     return { cancelled: (data ?? []).length };
