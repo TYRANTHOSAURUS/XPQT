@@ -267,6 +267,23 @@ export class RecurrenceService {
       throw new Error(`master reservation ${series.parent_reservation_id} not found`);
     }
     const master = masterRow as Reservation;
+    // If the user cancelled forward from the very first occurrence, the
+    // master row itself is now cancelled. Continuing here would happily
+    // re-materialise occurrences anchored on a cancelled row — visually
+    // the series would resurrect itself. The capped `series_end_at`
+    // already protects the rollover cron from picking this series up,
+    // but ad-hoc materialize() callers (admin tooling, manual extends)
+    // shouldn't be able to bypass that. Treat as a no-op.
+    if (
+      master.status === 'cancelled' ||
+      master.status === 'released' ||
+      master.recurrence_skipped
+    ) {
+      this.log.warn(
+        `materialize ${seriesId}: master ${master.id} is ${master.status}, skipping`,
+      );
+      return { created: [], skipped_conflicts: 0 };
+    }
 
     const masterStart = new Date(master.start_at);
     const masterEnd = new Date(master.end_at);

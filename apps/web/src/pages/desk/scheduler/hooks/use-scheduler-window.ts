@@ -108,6 +108,32 @@ export function useSchedulerWindow() {
     [state.dayStartHour, state.dayEndHour, state.cellMinutes],
   );
 
+  /**
+   * Map a cell index inside the visible window to an absolute ISO string.
+   *
+   * The cell belongs to a specific day (`cell / columnsPerDay`), and inside
+   * that day the offset is `(cell % columnsPerDay) * cellMinutes` from
+   * `dayStartHour:00` LOCAL — `setHours` handles the day's actual
+   * wall-clock hours correctly across DST. The naive
+   * `windowStartMs + cell * msPerCell` math assumed every cell was the
+   * same width, which breaks on DST changeover days because the affected
+   * day is 23 or 25 hours instead of 24 — drag-create at "Mon 10am" in
+   * a week view spanning a spring-forward Sunday would land at 9:55am or
+   * 10:05am.
+   */
+  const cellToIso = useCallback(
+    (cell: number): string => {
+      const safeCell = Math.max(0, Math.min(cell, dates.length * columnsPerDay));
+      const dayIdx = Math.min(dates.length - 1, Math.floor(safeCell / columnsPerDay));
+      const within = safeCell - dayIdx * columnsPerDay;
+      const date = new Date(`${dates[dayIdx]}T00:00:00`);
+      date.setHours(state.dayStartHour, 0, 0, 0);
+      date.setMinutes(date.getMinutes() + within * state.cellMinutes);
+      return date.toISOString();
+    },
+    [dates, columnsPerDay, state.dayStartHour, state.cellMinutes],
+  );
+
   return {
     state,
     update,
@@ -117,5 +143,6 @@ export function useSchedulerWindow() {
     startAtIso,
     endAtIso,
     columnsPerDay,
+    cellToIso,
   };
 }

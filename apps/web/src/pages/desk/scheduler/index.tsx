@@ -115,16 +115,19 @@ export function DeskSchedulerPage() {
   void hoverCell;
 
   // Helpers: cell-index ↔ ISO timestamp inside the visible window.
+  // Cell→ISO is delegated to the window hook so DST-changeover weeks
+  // (where one day is 23 or 25 hours) don't smear the missing/extra
+  // hour evenly across every cell. windowStartMs/windowEndMs/msPerCell
+  // stay around for collision math against existing reservations,
+  // where uniform cell width is fine because we're comparing two cell
+  // indices on the same row.
   const windowStartMs = useMemo(() => new Date(win.startAtIso).getTime(), [win.startAtIso]);
   const windowEndMs = useMemo(() => new Date(win.endAtIso).getTime(), [win.endAtIso]);
   const msPerCell = useMemo(
     () => (windowEndMs - windowStartMs) / totalColumns,
     [windowStartMs, windowEndMs, totalColumns],
   );
-  const cellToIso = useCallback(
-    (cell: number) => new Date(windowStartMs + cell * msPerCell).toISOString(),
-    [windowStartMs, msPerCell],
-  );
+  const cellToIso = win.cellToIso;
 
   // ── Drag-create ────────────────────────────────────────────────────
   const [createDialogOpen, setCreateDialogOpen] = useState(false);

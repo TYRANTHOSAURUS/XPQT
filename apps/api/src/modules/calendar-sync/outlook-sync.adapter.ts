@@ -258,17 +258,43 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     };
   }
 
-  // msal-node 5.x stores refresh tokens in its in-memory token cache. We
-  // serialise + parse to pull the latest one out — there's no public method.
+  // msal-node has no public getter for refresh tokens — they live inside
+  // the serialised in-memory cache. This is the documented escape hatch
+  // (the `serialize()` JSON shape is described in the msal-node-extensions
+  // distributed-cache plugin), but it IS an internal contract that can
+  // change between minor versions. We harden against that here:
+  //   - Look for any node under `RefreshToken` (any version)
+  //   - Or `refreshTokens` (older / hypothetical future renames)
+  //   - Walk values defensively so a renamed `secret` field doesn't
+  //     silently return null. Logs (loud) instead of throwing so the
+  //     caller can decide whether to fail-closed.
+  // If MSAL ever exposes a public API for this, swap.
   private async extractRefreshToken(): Promise<string | null> {
     try {
       const cache = this.msal.getTokenCache();
-      const blob = JSON.parse(cache.serialize() ?? '{}') as {
-        RefreshToken?: Record<string, { secret?: string }>;
-      };
-      const tokens = Object.values(blob.RefreshToken ?? {});
-      const last = tokens[tokens.length - 1];
-      return last?.secret ?? null;
+      const raw = cache.serialize() ?? '{}';
+      const blob = JSON.parse(raw) as Record<string, unknown>;
+      const buckets = [blob.RefreshToken, blob.refreshTokens, blob.refresh_tokens]
+        .filter((v): v is Record<string, unknown> => !!v && typeof v === 'object');
+      let latest: { secret: string; mtime: number } | null = null;
+      for (const bucket of buckets) {
+        for (const entry of Object.values(bucket)) {
+          if (!entry || typeof entry !== 'object') continue;
+          const e = entry as { secret?: unknown; last_modification_time?: unknown };
+          const secret = typeof e.secret === 'string' ? e.secret : null;
+          if (!secret) continue;
+          // last_modification_time is a unix-second string in MSAL 1.x/2.x;
+          // when missing, treat as just-issued (now).
+          const mtime = Number(e.last_modification_time) || Date.now() / 1000;
+          if (!latest || mtime > latest.mtime) latest = { secret, mtime };
+        }
+      }
+      if (!latest) {
+        this.logger.warn(
+          'No refresh token found in MSAL cache — token shape may have changed in a library update',
+        );
+      }
+      return latest?.secret ?? null;
     } catch (err) {
       this.logger.warn(`Failed to extract refresh token: ${(err as Error).message}`);
       return null;

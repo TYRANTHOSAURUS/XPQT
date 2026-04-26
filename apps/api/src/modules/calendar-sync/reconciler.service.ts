@@ -275,9 +275,39 @@ export class ReconcilerService {
   }
 }
 
+/**
+ * Convert a Microsoft Graph datetime string (which is "naive" — no offset
+ * baked in — paired with a separate `timeZone` field) to an absolute UTC
+ * ISO string.
+ *
+ * The Graph API gives us strings like `2026-05-01T10:00:00.0000000` paired
+ * with `"timeZone": "America/New_York"`. The previous implementation simply
+ * appended `Z` to anything that didn't already end in `Z`, treating every
+ * non-UTC tenant's events as if they were already UTC. That produced a
+ * 1–14 hour shift on every reconcile pass and silently raised
+ * `recurrence_drift` conflicts for any non-UTC room.
+ *
+ * Strategy: parse the naive datetime as if it were in the supplied IANA
+ * zone (luxon's `DateTime.fromISO(s, { zone: tz })`), then re-emit in UTC.
+ * Falls back to the historical "append Z" behaviour for unrecognised
+ * zones so we degrade rather than throw.
+ */
 function toIsoSafe(dateTime: string, tz: string): string {
-  if (tz === 'UTC' || dateTime.endsWith('Z')) {
-    return new Date(dateTime + (dateTime.endsWith('Z') ? '' : 'Z')).toISOString();
+  if (!dateTime) return '';
+  // If the string already carries an offset (Z or ±HH:MM), trust it.
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(dateTime)) {
+    return new Date(dateTime).toISOString();
   }
-  return new Date(dateTime + 'Z').toISOString();
+  // Graph occasionally returns more than 3 digits of fractional seconds
+  // (`.0000000`) — luxon parses 3, so trim the extras before parse.
+  const trimmed = dateTime.replace(/(\.\d{3})\d+$/, '$1');
+  if (tz && tz !== 'UTC') {
+    // Lazy require to keep luxon out of the cold-path when tz is UTC.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DateTime } = require('luxon');
+    const dt = DateTime.fromISO(trimmed, { zone: tz });
+    if (dt.isValid) return dt.toUTC().toISO({ suppressMilliseconds: true });
+    // Fallthrough: bad zone name → degrade to the legacy behaviour.
+  }
+  return new Date(`${trimmed}Z`).toISOString();
 }
