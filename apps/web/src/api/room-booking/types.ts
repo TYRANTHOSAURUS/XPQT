@@ -129,6 +129,19 @@ export interface FreeSlot {
   rank_score: number;
 }
 
+export interface ServiceLinePayload {
+  catalog_item_id: string;
+  menu_id?: string | null;
+  quantity: number;
+  /** Defaults to the reservation window when omitted. */
+  service_window_start_at?: string | null;
+  service_window_end_at?: string | null;
+  /** True (default) = clones for future occurrences; false = master-only. */
+  repeats_with_series?: boolean;
+  /** Optional asset to reserve alongside the line (specific projector etc.). */
+  linked_asset_id?: string | null;
+}
+
 export interface BookingPayload {
   reservation_type?: ReservationType;
   space_id: string;
@@ -141,6 +154,19 @@ export interface BookingPayload {
   recurrence_rule?: RecurrenceRule;
   source?: ReservationSource;
   override_reason?: string;
+  /**
+   * Optional service lines (catering / AV / setup) attached at booking
+   * time. Triggers `BundleService.attachServicesToReservation` on the
+   * backend after the reservation lands. Lazy bundle creation: room-only
+   * bookings (services absent or empty) skip the bundle entirely.
+   */
+  services?: ServiceLinePayload[];
+  /** Bundle metadata. Honored only when `services` is present. */
+  bundle?: {
+    bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+    cost_center_id?: string | null;
+    template_id?: string | null;
+  };
 }
 
 export interface MultiRoomBookingPayload {

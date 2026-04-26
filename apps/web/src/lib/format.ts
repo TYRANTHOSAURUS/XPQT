@@ -117,3 +117,21 @@ export function formatDayLabel(
     ? dayRangeLabelFormatter.format(d)
     : dayLabelFormatter.format(d);
 }
+
+const currencyFormatter = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Currency display with the locale's symbol. Renders an em-dash for
+ * null/non-finite — the booking-confirm dialog uses this when a service
+ * line has no price (priceless line: "—" reads as "ask for a quote").
+ *
+ * Defaults to USD until per-tenant currency lands.
+ */
+export function formatCurrency(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return currencyFormatter.format(value);
+}
