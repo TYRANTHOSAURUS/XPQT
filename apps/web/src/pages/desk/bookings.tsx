@@ -16,13 +16,20 @@ import { formatRef } from '@/lib/format-ref';
 import { BookingDetailDrawer } from '@/pages/portal/me-bookings/components/booking-detail-drawer';
 import { cn } from '@/lib/utils';
 
-type Scope = 'pending_approval' | 'upcoming' | 'past' | 'cancelled' | 'all';
+type Scope =
+  | 'pending_approval'
+  | 'upcoming'
+  | 'past'
+  | 'cancelled'
+  | 'all'
+  | 'bundles';
 
 const SCOPES: { value: Scope; label: string; description: string }[] = [
   { value: 'pending_approval', label: 'Pending', description: 'Awaiting approval' },
   { value: 'upcoming', label: 'Upcoming', description: 'Confirmed and active' },
   { value: 'past', label: 'Past', description: 'Already happened' },
   { value: 'cancelled', label: 'Cancelled', description: 'Cancelled or auto-released' },
+  { value: 'bundles', label: 'Bundles', description: 'Reservations with services' },
   { value: 'all', label: 'All', description: 'Every reservation' },
 ];
 
@@ -54,15 +61,20 @@ export function DeskBookingsPage() {
   const selectedId = params.get('id');
   const [search, setSearch] = useState('');
 
+  // The 'bundles' chip is a client-side filter on top of 'all' — every
+  // reservation that has a `booking_bundle_id`. The backend's existing scope
+  // enum doesn't model "has services" because that's a sub-project 2
+  // concept; doing it client-side keeps `useOperatorReservations` unchanged.
+  const fetchScope: Exclude<Scope, 'bundles'> = scope === 'bundles' ? 'all' : scope;
   const { data, isLoading, error, isFetching } = useOperatorReservations({
-    scope,
+    scope: fetchScope,
     limit: 200,
   });
 
-  const allItems = useMemo<OperatorReservationItem[]>(
-    () => (data?.items ?? []) as OperatorReservationItem[],
-    [data],
-  );
+  const allItems = useMemo<OperatorReservationItem[]>(() => {
+    const items = (data?.items ?? []) as OperatorReservationItem[];
+    return scope === 'bundles' ? items.filter((r) => Boolean(r.booking_bundle_id)) : items;
+  }, [data, scope]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -286,6 +298,14 @@ function BookingRow({
               series
             </span>
           )}
+          {item.booking_bundle_id && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary"
+              title="Has services attached"
+            >
+              services
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
           <span className="font-mono tabular-nums">
@@ -372,7 +392,12 @@ interface DayGroup {
  * date-grouping every single past row makes the page noisy.
  */
 function groupByDay(items: OperatorReservationItem[], scope: Scope): DayGroup[] {
-  if (scope !== 'upcoming' && scope !== 'pending_approval' && scope !== 'all') {
+  if (
+    scope !== 'upcoming' &&
+    scope !== 'pending_approval' &&
+    scope !== 'all' &&
+    scope !== 'bundles'
+  ) {
     return items.length === 0
       ? []
       : [{ key: scope, title: labelFor(scope), items }];
@@ -480,6 +505,10 @@ function EmptyState({ scope, hasSearch }: { scope: Scope; hasSearch: boolean }) 
   } else if (scope === 'cancelled') {
     title = 'No cancellations';
     body = 'No cancelled or auto-released bookings yet.';
+  } else if (scope === 'bundles') {
+    title = 'No bundled bookings';
+    body =
+      'No reservations have catering, AV, or setup attached. Anyone can add services from the booking dialog or place a standalone order.';
   } else {
     title = 'No bookings yet';
     body = 'Bookings will show here once anyone reserves a room.';
