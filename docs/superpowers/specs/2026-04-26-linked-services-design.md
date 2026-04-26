@@ -162,6 +162,7 @@ booking_bundle_status_v   -- VIEW
 | order_line_items | `policy_snapshot jsonb` | Snapshot the matched service rule + name fallback |
 | order_line_items | `recurrence_overridden boolean default false` | Per-occurrence override flag |
 | order_line_items | `recurrence_skipped boolean default false` + `skip_reason text` | Per-occurrence skip |
+| order_line_items | `repeats_with_series boolean default true` | Per-line "this repeats with the meeting" toggle (decision 7). When false, the materialiser does NOT clone this line for future occurrences — used for one-off setup that only the master needs |
 | order_line_items | `linked_asset_reservation_id` (nullable, FK) | Connects line to its asset_reservations row |
 | tickets | `booking_bundle_id` (nullable, FK), `linked_order_line_item_id` (nullable, FK) | NO `kind` column — `ticket_kind` already exists |
 | approvals | `scope_breakdown jsonb` | Multi-entity coverage |
@@ -170,7 +171,11 @@ booking_bundle_status_v   -- VIEW
 
 ### 3.5 Module boundaries (Nest)
 
-- **`BookingBundlesModule`** — owns `booking_bundles` + `BundleVisibilityService` (three-tier model: participant / operator with `rooms.read_all` at `bundle.location_id` / admin) + cascade orchestration. Status rollup is a view (`booking_bundle_status_v`), so there is no recompute path; reads compute on the fly.
+- **`BookingBundlesModule`** — owns `booking_bundles` + `BundleVisibilityService` + cascade orchestration. Status rollup is a view (`booking_bundle_status_v`), so there is no recompute path; reads compute on the fly. **Visibility tiers, in order of precedence:**
+  1. **Participant** — `requester_person_id`, `host_person_id`, anyone in `scope_breakdown.approver_person_id`s for any approval row, or any `assignee_user_id` of a linked work-order ticket. Sees full bundle.
+  2. **Operator** — anyone with `rooms.read_all` permission whose location-grant covers `bundle.location_id` (closure-expanded). Sees full bundle including denied/restricted services.
+  3. **Admin** — anyone with `rooms.admin`. Sees everything tenant-wide.
+  Otherwise hidden. Sub-project 4 (reception) consumes this same service.
 - **`ServiceCatalogModule`** — owns `service_rules` + `ServiceRuleResolverService` + `ServiceEvaluationContext`. Uses shared `PredicateEngineService`. Existing `vendors` / `catalog_menus` / `menu_items` admin folds in here.
 - **`OrdersModule`** — wraps `orders` + `order_line_items` + `asset_reservations`. Includes a `spawnWorkOrder()` helper that calls `TicketService.create({ ticket_kind: 'work_order', sla_id: null, parent_ticket_id: null, booking_bundle_id, linked_order_line_item_id })`. **No separate `WorkOrdersModule`.**
 - **`BundleTemplatesModule`** — admin CRUD over `bundle_templates`.
@@ -182,9 +187,9 @@ booking_bundle_status_v   -- VIEW
 ### 3.6 Cross-cutting
 
 - **RLS** — every new table gets `tenant_isolation` policy via `current_tenant_id()`.
-- **Audit events** — `bundle.created`, `bundle.cancelled`, `bundle.partially_cancelled`, `service_rule.{created,updated,deleted}`, `order.created`, `order.cancelled`, `asset_reservation.{created,cancelled}`. Best-effort try/catch.
-- **Realtime channels** — `booking_bundles:tenant_<id>:requester_<id>`, `booking_bundles:tenant_<id>:host_<id>`. Mirrors reservation pattern.
-- **Calendar sync** — when a bundle has a reservation, the reservation's `calendar_event_id` is canonical; bundle's is null. Services-only bundles own the calendar event. `OutlookSyncAdapter.toGraphEventPayload` extends to read bundle services and append a "Catering / AV / Setup" block to the description.
+- **Audit events** — `bundle.created`, `bundle.cancelled`, `bundle.partially_cancelled`, `bundle.recurrence_split`, `bundle.recurrence_cancel_forward`, `service_rule.{created,updated,deleted}`, `order.created`, `order.cancelled`, `order.line_added`, `order.line_cancelled`, `order.line_overridden`, `asset_reservation.{created,cancelled}`, `approval.dedup_merged` (when an additional rule joins an existing approval row). Best-effort try/catch.
+- **Realtime channels** — `booking_bundles:tenant_<id>:requester_<id>`, `booking_bundles:tenant_<id>:host_<id>`, `booking_bundles:tenant_<id>:approver_<id>` (so an approver gets live updates when a peer in the same role decides), `booking_bundles:tenant_<id>:operator_<location>` (sub-project 4 will consume). Mirrors reservation pattern.
+- **Calendar sync** — when a bundle has a reservation, the reservation's `calendar_event_id` is canonical; bundle's is null. Services-only bundles own the calendar event, written to the **requester's** calendar by default (host's calendar when `host_person_id` is set and differs from requester). `OutlookSyncAdapter.toGraphEventPayload` extends to read bundle services and append a "Catering / AV / Setup" block to the description.
 - **Notifications** — `bundle_pending_approval`, `bundle_confirmed`, `bundle_cancelled`, `service_at_risk` (lead time about to expire).
 - **Work-order SLA suppression** — `OrdersModule.spawnWorkOrder` always passes `sla_id: null`.
 
@@ -192,7 +197,7 @@ booking_bundle_status_v   -- VIEW
 
 ### 4.1 Composite booking flow (room + services)
 
-The existing portal picker (`/portal/rooms`) and confirm dialog stay as the primary entry point. Three new collapsed sections appear in the dialog — Catering / AV / Setup — each rendered only when at least one menu/item is available for the booking's location + time + requester.
+The existing portal picker (`/portal/rooms`) and confirm dialog stay as the primary entry point. The dialog already hosts a Recurrence section; three new collapsed sections appear alongside it — Catering / AV / Setup — each rendered only when at least one menu/item is available for the booking's location + time + requester. Final dialog has up to four collapsed sections (Catering · AV · Setup · Recurrence) plus the always-visible header (When · Room · Attendees) and footer (cost roll-up + actions).
 
 Per-section UX:
 - Menu picker (auto-selected when one menu, picker when multiple).
@@ -220,7 +225,7 @@ Submit is atomic via extended POST `/reservations`:
 1. Where (location picker — required).
 2. When (date + time window).
 3. Order (menu picker → items → quantity → per-line window).
-4. Cost center, recurrence toggle (`orders.recurrence_rule` captured but not yet materialised; sub-project 2.5+).
+4. Cost center. **Recurrence toggle is disabled in v1** with an inline hint "Recurring standalone orders coming soon". The `orders.recurrence_rule` column ships now (forward-compat) but the form doesn't write to it. Lights up automatically when sub-project 2.5 generalises the recurrence engine — no schema migration needed at that point. This avoids the "user thought weekly snacks were scheduled but they only happened once" trap.
 
 Backend: `POST /orders/standalone` in `OrdersModule`. Same code path as composite — branching only on "no reservation, use the order's `requested_for_*` window for line defaults".
 
@@ -244,7 +249,10 @@ Calls `PredicateEngineService.evaluate(predicate, context)` against rules where 
 2. For each rule with effect ∈ ('require_approval', 'allow_override'):
    a. Resolve approver_target → concrete {kind, id} pair:
       - 'person', personId
-      - 'role', roleId         → list of role members
+      - 'role', roleId         → list of role members; **first-approver-wins**
+                                  (any member can approve; their decision
+                                  closes the row for the rest). All-of-N
+                                  approval is sub-project 5+ work.
       - 'derived', expr        → evaluate (e.g. requester.manager,
                                   cost_center.default_approver,
                                   menu.fulfillment_team_lead)
@@ -281,7 +289,11 @@ Per-item reject splits the approval: approved entities → `confirmed`, rejected
 
 `CostService.computeBundleCost(bundle_id) → { lines, total_per_occurrence, total_annualised? }`
 
-- Per line: `unit_price × quantity` from `menu_items` (snapshotted into `order_line_items.unit_price` at create time).
+- Per line — depends on `menu_items.unit`:
+  - `'per_item'` → `unit_price × quantity`
+  - `'per_person'` → `unit_price × (quantity_per_attendee ?? 1) × bundle.attendee_count`
+  - `'flat_rate'` → `unit_price` (quantity is informational, doesn't multiply)
+  - `unit_price` is snapshotted onto `order_line_items.unit_price` at create time so future menu repricing doesn't change historical totals.
 - Bundle total: line totals + reservation `cost_amount_snapshot`.
 - Annualised: when `bundle.recurrence_rule` set, multiply per-occurrence by `expandOccurrences(rule, 1y).count`.
 - Null `unit_price` lines render as "—", contribute 0.
@@ -321,7 +333,7 @@ Recurrence stays anchored on reservations. Orders inherit the reservation's seri
 At bundle-create time when `recurrence_rule` is set:
 - `recurrence_series` row created (existing path).
 - Order rows reference master occurrence as parent.
-- Line `service_window_*` stored as offsets when template-derived, absolutes when manual. Normalised to absolute timestamps when materialised.
+- Line `service_window_*` are always stored as absolute timestamptz on each row (master and clones). The "offset" is computed at materialisation as `delta = master.line.service_window_start_at − master.reservation.start_at`, then applied: `clone.line.service_window_start_at = newReservation.start_at + delta`. No separate offset column. Template-derived lines pass `service_window_offset_minutes` through this same delta math at master-creation time, never as stored data.
 
 At occurrence materialisation (`RecurrenceService.materialize`):
 
@@ -459,14 +471,14 @@ Total: ~22 working days for one engineer, ~3 weeks calendar with two engineers (
 ## 8 · Migrations summary
 
 ```
-00139  booking_bundles + bundle_templates + cost_centers + service rule template seed table
+00139  booking_bundles (without primary_reservation_id FK) + bundle_templates + cost_centers + service rule template seed table
 00140  service_rules + service_rule_versions + service_rule_simulation_scenarios
 00141  asset_reservations with GiST exclusion + per-line conflict guard helpers
 00142  catalog_menus.fulfillment_team_id + vendor_id nullability + XOR check
 00143  orders/order_line_items column additions
 00144  tickets column additions (booking_bundle_id, linked_order_line_item_id)
 00145  approvals.scope_breakdown + unique partial index
-00146  reservations.booking_bundle_id FK constraint
+00146  reservations.booking_bundle_id FK constraint + booking_bundles.primary_reservation_id FK constraint (both added here together — the two tables FK-reference each other; Postgres allows the cycle but the FKs must land in a single migration so neither table is created with an unresolvable reference)
 00147  booking_bundle_status_v view + bundle visibility helpers
 00148  service rule template seed data
 ```
@@ -483,7 +495,7 @@ Each migration trailing `notify pgrst, 'reload schema'`. Every new table with `t
 | Integration | Full bundle create/edit/cancel pipeline; bundle template hydration; standalone order; multi-approver dedup with concurrent inserts |
 | API e2e | POST /reservations with services payload; POST /orders/standalone; cascade cancel via DELETE /booking-bundles/:id; partial reject from approver |
 | UI | Confirm-dialog three-section composition; per-line window picker default + override; cost roll-up live update; admin pages CRUD; Playwright happy path "book lunch + projector + setup, get one approval, see it on /desk/bookings, approver clicks approve all" |
-| Concurrency | 1000 concurrent bundle creates against same room/asset window — exclusion constraints catch all races; 0 dual-bookings; structured 409 with alternatives every time |
+| Concurrency | 1000 concurrent bundle creates against same room/asset window — exclusion constraints catch all races; 0 dual-bookings; structured 409 with alternatives every time. Concurrency suite folds into slice 2C (composite booking flow + asset reservations) since both ship together. |
 | Migration safety | catalog_menus.vendor_id nullability + XOR check on remote with existing rows; tickets schema additions don't break existing routing/dispatch tests |
 
 ## 10 · Acceptance criteria (sub-project 2 v1 shippable)
@@ -506,7 +518,7 @@ Each migration trailing `notify pgrst, 'reload schema'`. Every new table with `t
 | Asset GiST exclusion contention under booking storms | Medium | Medium | Same pattern proved out for reservations under 1000-concurrent in sub-project 1; index covers status='confirmed' only |
 | Vendor adoption stays low → service status timeline reads sparse | High | Low | Reframed as audit history (Section 4.6 + decision 18); useful day-1 with system events alone |
 | Bundle template proliferation → admin clutter | Medium | Low | `active` flag + admin filter; usage analytics (count of bundles created from template) surfaces dead templates |
-| Approval dedup index race under concurrent line additions | Medium | High | DB-enforced via unique partial index; `INSERT ... ON CONFLICT` semantics ensure mergeable behaviour; tests stress this explicitly |
+| Approval dedup index race under concurrent line additions | Medium | High | Application-layer merge inside the bundle transaction (Section 4.4); the unique partial index acts as the safety net — concurrent inserts surface as `23505`, the second writer retries the SELECT-merge-UPDATE path. Tests stress this explicitly. |
 | `catalog_menus.vendor_id` relaxation breaks existing menu resolver | Low | High | Tested before remote push; resolver branch kept narrow ("when vendor_id IS NULL, skip vendor_service_areas join"); migration includes resolver function update in same transaction |
 | Cost-center FK with ON DELETE SET NULL leaves orphan bundles | Low | Low | Reports already handle `cost_center_unknown`; admin tooling will surface affected bundles for re-tagging |
 
@@ -520,3 +532,120 @@ The operational reference needs new sections (sub-project 2 trigger files added 
 - "Audit events" table extended with `bundle.*` / `order.*` / `asset_reservation.*`.
 
 Trigger files added: `apps/api/src/modules/booking-bundles/**`, `apps/api/src/modules/orders/**`, `apps/api/src/modules/service-catalog/**`, `apps/api/src/modules/bundle-templates/**`, `apps/api/src/modules/cost-centers/**`. Frontend: `apps/web/src/pages/portal/order/**`, `apps/web/src/pages/admin/booking-services/**`, `apps/web/src/pages/admin/cost-centers/**`, `apps/web/src/pages/admin/bundle-templates/**`.
+
+## 13 · Performance, UX, design — best-in-class lens
+
+The technical design above is necessary but not sufficient. Below is how the slice holds up against ServiceNow / Eptura / Robin / Envoy at their best — through the eyes of every persona that touches it.
+
+### 13.1 Performance budgets (server)
+
+| Surface | p50 | p95 | How |
+|---|---|---|---|
+| Booking-confirm "what services apply here" probe | < 80 ms | < 200 ms | Single SQL: `resolve_menu_offer` + service_rules in parallel. Fires only when the dialog opens, not on every keystroke. |
+| Atomic bundle submit (room + 3 service lines + 2 work orders + 1 asset_reservation + approvals) | < 350 ms | < 800 ms | Single transaction; all writes pipelined. Picker re-run for alternatives only on conflict. |
+| Standalone-order submit | < 250 ms | < 500 ms | Same path minus the room pipeline. |
+| `/desk/bookings` Bundles scope, 200 rows + service preview | < 400 ms | < 900 ms | One round-trip joining bundles + reservations + a per-bundle "service summary" subquery. Covered by index `idx_orders_bundle` + `idx_tickets_bundle`. |
+| Bundle detail drawer (room + services + audit timeline) | < 250 ms | < 600 ms | Three queries in parallel — bundle-with-status-view, services with provenance, audit_events filtered by bundle scope. |
+| Admin `/admin/booking-services/rules` simulation against last 30 days | < 1.5 s | < 3 s | Reuses the room rules simulation infra; cached per (rule_id, scenario_id). |
+
+Each PR touching these queries pastes EXPLAIN ANALYZE in the description. WARN-log threshold is 2× the p95 budget (matches Phase K convention).
+
+### 13.2 Index hot paths
+
+```
+idx_orders_bundle           on orders (booking_bundle_id) where booking_bundle_id is not null
+idx_orders_recurrence       on orders (recurrence_series_id) where recurrence_series_id is not null
+idx_oli_bundle_via_order    -- accessed via orders.booking_bundle_id; explicit not needed
+idx_oli_window              on order_line_items (service_window_start_at) where service_window_start_at is not null
+idx_oli_recurrence_skipped  partial idx (occurrence-level skip lookup)
+idx_tickets_bundle          on tickets (booking_bundle_id) where booking_bundle_id is not null
+idx_tickets_kind_bundle     composite (ticket_kind, booking_bundle_id) for the operator "Work orders" preset
+idx_asset_reservations_*    GiST on (asset_id, time_range) where status='confirmed' (the conflict guard itself)
+idx_approvals_pending       unique partial on (target_entity_id, approver_person_id) where status='pending' (dedup safety net)
+idx_bundles_location        on booking_bundles (location_id) (for visibility filter)
+idx_bundles_status_search   on booking_bundles (tenant_id, start_at) where status_rollup = 'pending_approval'  -- VIEW-driven; we materialise this one because the operator inbox sorts by it
+```
+
+The GiST exclusion on `asset_reservations` does the heavy lifting on the conflict-guard write path — single index lookup, sub-80ms even under contention (proved out by the equivalent on `reservations` in sub-project 1).
+
+### 13.3 Frontend performance
+
+- **Booking-confirm dialog**: each service section lazily renders only when expanded. A user who only adds catering doesn't pay for the AV section's menu fetch until they expand it. React Query keys are scoped per (location_id, time_window, requester_id); idle expansions stay cached for 30s (matches the picker stale time).
+- **Bundle detail drawer**: audit-history timeline virtualised at 100+ rows (TanStack Virtual). Not expected to hit that for v1 but cheap insurance.
+- **Operator scheduler integration**: bundle service blocks render as a single colored shadow on the room row, no per-cell cost. Hover reveals the full service detail.
+
+### 13.4 UX — through every persona
+
+**Employee booking a meeting** (the 80% case):
+- Defaults are aggressive: today, next round-half-hour, prefilled cost center from primary org membership, attendee count = 1.
+- Service sections start collapsed. The user shouldn't see catering/AV unless they want them.
+- One-click templates: "Recent: Sales kickoff" / "Recent: Daily standup" / "Template: Executive Lunch" sit above the time picker as chips. Picking one fills 90% of the form.
+- The cost roll-up updates inline, never blocks the form. Annualised total shows a tooltip only when hovering — doesn't shout at the user.
+- Service rule outcomes (warn / require_approval) appear as a chip inline on the line, with the rule's `denial_message` as the explanation. Never a generic "approval needed" banner.
+- Submit confirmation: one toast "Booked Sales kickoff with catering · 1 approval pending from Sarah Lee · See bookings →". Not three separate toasts for room + catering + approval.
+
+**Employee placing a standalone order** (office party planner):
+- `/portal/order` opens with location prefilled from primary work location. Date defaults to next-business-day.
+- Recurrence toggle visibly disabled with "Coming soon" — no false promise.
+- Cost roll-up identical to composite — same component, reused.
+
+**Approver reading their queue** (manager / finance / facilities):
+- One row per bundle in their inbox. The dedup makes "approve all 3 things" one click.
+- Per-line reject is a small "× this only" button next to each line, not a primary action — defaults are biased toward "approve all".
+- Approval row shows `scope_breakdown.reasons` as a collapsible "Why this needs approval" section. Each rule's `denial_message` shown verbatim.
+- After approval, the row clears from the inbox immediately (optimistic update + realtime confirm).
+
+**Fulfillment team member** (catering vendor / AV team / facilities):
+- They live in `/desk/tickets` filtered by `ticket_kind='work_order'`. Their inbox is unchanged.
+- New row chip shows the bundle context: "Bundle: Sales kickoff · 09:00 · Meeting Room 2.12".
+- Service window (`service_window_start_at`) sorts the inbox by when they need to act — not by when the meeting is. AV setup at 8:30 sorts above the 9:00 meeting it serves.
+- Mobile-friendly: the same ticket row component works on mobile (already shipped in sub-project 1).
+
+**Operator triaging today's bookings** (service desk):
+- `/desk/bookings` Bundles scope shows everything that's a bundle today + tomorrow.
+- Row drawer shows the Services section with click-through to each work-order ticket — no need to leave the bookings page to check on a catering line.
+- Cancellation cascade dialog is the operator's single point of "make this not happen" — no surgery across multiple pages.
+
+**Admin configuring services** (workplace ops lead):
+- `/admin/booking-services` index card layout makes the three concepts (vendors, menus, items) immediately legible. No mental model to figure out.
+- Bundle template editor has a live preview pane — admin sees exactly what the user will see, without doing test bookings.
+- Rule simulation against last 30 days surfaces "this rule would have fired on 12 bookings" before publishing — same pattern as room rules sub-project 1.
+
+### 13.5 Design tokens + accessibility
+
+- All forms compose from `Field` primitives per CLAUDE.md mandate.
+- Service sections use the same expand/collapse pattern as Recurrence — visual continuity.
+- Cost numbers in `tabular-nums` so live-updating totals don't shift.
+- Status pills (Approved / Pending / Cancelled / Fulfilled) reuse the existing `BookingStatusPill` colour system — green / amber / muted / outline. No new colour conventions.
+- Dark mode + light mode covered by tokens (no hard-coded colours).
+- Keyboard navigation: every dialog and drawer fully keyboard-traversable; per-line "when" picker uses the existing `DateTimePicker` (already keyboard-accessible).
+- Reduced-motion respected globally (already wired in `apps/web/src/index.css`).
+- Approver UI's "Approve all" / per-line reject buttons have proper ARIA labels naming what they cover ("Approve room booking, catering for 14, AV setup").
+
+### 13.6 What we DON'T over-promise to users
+
+The slice is honest about its limits:
+- **Vendor real-time tracking** — not promised. Timeline shows what we know, no more.
+- **Standalone order recurrence** — toggle disabled, "Coming soon" inline.
+- **Floor-plan service placement** — not in scope; no UI affordance pretending otherwise.
+- **Performance scorecards** — not in this slice; the `/admin/booking-services/vendors/:id` page has a "Performance" section stub with an explicit "Available in a future release" message.
+
+### 13.7 Empty / loading / error states (first-class)
+
+For every new surface:
+- **Empty state** — explicit illustration + one-line explanation + primary CTA. No bare "No data".
+- **Loading** — skeleton variant matching final shape, never a centered spinner unless it's a sub-second operation.
+- **Error** — inline alert with the actual server message + retry button + link to operator if it's a permission issue.
+- **Partial state** — e.g. "approval pending" lines show a clock icon next to the value, not just blank. Status is always legible without hovering.
+
+### 13.8 Notifications (sub-project 5 will own delivery; we capture the events here)
+
+| Event | Recipient | Default channel |
+|---|---|---|
+| Bundle pending approval | Approvers | Email + in-app |
+| Bundle approved / rejected | Requester + host | Email + in-app |
+| Service line at risk (lead time about to expire without confirmation) | Requester + fulfillment team | In-app + nudging email if T-2h |
+| Bundle cancelled (any path) | Requester, host, all approvers, fulfillment team for fulfilled lines | Email + in-app |
+| Per-line reject on a bundle approval | Requester + host | In-app explaining what was kept / cancelled |
+
+Each event ships with a self-explaining body — same pattern as sub-project 1's auto-release email — including deep link to the bundle detail and a "what does this mean for me" sentence per persona.
