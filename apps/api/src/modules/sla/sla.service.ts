@@ -249,31 +249,27 @@ export class SlaService {
       .lt('due_at', now.toISOString())
       .limit(100);
 
-    for (const timer of breachedTimers ?? []) {
-      // Mark timer as breached
-      await this.supabase.admin
-        .from('sla_timers')
-        .update({ breached: true, breached_at: now.toISOString() })
-        .eq('id', timer.id);
+    if ((breachedTimers ?? []).length > 0) {
+      const timers = breachedTimers!;
+      const nowIso = now.toISOString();
+      const timerIds = timers.map((t) => t.id as string);
 
-      // Update ticket computed fields
-      const field = timer.timer_type === 'response'
-        ? 'sla_response_breached_at'
-        : 'sla_resolution_breached_at';
-
-      await this.supabase.admin
-        .from('tickets')
-        .update({ [field]: now.toISOString() })
-        .eq('id', timer.ticket_id);
-
-      // Log domain event
-      await this.supabase.admin.from('domain_events').insert({
-        tenant_id: timer.tenant_id,
-        event_type: `sla_${timer.timer_type}_breached`,
-        entity_type: 'ticket',
-        entity_id: timer.ticket_id,
-        payload: { timer_type: timer.timer_type, due_at: timer.due_at },
-      });
+      // The previous version issued N×3 round trips per cron tick; we then
+      // flattened it to 4 parallel writes. Both shapes leave a window where
+      // a partial failure (e.g. tickets update fails after sla_timers has
+      // already been stamped) produces an inconsistent dataset: timers say
+      // "breached" while the parent ticket carries no breach timestamp. The
+      // RPC defined in 00135 commits all four writes in one transaction.
+      const { error: rpcError } = await this.supabase.admin.rpc(
+        'mark_sla_breached_batch',
+        { p_timer_ids: timerIds, p_now: nowIso },
+      );
+      if (rpcError) {
+        // Don't crash the cron tick — log and let the next tick retry. The
+        // RPC is idempotent (filters on breached=false / *_breached_at IS
+        // NULL) so a re-run is safe.
+        console.error('[sla] mark_sla_breached_batch failed', rpcError);
+      }
     }
 
     // Mark tickets as "at risk" when within 80% of their SLA
@@ -287,20 +283,21 @@ export class SlaService {
       .gt('due_at', now.toISOString())
       .limit(200);
 
+    const atRiskTicketIds: string[] = [];
     for (const timer of atRiskTimers ?? []) {
       const started = new Date(timer.started_at).getTime();
       const due = new Date(timer.due_at).getTime();
       const elapsed = now.getTime() - started;
       const total = due - started;
       const percentUsed = total > 0 ? elapsed / total : 0;
-
-      if (percentUsed >= 0.8) {
-        await this.supabase.admin
-          .from('tickets')
-          .update({ sla_at_risk: true })
-          .eq('id', timer.ticket_id)
-          .eq('sla_at_risk', false); // only update if not already flagged
-      }
+      if (percentUsed >= 0.8) atRiskTicketIds.push(timer.ticket_id as string);
+    }
+    if (atRiskTicketIds.length > 0) {
+      await this.supabase.admin
+        .from('tickets')
+        .update({ sla_at_risk: true })
+        .in('id', atRiskTicketIds)
+        .eq('sla_at_risk', false); // skip rows already flagged
     }
 
     // Threshold-crossing pass — fires notify/escalate actions.

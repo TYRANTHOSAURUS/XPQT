@@ -95,9 +95,8 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
     const { bound, form_data } = splitFormData(formFields, formValues);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/tickets', {
+      await apiFetch('/tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
           description,
@@ -111,10 +110,6 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message || `Request failed: ${res.status}`);
-      }
       setTitle(''); setDescription(''); setPriority('medium');
       setSelectedRT(null); setSelectedRequester(null); setRequesterId('');
       setSourceChannel('phone'); setAssetId(null); setLocationId(null);

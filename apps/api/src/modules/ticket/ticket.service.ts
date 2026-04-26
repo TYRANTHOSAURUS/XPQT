@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -10,6 +10,21 @@ import { ApprovalService } from '../approval/approval.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
 
 export const SYSTEM_ACTOR = '__system__';
+
+/**
+ * Strip characters that PostgREST treats as filter grammar from user-supplied
+ * search input before interpolating into a `.or()` clause. We intentionally
+ * keep this conservative — the filter still has to fit into a URL query
+ * string, and silently dropping commas/parens is far safer than letting them
+ * inject extra clauses.
+ */
+function sanitizePostgrestLike(raw: string): string {
+  return raw
+    .replace(/[,()\\:]/g, ' ')
+    .replace(/[*%]/g, '')
+    .trim()
+    .slice(0, 120);
+}
 
 export interface CreateTicketDto {
   ticket_type_id?: string;
@@ -217,14 +232,24 @@ export class TicketService {
       query = query.eq('parent_ticket_id', filters.parent_ticket_id);
     }
 
-    // Cursor-based pagination
+    // Cursor-based pagination. Cursor is a `created_at` ISO timestamp — UUIDs
+    // are not guaranteed to sort in creation order, so the previous `id`-based
+    // cursor was incorrect for any tenant whose ticket-id allocator is not
+    // monotonic (which is most of them).
     if (filters.cursor) {
-      query = query.lt('id', filters.cursor);
+      query = query.lt('created_at', filters.cursor);
     }
 
-    // Text search on title and description
+    // Text search on title and description.
+    // PostgREST `.or()` parses commas and parens as grammar — if we drop raw
+    // user input in, a search like `foo,bar` silently splits into a third
+    // bogus filter clause. Strip every structural character before
+    // interpolating; the remaining ilike `%…%` still does a substring match.
     if (filters.search) {
-      query = query.or(`title.ilike.%${filters.search}%,description.ilike.%${filters.search}%`);
+      const safe = sanitizePostgrestLike(filters.search);
+      if (safe.length > 0) {
+        query = query.or(`title.ilike.%${safe}%,description.ilike.%${safe}%`);
+      }
     }
 
     const { data, error } = await query;
@@ -232,7 +257,8 @@ export class TicketService {
 
     return {
       items: data ?? [],
-      next_cursor: data && data.length === limit ? data[data.length - 1].id : null,
+      next_cursor:
+        data && data.length === limit ? data[data.length - 1].created_at : null,
     };
   }
 
@@ -445,8 +471,23 @@ export class TicketService {
     return data;
   }
 
-  async create(dto: CreateTicketDto, options: CreateTicketOptions = {}) {
+  async create(
+    dto: CreateTicketDto,
+    options: CreateTicketOptions = {},
+    actorAuthUid: string = SYSTEM_ACTOR,
+  ) {
     const tenant = TenantContext.current();
+
+    // If a real user is creating a ticket and didn't pass an explicit
+    // requester_person_id, default to their own person record. Prevents
+    // anonymous "API direct" creates with no requester attached, and gives
+    // every audit trail a real actor.
+    if (actorAuthUid !== SYSTEM_ACTOR && !dto.requester_person_id) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      if (ctx.person_id) {
+        dto = { ...dto, requester_person_id: ctx.person_id };
+      }
+    }
 
     const { data, error } = await this.supabase.admin
       .from('tickets')
@@ -656,7 +697,16 @@ export class TicketService {
           });
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.error('[routing] evaluate failed', err);
+        // Always leave a system-event breadcrumb on the ticket so operators
+        // see why their ticket landed unassigned. The previous code only
+        // logged to stdout, which was invisible to anyone outside the API box.
+        await this.addActivity(data.id as string, {
+          activity_type: 'system_event',
+          visibility: 'system',
+          metadata: { event: 'routing_evaluation_failed', error: message },
+        }).catch(() => undefined);
       }
     }
 
@@ -667,8 +717,15 @@ export class TicketService {
       try {
         await this.slaService.startTimers(data.id as string, tenantId, effectiveCaseSlaPolicyId);
         await this.supabase.admin.from('tickets').update({ sla_id: effectiveCaseSlaPolicyId }).eq('id', data.id as string);
-      } catch {
-        // SLA failure should not block ticket creation
+      } catch (err) {
+        // SLA failure should not block ticket creation, but record the breadcrumb.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[sla] start timers failed', err);
+        await this.addActivity(data.id as string, {
+          activity_type: 'system_event',
+          visibility: 'system',
+          metadata: { event: 'sla_start_failed', error: message },
+        }).catch(() => undefined);
       }
     }
 
@@ -677,8 +734,15 @@ export class TicketService {
     if (effectiveWorkflowDefinitionId && !options.skipWorkflow) {
       try {
         await this.workflowEngine.startForTicket(data.id as string, effectiveWorkflowDefinitionId);
-      } catch {
-        // Workflow failure should not block ticket creation
+      } catch (err) {
+        // Workflow failure should not block ticket creation, but record it.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[workflow] start failed', err);
+        await this.addActivity(data.id as string, {
+          activity_type: 'system_event',
+          visibility: 'system',
+          metadata: { event: 'workflow_start_failed', error: message },
+        }).catch(() => undefined);
       }
     }
 
@@ -985,35 +1049,45 @@ export class TicketService {
     if (error) throw error;
     if (!data) return [];
 
-    const signedActivities = await Promise.all(
-      data.map(async (activity) => {
-        const attachments = Array.isArray(activity.attachments)
-          ? await Promise.all(
-              (activity.attachments as StoredAttachment[]).map(async (attachment) => {
-                if (!attachment.path || attachment.url) return attachment;
+    // Collect every unique attachment path that still needs a signed URL into
+    // one batch call. The previous shape signed each attachment in its own
+    // round trip (Promise.all over Promise.all), which paid the storage API
+    // latency once per file — a 10-comment ticket with two attachments each
+    // was 20 sequential signing operations.
+    const pathsNeedingSign = new Set<string>();
+    for (const activity of data) {
+      if (!Array.isArray(activity.attachments)) continue;
+      for (const attachment of activity.attachments as StoredAttachment[]) {
+        if (attachment.path && !attachment.url) {
+          pathsNeedingSign.add(attachment.path);
+        }
+      }
+    }
 
-                const { data: signed, error: signedError } = await this.supabase.admin.storage
-                  .from(TICKET_ATTACHMENT_BUCKET)
-                  .createSignedUrl(attachment.path, 60 * 60);
+    const signedByPath = new Map<string, string>();
+    if (pathsNeedingSign.size > 0) {
+      const { data: signedBatch, error: signedError } = await this.supabase.admin.storage
+        .from(TICKET_ATTACHMENT_BUCKET)
+        .createSignedUrls(Array.from(pathsNeedingSign), 60 * 60);
+      if (!signedError && Array.isArray(signedBatch)) {
+        for (const entry of signedBatch) {
+          if (entry.path && entry.signedUrl) {
+            signedByPath.set(entry.path, entry.signedUrl);
+          }
+        }
+      }
+    }
 
-                if (signedError || !signed?.signedUrl) return attachment;
-
-                return {
-                  ...attachment,
-                  url: signed.signedUrl,
-                };
-              }),
-            )
-          : [];
-
-        return {
-          ...activity,
-          attachments,
-        };
-      }),
-    );
-
-    return signedActivities;
+    return data.map((activity) => ({
+      ...activity,
+      attachments: Array.isArray(activity.attachments)
+        ? (activity.attachments as StoredAttachment[]).map((attachment) => {
+            if (!attachment.path || attachment.url) return attachment;
+            const signedUrl = signedByPath.get(attachment.path);
+            return signedUrl ? { ...attachment, url: signedUrl } : attachment;
+          })
+        : [],
+    }));
   }
 
   async addActivity(ticketId: string, dto: AddActivityDto, accessToken?: string, actorAuthUid: string = SYSTEM_ACTOR) {
@@ -1132,8 +1206,43 @@ export class TicketService {
     return data;
   }
 
-  async bulkUpdate(ids: string[], dto: UpdateTicketDto) {
+  async bulkUpdate(
+    ids: string[],
+    dto: UpdateTicketDto,
+    actorAuthUid: string = SYSTEM_ACTOR,
+  ) {
     const tenant = TenantContext.current();
+
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+    // Cap blast radius. The desk UI never selects more than a screenful at a
+    // time; an unbounded list here is almost certainly an abuse signal.
+    if (ids.length > 200) {
+      throw new BadRequestException('bulk update is capped at 200 ids per call');
+    }
+
+    // Visibility gate: only update tickets the actor can write. We narrow the
+    // id set to the visible (write-eligible) subset rather than rejecting the
+    // whole request — matches how the desk surfaces partial-permission cases.
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      if (!ctx.has_write_all) {
+        const allowedIds: string[] = [];
+        for (const id of ids) {
+          try {
+            await this.visibility.assertVisible(id, ctx, 'write');
+            allowedIds.push(id);
+          } catch {
+            // Skip silently — the desk lists the result and surfaces partial
+            // outcomes; throwing on the first denied id would surprise users
+            // who selected a mix.
+          }
+        }
+        if (allowedIds.length === 0) {
+          throw new ForbiddenException('No tickets in selection are writable for this user');
+        }
+        ids = allowedIds;
+      }
+    }
 
     const { data, error } = await this.supabase.admin
       .from('tickets')

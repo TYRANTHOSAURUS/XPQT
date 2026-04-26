@@ -1,9 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
 import { BookingNotificationsService } from '../reservations/booking-notifications.service';
 import type { Reservation } from '../reservations/dto/types';
+
+export interface ApprovalActor {
+  userId: string;
+  personId: string;
+}
 
 export interface CreateApprovalDto {
   target_entity_type: string;
@@ -30,37 +35,67 @@ export class ApprovalService {
   ) {}
 
   /**
-   * Get pending approvals for a specific person (their approval queue).
+   * Resolve a Supabase auth uid to the caller's user/person identity within
+   * the current tenant. Returns `null` when the auth user has no row in the
+   * tenant — callers should treat that as forbidden.
    */
-  async getPendingForPerson(personId: string) {
+  async resolveActorPerson(authUid: string): Promise<ApprovalActor | null> {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select('id, person_id')
+      .eq('tenant_id', tenant.id)
+      .eq('auth_uid', authUid)
+      .maybeSingle();
+    if (error || !data || !data.person_id) return null;
+    return { userId: data.id as string, personId: data.person_id as string };
+  }
+
+  /**
+   * Get pending approvals for the caller's own queue, including approvals
+   * delegated to them via `delegations`. Delegations are keyed by
+   * `delegate_user_id` (a `users.id`), so we must look up the caller's user
+   * row, not their person row.
+   */
+  async getPendingForActor(actor: ApprovalActor) {
     const tenant = TenantContext.current();
 
-    // Check for delegations — include approvals delegated to this person
+    const nowIso = new Date().toISOString();
     const { data: delegations } = await this.supabase.admin
       .from('delegations')
       .select('delegator_user_id')
-      .eq('delegate_user_id', personId)
+      .eq('delegate_user_id', actor.userId)
       .eq('tenant_id', tenant.id)
       .eq('active', true)
-      .lte('starts_at', new Date().toISOString())
-      .gte('ends_at', new Date().toISOString());
+      .lte('starts_at', nowIso)
+      .gte('ends_at', nowIso);
 
-    const delegatorIds = (delegations ?? []).map((d) => d.delegator_user_id);
+    const delegatorUserIds = (delegations ?? [])
+      .map((d) => d.delegator_user_id as string)
+      .filter(Boolean);
 
-    // Get direct approvals + delegated approvals
-    let query = this.supabase.admin
+    let approverPersonIds: string[] = [actor.personId];
+    if (delegatorUserIds.length > 0) {
+      const { data: delegatorUsers } = await this.supabase.admin
+        .from('users')
+        .select('person_id')
+        .eq('tenant_id', tenant.id)
+        .in('id', delegatorUserIds);
+      const delegatorPersonIds = (delegatorUsers ?? [])
+        .map((u) => u.person_id as string | null)
+        .filter((v): v is string => Boolean(v));
+      if (delegatorPersonIds.length > 0) {
+        approverPersonIds = [...new Set([...approverPersonIds, ...delegatorPersonIds])];
+      }
+    }
+
+    const { data, error } = await this.supabase.admin
       .from('approvals')
       .select('*')
       .eq('tenant_id', tenant.id)
-      .eq('status', 'pending');
-
-    if (delegatorIds.length > 0) {
-      query = query.or(`approver_person_id.eq.${personId},approver_person_id.in.(${delegatorIds.join(',')})`);
-    } else {
-      query = query.eq('approver_person_id', personId);
-    }
-
-    const { data, error } = await query.order('requested_at', { ascending: false });
+      .eq('status', 'pending')
+      .in('approver_person_id', approverPersonIds)
+      .order('requested_at', { ascending: false });
     if (error) throw error;
     return data;
   }
@@ -131,8 +166,12 @@ export class ApprovalService {
       step_number: index + 1,
       approver_person_id: step.approver_person_id,
       approver_team_id: step.approver_team_id,
-      // Only the first step is pending; subsequent steps wait
-      status: index === 0 ? 'pending' : 'pending',
+      // The `approvals.status` check column has no `waiting` state — every
+      // step is inserted as `pending` and the UI / `respond()` flow enforce
+      // sequential order by only surfacing the current step as actionable.
+      // Earlier code carried `index === 0 ? 'pending' : 'pending'` as a
+      // placeholder for a never-shipped staged state.
+      status: 'pending',
     }));
 
     const { data, error } = await this.supabase.admin
@@ -177,8 +216,18 @@ export class ApprovalService {
 
   /**
    * Respond to an approval (approve or reject).
+   *
+   * `respondingPersonId` and `respondingUserId` are server-derived from the
+   * caller's auth uid — never trust them from the request body. We verify the
+   * caller is either the named approver, on the approver team, or holds an
+   * active delegation from the named approver.
    */
-  async respond(approvalId: string, dto: RespondDto, respondingPersonId: string) {
+  async respond(
+    approvalId: string,
+    dto: RespondDto,
+    respondingPersonId: string,
+    respondingUserId?: string,
+  ) {
     const tenant = TenantContext.current();
 
     const { data: approval, error: findError } = await this.supabase.admin
@@ -190,6 +239,12 @@ export class ApprovalService {
 
     if (findError || !approval) throw new NotFoundException('Approval not found');
     if (approval.status !== 'pending') throw new BadRequestException('Approval already responded to');
+
+    // Authorization: caller must be a permitted approver for this row.
+    const allowed = await this.callerCanRespond(approval, respondingPersonId, respondingUserId);
+    if (!allowed) {
+      throw new ForbiddenException('You are not an approver for this request');
+    }
 
     const { data, error } = await this.supabase.admin
       .from('approvals')
@@ -355,5 +410,62 @@ export class ApprovalService {
       entity_id: entityId,
       payload,
     });
+  }
+
+  /**
+   * Authorization gate for `respond`. Caller is permitted when:
+   *  • their personId matches `approver_person_id`, OR
+   *  • they hold an active delegation from the named approver, OR
+   *  • they are a member of `approver_team_id` (any team member can act).
+   */
+  private async callerCanRespond(
+    approval: {
+      approver_person_id: string | null;
+      approver_team_id: string | null;
+    },
+    callerPersonId: string,
+    callerUserId?: string,
+  ): Promise<boolean> {
+    const tenant = TenantContext.current();
+
+    if (approval.approver_person_id && approval.approver_person_id === callerPersonId) {
+      return true;
+    }
+
+    if (approval.approver_team_id && callerUserId) {
+      const { data: member } = await this.supabase.admin
+        .from('team_members')
+        .select('user_id')
+        .eq('tenant_id', tenant.id)
+        .eq('team_id', approval.approver_team_id)
+        .eq('user_id', callerUserId)
+        .maybeSingle();
+      if (member) return true;
+    }
+
+    if (approval.approver_person_id && callerUserId) {
+      const { data: approverUser } = await this.supabase.admin
+        .from('users')
+        .select('id')
+        .eq('tenant_id', tenant.id)
+        .eq('person_id', approval.approver_person_id)
+        .maybeSingle();
+      if (approverUser) {
+        const nowIso = new Date().toISOString();
+        const { data: delegation } = await this.supabase.admin
+          .from('delegations')
+          .select('id')
+          .eq('tenant_id', tenant.id)
+          .eq('delegator_user_id', approverUser.id)
+          .eq('delegate_user_id', callerUserId)
+          .eq('active', true)
+          .lte('starts_at', nowIso)
+          .gte('ends_at', nowIso)
+          .maybeSingle();
+        if (delegation) return true;
+      }
+    }
+
+    return false;
   }
 }

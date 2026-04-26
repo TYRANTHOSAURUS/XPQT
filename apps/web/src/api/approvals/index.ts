@@ -41,17 +41,16 @@ export interface RespondApprovalPayload {
   approvalId: string;
   status: 'approved' | 'rejected';
   comments?: string;
-  responding_person_id: string;
 }
 
 /** Approve/reject with optimistic removal from the pending list. */
 export function useRespondApproval(personId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, RespondApprovalPayload, { previous?: Approval[] }>({
-    mutationFn: ({ approvalId, status, comments, responding_person_id }) =>
+    mutationFn: ({ approvalId, status, comments }) =>
       apiFetch(`/approvals/${approvalId}/respond`, {
         method: 'POST',
-        body: JSON.stringify({ status, comments, responding_person_id }),
+        body: JSON.stringify({ status, comments }),
       }),
     onMutate: async ({ approvalId }) => {
       if (!personId) return {};

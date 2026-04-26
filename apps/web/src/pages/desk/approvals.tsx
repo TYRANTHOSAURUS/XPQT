@@ -55,7 +55,7 @@ export function ApprovalsPage() {
     if (!personId) return;
     setResponding((prev) => ({ ...prev, [approvalId]: true }));
     respond.mutate(
-      { approvalId, status, comments: comments[approvalId], responding_person_id: personId },
+      { approvalId, status, comments: comments[approvalId] },
       {
         onSuccess: () => {
           setComments((prev) => {

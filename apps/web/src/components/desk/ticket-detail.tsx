@@ -23,9 +23,7 @@ import {
   Paperclip,
   MessageSquare,
   Send,
-  BellOff,
   MoreHorizontal,
-  Star,
   XIcon,
   TagIcon,
   Maximize2,
@@ -508,7 +506,14 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
         {/* Top actions */}
         <div className="flex items-center gap-1 px-6 py-2 shrink-0">
           {onClose && (
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onClose}
+              aria-label="Close ticket detail"
+              title="Close"
+            >
               <XIcon className="h-4 w-4" />
             </Button>
           )}
@@ -525,12 +530,17 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
               <Maximize2 className="h-4 w-4" />
             </Button>
           )}
-          <Button variant="ghost" size="icon" className="h-8 w-8"><Star className="h-4 w-4" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8"><BellOff className="h-4 w-4" /></Button>
           <DropdownMenu>
             <DropdownMenuTrigger
               render={(props) => (
-                <Button {...props} variant="ghost" size="icon" className="h-8 w-8">
+                <Button
+                  {...props}
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Ticket actions"
+                  title="More actions"
+                >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               )}
@@ -834,11 +844,20 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                       size="icon"
                       className="h-8 w-8 rounded-lg"
                       onClick={() => attachmentInputRef.current?.click()}
+                      aria-label="Attach file"
+                      title="Attach file"
                     >
                       <Paperclip className="h-3.5 w-3.5" />
                     </Button>
                     <span className="hidden text-[11px] text-muted-foreground sm:inline">Cmd+Enter to send</span>
-                    <Button onClick={handleSubmitComment} disabled={!canSubmitComment} size="icon" className="h-8 w-8 rounded-lg">
+                    <Button
+                      onClick={handleSubmitComment}
+                      disabled={!canSubmitComment}
+                      size="icon"
+                      className="h-8 w-8 rounded-lg"
+                      aria-label="Send comment"
+                      title="Send (⌘ + Enter)"
+                    >
                       {submittingComment ? <Spinner className="h-3.5 w-3.5" /> : <Send className="h-3.5 w-3.5" />}
                     </Button>
                   </div>

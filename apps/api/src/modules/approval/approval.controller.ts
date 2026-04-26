@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApprovalService, CreateApprovalDto, RespondDto } from './approval.service';
 
 @Controller('approvals')
@@ -6,8 +7,18 @@ export class ApprovalController {
   constructor(private readonly approvalService: ApprovalService) {}
 
   @Get('pending/:personId')
-  async getPending(@Param('personId') personId: string) {
-    return this.approvalService.getPendingForPerson(personId);
+  async getPending(@Req() request: Request, @Param('personId') personId: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    // The :personId path param is retained for cache-key continuity on the
+    // frontend, but the server only ever lists the caller's own queue. A
+    // mismatch is treated as a permission error rather than silently swapped.
+    const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
+    if (!actor) throw new ForbiddenException('No person record linked to caller');
+    if (actor.personId !== personId) {
+      throw new ForbiddenException('Cannot read another user\'s pending approvals');
+    }
+    return this.approvalService.getPendingForActor(actor);
   }
 
   @Get('entity/:entityType/:entityId')
@@ -44,10 +55,16 @@ export class ApprovalController {
 
   @Post(':id/respond')
   async respond(
+    @Req() request: Request,
     @Param('id') id: string,
-    @Body() dto: RespondDto & { responding_person_id: string },
+    @Body() dto: RespondDto,
   ) {
-    return this.approvalService.respond(id, dto, dto.responding_person_id);
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
+    if (!actor) throw new ForbiddenException('No person record linked to caller');
+    // Body's responding_person_id is now ignored — server-derived only.
+    return this.approvalService.respond(id, dto, actor.personId, actor.userId);
   }
 
   @Get('chain/:chainId/complete')

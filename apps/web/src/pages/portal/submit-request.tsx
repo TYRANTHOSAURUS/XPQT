@@ -183,6 +183,10 @@ export function SubmitRequestPage() {
         setValues({});
       })
       .catch(() => setFormFields([]));
+    // selectedRT is intentionally read by primitive fields rather than passed
+    // whole — adding the object would refetch on every parent render where
+    // the request type lookup table identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRT?.id, selectedRT?.form_schema_id, selectedRT?.intake.requires_asset, selectedRT?.on_behalf_policy]);
 
   const needsDrilldown = useMemo(() => {

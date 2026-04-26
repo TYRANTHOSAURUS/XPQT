@@ -57,6 +57,14 @@ export class DispatchService {
     if (parent.status_category === 'pending_approval') {
       throw new BadRequestException('cannot dispatch while parent is pending approval');
     }
+    // The parent-close trigger (00134) rejects child inserts under terminal
+    // parents at the DB level. Catch it here for a friendly 400 instead of
+    // a generic 500.
+    if (parent.status_category === 'resolved' || parent.status_category === 'closed') {
+      throw new BadRequestException(
+        `cannot dispatch a work order on a ${parent.status_category as string} case`,
+      );
+    }
 
     const ticketTypeId = dto.ticket_type_id ?? (parent.ticket_type_id as string | null);
     const locationId = dto.location_id ?? (parent.location_id as string | null);

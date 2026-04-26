@@ -103,7 +103,7 @@ export class TicketController {
   async create(@Req() request: Request, @Body() dto: CreateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    return this.ticketService.create(dto);
+    return this.ticketService.create(dto, {}, actorAuthUid);
   }
 
   @Patch(':id')
@@ -114,8 +114,13 @@ export class TicketController {
   }
 
   @Patch('bulk/update')
-  async bulkUpdate(@Body() body: { ids: string[]; updates: UpdateTicketDto }) {
-    return this.ticketService.bulkUpdate(body.ids, body.updates);
+  async bulkUpdate(
+    @Req() request: Request,
+    @Body() body: { ids: string[]; updates: UpdateTicketDto },
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.bulkUpdate(body.ids, body.updates, actorAuthUid);
   }
 
   @Post(':id/reassign')
