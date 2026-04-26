@@ -27,6 +27,7 @@ export interface TicketRequestType {
 export interface TicketDetail {
   id: string;
   ticket_kind: 'case' | 'work_order';
+  module_number: number;
   parent_ticket_id: string | null;
   title: string;
   description: string;

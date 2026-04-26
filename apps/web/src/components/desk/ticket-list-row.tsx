@@ -7,6 +7,7 @@ import {
   statusConfig,
   timeAgo,
 } from './ticket-row-cells';
+import { formatTicketRef } from '@/lib/format-ref';
 
 interface Props {
   ticket: Ticket;
@@ -52,6 +53,10 @@ function TicketListRowImpl({ ticket, selected, checked, onSelect, onToggleCheck 
       <div className="w-4 shrink-0" onClick={(e) => e.stopPropagation()}>
         <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
       </div>
+
+      <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground tabular-nums truncate">
+        {formatTicketRef(ticket.ticket_kind, ticket.module_number)}
+      </span>
 
       <div className="flex w-28 items-center gap-2 shrink-0">
         <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />

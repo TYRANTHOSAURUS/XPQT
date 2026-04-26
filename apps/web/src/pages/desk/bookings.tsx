@@ -12,6 +12,7 @@ import {
 import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
+import { formatRef } from '@/lib/format-ref';
 import { BookingDetailDrawer } from '@/pages/portal/me-bookings/components/booking-detail-drawer';
 import { cn } from '@/lib/utils';
 
@@ -287,6 +288,9 @@ function BookingRow({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+          <span className="font-mono tabular-nums">
+            {formatRef('reservation', item.module_number)}
+          </span>
           <span className="truncate">{requesterName}</span>
           {typeof item.attendee_count === 'number' && item.attendee_count > 0 && (
             <span className="inline-flex items-center gap-1 tabular-nums">

@@ -3,6 +3,8 @@ import { cn } from '@/lib/utils';
 
 export interface Ticket {
   id: string;
+  ticket_kind: 'case' | 'work_order';
+  module_number: number;
   title: string;
   status_category: string;
   priority: string;

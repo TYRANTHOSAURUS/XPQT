@@ -2,6 +2,7 @@ import { ArrowRight, Clock, MapPin, RefreshCw, Users as UsersIcon } from 'lucide
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { formatRef } from '@/lib/format-ref';
 import type { Reservation } from '@/api/room-booking';
 import { BookingStatusPill } from './booking-status-pill';
 
@@ -101,6 +102,9 @@ export function BookingRow({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+          <span className="font-mono tabular-nums">
+            {formatRef('reservation', reservation.module_number)}
+          </span>
           <span className="inline-flex items-center gap-1 tabular-nums">
             <Clock className="size-3" />
             {durationLabel}

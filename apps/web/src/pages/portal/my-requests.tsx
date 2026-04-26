@@ -7,9 +7,12 @@ import { useAuth } from '@/providers/auth-provider';
 import { PortalPage } from '@/components/portal/portal-page';
 import { PortalRequestRow } from '@/components/portal/portal-request-row';
 import { derivePortalStatus } from '@/lib/portal-status';
+import { formatTicketRef } from '@/lib/format-ref';
 
 interface Ticket {
   id: string;
+  ticket_kind: 'case' | 'work_order';
+  module_number: number;
   title: string;
   status_category: string;
   assigned_team?: { name: string } | null;
@@ -96,6 +99,7 @@ export function MyRequestsPage() {
                 key={ticket.id}
                 href={`/portal/requests/${ticket.id}`}
                 kind="ticket"
+                ref={formatTicketRef(ticket.ticket_kind, ticket.module_number)}
                 title={ticket.title}
                 subtitle={ticket.assigned_team?.name ?? null}
                 timestamp={ticket.created_at}

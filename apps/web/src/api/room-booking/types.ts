@@ -47,6 +47,7 @@ export interface PolicySnapshot {
 export interface Reservation {
   id: string;
   tenant_id: string;
+  module_number: number;
   reservation_type: ReservationType;
   space_id: string;
   requester_person_id: string;

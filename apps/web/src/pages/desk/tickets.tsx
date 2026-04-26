@@ -26,6 +26,7 @@ import {
   statusConfig,
   timeAgo,
 } from '@/components/desk/ticket-row-cells';
+import { formatTicketRef } from '@/lib/format-ref';
 import { TicketFilterBar } from '@/components/desk/ticket-filter-bar';
 import { useTicketFilters, viewPresets } from '@/pages/desk/use-ticket-filters';
 import { Group, Panel, Separator } from 'react-resizable-panels';
@@ -79,6 +80,9 @@ const TicketTableRow = memo(function TicketTableRow({
         onClick={(e) => e.stopPropagation()}
       >
         <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
+      </TableCell>
+      <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
+        {formatTicketRef(ticket.ticket_kind, ticket.module_number)}
       </TableCell>
       <TableCell className="px-3 py-2">
         <div className="min-w-0">
@@ -167,6 +171,9 @@ function TicketTable({
                 onCheckedChange={toggleSelectAll}
               />
             </TableHead>
+            <TableHead className="h-8 w-[90px] px-3 text-xs uppercase text-muted-foreground">
+              Ref
+            </TableHead>
             <TableHead className="h-8 min-w-[250px] px-3 text-xs uppercase text-muted-foreground">
               Title
             </TableHead>
@@ -190,14 +197,14 @@ function TicketTable({
         <TableBody>
           {loading && tickets.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+              <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
                 Loading tickets...
               </TableCell>
             </TableRow>
           )}
           {!loading && tickets.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="h-32 text-center">
+              <TableCell colSpan={8} className="h-32 text-center">
                 <p className="text-lg font-medium text-muted-foreground">No tickets found</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   Try adjusting your filters or search
@@ -270,6 +277,7 @@ function TicketList({
             onCheckedChange={toggleSelectAll}
           />
         </div>
+        <span className="w-20 shrink-0">Ref</span>
         <span className="w-28 shrink-0">Status</span>
         <span className="w-6 shrink-0 text-center">Pri</span>
         <span className="flex-1 min-w-0">Title</span>

@@ -64,6 +64,7 @@ import {
 import { TicketActivityFeed } from '@/components/desk/ticket-activity-feed';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
+import { formatTicketRef } from '@/lib/format-ref';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
 import { NumberEditor } from '@/components/desk/editors/number-editor';
 import { InlineTextEditor } from '@/components/desk/editors/inline-text-editor';
@@ -563,6 +564,14 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
         <ScrollArea className="flex-1">
           <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
+            {/* Reference number — copy-able, non-editable */}
+            <code
+              data-chip
+              className="font-mono text-xs text-muted-foreground tabular-nums mb-1 inline-block"
+            >
+              {formatTicketRef(displayedTicket!.ticket_kind, displayedTicket!.module_number)}
+            </code>
+
             {/* Title */}
             <InlineTextEditor
               value={displayedTicket!.title}

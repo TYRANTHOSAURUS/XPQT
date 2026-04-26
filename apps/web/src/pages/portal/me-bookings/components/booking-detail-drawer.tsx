@@ -15,6 +15,7 @@ import {
   useReservationDetail, useCheckInBooking, useRestoreBooking,
 } from '@/api/room-booking';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
+import { formatRef } from '@/lib/format-ref';
 import { BookingStatusPill } from './booking-status-pill';
 import { BookingEditForm } from './booking-edit-form';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
@@ -96,6 +97,14 @@ export function BookingDetailDrawer({ reservationId, onClose, spaceName }: Props
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="flex w-full flex-col gap-0 sm:max-w-md p-0">
         <SheetHeader className="border-b px-5 py-4">
+          {reservation && (
+            <code
+              data-chip
+              className="font-mono text-xs text-muted-foreground tabular-nums mb-1 inline-block"
+            >
+              {formatRef('reservation', reservation.module_number)}
+            </code>
+          )}
           <SheetTitle className="text-lg">{spaceName ?? 'Booking'}</SheetTitle>
           <SheetDescription>
             {reservation

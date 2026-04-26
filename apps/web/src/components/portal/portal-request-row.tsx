@@ -9,6 +9,8 @@ export type RequestKind = 'ticket' | 'booking' | 'visitor' | 'order';
 interface Props {
   href: string;
   kind: RequestKind;
+  /** Optional human-readable reference (e.g. TKT-1234, RES-42). Rendered as a small mono chip above the title. */
+  ref?: string | null;
   title: string;
   subtitle?: string | null;
   timestamp: string;
@@ -31,7 +33,7 @@ const STATUS_STYLES: Record<Props['status']['tone'], string> = {
   breached:  'bg-red-500/15 text-red-500',
 };
 
-export function PortalRequestRow({ href, kind, title, subtitle, timestamp, assigneeName, status }: Props) {
+export function PortalRequestRow({ href, kind, ref, title, subtitle, timestamp, assigneeName, status }: Props) {
   const { Icon, tile } = KIND_STYLES[kind];
   return (
     <Link
@@ -43,7 +45,10 @@ export function PortalRequestRow({ href, kind, title, subtitle, timestamp, assig
       </span>
       <span className="flex-1 min-w-0">
         <span className="block truncate text-sm font-medium">{title}</span>
-        {subtitle && <span className="mt-0.5 block truncate text-xs text-muted-foreground">{subtitle}</span>}
+        <span className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+          {ref && <span className="font-mono tabular-nums">{ref}</span>}
+          {subtitle && <span className="truncate">{subtitle}</span>}
+        </span>
       </span>
       <time className="hidden md:inline shrink-0 text-xs text-muted-foreground tabular-nums" dateTime={timestamp} title={formatFullTimestamp(timestamp)}>
         {formatRelativeTime(timestamp)}
