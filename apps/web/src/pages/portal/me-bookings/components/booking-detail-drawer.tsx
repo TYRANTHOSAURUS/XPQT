@@ -18,6 +18,7 @@ import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { formatRef } from '@/lib/format-ref';
 import { BookingStatusPill } from './booking-status-pill';
 import { BookingEditForm } from './booking-edit-form';
+import { BundleServicesSection } from './bundle-services-section';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
 import { toast } from 'sonner';
 
@@ -198,6 +199,11 @@ export function BookingDetailDrawer({ reservationId, onClose, spaceName }: Props
                     </DetailRow>
                   )}
               </div>
+
+              {/* Services attached via a booking_bundle (sub-project 2) */}
+              {reservation.booking_bundle_id && (
+                <BundleServicesSection bundleId={reservation.booking_bundle_id} />
+              )}
 
               {/* Actions */}
               {(showCheckIn || showRestore || showEdit) && (

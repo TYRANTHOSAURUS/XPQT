@@ -10,6 +10,44 @@ export type BundleType = 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospita
 
 export type BundleSource = 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception';
 
+export interface BundleLine {
+  id: string;
+  order_id: string;
+  catalog_item_id: string;
+  catalog_item_name: string | null;
+  quantity: number;
+  unit_price: number | null;
+  line_total: number | null;
+  service_window_start_at: string | null;
+  service_window_end_at: string | null;
+  fulfillment_status:
+    | 'ordered'
+    | 'confirmed'
+    | 'preparing'
+    | 'delivered'
+    | 'cancelled'
+    | null;
+  linked_ticket_id: string | null;
+  linked_asset_reservation_id: string | null;
+}
+
+export interface BundleOrderRef {
+  id: string;
+  status: string;
+  requested_for_start_at: string | null;
+  requested_for_end_at: string | null;
+}
+
+export interface BundleTicketRef {
+  id: string;
+  ticket_kind: 'case' | 'work_order';
+  status_category: string | null;
+  assigned_user_id: string | null;
+  assigned_team_id: string | null;
+  assigned_vendor_id: string | null;
+  module_number: number | null;
+}
+
 export interface BookingBundle {
   id: string;
   tenant_id: string;
@@ -29,4 +67,8 @@ export interface BookingBundle {
   status_rollup: BundleStatusRollup;
   created_at: string;
   updated_at: string;
+  /** Populated by the GET /booking-bundles/:id detail endpoint. */
+  orders?: BundleOrderRef[];
+  tickets?: BundleTicketRef[];
+  lines?: BundleLine[];
 }
