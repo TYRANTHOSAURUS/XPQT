@@ -118,6 +118,22 @@ export function formatDayLabel(
     : dayLabelFormatter.format(d);
 }
 
+const timeShortFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+/**
+ * Time-only display ("3:14 PM"). Used by the bundle services drawer to
+ * show service-window starts compactly next to a status icon.
+ */
+export function formatTimeShort(input: Date | string | number | null | undefined): string {
+  if (input == null) return '';
+  const ts = input instanceof Date ? input.getTime() : new Date(input).getTime();
+  if (!Number.isFinite(ts)) return '';
+  return timeShortFormatter.format(new Date(ts));
+}
+
 const currencyFormatter = new Intl.NumberFormat(undefined, {
   style: 'currency',
   currency: 'USD',
