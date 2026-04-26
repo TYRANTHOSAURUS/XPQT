@@ -3,7 +3,6 @@ import {
   Controller,
   Get,
   NotFoundException,
-  NotImplementedException,
   Param,
   Post,
   Req,
@@ -13,12 +12,20 @@ import type { Request } from 'express';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleVisibilityService } from './bundle-visibility.service';
+import { BundleCascadeService, type CancelScope } from './bundle-cascade.service';
+
+interface CancelBundleBody {
+  keep_line_ids?: string[];
+  recurrence_scope?: CancelScope;
+  reason?: string;
+}
 
 @Controller('booking-bundles')
 export class BookingBundlesController {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly visibility: BundleVisibilityService,
+    private readonly cascade: BundleCascadeService,
   ) {}
 
   /**
@@ -82,8 +89,23 @@ export class BookingBundlesController {
   }
 
   @Post(':id/cancel')
-  cancel(@Body() _body: unknown, @Param('id') _id: string) {
-    throw new NotImplementedException('booking_bundles.cancel lands in 2D');
+  async cancel(
+    @Req() request: Request,
+    @Body() body: CancelBundleBody,
+    @Param('id') id: string,
+  ) {
+    const authUid = this.getAuthUid(request);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    return this.cascade.cancelBundle(
+      {
+        bundle_id: id,
+        keep_line_ids: body?.keep_line_ids,
+        recurrence_scope: body?.recurrence_scope,
+        reason: body?.reason,
+      },
+      ctx,
+    );
   }
 
   private getAuthUid(req: Request): string {
