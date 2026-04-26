@@ -1,14 +1,17 @@
 import {
   BadRequestException,
+  Body,
   Controller,
+  Delete,
   Get,
-  NotImplementedException,
   Param,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { ServiceRuleService, type ServiceRuleUpsertDto } from './service-rule.service';
 
 /**
  * Service catalog endpoints.
@@ -25,7 +28,10 @@ import { TenantContext } from '../../common/tenant-context';
  */
 @Controller()
 export class ServiceCatalogController {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly rules: ServiceRuleService,
+  ) {}
 
   // ── Portal reads ───────────────────────────────────────────────────────
 
@@ -138,21 +144,44 @@ export class ServiceCatalogController {
     };
   }
 
-  // ── Admin endpoints (501 stubs land in 2E follow-up) ───────────────────
+  // ── Service rule CRUD (admin) ──────────────────────────────────────────
+
+  @Get('admin/booking-services/rule-templates')
+  listTemplates() {
+    return this.rules.listTemplates();
+  }
 
   @Get('admin/booking-services/rules')
-  list() {
-    throw new NotImplementedException('service rules list lands in 2E follow-up');
+  list(@Query('active') active?: string) {
+    const filter =
+      active === 'true' ? { active: true } : active === 'false' ? { active: false } : undefined;
+    return this.rules.list(filter);
   }
 
   @Get('admin/booking-services/rules/:id')
-  findOne(@Param('id') _id: string) {
-    throw new NotImplementedException('service rules detail lands in 2E follow-up');
+  findOne(@Param('id') id: string) {
+    return this.rules.findOne(id);
   }
 
-  @Post('admin/booking-services/rules/simulate')
-  simulate() {
-    throw new NotImplementedException('service rules simulation lands in 2E follow-up');
+  @Post('admin/booking-services/rules')
+  create(@Body() dto: ServiceRuleUpsertDto) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+    }
+    return this.rules.create(dto);
+  }
+
+  @Patch('admin/booking-services/rules/:id')
+  update(@Param('id') id: string, @Body() dto: Partial<ServiceRuleUpsertDto>) {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+    }
+    return this.rules.update(id, dto);
+  }
+
+  @Delete('admin/booking-services/rules/:id')
+  remove(@Param('id') id: string) {
+    return this.rules.remove(id);
   }
 }
 
