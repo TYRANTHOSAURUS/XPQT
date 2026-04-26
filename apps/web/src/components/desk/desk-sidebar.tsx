@@ -41,6 +41,13 @@ import {
   MapPinIcon,
   ListTreeIcon,
   BuildingIcon,
+  CalendarRangeIcon,
+  CalendarClockIcon,
+  HourglassIcon,
+  CalendarCheck2Icon,
+  ArchiveIcon,
+  XCircleIcon,
+  GlobeIcon,
 } from "lucide-react"
 import { useQuery, queryOptions } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
@@ -54,7 +61,25 @@ const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
   { title: "Tickets", icon: TicketIcon, path: "/desk/tickets" },
   { title: "Approvals", icon: CheckSquareIcon, path: "/desk/approvals" },
+  { title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings" },
+  { title: "Scheduler", icon: CalendarRangeIcon, path: "/desk/scheduler" },
   { title: "Reports", icon: BarChart3Icon, path: "/desk/reports" },
+]
+
+// Scopes shown in the Bookings sidebar panel — mirrors the `?scope=` enum
+// in `pages/desk/bookings.tsx`. Adding/removing here means doing the same
+// in that file's SCOPES array.
+type BookingsScope = "pending_approval" | "upcoming" | "past" | "cancelled" | "all"
+const bookingsScopes: Array<{
+  id: BookingsScope
+  label: string
+  icon: typeof HourglassIcon
+}> = [
+  { id: "pending_approval", label: "Pending approval", icon: HourglassIcon },
+  { id: "upcoming", label: "Upcoming", icon: CalendarCheck2Icon },
+  { id: "past", label: "Past", icon: ArchiveIcon },
+  { id: "cancelled", label: "Cancelled", icon: XCircleIcon },
+  { id: "all", label: "All bookings", icon: GlobeIcon },
 ]
 
 // View ids match `useTicketFilters` preset ids. Icons live in the sidebar so
@@ -368,6 +393,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
           </>
         ) : activeNav.path === "/desk/tickets" ? (
           <TicketsSidebarPanel />
+        ) : activeNav.path === "/desk/bookings" ? (
+          <BookingsSidebarPanel />
         ) : activeNav.path === "/desk/reports" ? (
           <>
             <SidebarHeader className="gap-3.5 border-b p-4">
@@ -406,6 +433,63 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
         )}
       </Sidebar>
     </Sidebar>
+  )
+}
+
+/**
+ * Sidebar panel shown when /desk/bookings is active. Mirrors the
+ * TicketsSidebarPanel shape — each scope is a sub-route on the same
+ * page, driven by the `?scope=` URL param so deep-links highlight
+ * correctly.
+ */
+function BookingsSidebarPanel() {
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const activeScope = React.useMemo<BookingsScope>(() => {
+    if (!location.pathname.startsWith("/desk/bookings")) return "pending_approval"
+    const params = new URLSearchParams(location.search)
+    const v = params.get("scope")
+    return (v as BookingsScope) ?? "pending_approval"
+  }, [location.pathname, location.search])
+
+  return (
+    <>
+      <SidebarHeader className="gap-3.5 border-b p-4">
+        <div className="flex items-center justify-between">
+          <div className="text-base font-medium text-foreground">Bookings</div>
+          <button
+            onClick={() => navigate("/desk/scheduler")}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            type="button"
+          >
+            <CalendarRangeIcon className="size-3.5" />
+            Scheduler
+          </button>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Scopes</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {bookingsScopes.map((scope) => (
+                <SidebarMenuItem key={scope.id}>
+                  <SidebarMenuButton
+                    className="text-sm"
+                    isActive={activeScope === scope.id}
+                    onClick={() => navigate(`/desk/bookings?scope=${scope.id}`)}
+                  >
+                    <scope.icon className="size-4" />
+                    <span>{scope.label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </>
   )
 }
 
