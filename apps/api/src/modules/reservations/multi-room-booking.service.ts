@@ -150,6 +150,23 @@ export class MultiRoomBookingService {
         .eq('tenant_id', tenantId)
         .eq('id', groupId);
 
+      // Audit — phase K. Distinct from `reservation.multi_room_created`
+      // so reporting can see how often atomic groups roll back and which
+      // sibling failed (typically a slot conflict on one room of N).
+      try {
+        await this.supabase.admin.from('audit_events').insert({
+          tenant_id: tenantId,
+          event_type: 'reservation.multi_room_rolled_back',
+          entity_type: 'multi_room_group',
+          entity_id: groupId,
+          details: {
+            attempted_space_ids: input.space_ids,
+            cancelled_reservation_ids: created.map((r) => r.id),
+            failures,
+          },
+        });
+      } catch { /* best-effort */ }
+
       throw new ConflictException({
         code: 'multi_room_booking_failed',
         message: 'One or more rooms could not be booked. No partial bookings created.',
@@ -165,6 +182,26 @@ export class MultiRoomBookingService {
         .update({ primary_reservation_id: created[0].id })
         .eq('id', groupId);
     }
+
+    // Audit — phase K. One event per group create. Per-reservation
+    // create events are already emitted by BookingFlowService for each
+    // child; this gives reporting a way to count "atomic group bookings"
+    // independent of the per-room count.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'reservation.multi_room_created',
+        entity_type: 'multi_room_group',
+        entity_id: groupId,
+        details: {
+          space_ids: input.space_ids,
+          reservation_ids: created.map((r) => r.id),
+          requester_person_id: input.requester_person_id,
+          start_at: input.start_at,
+          end_at: input.end_at,
+        },
+      });
+    } catch { /* best-effort */ }
 
     this.log.log(`multi_room_group ${groupId}: ${created.length} rooms`);
     return { group_id: groupId, reservations: created };

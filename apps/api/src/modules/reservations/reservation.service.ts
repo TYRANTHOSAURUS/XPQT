@@ -336,7 +336,16 @@ export class ReservationService {
 
     if (error) throw new BadRequestException(`restore_failed:${error.message}`);
 
-    // TODO(phase-J): emit reservation.restored event + notify
+    // Audit — phase K.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'reservation.restored',
+        entity_type: 'reservation',
+        entity_id: id,
+        details: { restored_by: actor.user_id },
+      });
+    } catch { /* best-effort */ }
     return data as unknown as Reservation;
   }
 

@@ -245,6 +245,54 @@ Wired in `ReservationsModule.onModuleInit` via
 
 The `RoomMailboxService` then writes accept/reject back to the room calendar.
 
+## Audit events
+
+Every booking-lifecycle decision emits a row to `public.audit_events`. The
+event_type vocabulary (consumed by reporting + activity feeds):
+
+| Event type | Where it fires | Notes |
+|---|---|---|
+| `reservation.created` | `BookingFlowService.create` | one per row, including each occurrence of a recurring series and each room of a multi-room group |
+| `reservation.updated` | `ReservationService.editOne` / `BookingFlowService.editScope` | patch diff in `details` |
+| `reservation.cancelled` | `ReservationService.cancelOne` (single occurrence) | scope='this' |
+| `reservation.recurrence_cancel_forward` | `RecurrenceService.cancelForward` | scope='this_and_following' or 'series'; details includes pivot + cancelled_count |
+| `reservation.recurrence_split` | `RecurrenceService.splitSeries` | edit-this-and-following promotes a sub-tail to its own series |
+| `reservation.restored` | `ReservationService.restore` | within the cancellation grace window only |
+| `reservation.checked_in` | `CheckInService.checkIn` | both explicit + magic-link paths |
+| `reservation.auto_released` | `CheckInService.autoReleaseScan` | grace expired without check-in |
+| `reservation.multi_room_created` | `MultiRoomBookingService.createGroup` | one per atomic group; per-room rows still fire `reservation.created` |
+| `reservation.multi_room_rolled_back` | `MultiRoomBookingService.createGroup` (failure path) | sibling failed → group cancelled; `details.failures` carries reasons |
+| `room_booking_rule.{created,updated,deleted}` | `RoomBookingRulesService` | rule lifecycle |
+| `reservation.override_used` | `BookingFlowService.create` (override path) | actor used `rooms.override_rules` to bypass a deny |
+| `outlook.intercept_outcome` | `RoomMailboxService` | one per Pattern-A invite handled, with outcome enum |
+
+Audit emission is best-effort (try/catch wrapping the insert) — the lifecycle
+event commits even if audit insert fails. Audit gaps will show as warning
+logs but the booking itself never blocks on audit.
+
+## Performance instrumentation
+
+The picker emits a structured timing log per call so a Loki / DataDog
+scrape rule can compute `room_booking_picker_latency_seconds` without
+pulling in a dedicated metrics SDK:
+
+```
+picker tenant=<id> candidates=<n> returned=<n> elapsed_ms=<ms>
+```
+
+Calls slower than 2× the §6.1 budget (>500 ms) are logged at WARN level
+so slow outliers surface in real time. Spec budgets:
+
+| Surface | Target p95 | Status |
+|---|---|---|
+| Picker (`/reservations/picker`) | <250 ms server, <600 ms perceived | parallel pipeline + scope filter shipped (00138 era) |
+| Desk scheduler open (50 rooms × 7 days) | <700 ms server, <1.2 s perceived | virtualised rows + `include_unavailable` shipped |
+| Conflict-guard write | <80 ms | GiST exclusion constraint + buffer trigger |
+| Auto-release scan tick | <200 ms | partial index `idx_reservations_pending_check_in` + 24h lower bound |
+
+When adjusting any picker query, paste the EXPLAIN ANALYZE output into the
+PR description and confirm the budget still holds.
+
 ## MANDATORY — keep this doc in sync
 
 Trigger files. **If a change touches any of the below, update this doc in
@@ -257,11 +305,12 @@ Backend:
 - `apps/api/src/modules/floor-plans/**`
 
 Frontend:
-- `apps/web/src/pages/portal/book/room/**`
-- `apps/web/src/pages/portal/me/bookings/**`
+- `apps/web/src/pages/portal/book-room/**`
+- `apps/web/src/pages/portal/me-bookings/**`
 - `apps/web/src/pages/desk/scheduler/**`
+- `apps/web/src/pages/desk/bookings.tsx`
 - `apps/web/src/pages/admin/room-booking-rules/**`
-- `apps/web/src/pages/admin/calendar-sync/**`
+- `apps/web/src/pages/admin/calendar-sync.tsx`
 - `apps/web/src/api/room-booking/**`
 - `apps/web/src/api/room-booking-rules/**`
 - `apps/web/src/api/calendar-sync/**`

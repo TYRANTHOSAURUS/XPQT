@@ -527,6 +527,23 @@ export class RecurrenceService {
       .update({ series_end_at: p.start_at })
       .eq('id', srcSeries.id);
 
+    // Audit — phase K. The split changes the canonical series_id of every
+    // occurrence at-or-after the pivot, which downstream consumers
+    // (calendar sync, notifications, reporting) need to reconcile against.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: srcSeries.tenant_id,
+        event_type: 'reservation.recurrence_split',
+        entity_type: 'recurrence_series',
+        entity_id: srcSeries.id,
+        details: {
+          pivot_reservation_id: p.id,
+          pivot_start_at: p.start_at,
+          new_series_id: newSeriesId,
+        },
+      });
+    } catch { /* best-effort */ }
+
     return newSeriesId;
   }
 
@@ -581,6 +598,24 @@ export class RecurrenceService {
       .from('recurrence_series')
       .update({ series_end_at: p.start_at })
       .eq('id', p.recurrence_series_id);
+
+    // Audit — phase K. Distinct event_type from `reservation.cancelled`
+    // (which fires per-row) so analytics can tell "scope cancel of N
+    // occurrences" apart from N independent cancels.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: p.tenant_id,
+        event_type: 'reservation.recurrence_cancel_forward',
+        entity_type: 'recurrence_series',
+        entity_id: p.recurrence_series_id,
+        details: {
+          scope,
+          pivot_reservation_id: p.id,
+          pivot_start_at: p.start_at,
+          cancelled_count: (data ?? []).length,
+        },
+      });
+    } catch { /* best-effort */ }
 
     return { cancelled: (data ?? []).length };
   }

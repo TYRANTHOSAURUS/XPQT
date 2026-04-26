@@ -82,7 +82,16 @@ export class CheckInService {
       throw new BadRequestException('check_in_failed');
     }
 
-    // TODO(phase-J): emit reservation.checked_in workflow event + audit
+    // Audit — phase K. Spec §6.4 calls for an event on every check-in.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'reservation.checked_in',
+        entity_type: 'reservation',
+        entity_id: reservationId,
+        details: { checked_in_at: checkedInAt },
+      });
+    } catch { /* best-effort; check-in must succeed even if audit fails */ }
     return { id: r.id, checked_in_at: checkedInAt };
   }
 

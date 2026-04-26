@@ -34,6 +34,11 @@ export class ListBookableRoomsService {
     if (!requesterId) {
       return { rooms: [] };
     }
+    // Phase K observability — emit a structured timing log per call so
+    // Prometheus / log aggregators can scrape `room_booking_picker_latency_seconds`
+    // without us pulling a metrics SDK in just for this. Logger output stays
+    // line-oriented so Loki / DataDog / CloudWatch can parse it directly.
+    const t0 = process.hrtime.bigint();
 
     // 1. Load candidate rooms — filter by capacity + criteria
     const candidates = await this.loadCandidateSpaces(tenantId, input);
@@ -133,7 +138,16 @@ export class ListBookableRoomsService {
     // Default cap: 12 rooms. The picker is meant to surface the BEST
     // candidates, not enumerate the whole inventory; we only widen if the
     // caller asks via input.limit.
-    return { rooms: ranked.slice(0, input.limit ?? 12) };
+    const result = { rooms: ranked.slice(0, input.limit ?? 12) };
+    const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    // Spec §6.1 budget: p95 < 250 ms server. We log every call with the
+    // elapsed time so a Loki/Prom job can compute the percentile, and warn
+    // loudly when a single call goes >2× budget so operators see slow
+    // outliers in real time.
+    const tag = `picker tenant=${tenantId} candidates=${candidates.length} returned=${result.rooms.length} elapsed_ms=${elapsedMs.toFixed(1)}`;
+    if (elapsedMs > 500) this.log.warn(tag);
+    else this.log.log(tag);
+    return result;
   }
 
   /**
