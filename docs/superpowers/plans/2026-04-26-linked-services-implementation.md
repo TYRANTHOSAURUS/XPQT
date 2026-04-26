@@ -158,15 +158,15 @@ apps/web/src/App.tsx                                                            
 
 Migrations land. Modules return 501 from every endpoint. Tests verify migrations apply + RLS is on. No business logic.
 
-### Task 1: Migration 00139 — booking_bundles + bundle_templates + cost_centers
+### Task 1: Migration 00140 — booking_bundles + bundle_templates + cost_centers
 
 **Files:**
-- Create: `supabase/migrations/00139_booking_bundles_and_templates.sql`
+- Create: `supabase/migrations/00140_booking_bundles_and_templates.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00139_booking_bundles_and_templates.sql
+-- 00140_booking_bundles_and_templates.sql
 -- Sub-project 2: orchestration parent + bundle templates + cost centers.
 -- booking_bundles is created lazily on first-service-attach to a reservation;
 -- never created for room-only bookings. Visibility anchored on location_id.
@@ -178,7 +178,7 @@ create table public.booking_bundles (
     check (bundle_type in ('meeting','event','desk_day','parking','hospitality','other')),
   requester_person_id uuid not null references public.persons(id),
   host_person_id uuid references public.persons(id),
-  -- primary_reservation_id FK lands in 00146 (the cycle migration)
+  -- primary_reservation_id FK lands in 00147 (the cycle migration)
   primary_reservation_id uuid,
   location_id uuid not null references public.spaces(id),
   start_at timestamptz not null,
@@ -273,11 +273,11 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Validate locally**
 
 Run: `pnpm db:reset`
-Expected: every migration applies through 00139 cleanly; no errors.
+Expected: every migration applies through 00140 cleanly; no errors.
 
 - [ ] **Step 3: Push to remote**
 
-Run: `set -a; . .env; set +a; export PGPASSWORD="$SUPABASE_DB_PASS"; psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00139_booking_bundles_and_templates.sql`
+Run: `set -a; . .env; set +a; export PGPASSWORD="$SUPABASE_DB_PASS"; psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00140_booking_bundles_and_templates.sql`
 
 Expected: `CREATE TABLE` × 3, `CREATE POLICY` × 3, `CREATE INDEX` × N, `ALTER TABLE`, `NOTIFY`. No errors.
 
@@ -294,19 +294,19 @@ cost_centers
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/00139_booking_bundles_and_templates.sql
-git commit -m "feat(rooms-2): migration 00139 — booking_bundles + bundle_templates + cost_centers"
+git add supabase/migrations/00140_booking_bundles_and_templates.sql
+git commit -m "feat(rooms-2): migration 00140 — booking_bundles + bundle_templates + cost_centers"
 ```
 
-### Task 2: Migration 00140 — service_rules + versions + simulation_scenarios
+### Task 2: Migration 00141 — service_rules + versions + simulation_scenarios
 
 **Files:**
-- Create: `supabase/migrations/00140_service_rules.sql`
+- Create: `supabase/migrations/00141_service_rules.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00140_service_rules.sql
+-- 00141_service_rules.sql
 -- Mirrors room_booking_rules row-for-row; uses the same predicate-engine
 -- shape. target_kind extends to handle services.
 
@@ -392,7 +392,7 @@ create table public.service_rule_templates (
   created_at timestamptz not null default now()
 );
 
--- Templates seed lands in 00148. No RLS needed (read-only, tenant-agnostic).
+-- Templates seed lands in 00149. No RLS needed (read-only, tenant-agnostic).
 
 notify pgrst, 'reload schema';
 ```
@@ -415,19 +415,19 @@ service_rules
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/00140_service_rules.sql
-git commit -m "feat(rooms-2): migration 00140 — service_rules + versions + simulation + templates"
+git add supabase/migrations/00141_service_rules.sql
+git commit -m "feat(rooms-2): migration 00141 — service_rules + versions + simulation + templates"
 ```
 
-### Task 3: Migration 00141 — asset_reservations with GiST exclusion
+### Task 3: Migration 00142 — asset_reservations with GiST exclusion
 
 **Files:**
-- Create: `supabase/migrations/00141_asset_reservations.sql`
+- Create: `supabase/migrations/00142_asset_reservations.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00141_asset_reservations.sql
+-- 00142_asset_reservations.sql
 -- Conflict guard for assets attached to service line items. Mirrors the
 -- pattern used on `reservations`.
 
@@ -505,19 +505,19 @@ Expected: second INSERT fails with `23P01` (exclusion violation). Cleanup runs c
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/00141_asset_reservations.sql
-git commit -m "feat(rooms-2): migration 00141 — asset_reservations with GiST conflict guard"
+git add supabase/migrations/00142_asset_reservations.sql
+git commit -m "feat(rooms-2): migration 00142 — asset_reservations with GiST conflict guard"
 ```
 
-### Task 4: Migration 00142 — catalog_menus internal-team owner
+### Task 4: Migration 00143 — catalog_menus internal-team owner
 
 **Files:**
-- Create: `supabase/migrations/00142_catalog_menus_team_owner.sql`
+- Create: `supabase/migrations/00143_catalog_menus_team_owner.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00142_catalog_menus_team_owner.sql
+-- 00143_catalog_menus_team_owner.sql
 -- Internal teams (canteen, AV team) own menus alongside external vendors.
 -- vendor_id becomes nullable; XOR check enforces "exactly one owner".
 -- The resolve_menu_offer function gets one branch added.
@@ -644,19 +644,19 @@ Expected: returns rows if existing seed data has vendor menus; doesn't error if 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/00142_catalog_menus_team_owner.sql
-git commit -m "feat(rooms-2): migration 00142 — catalog_menus internal-team owner + updated resolver"
+git add supabase/migrations/00143_catalog_menus_team_owner.sql
+git commit -m "feat(rooms-2): migration 00143 — catalog_menus internal-team owner + updated resolver"
 ```
 
-### Task 5: Migration 00143 — orders/order_line_items column additions
+### Task 5: Migration 00144 — orders/order_line_items column additions
 
 **Files:**
-- Create: `supabase/migrations/00143_orders_bundle_columns.sql`
+- Create: `supabase/migrations/00144_orders_bundle_columns.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00143_orders_bundle_columns.sql
+-- 00144_orders_bundle_columns.sql
 -- Per spec §3.4 column additions on orders and order_line_items.
 
 alter table public.orders
@@ -694,19 +694,19 @@ notify pgrst, 'reload schema';
 Same pattern. Verify both tables have the new columns.
 
 ```bash
-git add supabase/migrations/00143_orders_bundle_columns.sql
-git commit -m "feat(rooms-2): migration 00143 — orders/order_line_items bundle + recurrence columns"
+git add supabase/migrations/00144_orders_bundle_columns.sql
+git commit -m "feat(rooms-2): migration 00144 — orders/order_line_items bundle + recurrence columns"
 ```
 
-### Task 6: Migration 00144 — tickets bundle columns
+### Task 6: Migration 00145 — tickets bundle columns
 
 **Files:**
-- Create: `supabase/migrations/00144_tickets_bundle_columns.sql`
+- Create: `supabase/migrations/00145_tickets_bundle_columns.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00144_tickets_bundle_columns.sql
+-- 00145_tickets_bundle_columns.sql
 -- tickets.ticket_kind ('case','work_order') already exists from 00030.
 -- We do NOT add a 'kind' column. Just the bundle linkage.
 
@@ -724,19 +724,19 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply + verify + commit**
 
 ```bash
-git add supabase/migrations/00144_tickets_bundle_columns.sql
-git commit -m "feat(rooms-2): migration 00144 — tickets bundle + line linkage"
+git add supabase/migrations/00145_tickets_bundle_columns.sql
+git commit -m "feat(rooms-2): migration 00145 — tickets bundle + line linkage"
 ```
 
-### Task 7: Migration 00145 — approvals.scope_breakdown + dedup index
+### Task 7: Migration 00146 — approvals.scope_breakdown + dedup index
 
 **Files:**
-- Create: `supabase/migrations/00145_approvals_scope_breakdown.sql`
+- Create: `supabase/migrations/00146_approvals_scope_breakdown.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00145_approvals_scope_breakdown.sql
+-- 00146_approvals_scope_breakdown.sql
 -- Per spec §4.4: approvals carry the scope of every entity they cover.
 -- DB-enforced dedup: one pending row per (target, approver).
 
@@ -755,24 +755,24 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply + verify + commit**
 
 ```bash
-git add supabase/migrations/00145_approvals_scope_breakdown.sql
-git commit -m "feat(rooms-2): migration 00145 — approvals.scope_breakdown + dedup unique partial index"
+git add supabase/migrations/00146_approvals_scope_breakdown.sql
+git commit -m "feat(rooms-2): migration 00146 — approvals.scope_breakdown + dedup unique partial index"
 ```
 
-### Task 8: Migration 00146 — booking_bundles ↔ reservations FK cycle
+### Task 8: Migration 00147 — booking_bundles ↔ reservations FK cycle
 
 **Files:**
-- Create: `supabase/migrations/00146_booking_bundles_fk_cycle.sql`
+- Create: `supabase/migrations/00147_booking_bundles_fk_cycle.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00146_booking_bundles_fk_cycle.sql
+-- 00147_booking_bundles_fk_cycle.sql
 -- The two tables FK-reference each other:
 --   booking_bundles.primary_reservation_id → reservations.id
 --   reservations.booking_bundle_id          → booking_bundles.id
 -- Postgres allows the cycle, but the FKs must land in a single migration.
--- The booking_bundles table is created in 00139 without primary_reservation_id FK.
+-- The booking_bundles table is created in 00140 without primary_reservation_id FK.
 -- The reservations.booking_bundle_id column already exists from sub-project 1
 -- (migration 00122) without an FK. We add both FKs here together.
 
@@ -792,19 +792,19 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply + verify + commit**
 
 ```bash
-git add supabase/migrations/00146_booking_bundles_fk_cycle.sql
-git commit -m "feat(rooms-2): migration 00146 — booking_bundles ↔ reservations FK cycle"
+git add supabase/migrations/00147_booking_bundles_fk_cycle.sql
+git commit -m "feat(rooms-2): migration 00147 — booking_bundles ↔ reservations FK cycle"
 ```
 
-### Task 9: Migration 00147 — booking_bundle_status_v + helpers
+### Task 9: Migration 00148 — booking_bundle_status_v + helpers
 
 **Files:**
-- Create: `supabase/migrations/00147_booking_bundle_status_view.sql`
+- Create: `supabase/migrations/00148_booking_bundle_status_view.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00147_booking_bundle_status_view.sql
+-- 00148_booking_bundle_status_view.sql
 -- Lazy status_rollup: derived at read time from linked entities.
 
 create or replace view public.booking_bundle_status_v as
@@ -902,19 +902,19 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply + verify + commit**
 
 ```bash
-git add supabase/migrations/00147_booking_bundle_status_view.sql
-git commit -m "feat(rooms-2): migration 00147 — booking_bundle_status_v + visibility helper"
+git add supabase/migrations/00148_booking_bundle_status_view.sql
+git commit -m "feat(rooms-2): migration 00148 — booking_bundle_status_v + visibility helper"
 ```
 
-### Task 10: Migration 00148 — service rule template seed
+### Task 10: Migration 00149 — service rule template seed
 
 **Files:**
-- Create: `supabase/migrations/00148_service_rule_templates_seed.sql`
+- Create: `supabase/migrations/00149_service_rule_templates_seed.sql`
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00148_service_rule_templates_seed.sql
+-- 00149_service_rule_templates_seed.sql
 -- Seven v1 templates per spec §6.1.
 
 insert into public.service_rule_templates (template_key, name, description, category, effect_default, applies_when_template, param_specs, approval_config_template) values
@@ -987,8 +987,8 @@ notify pgrst, 'reload schema';
 - [ ] **Step 2: Apply + verify + commit**
 
 ```bash
-git add supabase/migrations/00148_service_rule_templates_seed.sql
-git commit -m "feat(rooms-2): migration 00148 — seven v1 service rule templates seed"
+git add supabase/migrations/00149_service_rule_templates_seed.sql
+git commit -m "feat(rooms-2): migration 00149 — seven v1 service rule templates seed"
 ```
 
 ### Task 11: Module skeletons (BookingBundles + ServiceCatalog + Orders + BundleTemplates + CostCenters)
@@ -2046,7 +2046,7 @@ git commit -m "test(rooms-2): scaffold concurrent-insert stress for approval ded
 - [ ] **Step 1: Write the test**
 
 ```ts
-describe('service rule templates seed (00148)', () => {
+describe('service rule templates seed (00149)', () => {
   it.todo('seven templates land with correct categories');
   it.todo('every template has param_specs that match its predicate');
 });
@@ -2523,7 +2523,7 @@ export class BundleVisibilityService {
 
 - [ ] **Step 2: Test**
 
-Test against the SQL helper from migration 00147 directly via mock or integration suite.
+Test against the SQL helper from migration 00148 directly via mock or integration suite.
 
 - [ ] **Step 3: Commit**
 

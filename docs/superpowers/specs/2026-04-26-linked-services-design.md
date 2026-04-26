@@ -471,16 +471,16 @@ Total: ~22 working days for one engineer, ~3 weeks calendar with two engineers (
 ## 8 · Migrations summary
 
 ```
-00139  booking_bundles (without primary_reservation_id FK) + bundle_templates + cost_centers + service rule template seed table
-00140  service_rules + service_rule_versions + service_rule_simulation_scenarios
-00141  asset_reservations with GiST exclusion + per-line conflict guard helpers
-00142  catalog_menus.fulfillment_team_id + vendor_id nullability + XOR check
-00143  orders/order_line_items column additions
-00144  tickets column additions (booking_bundle_id, linked_order_line_item_id)
-00145  approvals.scope_breakdown + unique partial index
-00146  reservations.booking_bundle_id FK constraint + booking_bundles.primary_reservation_id FK constraint (both added here together — the two tables FK-reference each other; Postgres allows the cycle but the FKs must land in a single migration so neither table is created with an unresolvable reference)
-00147  booking_bundle_status_v view + bundle visibility helpers
-00148  service rule template seed data
+00140  booking_bundles (without primary_reservation_id FK) + bundle_templates + cost_centers + service rule template seed table
+00141  service_rules + service_rule_versions + service_rule_simulation_scenarios
+00142  asset_reservations with GiST exclusion + per-line conflict guard helpers
+00143  catalog_menus.fulfillment_team_id + vendor_id nullability + XOR check
+00144  orders/order_line_items column additions
+00145  tickets column additions (booking_bundle_id, linked_order_line_item_id)
+00146  approvals.scope_breakdown + unique partial index
+00147  reservations.booking_bundle_id FK constraint + booking_bundles.primary_reservation_id FK constraint (both added here together — the two tables FK-reference each other; Postgres allows the cycle but the FKs must land in a single migration so neither table is created with an unresolvable reference)
+00148  booking_bundle_status_v view + bundle visibility helpers
+00149  service rule template seed data
 ```
 
 Each migration trailing `notify pgrst, 'reload schema'`. Every new table with `tenant_isolation` RLS policy.
