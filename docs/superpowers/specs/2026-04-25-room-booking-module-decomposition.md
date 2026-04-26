@@ -18,6 +18,7 @@ Each row gets its own dated design doc under `docs/superpowers/specs/` and its o
 |---|---|---|---|
 | 1 | **Rooms foundation** | — | Schema upgrade (buffers, check-in, expanded status, policy snapshot, source, calendar_event_id, conflict guard via `tstzrange` exclusion), booking policies (lead time, max duration, capacity tolerance, who-can-book), employee booking flow, "my bookings", admin reservability surfaces. |
 | 2 | **Linked services on a booking** | 1 | Add optional catering / AV / setup modules to the booking flow → spawn linked `orders` + `order_line_items` + work orders. Introduces `booking_bundles` as the orchestration parent. Service availability rules, approval thresholds. |
+| 2.5 | **Parking** _(deferred — scope captured)_ | 1 | First-class parking subsystem mirroring rooms (spot inventory, conflict guard, predicate engine, recurrence, lot-map picker, no-show release). Bundle attaches via `parking_reservations.booking_bundle_id`. See [`2026-04-26-parking-subsystem-scope.md`](./2026-04-26-parking-subsystem-scope.md). Originally proposed as a service line in 2; deferred when we realised order line items can't model spot inventory + conflict guard. |
 | 3 | **Visitors** | 1 (bundle from 2 optional) | Preregistration, host invite, expanded visitor status, visitor policy (NDA, ID, escort), link to reservation + bundle. Can partly parallel sub-project 2. |
 | 4 | **Reception board + host workspace** | 1, 3 | Operator UX over reservations + visitors + service readiness — "expected today" board, exception handling, host summary. No new domain entities. |
 | 5 | **Notifications + workflow templates** | 1, 2, 3 | Cross-cutting. Booking confirmation, visitor invite, approval requested, room change, service at risk. The 10 workflow templates from the blueprint. Calendar sync mirroring. Pieces ship inside each prior slice; this sub-project closes the gaps. |
@@ -27,10 +28,11 @@ Each row gets its own dated design doc under `docs/superpowers/specs/` and its o
 Strict prerequisites: 1 → (2 ∥ 3) → 4. Sub-project 5 is cross-cutting — partial bits ship inside slices 1–4, with a final consolidation slice.
 
 ```
-1 (rooms foundation)
-├── 2 (services on bookings)         ← introduces booking_bundles
-├── 3 (visitors)                     ← can parallel 2
-└── 4 (reception + host workspaces)  ← needs 1 + 3
+1 (rooms foundation)                     ← shipped
+├── 2 (services on bookings)             ← introduces booking_bundles
+├── 2.5 (parking, deferred)              ← parallel to rooms
+├── 3 (visitors)                         ← can parallel 2 / 2.5
+└── 4 (reception + host workspaces)      ← needs 1 + 3, ideally 2.5
         └── 5 (notifications + workflows + calendar) ← cross-cutting tail
 ```
 
