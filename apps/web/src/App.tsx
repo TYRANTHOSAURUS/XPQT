@@ -74,6 +74,7 @@ const VendorsReport = lazyNamed(() => import('@/pages/desk/reports/vendors'), 'V
 const AdminIndexPage = lazyNamed(() => import('@/pages/admin'), 'AdminIndexPage');
 const RequestTypesPage = lazyNamed(() => import('@/pages/admin/request-types'), 'RequestTypesPage');
 const FormSchemasPage = lazyNamed(() => import('@/pages/admin/form-schemas'), 'FormSchemasPage');
+const FormSchemaDetailPage = lazyNamed(() => import('@/pages/admin/form-schema-detail'), 'FormSchemaDetailPage');
 const TeamsPage = lazyNamed(() => import('@/pages/admin/teams'), 'TeamsPage');
 const LocationsPage = lazyNamed(() => import('@/pages/admin/locations'), 'LocationsPage');
 const SlaPoliciesPage = lazyNamed(() => import('@/pages/admin/sla-policies'), 'SlaPoliciesPage');
@@ -216,6 +217,7 @@ export function App() {
                   {/* Config */}
                   <Route path="request-types" element={<RequestTypesPage />} />
                   <Route path="form-schemas" element={<FormSchemasPage />} />
+                  <Route path="form-schemas/:id" element={<FormSchemaDetailPage />} />
                   <Route path="teams" element={<TeamsPage />} />
                   <Route path="locations" element={<LocationsPage />} />
                   <Route path="locations/:spaceId" element={<LocationsPage />} />
