@@ -126,15 +126,18 @@ export function LoginPage() {
       </div>
 
       {/* Right: branding image */}
-      <div className="relative hidden bg-muted lg:block">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center px-12">
-            <TenantLogo variant="mark" alt="Prequest" className="h-24 w-24 mx-auto mb-8 opacity-80" />
-            <h2 className="text-3xl font-bold tracking-tight">Unified Workplace Operations</h2>
-            <p className="text-muted-foreground mt-3 text-lg max-w-md mx-auto">
-              One platform for facilities, IT service management, reservations, visitors, and more.
-            </p>
-          </div>
+      <div className="relative hidden overflow-hidden bg-muted lg:block">
+        <img
+          src="/assets/login-background.png"
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/10" />
+        <div className="absolute inset-x-0 bottom-0 px-12 pb-16">
+          <h2 className="text-3xl font-bold tracking-tight text-white text-balance">
+            A system that unifies the workplace
+          </h2>
         </div>
       </div>
     </div>

@@ -1,19 +1,15 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   Field,
+  FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldSeparator,
 } from '@/components/ui/field';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAuth } from '@/providers/auth-provider';
 import { apiFetch } from '@/lib/api';
@@ -44,7 +40,6 @@ export function SignUpPage() {
         return;
       }
 
-      // Create person record via API
       try {
         await apiFetch('/persons', {
           method: 'POST',
@@ -68,29 +63,34 @@ export function SignUpPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-2">
-          <TenantLogo variant="mark" alt="Prequest" className="h-12 w-12" />
-          <h1 className="text-xl font-semibold tracking-tight">Prequest</h1>
+    <div className="grid min-h-svh lg:grid-cols-2">
+      {/* Left: form */}
+      <div className="flex flex-col gap-4 p-6 md:p-10">
+        <div className="flex justify-center gap-2 md:justify-start">
+          <Link to="/" className="flex items-center gap-2 font-medium">
+            <div className="flex h-8 w-8 items-center justify-center">
+              <TenantLogo variant="mark" alt="Prequest" className="h-7 w-7" />
+            </div>
+            Prequest
+          </Link>
         </div>
-
-        <Card>
-          <CardHeader className="text-center">
-            <CardTitle className="text-lg">Create an account</CardTitle>
-            <CardDescription>
-              Enter your details to get started
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {error && (
-              <Alert variant="destructive" className="mb-4">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            <form onSubmit={handleSubmit}>
+        <div className="flex flex-1 items-center justify-center">
+          <div className="w-full max-w-xs">
+            <form onSubmit={handleSubmit} className={cn('flex flex-col gap-6')}>
               <FieldGroup>
+                <div className="flex flex-col items-center gap-1 text-center">
+                  <h1 className="text-2xl font-bold">Create an account</h1>
+                  <p className="text-sm text-balance text-muted-foreground">
+                    Enter your details to get started
+                  </p>
+                </div>
+
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+
                 <div className="grid grid-cols-2 gap-3">
                   <Field>
                     <FieldLabel htmlFor="first-name">First name</FieldLabel>
@@ -144,23 +144,38 @@ export function SignUpPage() {
                   />
                 </Field>
 
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? 'Creating account...' : 'Create account'}
-                </Button>
+                <Field>
+                  <Button type="submit" disabled={loading} className="w-full">
+                    {loading ? 'Creating account...' : 'Create account'}
+                  </Button>
+                </Field>
+                <FieldSeparator>Or</FieldSeparator>
+                <FieldDescription className="text-center">
+                  Already have an account?{' '}
+                  <Link to="/login" className="underline underline-offset-4">
+                    Sign in
+                  </Link>
+                </FieldDescription>
               </FieldGroup>
             </form>
+          </div>
+        </div>
+      </div>
 
-            <p className="mt-4 text-center text-sm text-muted-foreground">
-              Already have an account?{' '}
-              <Link
-                to="/login"
-                className="font-medium text-primary underline-offset-4 hover:underline"
-              >
-                Sign in
-              </Link>
-            </p>
-          </CardContent>
-        </Card>
+      {/* Right: branding image */}
+      <div className="relative hidden overflow-hidden bg-muted lg:block">
+        <img
+          src="/assets/login-background.png"
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/10" />
+        <div className="absolute inset-x-0 bottom-0 px-12 pb-16">
+          <h2 className="text-3xl font-bold tracking-tight text-white text-balance">
+            A system that unifies the workplace
+          </h2>
+        </div>
       </div>
     </div>
   );
