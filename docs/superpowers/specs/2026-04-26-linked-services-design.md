@@ -87,7 +87,7 @@ alter table public.catalog_menus
     check (num_nonnulls(vendor_id, fulfillment_team_id) = 1);
 ```
 
-The resolver gains one branch: when `vendor_id IS NULL`, skip the `vendor_service_areas` join and use `catalog_menus.space_id` alone for spatial scoping.
+The resolver gains one branch: when `vendor_id IS NULL`, skip the `vendor_service_areas` join and use `catalog_menus.space_id` alone for spatial scoping. `catalog_menus.space_id IS NULL` continues to mean "applies to every location" (with the existing closure-expansion semantic) — internal-team menus that aren't location-scoped (e.g. tenant-wide canteen) leave both `space_id` and `vendor_id` resolution paths in their existing wildcard mode.
 
 ### 3.3 New tables
 
@@ -96,7 +96,7 @@ booking_bundles
   id, tenant_id
   bundle_type            ('meeting'|'event'|'desk_day'|'parking'|'hospitality'|'other')
   requester_person_id, host_person_id
-  primary_reservation_id (nullable)
+  primary_reservation_id (nullable — always set in sub-project 2 because every bundle is created on first-service-attach to a reservation; nullable for sub-project 3+ visitor-only / hospitality-only bundles)
   location_id            (NOT NULL — visibility anchor; from primary reservation OR first delivery_location_id)
   start_at, end_at, timezone
   source                 ('portal'|'desk'|'api'|'calendar_sync'|'reception')
@@ -170,7 +170,7 @@ booking_bundle_status_v   -- VIEW
 
 ### 3.5 Module boundaries (Nest)
 
-- **`BookingBundlesModule`** — owns `booking_bundles` + `BundleVisibilityService` (three-tier model: participant / operator with `rooms.read_all` at `bundle.location_id` / admin) + status_rollup recompute / cascade orchestration.
+- **`BookingBundlesModule`** — owns `booking_bundles` + `BundleVisibilityService` (three-tier model: participant / operator with `rooms.read_all` at `bundle.location_id` / admin) + cascade orchestration. Status rollup is a view (`booking_bundle_status_v`), so there is no recompute path; reads compute on the fly.
 - **`ServiceCatalogModule`** — owns `service_rules` + `ServiceRuleResolverService` + `ServiceEvaluationContext`. Uses shared `PredicateEngineService`. Existing `vendors` / `catalog_menus` / `menu_items` admin folds in here.
 - **`OrdersModule`** — wraps `orders` + `order_line_items` + `asset_reservations`. Includes a `spawnWorkOrder()` helper that calls `TicketService.create({ ticket_kind: 'work_order', sla_id: null, parent_ticket_id: null, booking_bundle_id, linked_order_line_item_id })`. **No separate `WorkOrdersModule`.**
 - **`BundleTemplatesModule`** — admin CRUD over `bundle_templates`.
@@ -258,8 +258,12 @@ Calls `PredicateEngineService.evaluate(predicate, context)` against rules where 
        reasons: [{ rule_id, denial_message }]
      }
    - status='pending'
-4. INSERT ... ON CONFLICT on (target_entity_id, approver_person_id)
-   WHERE status='pending' DO UPDATE SET scope_breakdown = scope_breakdown || EXCLUDED.scope_breakdown.
+4. Upsert via application-layer merge (not raw `||`):
+   - SELECT existing pending approval for (target_entity_id, approver_person_id) inside the bundle transaction.
+   - If found: deep-merge new arrays into existing arrays in TypeScript (concat + dedupe per key), UPDATE the row.
+   - If not found: INSERT.
+   - The unique partial index `(target_entity_id, approver_person_id) WHERE status='pending'` is the safety net — concurrent inserts surface as `23505` and the second writer retries the upsert.
+   - Why not raw `INSERT ... ON CONFLICT DO UPDATE SET scope_breakdown = scope_breakdown || EXCLUDED.scope_breakdown`? The jsonb `||` operator does shallow merge — `reservation_ids: [r1]` paired with `reservation_ids: [r2]` keeps only the EXCLUDED side (r2), losing r1. Application-layer merge is the only way to concat arrays per key.
 ```
 
 Approver UI:
@@ -302,7 +306,11 @@ Per-item reject splits the approval: approved entities → `confirmed`, rejected
 }
 ```
 
-User picks a template from a dropdown above the time picker. Form pre-fills with editable defaults. `quantity_per_attendee` lets templates say "1 lunch per attendee" without hardcoding. `service_window_offset_minutes` is signed minutes from `start_at` (negative = before the meeting).
+User picks a template from a new dropdown above the time picker on `/portal/rooms`. Form pre-fills with editable defaults. `quantity_per_attendee` lets templates say "1 lunch per attendee" without hardcoding. `service_window_offset_minutes` is signed minutes from `start_at` (negative = before the meeting).
+
+**Recurrence + templates compose naturally.** Once the template hydrates the form, the recurrence toggle works exactly as for a manual booking. Each occurrence's catering window is recomputed by applying `service_window_offset_minutes` to that occurrence's `start_at` — so a "30 min after start" template item that lands on a 9am Monday becomes 9:30 catering on Monday and 9:30 next Monday, even if the user later shifts next Monday's reservation. **Manual per-occurrence overrides** (user picks an absolute time on Wednesday) detach that occurrence's line from the offset — subsequent occurrences keep using the offset, but the overridden Wednesday is now an absolute timestamp and won't track the meeting if it moves.
+
+**Naming clarification.** "Service rule templates" (Section 6.1) and "bundle templates" (Section 4.6) are different. Service rule templates are predicate-engine starting points admins use to create approval / availability / blackout rules. Bundle templates are pre-filled composite booking shapes users pick from the dropdown.
 
 ## 5 · Recurrence + cancellation
 
