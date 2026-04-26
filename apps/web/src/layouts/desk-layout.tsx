@@ -16,6 +16,8 @@ import {
 import { DeskSidebar } from '@/components/desk/desk-sidebar';
 import { ShellSwitcher } from '@/components/shell-switcher';
 import { SearchTrigger } from '@/components/command-palette/search-trigger';
+import { useTicketDetail } from '@/api/tickets';
+import { formatTicketRef } from '@/lib/format-ref';
 
 const pageTitles: Record<string, string> = {
   '/desk/inbox': 'Inbox',
@@ -52,7 +54,7 @@ export function DeskLayout() {
                   </BreadcrumbItem>
                   <BreadcrumbSeparator />
                   <BreadcrumbItem>
-                    <BreadcrumbPage>Ticket</BreadcrumbPage>
+                    <TicketRefBreadcrumb ticketId={ticketDetailMatch.params.id!} />
                   </BreadcrumbItem>
                 </>
               ) : (
@@ -72,5 +74,23 @@ export function DeskLayout() {
         </div>
       </SidebarInset>
     </SidebarProvider>
+  );
+}
+
+/**
+ * Renders the ticket's ref (TKT-1234 / WO-1234) in the breadcrumb. Falls back
+ * to "Ticket" while the detail query is loading or if it errors. Shares the
+ * React Query cache with the detail page itself, so this is free after the
+ * page has mounted once.
+ */
+function TicketRefBreadcrumb({ ticketId }: { ticketId: string }) {
+  const { data } = useTicketDetail(ticketId);
+  const label = data
+    ? formatTicketRef(data.ticket_kind, data.module_number)
+    : 'Ticket';
+  return (
+    <BreadcrumbPage className={data ? 'font-mono tabular-nums' : undefined}>
+      {label}
+    </BreadcrumbPage>
   );
 }
