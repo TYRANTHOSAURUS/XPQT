@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -59,6 +60,10 @@ export function SchedulerCreatePopover({
   // book on behalf of one person without committing the rest of their
   // session to that requester.
   const [requesterPersonId, setRequesterPersonId] = useState<string>('');
+  // Persist the last error inside the dialog so the operator can read it
+  // without chasing a toast that fades. We clear it on every fresh attempt
+  // so a successful retry leaves no stale alert.
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const create = useCreateBooking();
 
   useEffect(() => {
@@ -66,6 +71,7 @@ export function SchedulerCreatePopover({
     const seed = room?.min_attendees && room.min_attendees > 0 ? room.min_attendees : 2;
     setAttendeeCount(seed);
     setRequesterPersonId(toolbarBookForPersonId ?? currentUserPersonId);
+    setSubmitError(null);
   }, [
     open,
     room?.space_id,
@@ -81,9 +87,10 @@ export function SchedulerCreatePopover({
 
   const submit = async () => {
     if (!requesterPersonId) {
-      toast.error('Pick who this booking is for.');
+      setSubmitError('Pick who this booking is for.');
       return;
     }
+    setSubmitError(null);
     try {
       await create.mutateAsync({
         space_id: room.space_id,
@@ -99,6 +106,10 @@ export function SchedulerCreatePopover({
     } catch (e) {
       const message =
         e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Booking failed';
+      // Show inline AND toast: inline keeps the explanation under the
+      // button so the operator can read why it failed without losing the
+      // dialog state; the toast catches eyes that are tracking the page.
+      setSubmitError(message);
       toast.error(message);
     }
   };
@@ -162,6 +173,16 @@ export function SchedulerCreatePopover({
             </FieldDescription>
           </Field>
         </FieldGroup>
+
+        {submitError && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          >
+            <AlertTriangle className="size-3.5 shrink-0 translate-y-0.5" />
+            <p className="leading-relaxed">{submitError}</p>
+          </div>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

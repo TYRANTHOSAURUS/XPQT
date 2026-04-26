@@ -100,6 +100,13 @@ interface PickerResponse {
  *
  * Realtime: the page subscribes to per-space changefeeds and re-runs this
  * query (200 ms debounced) when an event arrives that affects a shown room.
+ *
+ * staleTime is 30s by default — the realtime hook keeps the cache fresh on
+ * write events, so we don't need React Query's window-focus refetch to do
+ * the same job 5 seconds later. The desk scheduler in particular benefits:
+ * the picker is the heavy half of the page, and operators routinely
+ * switch focus between tabs while triaging without wanting a full refetch
+ * round-trip on every return.
  */
 export function pickerOptions(input: PickerInput) {
   return queryOptions({
@@ -110,7 +117,7 @@ export function pickerOptions(input: PickerInput) {
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    staleTime: 5_000,
+    staleTime: 30_000,
     placeholderData: keepPreviousData,
     enabled: Boolean(input.start_at) && Boolean(input.end_at) && input.attendee_count > 0,
   });

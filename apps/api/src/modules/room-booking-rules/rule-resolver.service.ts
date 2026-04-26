@@ -105,14 +105,21 @@ export class RuleResolverService {
     const out = new Map<string, ResolveOutcome>();
     if (spaceIds.length === 0) return out;
 
-    // Fetch all candidate rules once. Cheaper than N queries; we'll filter
-    // per space in TS using the ancestor/type maps.
-    const allRules = await this.fetchAllRules();
-    const requester = await this.loadRequester(requesterPersonId);
-    const permissions = await this.loadPermissionMap(requester.user_id);
-
-    // Fetch every space + parent chain in one query.
-    const spaces = await this.loadSpacesWithAncestors(spaceIds);
+    // Three independent IO branches — fan out in parallel:
+    //   - all active rules in the tenant (one query)
+    //   - the requester's role / org / type context (chained queries)
+    //   - every candidate space + its parent chain (BFS, batched per layer)
+    // They share no inputs once we have the spaceIds, so running them
+    // sequentially is pure latency. Permissions still depend on the
+    // requester's user_id, so they happen inside loadRequester's branch.
+    const [allRules, { requester, permissions }, spaces] = await Promise.all([
+      this.fetchAllRules(),
+      this.loadRequester(requesterPersonId).then(async (r) => ({
+        requester: r,
+        permissions: await this.loadPermissionMap(r.user_id),
+      })),
+      this.loadSpacesWithAncestors(spaceIds),
+    ]);
 
     for (const spaceId of spaceIds) {
       const space = spaces.get(spaceId);
@@ -288,34 +295,37 @@ export class RuleResolverService {
 
   private async loadRequester(personId: string): Promise<RequesterContext> {
     const tenant = TenantContext.current();
-    const [{ data: person, error: pErr }, { data: membership, error: mErr }] =
-      await Promise.all([
-        this.supabase.admin
-          .from('persons')
-          .select('id, type, cost_center')
-          .eq('id', personId)
-          .eq('tenant_id', tenant.id)
-          .maybeSingle(),
-        this.supabase.admin
-          .from('person_org_memberships')
-          .select('org_node_id')
-          .eq('person_id', personId)
-          .eq('tenant_id', tenant.id)
-          .eq('is_primary', true)
-          .maybeSingle(),
-      ]);
+    // Person + primary membership + linked user are independent — fan out.
+    // Roles still need user_id, so they chain on the user lookup.
+    const [
+      { data: person, error: pErr },
+      { data: membership, error: mErr },
+      { data: user, error: uErr },
+    ] = await Promise.all([
+      this.supabase.admin
+        .from('persons')
+        .select('id, type, cost_center')
+        .eq('id', personId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle(),
+      this.supabase.admin
+        .from('person_org_memberships')
+        .select('org_node_id')
+        .eq('person_id', personId)
+        .eq('tenant_id', tenant.id)
+        .eq('is_primary', true)
+        .maybeSingle(),
+      this.supabase.admin
+        .from('users')
+        .select('id')
+        .eq('person_id', personId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle(),
+    ]);
     if (pErr) throw pErr;
     if (mErr) throw mErr;
-    if (!person) throw new NotFoundException(`Person ${personId} not found`);
-
-    // Find the linked user (if any) so we can compute role_ids + permissions.
-    const { data: user, error: uErr } = await this.supabase.admin
-      .from('users')
-      .select('id')
-      .eq('person_id', personId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
     if (uErr) throw uErr;
+    if (!person) throw new NotFoundException(`Person ${personId} not found`);
     const userId = (user as { id: string } | null)?.id ?? null;
 
     let roleIds: string[] = [];
