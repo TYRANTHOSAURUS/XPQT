@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { bundleKeys } from './keys';
+import { approvalKeys } from '@/api/approvals';
 import { roomBookingKeys } from '@/api/room-booking';
+import { ticketKeys } from '@/api/tickets';
 
 export interface CancelBundlePayload {
   /** Line-item ids to KEEP — everything else cancels. */
@@ -24,6 +26,11 @@ export function useCancelBundle() {
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
       qc.invalidateQueries({ queryKey: roomBookingKeys.lists() });
       qc.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
+      // Cascading entities — work-order tickets get cancelled, approvals
+      // get expired. Refresh both so pages displaying them show the new
+      // state without a manual reload.
+      qc.invalidateQueries({ queryKey: ticketKeys.all });
+      qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
   });
 }
@@ -52,6 +59,12 @@ export function useCancelBundleLine(bundleId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
+      // Cascading: line cancel cascades to work-order ticket + asset
+      // reservation, and may auto-close approval rows whose scope drops
+      // to empty. Refresh both so /desk/tickets, /desk/approvals, and
+      // any open ticket detail show the new state.
+      qc.invalidateQueries({ queryKey: ticketKeys.all });
+      qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
   });
 }
