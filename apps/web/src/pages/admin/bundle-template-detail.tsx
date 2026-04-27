@@ -245,7 +245,7 @@ export function BundleTemplateDetailPage() {
               value={data.payload?.default_cost_center_id ?? '__none__'}
               onValueChange={(value) =>
                 persistPayload({
-                  default_cost_center_id: value === '__none__' ? null : value,
+                  default_cost_center_id: !value || value === '__none__' ? null : value,
                 })
               }
             >

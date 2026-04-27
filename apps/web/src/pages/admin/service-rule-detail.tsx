@@ -205,12 +205,13 @@ export function ServiceRuleDetailPage() {
           <SettingsRowValue>
             <Select
               value={data.target_kind}
-              onValueChange={(v) =>
+              onValueChange={(v) => {
+                if (!v) return; // null fires when clearing — ignore
                 persist({
                   target_kind: v as ServiceRuleTargetKind,
                   target_id: v === 'tenant' ? null : data.target_id,
-                })
-              }
+                });
+              }}
             >
               <SelectTrigger className="h-8 w-[180px]">
                 <SelectValue />
@@ -248,7 +249,10 @@ export function ServiceRuleDetailPage() {
           <SettingsRowValue>
             <Select
               value={data.effect}
-              onValueChange={(v) => persist({ effect: v as ServiceRuleEffect })}
+              onValueChange={(v) => {
+                if (!v) return;
+                persist({ effect: v as ServiceRuleEffect });
+              }}
             >
               <SelectTrigger className="h-8 w-[200px]">
                 <SelectValue />
