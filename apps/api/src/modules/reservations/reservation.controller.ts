@@ -11,6 +11,7 @@ import { ListBookableRoomsService } from './list-bookable-rooms.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
+import { BundleService, type ServiceLineInput } from '../booking-bundles/bundle.service';
 import { Public } from '../auth/public.decorator';
 import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -31,6 +32,7 @@ export class ReservationController {
     private readonly multiRoom: MultiRoomBookingService,
     private readonly findTime: MultiAttendeeFinder,
     private readonly supabase: SupabaseService,
+    private readonly bundle: BundleService,
   ) {}
 
   // ---- Reads ----
@@ -309,6 +311,52 @@ export class ReservationController {
     @Query('token') token: string,
   ) {
     return this.checkInService.checkInMagic(id, token ?? '');
+  }
+
+  // ---- Services attached to a reservation (post-booking) ----
+
+  /**
+   * `POST /reservations/:id/services` — attach (or append) service lines
+   * to a reservation. Handles both first-attach (lazy-creates the bundle)
+   * and append-to-existing-bundle. Wraps `attachServicesToReservation`,
+   * which already handles bundle reuse + per-service-type ordering +
+   * approval routing.
+   *
+   * Use this from the post-booking "+ Add service" UI; for direct
+   * bundle-level additions (when callers already have a bundle id), the
+   * sibling `POST /booking-bundles/:id/lines` is also available.
+   *
+   * Write gate: requester / host / `rooms.admin`.
+   */
+  @Post(':id/services')
+  async attachServices(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() body: { services: ServiceLineInput[] },
+  ) {
+    const authUid = this.getAuthUid(request);
+    // Visibility check + ensures the reservation exists in the caller's
+    // tenant before we mutate anything.
+    const reservation = await this.service.findOne(id, authUid);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+
+    // Write gate: requester / host / admin only.
+    const r = reservation as { requester_person_id: string; host_person_id?: string | null };
+    const isParticipant =
+      ctx.person_id != null && (r.requester_person_id === ctx.person_id || r.host_person_id === ctx.person_id);
+    if (!ctx.has_admin && !isParticipant) {
+      throw new UnauthorizedException({
+        code: 'reservation_write_forbidden',
+        message: 'Only the requester, host, or an admin can change this booking.',
+      });
+    }
+
+    return this.bundle.attachServicesToReservation({
+      reservation_id: id,
+      requester_person_id: r.requester_person_id,
+      services: body?.services ?? [],
+    });
   }
 
   // ---- Visitors attached to a reservation ----

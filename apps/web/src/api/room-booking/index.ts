@@ -25,4 +25,6 @@ export type { OperatorReservationItem, MyReservationItem, SchedulerRoom } from '
 export {
   useCreateBooking, useDryRunBooking, useMultiRoomBooking,
   useEditBooking, useCancelBooking, useRestoreBooking, useCheckInBooking,
+  useAttachReservationServices,
 } from './mutations';
+export type { AttachServicesInput } from './mutations';

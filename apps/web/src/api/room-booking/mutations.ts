@@ -121,6 +121,49 @@ export function useRestoreBooking() {
   });
 }
 
+export interface AttachServicesInput {
+  catalog_item_id: string;
+  menu_id?: string | null;
+  quantity: number;
+  service_window_start_at?: string | null;
+  service_window_end_at?: string | null;
+}
+
+/**
+ * Attach service lines to an existing reservation. Lazy-creates the
+ * booking_bundle on first attach; appends to it on subsequent calls.
+ * Used by the post-booking "+ Add service" affordance.
+ */
+export function useAttachReservationServices(reservationId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<
+    {
+      bundle_id: string;
+      order_ids: string[];
+      order_line_item_ids: string[];
+      asset_reservation_ids: string[];
+      approval_ids: string[];
+      any_pending_approval: boolean;
+    },
+    Error,
+    { services: AttachServicesInput[] }
+  >({
+    mutationFn: ({ services }) =>
+      apiFetch(`/reservations/${reservationId}/services`, {
+        method: 'POST',
+        body: JSON.stringify({ services }),
+      }),
+    onSuccess: (data) => {
+      // Reservation's booking_bundle_id may have just been set; refresh
+      // the reservation and the bundle's lines.
+      queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(reservationId) });
+      queryClient.invalidateQueries({ queryKey: ['booking-bundles', 'detail', data.bundle_id] as const });
+      // Lists may surface new bundle status / has-services chip.
+      queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
+    },
+  });
+}
+
 export function useCheckInBooking() {
   const queryClient = useQueryClient();
   return useMutation({

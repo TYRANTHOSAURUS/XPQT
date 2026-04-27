@@ -171,9 +171,11 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
           )}
       </div>
 
-      {reservation.booking_bundle_id && (
-        <BundleServicesSection bundleId={reservation.booking_bundle_id} />
-      )}
+      <BundleServicesSection
+        reservation={reservation}
+        canEdit={showEdit}
+      />
+
 
       {(showCheckIn || showRestore || showEdit) && (
         <div className="border-t px-5 py-3">
