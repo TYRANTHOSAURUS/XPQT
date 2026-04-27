@@ -10,6 +10,7 @@ import { AuditOutboxWorker } from './audit-outbox.worker';
 import { DataCategoryRegistry } from './data-category-registry.service';
 import { DataSubjectService } from './data-subject.service';
 import { GdprAdminController } from './gdpr-admin.controller';
+import { LegalHoldService } from './legal-hold.service';
 import { PersonalDataAccessInterceptor } from './personal-data-access.interceptor';
 import { PersonalDataAccessLogService } from './personal-data-access-log.service';
 import { RetentionService } from './retention.service';
@@ -47,6 +48,7 @@ import {
     RetentionWorker,
     PersonalDataAccessLogService,
     DataSubjectService,
+    LegalHoldService,
     PermissionGuard,
 
     // Class-based adapters for the categories that need bespoke logic.
@@ -69,6 +71,7 @@ import {
     RetentionService,
     PersonalDataAccessLogService,
     DataSubjectService,
+    LegalHoldService,
   ],
 })
 export class PrivacyComplianceModule implements OnApplicationBootstrap {

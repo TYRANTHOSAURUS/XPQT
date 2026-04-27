@@ -182,6 +182,181 @@ export class DataSubjectService {
     };
   }
 
+  // ====================================================================
+  // Erasure (Art. 17)
+  // ====================================================================
+
+  /**
+   * Initiate an erasure request. Per gdpr-baseline-design.md §6:
+   *   - Reason captured for the audit trail.
+   *   - Default policy is anonymize (preserve operational integrity);
+   *     hard-delete only on explicit subject demand + legal review (a flag
+   *     callers can pass; defaults to anonymize).
+   *   - Active legal hold on this person → request denied immediately.
+   */
+  async createErasureRequest(input: CreateErasureRequestInput): Promise<DsrRow> {
+    const subject = await this.db.queryOne<{ id: string }>(
+      `select id from persons where tenant_id = $1 and id = $2`,
+      [input.tenantId, input.subjectPersonId],
+    );
+    if (!subject) {
+      throw new NotFoundException(`Person ${input.subjectPersonId} not found in tenant ${input.tenantId}`);
+    }
+    if (!input.reason || input.reason.trim().length < 8) {
+      throw new BadRequestException('Reason required (>=8 chars) for erasure requests.');
+    }
+
+    // Check person-level + tenant-wide active holds.
+    const activeHold = await this.db.queryOne<{ id: string; hold_type: string; reason: string }>(
+      `select id, hold_type, reason from legal_holds
+        where tenant_id = $1
+          and released_at is null
+          and (expires_at is null or expires_at > now())
+          and (
+            hold_type = 'tenant_wide'
+            or (hold_type = 'person' and subject_person_id = $2)
+          )
+        limit 1`,
+      [input.tenantId, input.subjectPersonId],
+    );
+
+    if (activeHold) {
+      const dsr = await this.db.queryOne<DsrRow>(
+        `insert into data_subject_requests
+           (tenant_id, request_type, subject_person_id, initiated_by_user_id, status, decision_reason)
+         values ($1, 'erasure', $2, $3, 'denied', $4)
+         returning *`,
+        [
+          input.tenantId,
+          input.subjectPersonId,
+          input.initiatedByUserId,
+          `Denied: ${activeHold.hold_type} legal hold active. Hold reason: ${activeHold.reason}`,
+        ],
+      );
+      if (!dsr) throw new BadRequestException('Failed to create denied DSR row');
+
+      await this.auditOutbox.emit({
+        tenantId: input.tenantId,
+        eventType: GdprEventType.ErasureRequestDenied,
+        entityType: 'data_subject_requests',
+        entityId: dsr.id,
+        actorUserId: input.initiatedByUserId,
+        details: {
+          subject_person_id: input.subjectPersonId,
+          reason: input.reason,
+          denial_reason: 'active_legal_hold',
+          hold_id: activeHold.id,
+          hold_type: activeHold.hold_type,
+        },
+      });
+      return dsr;
+    }
+
+    const dsr = await this.db.queryOne<DsrRow>(
+      `insert into data_subject_requests
+         (tenant_id, request_type, subject_person_id, initiated_by_user_id, status, decision_reason)
+       values ($1, 'erasure', $2, $3, 'in_progress', $4)
+       returning *`,
+      [input.tenantId, input.subjectPersonId, input.initiatedByUserId, input.reason],
+    );
+    if (!dsr) throw new BadRequestException('Failed to create DSR row');
+
+    await this.auditOutbox.emit({
+      tenantId: input.tenantId,
+      eventType: GdprEventType.ErasureRequestInitiated,
+      entityType: 'data_subject_requests',
+      entityId: dsr.id,
+      actorUserId: input.initiatedByUserId,
+      details: {
+        subject_person_id: input.subjectPersonId,
+        reason: input.reason,
+        mode: input.hardDelete ? 'hard_delete' : 'anonymize',
+      },
+    });
+
+    return dsr;
+  }
+
+  /**
+   * Fulfill an erasure request. Walks every adapter for refs the person
+   * touches, runs anonymize() (default) or hardDelete() (when caller
+   * explicitly opted in + adapter supports it), and emits per-category
+   * audit events. Marks the DSR completed (or partial when some adapters
+   * reported nothing to do).
+   */
+  async fulfillErasureRequest(input: FulfillErasureRequestInput): Promise<FulfillErasureResult> {
+    const dsr = await this.db.queryOne<DsrRow>(
+      `select * from data_subject_requests
+        where tenant_id = $1 and id = $2`,
+      [input.tenantId, input.requestId],
+    );
+    if (!dsr) throw new NotFoundException('DSR not found');
+    if (dsr.status === 'denied') throw new BadRequestException('DSR already denied');
+    if (dsr.status === 'completed') throw new BadRequestException('DSR already completed');
+
+    const adapters = this.registry.all();
+    const breakdown: Record<string, { anonymized: number; hardDeleted: number; description: string }> = {};
+    let totalProcessed = 0;
+
+    for (const adapter of adapters) {
+      try {
+        const refs = await adapter.erasureRefs(input.tenantId, dsr.subject_person_id);
+        if (refs.length === 0) {
+          breakdown[adapter.category] = { anonymized: 0, hardDeleted: 0, description: adapter.description };
+          continue;
+        }
+
+        const isHardDelete = input.hardDelete === true && adapter.legalBasis !== 'legal_obligation';
+        if (isHardDelete) {
+          await adapter.hardDelete(refs);
+          breakdown[adapter.category] = { anonymized: 0, hardDeleted: refs.length, description: adapter.description };
+        } else {
+          await adapter.anonymize(refs);
+          breakdown[adapter.category] = { anonymized: refs.length, hardDeleted: 0, description: adapter.description };
+        }
+        totalProcessed += refs.length;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.warn(`adapter ${adapter.category} erasure failed: ${message}`);
+        breakdown[adapter.category] = { anonymized: 0, hardDeleted: 0, description: `failed: ${message}` };
+      }
+    }
+
+    const finalStatus = totalProcessed > 0 ? 'completed' : 'partial';
+
+    const updated = await this.db.queryOne<DsrRow>(
+      `update data_subject_requests
+          set status          = $3,
+              completed_at    = now(),
+              scope_breakdown = $4::jsonb
+        where tenant_id = $1 and id = $2
+        returning *`,
+      [input.tenantId, input.requestId, finalStatus, JSON.stringify(breakdown)],
+    );
+
+    await this.auditOutbox.emit({
+      tenantId: input.tenantId,
+      eventType: finalStatus === 'completed'
+        ? GdprEventType.ErasureRequestFulfilled
+        : GdprEventType.ErasureRequestPartial,
+      entityType: 'data_subject_requests',
+      entityId: input.requestId,
+      actorUserId: input.actorUserId,
+      details: {
+        subject_person_id: dsr.subject_person_id,
+        total_processed: totalProcessed,
+        breakdown,
+      },
+    });
+
+    return {
+      request: updated ?? dsr,
+      breakdown,
+      totalProcessed,
+      status: finalStatus,
+    };
+  }
+
   async getRequest(tenantId: string, requestId: string): Promise<DsrRow | null> {
     return this.db.queryOne<DsrRow>(
       `select * from data_subject_requests where tenant_id = $1 and id = $2`,
@@ -228,6 +403,29 @@ export interface FulfillAccessResult {
   expiresAt: string;
   path: string;
   breakdown: Record<string, { count: number; description: string }>;
+}
+
+export interface CreateErasureRequestInput {
+  tenantId: string;
+  subjectPersonId: string;
+  initiatedByUserId: string;
+  reason: string;
+  /** When true + adapter allows it, hard-delete instead of anonymize. */
+  hardDelete?: boolean;
+}
+
+export interface FulfillErasureRequestInput {
+  tenantId: string;
+  requestId: string;
+  actorUserId: string;
+  hardDelete?: boolean;
+}
+
+export interface FulfillErasureResult {
+  request: DsrRow;
+  breakdown: Record<string, { anonymized: number; hardDeleted: number; description: string }>;
+  totalProcessed: number;
+  status: 'completed' | 'partial';
 }
 
 export interface DsrRow {

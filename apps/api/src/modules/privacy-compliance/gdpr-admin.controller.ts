@@ -14,6 +14,7 @@ import { PermissionGuard } from '../../common/permission-guard';
 import { TenantContext } from '../../common/tenant-context';
 import { DataSubjectService } from './data-subject.service';
 import { GdprPermission } from './event-types';
+import { LegalHoldService } from './legal-hold.service';
 import {
   RetentionService,
   type SetCategorySettingsInput,
@@ -42,6 +43,7 @@ export class GdprAdminController {
     private readonly permission: PermissionGuard,
     private readonly retention: RetentionService,
     private readonly dataSubject: DataSubjectService,
+    private readonly legalHold: LegalHoldService,
   ) {}
 
   // -------------------- retention --------------------
@@ -133,5 +135,104 @@ export class GdprAdminController {
     await this.permission.requirePermission(req, GdprPermission.FulfillRequest);
     const tenant = TenantContext.current();
     return this.dataSubject.getRequest(tenant.id, id);
+  }
+
+  // -------------------- erasure requests --------------------
+
+  @Post('persons/:personId/erase')
+  async initiateErasure(
+    @Req() req: Request,
+    @Param('personId', ParseUUIDPipe) personId: string,
+    @Body() body: { reason: string; hard_delete?: boolean; fulfill?: boolean },
+  ) {
+    const { userId } = await this.permission.requirePermission(req, GdprPermission.FulfillRequest);
+    const tenant = TenantContext.current();
+
+    const dsr = await this.dataSubject.createErasureRequest({
+      tenantId: tenant.id,
+      subjectPersonId: personId,
+      initiatedByUserId: userId,
+      reason: body?.reason,
+      hardDelete: body?.hard_delete === true,
+    });
+
+    // If denied at intake (e.g. legal hold), return immediately.
+    if (dsr.status === 'denied') return { request: dsr };
+
+    if (body?.fulfill !== false) {
+      const result = await this.dataSubject.fulfillErasureRequest({
+        tenantId: tenant.id,
+        requestId: dsr.id,
+        actorUserId: userId,
+        hardDelete: body?.hard_delete === true,
+      });
+      return {
+        request: result.request,
+        breakdown: result.breakdown,
+        total_processed: result.totalProcessed,
+        status: result.status,
+      };
+    }
+
+    return { request: dsr };
+  }
+
+  // -------------------- legal holds --------------------
+
+  @Get('legal-holds')
+  async listHolds(
+    @Req() req: Request,
+    @Query('include_released') includeReleased?: string,
+  ) {
+    await this.permission.requirePermission(req, GdprPermission.PlaceLegalHold);
+    const tenant = TenantContext.current();
+    return this.legalHold.listAll(tenant.id, {
+      includeReleased: includeReleased === 'true',
+    });
+  }
+
+  @Post('legal-holds')
+  async placeHold(
+    @Req() req: Request,
+    @Body() body: {
+      hold_type: 'person' | 'category' | 'tenant_wide';
+      subject_person_id?: string;
+      data_category?: string;
+      reason: string;
+      expires_at?: string;
+    },
+  ) {
+    const { userId } = await this.permission.requirePermission(req, GdprPermission.PlaceLegalHold);
+    if (!body?.hold_type) throw new BadRequestException('hold_type is required');
+    if (!body?.reason)    throw new BadRequestException('reason is required');
+
+    const tenant = TenantContext.current();
+    return this.legalHold.place({
+      tenantId: tenant.id,
+      holdType: body.hold_type,
+      subjectPersonId: body.subject_person_id,
+      dataCategory: body.data_category,
+      reason: body.reason,
+      initiatedByUserId: userId,
+      expiresAt: body.expires_at,
+    });
+  }
+
+  @Post('legal-holds/:id/release')
+  async releaseHold(
+    @Req() req: Request,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { reason: string },
+  ) {
+    const { userId } = await this.permission.requirePermission(req, GdprPermission.PlaceLegalHold);
+    if (!body?.reason) throw new BadRequestException('reason is required');
+
+    const tenant = TenantContext.current();
+    return this.legalHold.release({
+      tenantId: tenant.id,
+      holdId: id,
+      releasedByUserId: userId,
+      reason: body.reason,
+    });
   }
 }
