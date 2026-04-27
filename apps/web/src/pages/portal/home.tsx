@@ -59,6 +59,9 @@ export function PortalHome() {
     <PortalPage>
       <PortalHomeHero />
       <div className="mt-8 md:mt-10">
+        <div className="mb-6 md:mb-8">
+          <PortalAnnouncementCard />
+        </div>
         <div className="grid gap-8 md:gap-10 md:grid-cols-[1.8fr_1fr]">
           <section>
             <div className="mb-3 text-xs uppercase tracking-widest text-muted-foreground font-semibold">
@@ -85,10 +88,6 @@ export function PortalHome() {
             </div>
             <PortalActivityPanel />
           </section>
-        </div>
-
-        <div className="mt-10 mb-10">
-          <PortalAnnouncementCard />
         </div>
       </div>
     </PortalPage>

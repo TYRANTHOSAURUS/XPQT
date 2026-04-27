@@ -27,6 +27,7 @@ import { useCostCenters } from '@/api/cost-centers';
 import { ServiceSection, type ServiceSelection } from '@/pages/portal/book-room/components/service-section';
 import { formatCurrency } from '@/lib/format';
 import { toastError, toastSuccess } from '@/lib/toast';
+import { usePortal } from '@/providers/portal-provider';
 
 /**
  * `/portal/order` — services-only order flow. No reservation; the bundle
@@ -42,8 +43,20 @@ import { toastError, toastSuccess } from '@/lib/toast';
 export function PortalOrderPage() {
   const navigate = useNavigate();
   const createStandalone = useCreateStandaloneOrder();
+  const { data: portal } = usePortal();
 
   const [deliverySpaceId, setDeliverySpaceId] = useState<string>('');
+  // Seed the drop-off location with the portal user's current location
+  // (their default building / authorized site) once the portal context loads.
+  // Don't override after the user has made a choice.
+  const [seededFromPortal, setSeededFromPortal] = useState(false);
+  useEffect(() => {
+    if (seededFromPortal) return;
+    const seed = portal?.current_location?.id ?? portal?.default_location?.id;
+    if (!seed) return;
+    setDeliverySpaceId(seed);
+    setSeededFromPortal(true);
+  }, [portal?.current_location?.id, portal?.default_location?.id, seededFromPortal]);
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState<string>(today);
   const [startTime, setStartTime] = useState<string>('09:00');
