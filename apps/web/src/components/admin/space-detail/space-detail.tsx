@@ -5,7 +5,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import type { SpaceType } from '@prequest/shared';
 import {
@@ -67,22 +67,22 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
     if (!confirm(`Archive "${space.name}"? It will no longer appear in the tree.`)) return;
     try {
       await deleteMut.mutateAsync(space.id);
-      toast.success('Archived');
+      toastRemoved(space.name, { verb: 'archived' });
       const path = pathTo(tree, space.id);
       const parent = path.at(-2)?.id ?? null;
       onNavigate(parent);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to archive');
+      toastError(`Couldn't archive ${space.name}`, { error: err, retry: handleArchive });
     }
   };
 
   const handleMoveSubmit = async () => {
     try {
       await moveMut.mutateAsync({ parent_id: moveTarget });
-      toast.success('Moved');
+      toastSuccess(`${space.name} moved`);
       setMoveOpen(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to move');
+      toastError(`Couldn't move ${space.name}`, { error: err, retry: handleMoveSubmit });
     }
   };
 

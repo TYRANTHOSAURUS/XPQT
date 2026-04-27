@@ -3,7 +3,7 @@ import { SettingsRow } from '@/components/ui/settings-row';
 import { Button } from '@/components/ui/button';
 import { PortalHeroUploadDialog } from './portal-hero-upload-dialog';
 import { useRemovePortalHero } from '@/api/portal-appearance';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 
 interface Props {
   locationId: string;
@@ -18,9 +18,9 @@ export function PortalHeroSlot({ locationId, locationName, currentUrl }: Props) 
   const handleRemove = async () => {
     try {
       await remove.mutateAsync(locationId);
-      toast.success('Hero removed');
+      toastRemoved('Hero');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Remove failed');
+      toastError("Couldn't remove hero", { error: err, retry: handleRemove });
     }
   };
 

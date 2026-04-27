@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Trash2, RotateCcw } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -71,9 +71,10 @@ export function DomainsEditor() {
     setDialogOpen(true);
   }
 
+  const canSave = key.trim().length > 0 && displayName.trim().length > 0;
+
   async function handleSave() {
-    if (!key.trim()) { toast.error('Key required'); return; }
-    if (!displayName.trim()) { toast.error('Display name required'); return; }
+    if (!canSave) return;
     try {
       if (editId) {
         await apiFetch(`/admin/routing/domains/${editId}`, {
@@ -83,7 +84,7 @@ export function DomainsEditor() {
             parent_domain_id: parentId || null,
           }),
         });
-        toast.success(`Updated ${key}`);
+        toastSuccess(`Updated ${key}`);
       } else {
         await apiFetch('/admin/routing/domains', {
           method: 'POST',
@@ -93,13 +94,25 @@ export function DomainsEditor() {
             parent_domain_id: parentId || null,
           }),
         });
-        toast.success(`Added ${key}`);
+        toastSuccess(`Added ${key}`);
       }
       setDialogOpen(false);
       reset();
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save domain');
+      toastError("Couldn't save domain", { error: err, retry: handleSave });
+    }
+  }
+
+  async function reactivate(row: Domain) {
+    try {
+      await apiFetch(`/admin/routing/domains/${row.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: true }),
+      });
+      refetch();
+    } catch (err) {
+      toastError(`Couldn't reactivate ${row.key}`, { error: err, retry: () => reactivate(row) });
     }
   }
 
@@ -108,17 +121,14 @@ export function DomainsEditor() {
       if (row.active) {
         if (!confirm(`Deactivate domain "${row.key}"? Rows pointing to it keep their references but it won't appear in new policy editors.`)) return;
         await apiFetch(`/admin/routing/domains/${row.id}`, { method: 'DELETE' });
-        toast.success(`${row.key} deactivated`);
+        toastRemoved(row.key, { verb: 'deactivated', onUndo: () => reactivate(row) });
       } else {
-        await apiFetch(`/admin/routing/domains/${row.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ active: true }),
-        });
-        toast.success(`${row.key} reactivated`);
+        await reactivate(row);
+        toastSuccess(`${row.key} reactivated`);
       }
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to toggle');
+      toastError("Couldn't update domain", { error: err, retry: () => handleToggleActive(row) });
     }
   }
 
@@ -197,7 +207,7 @@ export function DomainsEditor() {
             </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleSave}>{editId ? 'Save' : 'Add'}</Button>
+              <Button onClick={handleSave} disabled={!canSave}>{editId ? 'Save' : 'Add'}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

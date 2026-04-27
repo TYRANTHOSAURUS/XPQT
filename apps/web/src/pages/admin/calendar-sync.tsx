@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Calendar, CheckCircle2, AlertTriangle, ExternalLink } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -326,12 +326,12 @@ function ResolveDialog({
     if (!conflict) return;
     try {
       await resolve.mutateAsync({ id: conflict.id, body: { action, note: note || undefined } });
-      toast.success('Conflict resolved');
+      toastSuccess('Conflict resolved');
       onClose();
       setNote('');
       setAction('keep_internal');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Resolve failed');
+      toastError("Couldn't resolve conflict", { error: err, retry: onSubmit });
     }
   };
 

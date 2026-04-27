@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastCreated, toastError } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -33,10 +33,10 @@ export function SlaPolicyCreatePage() {
     };
     create.mutate(body, {
       onSuccess: (policy) => {
-        toast.success('Policy created');
+        toastCreated('SLA policy', { onView: () => navigate(`/admin/sla-policies/${policy.id}`) });
         navigate(`/admin/sla-policies/${policy.id}`);
       },
-      onError: (err) => toast.error(err.message || 'Create failed'),
+      onError: (err) => toastError("Couldn't create SLA policy", { error: err, retry: handleCreate }),
     });
   };
 

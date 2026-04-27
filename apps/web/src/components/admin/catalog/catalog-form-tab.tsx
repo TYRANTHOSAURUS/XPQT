@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSaved } from '@/lib/toast';
 import { Plus, X, Info } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -128,11 +128,8 @@ export function CatalogFormTab({ detail, onSaved }: {
     return null;
   }, [conditional]);
 
-  const save = useCallback(async () => {
-    if (validationError) {
-      toast.error(validationError);
-      return;
-    }
+  const save: () => Promise<void> = useCallback(async () => {
+    if (validationError) return;
     setSaving(true);
     try {
       const payload: Array<{
@@ -167,13 +164,14 @@ export function CatalogFormTab({ detail, onSaved }: {
         method: 'PUT',
         body: JSON.stringify({ variants: payload }),
       });
-      toast.success('Form variants saved');
+      toastSaved('Form variants');
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      toastError("Couldn't save form variants", { error: err, retry: () => void save() });
     } finally {
       setSaving(false);
     }
+    // `save` referenced from retry — stable enough; deps are the inputs.
   }, [defaultDraft, conditional, detail.id, onSaved, validationError]);
 
   const schemaOptions = schemas ?? [];

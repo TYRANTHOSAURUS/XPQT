@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { toast } from 'sonner';
+import { toastError } from '@/lib/toast';
 import { useUpdateSpace, type Space } from '@/api/spaces';
 
 interface Props { space: Space }
@@ -23,7 +23,7 @@ export function SpaceMetadataStrip({ space }: Props) {
     try {
       await update.mutateAsync({ capacity: next });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save capacity');
+      toastError("Couldn't save capacity", { error: err });
       setCapacityDraft(space.capacity?.toString() ?? '');
     }
   };
@@ -32,7 +32,7 @@ export function SpaceMetadataStrip({ space }: Props) {
     try {
       await update.mutateAsync({ reservable: v });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to update reservable');
+      toastError("Couldn't update reservable", { error: err, retry: () => toggleReservable(v) });
     }
   };
 

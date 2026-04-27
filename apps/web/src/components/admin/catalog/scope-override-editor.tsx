@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
 import {
   Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
@@ -187,11 +187,15 @@ export function ScopeOverrideEditor({
         method: 'PUT',
         body: JSON.stringify({ overrides }),
       });
-      toast.success(editing ? 'Override updated' : 'Override added');
+      if (editing) {
+        toastUpdated('Override');
+      } else {
+        toastSuccess('Override added');
+      }
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      toastError("Couldn't save override", { error: err, retry: save });
     } finally {
       setSaving(false);
     }
@@ -209,11 +213,11 @@ export function ScopeOverrideEditor({
         method: 'PUT',
         body: JSON.stringify({ overrides }),
       });
-      toast.success('Override removed');
+      toastRemoved('Override');
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Remove failed');
+      toastError("Couldn't remove override", { error: err, retry: remove });
     } finally {
       setSaving(false);
     }

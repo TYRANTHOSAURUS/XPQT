@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
 import { Building2, Layers, Globe2, Tag, ChevronRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -137,10 +137,8 @@ function RuleDetailBody({ rule, onDeleted }: RuleDetailBodyProps) {
     opts: { silent?: boolean } = {},
   ) => {
     update.mutate(patch as Record<string, unknown>, {
-      onSuccess: () => {
-        if (!opts.silent) toast.success('Saved');
-      },
-      onError: (err) => toast.error(err.message || 'Save failed'),
+      onSuccess: () => toastSaved('Rule', { silent: opts.silent }),
+      onError: (err) => toastError("Couldn't save rule", { error: err, retry: () => save(patch, opts) }),
     });
   };
 
@@ -704,7 +702,7 @@ function DangerGroup({
         destructive
         onConfirm={async () => {
           await del.mutateAsync(rule.id);
-          toast.success('Rule deleted');
+          toastRemoved('Rule', { verb: 'deleted' });
           onDeleted();
         }}
       />

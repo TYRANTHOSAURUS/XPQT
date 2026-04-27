@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, Plus, SlidersHorizontal, Info } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import type { RequestTypeDetail } from './catalog-service-panel';
 import { ScopeOverrideEditor, type ScopeOverrideRow } from './scope-override-editor';
@@ -185,7 +185,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
       onSaved();
       refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to update');
+      toastError("Couldn't update coverage", { error: e });
     } finally {
       setSaving(null);
     }
@@ -214,7 +214,7 @@ export function CatalogCoverageTab({ detail, onSaved }: {
       onSaved();
       refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed');
+      toastError("Couldn't toggle tenant coverage", { error: e, retry: toggleTenant });
     } finally {
       setSaving(null);
     }

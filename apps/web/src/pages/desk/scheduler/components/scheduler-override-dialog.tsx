@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { ShieldAlert } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
-import { ApiError } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
 
 interface Props {
@@ -74,13 +73,11 @@ export function SchedulerOverrideDialog({
         source: 'desk',
         override_reason: reason.trim(),
       });
-      toast.success(`Override booked: ${room.name}`);
+      toastSuccess(`Override booked: ${room.name}`);
       onCreated?.();
       onOpenChange(false);
     } catch (e) {
-      const message =
-        e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Override failed';
-      toast.error(message);
+      toastError(`Couldn't book override for ${room.name}`, { error: e, retry: submit });
     }
   };
 

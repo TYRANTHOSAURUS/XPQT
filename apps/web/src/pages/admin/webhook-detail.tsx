@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
 import { AlertTriangle, Copy, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -94,9 +94,9 @@ function WebhookDetailBody({ webhook, onDeleted }: WebhookDetailBodyProps) {
       onSuccess: (res) => {
         const next = (res as unknown as { validation?: { problems?: ValidationProblem[] } }).validation?.problems ?? [];
         setProblems(next);
-        if (!opts.silent) toast.success('Saved');
+        toastSaved('Webhook', { silent: opts.silent });
       },
-      onError: (err) => toast.error(err.message || 'Save failed'),
+      onError: (err) => toastError("Couldn't save webhook", { error: err, retry: () => save(patch, opts) }),
     });
   };
 
@@ -478,7 +478,7 @@ function AuthGroup({
               variant="outline"
               onClick={() => {
                 if (rotatedKey) navigator.clipboard.writeText(rotatedKey);
-                toast.success('API key copied');
+                toastSuccess('API key copied');
               }}
             >
               <Copy className="size-4" /> Copy
@@ -530,7 +530,7 @@ function DangerGroup({ webhookId, onDeleted }: { webhookId: string; onDeleted: (
         destructive
         onConfirm={async () => {
           await del.mutateAsync(webhookId);
-          toast.success('Webhook deleted');
+          toastRemoved('Webhook', { verb: 'deleted' });
           onDeleted();
         }}
       />

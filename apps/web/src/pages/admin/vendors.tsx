@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Plus, Pencil, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVendors, vendorKeys } from '@/api/vendors';
 import { useTeams } from '@/api/teams';
@@ -69,6 +69,7 @@ interface ServiceArea {
 
 export function VendorsPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data: vendors, isPending: loading } = useVendors() as { data: Vendor[] | undefined; isPending: boolean };
   const refetch = () => qc.invalidateQueries({ queryKey: vendorKeys.all });
   const { data: teams } = useTeams() as { data: Team[] | undefined };
@@ -133,18 +134,20 @@ export function VendorsPage() {
       default_sla_policy_id: defaultSlaPolicyId || null,
     };
     try {
+      let savedId = editId;
       if (editId) {
         await apiFetch(`/vendors/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Vendor updated');
+        toastUpdated('Vendor');
       } else {
-        await apiFetch('/vendors', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Vendor created');
+        const created = await apiFetch<{ id: string }>('/vendors', { method: 'POST', body: JSON.stringify(body) });
+        savedId = created.id;
+        toastCreated('Vendor', { onView: () => savedId && navigate(`/admin/vendors/${savedId}`) });
       }
       resetForm();
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save vendor');
+      toastError("Couldn't save vendor", { error: err, retry: handleSave });
     }
   };
 
@@ -178,23 +181,37 @@ export function VendorsPage() {
           default_priority: Number(newAreaPriority) || 100,
         }),
       });
-      toast.success('Service area added');
+      toastSuccess('Service area added');
       setNewAreaSpaceId('');
       setNewAreaPriority('100');
       await loadAreas(editId);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add service area');
+      toastError("Couldn't add service area", { error: err, retry: handleAddArea });
     }
   };
 
   const handleRemoveArea = async (areaId: string) => {
     if (!editId) return;
+    const restoredArea = serviceAreas.find((a) => a.id === areaId);
     try {
       await apiFetch(`/vendors/${editId}/service-areas/${areaId}`, { method: 'DELETE' });
-      toast.success('Service area removed');
+      toastRemoved('Service area', {
+        onUndo: restoredArea
+          ? () => {
+              void apiFetch(`/vendors/${editId}/service-areas`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  space_id: restoredArea.space_id,
+                  service_type: restoredArea.service_type,
+                  default_priority: restoredArea.default_priority,
+                }),
+              }).then(() => loadAreas(editId));
+            }
+          : undefined,
+      });
       await loadAreas(editId);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove service area');
+      toastError("Couldn't remove service area", { error: err, retry: () => handleRemoveArea(areaId) });
     }
   };
 

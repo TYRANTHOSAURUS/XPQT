@@ -16,7 +16,7 @@ import { SpaceSelect } from '@/components/space-select';
 import { useCreateStandaloneOrder } from '@/api/orders';
 import { ServiceSection, type ServiceSelection } from '@/pages/portal/book-room/components/service-section';
 import { formatCurrency } from '@/lib/format';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 
 /**
  * `/portal/order` — services-only order flow. No reservation; the bundle
@@ -94,11 +94,12 @@ export function PortalOrderPage() {
           quantity: s.quantity,
         })),
       });
-      toast.success('Order placed');
+      toastSuccess('Order placed', {
+        action: { label: 'View requests', onClick: () => navigate('/portal/requests') },
+      });
       navigate('/portal/requests');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to place order';
-      toast.error(message);
+      toastError("Couldn't place order", { error: err, retry: onSubmit });
     }
   };
 

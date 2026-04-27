@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -48,12 +48,12 @@ export function DomainFallbacksEditor({ compact = false }: Props) {
         method: 'POST',
         body: JSON.stringify({ domain: domain.trim(), parent_domain: parentDomain.trim() }),
       });
-      toast.success('Domain parent added');
+      toastSuccess('Domain parent added');
       setDialogOpen(false);
       reset();
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add');
+      toastError("Couldn't add domain parent", { error: err, retry: handleCreate });
     }
   }
 
@@ -61,10 +61,10 @@ export function DomainFallbacksEditor({ compact = false }: Props) {
     if (!confirm(`Remove parent relationship "${row.domain} → ${row.parent_domain}"?`)) return;
     try {
       await apiFetch(`/domain-parents/${row.id}`, { method: 'DELETE' });
-      toast.success('Relationship removed');
+      toastRemoved('Relationship');
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete');
+      toastError("Couldn't remove relationship", { error: err, retry: () => handleDelete(row) });
     }
   }
 

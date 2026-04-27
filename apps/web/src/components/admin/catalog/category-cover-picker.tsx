@@ -4,7 +4,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api';
 import { Plus } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 
 const PLATFORM_DEFAULTS: { token: string; className: string; label: string }[] = [
@@ -58,10 +58,7 @@ export function CategoryCoverPicker({
   const [uploading, setUploading] = useState(false);
 
   const handleUpload = async (file: File) => {
-    if (!categoryId) {
-      toast.error('Save the category first, then upload a cover.');
-      return;
-    }
+    if (!categoryId) return;
     setUploading(true);
     try {
       const form = new FormData();
@@ -71,9 +68,9 @@ export function CategoryCoverPicker({
         { method: 'POST', body: form },
       );
       onChange({ cover_source: 'image', cover_image_url: res.cover_image_url });
-      toast.success('Cover uploaded');
+      toastSuccess('Cover uploaded');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Upload failed');
+      toastError("Couldn't upload cover", { error: err, retry: () => handleUpload(file) });
     } finally {
       setUploading(false);
     }
@@ -123,10 +120,11 @@ export function CategoryCoverPicker({
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || !categoryId}
+              title={!categoryId ? 'Save the category first to upload a custom cover.' : undefined}
               className={cn(
                 'aspect-[2/1] flex items-center justify-center rounded-md border-2 border-dashed',
-                'text-muted-foreground hover:bg-muted/50',
+                'text-muted-foreground hover:bg-muted/50 disabled:opacity-50 disabled:cursor-not-allowed',
               )}
               aria-label="Upload custom cover"
             >

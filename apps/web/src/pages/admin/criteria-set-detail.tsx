@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
 import { ArrowRight, RefreshCw } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -73,10 +73,8 @@ function CriteriaSetDetailBody({ criteriaSet, onDeleted }: BodyProps) {
 
   const save = (patch: Partial<CriteriaSetUpsertBody>, opts: { silent?: boolean } = {}) => {
     update.mutate(patch, {
-      onSuccess: () => {
-        if (!opts.silent) toast.success('Saved');
-      },
-      onError: (err) => toast.error(err.message || 'Save failed'),
+      onSuccess: () => toastSaved('Criteria set', { silent: opts.silent }),
+      onError: (err) => toastError("Couldn't save criteria set", { error: err, retry: () => save(patch, opts) }),
     });
   };
 
@@ -212,7 +210,7 @@ function PreviewGroup({ criteriaSet }: { criteriaSet: CriteriaSet }) {
   const run = () => {
     preview.mutate(criteriaSet.expression, {
       onSuccess: (res) => setResult(res),
-      onError: (err) => toast.error(err.message || 'Preview failed'),
+      onError: (err) => toastError("Couldn't preview criteria", { error: err, retry: run }),
     });
   };
 
@@ -328,7 +326,7 @@ function DangerGroup({ criteriaSetId, name, onDeleted }: DangerProps) {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(criteriaSetId);
-          toast.success('Criteria set deleted');
+          toastRemoved('Criteria set', { verb: 'deleted' });
           onDeleted();
         }}
       />

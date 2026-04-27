@@ -32,7 +32,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
-import { toast } from 'sonner';
+import { toastError } from '@/lib/toast';
 
 export interface CatalogRequestType {
   id: string;
@@ -375,7 +375,9 @@ export function CatalogTreeEditor({
 
     if (activeItem.kind === 'request_type') {
       if (newParentId === null) {
-        toast.error('Request types must live under a category.');
+        toastError("Couldn't move request type", {
+          description: 'Request types must live under a category.',
+        });
         return;
       }
       const siblingTypes = reorderedFlat.filter(
@@ -389,7 +391,7 @@ export function CatalogTreeEditor({
       try {
         await onRequestTypeMove(updates);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to move request type.');
+        toastError("Couldn't move request type", { error: err });
       }
       return;
     }
@@ -406,7 +408,9 @@ export function CatalogTreeEditor({
     const newDepth = newParentDepth + 1;
 
     if (newDepth + subtreeDepth > MAX_CATEGORY_DEPTH) {
-      toast.error('Move blocked: hierarchy is capped at 3 levels.');
+      toastError("Couldn't move category", {
+        description: `The catalog hierarchy is capped at ${MAX_CATEGORY_DEPTH} levels.`,
+      });
       return;
     }
 
@@ -422,7 +426,7 @@ export function CatalogTreeEditor({
     try {
       await onCategoryMove(updates);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to move category.');
+      toastError("Couldn't move category", { error: err });
     }
   };
 

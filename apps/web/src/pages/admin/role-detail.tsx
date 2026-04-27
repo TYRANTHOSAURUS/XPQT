@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastSaved } from '@/lib/toast';
 import { AlertTriangle, ChevronRight, Search, Shield, Users as UsersIcon, Info } from 'lucide-react';
 import { expandGranted, normalisePermission, type ModuleMeta } from '@prequest/shared';
 import {
@@ -339,10 +339,7 @@ export function RoleDetailPage() {
   }, [rolesListQuery.data]);
 
   const onSave = async () => {
-    if (!name.trim()) {
-      toast.error('Role name is required');
-      return;
-    }
+    if (!name.trim()) return;
     if (hasDanger) {
       const ok = window.confirm(
         'This role includes destructive or scope-bypassing permissions. Confirm save?',
@@ -361,7 +358,7 @@ export function RoleDetailPage() {
     try {
       if (isNew) {
         const created = await createMut.mutateAsync(body);
-        toast.success('Role created');
+        toastCreated('Role', { onView: () => navigate(`/admin/user-roles/${created.id}`) });
         navigate(`/admin/user-roles/${created.id}`);
       } else {
         await updateMut.mutateAsync(body);
@@ -373,11 +370,10 @@ export function RoleDetailPage() {
           active,
           permissions: new Set(permissions),
         });
-        toast.success('Role saved');
+        toastSaved('Role');
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Save failed';
-      toast.error(message);
+      toastError(isNew ? "Couldn't create role" : "Couldn't save role", { error: err, retry: onSave });
     }
   };
 

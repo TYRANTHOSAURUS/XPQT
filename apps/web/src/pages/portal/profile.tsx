@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import {
   Building2,
   Camera,
@@ -139,19 +139,21 @@ function ProfileHero({
     event.target.value = '';
     if (!file) return;
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      toast.error('Please choose a JPG, PNG, or WebP image.');
+      toastError('Unsupported image type', {
+        description: 'Choose a JPG, PNG, or WebP image.',
+      });
       return;
     }
     if (file.size > 2 * 1024 * 1024) {
-      toast.error('Image is too large — keep it under 2MB.');
+      toastError('Image is too large', { description: 'Keep it under 2 MB.' });
       return;
     }
     setBusy(true);
     try {
       await uploadAvatar(file);
-      toast.success('Profile photo updated');
+      toastSuccess('Profile photo updated');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to upload photo');
+      toastError("Couldn't upload photo", { error: e });
     } finally {
       setBusy(false);
     }
@@ -161,9 +163,9 @@ function ProfileHero({
     setBusy(true);
     try {
       await removeAvatar();
-      toast.success('Photo removed');
+      toastRemoved('Photo');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to remove photo');
+      toastError("Couldn't remove photo", { error: e });
     } finally {
       setBusy(false);
     }
@@ -283,7 +285,7 @@ function PhoneRow({ phone }: { phone: string }) {
   useDebouncedSave(value, (next) => {
     if (next === phone) return;
     void updateProfile({ phone: next })
-      .catch((e) => toast.error(e instanceof Error ? e.message : 'Failed to save phone'));
+      .catch((e) => toastError("Couldn't save phone", { error: e }));
   });
 
   return (
@@ -323,9 +325,9 @@ function DefaultLocationRow({
     setBusy(true);
     try {
       await updateProfile({ default_location_id: spaceId });
-      toast.success('Default location updated');
+      toastSuccess('Default location updated');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to update location');
+      toastError("Couldn't update location", { error: e });
     } finally {
       setBusy(false);
     }

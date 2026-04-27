@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, UserCog, Shield, Search } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -123,7 +123,7 @@ export function UsersPage() {
       resetCreate();
       setCreateOpen(false);
       refetchUsers();
-      toast.success('User created');
+      toastCreated('User');
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create user');
     }

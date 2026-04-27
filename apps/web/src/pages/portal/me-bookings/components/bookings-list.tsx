@@ -10,7 +10,7 @@ import {
 } from '@/api/room-booking';
 import type { MyReservationItem } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { BookingRow } from './booking-row';
 import { BookingDayGroup } from './booking-day-group';
 import { BookingNextUpCard } from './booking-next-up-card';
@@ -55,18 +55,18 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
   const handleCheckIn = async (id: string) => {
     try {
       await checkIn.mutateAsync(id);
-      toast.success('Checked in');
+      toastSuccess('Checked in');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Check-in failed');
+      toastError("Couldn't check in", { error: e, retry: () => handleCheckIn(id) });
     }
   };
 
   const handleRestore = async (id: string) => {
     try {
       await restore.mutateAsync(id);
-      toast.success('Booking restored');
+      toastSuccess('Booking restored');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Restore failed');
+      toastError("Couldn't restore booking", { error: e, retry: () => handleRestore(id) });
     }
   };
 

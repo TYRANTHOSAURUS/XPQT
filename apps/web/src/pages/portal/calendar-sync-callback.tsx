@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastSuccess } from '@/lib/toast';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
@@ -46,7 +46,7 @@ export function PortalCalendarSyncCallbackPage() {
     void finish
       .mutateAsync({ code, state })
       .then(() => {
-        toast.success('Outlook calendar connected');
+        toastSuccess('Outlook calendar connected');
         navigate('/portal/me/calendar-sync', { replace: true });
       })
       .catch((err: Error) => {

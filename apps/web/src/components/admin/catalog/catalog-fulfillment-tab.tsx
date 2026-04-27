@@ -16,7 +16,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { toast } from 'sonner';
+import { toastError, toastSaved } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { useQuery, queryOptions } from '@tanstack/react-query';
 import { useTeams } from '@/api/teams';
@@ -169,10 +169,10 @@ export function CatalogFulfillmentTab({
         method: 'PATCH',
         body: JSON.stringify(rtBody),
       });
-      toast.success('Fulfillment saved');
+      toastSaved('Fulfillment');
       onSaved();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
+      toastError("Couldn't save fulfillment", { error: e, retry: save });
     } finally {
       setSaving(false);
     }

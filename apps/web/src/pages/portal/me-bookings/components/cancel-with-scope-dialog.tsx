@@ -20,7 +20,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
 import { useCancelBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 
 type Scope = 'this' | 'this_and_following' | 'series';
 
@@ -77,11 +77,11 @@ export function CancelWithScopeDialog({
         scope: isRecurring ? scope : undefined,
         reason: reason.trim() || undefined,
       });
-      toast.success('Booking cancelled');
+      toastRemoved('Booking', { verb: 'cancelled' });
       onCancelled?.();
       onOpenChange(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Cancel failed');
+      toastError("Couldn't cancel booking", { error: e, retry: submit });
     }
   };
 

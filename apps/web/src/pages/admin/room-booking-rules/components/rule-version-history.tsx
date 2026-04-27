@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { History, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
@@ -134,9 +134,9 @@ function VersionRow({
         onConfirm={async () => {
           try {
             await restore.mutateAsync(version.version_number);
-            toast.success(`Restored v${version.version_number}`);
+            toastSuccess(`Restored v${version.version_number}`);
           } catch (err) {
-            toast.error((err as Error).message || 'Restore failed');
+            toastError("Couldn't restore version", { error: err });
             throw err;
           }
         }}

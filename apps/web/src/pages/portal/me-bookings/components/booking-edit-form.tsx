@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -15,7 +15,7 @@ import {
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { useEditBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toast } from 'sonner';
+import { toastError, toastUpdated } from '@/lib/toast';
 
 interface Props {
   reservation: Reservation;
@@ -46,12 +46,14 @@ export function BookingEditForm({ reservation, onClose }: Props) {
 
   const edit = useEditBooking();
 
+  const startIso = useMemo(() => {
+    const iso = date && startTime ? new Date(`${date}T${startTime}:00`).toISOString() : '';
+    return Number.isFinite(new Date(iso).getTime()) ? iso : '';
+  }, [date, startTime]);
+  const canSubmit = startIso.length > 0 && !edit.isPending;
+
   const submit = async () => {
-    const startIso = new Date(`${date}T${startTime}:00`).toISOString();
-    if (!Number.isFinite(new Date(startIso).getTime())) {
-      toast.error('Pick a valid date and time');
-      return;
-    }
+    if (!canSubmit) return;
     const endIso = new Date(
       new Date(startIso).getTime() + durationMinutes * 60_000,
     ).toISOString();
@@ -65,10 +67,10 @@ export function BookingEditForm({ reservation, onClose }: Props) {
           attendee_count: attendeeCount,
         },
       });
-      toast.success('Booking updated');
+      toastUpdated('Booking');
       onClose();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Update failed');
+      toastError("Couldn't update booking", { error: e, retry: submit });
     }
   };
 
@@ -123,7 +125,7 @@ export function BookingEditForm({ reservation, onClose }: Props) {
         <Button variant="outline" onClick={onClose} disabled={edit.isPending}>
           Cancel
         </Button>
-        <Button onClick={submit} disabled={edit.isPending}>
+        <Button onClick={submit} disabled={!canSubmit}>
           {edit.isPending ? 'Saving…' : 'Save changes'}
         </Button>
       </div>

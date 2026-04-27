@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/field';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Ban } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastRemoved } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDelegations, delegationKeys } from '@/api/delegations';
 import { apiFetch } from '@/lib/api';
@@ -110,9 +110,9 @@ export function DelegationsPage() {
       resetForm();
       setDialogOpen(false);
       refetch();
-      toast.success('Delegation created');
+      toastCreated('Delegation');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create delegation');
+      toastError("Couldn't create delegation", { error: err, retry: handleCreate });
     }
   };
 
@@ -123,9 +123,17 @@ export function DelegationsPage() {
         body: JSON.stringify({ active: false }),
       });
       refetch();
-      toast.success('Delegation deactivated');
+      toastRemoved('Delegation', {
+        verb: 'deactivated',
+        onUndo: () => {
+          void apiFetch(`/delegations/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ active: true }),
+          }).then(refetch);
+        },
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to deactivate delegation');
+      toastError("Couldn't deactivate delegation", { error: err, retry: () => handleDeactivate(id) });
     }
   };
 

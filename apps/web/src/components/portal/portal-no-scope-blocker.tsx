@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, Building2, Mail, MapPin } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -65,16 +65,13 @@ export function PortalNoScopeBlocker() {
   }, [canSelfOnboard, fetchOptions]);
 
   const onClaim = async () => {
-    if (!spaceId) {
-      toast.error('Pick your work location first');
-      return;
-    }
+    if (!spaceId) return;
     setSubmitting(true);
     try {
       await claimDefaultLocation(spaceId);
-      toast.success('Work location set');
+      toastSuccess('Work location set');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to set work location');
+      toastError("Couldn't set your work location", { error: e, retry: onClaim });
     } finally {
       setSubmitting(false);
     }

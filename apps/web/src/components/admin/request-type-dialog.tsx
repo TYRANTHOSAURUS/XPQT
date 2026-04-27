@@ -17,7 +17,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useSlaPolicies } from '@/api/sla-policies';
@@ -165,7 +165,7 @@ export function RequestTypeDialog({
         setApprovalApproverTeamId(rt.approval_approver_team_id ?? '');
       } catch (err) {
         if (cancelled) return;
-        toast.error(err instanceof Error ? err.message : 'Failed to load request type');
+        toastError("Couldn't load request type", { error: err });
         onOpenChange(false);
       }
     })();
@@ -251,9 +251,9 @@ export function RequestTypeDialog({
             try {
               await apiFetch(`/request-types/${createdId}`, { method: 'DELETE' });
             } catch {
-              toast.error(
-                'Form schema sync failed AND rollback of the new request type failed. Check /admin/request-types for a stray row.',
-              );
+              toastError("Couldn't sync form schema and rollback failed", {
+                description: 'A stray request type may exist — check /admin/request-types.',
+              });
               throw variantErr;
             }
           }
@@ -262,7 +262,11 @@ export function RequestTypeDialog({
         }
       }
 
-      toast.success(editingId ? 'Request type updated' : 'Request type created');
+      if (editingId) {
+        toastUpdated('Request type');
+      } else {
+        toastCreated('Request type');
+      }
       // Propagate to every consumer: list pages, ticket detail, portal submit,
       // routing studio. Skipping an explicit invalidation here used to mean
       // admins had to reload to see their change (T4 staleness bug).
@@ -273,7 +277,7 @@ export function RequestTypeDialog({
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save request type');
+      toastError("Couldn't save request type", { error: err, retry: handleSave });
     } finally {
       setSaving(false);
     }

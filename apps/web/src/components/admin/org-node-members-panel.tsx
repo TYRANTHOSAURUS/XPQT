@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { PersonPicker } from '@/components/person-picker';
 import { apiFetch } from '@/lib/api';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 
 interface Member {
   id: string;
@@ -26,7 +26,7 @@ export function OrgNodeMembersPanel({ nodeId }: { nodeId: string }) {
       const rows = await apiFetch<Member[]>(`/org-nodes/${nodeId}/members`);
       setMembers(rows);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load members');
+      toastError("Couldn't load members", { error: err, retry: reload });
     } finally {
       setLoading(false);
     }
@@ -44,9 +44,9 @@ export function OrgNodeMembersPanel({ nodeId }: { nodeId: string }) {
       });
       setAddPersonId('');
       await reload();
-      toast.success('Member added');
+      toastSuccess('Member added');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add member');
+      toastError("Couldn't add member", { error: err, retry: addMember });
     } finally {
       setAdding(false);
     }
@@ -56,8 +56,16 @@ export function OrgNodeMembersPanel({ nodeId }: { nodeId: string }) {
     try {
       await apiFetch(`/org-nodes/${nodeId}/members/${personId}`, { method: 'DELETE' });
       await reload();
+      toastRemoved('Member', {
+        onUndo: () => {
+          void apiFetch(`/org-nodes/${nodeId}/members`, {
+            method: 'POST',
+            body: JSON.stringify({ person_id: personId, is_primary: true }),
+          }).then(reload);
+        },
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove member');
+      toastError("Couldn't remove member", { error: err, retry: () => removeMember(personId) });
     }
   };
 

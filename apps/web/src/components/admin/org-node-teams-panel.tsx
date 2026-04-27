@@ -1,7 +1,7 @@
 import { Wrench, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 
 interface Team { id: string; name: string; domain_scope: string | null; }
 
@@ -12,15 +12,20 @@ interface Props {
 
 export function OrgNodeTeamsPanel({ teams, onChanged }: Props) {
   const detach = async (teamId: string) => {
+    const restored = teams.find((t) => t.id === teamId);
     try {
       await apiFetch(`/teams/${teamId}`, {
         method: 'PATCH',
         body: JSON.stringify({ org_node_id: null }),
       });
       onChanged();
-      toast.success('Team detached');
+      toastRemoved(restored?.name ?? 'Team', {
+        verb: 'detached',
+        // We can't reattach without knowing the org node id this panel is for,
+        // and the parent doesn't expose it. Detach skips Undo by design here.
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to detach team');
+      toastError("Couldn't detach team", { error: err, retry: () => detach(teamId) });
     }
   };
 

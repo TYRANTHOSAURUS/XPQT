@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -67,7 +67,9 @@ export function VendorDetailPage() {
   };
 
   useEffect(() => {
-    if (upsert.error) toast.error(`Couldn't save vendor: ${upsert.error.message}`);
+    if (upsert.error) {
+      toastError("Couldn't save vendor", { error: upsert.error });
+    }
   }, [upsert.error]);
 
   useDebouncedSave(name, (v) => {
@@ -244,7 +246,7 @@ export function VendorDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(vendor.id);
-          toast.success(`${headline} deleted`);
+          toastRemoved(headline, { verb: 'deleted' });
           setConfirmDelete(false);
           navigate('/admin/vendors');
         }}

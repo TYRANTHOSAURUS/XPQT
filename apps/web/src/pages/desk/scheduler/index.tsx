@@ -1,9 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastUpdated } from '@/lib/toast';
 import { useAuth } from '@/providers/auth-provider';
-import { ApiError } from '@/lib/api';
 import { useEditBooking, type RankedRoom, type Reservation } from '@/api/room-booking';
 import { usePerson } from '@/api/persons';
 import { formatDayLabel } from '@/lib/format';
@@ -182,11 +181,12 @@ export function DeskSchedulerPage() {
           id: reservationId,
           patch: { start_at: newStartIso, end_at: newEndIso },
         });
-        toast.success('Booking updated');
+        toastUpdated('Booking');
       } catch (e) {
-        const message =
-          e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Edit failed';
-        toast.error(message);
+        toastError("Couldn't update booking", {
+          error: e,
+          retry: () => persistEdit(reservationId, newStartIso, newEndIso),
+        });
       }
     },
     [editBooking],

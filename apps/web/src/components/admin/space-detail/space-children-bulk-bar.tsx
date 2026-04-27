@@ -5,7 +5,7 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Checkbox } from '@/components/ui/checkbox';
-import { toast } from 'sonner';
+import { toast, toastError, toastSuccess } from '@/lib/toast';
 import { useBulkUpdateSpaces, type BulkUpdateResult } from '@/api/spaces';
 
 interface Props {
@@ -20,23 +20,26 @@ export function SpaceChildrenBulkBar({ selectedIds, onClear }: Props) {
 
   if (selectedIds.length === 0) return null;
 
+  const hasChange = reservable !== null;
+
   const apply = async () => {
-    const patch: { reservable?: boolean } = {};
-    if (reservable !== null) patch.reservable = reservable;
-    if (Object.keys(patch).length === 0) {
-      toast.error('Pick at least one change to apply');
-      return;
-    }
+    if (!hasChange) return;
+    const patch: { reservable?: boolean } = { reservable: reservable! };
     try {
       const res: BulkUpdateResult = await bulk.mutateAsync({ ids: selectedIds, patch });
       const okCount = res.results.filter((r) => r.ok).length;
       const failed = res.results.filter((r) => !r.ok);
-      if (failed.length === 0) toast.success(`Updated ${okCount} spaces`);
-      else toast.warning(`Updated ${okCount}; ${failed.length} failed: ${failed.map((f) => f.error).join(', ')}`);
+      if (failed.length === 0) {
+        toastSuccess(`Updated ${okCount} space${okCount === 1 ? '' : 's'}`);
+      } else {
+        toast.warning(`Updated ${okCount} of ${res.results.length}`, {
+          description: `${failed.length} failed: ${failed.map((f) => f.error).slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`,
+        });
+      }
       setDialogOpen(false);
       onClear();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Bulk update failed');
+      toastError("Couldn't apply bulk update", { error: err, retry: apply });
     }
   };
 
@@ -67,7 +70,7 @@ export function SpaceChildrenBulkBar({ selectedIds, onClear }: Props) {
           </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={apply} disabled={bulk.isPending}>Apply</Button>
+            <Button onClick={apply} disabled={bulk.isPending || !hasChange}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

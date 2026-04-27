@@ -126,6 +126,21 @@ Every form — dialog, sheet, drawer, page-level, inspector panel — must be bu
 
 Before writing any new form or touching an existing one, confirm it follows the above. If you find a form that doesn't, migrate it rather than copying its pattern.
 
+### Toasts / notifications (mandatory)
+
+Every toast goes through the helpers in `apps/web/src/lib/toast.ts` — never import from `'sonner'` directly in feature code. The wrapper enforces voice (`Couldn't <verb> <thing>` for errors, `<Thing> <past-verb>` for success), retry on errors, View on creates, and Undo on reversible removes.
+
+Quick reference:
+- `toastCreated(entity, { onView })` — new entity; wire `onView` to the detail route.
+- `toastSaved(entity, { silent })` — auto-save flows pass `silent: true`.
+- `toastUpdated(entity)` — committed state change.
+- `toastRemoved(entity, { verb, onUndo })` — pick the closest verb (`removed | deleted | detached | revoked | archived | deactivated | unpublished | cancelled`); wire `onUndo` unless the op is genuinely irreversible.
+- `toastError(title, { error, retry })` — title vs description split is automatic; pass `retry` for any re-runnable mutation.
+- `toastSuccess(title, …)` — generic success that doesn't fit an entity (`Reply sent`, `API key copied`).
+- `toast` (re-exported) — only for `toast.message` / `toast.warning` one-offs.
+
+**Form validation is NOT a toast** — disable the submit button or use `<FieldError>` near the offender. See [`docs/toast-conventions.md`](docs/toast-conventions.md) for the full rules, anti-patterns, and recipes. Read it before adding any new toast.
+
 ### Settings page layout (mandatory)
 
 Every admin / settings-style page is built with `SettingsPageShell` + `SettingsPageHeader` + `SettingsSection` + `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx`. Widths are a fixed enum — do not invent new ones.

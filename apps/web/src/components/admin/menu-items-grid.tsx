@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Percent, Trash2, Plus, Clipboard, X, Euro } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast, toastError, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -77,7 +77,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to update item');
+      toastError("Couldn't update item", { error: err, retry: () => updateItem(itemId, patch) });
     }
   };
 
@@ -91,17 +91,14 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove item');
+      toastError("Couldn't remove item", { error: err, retry: () => removeItem(itemId) });
     }
   };
 
   const applyBulk = async () => {
     const pct = bulkPct ? Number(bulkPct) : 0;
     const flat = bulkFlat ? Number(bulkFlat) : 0;
-    if (!pct && !flat) {
-      toast.error('Enter a % or flat amount');
-      return;
-    }
+    if (!pct && !flat) return;
     try {
       await apiFetch(`/catalog-menus/${menuId}/items/bulk-update`, {
         method: 'POST',
@@ -111,13 +108,13 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
           price_adjustment_flat: flat || null,
         }),
       });
-      toast.success(`Updated ${selected.size} item${selected.size === 1 ? '' : 's'}`);
+      toastSuccess(`Updated ${selected.size} item${selected.size === 1 ? '' : 's'}`);
       setBulkPct('');
       setBulkFlat('');
       setSelected(new Set());
       onChange();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Bulk update failed');
+      toastError("Couldn't apply bulk update", { error: err, retry: applyBulk });
     }
   };
 
@@ -128,11 +125,11 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
         method: 'POST',
         body: JSON.stringify({ item_ids: Array.from(selected) }),
       });
-      toast.success(`Removed ${selected.size} item${selected.size === 1 ? '' : 's'}`);
+      toastSuccess(`Removed ${selected.size} item${selected.size === 1 ? '' : 's'}`);
       setSelected(new Set());
       onChange();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Bulk delete failed');
+      toastError("Couldn't bulk-delete items", { error: err, retry: bulkDelete });
     }
   };
 
@@ -148,7 +145,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add item');
+      toastError("Couldn't add item", { error: err, retry: () => addItem(catalogItem) });
     }
   };
 
@@ -438,11 +435,11 @@ function PasteItemsDialog({
         }
       }
 
-      if (created) toast.success(`Imported ${created} item${created === 1 ? '' : 's'}`);
+      if (created) toastSuccess(`Imported ${created} item${created === 1 ? '' : 's'}`);
       if (skipped.length) {
-        toast.warning(
-          `Skipped ${skipped.length}: ${skipped.slice(0, 3).map((s) => `${s.name} (${s.reason})`).join(', ')}${skipped.length > 3 ? '…' : ''}`,
-        );
+        toast.warning(`Skipped ${skipped.length} item${skipped.length === 1 ? '' : 's'}`, {
+          description: `${skipped.slice(0, 3).map((s) => `${s.name} (${s.reason})`).join(', ')}${skipped.length > 3 ? '…' : ''}`,
+        });
       }
       setRaw('');
       onImported();

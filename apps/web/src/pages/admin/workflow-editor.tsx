@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ReactFlowProvider } from 'reactflow';
-import { toast } from 'sonner';
+import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
 import { useWorkflow, useWorkflowMutations } from '@/hooks/use-workflow';
 import { useGraphStore } from '@/components/workflow-editor/graph-store';
 import { Canvas } from '@/components/workflow-editor/canvas';
@@ -73,9 +73,9 @@ export function WorkflowEditorPage() {
     try {
       await saveGraph(toJSON());
       markSaved();
-      toast.success('Saved');
+      toastSaved('Workflow');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
+      toastError("Couldn't save workflow", { error: e, retry: handleSave });
     } finally {
       setSaving(false);
     }
@@ -88,10 +88,10 @@ export function WorkflowEditorPage() {
     try {
       await saveGraph(toJSON());
       await publish();
-      toast.success('Published');
+      toastSuccess('Workflow published');
       refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Publish failed');
+      toastError("Couldn't publish workflow", { error: e, retry: handlePublish });
     } finally {
       setSaving(false);
     }
@@ -100,10 +100,10 @@ export function WorkflowEditorPage() {
   const doUnpublish = async () => {
     try {
       await unpublish();
-      toast.success('Unpublished');
+      toastSuccess('Workflow unpublished');
       refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Unpublish failed');
+      toastError("Couldn't unpublish workflow", { error: e, retry: doUnpublish });
     }
   };
 

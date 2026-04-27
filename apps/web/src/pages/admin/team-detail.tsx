@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -46,7 +46,9 @@ export function TeamDetailPage() {
   }, [teamId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (upsert.error) toast.error(`Couldn't save team: ${upsert.error.message}`);
+    if (upsert.error) {
+      toastError("Couldn't save team", { error: upsert.error });
+    }
   }, [upsert.error]);
 
   useDebouncedSave(name, (v) => {
@@ -186,7 +188,7 @@ export function TeamDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(team.id);
-          toast.success(`${headline} deleted`);
+          toastRemoved(headline, { verb: 'deleted' });
           setConfirmDelete(false);
           navigate('/admin/teams');
         }}

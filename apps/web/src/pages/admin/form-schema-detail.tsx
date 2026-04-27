@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown, ChevronUp, Eye, Link2, Plus, Trash2, Pencil,
@@ -179,9 +179,9 @@ function FormSchemaDetailBody({ schema }: BodyProps) {
       });
       await apiFetch(`/config-entities/${schema.id}/publish`, { method: 'POST' });
       await qc.invalidateQueries({ queryKey: configEntityKeys.all });
-      toast.success('Form schema published');
+      toastSuccess('Form schema published');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save form schema');
+      toastError("Couldn't save form schema", { error: err });
     } finally {
       setSaving(false);
     }

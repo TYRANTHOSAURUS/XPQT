@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toast, toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCatalogTree, catalogKeys } from '@/api/catalog';
 import { apiFetch } from '@/lib/api';
@@ -112,25 +112,27 @@ export function CatalogHierarchyPage() {
           method: 'PATCH',
           body: JSON.stringify(body),
         });
-        toast.success('Category updated');
+        toastUpdated('Category');
       } else {
         await apiFetch('/service-catalog/categories', {
           method: 'POST',
           body: JSON.stringify(body),
         });
-        toast.success('Category created');
+        toastCreated('Category');
       }
       setDialogOpen(false);
       setForm(emptyForm);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save category');
+      toastError("Couldn't save category", { error: err, retry: handleSave });
     }
   };
 
   const handleDelete = async (item: FlatItem) => {
     if (item.kind === 'request_type') {
-      toast.info('Delete request types from the Request Types page.');
+      toast.message('Request types are deleted from their own page', {
+        action: { label: 'Open page', onClick: () => { window.location.href = '/admin/request-types'; } },
+      });
       return;
     }
     if (!confirm(`Delete category "${item.name}"? Its children and request types will be unparented.`)) {
@@ -138,11 +140,11 @@ export function CatalogHierarchyPage() {
     }
     try {
       await apiFetch(`/service-catalog/categories/${item.id}`, { method: 'DELETE' });
-      toast.success('Category deleted');
+      toastRemoved(item.name, { verb: 'deleted' });
       if (selectedRtId && !tree) setSelectedRtId(null);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete category');
+      toastError("Couldn't delete category", { error: err, retry: () => handleDelete(item) });
     }
   };
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -56,10 +56,12 @@ export function RoutingModeToggle() {
         method: 'PATCH',
         body: JSON.stringify({ mode: next }),
       });
-      toast.success(`routing_v2_mode = ${res.mode}. Evaluator cache refreshes within ~30s.`);
+      toastSuccess(`Routing mode set to ${res.mode}`, {
+        description: 'Takes effect within 30 seconds.',
+      });
       await qc.invalidateQueries({ queryKey: routingKeys.all });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to set mode');
+      toastError("Couldn't change routing mode", { error: err, retry: () => handleChange(next) });
     } finally {
       setSaving(false);
     }

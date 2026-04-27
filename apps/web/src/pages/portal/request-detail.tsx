@@ -9,7 +9,7 @@ import { PortalRequestThread, type ThreadEvent } from '@/components/portal/porta
 import { PortalRequestSidebar } from '@/components/portal/portal-request-sidebar';
 import { derivePortalStatus } from '@/lib/portal-status';
 import { ArrowLeft } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 
 // GET /tickets/:id — joined shape from ticket.service.ts getById
 interface TicketDetail {
@@ -208,9 +208,12 @@ export function RequestDetailPage() {
               onReply={async (body) => {
                 try {
                   await reply.mutateAsync(body);
-                  toast.success('Reply sent');
+                  toastSuccess('Reply sent');
                 } catch (e) {
-                  toast.error(e instanceof Error ? e.message : 'Send failed');
+                  toastError("Couldn't send reply", {
+                    error: e,
+                    retry: () => reply.mutateAsync(body),
+                  });
                 }
               }}
             />

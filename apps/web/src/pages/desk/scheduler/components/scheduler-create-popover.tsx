@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -100,7 +100,7 @@ export function SchedulerCreatePopover({
         attendee_count: attendeeCount,
         source: 'desk',
       });
-      toast.success(`Booked ${room.name}`);
+      toastSuccess(`Booked ${room.name}`);
       onCreated?.();
       onOpenChange(false);
     } catch (e) {
@@ -110,7 +110,7 @@ export function SchedulerCreatePopover({
       // button so the operator can read why it failed without losing the
       // dialog state; the toast catches eyes that are tracking the page.
       setSubmitError(message);
-      toast.error(message);
+      toastError(`Couldn't book ${room.name}`, { error: e, retry: submit });
     }
   };
 

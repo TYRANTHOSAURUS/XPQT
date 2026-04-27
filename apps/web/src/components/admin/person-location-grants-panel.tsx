@@ -14,7 +14,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { LocationCombobox } from '@/components/location-combobox';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 
 type AuthSource = 'default' | 'grant' | 'org_grant';
 interface EffectiveAuth {
@@ -62,10 +62,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
   }, [reload]);
 
   const onAdd = async () => {
-    if (!addSpaceId) {
-      toast.error('Pick a site or building to grant');
-      return;
-    }
+    if (!addSpaceId) return;
     setAdding(true);
     try {
       await apiFetch(`/persons/${personId}/location-grants`, {
@@ -74,10 +71,10 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
       });
       setAddSpaceId(null);
       setAddNote('');
-      toast.success('Grant added');
+      toastSuccess('Grant added');
       await reload();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to add grant');
+      toastError("Couldn't add grant", { error: e, retry: onAdd });
     } finally {
       setAdding(false);
     }
@@ -86,10 +83,10 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
   const onRemove = async (grantId: string) => {
     try {
       await apiFetch(`/persons/${personId}/location-grants/${grantId}`, { method: 'DELETE' });
-      toast.success('Grant revoked');
+      toastRemoved('Grant', { verb: 'revoked' });
       await reload();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to revoke grant');
+      toastError("Couldn't revoke grant", { error: e, retry: () => onRemove(grantId) });
     }
   };
 

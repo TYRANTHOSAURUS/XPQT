@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastCreated, toastError } from '@/lib/toast';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -25,12 +25,10 @@ export function OrganisationCreatePage() {
   const [description, setDescription] = useState('');
   const [parentId, setParentId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const canSubmit = name.trim().length > 0 && !submitting;
 
   const submit = async () => {
-    if (!name.trim()) {
-      toast.error('Name is required');
-      return;
-    }
+    if (!canSubmit) return;
     setSubmitting(true);
     try {
       const created = await apiFetch<{ id: string }>('/org-nodes', {
@@ -42,10 +40,10 @@ export function OrganisationCreatePage() {
           parent_id: parentId,
         }),
       });
-      toast.success('Organisation created');
+      toastCreated('Organisation', { onView: () => navigate(`/admin/organisations/${created.id}`) });
       navigate(`/admin/organisations/${created.id}`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create organisation');
+      toastError("Couldn't create organisation", { error: err, retry: submit });
     } finally {
       setSubmitting(false);
     }
@@ -111,6 +109,7 @@ export function OrganisationCreatePage() {
           label: 'Create organisation',
           onClick: submit,
           loading: submitting,
+          disabled: !canSubmit,
         }}
         secondary={{ label: 'Cancel', href: '/admin/organisations' }}
       />

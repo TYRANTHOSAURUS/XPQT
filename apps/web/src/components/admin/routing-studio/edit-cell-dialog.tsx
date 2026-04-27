@@ -7,7 +7,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toast } from 'sonner';
+import { toastError, toastUpdated } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { useTeams } from '@/api/teams';
 import { useVendors } from '@/api/vendors';
@@ -78,11 +78,11 @@ export function EditCellDialog({ input, open, onOpenChange, onSaved }: Props) {
           assignee: kind === 'unset' ? null : { kind, id: targetId },
         }),
       });
-      toast.success('Coverage updated');
+      toastUpdated('Coverage');
       onSaved();
       onOpenChange(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
+      toastError("Couldn't update coverage", { error: e, retry: handleSave });
     } finally {
       setSaving(false);
     }

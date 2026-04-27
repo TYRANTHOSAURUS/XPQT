@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Sparkles } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast, toastCreated, toastError } from '@/lib/toast';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -152,7 +152,7 @@ function RuleRow({ rule }: { rule: RoomBookingRule }) {
             update.mutate(
               { active: next },
               {
-                onError: (err) => toast.error(err.message || 'Save failed'),
+                onError: (err) => toastError("Couldn't save rule", { error: err }),
               },
             )
           }
@@ -238,11 +238,11 @@ function CreateRuleDialog({ open, onOpenChange, seedTemplate }: CreateRuleDialog
       },
       {
         onSuccess: (rule) => {
-          toast.success('Rule created');
+          toastCreated('Rule', { onView: () => navigate(`/admin/room-booking-rules/${rule.id}`) });
           onOpenChange(false);
           navigate(`/admin/room-booking-rules/${rule.id}`);
         },
-        onError: (err) => toast.error(err.message || 'Could not create rule'),
+        onError: (err) => toastError("Couldn't create rule", { error: err, retry: () => handleSave(result) }),
       },
     );
   };

@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useBusinessHoursCalendars, slaPolicyKeys } from '@/api/sla-policies';
 import { apiFetch } from '@/lib/api';
@@ -144,16 +144,16 @@ export function BusinessHoursPage() {
     try {
       if (editId) {
         await apiFetch(`/business-hours/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Calendar updated');
+        toastUpdated('Calendar');
       } else {
         await apiFetch('/business-hours', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Calendar created');
+        toastCreated('Calendar');
       }
       resetForm();
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save calendar');
+      toastError("Couldn't save calendar", { error: err, retry: handleSave });
     }
   };
 

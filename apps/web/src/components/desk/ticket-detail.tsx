@@ -77,7 +77,7 @@ import {
 } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
 function formatFormValue(field: FormField | undefined, value: unknown): string {
@@ -314,7 +314,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     updateTicket.mutate(updates as UpdateTicketPayload, {
       onError: (err) => {
         const field = Object.keys(updates)[0] ?? 'field';
-        toast.error(`Failed to update ${field}: ${err.message}`);
+        toastError(`Couldn't update ${field}`, {
+          error: err,
+          retry: () => patch(updates),
+        });
       },
     });
   };
@@ -336,7 +339,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     // First-time assignment — silent PATCH, no routing_decisions audit needed.
     if (target.previousLabel === null) {
       updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
-        onError: (err) => toast.error(`Failed to assign ${target.kind}: ${err.message}`),
+        onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
+          error: err,
+          retry: () => updateAssignment(target),
+        }),
       });
       return;
     }
@@ -354,7 +360,12 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
         reason,
         actorPersonId: person?.id,
       },
-      { onError: (err) => toast.error(`Failed to reassign ${target.kind}: ${err.message}`) },
+      {
+        onError: (err) => toastError(`Couldn't reassign ${target.kind}`, {
+          error: err,
+          retry: () => updateAssignment(target),
+        }),
+      },
     );
   };
 
@@ -372,9 +383,12 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
           setAttachmentFiles([]);
           if (attachmentInputRef.current) attachmentInputRef.current.value = '';
           closeMentionMenu();
-          toast.success(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
+          toastSuccess(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
         },
-        onError: (err) => toast.error(err.message),
+        onError: (err) => toastError(
+          commentVisibility === 'internal' ? "Couldn't add note" : "Couldn't send reply",
+          { error: err, retry: handleSubmitComment },
+        ),
       },
     );
   };

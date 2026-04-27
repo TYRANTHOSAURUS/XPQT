@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, MousePointerClick } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { CatalogBasicsTab } from './catalog-basics-tab';
 import { CatalogCoverageTab } from './catalog-coverage-tab';
@@ -174,11 +174,11 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
     setDeleting(true);
     try {
       await apiFetch(`/request-types/${requestTypeId}`, { method: 'DELETE' });
-      toast.success('Service deactivated');
+      toastRemoved(detail.name, { verb: 'deactivated' });
       onSaved();
       onClose();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Delete failed');
+      toastError("Couldn't deactivate service", { error: e });
     } finally {
       setDeleting(false);
     }

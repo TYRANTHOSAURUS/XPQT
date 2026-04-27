@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -214,10 +214,10 @@ function CreateMenuDialog({
           status: 'draft',
         }),
       });
-      toast.success('Menu created');
+      toastCreated('Menu', { onView: () => onCreated(created.id) });
       onCreated(created.id);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Create failed');
+      toastError("Couldn't create menu", { error: err, retry: submit });
     } finally {
       setBusy(false);
     }

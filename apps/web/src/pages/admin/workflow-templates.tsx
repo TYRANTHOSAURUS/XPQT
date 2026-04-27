@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -79,11 +79,11 @@ export function WorkflowTemplatesPage() {
       });
       resetForm();
       setDialogOpen(false);
-      toast.success('Workflow created');
+      toastCreated('Workflow', { onView: () => navigate(`/admin/workflow-templates/${created.id}`) });
       refetch();
       navigate(`/admin/workflow-templates/${created.id}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Create failed');
+      toastError("Couldn't create workflow", { error: e, retry: handleCreate });
     }
   };
 
@@ -91,10 +91,10 @@ export function WorkflowTemplatesPage() {
     setPublishing(id);
     try {
       await apiFetch(`/workflows/${id}/publish`, { method: 'POST' });
-      toast.success('Published');
+      toastSuccess('Workflow published');
       refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Publish failed');
+      toastError("Couldn't publish workflow", { error: e, retry: () => handlePublish(id) });
     } finally {
       setPublishing(null);
     }
@@ -106,11 +106,13 @@ export function WorkflowTemplatesPage() {
         method: 'POST',
         body: JSON.stringify({}),
       });
-      toast.success('Cloned');
+      toastSuccess('Workflow cloned', {
+        action: { label: 'Open', onClick: () => navigate(`/admin/workflow-templates/${newWf.id}`) },
+      });
       refetch();
       navigate(`/admin/workflow-templates/${newWf.id}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Clone failed');
+      toastError("Couldn't clone workflow", { error: e, retry: () => handleClone(id) });
     }
   };
 

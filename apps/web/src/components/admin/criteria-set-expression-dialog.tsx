@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, Minus, Play, Plus, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -87,21 +87,15 @@ export function CriteriaSetExpressionDialog({ open, onOpenChange, value, onSave,
   const leaves = useMemo(() => countLeaves(node), [node]);
 
   const handlePreview = () => {
-    if (validationError) {
-      toast.error(validationError);
-      return;
-    }
+    if (validationError) return;
     preview.mutate(simplifyForSave(node), {
       onSuccess: (res) => setPreviewResult(res),
-      onError: (err) => toast.error(err.message || 'Preview failed'),
+      onError: (err) => toastError("Couldn't preview matches", { error: err, retry: handlePreview }),
     });
   };
 
   const handleSave = () => {
-    if (validationError) {
-      toast.error(validationError);
-      return;
-    }
+    if (validationError) return;
     onSave(simplifyForSave(node));
   };
 

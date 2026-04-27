@@ -6,7 +6,7 @@ import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet, FieldSeparator } 
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import type { SpaceType } from '@prequest/shared';
 import { useCreateSpace, useUpdateSpace, type Space } from '@/api/spaces';
 import { SpaceTypePicker } from './space-type-picker';
@@ -83,7 +83,7 @@ export function SpaceFormDialog({ open, onOpenChange, mode }: Props) {
           reservable,
           amenities: amenities.length > 0 ? amenities : undefined,
         });
-        toast.success('Space created');
+        toastCreated('Space');
       } else {
         await updateMut.mutateAsync({
           name: name.trim(),
@@ -92,11 +92,11 @@ export function SpaceFormDialog({ open, onOpenChange, mode }: Props) {
           reservable,
           amenities,
         });
-        toast.success('Space updated');
+        toastUpdated('Space');
       }
       onOpenChange(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save space');
+      toastError("Couldn't save space", { error: err, retry: handleSave });
     }
   };
 

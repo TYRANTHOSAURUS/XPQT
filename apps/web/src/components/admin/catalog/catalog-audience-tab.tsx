@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSaved } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -77,10 +77,10 @@ export function CatalogAudienceTab({ detail, onSaved }: {
         method: 'PUT',
         body: JSON.stringify({ rules: audience }),
       });
-      toast.success('Audience rules saved');
+      toastSaved('Audience rules');
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      toastError("Couldn't save audience rules", { error: err });
     } finally {
       setAudienceSaving(false);
     }
@@ -118,10 +118,10 @@ export function CatalogAudienceTab({ detail, onSaved }: {
         method: 'PUT',
         body: JSON.stringify({ rules: onBehalf }),
       });
-      toast.success('On-behalf rules saved');
+      toastSaved('On-behalf rules');
       onSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      toastError("Couldn't save on-behalf rules", { error: err });
     } finally {
       setOnBehalfSaving(false);
     }

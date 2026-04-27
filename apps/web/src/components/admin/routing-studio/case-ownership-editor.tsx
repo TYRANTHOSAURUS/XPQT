@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { CheckCircle2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -198,20 +198,15 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
     );
   }
 
+  // Validate scoped rows locally before the 4-call sequence, so we fail fast
+  // instead of partway through (e.g. entity created but version rejected).
+  const incompleteRow = scopedRows.find(
+    (r) => !r.target.team_id || !(r.match.operational_scope_ids?.[0]),
+  );
+  const canSave = !!selectedRt && !!selectedTeamId && !incompleteRow && !saving;
+
   async function handleSave() {
-    if (!selectedRt) { toast.error('Pick a request type'); return; }
-    if (!selectedTeamId) { toast.error('Pick a default team'); return; }
-
-    // Validate scoped rows locally before the 4-call sequence, so we fail fast
-    // instead of partway through (e.g. entity created but version rejected).
-    const incomplete = scopedRows.find(
-      (r) => !r.target.team_id || !(r.match.operational_scope_ids?.[0]),
-    );
-    if (incomplete) {
-      toast.error('Every scoped row needs a location and a team');
-      return;
-    }
-
+    if (!selectedRt || !selectedTeamId || incompleteRow) return;
     setSaving(true);
     try {
       let entityId = selectedRt.case_owner_policy_entity_id;
@@ -264,7 +259,7 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
       const rowSummary = normalizedRows.length > 0
         ? ` (+${normalizedRows.length} scoped row${normalizedRows.length === 1 ? '' : 's'})`
         : '';
-      toast.success(
+      toastSuccess(
         `${selectedRt.name} → ${teamsById.get(selectedTeamId)?.name ?? 'team'}${rowSummary}`,
       );
       // Keep the RT selected so admins can iterate (tweak + save again) without
@@ -272,7 +267,7 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
       // and the effect picks the new "attached" state up.
       await refetchRts();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save policy');
+      toastError("Couldn't save case-ownership policy", { error: err, retry: handleSave });
     } finally {
       setSaving(false);
     }
@@ -423,9 +418,14 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
           <FieldSeparator />
 
           <div>
-            <Button onClick={handleSave} disabled={saving || !selectedRtId || !selectedTeamId}>
+            <Button onClick={handleSave} disabled={!canSave}>
               {saving ? 'Saving…' : 'Save policy'}
             </Button>
+            {incompleteRow && (
+              <p className="mt-2 text-xs text-destructive">
+                Every scoped row needs a location and a team.
+              </p>
+            )}
           </div>
         </FieldGroup>
       </section>

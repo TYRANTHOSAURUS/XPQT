@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -61,7 +61,7 @@ export function OrganisationDetailPage() {
       setDescription(data.description ?? '');
       setParentId(data.parent_id);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load organisation');
+      toastError("Couldn't load organisation", { error: err, retry: load });
     } finally {
       setLoading(false);
     }
@@ -83,9 +83,9 @@ export function OrganisationDetailPage() {
         }),
       });
       await load();
-      toast.success('Saved');
+      toastSaved('Organisation');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save');
+      toastError("Couldn't save organisation", { error: err, retry: save });
     } finally {
       setSaving(false);
     }
@@ -98,10 +98,13 @@ export function OrganisationDetailPage() {
     }
     try {
       await apiFetch(`/org-nodes/${id}`, { method: 'DELETE' });
-      toast.success('Deleted');
+      toastRemoved('Organisation', { verb: 'deleted' });
       navigate('/admin/organisations');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Cannot delete (does it have children?)');
+      toastError("Couldn't delete organisation", {
+        error: err,
+        description: "Move or delete this organisation's children first.",
+      });
     }
   };
 

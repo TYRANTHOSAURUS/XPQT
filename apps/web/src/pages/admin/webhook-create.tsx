@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastSuccess } from '@/lib/toast';
 import { Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -31,11 +31,11 @@ export function WebhookCreatePage() {
         onSuccess: (res) => {
           setApiKey(res.api_key);
           setCreatedId(res.webhook.id);
-          toast.success('Webhook created');
+          toastCreated('Webhook', {
+            description: 'Copy the API key below — it only appears once.',
+          });
         },
-        onError: (err) => {
-          toast.error(err.message || 'Create failed');
-        },
+        onError: (err) => toastError("Couldn't create webhook", { error: err, retry: handleCreate }),
       },
     );
   };
@@ -84,7 +84,7 @@ export function WebhookCreatePage() {
               variant="outline"
               onClick={() => {
                 navigator.clipboard.writeText(apiKey);
-                toast.success('API key copied');
+                toastSuccess('API key copied');
               }}
             >
               <Copy className="size-4" /> Copy

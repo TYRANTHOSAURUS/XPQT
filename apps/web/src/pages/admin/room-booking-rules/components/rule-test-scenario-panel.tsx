@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from 'react';
 import { Play, Save } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSaved } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -74,7 +74,7 @@ export function RuleTestScenarioPanel({ ruleId: _ruleId }: RuleTestScenarioPanel
     if (!selectedScenario) return;
     runSaved.mutate(selectedScenario.id, {
       onSuccess: (res) => setResult(res),
-      onError: (err) => toast.error(err.message || 'Run failed'),
+      onError: (err) => toastError("Couldn't run scenario", { error: err, retry: handleRunSaved }),
     });
   };
 
@@ -83,7 +83,7 @@ export function RuleTestScenarioPanel({ ruleId: _ruleId }: RuleTestScenarioPanel
       { scenario: adhoc },
       {
         onSuccess: (res) => setResult(res),
-        onError: (err) => toast.error(err.message || 'Run failed'),
+        onError: (err) => toastError("Couldn't run scenario", { error: err, retry: handleRunAdhoc }),
       },
     );
   };
@@ -400,11 +400,11 @@ function SaveScenarioDialog({
       { name: name.trim(), description: description.trim() || null, scenario },
       {
         onSuccess: () => {
-          toast.success('Scenario saved');
+          toastSaved('Scenario');
           reset();
           onOpenChange(false);
         },
-        onError: (err) => toast.error(err.message || 'Save failed'),
+        onError: (err) => toastError("Couldn't save scenario", { error: err, retry: handleSave }),
       },
     );
   };

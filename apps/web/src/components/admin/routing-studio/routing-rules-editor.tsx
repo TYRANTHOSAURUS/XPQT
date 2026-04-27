@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useTeams } from '@/api/teams';
@@ -64,16 +64,16 @@ export function RoutingRulesEditor({ compact = false }: Props) {
     try {
       if (editId) {
         await apiFetch(`/routing-rules/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Routing rule updated');
+        toastUpdated('Routing rule');
       } else {
         await apiFetch('/routing-rules', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Routing rule created');
+        toastCreated('Routing rule');
       }
       resetForm();
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save routing rule');
+      toastError("Couldn't save routing rule", { error: err, retry: handleSave });
     }
   };
 

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useCheckInBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 
 interface Props {
   reservation: Reservation;
@@ -52,9 +52,9 @@ export function BookingNextUpCard({ reservation, spaceName, href }: Props) {
   const onCheckIn = async () => {
     try {
       await checkIn.mutateAsync(reservation.id);
-      toast.success('Checked in');
+      toastSuccess('Checked in');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Check-in failed');
+      toastError("Couldn't check in", { error: e, retry: onCheckIn });
     }
   };
 

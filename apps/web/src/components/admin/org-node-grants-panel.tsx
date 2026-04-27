@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { LocationCombobox } from '@/components/location-combobox';
 import { apiFetch } from '@/lib/api';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 
 interface Grant {
   id: string;
@@ -28,7 +28,7 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
       const rows = await apiFetch<Grant[]>(`/org-nodes/${nodeId}/location-grants`);
       setGrants(rows);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load grants');
+      toastError("Couldn't load grants", { error: err, retry: reload });
     } finally {
       setLoading(false);
     }
@@ -47,20 +47,35 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
       setAddSpaceId(null);
       setAddNote('');
       await reload();
-      toast.success('Location granted');
+      toastSuccess('Location granted');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add grant');
+      toastError("Couldn't add grant", { error: err, retry: add });
     } finally {
       setAdding(false);
     }
   };
 
   const remove = async (id: string) => {
+    const restored = grants.find((g) => g.id === id);
     try {
       await apiFetch(`/org-nodes/${nodeId}/location-grants/${id}`, { method: 'DELETE' });
       await reload();
+      toastRemoved('Grant', {
+        verb: 'revoked',
+        onUndo: restored
+          ? () => {
+              void apiFetch(`/org-nodes/${nodeId}/location-grants`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  space_id: restored.space_id,
+                  note: restored.note ?? undefined,
+                }),
+              }).then(reload);
+            }
+          : undefined,
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove grant');
+      toastError("Couldn't revoke grant", { error: err, retry: () => remove(id) });
     }
   };
 

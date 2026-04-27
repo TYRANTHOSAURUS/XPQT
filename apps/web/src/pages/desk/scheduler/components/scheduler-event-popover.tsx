@@ -1,4 +1,4 @@
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -6,7 +6,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useCancelBooking, type Reservation } from '@/api/room-booking';
-import { ApiError } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
 
 interface Props {
@@ -44,12 +43,10 @@ export function SchedulerEventPopover({
   const submitCancel = async () => {
     try {
       await cancel.mutateAsync({ id: reservation.id });
-      toast.success('Booking cancelled');
+      toastRemoved('Booking', { verb: 'cancelled' });
       onOpenChange(false);
     } catch (e) {
-      const message =
-        e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Cancel failed';
-      toast.error(message);
+      toastError("Couldn't cancel booking", { error: e, retry: submitCancel });
     }
   };
 

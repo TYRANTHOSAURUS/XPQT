@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -65,7 +65,9 @@ export function RequestTypeDetailPage() {
   };
 
   useEffect(() => {
-    if (upsert.error) toast.error(`Couldn't save request type: ${upsert.error.message}`);
+    if (upsert.error) {
+      toastError("Couldn't save request type", { error: upsert.error });
+    }
   }, [upsert.error]);
 
   useDebouncedSave(name, (v) => {
@@ -249,7 +251,7 @@ export function RequestTypeDetailPage() {
         destructive
         onConfirm={async () => {
           await del.mutateAsync(requestType.id);
-          toast.success(`${headline} deleted`);
+          toastRemoved(headline, { verb: 'deleted' });
           setConfirmDelete(false);
           navigate('/admin/request-types');
         }}

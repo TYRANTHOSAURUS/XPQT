@@ -22,7 +22,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle, MapPin } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
@@ -207,24 +207,24 @@ export function SubmitRequestPage() {
 
     const missing = validateRequired(formFields, values);
     if (missing) {
-      toast.error(`"${missing.label}" is required`);
+      setSubmitError(`"${missing.label}" is required.`);
       return;
     }
 
     if (selectedRT?.intake.location_required && !submitLocationId && !assetId) {
-      toast.error('Please pick a location or asset');
+      setSubmitError('Pick a location or asset before submitting.');
       return;
     }
 
     if (selectedRT?.intake.location_granularity && !submitLocationId && !assetId) {
-      toast.error('Please drill down to the required location');
+      setSubmitError('Drill down to the required location.');
       return;
     }
 
     const { bound, form_data } = splitFormData(formFields, values);
 
     try {
-      await apiFetch('/portal/tickets', {
+      const created = await apiFetch<{ id: string }>('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
           request_type_id: formValues.requestTypeId,
@@ -238,12 +238,12 @@ export function SubmitRequestPage() {
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
       });
-      toast.success('Request submitted');
+      toastCreated('Request', { onView: () => navigate(`/portal/requests/${created.id}`) });
       navigate('/portal/requests');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit request';
       setSubmitError(msg);
-      toast.error(msg);
+      toastError("Couldn't submit request", { error: err, retry: () => onSubmit(formValues) });
     }
   };
 

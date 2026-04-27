@@ -25,7 +25,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Plus, Send } from 'lucide-react';
-import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
+import { toastCreated, toastError } from '@/lib/toast';
 import { PersonPicker, type Person } from '@/components/person-picker';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
@@ -41,6 +42,7 @@ interface FormSchemaEntity {
 }
 
 export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -55,6 +57,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
   const [locationId, setLocationId] = useState<string | null>(null);
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
+  const [missingFieldLabel, setMissingFieldLabel] = useState<string | null>(null);
 
   const requestTypeId = selectedRT?.id ?? '';
 
@@ -83,19 +86,27 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
     return () => { cancelled = true; };
   }, [selectedRT]);
 
+  const requiredAssetMissing = !!selectedRT?.asset_required && !assetId;
+  const requiredLocationMissing = !!selectedRT?.location_required && !locationId;
+  const canSubmit =
+    title.trim().length > 0 &&
+    !!requesterId &&
+    !requiredAssetMissing &&
+    !requiredLocationMissing &&
+    !submitting;
+
   const handleSubmit = async () => {
-    if (!title.trim() || !requesterId) return;
-    if (selectedRT?.asset_required && !assetId) return;
-    if (selectedRT?.location_required && !locationId) return;
+    if (!canSubmit) return;
     const missing = validateRequired(formFields, formValues);
     if (missing) {
-      toast.error(`"${missing.label}" is required`);
+      setMissingFieldLabel(missing.label);
       return;
     }
+    setMissingFieldLabel(null);
     const { bound, form_data } = splitFormData(formFields, formValues);
     setSubmitting(true);
     try {
-      await apiFetch('/tickets', {
+      const created = await apiFetch<{ id: string }>('/tickets', {
         method: 'POST',
         body: JSON.stringify({
           title,
@@ -116,9 +127,9 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
       setFormFields([]); setFormValues({});
       setOpen(false);
       onCreated?.();
-      toast.success('Ticket created');
+      toastCreated('Ticket', { onView: () => navigate(`/desk/tickets/${created.id}`) });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create ticket');
+      toastError("Couldn't create ticket", { error: err, retry: handleSubmit });
     } finally {
       setSubmitting(false);
     }
@@ -242,9 +253,15 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           />
         </FieldGroup>
 
+        {missingFieldLabel && (
+          <p className="text-sm text-destructive" role="alert">
+            "{missingFieldLabel}" is required.
+          </p>
+        )}
+
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={!title.trim() || !requesterId || submitting}>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
             <Send className="h-4 w-4 mr-2" />
             {submitting ? 'Creating...' : 'Create Ticket'}
           </Button>

@@ -20,7 +20,7 @@ import { BookingStatusPill } from './booking-status-pill';
 import { BookingEditForm } from './booking-edit-form';
 import { BundleServicesSection } from './bundle-services-section';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 
 interface Props {
   reservationId: string | null;
@@ -59,9 +59,9 @@ export function BookingDetailDrawer({ reservationId, onClose, spaceName }: Props
     if (!reservation) return;
     try {
       await checkIn.mutateAsync(reservation.id);
-      toast.success('Checked in');
+      toastSuccess('Checked in');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Check-in failed');
+      toastError("Couldn't check in", { error: e, retry: onCheckIn });
     }
   };
 
@@ -69,9 +69,9 @@ export function BookingDetailDrawer({ reservationId, onClose, spaceName }: Props
     if (!reservation) return;
     try {
       await restore.mutateAsync(reservation.id);
-      toast.success('Booking restored');
+      toastSuccess('Booking restored');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Restore failed');
+      toastError("Couldn't restore booking", { error: e, retry: onRestore });
     }
   };
 

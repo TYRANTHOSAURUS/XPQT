@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { toastSuccess } from '@/lib/toast';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -133,7 +133,7 @@ export function AddSubIssueDialog({
         assigned_vendor_id: tab === 'vendor' ? selectedId : undefined,
         ...slaPayload,
       });
-      toast.success(`Sub-issue "${trimmed}" added`);
+      toastSuccess(`Sub-issue "${trimmed}" added`);
       onDispatched();
       reset();
       onOpenChange(false);

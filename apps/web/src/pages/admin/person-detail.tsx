@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toastError, toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -67,7 +67,7 @@ export function PersonDetailPage() {
   // Surface PATCH failures as toasts so silent save errors stop being silent.
   useEffect(() => {
     if (update.error) {
-      toast.error(`Couldn't save changes: ${update.error.message}`);
+      toastError("Couldn't save changes", { error: update.error });
     }
   }, [update.error]);
 
@@ -266,7 +266,7 @@ export function PersonDetailPage() {
           await update.mutateAsync({ active: false });
           setActive(false);
           setConfirmDeactivate(false);
-          toast.success(`${headline} deactivated`);
+          toastRemoved(headline, { verb: 'deactivated' });
           navigate('/admin/persons');
         }}
       />

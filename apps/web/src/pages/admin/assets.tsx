@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -24,7 +24,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAssetsFiltered, useAssetTypes, assetKeys } from '@/api/assets';
 import { apiFetch } from '@/lib/api';
@@ -78,6 +78,7 @@ const roleVariant: Record<string, 'default' | 'secondary' | 'outline'> = {
 
 export function AssetsPage() {
   const [roleFilter, setRoleFilter] = useState('all');
+  const navigate = useNavigate();
 
   // Assets page has a role filter param not covered by the base api/assets list —
   // useAssetsFiltered keys each role view independently for clean caching.
@@ -128,17 +129,23 @@ export function AssetsPage() {
       purchase_date: purchaseDate || undefined,
     };
     try {
+      let savedId = editId;
       if (editId) {
         await apiFetch(`/assets/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
       } else {
-        await apiFetch('/assets', { method: 'POST', body: JSON.stringify(body) });
+        const created = await apiFetch<{ id: string }>('/assets', { method: 'POST', body: JSON.stringify(body) });
+        savedId = created.id;
       }
       resetForm();
       setDialogOpen(false);
       refetch();
-      toast.success(editId ? 'Asset updated' : 'Asset created');
+      if (editId) {
+        toastUpdated('Asset');
+      } else {
+        toastCreated('Asset', { onView: () => savedId && navigate(`/admin/assets/${savedId}`) });
+      }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save asset');
+      toastError("Couldn't save asset", { error: err, retry: handleSave });
     }
   };
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Pencil, Trash2, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -73,7 +73,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
       });
       return created.id;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save group');
+      toastError("Couldn't save group", { error: err });
       return null;
     }
   }
@@ -100,12 +100,16 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
     const original = data?.find((g) => g.id === id)?.members.map((m) => m.space_id) ?? [];
     try {
       await syncMembers(id, original, memberIds);
-      toast.success(editId ? 'Group updated' : 'Group created');
+      if (editId) {
+        toastUpdated('Group');
+      } else {
+        toastCreated('Group');
+      }
       setDialogOpen(false);
       resetForm();
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to sync members');
+      toastError("Couldn't sync group members", { error: err, retry: handleSave });
     }
   }
 
@@ -113,10 +117,10 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
     if (!confirm(`Delete space group "${group.name}"? Any location_teams rows using it will be removed.`)) return;
     try {
       await apiFetch(`/space-groups/${group.id}`, { method: 'DELETE' });
-      toast.success('Group deleted');
+      toastRemoved(group.name, { verb: 'deleted' });
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete');
+      toastError("Couldn't delete group", { error: err, retry: () => handleDelete(group) });
     }
   }
 

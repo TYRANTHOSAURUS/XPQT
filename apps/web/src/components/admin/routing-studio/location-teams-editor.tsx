@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -93,12 +93,12 @@ export function LocationTeamsEditor({ compact = false }: Props) {
     if (t === 'team') setVendorId(null); else setTeamId(null);
   }
 
+  const scopeValue = scopeTab === 'space' ? spaceId : groupId;
+  const assigneeValue = assigneeTab === 'team' ? teamId : vendorId;
+  const canSave = domain.trim().length > 0 && !!scopeValue && !!assigneeValue;
+
   async function handleSave() {
-    if (!domain.trim()) { toast.error('Domain is required'); return; }
-    const scopeValue = scopeTab === 'space' ? spaceId : groupId;
-    if (!scopeValue) { toast.error('Pick a space or space group'); return; }
-    const assigneeValue = assigneeTab === 'team' ? teamId : vendorId;
-    if (!assigneeValue) { toast.error('Pick a team or vendor'); return; }
+    if (!canSave) return;
 
     const body = {
       space_id: scopeTab === 'space' ? spaceId : null,
@@ -111,16 +111,16 @@ export function LocationTeamsEditor({ compact = false }: Props) {
     try {
       if (editId) {
         await apiFetch(`/location-teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Routing entry updated');
+        toastUpdated('Routing entry');
       } else {
         await apiFetch('/location-teams', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Routing entry created');
+        toastCreated('Routing entry');
       }
       setDialogOpen(false);
       reset();
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save');
+      toastError("Couldn't save routing entry", { error: err, retry: handleSave });
     }
   }
 
@@ -128,10 +128,10 @@ export function LocationTeamsEditor({ compact = false }: Props) {
     if (!confirm(`Delete routing entry for domain "${row.domain}"?`)) return;
     try {
       await apiFetch(`/location-teams/${row.id}`, { method: 'DELETE' });
-      toast.success('Routing entry deleted');
+      toastRemoved('Routing entry', { verb: 'deleted' });
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete');
+      toastError("Couldn't delete routing entry", { error: err, retry: () => handleDelete(row) });
     }
   }
 
@@ -208,7 +208,7 @@ export function LocationTeamsEditor({ compact = false }: Props) {
             </FieldGroup>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleSave}>{editId ? 'Save' : 'Create'}</Button>
+              <Button onClick={handleSave} disabled={!canSave}>{editId ? 'Save' : 'Create'}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Copy } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -116,7 +116,7 @@ export function VendorMenuDetailPage() {
       await apiFetch(`/catalog-menus/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
       refetchMenu();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      toastError("Couldn't save menu", { error: err, retry: () => patch(body) });
     }
   };
 
@@ -334,10 +334,12 @@ function DuplicateMenuDialog({
           status: 'draft',
         }),
       });
-      toast.success('Menu duplicated');
+      toastSuccess('Menu duplicated', {
+        action: { label: 'Open', onClick: () => onDuplicated(created.id) },
+      });
       onDuplicated(created.id);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Duplicate failed');
+      toastError("Couldn't duplicate menu", { error: err });
     } finally {
       setBusy(false);
     }

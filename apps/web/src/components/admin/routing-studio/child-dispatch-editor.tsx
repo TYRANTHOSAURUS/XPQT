@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { toastError, toastSuccess } from '@/lib/toast';
 import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -198,8 +198,9 @@ export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
   const primaryRequired = executionMode === 'fixed';
 
   async function handleSave() {
-    if (!selectedRt) { toast.error('Pick a request type'); return; }
-    if (primaryRequired && !targetId) { toast.error(`Pick a primary ${targetKind}`); return; }
+    // The Save button is disabled when these fail; this is a defense-in-depth check.
+    if (!selectedRt) return;
+    if (primaryRequired && !targetId) return;
     setSaving(true);
     try {
       let entityId = selectedRt.child_dispatch_policy_entity_id;
@@ -261,11 +262,11 @@ export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
         executionMode === 'fixed'
           ? `${selectedRt.name} → ${primaryName ?? 'unset'}${fallbackName ? ` (fallback ${fallbackName})` : ''}`
           : `${selectedRt.name} uses location-team lookup${fallbackName ? `, fallback ${fallbackName}` : ''}`;
-      toast.success(summary);
+      toastSuccess(summary);
       // Keep the RT + target selected for fast iterate-and-save.
       await refetchRts();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save policy');
+      toastError("Couldn't save dispatch policy", { error: err, retry: handleSave });
     } finally {
       setSaving(false);
     }

@@ -24,7 +24,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil, UserPlus } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast, toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePersons, personKeys } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
@@ -141,22 +141,25 @@ export function PersonsPage() {
     try {
       if (editId) {
         await apiFetch(`/persons/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Person updated');
+        toastUpdated('Person');
       } else {
         await apiFetch('/persons', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Person created');
+        toastCreated('Person');
       }
       resetForm();
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save person');
+      toastError("Couldn't save person", { error: err });
     }
   };
 
   const handleInvite = async (person: Person) => {
     if (!person.email) {
-      toast.error('Add an email to this person before inviting.');
+      toast.message('Add an email to invite this person', {
+        description: 'Open the person, fill in their email, then try again.',
+        action: { label: 'Edit person', onClick: () => openEdit(person) },
+      });
       return;
     }
     if (!window.confirm(
@@ -173,10 +176,13 @@ export function PersonsPage() {
           status: 'active',
         }),
       });
-      toast.success(`${person.first_name} can now sign in. Assign them a role on the Users page.`);
+      toast.success(`${person.first_name} can now sign in`, {
+        description: 'Assign them a role on the Users page.',
+        action: { label: 'Assign role', onClick: () => { window.location.href = '/admin/users'; } },
+      });
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create account');
+      toastError("Couldn't create account", { error: err, retry: () => handleInvite(person) });
     }
   };
 

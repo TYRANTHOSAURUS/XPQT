@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastSuccess } from '@/lib/toast';
 import {
   Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
@@ -67,9 +67,9 @@ export function ReclassifyTicketDialog({
         reason: reasonTrimmed,
         acknowledgedChildrenInProgress: ackInProgress,
       });
-      toast.success(
-        `Reclassified to ${impact.ticket.new_request_type.name}. ${impact.children.length} work order(s) closed.`,
-      );
+      toastSuccess(`Reclassified to ${impact.ticket.new_request_type.name}`, {
+        description: `${impact.children.length} work order${impact.children.length === 1 ? '' : 's'} closed.`,
+      });
       reset();
       onOpenChange(false);
       onReclassified();

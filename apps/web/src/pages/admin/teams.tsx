@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -27,7 +27,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, X, UserPlus } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastCreated, toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeams, teamKeys } from '@/api/teams';
 import { useSpaces } from '@/api/spaces';
@@ -71,6 +71,7 @@ const domains = ['fm', 'it', 'visitor', 'catering', 'security', 'all'];
 
 export function TeamsPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data, isPending: loading } = useTeams() as { data: Team[] | undefined; isPending: boolean };
   const refetch = () => qc.invalidateQueries({ queryKey: teamKeys.all });
   const { data: spaces } = useSpaces() as { data: Space[] | undefined };
@@ -123,18 +124,20 @@ export function TeamsPage() {
       org_node_id: orgNodeId,
     };
     try {
+      let savedId = editId;
       if (editId) {
         await apiFetch(`/teams/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toast.success('Team updated');
+        toastUpdated('Team');
       } else {
-        await apiFetch('/teams', { method: 'POST', body: JSON.stringify(body) });
-        toast.success('Team created');
+        const created = await apiFetch<{ id: string }>('/teams', { method: 'POST', body: JSON.stringify(body) });
+        savedId = created.id;
+        toastCreated('Team', { onView: () => savedId && navigate(`/admin/teams/${savedId}`) });
       }
       resetForm();
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save team');
+      toastError("Couldn't save team", { error: err, retry: handleSave });
     }
   };
 
@@ -161,22 +164,30 @@ export function TeamsPage() {
         method: 'POST',
         body: JSON.stringify({ user_id: addUserId }),
       });
-      toast.success('Member added');
+      toastSuccess('Member added');
       setAddUserId('');
       await loadMembers(editId);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add member');
+      toastError("Couldn't add member", { error: err, retry: handleAddMember });
     }
   };
 
   const handleRemoveMember = async (userId: string) => {
     if (!editId) return;
+    const editTeamId = editId;
     try {
-      await apiFetch(`/teams/${editId}/members/${userId}`, { method: 'DELETE' });
-      toast.success('Member removed');
-      await loadMembers(editId);
+      await apiFetch(`/teams/${editTeamId}/members/${userId}`, { method: 'DELETE' });
+      toastRemoved('Member', {
+        onUndo: () => {
+          void apiFetch(`/teams/${editTeamId}/members`, {
+            method: 'POST',
+            body: JSON.stringify({ user_id: userId }),
+          }).then(() => loadMembers(editTeamId));
+        },
+      });
+      await loadMembers(editTeamId);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove member');
+      toastError("Couldn't remove member", { error: err, retry: () => handleRemoveMember(userId) });
     }
   };
 

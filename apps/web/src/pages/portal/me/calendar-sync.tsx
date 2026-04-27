@@ -1,5 +1,5 @@
 import { Calendar, CheckCircle2, AlertCircle, RefreshCw, Unplug } from 'lucide-react';
-import { toast } from 'sonner';
+import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import { useState } from 'react';
 import {
   SettingsPageShell,
@@ -49,16 +49,16 @@ export function PortalCalendarSyncPage() {
       // /portal/calendar-sync/callback which finishes the exchange.
       window.location.href = authUrl;
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not start connection');
+      toastError("Couldn't start Outlook connection", { error: e, retry: onConnect });
     }
   };
 
   const onDisconnect = async () => {
     try {
       await disconnect.mutateAsync();
-      toast.success('Outlook disconnected');
+      toastRemoved('Outlook', { verb: 'detached' });
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Disconnect failed');
+      toastError("Couldn't disconnect Outlook", { error: e, retry: onDisconnect });
     } finally {
       setConfirmDisconnect(false);
     }
@@ -67,9 +67,9 @@ export function PortalCalendarSyncPage() {
   const onResync = async () => {
     try {
       const r = await resync.mutateAsync();
-      toast.success(`Resync triggered — ${r.events_seen} events`);
+      toastSuccess('Resync triggered', { description: `${r.events_seen} event${r.events_seen === 1 ? '' : 's'} seen.` });
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Resync failed');
+      toastError("Couldn't resync calendar", { error: e, retry: onResync });
     }
   };
 

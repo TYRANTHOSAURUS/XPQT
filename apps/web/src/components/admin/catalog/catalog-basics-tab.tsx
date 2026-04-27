@@ -13,7 +13,7 @@ import {
   FieldSet,
   FieldLegend,
 } from '@/components/ui/field';
-import { toast } from 'sonner';
+import { toastError, toastSaved } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { useCatalogCategories } from '@/api/catalog';
 import type { RequestTypeDetail } from './catalog-service-panel';
@@ -78,10 +78,10 @@ export function CatalogBasicsTab({
         method: 'PUT',
         body: JSON.stringify({ category_ids: categoryIds }),
       });
-      toast.success('Saved');
+      toastSaved('Service basics');
       onSaved();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
+      toastError("Couldn't save service basics", { error: e, retry: save });
     } finally {
       setSaving(false);
     }
