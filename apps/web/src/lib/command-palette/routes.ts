@@ -205,6 +205,7 @@ const adminAliasMap: Record<string, string[]> = {
   '/admin/branding': ['theme', 'logo', 'colors'],
   '/admin/calendar-sync': ['outlook', 'google calendar'],
   '/admin/room-booking-rules': ['booking rules'],
+  '/admin/room-booking-reports': ['bookings report', 'utilization', 'no-show', 'occupancy'],
   '/admin/routing-studio': ['routing', 'dispatch'],
 };
 

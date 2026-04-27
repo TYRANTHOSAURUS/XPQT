@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
+  BarChart3,
   Bell,
   BookOpen,
   Building2,
@@ -236,6 +237,12 @@ const roomBookingItems: AdminNavItem[] = [
     path: '/admin/calendar-sync',
     icon: CalendarCog,
     description: 'Outlook intercept health and conflict inbox',
+  },
+  {
+    title: 'Reports',
+    path: '/admin/room-booking-reports',
+    icon: BarChart3,
+    description: 'Bookings volume, utilization, no-shows, and services',
   },
 ];
 

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -153,5 +153,64 @@ export class ReportingService {
       groups[date] = (groups[date] ?? 0) + 1;
     }
     return groups;
+  }
+
+  // Bookings overview report — single RPC round-trip.
+  // Spec: docs/superpowers/specs/2026-04-27-bookings-overview-report-design.md
+  async getBookingsOverview(params: {
+    from: string;
+    to: string;
+    buildingId: string | null;
+    tz: string;
+  }) {
+    const tenant = TenantContext.current();
+
+    const fromDate = this.parseDate(params.from, 'from');
+    const toDate = this.parseDate(params.to, 'to');
+    if (fromDate > toDate) {
+      throw new BadRequestException('from must be on or before to');
+    }
+    const days = Math.round((toDate.getTime() - fromDate.getTime()) / 86_400_000);
+    if (days > 365) {
+      throw new BadRequestException('window too large (max 365 days)');
+    }
+    const tz = this.validateTimezone(params.tz);
+
+    const { data, error } = await this.supabase.admin.rpc('room_booking_report_overview', {
+      p_tenant_id: tenant.id,
+      p_from: params.from,
+      p_to: params.to,
+      p_building_id: params.buildingId,
+      p_tz: tz,
+    });
+
+    if (error) {
+      throw new BadRequestException(error.message);
+    }
+
+    return data;
+  }
+
+  private parseDate(value: string, label: string): Date {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new BadRequestException(`${label} must be a YYYY-MM-DD date`);
+    }
+    const d = new Date(value + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException(`${label} is not a valid date`);
+    }
+    return d;
+  }
+
+  private validateTimezone(tz: string): string {
+    // IANA tz validation via Intl. Falls back to UTC on unknown zones rather
+    // than failing — better UX for clients on older browsers / weird locales.
+    try {
+      // eslint-disable-next-line no-new
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return tz;
+    } catch {
+      return 'UTC';
+    }
   }
 }
