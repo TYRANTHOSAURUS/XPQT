@@ -1,15 +1,11 @@
 import type { LucideIcon } from 'lucide-react';
 import {
-  AlertTriangle,
-  BarChart3,
   Bell,
   BookOpen,
   Building2,
   Calendar,
   CalendarCog,
   ChefHat,
-  Gauge,
-  Hourglass,
   Clock,
   Compass,
   Filter,
@@ -240,36 +236,6 @@ const roomBookingItems: AdminNavItem[] = [
     path: '/admin/calendar-sync',
     icon: CalendarCog,
     description: 'Outlook intercept health and conflict inbox',
-  },
-  {
-    title: 'Reports — Overview',
-    path: '/admin/room-booking-reports',
-    icon: BarChart3,
-    description: 'Volume, utilization, no-shows, services at a glance',
-  },
-  {
-    title: 'Reports — Utilization',
-    path: '/admin/room-booking-reports/utilization',
-    icon: Gauge,
-    description: 'Per-room utilization, capacity fit, building rollup',
-  },
-  {
-    title: 'Reports — No-shows',
-    path: '/admin/room-booking-reports/no-shows',
-    icon: AlertTriangle,
-    description: 'No-show & cancellation deep-dive, top organizers',
-  },
-  {
-    title: 'Reports — Services & cost',
-    path: '/admin/room-booking-reports/services',
-    icon: ChefHat,
-    description: 'Services attach, spend, top items, by cost center',
-  },
-  {
-    title: 'Reports — Demand',
-    path: '/admin/room-booking-reports/demand',
-    icon: Hourglass,
-    description: 'Peak hours, contention, lead time, daily volume',
   },
 ];
 

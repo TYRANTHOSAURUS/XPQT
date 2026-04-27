@@ -239,12 +239,6 @@ export function App() {
                   {/* Room booking rules (D-engine) — index + detail */}
                   <Route path="room-booking-rules" element={<RoomBookingRulesPage />} />
                   <Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
-                  {/* Bookings reports — overview + management deep-dives */}
-                  <Route path="room-booking-reports"              element={<RoomBookingReportsPage />} />
-                  <Route path="room-booking-reports/utilization"  element={<RoomBookingUtilizationReport />} />
-                  <Route path="room-booking-reports/no-shows"     element={<RoomBookingNoShowsReport />} />
-                  <Route path="room-booking-reports/services"     element={<RoomBookingServicesReport />} />
-                  <Route path="room-booking-reports/demand"       element={<RoomBookingDemandReport />} />
                   {/* Cost centers (sub-project 2) — GL chargeback codes */}
                   <Route path="cost-centers" element={<CostCentersPage />} />
                   <Route path="cost-centers/:id" element={<CostCenterDetailPage />} />
