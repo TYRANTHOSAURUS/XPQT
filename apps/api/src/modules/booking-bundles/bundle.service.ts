@@ -333,6 +333,168 @@ export class BundleService {
     }
   }
 
+  /**
+   * `addLinesToBundle` — append new service lines to an existing bundle.
+   * Resolves the bundle's primary reservation and delegates to
+   * `attachServicesToReservation`, which already handles bundle reuse,
+   * grouping by service_type, asset reservations, rule resolution, and
+   * approval routing.
+   */
+  async addLinesToBundle(args: {
+    bundle_id: string;
+    requester_person_id: string;
+    services: ServiceLineInput[];
+  }): Promise<AttachServicesResult> {
+    if (args.services.length === 0) {
+      throw new BadRequestException({ code: 'no_services', message: 'no service lines provided' });
+    }
+    const tenantId = TenantContext.current().id;
+
+    const { data, error } = await this.supabase.admin
+      .from('booking_bundles')
+      .select('id, primary_reservation_id, requester_person_id, host_person_id, location_id')
+      .eq('id', args.bundle_id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${args.bundle_id} not found.` });
+    }
+    const bundle = data as { id: string; primary_reservation_id: string | null };
+    if (!bundle.primary_reservation_id) {
+      throw new BadRequestException({
+        code: 'bundle_no_reservation',
+        message: 'Cannot add lines to a bundle without a primary reservation.',
+      });
+    }
+
+    return this.attachServicesToReservation({
+      reservation_id: bundle.primary_reservation_id,
+      requester_person_id: args.requester_person_id,
+      services: args.services,
+    });
+  }
+
+  /**
+   * `editLine` — patch quantity / service window / notes on an existing
+   * order_line_items row. Recomputes line_total when qty changes; cascades
+   * the new window to the linked work-order ticket so dispatch and SLA
+   * still reflect the latest commitment.
+   *
+   * Visibility/write check is enforced upstream by the controller via
+   * `BundleVisibilityService` + a participant/admin gate on writes.
+   */
+  async editLine(args: {
+    line_id: string;
+    patch: {
+      quantity?: number;
+      service_window_start_at?: string | null;
+      service_window_end_at?: string | null;
+    };
+  }): Promise<{ line_id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null }> {
+    const tenantId = TenantContext.current().id;
+
+    const { data: existing, error: loadErr } = await this.supabase.admin
+      .from('order_line_items')
+      .select('id, tenant_id, order_id, quantity, unit_price, line_total, service_window_start_at, service_window_end_at, fulfillment_status, linked_ticket_id')
+      .eq('id', args.line_id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!existing) {
+      throw new NotFoundException({ code: 'line_not_found', message: `Line ${args.line_id} not found.` });
+    }
+    const line = existing as {
+      id: string;
+      tenant_id: string;
+      order_id: string;
+      quantity: number;
+      unit_price: number | null;
+      line_total: number | null;
+      service_window_start_at: string | null;
+      service_window_end_at: string | null;
+      fulfillment_status: string;
+      linked_ticket_id: string | null;
+    };
+
+    const FROZEN: Set<string> = new Set(['preparing', 'delivered', 'cancelled']);
+    if (FROZEN.has(line.fulfillment_status)) {
+      throw new ConflictException({
+        code: 'line_frozen',
+        message: `Cannot edit a line in '${line.fulfillment_status}' state. Cancel and re-add instead.`,
+      });
+    }
+
+    const update: Record<string, unknown> = {};
+    if (typeof args.patch.quantity === 'number' && args.patch.quantity !== line.quantity) {
+      if (args.patch.quantity < 1) {
+        throw new BadRequestException({ code: 'invalid_quantity', message: 'Quantity must be ≥ 1.' });
+      }
+      update.quantity = args.patch.quantity;
+      if (line.unit_price != null) {
+        update.line_total = Number((Number(line.unit_price) * args.patch.quantity).toFixed(2));
+      }
+    }
+    if (args.patch.service_window_start_at !== undefined && args.patch.service_window_start_at !== line.service_window_start_at) {
+      update.service_window_start_at = args.patch.service_window_start_at;
+    }
+    if (args.patch.service_window_end_at !== undefined && args.patch.service_window_end_at !== line.service_window_end_at) {
+      update.service_window_end_at = args.patch.service_window_end_at;
+    }
+
+    if (Object.keys(update).length === 0) {
+      // No-op; return current state.
+      return {
+        line_id: line.id,
+        quantity: line.quantity,
+        line_total: line.line_total,
+        service_window_start_at: line.service_window_start_at,
+        service_window_end_at: line.service_window_end_at,
+      };
+    }
+
+    const { data: updated, error: updateErr } = await this.supabase.admin
+      .from('order_line_items')
+      .update(update)
+      .eq('id', line.id)
+      .eq('tenant_id', tenantId)
+      .select('id, quantity, line_total, service_window_start_at, service_window_end_at')
+      .single();
+    if (updateErr) throw updateErr;
+    const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null };
+
+    // Cascade window change to the linked work-order ticket so SLA + dispatch
+    // see the latest commitment. Only fires if the window actually moved.
+    const windowChanged =
+      'service_window_start_at' in update || 'service_window_end_at' in update;
+    if (windowChanged && line.linked_ticket_id) {
+      const { error: ticketErr } = await this.supabase.admin
+        .from('tickets')
+        .update({
+          requested_for_start_at: u.service_window_start_at,
+          requested_for_end_at: u.service_window_end_at,
+        })
+        .eq('id', line.linked_ticket_id)
+        .eq('tenant_id', tenantId);
+      if (ticketErr) {
+        this.log.warn(`ticket cascade failed for line ${line.id}: ${ticketErr.message}`);
+      }
+    }
+
+    void this.audit(tenantId, 'bundle_line.updated', 'order_line_item', line.id, {
+      line_id: line.id,
+      patch: update,
+    });
+
+    return {
+      line_id: u.id,
+      quantity: u.quantity,
+      line_total: u.line_total,
+      service_window_start_at: u.service_window_start_at,
+      service_window_end_at: u.service_window_end_at,
+    };
+  }
+
   // ── Internals ──────────────────────────────────────────────────────────
 
   private async loadReservation(id: string) {

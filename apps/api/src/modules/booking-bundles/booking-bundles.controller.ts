@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Req,
   UnauthorizedException,
@@ -13,6 +15,7 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleVisibilityService } from './bundle-visibility.service';
 import { BundleCascadeService, type CancelScope } from './bundle-cascade.service';
+import { BundleService, type ServiceLineInput } from './bundle.service';
 
 interface CancelBundleBody {
   keep_line_ids?: string[];
@@ -26,6 +29,7 @@ export class BookingBundlesController {
     private readonly supabase: SupabaseService,
     private readonly visibility: BundleVisibilityService,
     private readonly cascade: BundleCascadeService,
+    private readonly bundle: BundleService,
   ) {}
 
   /**
@@ -149,6 +153,113 @@ export class BookingBundlesController {
     };
   }
 
+  /**
+   * `POST /booking-bundles/:id/lines` — append service lines to an existing
+   * bundle. Closes the asymmetry where catering could be attached only at
+   * booking time. Reuses `attachServicesToReservation` so rule resolution,
+   * approval routing, and asset reservations all work the same as initial
+   * booking.
+   *
+   * Write gate: requester / host / `rooms.admin`. Operators with read-all
+   * but not admin cannot mutate other people's bookings.
+   */
+  @Post(':id/lines')
+  async addLines(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() body: { services: ServiceLineInput[] },
+  ) {
+    const authUid = this.getAuthUid(request);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+
+    const { data: bundleRow, error } = await this.supabase.admin
+      .from('booking_bundles')
+      .select('id, requester_person_id, host_person_id, location_id')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!bundleRow) {
+      throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${id} not found.` });
+    }
+    const bundle = bundleRow as { id: string; requester_person_id: string; host_person_id: string | null; location_id: string };
+
+    await this.visibility.assertVisible(bundle, ctx);
+    this.assertCanWrite(bundle, ctx);
+
+    return this.bundle.addLinesToBundle({
+      bundle_id: id,
+      requester_person_id: bundle.requester_person_id,
+      services: body?.services ?? [],
+    });
+  }
+
+  /**
+   * `PATCH /booking-bundles/lines/:lineId` — edit qty / service window on a
+   * line that hasn't yet been picked up by fulfillment. Fulfilled or
+   * cancelled lines reject (cancel + re-add is the path).
+   */
+  @Patch('lines/:lineId')
+  async editLine(
+    @Req() request: Request,
+    @Param('lineId') lineId: string,
+    @Body() body: { quantity?: number; service_window_start_at?: string | null; service_window_end_at?: string | null },
+  ) {
+    const authUid = this.getAuthUid(request);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+
+    // Resolve the line → its order → bundle to gate the write.
+    const { data: lineRow, error } = await this.supabase.admin
+      .from('order_line_items')
+      .select('id, order_id')
+      .eq('id', lineId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!lineRow) {
+      throw new NotFoundException({ code: 'line_not_found', message: `Line ${lineId} not found.` });
+    }
+    const orderId = (lineRow as { order_id: string }).order_id;
+
+    const { data: orderRow, error: orderErr } = await this.supabase.admin
+      .from('orders')
+      .select('booking_bundle_id')
+      .eq('id', orderId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (orderErr) throw orderErr;
+    const bundleId = (orderRow as { booking_bundle_id: string | null } | null)?.booking_bundle_id;
+    if (!bundleId) {
+      throw new NotFoundException({ code: 'bundle_not_found', message: `Line ${lineId} is not attached to a bundle.` });
+    }
+
+    const { data: bundleRow, error: bundleErr } = await this.supabase.admin
+      .from('booking_bundles')
+      .select('id, requester_person_id, host_person_id, location_id')
+      .eq('id', bundleId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (bundleErr) throw bundleErr;
+    if (!bundleRow) {
+      throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${bundleId} not found.` });
+    }
+    const bundle = bundleRow as { id: string; requester_person_id: string; host_person_id: string | null; location_id: string };
+
+    await this.visibility.assertVisible(bundle, ctx);
+    this.assertCanWrite(bundle, ctx);
+
+    return this.bundle.editLine({
+      line_id: lineId,
+      patch: {
+        quantity: body?.quantity,
+        service_window_start_at: body?.service_window_start_at,
+        service_window_end_at: body?.service_window_end_at,
+      },
+    });
+  }
+
   @Post(':id/cancel')
   async cancel(
     @Req() request: Request,
@@ -191,5 +302,24 @@ export class BookingBundlesController {
     const u = (req as unknown as { user?: { id?: string } }).user;
     if (!u?.id) throw new UnauthorizedException('missing_user');
     return u.id;
+  }
+
+  /**
+   * Write gate: only the bundle's requester / host or a `rooms.admin` may
+   * mutate. `rooms.read_all` operators get read-only visibility. Surface as
+   * a 403 with a stable code so the frontend can show the right message.
+   */
+  private assertCanWrite(
+    bundle: { requester_person_id: string; host_person_id: string | null },
+    ctx: { has_admin: boolean; person_id: string | null },
+  ): void {
+    if (ctx.has_admin) return;
+    if (ctx.person_id && (bundle.requester_person_id === ctx.person_id || bundle.host_person_id === ctx.person_id)) {
+      return;
+    }
+    throw new ForbiddenException({
+      code: 'bundle_write_forbidden',
+      message: 'Only the requester, host, or an admin can change this booking.',
+    });
   }
 }
