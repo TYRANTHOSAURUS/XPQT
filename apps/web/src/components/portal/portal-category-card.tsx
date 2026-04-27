@@ -27,21 +27,46 @@ export function PortalCategoryCard({ id, name, description, icon, cover_source, 
   return (
     <Link
       to={`/portal/catalog/${id}`}
+      viewTransition
       className={cn(
-        'group block overflow-hidden rounded-xl border bg-card transition-colors hover:bg-accent/40',
+        'group block overflow-hidden rounded-xl border border-border/70 bg-card',
+        'transition-[transform,border-color,background-color,box-shadow]',
+        'hover:-translate-y-0.5 hover:border-border hover:bg-card hover:shadow-sm',
+        'active:translate-y-0 active:scale-[0.99] active:shadow-none',
+        'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
         className,
       )}
-      style={{ transitionTimingFunction: 'var(--ease-smooth)', transitionDuration: '200ms' }}
+      style={{
+        transitionTimingFunction: 'var(--ease-portal)',
+        transitionDuration: 'var(--dur-portal-hover)',
+        viewTransitionName: `portal-cat-${id}`,
+      }}
     >
-      <div className="relative aspect-[2.1/1] bg-muted">
+      <div className="relative aspect-[2.1/1] bg-muted overflow-hidden">
         {cover_source === 'image' && cover_image_url && platformClass ? (
           <div className={cn(platformClass, 'h-full w-full')} />
         ) : cover_source === 'image' && cover_image_url ? (
-          <img src={cover_image_url} alt="" className="h-full w-full object-cover" />
+          <img
+            src={cover_image_url}
+            alt=""
+            loading="lazy"
+            data-portal-fade
+            data-loaded="false"
+            onLoad={(e) => e.currentTarget.setAttribute('data-loaded', 'true')}
+            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+            style={{ transitionTimingFunction: 'var(--ease-portal)' }}
+          />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/20 to-primary/5 text-primary">
             {IconCmp ? <IconCmp className="size-7" /> : <Icons.HelpCircle className="size-7" />}
           </div>
+        )}
+        {/* Bottom scrim — keeps title readable when an image is present */}
+        {cover_source === 'image' && cover_image_url && !platformClass && (
+          <div
+            aria-hidden
+            className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/25 to-transparent"
+          />
         )}
       </div>
       <div className="p-4">

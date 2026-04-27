@@ -1,33 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Spinner } from '@/components/ui/spinner';
-import { apiFetch } from '@/lib/api';
+import { useQuery } from '@tanstack/react-query';
 import { usePortal } from '@/providers/portal-provider';
 import { useCatalogCategories } from '@/api/catalog';
+import { portalCatalogOptions } from '@/api/portal-catalog';
 import { PortalPage } from '@/components/portal/portal-page';
 import { PortalCategoryBanner } from '@/components/portal/portal-category-banner';
 import { PortalSubcategoryRail } from '@/components/portal/portal-subcategory-rail';
 import { PortalServicesGrid } from '@/components/portal/portal-services-grid';
-
-interface CatalogRequestType {
-  id: string;
-  name: string;
-  description: string | null;
-  icon?: string | null;
-}
-
-interface PortalCatalogCategoryRow {
-  id: string;
-  name: string;
-  icon: string | null;
-  parent_category_id: string | null;
-  request_types: CatalogRequestType[];
-}
-
-interface PortalCatalogResponse {
-  selected_location: { id: string; name: string; type: string };
-  categories: PortalCatalogCategoryRow[];
-}
 
 interface DbCategory {
   id: string;
@@ -45,17 +25,7 @@ export function CatalogCategoryPage() {
   const { data: dbCategories } = useCatalogCategories() as { data: DbCategory[] | undefined };
 
   const currentLocation = portal?.current_location ?? null;
-  const [catalog, setCatalog] = useState<PortalCatalogResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!currentLocation) return;
-    setLoading(true);
-    apiFetch<PortalCatalogResponse>(`/portal/catalog?location_id=${encodeURIComponent(currentLocation.id)}`)
-      .then(setCatalog)
-      .catch(() => setCatalog(null))
-      .finally(() => setLoading(false));
-  }, [currentLocation?.id]);
+  const { data: catalog, isPending: loading } = useQuery(portalCatalogOptions(currentLocation?.id));
 
   const { categoryRow, dbCategory, services, subcategories } = useMemo(() => {
     if (!catalog || !categoryId || !dbCategories) {
@@ -90,6 +60,7 @@ export function CatalogCategoryPage() {
   return (
     <PortalPage bleed>
       <PortalCategoryBanner
+        id={categoryId}
         name={dbCategory?.name ?? categoryRow?.name ?? 'Services'}
         description={dbCategory?.description}
         parentName={parent?.name}
@@ -100,17 +71,31 @@ export function CatalogCategoryPage() {
       />
 
       <div className="px-4 md:px-6 lg:px-8 mt-8 md:mt-10 space-y-10">
-        {/* KB slot — Phase 4. Hidden until articles backend exists. */}
-        {/* <PortalCategoryAnswers categoryId={categoryId} /> */}
-
         {loading && (
-          <div className="flex items-center justify-center py-12">
-            <Spinner className="size-6 text-muted-foreground" />
+          <div className="space-y-10">
+            {/* Subcategory rail skeleton */}
+            <div className="space-y-3">
+              <div className="portal-skeleton h-3 w-24 rounded" />
+              <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="portal-skeleton h-12 rounded-lg" />
+                ))}
+              </div>
+            </div>
+            {/* Services skeleton */}
+            <div className="space-y-3">
+              <div className="portal-skeleton h-3 w-20 rounded" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="portal-skeleton h-20 rounded-xl" />
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
-        {subcategories.length > 0 && <PortalSubcategoryRail items={subcategories} />}
-        {services.length > 0 && (
+        {!loading && subcategories.length > 0 && <PortalSubcategoryRail items={subcategories} />}
+        {!loading && services.length > 0 && (
           <PortalServicesGrid
             services={services.map((s) => ({ id: s.id, name: s.name, description: s.description, iconName: s.icon ?? null }))}
             categoryIdForOther={categoryId ?? null}
@@ -118,7 +103,7 @@ export function CatalogCategoryPage() {
         )}
 
         {empty && (
-          <div className="rounded-xl border bg-card px-6 py-12 text-center">
+          <div className="portal-rise rounded-xl border border-border/70 bg-card px-6 py-12 text-center">
             <p className="text-sm text-muted-foreground">
               No services available in this category at your selected location.
             </p>

@@ -115,6 +115,9 @@ export function SubmitRequestPage() {
   } = useForm<SubmitFormValues>({
     resolver: zodResolver(submitSchema),
     defaultValues: { title: '', description: '', priority: 'normal', requestTypeId: preselectedType },
+    // Validate after blur — show errors when the user has had a chance to
+    // type, but not on every keystroke and not only on submit.
+    mode: 'onTouched',
   });
 
   const requestTypeId = watch('requestTypeId');
@@ -270,7 +273,7 @@ export function SubmitRequestPage() {
             </Alert>
           )}
 
-          <FieldGroup>
+          <FieldGroup className="portal-stagger">
             {/* Request type selector — shown when no type is pre-selected or when arriving from a general URL */}
             <Field>
               <FieldLabel htmlFor="request-type">Request Type</FieldLabel>

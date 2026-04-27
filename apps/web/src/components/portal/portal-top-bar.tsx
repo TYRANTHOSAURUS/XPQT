@@ -21,12 +21,20 @@ export function PortalTopBar() {
   const tenantName = data?.tenant?.name?.trim() || 'Workplace';
 
   return (
-    <header className="sticky top-0 z-40 h-16 bg-background">
+    <header
+      className="
+        sticky top-0 z-40 h-16
+        bg-background/85 backdrop-blur
+        supports-[backdrop-filter]:bg-background/70
+        border-b border-border/50
+      "
+    >
       {/* Desktop: brand · nav · actions */}
       <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr] items-center gap-6 px-3 md:px-4 lg:px-6 mx-auto max-w-[1600px]">
         <Link
           to="/portal"
-          className="group inline-flex items-center gap-2.5 min-w-0 -ml-1 rounded-md px-1 py-1 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          viewTransition
+          className="inline-flex items-center gap-2.5 min-w-0 -ml-1 rounded-md px-1 py-1 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {branding?.logo_light_url ? (
             <img src={branding.logo_light_url} alt="" className="h-7 w-auto shrink-0" />
@@ -36,7 +44,7 @@ export function PortalTopBar() {
               aria-hidden
             />
           )}
-          <span className="truncate text-[13px] font-semibold tracking-tight text-foreground/90 group-hover:text-foreground transition-colors">
+          <span className="truncate text-[13px] font-semibold tracking-tight text-foreground">
             {tenantName}
           </span>
         </Link>
@@ -60,7 +68,7 @@ export function PortalTopBar() {
 
       {/* Mobile: brand · search · location · account */}
       <div className="md:hidden flex h-full items-center gap-2 px-3">
-        <Link to="/portal" className="flex items-center gap-2 min-w-0 flex-1">
+        <Link to="/portal" viewTransition className="flex items-center gap-2 min-w-0 flex-1">
           {branding?.logo_light_url ? (
             <img src={branding.logo_light_url} alt="" className="h-6 w-auto shrink-0" />
           ) : (

@@ -138,6 +138,16 @@
     --ease-smooth: cubic-bezier(0.32, 0.72, 0, 1);
     --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1.1);
     --ease-swift-out: cubic-bezier(0.4, 0, 1, 1);
+
+    /* Portal-specific motion tempo. The whole employee portal speaks one
+       cadence: a soft 200ms enter, 120ms press, 240ms cross-route morph.
+       Anything in `apps/web/src/components/portal/**` should reach for
+       these tokens before introducing a new duration/curve. */
+    --ease-portal: cubic-bezier(0.32, 0.72, 0, 1);
+    --dur-portal-press: 120ms;
+    --dur-portal-hover: 180ms;
+    --dur-portal-enter: 380ms;
+    --dur-portal-route: 240ms;
     }
   body {
     @apply bg-background text-foreground antialiased;
@@ -249,6 +259,93 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ─── Portal motion primitives ─────────────────────────────────────────
+   Reusable enter/skeleton animations for the employee portal. Kept here
+   so portal pages don't reinvent durations or curves and so a global
+   prefers-reduced-motion override neutralises them automatically. */
+
+@keyframes portal-rise {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes portal-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.portal-rise {
+  animation: portal-rise var(--dur-portal-enter) var(--ease-portal) both;
+}
+
+/* Stagger helpers — child indices 1..n get an extra delay. We cap at 12
+   because anything larger should re-virtualise rather than animate.
+   Set --portal-stagger-offset on the container to shift the whole
+   cascade later — useful for page-level section sequencing where one
+   group should rise after another finishes. */
+.portal-stagger > * {
+  animation: portal-rise var(--dur-portal-enter) var(--ease-portal) both;
+}
+.portal-stagger > *:nth-child(1)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 0ms);   }
+.portal-stagger > *:nth-child(2)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 40ms);  }
+.portal-stagger > *:nth-child(3)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 80ms);  }
+.portal-stagger > *:nth-child(4)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 120ms); }
+.portal-stagger > *:nth-child(5)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 160ms); }
+.portal-stagger > *:nth-child(6)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 200ms); }
+.portal-stagger > *:nth-child(7)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 240ms); }
+.portal-stagger > *:nth-child(8)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 280ms); }
+.portal-stagger > *:nth-child(9)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 320ms); }
+.portal-stagger > *:nth-child(10) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 360ms); }
+.portal-stagger > *:nth-child(11) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 400ms); }
+.portal-stagger > *:nth-child(12) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 440ms); }
+
+.portal-skeleton {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--muted) 100%, transparent) 0%,
+    color-mix(in oklab, var(--muted) 50%,  transparent) 50%,
+    color-mix(in oklab, var(--muted) 100%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: portal-shimmer 1400ms linear infinite;
+}
+
+/* ─── Collapse-out (used for dismissable cards like announcements) ─────
+   Uses the grid-template-rows 1fr → 0fr trick so the height animation
+   works without measuring the element. Chrome 117+ / Safari 17.4+;
+   older browsers skip the animation but the element still removes. */
+.portal-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows var(--dur-portal-enter) var(--ease-swift-out),
+    opacity var(--dur-portal-hover) var(--ease-swift-out),
+    margin var(--dur-portal-enter) var(--ease-swift-out);
+  opacity: 1;
+}
+.portal-collapse > * {
+  overflow: hidden;
+  min-height: 0;
+}
+.portal-collapse[data-state="exiting"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin: 0 !important;
+}
+
+/* ─── Image fade-in on load ────────────────────────────────────────────
+   Decorations like cover photos and hero images load asynchronously.
+   Mark them with data-portal-fade and wire onLoad → data-loaded="true";
+   the image fades in instead of snapping. The default is loaded so
+   SSR / cached / data-URI images don't flash invisible. */
+img[data-portal-fade] {
+  opacity: 0;
+  transition: opacity 250ms var(--ease-portal);
+}
+img[data-portal-fade][data-loaded="true"] {
+  opacity: 1;
 }
 
 /* Workflow editor — subtle animated flow on edges */

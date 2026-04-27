@@ -1,42 +1,14 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useCatalogCategories } from '@/api/catalog';
+import { portalCatalogOptions } from '@/api/portal-catalog';
 import { usePortal } from '@/providers/portal-provider';
 import { PortalPage } from '@/components/portal/portal-page';
 import { PortalHomeHero } from '@/components/portal/portal-home-hero';
 import { PortalCategoryCard } from '@/components/portal/portal-category-card';
 import { PortalActivityPanel } from '@/components/portal/portal-activity-panel';
 import { PortalAnnouncementCard } from '@/components/portal/portal-announcement-card';
-import { useQuery, queryOptions } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api';
-
-interface PortalCatalogCategory {
-  id: string;
-  name: string;
-  icon: string | null;
-  parent_category_id: string | null;
-  request_types: Array<{ id: string }>;
-  cover_image_url: string | null;
-  cover_source: 'image' | 'icon' | null;
-  description: string | null;
-}
-
-interface PortalCatalogResponse {
-  selected_location: { id: string; name: string; type: string };
-  categories: PortalCatalogCategory[];
-}
-
-const portalCatalogOptions = (locationId: string | undefined) =>
-  queryOptions({
-    queryKey: ['portal', 'catalog', locationId],
-    queryFn: ({ signal }) =>
-      apiFetch<PortalCatalogResponse>(
-        `/portal/catalog?location_id=${encodeURIComponent(locationId ?? '')}`,
-        { signal },
-      ),
-    enabled: Boolean(locationId),
-    staleTime: 60_000,
-  });
 
 export function PortalHome() {
   const { data: portal } = usePortal();
@@ -57,17 +29,30 @@ export function PortalHome() {
 
   return (
     <PortalPage>
+      {/* Page-level cascade: hero rises first (0ms), announcement at +120ms,
+          the cards below at +240ms (with their own internal stagger). The
+          aside on the right rises with the cards but slightly later so the
+          eye reads left-then-right.
+          The CSS variables on each section feed into .portal-rise's
+          animation-delay or .portal-stagger's --portal-stagger-offset. */}
       <PortalHomeHero />
       <div className="mt-8 md:mt-10">
-        <div className="mb-6 md:mb-8">
-          <PortalAnnouncementCard />
-        </div>
+        {/* Announcement carries its own bottom margin + collapse-on-dismiss
+            wrapper. When dismissed or absent it returns null and consumes
+            no space — the grid below moves up cleanly. */}
+        <PortalAnnouncementCard />
         <div className="grid gap-8 md:gap-10 md:grid-cols-[1.8fr_1fr]">
           <section>
-            <div className="mb-3 text-xs uppercase tracking-widest text-muted-foreground font-semibold">
+            <h2
+              className="mb-3 text-sm font-semibold tracking-tight text-foreground portal-rise"
+              style={{ animationDelay: '200ms' }}
+            >
               Browse services
-            </div>
-            <div className="grid gap-3 grid-cols-2 md:grid-cols-3">
+            </h2>
+            <div
+              className="portal-stagger grid gap-3 grid-cols-2 md:grid-cols-3"
+              style={{ ['--portal-stagger-offset' as string]: '240ms' } as React.CSSProperties}
+            >
               {topLevel.map((c) => (
                 <PortalCategoryCard
                   key={c.id}
@@ -82,10 +67,10 @@ export function PortalHome() {
             </div>
           </section>
 
-          <section className="order-last md:order-none space-y-4">
-            <div className="mb-3 text-xs uppercase tracking-widest text-muted-foreground font-semibold">
-              Your activity
-            </div>
+          <section
+            className="order-last md:order-none portal-rise"
+            style={{ animationDelay: '320ms' }}
+          >
             <PortalActivityPanel />
           </section>
         </div>
