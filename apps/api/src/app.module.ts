@@ -40,6 +40,7 @@ import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.
 import { OrdersModule } from './modules/orders/orders.module';
 import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templates.module';
 import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
+import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
     OrdersModule,
     BundleTemplatesModule,
     CostCentersModule,
+    PrivacyComplianceModule,
   ],
   controllers: [HealthController],
   providers: [
