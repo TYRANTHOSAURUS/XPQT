@@ -290,10 +290,13 @@ The four lifecycle methods + their entry points:
 
 | Method | Entry point | Notes |
 |---|---|---|
-| `BundleService.attachServicesToReservation` | `POST /reservations` (with `services[]`) — called from `BookingFlowService.create` post-write | Lazy bundle create; one order per service_type group; per-line asset GiST conflict guard fires here |
+| `BundleService.attachServicesToReservation` | `POST /reservations` (with `services[]`) — called from `BookingFlowService.create` post-write, **before** `startSeries` so the materialiser sees `master.booking_bundle_id` and clones services per occurrence | Lazy bundle create; one order per service_type group; per-line asset GiST conflict guard fires here |
 | `OrderService.createStandalone` | `POST /orders/standalone` | Services-only bundle (`primary_reservation_id` null) |
-| `BundleCascadeService.cancelLine` | (internal) | Per-line cancel + cascade to ticket + asset_reservation; auto-close empty-scope approvals |
+| `BundleCascadeService.cancelLine` | `POST /booking-bundles/lines/:lineId/cancel` | Per-line cancel + cascade to ticket + asset_reservation; auto-close empty-scope approvals |
 | `BundleCascadeService.cancelBundle` | `POST /booking-bundles/:id/cancel` | Smart-default cascade with `keep_line_ids[]` opt-out; fulfilled lines protected |
+| `BundleCascadeService.cancelBundleInternal` | called by `ReservationService.cancelOne` and `RecurrenceService.cancelForward` when a cancelled reservation has `booking_bundle_id` set | Visibility-bypass internal cascade; the caller already validated the user can cancel the reservation. Best-effort — failures log but don't undo the reservation cancel |
+| `OrderService.cloneOrderForOccurrence` | called by `RecurrenceService.materialize` per new occurrence | Clones order + lines + asset reservations; `repeats_with_series=false` lines stay master-only; per-occurrence asset GiST conflict marks `recurrence_skipped` without blocking siblings |
+| `OrderService.{override,skip,revert}LineForOccurrence` | `PATCH /order-line-items/:id/{override,skip,revert}` | Per-occurrence tweaks; sets `recurrence_overridden=true` so series-level edits leave the line alone. Authorisation: line's order requester or `rooms.read_all`/`rooms.admin` |
 
 ### Service rule resolver
 
@@ -352,6 +355,22 @@ exclusion's `WHERE` clause covers `status='confirmed'` only.
 asset_reservations
   exclude using gist (asset_id with =, time_range with &&) where (status = 'confirmed')
 ```
+
+### Admin endpoints + permissions
+
+Sub-project 2 admin endpoints follow the same gating pattern as
+`room-booking-rules`: `PermissionGuard.requirePermission(req, 'rooms.admin')`
+inside the controller. Reads on `bundle_templates` and `cost_centers` are
+intentionally **NOT** gated — the portal `/portal/rooms` chip picker and
+`/portal/order` cost-center selector consume them. Service rules are
+admin-only on both reads and writes.
+
+| Surface | Read | Write |
+|---|---|---|
+| `/admin/booking-services/rules` | `rooms.admin` | `rooms.admin` |
+| `/admin/booking-services/rule-templates` | `rooms.admin` | (read-only seed) |
+| `/admin/bundle-templates` | open | `rooms.admin` |
+| `/admin/cost-centers` | open | `rooms.admin` |
 
 ### Status rollup
 
