@@ -4,6 +4,8 @@ import {
   BookOpen,
   Building2,
   Calendar,
+  CalendarCog,
+  ChefHat,
   Clock,
   Compass,
   Filter,
@@ -11,14 +13,17 @@ import {
   GitBranch,
   HandCoins,
   Layers,
+  ListChecks,
   ListTree,
   MapPin,
   Network,
   Package,
   Palette,
   PersonStanding,
+  Receipt,
   Route,
   Shield,
+  Sparkles,
   Store,
   UserCog,
   Users,
@@ -201,9 +206,43 @@ const operationsItems: AdminNavItem[] = [
   },
 ];
 
+const roomBookingItems: AdminNavItem[] = [
+  {
+    title: 'Room booking rules',
+    path: '/admin/room-booking-rules',
+    icon: ListChecks,
+    description: 'Approval, capacity, and availability rules for room bookings',
+  },
+  {
+    title: 'Booking services',
+    path: '/admin/booking-services',
+    icon: ChefHat,
+    description: 'Catering, AV, and setup — vendors, menus, items, and rules',
+  },
+  {
+    title: 'Bundle templates',
+    path: '/admin/bundle-templates',
+    icon: Sparkles,
+    description: 'Pre-filled meeting + service combos for the room picker',
+  },
+  {
+    title: 'Cost centers',
+    path: '/admin/cost-centers',
+    icon: Receipt,
+    description: 'GL chargeback codes that drive bundle approval routing',
+  },
+  {
+    title: 'Calendar sync',
+    path: '/admin/calendar-sync',
+    icon: CalendarCog,
+    description: 'Outlook intercept health and conflict inbox',
+  },
+];
+
 export const adminNavGroups: AdminNavGroup[] = [
   { label: 'Configuration', items: configItems },
   { label: 'People', items: peopleItems },
   { label: 'Authorisation & Permissions', items: authorizationItems },
   { label: 'Operations', items: operationsItems },
+  { label: 'Room booking', items: roomBookingItems },
 ];
