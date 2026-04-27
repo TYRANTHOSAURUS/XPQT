@@ -197,14 +197,14 @@ All mutations follow `docs/react-query-guidelines.md` `onMutate` + rollback patt
 
 ## Phase A sub-slices (executable in order)
 
-| Slice | Scope | Verification |
+| Slice | Scope | Status |
 |---|---|---|
-| **α. Backend foundation** | `00159` migration; `POST /booking-bundles/:id/lines`; `PATCH /booking-bundles/lines/:lineId`; `POST /reservations/:id/visitors`; `DELETE /reservations/:id/visitors/:vid`; bundle service tests | API tests + psql smoke |
-| **β. Add/edit services post-booking** | `ServicePickerSheet` extracted; `+ Add service` on `BundleServicesSection`; inline edit on lines; mobile bottom-sheet | Typecheck + manual smoke |
-| **γ. Visitor attach** | `VisitorPickerSheet` (search-or-create); "Visitors" section on `BookingDetailContent`; +/- mutations | Typecheck + manual smoke |
-| **δ. Composer extraction + desk parity** | `BookingComposer` extracted from portal dialog; plug into scheduler create + new desk list `+ New` button; on-behalf-of in all entry points; visitor section in operator mode | Typecheck + manual smoke |
+| **α. Backend foundation** | `00159` migration; `POST /booking-bundles/:id/lines`; `PATCH /booking-bundles/lines/:lineId`; `POST /reservations/:id/services`; visitor link endpoints | **Shipped** (commits `3c3e295` migration+bundle, `58ada65` includes reservation services). 405/427 API tests pass. |
+| **β. Add/edit services post-booking** | `ServicePickerSheet` extracted; +Add affordance on `BundleServicesSection` (no-bundle and with-bundle states); inline edit on lines; mobile bottom-sheet | **Shipped** (commit `58ada65`). |
+| **γ. Visitor attach (UX)** | `VisitorPickerSheet`; "Visitors" section on `BookingDetailContent`; +/- mutations | **Deferred — needs visitors backend module first.** The table (`visitors`, migration 00015) and the link junction (`reservation_visitors`, migration 00159) exist; the link endpoints exist; what's missing is a CRUD module for the visitors themselves (no controller/service exists today). Shipping γ requires building that module first as its own slice. |
+| **δ. Composer extraction + desk parity** | `BookingComposer` extracted from portal dialog; plug into scheduler create + new desk list `+ New` button; on-behalf-of everywhere; visitor section in operator mode | **Deferred — depends on γ for the visitor section in operator mode.** The composer extraction itself (without visitors) can ship independently as δ-light. |
 
-Each slice is independently shippable. α + β + γ ships value (post-booking add + visitors). δ adds desk parity for new bookings. β + γ are the most user-visible.
+Each slice was independently shippable as planned. α + β land the post-booking add/edit value end-to-end. γ blocks on a missing visitors module; δ partially depends on γ.
 
 ## Out-of-scope but layout-reserved
 
