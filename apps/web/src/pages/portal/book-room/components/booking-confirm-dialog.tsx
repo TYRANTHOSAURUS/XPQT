@@ -131,6 +131,12 @@ export function BookingConfirmDialog({
   // pre-selected services — quantities show in the input so the user can
   // tweak before submitting; unit prices are filled in once they expand a
   // section and the lazy-fetch lands.
+  //
+  // The dependency list intentionally excludes `attendeeCount`: the
+  // per-attendee multiplier is recomputed at submit time (see servicesPayload
+  // below), so we don't wipe selections when the user changes the headcount
+  // on the dialog. Including it here would re-seed (clearing manual tweaks)
+  // every keystroke in the attendees field.
   useEffect(() => {
     if (!open) return;
     setRecurring(Boolean(recurrenceRule));
@@ -160,7 +166,8 @@ export function BookingConfirmDialog({
     setCateringSelections(seeds);
     setAvSelections([]);
     setSetupSelections([]);
-  }, [open, recurrenceRule, primaryRoom?.space_id, templateServices, attendeeCount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- attendeeCount intentionally omitted
+  }, [open, recurrenceRule, primaryRoom?.space_id, templateServices]);
 
   const createBooking = useCreateBooking();
   const multiBooking = useMultiRoomBooking();

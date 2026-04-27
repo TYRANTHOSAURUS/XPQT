@@ -15,8 +15,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, XCircle, Inbox } from 'lucide-react';
 import { usePendingApprovals, useRespondApproval } from '@/api/approvals';
 import { useReservationDetail } from '@/api/room-booking';
+import { useBundle } from '@/api/booking-bundles';
 import { useAuth } from '@/providers/auth-provider';
-import { formatFullTimestamp } from '@/lib/format';
+import { formatCurrency, formatFullTimestamp, formatTimeShort } from '@/lib/format';
 
 
 /* ---------- Helpers ---------- */
@@ -212,6 +213,7 @@ export function ApprovalsPage() {
  */
 function ApprovalEntityCell({ type, id }: { type: string; id: string }) {
   if (type === 'reservation') return <ReservationEntityCell id={id} />;
+  if (type === 'booking_bundle') return <BundleEntityCell id={id} />;
   if (type === 'ticket') {
     return (
       <div>
@@ -230,6 +232,80 @@ function ApprovalEntityCell({ type, id }: { type: string; id: string }) {
       <span className="block text-xs text-muted-foreground font-mono mt-0.5">
         {id.slice(0, 8)}…
       </span>
+    </div>
+  );
+}
+
+/**
+ * Bundle approver cell per spec §4.4 — shows the room + service lines so
+ * the approver sees the full scope of what they're approving in one row.
+ *
+ *   Sales kickoff Apr 30
+ *     ✓ Meeting Room 2.12 · 09:00–11:00 · 14 attendees
+ *     ✓ Catering: Continental breakfast × 14 · $420 · 12:00
+ *     ✓ AV: Projector × 1
+ */
+function BundleEntityCell({ id }: { id: string }) {
+  const { data: bundle, isLoading } = useBundle(id);
+  if (isLoading) {
+    return (
+      <div>
+        <span className="font-medium">Booking bundle</span>
+        <span className="block text-xs text-muted-foreground mt-0.5">Loading…</span>
+      </div>
+    );
+  }
+  if (!bundle) {
+    return (
+      <div>
+        <span className="font-medium">Booking bundle</span>
+        <span className="block text-xs text-muted-foreground font-mono mt-0.5">
+          {id.slice(0, 8)}…
+        </span>
+      </div>
+    );
+  }
+  const lines = bundle.lines ?? [];
+  const total = lines.reduce(
+    (sum, l) => sum + (l.line_total != null ? Number(l.line_total) : 0),
+    0,
+  );
+  return (
+    <div className="space-y-1">
+      <Link
+        to={`/desk/bookings?scope=bundles&id=${bundle.primary_reservation_id ?? ''}`}
+        className="font-medium hover:underline"
+      >
+        Booking bundle
+      </Link>
+      <div className="text-xs text-muted-foreground tabular-nums">
+        <time dateTime={bundle.start_at}>{formatFullTimestamp(bundle.start_at)}</time>
+      </div>
+      {lines.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+          {lines.slice(0, 4).map((line) => (
+            <li key={line.id} className="flex items-baseline gap-2">
+              <span className="text-foreground">
+                {line.catalog_item_name ?? 'Service item'} × {line.quantity}
+              </span>
+              {line.line_total != null && (
+                <span className="tabular-nums">{formatCurrency(line.line_total)}</span>
+              )}
+              {line.service_window_start_at && (
+                <span className="tabular-nums">
+                  · {formatTimeShort(line.service_window_start_at)}
+                </span>
+              )}
+            </li>
+          ))}
+          {lines.length > 4 && (
+            <li className="italic">+{lines.length - 4} more line{lines.length - 4 === 1 ? '' : 's'}</li>
+          )}
+        </ul>
+      )}
+      {total > 0 && (
+        <div className="text-xs font-medium tabular-nums">{formatCurrency(total)} total</div>
+      )}
     </div>
   );
 }

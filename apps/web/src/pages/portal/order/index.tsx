@@ -4,12 +4,14 @@ import { Button } from '@/components/ui/button';
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
   FieldLegend,
   FieldSet,
   FieldSeparator,
 } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { SpaceSelect } from '@/components/space-select';
@@ -146,14 +148,17 @@ export function PortalOrderPage() {
           </Field>
           <Field>
             <FieldLabel htmlFor="order-end">Ends</FieldLabel>
-            <input
+            <Input
               id="order-end"
               type="time"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 tabular-nums"
               value={endTime}
               onChange={(e) => setEndTime(e.target.value)}
               step={300}
+              className="tabular-nums"
             />
+            {endTime <= startTime && (
+              <FieldError>End time must be after start time.</FieldError>
+            )}
           </Field>
         </FieldSet>
 

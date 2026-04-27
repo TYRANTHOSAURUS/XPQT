@@ -40,11 +40,14 @@ import {
 import { cn } from '@/lib/utils';
 import {
   useCreateServiceRule,
+  useServiceRuleTemplates,
   useServiceRules,
   type ServiceRule,
   type ServiceRuleEffect,
   type ServiceRuleTargetKind,
+  type ServiceRuleTemplate,
 } from '@/api/service-rules';
+import { Sparkles } from 'lucide-react';
 import { toastCreated, toastError } from '@/lib/toast';
 
 const TARGET_KIND_LABEL: Record<ServiceRuleTargetKind, string> = {
@@ -201,10 +204,28 @@ function CreateDialog({
 }) {
   const navigate = useNavigate();
   const create = useCreateServiceRule();
+  const { data: templates } = useServiceRuleTemplates();
   const [name, setName] = useState('');
   const [targetKind, setTargetKind] = useState<ServiceRuleTargetKind>('tenant');
   const [effect, setEffect] = useState<ServiceRuleEffect>('require_approval');
+  const [appliesWhen, setAppliesWhen] = useState<Record<string, unknown>>({});
+  const [appliedTemplateId, setAppliedTemplateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const handleApplyTemplate = (template: ServiceRuleTemplate) => {
+    if (appliedTemplateId === template.id) {
+      // Toggle off — clear back to defaults.
+      setAppliedTemplateId(null);
+      setAppliesWhen({});
+      return;
+    }
+    setAppliedTemplateId(template.id);
+    setName(template.name);
+    setEffect(template.effect_default);
+    // Use the template's predicate as a starting point; admins refine on
+    // the detail page (replace `$.threshold` placeholders, etc.).
+    setAppliesWhen(template.applies_when_template);
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -217,15 +238,18 @@ function CreateDialog({
         target_kind: targetKind,
         target_id: null,
         effect,
-        applies_when: {},
+        applies_when: appliesWhen,
         priority: 100,
-        active: false, // start inactive — predicate is empty / always-fires
+        active: false, // start inactive — admins activate after wiring up the predicate
+        template_id: appliedTemplateId,
       });
       toastCreated('Service rule', {
         onView: () => navigate(`/admin/booking-services/rules/${r.id}`),
       });
       onOpenChange(false);
       setName('');
+      setAppliesWhen({});
+      setAppliedTemplateId(null);
       setError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Create failed';
@@ -236,16 +260,45 @@ function CreateDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>New service rule</DialogTitle>
           <DialogDescription>
-            Start with a name + scope + effect. Configure the predicate, target, and approval routing
-            on the detail page. The rule starts inactive so it doesn't fire while you're still
-            setting it up.
+            Start from a template or pick a name + scope + effect. The rule starts inactive so it
+            doesn't fire while you're still setting it up.
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>
+          {(templates?.length ?? 0) > 0 && (
+            <Field>
+              <FieldLabel>Start from template</FieldLabel>
+              <FieldDescription>
+                Pre-fills name + effect + a predicate skeleton with{' '}
+                <code className="chip">$.params</code> placeholders to fill in on the detail page.
+              </FieldDescription>
+              <div className="flex flex-wrap gap-1.5">
+                {(templates ?? []).map((t) => {
+                  const selected = appliedTemplateId === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => handleApplyTemplate(t)}
+                      className={
+                        selected
+                          ? 'inline-flex items-center gap-1 rounded-full border border-primary bg-primary/10 px-2.5 py-1 text-xs text-primary'
+                          : 'inline-flex items-center gap-1 rounded-full border border-input bg-card px-2.5 py-1 text-xs hover:bg-accent/40'
+                      }
+                      title={t.description}
+                    >
+                      <Sparkles className="size-3" />
+                      {t.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
           <Field>
             <FieldLabel htmlFor="sr-name">Name</FieldLabel>
             <Input
