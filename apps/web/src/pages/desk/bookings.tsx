@@ -13,7 +13,7 @@ import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { formatRef } from '@/lib/format-ref';
-import { BookingDetailDrawer } from '@/pages/portal/me-bookings/components/booking-detail-drawer';
+import { BookingDetailDrawer } from '@/components/booking-detail/booking-detail-drawer';
 import { cn } from '@/lib/utils';
 
 type Scope =

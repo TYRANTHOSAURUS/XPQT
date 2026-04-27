@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { formatRef } from '@/lib/format-ref';
 import type { Reservation } from '@/api/room-booking';
-import { BookingStatusPill } from './booking-status-pill';
+import { BookingStatusPill } from '@/components/booking-detail/booking-status-pill';
 
 interface Props {
   reservation: Reservation;

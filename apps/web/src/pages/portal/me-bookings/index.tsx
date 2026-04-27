@@ -6,7 +6,7 @@ import { buttonVariants } from '@/components/ui/button';
 import { useReservationDetail } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
 import { BookingsList } from './components/bookings-list';
-import { BookingDetailDrawer } from './components/booking-detail-drawer';
+import { BookingDetailDrawer } from '@/components/booking-detail/booking-detail-drawer';
 
 type TabValue = 'upcoming' | 'past' | 'cancelled';
 
