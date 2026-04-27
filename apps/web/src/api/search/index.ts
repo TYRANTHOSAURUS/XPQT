@@ -11,7 +11,8 @@ export type SearchKind =
   | 'asset'
   | 'vendor'
   | 'team'
-  | 'request_type';
+  | 'request_type'
+  | 'reservation';
 
 export interface SearchHit {
   kind: SearchKind;
@@ -67,11 +68,13 @@ export const SEARCH_KIND_LABEL: Record<SearchKind, string> = {
   vendor: 'Vendors',
   team: 'Teams',
   request_type: 'Request types',
+  reservation: 'Bookings',
 };
 
 export const SEARCH_KIND_ORDER: SearchKind[] = [
   'ticket',
   'person',
+  'reservation',
   'room',
   'space',
   'asset',

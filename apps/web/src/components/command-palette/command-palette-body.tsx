@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   Box,
+  CalendarClock,
   CalendarDays,
   History,
   MapPin,
@@ -129,6 +130,14 @@ const KIND_META: Record<
     href: (id) => `/admin/request-types/${id}`,
     listHref: (q) => `/admin/request-types?q=${encodeURIComponent(q)}`,
   },
+  reservation: {
+    label: 'Bookings',
+    singular: 'booking',
+    icon: CalendarClock,
+    href: (id, { scope }) =>
+      scope === 'public' ? `/portal/me/bookings/${id}` : `/desk/bookings/${id}`,
+    listHref: (q) => `/desk/bookings?q=${encodeURIComponent(q)}`,
+  },
 };
 
 const PER_TYPE_LIMIT = 4;
@@ -136,6 +145,7 @@ const PER_TYPE_LIMIT = 4;
 const RESULT_KIND_ORDER: SearchKind[] = [
   'ticket',
   'person',
+  'reservation',
   'room',
   'space',
   'asset',
