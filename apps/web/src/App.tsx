@@ -115,6 +115,7 @@ const WebhooksPage = lazyNamed(() => import('@/pages/admin/webhooks'), 'Webhooks
 const WebhookCreatePage = lazyNamed(() => import('@/pages/admin/webhook-create'), 'WebhookCreatePage');
 const WebhookDetailPage = lazyNamed(() => import('@/pages/admin/webhook-detail'), 'WebhookDetailPage');
 const WebhookEventsPage = lazyNamed(() => import('@/pages/admin/webhook-events'), 'WebhookEventsPage');
+const PrivacyAdminPage = lazyNamed(() => import('@/pages/admin/privacy'), 'PrivacyAdminPage');
 const UsersPage = lazyNamed(() => import('@/pages/admin/users'), 'UsersPage');
 const UserDetailPage = lazyNamed(() => import('@/pages/admin/user-detail'), 'UserDetailPage');
 const UserRolesPage = lazyNamed(() => import('@/pages/admin/user-roles'), 'UserRolesPage');
@@ -309,6 +310,7 @@ export function App() {
                   <Route path="workflow-templates" element={<WorkflowTemplatesPage />} />
                   <Route path="workflow-templates/:id" element={<WorkflowEditorPage />} />
                   <Route path="workflow-templates/instances/:id" element={<WorkflowInstancePage />} />
+                  <Route path="settings/privacy" element={<PrivacyAdminPage />} />
                   <Route path="webhooks" element={<WebhooksPage />} />
                   <Route path="webhooks/new" element={<WebhookCreatePage />} />
                   <Route path="webhooks/:id" element={<WebhookDetailPage />} />

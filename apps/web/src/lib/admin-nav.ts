@@ -130,6 +130,12 @@ const configItems: AdminNavItem[] = [
     description: 'Outbound event subscriptions for external systems',
   },
   {
+    title: 'Privacy & data',
+    path: '/admin/settings/privacy',
+    icon: Shield,
+    description: 'GDPR retention, legal holds, and data subject requests',
+  },
+  {
     title: 'Branding',
     path: '/admin/branding',
     icon: Palette,
