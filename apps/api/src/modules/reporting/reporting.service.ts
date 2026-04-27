@@ -2,6 +2,13 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
+export interface BookingReportParams {
+  from: string;
+  to: string;
+  buildingId: string | null;
+  tz: string;
+}
+
 @Injectable()
 export class ReportingService {
   constructor(private readonly supabase: SupabaseService) {}
@@ -157,14 +164,28 @@ export class ReportingService {
 
   // Bookings overview report — single RPC round-trip.
   // Spec: docs/superpowers/specs/2026-04-27-bookings-overview-report-design.md
-  async getBookingsOverview(params: {
-    from: string;
-    to: string;
-    buildingId: string | null;
-    tz: string;
-  }) {
-    const tenant = TenantContext.current();
+  async getBookingsOverview(params: BookingReportParams) {
+    return this.callBookingReport('room_booking_report_overview', params);
+  }
 
+  async getBookingsUtilization(params: BookingReportParams) {
+    return this.callBookingReport('room_booking_utilization_report', params);
+  }
+
+  async getBookingsNoShows(params: BookingReportParams) {
+    return this.callBookingReport('room_booking_no_shows_report', params);
+  }
+
+  async getBookingsServices(params: BookingReportParams) {
+    return this.callBookingReport('room_booking_services_report', params);
+  }
+
+  async getBookingsDemand(params: BookingReportParams) {
+    return this.callBookingReport('room_booking_demand_report', params);
+  }
+
+  private async callBookingReport(rpc: string, params: BookingReportParams) {
+    const tenant = TenantContext.current();
     const fromDate = this.parseDate(params.from, 'from');
     const toDate = this.parseDate(params.to, 'to');
     if (fromDate > toDate) {
@@ -176,7 +197,7 @@ export class ReportingService {
     }
     const tz = this.validateTimezone(params.tz);
 
-    const { data, error } = await this.supabase.admin.rpc('room_booking_report_overview', {
+    const { data, error } = await this.supabase.admin.rpc(rpc, {
       p_tenant_id: tenant.id,
       p_from: params.from,
       p_to: params.to,

@@ -1,20 +1,37 @@
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import type { BookingsOverviewParams, BookingsOverviewResponse } from './types';
+import type {
+  BookingsReportParams,
+  BookingsOverviewResponse,
+  UtilizationReportResponse,
+  NoShowsReportResponse,
+  ServicesReportResponse,
+  DemandReportResponse,
+} from './types';
 
-export type { BookingsOverviewParams, BookingsOverviewResponse } from './types';
+export type {
+  BookingsReportParams, BookingsOverviewParams,
+  BookingsOverviewResponse, UtilizationReportResponse,
+  NoShowsReportResponse, ServicesReportResponse, DemandReportResponse,
+} from './types';
 
 export const bookingReportKeys = {
   all: ['booking-reports'] as const,
-  overview: (params: BookingsOverviewParams) =>
-    [...bookingReportKeys.all, 'overview', params] as const,
+  overview:    (p: BookingsReportParams) => [...bookingReportKeys.all, 'overview',    p] as const,
+  utilization: (p: BookingsReportParams) => [...bookingReportKeys.all, 'utilization', p] as const,
+  noShows:     (p: BookingsReportParams) => [...bookingReportKeys.all, 'no-shows',    p] as const,
+  services:    (p: BookingsReportParams) => [...bookingReportKeys.all, 'services',    p] as const,
+  demand:      (p: BookingsReportParams) => [...bookingReportKeys.all, 'demand',      p] as const,
 } as const;
 
-export function bookingsOverviewOptions(params: BookingsOverviewParams) {
-  return queryOptions({
-    queryKey: bookingReportKeys.overview(params),
+function makeReportOptions<T>(
+  path: string,
+  keyMaker: (p: BookingsReportParams) => readonly unknown[],
+) {
+  return (params: BookingsReportParams) => queryOptions({
+    queryKey: keyMaker(params),
     queryFn: ({ signal }) =>
-      apiFetch<BookingsOverviewResponse>('/reports/bookings/overview', {
+      apiFetch<T>(path, {
         signal,
         query: {
           from: params.from,
@@ -28,6 +45,14 @@ export function bookingsOverviewOptions(params: BookingsOverviewParams) {
   });
 }
 
-export function useBookingsOverview(params: BookingsOverviewParams) {
-  return useQuery(bookingsOverviewOptions(params));
-}
+export const bookingsOverviewOptions    = makeReportOptions<BookingsOverviewResponse>('/reports/bookings/overview',    bookingReportKeys.overview);
+export const bookingsUtilizationOptions = makeReportOptions<UtilizationReportResponse>('/reports/bookings/utilization', bookingReportKeys.utilization);
+export const bookingsNoShowsOptions     = makeReportOptions<NoShowsReportResponse>('/reports/bookings/no-shows',       bookingReportKeys.noShows);
+export const bookingsServicesOptions    = makeReportOptions<ServicesReportResponse>('/reports/bookings/services',      bookingReportKeys.services);
+export const bookingsDemandOptions      = makeReportOptions<DemandReportResponse>('/reports/bookings/demand',          bookingReportKeys.demand);
+
+export const useBookingsOverview    = (p: BookingsReportParams) => useQuery(bookingsOverviewOptions(p));
+export const useBookingsUtilization = (p: BookingsReportParams) => useQuery(bookingsUtilizationOptions(p));
+export const useBookingsNoShows     = (p: BookingsReportParams) => useQuery(bookingsNoShowsOptions(p));
+export const useBookingsServices    = (p: BookingsReportParams) => useQuery(bookingsServicesOptions(p));
+export const useBookingsDemand      = (p: BookingsReportParams) => useQuery(bookingsDemandOptions(p));

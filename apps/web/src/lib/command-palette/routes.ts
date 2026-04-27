@@ -205,7 +205,11 @@ const adminAliasMap: Record<string, string[]> = {
   '/admin/branding': ['theme', 'logo', 'colors'],
   '/admin/calendar-sync': ['outlook', 'google calendar'],
   '/admin/room-booking-rules': ['booking rules'],
-  '/admin/room-booking-reports': ['bookings report', 'utilization', 'no-show', 'occupancy'],
+  '/admin/room-booking-reports':              ['bookings report', 'overview', 'occupancy'],
+  '/admin/room-booking-reports/utilization':  ['utilization', 'capacity fit', 'underused rooms'],
+  '/admin/room-booking-reports/no-shows':     ['no-show', 'cancellation', 'top offenders'],
+  '/admin/room-booking-reports/services':     ['services attach', 'catering', 'spend', 'cost center'],
+  '/admin/room-booking-reports/demand':       ['demand', 'peak hours', 'contention', 'lead time'],
   '/admin/routing-studio': ['routing', 'dispatch'],
 };
 

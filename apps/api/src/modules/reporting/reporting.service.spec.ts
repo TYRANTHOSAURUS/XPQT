@@ -79,4 +79,39 @@ describe('ReportingService.getBookingsOverview', () => {
       })),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  describe.each([
+    ['getBookingsUtilization', 'room_booking_utilization_report'],
+    ['getBookingsNoShows',     'room_booking_no_shows_report'],
+    ['getBookingsServices',    'room_booking_services_report'],
+    ['getBookingsDemand',      'room_booking_demand_report'],
+  ] as const)('%s', (method, rpcName) => {
+    it(`calls ${rpcName} with the same window/tenant contract`, async () => {
+      const payload = { kpis: { total: 1 } };
+      const rpc = jest.fn().mockResolvedValue({ data: payload, error: null });
+      const svc = makeService(rpc);
+      const result = await withTenant(() => (svc as any)[method]({
+        from: '2026-04-01', to: '2026-04-30', buildingId: 'b-1', tz: 'Europe/Amsterdam',
+      }));
+      expect(rpc).toHaveBeenCalledWith(rpcName, {
+        p_tenant_id: 'tenant-1',
+        p_from: '2026-04-01',
+        p_to: '2026-04-30',
+        p_building_id: 'b-1',
+        p_tz: 'Europe/Amsterdam',
+      });
+      expect(result).toBe(payload);
+    });
+
+    it(`rejects an inverted window for ${method}`, async () => {
+      const rpc = jest.fn();
+      const svc = makeService(rpc);
+      await expect(
+        withTenant(() => (svc as any)[method]({
+          from: '2026-05-01', to: '2026-04-01', buildingId: null, tz: 'UTC',
+        })),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(rpc).not.toHaveBeenCalled();
+    });
+  });
 });

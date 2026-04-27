@@ -54,6 +54,10 @@ const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-syn
 const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/index'), 'RoomBookingRulesPage');
 const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
 const RoomBookingReportsPage = lazyNamed(() => import('@/pages/admin/room-booking-reports/index'), 'RoomBookingReportsPage');
+const RoomBookingUtilizationReport = lazyNamed(() => import('@/pages/admin/room-booking-reports/utilization'), 'RoomBookingUtilizationReport');
+const RoomBookingNoShowsReport     = lazyNamed(() => import('@/pages/admin/room-booking-reports/no-shows'),    'RoomBookingNoShowsReport');
+const RoomBookingServicesReport    = lazyNamed(() => import('@/pages/admin/room-booking-reports/services'),   'RoomBookingServicesReport');
+const RoomBookingDemandReport      = lazyNamed(() => import('@/pages/admin/room-booking-reports/demand'),     'RoomBookingDemandReport');
 const CostCentersPage = lazyNamed(() => import('@/pages/admin/cost-centers'), 'CostCentersPage');
 const CostCenterDetailPage = lazyNamed(() => import('@/pages/admin/cost-center-detail'), 'CostCenterDetailPage');
 const BundleTemplatesPage = lazyNamed(() => import('@/pages/admin/bundle-templates'), 'BundleTemplatesPage');
@@ -212,6 +216,10 @@ export function App() {
                     <Route path="assets" element={<AssetsReport />} />
                     <Route path="vendors" element={<VendorsReport />} />
                     <Route path="bookings" element={<RoomBookingReportsPage />} />
+                    <Route path="bookings/utilization" element={<RoomBookingUtilizationReport />} />
+                    <Route path="bookings/no-shows"    element={<RoomBookingNoShowsReport />} />
+                    <Route path="bookings/services"    element={<RoomBookingServicesReport />} />
+                    <Route path="bookings/demand"      element={<RoomBookingDemandReport />} />
                   </Route>
                   <Route path="settings" element={<Navigate to="/admin" replace />} />
                 </Route>
@@ -231,8 +239,12 @@ export function App() {
                   {/* Room booking rules (D-engine) — index + detail */}
                   <Route path="room-booking-rules" element={<RoomBookingRulesPage />} />
                   <Route path="room-booking-rules/:id" element={<RoomBookingRuleDetailPage />} />
-                  {/* Bookings overview report */}
-                  <Route path="room-booking-reports" element={<RoomBookingReportsPage />} />
+                  {/* Bookings reports — overview + management deep-dives */}
+                  <Route path="room-booking-reports"              element={<RoomBookingReportsPage />} />
+                  <Route path="room-booking-reports/utilization"  element={<RoomBookingUtilizationReport />} />
+                  <Route path="room-booking-reports/no-shows"     element={<RoomBookingNoShowsReport />} />
+                  <Route path="room-booking-reports/services"     element={<RoomBookingServicesReport />} />
+                  <Route path="room-booking-reports/demand"       element={<RoomBookingDemandReport />} />
                   {/* Cost centers (sub-project 2) — GL chargeback codes */}
                   <Route path="cost-centers" element={<CostCentersPage />} />
                   <Route path="cost-centers/:id" element={<CostCenterDetailPage />} />

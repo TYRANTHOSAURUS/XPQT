@@ -49,6 +49,7 @@ import {
   XCircleIcon,
   GlobeIcon,
   SearchIcon,
+  ChefHatIcon,
 } from "lucide-react"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { useQuery, queryOptions } from "@tanstack/react-query"
@@ -118,7 +119,11 @@ const reportGroups: Array<{
   {
     title: "Room booking",
     items: [
-      { to: "/desk/reports/bookings", label: "Bookings overview", icon: CalendarCheck2Icon },
+      { to: "/desk/reports/bookings",             label: "Overview",            icon: CalendarCheck2Icon },
+      { to: "/desk/reports/bookings/utilization", label: "Utilization",         icon: GaugeIcon },
+      { to: "/desk/reports/bookings/no-shows",    label: "No-shows & cancels",  icon: AlertTriangleIcon },
+      { to: "/desk/reports/bookings/services",    label: "Services & costs",    icon: ChefHatIcon },
+      { to: "/desk/reports/bookings/demand",      label: "Demand & contention", icon: HourglassIcon },
     ],
   },
   {
