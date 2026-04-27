@@ -99,6 +99,21 @@ export function DeskBookingsPage() {
     setParams(p, { replace: true });
   };
 
+  // Carry transferable filter context to /desk/scheduler when the user
+  // hits "Open scheduler". Today the bookings page only has a search
+  // term and (future) a building filter; both keys map 1:1 to scheduler
+  // URL params (`?q=…&building=…`). Page-specific keys like `scope` and
+  // `id` are intentionally dropped — they don't translate.
+  const schedulerLinkTo = useMemo(() => {
+    const sp = new URLSearchParams();
+    const q = search.trim();
+    if (q) sp.set('q', q);
+    const building = params.get('building');
+    if (building) sp.set('building', building);
+    const qs = sp.toString();
+    return qs ? `/desk/scheduler?${qs}` : '/desk/scheduler';
+  }, [search, params]);
+
   const openDetail = (id: string) => {
     const p = new URLSearchParams(params);
     p.set('id', id);
@@ -122,7 +137,7 @@ export function DeskBookingsPage() {
               Every room reservation in this workspace. Use the scheduler for the calendar grid.
             </p>
           </div>
-          <Link to="/desk/scheduler">
+          <Link to={schedulerLinkTo}>
             <Button variant="outline" size="sm" className="gap-1.5">
               <CalendarDays className="size-3.5" />
               Open scheduler
