@@ -622,6 +622,10 @@ export class OrderService {
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
     if (error) throw error;
+    void this.audit(tenantId, 'order.line_overridden', 'order_line_item', lineId, {
+      line_id: lineId,
+      patch,
+    });
     return { id: lineId, recurrence_overridden: true };
   }
 
@@ -641,6 +645,10 @@ export class OrderService {
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
     if (error) throw error;
+    void this.audit(tenantId, 'order.line_skipped', 'order_line_item', lineId, {
+      line_id: lineId,
+      reason: reason ?? 'user_skipped',
+    });
     return { id: lineId, recurrence_skipped: true };
   }
 
@@ -658,6 +666,9 @@ export class OrderService {
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
     if (error) throw error;
+    void this.audit(tenantId, 'order.line_reverted', 'order_line_item', lineId, {
+      line_id: lineId,
+    });
     return { id: lineId };
   }
 
