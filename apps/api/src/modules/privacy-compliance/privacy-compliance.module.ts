@@ -1,39 +1,98 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module, OnApplicationBootstrap } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
+import { DbService } from '../../common/db/db.service';
+import { AnonymizationAuditService } from './anonymization-audit.service';
 import { AuditOutboxService } from './audit-outbox.service';
 import { AuditOutboxWorker } from './audit-outbox.worker';
 import { DataCategoryRegistry } from './data-category-registry.service';
 import { RetentionService } from './retention.service';
 import { RetentionWorker } from './retention.worker';
+import { VisitorRecordsAdapter } from './adapters/visitor-records.adapter';
+import { PersonsAdapter } from './adapters/persons.adapter';
+import { AuditEventsAdapter } from './adapters/audit-events.adapter';
+import {
+  buildEmailNotificationsAdapter,
+  buildNoOpAdapters,
+  buildPendingSpecAdapters,
+  buildWebhookNotificationsAdapter,
+} from './adapters/concrete-adapters';
 
 /**
  * Privacy compliance / GDPR baseline subsystem.
  *
- * Wave 0 Sprint 1 deliverables (per gdpr-baseline-design.md §15):
- *   - audit_outbox infrastructure (cross-spec shared per cross-spec map §3.2)
- *   - retention category registry + adapter contract
- *   - RetentionService for settings + apply
- *   - Background workers (audit drain, nightly retention, partition maintenance)
+ * Sprint 1 shipped: outbox + registry + retention service + worker scaffolding.
+ * Sprint 2 shipped: 16 concrete adapters wired into the registry; boot-time
+ * coverage check guards against silently missing categories.
  *
- * Sprint 2 will register concrete DataCategoryAdapter implementations.
- * Sprint 3 wires the @LogPersonalDataAccess decorator + access endpoint.
- * Sprint 4 ships the admin UI + erasure endpoint.
+ * Per gdpr-baseline-design.md §17 (risk: "Adapter coverage incomplete"),
+ * onApplicationBootstrap diff-checks the registered adapters vs. the seed
+ * function's category set — warnings surface anything missing.
  */
 @Module({
   imports: [DbModule],
   providers: [
     AuditOutboxService,
     AuditOutboxWorker,
+    AnonymizationAuditService,
     DataCategoryRegistry,
     RetentionService,
     RetentionWorker,
+
+    // Class-based adapters for the categories that need bespoke logic.
+    VisitorRecordsAdapter,
+    PersonsAdapter,
+    AuditEventsAdapter,
   ],
   exports: [
-    // Other modules import these — they're the entry points for emitting
-    // audits + registering data categories from outside the privacy module.
     AuditOutboxService,
+    AnonymizationAuditService,
     DataCategoryRegistry,
     RetentionService,
   ],
 })
-export class PrivacyComplianceModule {}
+export class PrivacyComplianceModule implements OnApplicationBootstrap {
+  private readonly log = new Logger(PrivacyComplianceModule.name);
+
+  constructor(
+    private readonly db: DbService,
+    private readonly registry: DataCategoryRegistry,
+    private readonly retention: RetentionService,
+    private readonly visitorRecords: VisitorRecordsAdapter,
+    private readonly persons: PersonsAdapter,
+    private readonly auditEvents: AuditEventsAdapter,
+  ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    // 1. Register class-based adapters (DI-built, share connections).
+    this.registry.register(this.visitorRecords);
+    this.registry.register(this.persons);
+    this.registry.register(this.auditEvents);
+
+    // 2. Register factory-built adapters (composition-based).
+    this.registry.register(buildWebhookNotificationsAdapter(this.db));
+    this.registry.register(buildEmailNotificationsAdapter(this.db));
+    for (const a of buildNoOpAdapters()) this.registry.register(a);
+    for (const a of buildPendingSpecAdapters()) this.registry.register(a);
+
+    // 3. Coverage check — every seeded category must have an adapter.
+    //    Use the first active tenant's seeded category list as the source
+    //    of truth; the seed function is canonical so any tenant will do.
+    const tenants = await this.retention.listActiveTenantIds();
+    if (tenants.length === 0) {
+      this.log.warn('coverage check skipped — no active tenants yet');
+      return;
+    }
+
+    const seeded = await this.retention.listSeededCategories(tenants[0]);
+    const unimplemented = this.registry.unimplementedCategories(seeded);
+
+    if (unimplemented.length > 0) {
+      this.log.error(
+        `GDPR adapter coverage gap: ${unimplemented.length} seeded categories have no adapter: ` +
+        unimplemented.join(', '),
+      );
+    } else {
+      this.log.log(`GDPR adapter coverage: ${seeded.length}/${seeded.length} categories registered`);
+    }
+  }
+}
