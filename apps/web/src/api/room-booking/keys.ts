@@ -93,10 +93,27 @@ export const roomBookingKeys = {
   //   ['room-booking','scheduler-window', { space_ids: string[] (sorted), start_at, end_at }]
   schedulerWindow: (input: SchedulerWindowInput) =>
     [...roomBookingKeys.all, 'scheduler-window', input] as const,
+
+  // Unified scheduler-data bucket. One round-trip returns rooms + reservations.
+  // Realtime invalidation only needs to bust this key prefix; the legacy
+  // picker / scheduler-window buckets are no longer used by the desk scheduler.
+  schedulerData: (input: SchedulerDataInput) =>
+    [...roomBookingKeys.all, 'scheduler-data', input] as const,
 } as const;
 
 export interface SchedulerWindowInput {
   space_ids: string[];
   start_at: string;
   end_at: string;
+}
+
+export interface SchedulerDataInput {
+  start_at: string;
+  end_at: string;
+  attendee_count?: number;
+  site_id?: string | null;
+  building_id?: string | null;
+  floor_id?: string | null;
+  must_have_amenities?: string[];
+  requester_id?: string | null;
 }

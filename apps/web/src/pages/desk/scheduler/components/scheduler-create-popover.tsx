@@ -8,14 +8,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { PersonPicker } from '@/components/person-picker';
-import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
+import { useCreateBooking, type SchedulerRoom } from '@/api/room-booking';
 import { ApiError } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  room: RankedRoom | null;
+  room: SchedulerRoom | null;
   startAtIso: string;
   endAtIso: string;
   /**

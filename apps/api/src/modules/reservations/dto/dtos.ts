@@ -91,3 +91,21 @@ export interface SchedulerWindowDto {
   start_at: string;
   end_at: string;
 }
+
+/**
+ * Unified scheduler-data input — replaces the picker → window waterfall
+ * with one round-trip. Backend resolves the scope (site/building/floor) →
+ * candidate rooms, then runs parent-chain + reservations + (optional) rule
+ * eval in parallel. See ListBookableRoomsService.loadSchedulerData.
+ */
+export interface SchedulerDataDto {
+  start_at: string;
+  end_at: string;
+  attendee_count?: number;
+  site_id?: string;
+  building_id?: string;
+  floor_id?: string;
+  must_have_amenities?: string[];
+  /** When set, rules are evaluated for this requester (booking-for mode). */
+  requester_id?: string;
+}

@@ -1,6 +1,7 @@
 // Re-export everything; types vs runtime split keeps tree-shaking clean.
 export type {
-  ReservationListFilters, PickerInput, PickerCriteria, FindTimeInput, SchedulerWindowInput,
+  ReservationListFilters, PickerInput, PickerCriteria, FindTimeInput,
+  SchedulerWindowInput, SchedulerDataInput,
 } from './keys';
 export { roomBookingKeys } from './keys';
 
@@ -16,9 +17,10 @@ export {
   pickerOptions, usePicker,
   findTimeOptions, useFindTime,
   schedulerWindowOptions, useSchedulerReservations,
+  schedulerDataOptions, useSchedulerData,
   operatorReservationListOptions, useOperatorReservations,
 } from './queries';
-export type { OperatorReservationItem, MyReservationItem } from './queries';
+export type { OperatorReservationItem, MyReservationItem, SchedulerRoom } from './queries';
 
 export {
   useCreateBooking, useDryRunBooking, useMultiRoomBooking,

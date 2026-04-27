@@ -39,11 +39,13 @@ export function useRealtimeScheduler(
     const scheduleInvalidate = () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
+        // Only the unified scheduler-data bucket needs busting — that's the
+        // single query the page actually reads from. The legacy picker /
+        // scheduler-window keys are no longer used by this page; busting
+        // them on every reservation event would re-run the heavy picker
+        // pipeline for nothing.
         queryClient.invalidateQueries({
-          queryKey: [...roomBookingKeys.all, 'scheduler-window'],
-        });
-        queryClient.invalidateQueries({
-          queryKey: [...roomBookingKeys.all, 'picker'],
+          queryKey: [...roomBookingKeys.all, 'scheduler-data'],
         });
       }, 200);
     };

@@ -6,8 +6,27 @@ import {
   type PickerInput,
   type FindTimeInput,
   type SchedulerWindowInput,
+  type SchedulerDataInput,
 } from './keys';
-import type { Reservation, RankedRoom, FreeSlot } from './types';
+import type { Reservation, RankedRoom, FreeSlot, RuleOutcome } from './types';
+
+/**
+ * Slim room shape returned by `/reservations/scheduler-data` — drops
+ * ranking_score / ranking_reasons / day_blocks since the desk grid never
+ * reads them. Saves bytes and CPU on every paint.
+ */
+export interface SchedulerRoom {
+  space_id: string;
+  name: string;
+  space_type: string;
+  image_url: string | null;
+  capacity: number | null;
+  min_attendees: number | null;
+  amenities: string[];
+  keywords: string[];
+  parent_chain: { id: string; name: string; type: string }[];
+  rule_outcome: RuleOutcome;
+}
 
 /**
  * "My bookings" rows include a denormalized `space_name` so the portal
@@ -187,4 +206,98 @@ export function schedulerWindowOptions(input: SchedulerWindowInput) {
 
 export function useSchedulerReservations(input: SchedulerWindowInput) {
   return useQuery(schedulerWindowOptions(input));
+}
+
+interface SchedulerDataResponse {
+  rooms: SchedulerRoom[];
+  reservations: Reservation[];
+}
+
+/**
+ * Per-cache-key ETag side-channel. React Query owns the body (so we don't
+ * have to duplicate it); this map only tracks the most recent server ETag
+ * per stable input shape so refetches can send `If-None-Match` and the
+ * server can reply 304 when nothing changed.
+ *
+ * Bounded at 64 entries (LRU-ish via Map insertion order) to defend
+ * against long-lived sessions accumulating stale entries from many
+ * scope/date combinations.
+ */
+const SCHEDULER_DATA_ETAGS = new Map<string, string>();
+const ETAG_LIMIT = 64;
+
+function rememberEtag(key: string, etag: string | null): void {
+  if (!etag) return;
+  if (SCHEDULER_DATA_ETAGS.has(key)) SCHEDULER_DATA_ETAGS.delete(key);
+  SCHEDULER_DATA_ETAGS.set(key, etag);
+  if (SCHEDULER_DATA_ETAGS.size > ETAG_LIMIT) {
+    const first = SCHEDULER_DATA_ETAGS.keys().next().value;
+    if (first) SCHEDULER_DATA_ETAGS.delete(first);
+  }
+}
+
+/**
+ * Unified desk-scheduler load — one round-trip returns rooms + reservations.
+ * Replaces the legacy picker → scheduler-window waterfall. Backend collapses
+ * candidate resolution + parent-chain CTE + reservation read + (optional)
+ * rule eval into a single SQL function call.
+ *
+ * Conditional GET via ETag: on each refetch we send the previous response's
+ * ETag in `If-None-Match`. When nothing has changed (the common case for
+ * focus-refetch and the 200 ms realtime debounce on quiet rooms), the
+ * server replies `304 Not Modified` with no body, and React Query reuses
+ * the cached payload. Saves the wire bytes + JSON parse on every quiet
+ * revalidation.
+ *
+ * staleTime is 10 s because realtime keeps the bucket fresh on writes; this
+ * just controls the focus-refetch behaviour for stale tabs.
+ */
+export function schedulerDataOptions(input: SchedulerDataInput) {
+  // Stable cache key: drop empty arrays / null-equivalent keys so semantically
+  // equivalent inputs hit the same cell.
+  const stable: SchedulerDataInput = {
+    start_at: input.start_at,
+    end_at: input.end_at,
+    attendee_count: input.attendee_count ?? 1,
+    site_id: input.site_id ?? null,
+    building_id: input.building_id ?? null,
+    floor_id: input.floor_id ?? null,
+    must_have_amenities:
+      input.must_have_amenities && input.must_have_amenities.length > 0
+        ? [...input.must_have_amenities].sort()
+        : undefined,
+    requester_id: input.requester_id ?? null,
+  };
+  const cacheKey = JSON.stringify(stable);
+  return queryOptions<SchedulerDataResponse>({
+    queryKey: roomBookingKeys.schedulerData(stable),
+    queryFn: async ({ signal, client, queryKey }) => {
+      const previous = client.getQueryData<SchedulerDataResponse>(queryKey);
+      const previousEtag = SCHEDULER_DATA_ETAGS.get(cacheKey);
+      return apiFetch<SchedulerDataResponse>('/reservations/scheduler-data', {
+        signal,
+        method: 'POST',
+        body: JSON.stringify({
+          start_at: stable.start_at,
+          end_at: stable.end_at,
+          attendee_count: stable.attendee_count,
+          site_id: stable.site_id ?? undefined,
+          building_id: stable.building_id ?? undefined,
+          floor_id: stable.floor_id ?? undefined,
+          must_have_amenities: stable.must_have_amenities,
+          requester_id: stable.requester_id ?? undefined,
+        }),
+        etag: previous ? previousEtag ?? null : null,
+        onNotModified: () => previous!,
+        etagOut: (etag) => rememberEtag(cacheKey, etag),
+      });
+    },
+    staleTime: 10_000,
+    placeholderData: keepPreviousData,
+    enabled: Boolean(input.start_at) && Boolean(input.end_at),
+  });
+}
+
+export function useSchedulerData(input: SchedulerDataInput) {
+  return useQuery(schedulerDataOptions(input));
 }

@@ -37,7 +37,36 @@ export class ReservationVisibilityService {
         .eq('auth_uid', authUid) as unknown as { maybeSingle: () => Promise<{ data: UserRow | null; error: unknown }> }
     ).maybeSingle();
 
-    const userRow = userLookup.data;
+    return this.contextFromUserRow(userLookup.data, tenantId);
+  }
+
+  /**
+   * Same as loadContext but resolves by `users.id` (the app-side user id)
+   * instead of `auth_uid`. Used by mutation paths (editOne / cancelOne /
+   * restore) that already have an `ActorContext` in hand — passing
+   * `actor.user_id` to `loadContext` would be a category mismatch (it
+   * looks up by `auth_uid`, returns an empty context, and breaks every
+   * subsequent visibility check). That mismatch is the root cause of the
+   * "reservation not visible" failure when an operator drags a row on
+   * the desk scheduler.
+   */
+  async loadContextByUserId(userId: string, tenantId: string): Promise<ReservationVisibilityContext> {
+    type UserRow = { id: string; person_id: string | null };
+    const userLookup = await (
+      this.supabase.admin
+        .from('users')
+        .select('id, person_id')
+        .eq('tenant_id', tenantId)
+        .eq('id', userId) as unknown as { maybeSingle: () => Promise<{ data: UserRow | null; error: unknown }> }
+    ).maybeSingle();
+
+    return this.contextFromUserRow(userLookup.data, tenantId);
+  }
+
+  private async contextFromUserRow(
+    userRow: { id: string; person_id: string | null } | null,
+    tenantId: string,
+  ): Promise<ReservationVisibilityContext> {
     if (!userRow) {
       return {
         user_id: '',
@@ -88,7 +117,9 @@ export class ReservationVisibilityService {
     attendee_person_ids: string[] | null;
     booked_by_user_id: string | null;
   }, ctx: ReservationVisibilityContext): boolean {
-    if (ctx.has_admin || ctx.has_read_all) return true;
+    // write_all implies read access — someone authorised to edit any
+    // reservation must also be able to read what they're about to mutate.
+    if (ctx.has_admin || ctx.has_read_all || ctx.has_write_all) return true;
     if (ctx.person_id && reservation.requester_person_id === ctx.person_id) return true;
     if (ctx.person_id && (reservation.attendee_person_ids ?? []).includes(ctx.person_id)) return true;
     if (ctx.user_id && reservation.booked_by_user_id === ctx.user_id) return true;

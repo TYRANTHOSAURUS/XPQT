@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { RankedRoom, Reservation, RuleOutcome } from '@/api/room-booking';
+import type { Reservation, RuleOutcome, SchedulerRoom } from '@/api/room-booking';
 import { SchedulerGridRow } from './scheduler-grid-row';
 import { SchedulerTimeAxis } from './scheduler-time-axis';
 import { SchedulerNowLine } from './scheduler-now-line';
@@ -10,7 +10,7 @@ import type { MoveState } from '../hooks/use-drag-move';
 import type { DragCreateRange } from '../hooks/use-drag-create';
 
 interface Props {
-  rooms: RankedRoom[];
+  rooms: SchedulerRoom[];
   reservationsBySpaceId: Map<string, Reservation[]>;
   windowStartIso: string;
   windowEndIso: string;
@@ -32,8 +32,8 @@ interface Props {
   pendingCreate: DragCreateRange | null;
   /** Drag state during a resize. */
   pendingResize: (ResizeState & { spaceId: string; collide: boolean }) | null;
-  /** Drag state during a move. */
-  pendingMove: (MoveState & { spaceId: string; collide: boolean }) | null;
+  /** Drag state during a move. `isGhost` indicates a cross-row preview. */
+  pendingMove: (MoveState & { spaceId: string; collide: boolean; isGhost: boolean }) | null;
 
   // Pointer handlers — bound to the row component
   onCellPointerDown: (e: React.PointerEvent<HTMLDivElement>, spaceId: string) => void;
@@ -59,7 +59,7 @@ interface Props {
     rowEl: HTMLElement,
   ) => void;
 
-  onCellClickWhenDenied: (cell: number, outcome: RuleOutcome, room: RankedRoom) => void;
+  onCellClickWhenDenied: (cell: number, outcome: RuleOutcome, room: SchedulerRoom) => void;
 }
 
 const EMPTY_CELL_SET: Set<number> = new Set();
@@ -177,12 +177,14 @@ export function SchedulerGrid({
                     newStartCell: pendingMove.newStartCell,
                     newEndCell: pendingMove.newEndCell,
                     collide: pendingMove.collide,
+                    isGhost: pendingMove.isGhost,
                   }
                 : null;
           return (
             <div
               key={room.space_id}
               data-index={vr.index}
+              data-space-id={room.space_id}
               style={{
                 position: 'absolute',
                 top: 0,
@@ -212,7 +214,7 @@ export function SchedulerGrid({
                 onEventClick={onEventClick}
                 onEventResizeStart={onEventResizeStart}
                 onEventMoveStart={onEventMoveStart}
-                onCellClickWhenDenied={(cell, outcome) => onCellClickWhenDenied(cell, outcome, room)}
+                onCellClickWhenDenied={onCellClickWhenDenied}
               />
             </div>
           );

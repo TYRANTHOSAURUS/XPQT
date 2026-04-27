@@ -63,6 +63,29 @@ export interface ApiFetchOptions extends RequestInit {
    * scrubbing them. Arrays are repeated (`?status=open&status=in_progress`).
    */
   query?: Record<string, QueryParam>;
+
+  /**
+   * Conditional GET / POST support. Pass an `etag` (read from a previous
+   * response) to send `If-None-Match`; on a 304 reply, `apiFetch` resolves
+   * with the result of `onNotModified()` instead of attempting to parse an
+   * empty body.
+   *
+   * Example:
+   * ```ts
+   * apiFetch<T>('/foo', {
+   *   etag: cached.etag,
+   *   onNotModified: () => cached.body,
+   * }).then((res) => {
+   *   // res is either the new body OR the cached body
+   * });
+   * ```
+   *
+   * The `etagOut` callback receives the server's ETag from a 200 response
+   * so the caller can persist it alongside the body.
+   */
+  etag?: string | null;
+  onNotModified?: () => unknown;
+  etagOut?: (etag: string | null) => void;
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
@@ -88,20 +111,20 @@ function buildUrl(path: string, query?: Record<string, QueryParam>): string {
 }
 
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
-  const { query, ...init } = options;
+  const { query, etag, onNotModified, etagOut, ...init } = options;
   const authHeaders = await getAuthHeaders();
   const url = buildUrl(path, query);
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...authHeaders,
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (etag) headers['If-None-Match'] = etag;
+
   let res: Response;
   try {
-    res = await fetch(url, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders,
-        ...init.headers,
-      },
-    });
+    res = await fetch(url, { ...init, headers });
   } catch (e) {
     // Aborts (React Query cancelling a stale query) bubble unchanged so the
     // query layer can recognise them.
@@ -118,6 +141,13 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
     });
   }
 
+  // Conditional 304 path — caller passed an ETag and the server confirmed
+  // the resource is unchanged. Fall back to the cached body without
+  // attempting to parse an empty response.
+  if (res.status === 304 && onNotModified) {
+    return onNotModified() as T;
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const message =
@@ -127,6 +157,8 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
         : `API error: ${res.status}`;
     throw new ApiError({ status: res.status, message, body });
   }
+
+  if (etagOut) etagOut(res.headers.get('ETag'));
 
   if (res.status === 204) return undefined as T;
   return res.json();

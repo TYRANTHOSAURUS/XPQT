@@ -1,8 +1,9 @@
 import {
-  Body, Controller, Get, Param, Patch, Post, Query, Req,
+  Body, Controller, Get, Header, Headers, Param, Patch, Post, Query, Req, Res,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import { createHash } from 'node:crypto';
 import { ReservationService } from './reservation.service';
 import { CheckInService } from './check-in.service';
 import { BookingFlowService } from './booking-flow.service';
@@ -15,7 +16,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
   CancelReservationDto, CreateReservationDto, FindTimeDto, MultiRoomBookingDto, PickerDto,
-  SchedulerWindowDto, UpdateReservationDto,
+  SchedulerDataDto, SchedulerWindowDto, UpdateReservationDto,
 } from './dto/dtos';
 import type { ActorContext, CreateReservationInput, PickerInput } from './dto/types';
 
@@ -170,6 +171,57 @@ export class ReservationController {
     });
   }
 
+  /**
+   * Unified desk-scheduler load — returns rooms + reservations in ONE
+   * round-trip via the `scheduler_data` plpgsql RPC. Replaces the legacy
+   * picker → scheduler-window waterfall.
+   *
+   * Conditional GET: response carries a weak `ETag` derived from a
+   * SHA-256 of the JSON payload, plus `Cache-Control: private, no-cache`
+   * so the browser revalidates every request. When the client sends a
+   * matching `If-None-Match`, we short-circuit to `304 Not Modified`
+   * with no body — saves 50–150 KB of wire time on every refetch where
+   * nothing actually changed (typical for tab-focus refresh and the
+   * realtime debounce). Operator/admin only.
+   */
+  @Post('scheduler-data')
+  @Header('Cache-Control', 'private, no-cache')
+  async schedulerData(
+    @Req() request: Request,
+    @Body() dto: SchedulerDataDto,
+    @Headers('if-none-match') ifNoneMatch: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const actor = await this.actorFromRequest(request);
+    const data = await this.picker.loadSchedulerData(
+      {
+        start_at: dto.start_at,
+        end_at: dto.end_at,
+        attendee_count: dto.attendee_count,
+        site_id: dto.site_id,
+        building_id: dto.building_id,
+        floor_id: dto.floor_id,
+        must_have_amenities: dto.must_have_amenities,
+        requester_id: dto.requester_id,
+      },
+      actor,
+    );
+
+    // Weak ETag — JSON.stringify hash truncated to 16 base64-url chars.
+    // Truncation is fine: collisions on this corpus are astronomically
+    // rare and a missed 304 just means a normal 200, not data loss.
+    const body = JSON.stringify(data);
+    const etag = `W/"${createHash('sha256').update(body).digest('base64url').slice(0, 16)}"`;
+
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      res.status(304).setHeader('ETag', etag).end();
+      return;
+    }
+
+    res.setHeader('ETag', etag);
+    return data;
+  }
+
   @Patch(':id')
   async edit(
     @Req() request: Request,
@@ -214,8 +266,12 @@ export class ReservationController {
     const actor = await this.actorFromRequest(request);
     const tenantId = TenantContext.current().id;
     // Loads the pivot reservation (asserts it's visible) and gates write.
-    const pivot = await this.service.findOne(id, actor.user_id);
-    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    // Resolves visibility against actor.user_id directly — passing it as
+    // an authUid would be a category mismatch (loadContext queries by
+    // auth_uid, returns an empty context for any user_id, and breaks
+    // every gate downstream).
+    const pivot = await this.service.findOneForActor(id, actor);
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     if (!this.visibility.canEdit(pivot, ctx)) {
       throw new UnauthorizedException('reservation_not_editable');
     }

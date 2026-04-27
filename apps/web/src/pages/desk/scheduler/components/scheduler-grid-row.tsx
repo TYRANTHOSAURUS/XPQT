@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import type { RankedRoom, Reservation, RuleOutcome } from '@/api/room-booking';
+import type { Reservation, RuleOutcome, SchedulerRoom } from '@/api/room-booking';
 // RuleOutcome is referenced in the prop signature for `onCellClickWhenDenied`.
 import { SchedulerEventBlock } from './scheduler-event-block';
 import { SchedulerBufferShading } from './scheduler-buffer-shading';
@@ -8,7 +8,7 @@ import { buildCellBackground, type CellOutcomeMap } from './scheduler-grid-cell'
 import { SchedulerRuleTag, type RuleTagOutcome } from './scheduler-rule-tag';
 
 interface Props {
-  room: RankedRoom;
+  room: SchedulerRoom;
   reservations: Reservation[];
   /** Window-relative cell math: every reservation's start_at is mapped to a column index. */
   windowStartIso: string;
@@ -28,8 +28,22 @@ interface Props {
   cellOutcomes?: CellOutcomeMap;
   /** Drag-create preview range (rendered as a translucent block). */
   pendingCreate?: { startCell: number; endCell: number } | null;
-  /** Drag-resize / move preview, keyed by reservation id. */
-  pendingDrag?: { reservationId: string; newStartCell: number; newEndCell: number; collide: boolean } | null;
+  /**
+   * Drag-resize / move preview, keyed by reservation id.
+   *
+   * `isGhost` is set when this row is the *target* of a cross-row drag-move
+   * (the operator picked up an event from a different lane and is hovering
+   * over this one). The reservation isn't part of this row's `reservations`
+   * list, so we render a translucent placeholder instead of trying to
+   * substitute its position.
+   */
+  pendingDrag?: {
+    reservationId: string;
+    newStartCell: number;
+    newEndCell: number;
+    collide: boolean;
+    isGhost?: boolean;
+  } | null;
 
   // Pointer handlers
   onCellPointerDown?: (e: React.PointerEvent<HTMLDivElement>, spaceId: string) => void;
@@ -42,7 +56,7 @@ interface Props {
   onEventResizeStart?: (e: React.PointerEvent<HTMLElement>, reservation: Reservation, edge: 'start' | 'end', startCell: number, endCell: number, rowEl: HTMLElement) => void;
   onEventMoveStart?: (e: React.PointerEvent<HTMLElement>, reservation: Reservation, startCell: number, endCell: number, rowEl: HTMLElement) => void;
 
-  onCellClickWhenDenied?: (cell: number, outcome: RuleOutcome) => void;
+  onCellClickWhenDenied?: (cell: number, outcome: RuleOutcome, room: SchedulerRoom) => void;
 }
 
 /**
@@ -171,7 +185,7 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
             if (outcome === 'deny') {
               // Surface the override flow (the page may decline if the user
               // doesn't have rooms.override_rules — the API also gates it).
-              onCellClickWhenDenied(cell, room.rule_outcome);
+              onCellClickWhenDenied(cell, room.rule_outcome, room);
             }
           }
         }}
@@ -274,6 +288,27 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
             style={{
               left: `${(pendingCreate.startCell / totalColumns) * 100}%`,
               width: `${((pendingCreate.endCell - pendingCreate.startCell + 1) / totalColumns) * 100}%`,
+            }}
+          />
+        )}
+
+        {/* Cross-row drag-move ghost — painted in the destination row so
+            the operator gets feedback that they're hovering over a valid
+            target lane. The original row keeps painting the source block
+            in its origin position; once the drop persists, realtime /
+            invalidation will reflow both rows. */}
+        {pendingDrag?.isGhost && pendingDrag.newEndCell >= pendingDrag.newStartCell && (
+          <div
+            aria-hidden
+            className={cn(
+              'absolute top-1 bottom-1 rounded-md border-2 border-dashed pointer-events-none',
+              pendingDrag.collide
+                ? 'bg-destructive/10 border-destructive/60'
+                : 'bg-primary/15 border-primary/70',
+            )}
+            style={{
+              left: `${(pendingDrag.newStartCell / totalColumns) * 100}%`,
+              width: `${((pendingDrag.newEndCell - pendingDrag.newStartCell + 1) / totalColumns) * 100}%`,
             }}
           />
         )}

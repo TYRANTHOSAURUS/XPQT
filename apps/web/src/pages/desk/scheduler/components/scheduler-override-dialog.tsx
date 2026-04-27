@@ -7,13 +7,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
+import { useCreateBooking, type SchedulerRoom } from '@/api/room-booking';
 import { formatFullTimestamp } from '@/lib/format';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  room: RankedRoom | null;
+  room: SchedulerRoom | null;
   startAtIso: string;
   endAtIso: string;
   requesterPersonId: string;

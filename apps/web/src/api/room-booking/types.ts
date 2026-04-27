@@ -85,6 +85,16 @@ export interface Reservation {
   booking_bundle_id: string | null;
   created_at: string;
   updated_at: string;
+  // Optional denormalised display fields. Populated by `/scheduler-data`
+  // and the operator list endpoint so the desk grid + lists can label
+  // rows without each block firing its own `usePerson` lookup. Absent on
+  // reads from `/reservations/:id` and friends.
+  requester_first_name?: string | null;
+  requester_last_name?: string | null;
+  requester_email?: string | null;
+  host_first_name?: string | null;
+  host_last_name?: string | null;
+  host_email?: string | null;
 }
 
 export interface RuleOutcome {

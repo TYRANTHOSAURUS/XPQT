@@ -102,6 +102,26 @@ export function useSchedulerWindow() {
     return { startAtIso: first.toISOString(), endAtIso: last.toISOString() };
   }, [dates, state.dayStartHour, state.dayEndHour]);
 
+  // Adjacent windows for idle prefetch. We project the same view-mode
+  // step (1 day or 7 days) backwards and forwards from the current
+  // anchor; the result is what the toolbar's prev/next buttons would
+  // produce, so prefetching them turns clicks into instant paints.
+  const adjacentWindows = useMemo(() => {
+    const step = state.viewMode === 'week' ? 7 : 1;
+    const prevAnchor = shiftDate(state.anchorDate, -step);
+    const nextAnchor = shiftDate(state.anchorDate, step);
+    const span = (anchor: string): { startAtIso: string; endAtIso: string } => {
+      const list =
+        state.viewMode === 'day'
+          ? [anchor]
+          : Array.from({ length: 7 }, (_, i) => shiftDate(anchor, i));
+      const first = buildDayBounds(list[0], state.dayStartHour, state.dayEndHour).start;
+      const last = buildDayBounds(list[list.length - 1], state.dayStartHour, state.dayEndHour).end;
+      return { startAtIso: first.toISOString(), endAtIso: last.toISOString() };
+    };
+    return { prev: span(prevAnchor), next: span(nextAnchor) };
+  }, [state.viewMode, state.anchorDate, state.dayStartHour, state.dayEndHour]);
+
   // Number of half-hour (or cellMinutes) columns per day.
   const columnsPerDay = useMemo(
     () => Math.max(1, Math.round(((state.dayEndHour - state.dayStartHour) * 60) / state.cellMinutes)),
@@ -142,6 +162,7 @@ export function useSchedulerWindow() {
     dates,
     startAtIso,
     endAtIso,
+    adjacentWindows,
     columnsPerDay,
     cellToIso,
   };

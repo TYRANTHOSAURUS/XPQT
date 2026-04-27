@@ -58,6 +58,26 @@ function formatTimeRange(startIso: string, endIso: string): string {
 }
 
 /**
+ * Best-effort display name from the reservation's denormalised fields.
+ * Falls back to the email local-part, then a null when nothing was joined
+ * (e.g. when the reservation was created via a path that didn't hydrate
+ * the requester relation).
+ */
+function personLabel(
+  first: string | null | undefined,
+  last: string | null | undefined,
+  email: string | null | undefined,
+): string | null {
+  const full = `${first ?? ''} ${last ?? ''}`.trim();
+  if (full) return full;
+  if (email) {
+    const at = email.indexOf('@');
+    return at > 0 ? email.slice(0, at) : email;
+  }
+  return null;
+}
+
+/**
  * One reservation block painted on the row. Absolutely positioned by
  * `(startCell, endCell, totalColumns)` so the row doesn't reflow when
  * blocks shift; CSS percentages keep the math simple and the GPU happy.
@@ -85,14 +105,56 @@ export const SchedulerEventBlock = memo(function SchedulerEventBlock({
     [reservation.start_at, reservation.end_at],
   );
 
+  const requesterLabel = useMemo(
+    () =>
+      personLabel(
+        reservation.requester_first_name,
+        reservation.requester_last_name,
+        reservation.requester_email,
+      ),
+    [
+      reservation.requester_first_name,
+      reservation.requester_last_name,
+      reservation.requester_email,
+    ],
+  );
+
+  const hostLabel = useMemo(() => {
+    if (!reservation.host_person_id) return null;
+    if (reservation.host_person_id === reservation.requester_person_id) return null;
+    return personLabel(
+      reservation.host_first_name,
+      reservation.host_last_name,
+      reservation.host_email,
+    );
+  }, [
+    reservation.host_person_id,
+    reservation.requester_person_id,
+    reservation.host_first_name,
+    reservation.host_last_name,
+    reservation.host_email,
+  ]);
+
   if (endCell <= startCell) return null;
   const left = (startCell / totalColumns) * 100;
   const width = ((endCell - startCell) / totalColumns) * 100;
   const cells = endCell - startCell;
-  const showAttendees = cells >= 2 && (reservation.attendee_count ?? 0) > 0;
+  const showAttendees = cells >= 3 && (reservation.attendee_count ?? 0) > 0;
   // Below ~3 cells the time range eats the entire block — drop to a single
   // start-time label so the block stays readable.
   const showCompactTime = cells <= 2;
+  // Two-line layout (requester on top, time + meta on bottom) only fits in
+  // wider blocks. Keep narrow blocks single-line.
+  const showRequesterLine = !!requesterLabel && cells >= 2;
+  const tooltip = [
+    requesterLabel ? `${requesterLabel}` : null,
+    hostLabel ? `Host: ${hostLabel}` : null,
+    timeLabel,
+    `${reservation.attendee_count ?? 1} attendees`,
+    reservation.status,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const dragRing =
     dragState === 'collide'
@@ -105,7 +167,7 @@ export const SchedulerEventBlock = memo(function SchedulerEventBlock({
     <div
       role="button"
       tabIndex={0}
-      title={`${timeLabel} · ${reservation.attendee_count ?? 1} attendees`}
+      title={tooltip}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -148,19 +210,34 @@ export const SchedulerEventBlock = memo(function SchedulerEventBlock({
         />
       )}
 
-      <div className="event-text flex h-full min-w-0 items-center gap-1.5">
-        {STATUS_ICON[reservation.status]}
-        <span className="truncate font-medium tabular-nums">
-          {showCompactTime
-            ? TIME_FORMATTER.format(new Date(reservation.start_at))
-            : timeLabel}
-        </span>
-        {showAttendees && (
-          <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 tabular-nums text-muted-foreground">
-            <Users className="size-3" />
-            {reservation.attendee_count}
-          </span>
+      <div className="event-text flex h-full min-w-0 flex-col justify-center gap-0.5">
+        {showRequesterLine && (
+          <div className="flex min-w-0 items-center gap-1">
+            {STATUS_ICON[reservation.status]}
+            <span className="truncate font-medium leading-tight">
+              {requesterLabel}
+              {hostLabel && (
+                <span className="ml-1 font-normal text-muted-foreground">
+                  · w/ {hostLabel}
+                </span>
+              )}
+            </span>
+          </div>
         )}
+        <div className="flex min-w-0 items-center gap-1.5">
+          {!showRequesterLine && STATUS_ICON[reservation.status]}
+          <span className="truncate tabular-nums text-muted-foreground">
+            {showCompactTime
+              ? TIME_FORMATTER.format(new Date(reservation.start_at))
+              : timeLabel}
+          </span>
+          {showAttendees && (
+            <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 tabular-nums text-muted-foreground">
+              <Users className="size-3" />
+              {reservation.attendee_count}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

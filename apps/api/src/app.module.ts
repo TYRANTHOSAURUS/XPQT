@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { SupabaseModule } from './common/supabase/supabase.module';
+import { DbModule } from './common/db/db.module';
 import { HealthController } from './health.controller';
 import { TenantModule } from './modules/tenant/tenant.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -48,6 +49,7 @@ import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
     }),
     ScheduleModule.forRoot(),
     SupabaseModule,
+    DbModule,
     TenantModule,
     AuthModule,
     TicketModule,

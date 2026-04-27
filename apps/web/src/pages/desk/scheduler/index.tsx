@@ -1,13 +1,14 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { toastError, toastUpdated } from '@/lib/toast';
 import { useAuth } from '@/providers/auth-provider';
-import { useEditBooking, type RankedRoom, type Reservation } from '@/api/room-booking';
+import { useEditBooking, type Reservation, type RuleOutcome, type SchedulerRoom } from '@/api/room-booking';
 import { usePerson } from '@/api/persons';
 import { formatDayLabel } from '@/lib/format';
 import { useSchedulerWindow } from './hooks/use-scheduler-window';
 import { useSchedulerData } from './hooks/use-scheduler-data';
+import { useSchedulerAdjacentPrefetch } from './hooks/use-adjacent-prefetch';
 import { useRealtimeScheduler } from './hooks/use-realtime-scheduler';
 import { useDragCreate } from './hooks/use-drag-create';
 import { useDragResize, type ResizeState } from './hooks/use-drag-resize';
@@ -63,6 +64,34 @@ export function DeskSchedulerPage() {
   // any visible space.
   useRealtimeScheduler(data.spaceIds, data.spaceIds.length > 0);
 
+  // Idle-time prefetch of the previous / next view windows so the toolbar's
+  // prev / next buttons paint instantly from cache. Disabled until the
+  // current window has resolved — there's no point burning concurrent
+  // bandwidth before the visible page is on screen.
+  useSchedulerAdjacentPrefetch({
+    enabled: !data.isLoading,
+    prevInput: {
+      start_at: win.adjacentWindows.prev.startAtIso,
+      end_at: win.adjacentWindows.prev.endAtIso,
+      attendee_count: 1,
+      building_id: win.state.buildingId,
+      floor_id: win.state.floorId,
+      must_have_amenities:
+        win.state.amenities.length > 0 ? win.state.amenities : undefined,
+      requester_id: win.state.bookForPersonId,
+    },
+    nextInput: {
+      start_at: win.adjacentWindows.next.startAtIso,
+      end_at: win.adjacentWindows.next.endAtIso,
+      attendee_count: 1,
+      building_id: win.state.buildingId,
+      floor_id: win.state.floorId,
+      must_have_amenities:
+        win.state.amenities.length > 0 ? win.state.amenities : undefined,
+      requester_id: win.state.bookForPersonId,
+    },
+  });
+
   const totalColumns = win.columnsPerDay * win.dates.length;
 
   // Per-room cell outcomes when "Booking for: <person>" is set.
@@ -104,14 +133,16 @@ export function DeskSchedulerPage() {
     });
   }, []);
 
-  // Hover state — for cell-level outcome resolution / future tooltips.
-  const [hoverCell, setHoverCell] = useState<{ cell: number; spaceId: string } | null>(null);
+  // Hover state lives in a ref, not React state — pointer-move fires
+  // 60+ times per second, and routing each event through `setState`
+  // re-rendered the whole page (the parent holds the virtualised grid)
+  // every time. Future per-cell tooltips can read the ref via a
+  // useSyncExternalStore subscription instead of triggering a top-level
+  // re-render.
+  const hoverCellRef = useRef<{ cell: number; spaceId: string } | null>(null);
   const onCellHover = useCallback((cell: number, spaceId: string) => {
-    setHoverCell({ cell, spaceId });
+    hoverCellRef.current = { cell, spaceId };
   }, []);
-  // Quiet linter: hover state is wired now; the visible per-cell
-  // tooltip lands in a follow-up. Keep the read so the hook stays.
-  void hoverCell;
 
   // Helpers: cell-index ↔ ISO timestamp inside the visible window.
   // Cell→ISO is delegated to the window hook so DST-changeover weeks
@@ -131,7 +162,7 @@ export function DeskSchedulerPage() {
   // ── Drag-create ────────────────────────────────────────────────────
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createPayload, setCreatePayload] = useState<{
-    room: RankedRoom;
+    room: SchedulerRoom;
     startAtIso: string;
     endAtIso: string;
   } | null>(null);
@@ -175,17 +206,26 @@ export function DeskSchedulerPage() {
   const editBooking = useEditBooking();
 
   const persistEdit = useCallback(
-    async (reservationId: string, newStartIso: string, newEndIso: string) => {
+    async (
+      reservationId: string,
+      newStartIso: string,
+      newEndIso: string,
+      newSpaceId?: string,
+    ) => {
       try {
         await editBooking.mutateAsync({
           id: reservationId,
-          patch: { start_at: newStartIso, end_at: newEndIso },
+          patch: {
+            start_at: newStartIso,
+            end_at: newEndIso,
+            ...(newSpaceId ? { space_id: newSpaceId } : null),
+          },
         });
         toastUpdated('Booking');
       } catch (e) {
         toastError("Couldn't update booking", {
           error: e,
-          retry: () => persistEdit(reservationId, newStartIso, newEndIso),
+          retry: () => persistEdit(reservationId, newStartIso, newEndIso, newSpaceId),
         });
       }
     },
@@ -208,10 +248,17 @@ export function DeskSchedulerPage() {
     columnsPerDay: win.columnsPerDay,
     numDays: win.dates.length,
     onComplete: (state) => {
+      // Cross-row drop: pass the new space id when the user landed in a
+      // different lane than the one the reservation started in. The
+      // backend's `editOne` already accepts `space_id` in the patch and
+      // re-runs the conflict guard against the destination room.
+      const switchedRow =
+        state.targetSpaceId && state.targetSpaceId !== state.originSpaceId;
       void persistEdit(
         state.reservationId,
         cellToIso(state.newStartCell),
         cellToIso(state.newEndCell + 1),
+        switchedRow ? state.targetSpaceId : undefined,
       );
     },
   });
@@ -254,13 +301,22 @@ export function DeskSchedulerPage() {
         }
       : null;
 
-  const pendingMove: (MoveState & { spaceId: string; collide: boolean }) | null =
+  // Cross-row drag-move: the preview block paints in the TARGET row (the
+  // lane the cursor is hovering over) rather than the origin. Collision is
+  // also checked against the target's reservations so the block goes red
+  // when the operator is about to drop onto an existing booking.
+  const pendingMove:
+    | (MoveState & { spaceId: string; collide: boolean; isGhost: boolean })
+    | null =
     dragMove.active && activeDragSpaceId
       ? {
           ...dragMove.active,
-          spaceId: activeDragSpaceId,
+          spaceId: dragMove.active.targetSpaceId || activeDragSpaceId,
+          isGhost:
+            !!dragMove.active.targetSpaceId &&
+            dragMove.active.targetSpaceId !== activeDragSpaceId,
           collide: computeCollision(
-            activeDragSpaceId,
+            dragMove.active.targetSpaceId || activeDragSpaceId,
             dragMove.active.reservationId,
             dragMove.active.newStartCell,
             dragMove.active.newEndCell,
@@ -304,8 +360,51 @@ export function DeskSchedulerPage() {
 
   // ── Override-rules flow ───────────────────────────────────────────
   const [overrideOpen, setOverrideOpen] = useState(false);
-  const [overrideRoom, setOverrideRoom] = useState<RankedRoom | null>(null);
+  const [overrideRoom, setOverrideRoom] = useState<SchedulerRoom | null>(null);
   const [overridePayload, setOverridePayload] = useState<{ startAtIso: string; endAtIso: string } | null>(null);
+
+  // Stabilised drag-event start handlers — the SchedulerGridRow is memo'd
+  // so passing fresh inline closures every render makes the memo useless
+  // and re-renders all visible rows on every state tick. useCallback with
+  // primitive deps keeps the row's prop refs equal across normal renders.
+  const onEventResizeStart = useCallback(
+    (
+      e: React.PointerEvent<HTMLElement>,
+      r: Reservation,
+      edge: 'start' | 'end',
+      startCell: number,
+      endCell: number,
+      rowEl: HTMLElement,
+    ) => {
+      dragResize.begin(e, { reservationId: r.id, edge, startCell, endCell, rowEl });
+    },
+    [dragResize],
+  );
+
+  const onEventMoveStart = useCallback(
+    (
+      e: React.PointerEvent<HTMLElement>,
+      r: Reservation,
+      startCell: number,
+      endCell: number,
+      rowEl: HTMLElement,
+    ) => {
+      dragMove.begin(e, { reservationId: r.id, startCell, endCell, rowEl });
+    },
+    [dragMove],
+  );
+
+  const onCellClickWhenDenied = useCallback(
+    (cell: number, _outcome: RuleOutcome, room: SchedulerRoom) => {
+      const start = cellToIso(cell);
+      // 2 cells = ~1 hour at 30-min granularity.
+      const end = cellToIso(Math.min(cell + 2, totalColumns));
+      setOverrideRoom(room);
+      setOverridePayload({ startAtIso: start, endAtIso: end });
+      setOverrideOpen(true);
+    },
+    [cellToIso, totalColumns],
+  );
 
   // ── Multi-room ────────────────────────────────────────────────────
   const selectedSpaceIds = useMemo(() => Array.from(multiSel.keys()), [multiSel]);
@@ -385,24 +484,9 @@ export function DeskSchedulerPage() {
           onCellShiftClick={onCellShiftClick}
           onCellHover={onCellHover}
           onEventClick={onEventClick}
-          onEventResizeStart={(e, r, edge, startCell, endCell, rowEl) =>
-            dragResize.begin(e, { reservationId: r.id, edge, startCell, endCell, rowEl })
-          }
-          onEventMoveStart={(e, r, startCell, endCell, rowEl) =>
-            dragMove.begin(e, { reservationId: r.id, startCell, endCell, rowEl })
-          }
-          onCellClickWhenDenied={(_cell, _outcome, room) => {
-            // The grid only invokes this on a deny; pre-fill a 1-hour
-            // override at the clicked time so the operator just types a
-            // reason and confirms.
-            const cell = _cell;
-            const start = cellToIso(cell);
-            // 2 cells = ~1 hour at 30-min granularity.
-            const end = cellToIso(Math.min(cell + 2, totalColumns));
-            setOverrideRoom(room);
-            setOverridePayload({ startAtIso: start, endAtIso: end });
-            setOverrideOpen(true);
-          }}
+          onEventResizeStart={onEventResizeStart}
+          onEventMoveStart={onEventMoveStart}
+          onCellClickWhenDenied={onCellClickWhenDenied}
         />
       )}
 

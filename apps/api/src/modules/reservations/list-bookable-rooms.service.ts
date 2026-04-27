@@ -1,9 +1,38 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { DbService } from '../../common/db/db.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
-import type { ActorContext, PickerInput, RankedRoom, RuleOutcome } from './dto/types';
+import type { ActorContext, PickerInput, RankedRoom, Reservation, RuleOutcome } from './dto/types';
 import { RankingService } from './ranking.service';
+
+/** Slim shape returned by the scheduler-data endpoint. Drops ranking_score,
+ *  ranking_reasons, and day_blocks — the desk scheduler grid never reads
+ *  them, and computing them on every paint is the picker's biggest waste. */
+export interface SchedulerRoom {
+  space_id: string;
+  name: string;
+  space_type: string;
+  image_url: string | null;
+  capacity: number | null;
+  min_attendees: number | null;
+  amenities: string[];
+  keywords: string[];
+  parent_chain: { id: string; name: string; type: string }[];
+  rule_outcome: RuleOutcome;
+}
+
+export interface SchedulerDataInput {
+  start_at: string;
+  end_at: string;
+  attendee_count?: number;
+  site_id?: string;
+  building_id?: string;
+  floor_id?: string;
+  must_have_amenities?: string[];
+  /** When set, rules are evaluated for this requester (booking-for mode in the toolbar). */
+  requester_id?: string;
+}
 
 /**
  * The canonical picker query.
@@ -24,6 +53,7 @@ export class ListBookableRoomsService {
 
   constructor(
     private readonly supabase: SupabaseService,
+    private readonly db: DbService,
     private readonly ruleResolver: RuleResolverService,
     private readonly ranking: RankingService,
   ) {}
@@ -61,8 +91,9 @@ export class ListBookableRoomsService {
         this.criteriaToContext(input),
       ),
       // Parent chains disambiguate same-named rooms ("Meeting Room 2.12"
-      // on three different floors). One batched walk up the parent_id graph.
-      this.loadParentChains(tenantId, candidates),
+      // on three different floors). Recursive CTE — one round-trip
+      // regardless of tree depth (was three sequential `IN` queries).
+      this.loadParentChainsBulk(tenantId, candidateIds),
     ]);
 
     const conflictBySpace = new Map<string, Array<{ start_at: string; end_at: string; status: string }>>();
@@ -151,59 +182,171 @@ export class ListBookableRoomsService {
   }
 
   /**
-   * Walk each candidate up the spaces tree (parent_id) up to 3 levels and
-   * return the chain (floor / building / site) for disambiguation in the UI.
-   * One round-trip: fetch all unique ancestor ids in a single IN query.
+   * Desk-scheduler "what to paint" fetch — ONE database round-trip via
+   * `scheduler_data` plpgsql RPC (migration 00153). The function
+   * resolves scope, filters candidates, walks parent chains via a
+   * recursive CTE, and joins reservation rows with requester / host
+   * names — all server-side, returning a single JSONB blob.
+   *
+   * The TS layer only does:
+   *   - rule evaluation (when `requester_id` is set, otherwise every
+   *     room defaults to `effect: allow` and the rule-resolver path
+   *     is skipped entirely),
+   *   - `deny` filtering for non-operator callers.
+   *
+   * Drops ranking_score / ranking_reasons / day_blocks since the grid
+   * doesn't read them; running rule eval and a separate conflicts
+   * query for those was pure latency. Typical end-to-end on remote
+   * Supabase: ~10 ms server, ~50–80 ms perceived (network dominated).
    */
-  private async loadParentChains(
+  async loadSchedulerData(
+    input: SchedulerDataInput,
+    actor: ActorContext,
+  ): Promise<{ rooms: SchedulerRoom[]; reservations: Reservation[] }> {
+    const tenantId = TenantContext.current().id;
+    const t0 = process.hrtime.bigint();
+
+    type RpcRoom = {
+      space_id: string;
+      name: string;
+      space_type: string;
+      image_url: string | null;
+      capacity: number | null;
+      min_attendees: number | null;
+      amenities: string[] | null;
+      keywords: string[] | null;
+      parent_chain: { id: string; name: string; type: string }[];
+    };
+    type RpcResult = { rooms: RpcRoom[]; reservations: Reservation[] };
+
+    const wantsRules = Boolean(input.requester_id);
+
+    // Run the SQL function and (optionally) the rule resolver in parallel.
+    // The RPC goes through `DbService` (direct Postgres via persistent
+    // pool) — bypasses Supabase REST entirely, so the round-trip is
+    // ~5–15 ms instead of ~80–110 ms. Rule resolver still talks to
+    // Supabase REST for now; migrating it is incremental.
+    const [rpcResult, ruleOutcomes] = await Promise.all([
+      this.db.rpc<RpcResult>('scheduler_data', {
+        p_tenant_id: tenantId,
+        p_start_at: input.start_at,
+        p_end_at: input.end_at,
+        p_attendee_count: input.attendee_count ?? 1,
+        p_site_id: input.site_id ?? null,
+        p_building_id: input.building_id ?? null,
+        p_floor_id: input.floor_id ?? null,
+        p_must_have_amenities:
+          input.must_have_amenities && input.must_have_amenities.length > 0
+            ? input.must_have_amenities
+            : null,
+      }),
+      wantsRules ? this.deferredRuleResolveBulk(input) : Promise.resolve(null),
+    ]);
+    const result = rpcResult ?? { rooms: [], reservations: [] };
+
+    const rooms: SchedulerRoom[] = [];
+    for (const r of result.rooms) {
+      const ruleOutcome = ruleOutcomes?.get(r.space_id);
+      const outcome: RuleOutcome = ruleOutcome
+        ? {
+            effect:
+              ruleOutcome.final === 'deny' ? 'deny' :
+              ruleOutcome.final === 'require_approval' ? 'require_approval' :
+              ruleOutcome.warnings.length ? 'warn' : 'allow',
+            matched_rule_ids: ruleOutcome.matchedRules.map((m) => m.id),
+            denial_message: ruleOutcome.denialMessages[0],
+            warning_messages: ruleOutcome.warnings,
+          }
+        : { effect: 'allow', matched_rule_ids: [] };
+
+      if (outcome.effect === 'deny' && !actor.is_service_desk) continue;
+
+      rooms.push({
+        space_id: r.space_id,
+        name: r.name,
+        space_type: r.space_type,
+        image_url: r.image_url,
+        capacity: r.capacity,
+        min_attendees: r.min_attendees,
+        amenities: r.amenities ?? [],
+        keywords: r.keywords ?? [],
+        parent_chain: r.parent_chain ?? [],
+        rule_outcome: outcome,
+      });
+    }
+
+    const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    const tag = `scheduler-data tenant=${tenantId} returned=${rooms.length} reservations=${result.reservations.length} rules=${wantsRules ? 'on' : 'off'} elapsed_ms=${elapsedMs.toFixed(1)}`;
+    if (elapsedMs > 250) this.log.warn(tag);
+    else this.log.log(tag);
+
+    return { rooms, reservations: result.reservations };
+  }
+
+  /**
+   * Wraps `RuleResolverService.resolveBulk` for the booking-for path. The
+   * resolver needs the candidate space ids, but the SQL function returns
+   * them as part of the response — so we resolve scope -> candidate ids
+   * here too, just for the rule branch. Cheap (one indexed query) and
+   * keeps rule eval able to run in parallel with the main RPC.
+   */
+  private async deferredRuleResolveBulk(input: SchedulerDataInput) {
+    const tenantId = TenantContext.current().id;
+    const candidates = await this.loadCandidateSpaces(tenantId, {
+      start_at: input.start_at,
+      end_at: input.end_at,
+      attendee_count: input.attendee_count ?? 1,
+      site_id: input.site_id,
+      building_id: input.building_id,
+      floor_id: input.floor_id,
+      criteria: input.must_have_amenities?.length
+        ? { must_have_amenities: input.must_have_amenities }
+        : undefined,
+      sort: 'best_match',
+      limit: 200,
+      include_unavailable: true,
+    });
+    if (candidates.length === 0) return null;
+    return this.ruleResolver.resolveBulk(
+      input.requester_id!,
+      candidates.map((s) => s.id),
+      { start_at: input.start_at, end_at: input.end_at },
+      {
+        site_id: input.site_id,
+        building_id: input.building_id,
+        floor_id: input.floor_id,
+        must_have_amenities: input.must_have_amenities,
+      },
+    );
+  }
+
+  /**
+   * Single-RPC parent chain lookup for the picker / scheduler. Calls the
+   * `space_parent_chains` recursive CTE (migration 00152) which returns one
+   * row per (space, ancestor) pair ordered by depth ascending. Falls back to
+   * an empty chain on error so the UI still renders rooms — disambiguation
+   * is a nice-to-have, not load-critical.
+   */
+  private async loadParentChainsBulk(
     tenantId: string,
-    candidates: Array<{ id: string; parent_id: string | null }>,
+    spaceIds: string[],
   ): Promise<Map<string, Array<{ id: string; name: string; type: string }>>> {
     const out = new Map<string, Array<{ id: string; name: string; type: string }>>();
-    const parentIds = new Set<string>();
-    for (const c of candidates) {
-      if (c.parent_id) parentIds.add(c.parent_id);
-    }
-    if (parentIds.size === 0) {
-      for (const c of candidates) out.set(c.id, []);
+    if (spaceIds.length === 0) return out;
+    for (const id of spaceIds) out.set(id, []);
+
+    const { data, error } = await this.supabase.admin.rpc('space_parent_chains', {
+      p_tenant_id: tenantId,
+      p_space_ids: spaceIds,
+    });
+    if (error) {
+      this.log.warn(`loadParentChainsBulk rpc failed: ${error.message}`);
       return out;
     }
-
-    // Fetch up to 3 levels of ancestors. Two iterations cover floor →
-    // building → site for the typical 3-level hierarchy.
-    const fetched = new Map<string, { id: string; name: string; type: string; parent_id: string | null }>();
-    let frontier = Array.from(parentIds);
-    for (let i = 0; i < 3 && frontier.length > 0; i++) {
-      const { data, error } = await this.supabase.admin
-        .from('spaces')
-        .select('id, name, type, parent_id')
-        .eq('tenant_id', tenantId)
-        .in('id', frontier);
-      if (error) {
-        this.log.warn(`loadParentChains error: ${error.message}`);
-        break;
-      }
-      const next: string[] = [];
-      for (const row of (data ?? []) as Array<{
-        id: string; name: string; type: string; parent_id: string | null;
-      }>) {
-        fetched.set(row.id, row);
-        if (row.parent_id && !fetched.has(row.parent_id)) next.push(row.parent_id);
-      }
-      frontier = next;
-    }
-
-    for (const c of candidates) {
-      const chain: Array<{ id: string; name: string; type: string }> = [];
-      let cursor = c.parent_id;
-      let safety = 4;
-      while (cursor && safety-- > 0) {
-        const row = fetched.get(cursor);
-        if (!row) break;
-        chain.push({ id: row.id, name: row.name, type: row.type });
-        cursor = row.parent_id;
-      }
-      out.set(c.id, chain);
+    type Row = { space_id: string; ancestor_id: string; ancestor_name: string; ancestor_type: string; depth: number };
+    for (const row of (data ?? []) as Row[]) {
+      const list = out.get(row.space_id);
+      if (list) list.push({ id: row.ancestor_id, name: row.ancestor_name, type: row.ancestor_type });
     }
     return out;
   }
