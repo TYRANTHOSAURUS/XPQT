@@ -132,6 +132,17 @@ export class BundleService {
         menu_id: string | null;
       }> = [];
       const perLineScopes = new Map<string, { order_id: string; oli_id: string; asset_reservation_id: string | null; ticket_id: string | null }>();
+      // (oliId → HydratedLine) — the rule resolver's `contextFor` callback
+      // looks up by lineKey (= persisted oliId), not by HydratedLine.id (which
+      // is always the empty string until insert). Track the pair here.
+      const lineByOli = new Map<string, HydratedLine>();
+
+      // Pre-compute the order total once — `contextFor` would otherwise
+      // recompute it per line.
+      const orderTotal = lines.reduce(
+        (sum, l) => sum + (l.unit_price ?? 0) * l.quantity,
+        0,
+      );
 
       for (const [serviceType, group] of linesByServiceType) {
         const order = await this.createOrder({
@@ -184,6 +195,7 @@ export class BundleService {
             asset_reservation_id: assetReservationId,
             ticket_id: null,
           });
+          lineByOli.set(oliId, line);
         }
       }
 
@@ -191,7 +203,7 @@ export class BundleService {
       const outcomes = await this.resolver.resolveBulk({
         lines: perLineOutcomeInputs,
         contextFor: (lineKey) => {
-          const line = lines.find((l) => l.id === lineKey);
+          const line = lineByOli.get(lineKey);
           if (!line) throw new Error(`context lookup failed for ${lineKey}`);
           return buildServiceEvaluationContext({
             requester: {
@@ -230,8 +242,8 @@ export class BundleService {
               },
             },
             order: {
-              total_per_occurrence: lines.reduce((sum, l) => sum + (l.unit_price ?? 0) * l.quantity, 0),
-              total: lines.reduce((sum, l) => sum + (l.unit_price ?? 0) * l.quantity, 0),
+              total_per_occurrence: orderTotal,
+              total: orderTotal,
               line_count: lines.length,
             },
             permissions: args.permissions ?? {},
