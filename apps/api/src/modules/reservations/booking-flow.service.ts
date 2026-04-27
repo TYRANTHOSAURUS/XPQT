@@ -208,22 +208,14 @@ export class BookingFlowService {
       matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
     });
 
-    // - Recurrence series materialisation (master row + first 90d of rows).
-    //   Fire-and-forget so the user gets their first booking back immediately.
-    if (
-      input.recurrence_rule &&
-      !input.recurrence_series_id &&  // not itself an occurrence being materialised
-      this.recurrence &&
-      reservation.status !== 'pending_approval'
-    ) {
-      void this.startSeries(reservation, input.recurrence_rule).catch((err) => {
-        this.log.warn(`startSeries failed for ${reservation.id}: ${(err as Error).message}`);
-      });
-    }
-
-    // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
-
     // - Service lines → bundle creation (sub-project 2)
+    //
+    // Awaited and ordered BEFORE recurrence series materialisation, so
+    // that when the materialiser fans out occurrences and re-reads the
+    // master, `master.booking_bundle_id` is already set and
+    // cloneOrderForOccurrence fires per occurrence. Putting startSeries
+    // first leaves a race where some early-materialised occurrences land
+    // without their services.
     if (input.services && input.services.length > 0 && this.bundle) {
       try {
         // BundleSource is a stricter subset of ReservationSource — drop
@@ -257,7 +249,34 @@ export class BookingFlowService {
         );
         throw err;
       }
+
+      // The booking_bundle_id row was set by attachServicesToReservation;
+      // refresh our local copy so the recurrence materialiser sees it.
+      reservation.booking_bundle_id = (
+        await this.supabase.admin
+          .from('reservations')
+          .select('booking_bundle_id')
+          .eq('id', reservation.id)
+          .maybeSingle()
+      ).data?.booking_bundle_id ?? reservation.booking_bundle_id;
     }
+
+    // - Recurrence series materialisation (master row + first 90d of rows).
+    //   Fire-and-forget so the user gets their first booking back immediately.
+    //   Runs AFTER bundle attach so the materialiser sees the master's bundle
+    //   and clones services onto each occurrence (sub-project 2 fan-out).
+    if (
+      input.recurrence_rule &&
+      !input.recurrence_series_id &&  // not itself an occurrence being materialised
+      this.recurrence &&
+      reservation.status !== 'pending_approval'
+    ) {
+      void this.startSeries(reservation, input.recurrence_rule).catch((err) => {
+        this.log.warn(`startSeries failed for ${reservation.id}: ${(err as Error).message}`);
+      });
+    }
+
+    // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
 
     return reservation;
   }
