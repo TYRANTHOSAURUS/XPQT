@@ -5,22 +5,24 @@ import { adminNavGroups, type AdminNavItem } from '@/lib/admin-nav';
 
 export function AdminIndexPage() {
   return (
-    <SettingsPageShell>
+    <SettingsPageShell width="ultra">
       <SettingsPageHeader
         title="Admin"
         description="Configure your workspace — catalog, routing, people, access, and operations."
       />
 
-      {adminNavGroups.map((group) => (
-        <section key={group.label} className="flex flex-col gap-3">
-          <h2 className="text-base font-medium">{group.label}</h2>
-          <div className="flex flex-col rounded-lg border bg-card divide-y overflow-hidden">
-            {group.items.map((item) => (
-              <AdminNavRow key={item.path} item={item} />
-            ))}
-          </div>
-        </section>
-      ))}
+      <div className="gap-x-6 md:columns-2 lg:columns-3 [&>section]:break-inside-avoid">
+        {adminNavGroups.map((group) => (
+          <section key={group.label} className="mb-6 flex flex-col gap-3">
+            <h2 className="text-base font-medium">{group.label}</h2>
+            <div className="flex flex-col rounded-lg border bg-card divide-y overflow-hidden">
+              {group.items.map((item) => (
+                <AdminNavRow key={item.path} item={item} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
     </SettingsPageShell>
   );
 }
