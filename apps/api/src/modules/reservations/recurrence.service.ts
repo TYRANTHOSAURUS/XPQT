@@ -56,6 +56,17 @@ export class RecurrenceService {
     requesterPersonId: string;
   }) => Promise<unknown> } | null = null;
 
+  /**
+   * Sub-project 2 cascade: cancelForward cancels N occurrences in one
+   * statement; for each cancelled occurrence with a bundle attached, the
+   * bundle's orders + lines + tickets + asset reservations + pending
+   * approvals also need cascading. Wired lazily, same circular-dep avoidance
+   * as `orders`.
+   */
+  private bundleCascade: {
+    cancelBundleInternal: (args: { bundle_id: string; reason?: string }) => Promise<void>;
+  } | null = null;
+
   // System actor used by the materialiser + rollover cron when there's no
   // human caller. Has no override permission — recurrence-materialised rows
   // only ever land if the rules + conflict guard allow them.
@@ -87,6 +98,14 @@ export class RecurrenceService {
    */
   setOrdersFanOut(handler: NonNullable<RecurrenceService['orders']>) {
     this.orders = handler;
+  }
+
+  /**
+   * Wire the bundle cascade lazily so cancelForward can cascade bundles
+   * for each cancelled occurrence.
+   */
+  setBundleCascade(handler: NonNullable<RecurrenceService['bundleCascade']>) {
+    this.bundleCascade = handler;
   }
 
   /**
@@ -675,8 +694,26 @@ export class RecurrenceService {
     }
     // 'series' → no time gate; cancels everything in the series.
 
-    const { data, error } = await q.select('id');
+    const { data, error } = await q.select('id, booking_bundle_id');
     if (error) throw new Error(`cancelForward failed: ${error.message}`);
+
+    // Sub-project 2 cascade: every cancelled occurrence with a bundle
+    // attached cascades the bundle (orders + lines + tickets + asset
+    // reservations + pending approvals). De-dupe bundle ids first — a
+    // single bundle can span multiple occurrences (services-only bundle
+    // shared across recurring orders).
+    if (this.bundleCascade) {
+      const bundleIds = new Set<string>();
+      for (const row of (data ?? []) as Array<{ booking_bundle_id: string | null }>) {
+        if (row.booking_bundle_id) bundleIds.add(row.booking_bundle_id);
+      }
+      for (const bundleId of bundleIds) {
+        await this.bundleCascade.cancelBundleInternal({
+          bundle_id: bundleId,
+          reason: `recurrence_cancel_forward:${scope}`,
+        });
+      }
+    }
 
     // Cap the series so the rollover doesn't re-create. For 'series' the
     // pivot start_at is also a safe end-cap because every occurrence at or

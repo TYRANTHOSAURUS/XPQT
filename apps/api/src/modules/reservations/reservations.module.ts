@@ -24,6 +24,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { OrdersModule } from '../orders/orders.module';
 import { OrderService } from '../orders/order.service';
+import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -76,6 +77,7 @@ export class ReservationsModule implements OnModuleInit {
     private readonly supabase: SupabaseService,
     private readonly tenants: TenantService,
     private readonly orders: OrderService,
+    private readonly bundleCascade: BundleCascadeService,
   ) {}
 
   onModuleInit() {
@@ -88,6 +90,11 @@ export class ReservationsModule implements OnModuleInit {
     // in ServiceCatalogModule which would otherwise create a cycle.
     this.recurrence.setOrdersFanOut({
       cloneOrderForOccurrence: (args) => this.orders.cloneOrderForOccurrence(args),
+    });
+    // Same cascade wiring for cancelForward — every cancelled occurrence's
+    // bundle needs to cascade orders + lines + tickets.
+    this.recurrence.setBundleCascade({
+      cancelBundleInternal: (args) => this.bundleCascade.cancelBundleInternal(args),
     });
 
     // Wire the calendar-sync intercept handler. When a Pattern-A room mailbox
