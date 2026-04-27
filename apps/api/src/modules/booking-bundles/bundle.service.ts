@@ -350,13 +350,16 @@ export class BundleService {
   private async hydrateLines(inputs: ServiceLineInput[], reservation: ReservationRow): Promise<HydratedLine[]> {
     const out: HydratedLine[] = [];
     const now = Date.now();
+    const tenantId = reservation.tenant_id;
     for (const input of inputs) {
       // Look up the catalog item — gives us category + price/unit defaults
-      // that the resolver doesn't otherwise see.
+      // that the resolver doesn't otherwise see. Tenant-filter to refuse
+      // cross-tenant catalog ids passed in the payload.
       const { data: item, error: itemErr } = await this.supabase.admin
         .from('catalog_items')
         .select('id, category, price_per_unit, unit, fulfillment_team_id')
         .eq('id', input.catalog_item_id)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       if (itemErr) throw itemErr;
       if (!item) throw new NotFoundException({ code: 'catalog_item_not_found', message: `Catalog item ${input.catalog_item_id} not found.` });
@@ -436,10 +439,12 @@ export class BundleService {
         .from('booking_bundles')
         .select('id')
         .eq('id', args.reservation.booking_bundle_id)
+        .eq('tenant_id', args.tenantId)
         .maybeSingle();
       if (error) throw error;
       if (data) return { id: (data as { id: string }).id, preExisting: true };
-      // Stale FK — fall through to create new.
+      // Stale FK or cross-tenant leak attempt — fall through to create new
+      // in this tenant.
     }
 
     const insertRow = {
@@ -552,6 +557,23 @@ export class BundleService {
     requester_person_id: string;
     bundle_id: string;
   }): Promise<string> {
+    // Confirm the asset belongs to this tenant — otherwise a cross-tenant
+    // asset id passed in the payload would land a tenant-A reservation
+    // pointing at a tenant-B asset.
+    const assetCheck = await this.supabase.admin
+      .from('assets')
+      .select('id')
+      .eq('id', args.asset_id)
+      .eq('tenant_id', args.tenantId)
+      .maybeSingle();
+    if (assetCheck.error) throw assetCheck.error;
+    if (!assetCheck.data) {
+      throw new NotFoundException({
+        code: 'asset_not_found',
+        message: `Asset ${args.asset_id} not found.`,
+      });
+    }
+
     const { data, error } = await this.supabase.admin
       .from('asset_reservations')
       .insert({

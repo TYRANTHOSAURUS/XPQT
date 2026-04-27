@@ -330,11 +330,13 @@ export class BundleCascadeService {
       linked_ticket_id: string | null;
       order_id: string;
     };
-    // Walk to bundle_id via orders.
+    // Walk to bundle_id via orders. Tenant-filter as defence-in-depth in
+    // case a malformed line ever points at a cross-tenant order.
     const { data: order, error: orderErr } = await this.supabase.admin
       .from('orders')
       .select('booking_bundle_id')
       .eq('id', row.order_id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (orderErr) throw orderErr;
     return {

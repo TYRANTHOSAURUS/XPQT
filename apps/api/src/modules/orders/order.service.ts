@@ -1018,6 +1018,22 @@ export class OrderService {
     requester_person_id: string;
     bundle_id: string;
   }): Promise<string> {
+    // Reject cross-tenant asset ids passed in the payload — admin client
+    // bypasses RLS so the tenant boundary has to live in code.
+    const assetCheck = await this.supabase.admin
+      .from('assets')
+      .select('id')
+      .eq('id', args.asset_id)
+      .eq('tenant_id', args.tenantId)
+      .maybeSingle();
+    if (assetCheck.error) throw assetCheck.error;
+    if (!assetCheck.data) {
+      throw new NotFoundException({
+        code: 'asset_not_found',
+        message: `Asset ${args.asset_id} not found.`,
+      });
+    }
+
     const { data, error } = await this.supabase.admin
       .from('asset_reservations')
       .insert({
