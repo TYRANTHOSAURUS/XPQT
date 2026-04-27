@@ -512,7 +512,9 @@ export function BookingConfirmDialog({
                 ? 'Submit for approval'
                 : isMultiRoom
                   ? 'Book all rooms'
-                  : 'Confirm booking'}
+                  : hasServices
+                    ? `Book + ${pluralize(allServiceSelections.length, 'service')}`
+                    : 'Confirm booking'}
           </Button>
         </DialogFooter>
       </DialogContent>
