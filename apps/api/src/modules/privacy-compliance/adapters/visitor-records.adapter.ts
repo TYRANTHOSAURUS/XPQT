@@ -37,8 +37,8 @@ export class VisitorRecordsAdapter implements DataCategoryAdapter {
     // Visit considered "completed" once the date is past + the visitor's
     // status is terminal. We anonymize once retention has elapsed since the
     // visit_date AND the visitor isn't pending future activity.
-    const rows = await this.db.queryMany<{ id: string }>(
-      `select id from visitors
+    const rows = await this.db.queryMany<{ id: string; person_id: string; host_person_id: string }>(
+      `select id, person_id, host_person_id from visitors
         where tenant_id = $1
           and anonymized_at is null
           and visit_date < (current_date - ($2 || ' days')::interval)
@@ -53,6 +53,7 @@ export class VisitorRecordsAdapter implements DataCategoryAdapter {
       resourceType: 'visitors',
       resourceId: r.id,
       tenantId,
+      subjectPersonIds: [r.person_id, r.host_person_id].filter(Boolean),
     }));
   }
 

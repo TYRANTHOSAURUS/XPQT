@@ -24,6 +24,7 @@ export class AuditOutboxWorker {
   private readonly batchSize       = Number(process.env.AUDIT_OUTBOX_BATCH_SIZE ?? 500);
   private readonly staleClaimMs    = Number(process.env.AUDIT_OUTBOX_STALE_CLAIM_MS ?? 5 * 60 * 1000);
   private readonly purgeAfterDays  = Number(process.env.AUDIT_OUTBOX_PURGE_AFTER_DAYS ?? 7);
+  private readonly maxAttempts     = Number(process.env.AUDIT_OUTBOX_MAX_ATTEMPTS ?? 8);
   private readonly enabled         = process.env.AUDIT_OUTBOX_WORKER_ENABLED !== 'false';
 
   private running = false;
@@ -63,13 +64,16 @@ export class AuditOutboxWorker {
     );
 
     // Step 2: claim a batch atomically. SKIP LOCKED lets multiple worker
-    // instances coexist without blocking each other.
+    // instances coexist without blocking each other. Skip rows past
+    // maxAttempts — they're broken (poison-pill payload, schema drift, etc.)
+    // and need ops attention rather than continued retry.
     const claimToken = randomUUID();
     const claimed = await this.db.query<{ id: string }>(
       `with cte as (
          select id from audit_outbox
           where processed_at is null
             and claim_token is null
+            and attempts < $3
           order by enqueued_at
           limit $1
           for update skip locked
@@ -79,11 +83,12 @@ export class AuditOutboxWorker {
          from cte
         where o.id = cte.id
         returning o.id`,
-      [this.batchSize, claimToken],
+      [this.batchSize, claimToken, this.maxAttempts],
     );
 
     if (claimed.rowCount === 0) {
       await this.purgeProcessed();
+      await this.warnOnDeadLetter();
       return 0;
     }
 
@@ -136,5 +141,26 @@ export class AuditOutboxWorker {
           and processed_at < now() - ($1 || ' days')::interval`,
       [this.purgeAfterDays.toString()],
     );
+  }
+
+  /**
+   * Surface dead-letter rows (attempts hit the cap, never processed) so ops
+   * can investigate. Cheap query — only runs when the worker has nothing
+   * else to do, and only logs when there's something to report.
+   */
+  private async warnOnDeadLetter(): Promise<void> {
+    const r = await this.db.queryOne<{ count: string }>(
+      `select count(*)::text as count from audit_outbox
+        where processed_at is null and attempts >= $1`,
+      [this.maxAttempts],
+    );
+    const n = Number(r?.count ?? '0');
+    if (n > 0) {
+      this.log.warn(
+        `audit_outbox dead-letter: ${n} rows past max_attempts=${this.maxAttempts}; ` +
+        `select id, event_type, last_error, attempts from audit_outbox ` +
+        `where processed_at is null and attempts >= ${this.maxAttempts};`,
+      );
+    }
   }
 }

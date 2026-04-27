@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { AuditOutboxService } from './audit-outbox.service';
 import { DataCategoryRegistry } from './data-category-registry.service';
 import { RetentionService } from './retention.service';
-import type { DataCategoryAdapter } from './data-category.adapter';
+import type { DataCategoryAdapter, EntityRef } from './data-category.adapter';
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
 const ACTOR = 'b2c3d4e5-f6a7-4b89-8cde-f0123456789a';
@@ -236,6 +236,127 @@ describe('RetentionService.applyRetention throttling', () => {
     const result = await service.applyRetention(TENANT, 'visitor_records', { maxRows: 0, chunkSize: 25_000, batchSleepMs: 0 });
     expect(result.anonymized).toBe(75_000);
     expect(result.deferred).toBe(0);
+  });
+});
+
+describe('RetentionService person-level legal hold filter', () => {
+  function makeService(refs: Array<{ id: string; subjectPersonIds?: string[] }>, heldPersonIds: string[]) {
+    const captured: CapturedQuery[] = [];
+
+    const adapter: DataCategoryAdapter = {
+      category: 'visitor_records',
+      description: 'test',
+      defaultRetentionDays: 30,
+      capRetentionDays: 90,
+      legalBasis: 'legitimate_interest',
+      scanForExpired: jest.fn(async (tenantId: string) => refs.map((r) => ({
+        category: 'visitor_records',
+        resourceType: 'visitors',
+        resourceId: r.id,
+        tenantId,
+        subjectPersonIds: r.subjectPersonIds,
+      }))),
+      anonymize: jest.fn(async () => {}),
+      hardDelete: jest.fn(async () => {}),
+      exportForPerson: jest.fn(async () => ({ category: 'visitor_records', description: 'test', records: [], totalCount: 0 })),
+      erasureRefs: jest.fn(async () => []),
+    };
+
+    const db = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => { captured.push({ sql, params }); return { rows: [], rowCount: 0 }; }),
+      queryOne: jest.fn(async (sql: string) => {
+        if (sql.includes('hold_type')) return { exists: false };
+        if (sql.includes('from tenant_retention_settings')) {
+          return { id: '1', tenant_id: TENANT, data_category: 'visitor_records', retention_days: 30, cap_retention_days: 90, lia_text: null, legal_basis: 'legitimate_interest', created_at: 'x', updated_at: 'x', lia_text_updated_at: null, lia_text_updated_by_user_id: null };
+        }
+        return null;
+      }),
+      queryMany: jest.fn(async (sql: string) => {
+        if (sql.includes('legal_holds') && sql.includes('hold_type = \'person\'')) {
+          return heldPersonIds.map((pid) => ({ subject_person_id: pid }));
+        }
+        return [];
+      }),
+      rpc: jest.fn(),
+      tx: jest.fn(),
+      captured,
+    };
+
+    const registry = new DataCategoryRegistry();
+    registry.register(adapter);
+    const auditOutbox = new AuditOutboxService(db as any);
+    const service = new RetentionService(db as any, registry, auditOutbox);
+    return { service, adapter, db };
+  }
+
+  it('skips refs whose subjectPersonIds intersect a held person', async () => {
+    const HELD = '11111111-1111-4111-8111-111111111111';
+    const FREE = '22222222-2222-4222-8222-222222222222';
+    const { service, adapter } = makeService(
+      [
+        { id: 'r1', subjectPersonIds: [HELD] },        // held — must be skipped
+        { id: 'r2', subjectPersonIds: [FREE] },        // free — must be processed
+        { id: 'r3', subjectPersonIds: [FREE, HELD] },  // overlapping — must be skipped
+        { id: 'r4' },                                  // no link — processed
+      ],
+      [HELD],
+    );
+    const result = await service.applyRetention(TENANT, 'visitor_records', { batchSleepMs: 0 });
+    expect(result.skippedHeld).toBe(2);
+    expect(result.anonymized).toBe(2);
+    // Confirm the adapter never saw the held refs.
+    const anonymizeCalls = (adapter.anonymize as jest.Mock).mock.calls;
+    const sentIds = anonymizeCalls.flatMap((c) => c[0].map((ref: EntityRef) => ref.resourceId));
+    expect(sentIds).toEqual(expect.arrayContaining(['r2', 'r4']));
+    expect(sentIds).not.toEqual(expect.arrayContaining(['r1', 'r3']));
+  });
+
+  it('persons category falls back to resourceId when subjectPersonIds is missing', async () => {
+    const HELD = '11111111-1111-4111-8111-111111111111';
+
+    // Adapter returns refs to the persons table itself — orchestrator must
+    // treat resourceId AS the person id for hold lookup.
+    const captured: CapturedQuery[] = [];
+    const adapter: DataCategoryAdapter = {
+      category: 'person_ref_in_past_records',
+      description: 'test',
+      defaultRetentionDays: 90,
+      capRetentionDays: 90,
+      legalBasis: 'contract',
+      scanForExpired: jest.fn(async (tenantId: string) => [{
+        category: 'person_ref_in_past_records',
+        resourceType: 'persons',
+        resourceId: HELD,
+        tenantId,
+      }]),
+      anonymize: jest.fn(async () => {}),
+      hardDelete: jest.fn(async () => {}),
+      exportForPerson: jest.fn(async () => ({ category: 'x', description: 'x', records: [], totalCount: 0 })),
+      erasureRefs: jest.fn(async () => []),
+    };
+
+    const db = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => { captured.push({ sql, params }); return { rows: [], rowCount: 0 }; }),
+      queryOne: jest.fn(async (sql: string) => {
+        if (sql.includes('hold_type')) return { exists: false };
+        if (sql.includes('from tenant_retention_settings')) return { id: '1', tenant_id: TENANT, data_category: 'person_ref_in_past_records', retention_days: 90, cap_retention_days: 90, lia_text: null, legal_basis: 'contract', created_at: 'x', updated_at: 'x', lia_text_updated_at: null, lia_text_updated_by_user_id: null };
+        return null;
+      }),
+      queryMany: jest.fn(async () => [{ subject_person_id: HELD }]),
+      rpc: jest.fn(),
+      tx: jest.fn(),
+      captured,
+    };
+
+    const registry = new DataCategoryRegistry();
+    registry.register(adapter);
+    const auditOutbox = new AuditOutboxService(db as any);
+    const service = new RetentionService(db as any, registry, auditOutbox);
+
+    const result = await service.applyRetention(TENANT, 'person_ref_in_past_records', { batchSleepMs: 0 });
+    expect(result.skippedHeld).toBe(1);
+    expect(result.anonymized).toBe(0);
+    expect(adapter.anonymize).not.toHaveBeenCalled();
   });
 });
 

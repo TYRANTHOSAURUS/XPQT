@@ -33,6 +33,12 @@ export interface HardDeleteAdapterConfig {
   table: string;
   /** Column whose timestamp determines "past retention". */
   dateColumn: string;
+  /**
+   * Person-FK columns on the row whose values populate EntityRef.subjectPersonIds.
+   * Used by the orchestrator to filter out rows covered by person-level legal
+   * holds. Omit when no person link exists (webhook_events).
+   */
+  personFkColumns?: readonly string[];
   /** Optional WHERE-fragment appended to the scan to exclude already-processed rows. */
   alreadyProcessedPredicate?: string;
   /**
@@ -62,8 +68,11 @@ export function makeHardDeleteByDateAdapter(
       // Retention 0 = no warehousing → never scan. Treat as no-op.
       if (retentionDays <= 0) return [];
 
-      const rows = await db.queryMany<{ id: string }>(
-        `select id from ${config.table}
+      const personFkSelect = (config.personFkColumns ?? []).join(', ');
+      const selectExpr = personFkSelect ? `id, ${personFkSelect}` : 'id';
+
+      const rows = await db.queryMany<Record<string, string | null>>(
+        `select ${selectExpr} from ${config.table}
           where tenant_id = $1
             and ${config.dateColumn} < now() - ($2 || ' days')::interval
             ${alreadyProcessed ? `and ${alreadyProcessed}` : ''}
@@ -72,12 +81,18 @@ export function makeHardDeleteByDateAdapter(
         [tenantId, retentionDays.toString()],
       );
 
-      return rows.map((r) => ({
-        category: config.category,
-        resourceType: config.table,
-        resourceId: r.id,
-        tenantId,
-      }));
+      return rows.map((r) => {
+        const subjectPersonIds = (config.personFkColumns ?? [])
+          .map((col) => r[col])
+          .filter((v): v is string => typeof v === 'string' && v.length > 0);
+        return {
+          category: config.category,
+          resourceType: config.table,
+          resourceId: r.id as string,
+          tenantId,
+          subjectPersonIds: subjectPersonIds.length > 0 ? subjectPersonIds : undefined,
+        };
+      });
     },
 
     async anonymize(_refs: EntityRef[]): Promise<void> {

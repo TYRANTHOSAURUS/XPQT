@@ -218,8 +218,7 @@ export class RetentionService {
     let skippedHeld = 0;
 
     for (const ref of expired) {
-      const linkedPersonId = await this.refSubjectPersonId(ref);
-      if (linkedPersonId && heldPersonIds.has(linkedPersonId)) {
+      if (this.refTouchesHeldPerson(ref, heldPersonIds)) {
         skippedHeld += 1;
         continue;
       }
@@ -371,14 +370,21 @@ export class RetentionService {
   }
 
   /**
-   * Default heuristic: if the resource type is `persons`, the subject is the
-   * resource itself. Otherwise the adapter is responsible for surfacing a
-   * person link via the EntityRef (TODO Sprint 2: extend EntityRef with optional
-   * subject_person_id so adapters can declare it cheaply).
+   * A ref is "covered" by a person-level legal hold iff any person id it
+   * touches is currently held. Adapters populate `subjectPersonIds` with the
+   * union of all person FK columns on the row. For `persons` itself, the
+   * resourceId is implicitly the subject — handled here as a fallback so
+   * adapters don't have to duplicate the obvious case.
    */
-  private async refSubjectPersonId(ref: EntityRef): Promise<string | null> {
-    if (ref.resourceType === 'persons') return ref.resourceId;
-    return null;
+  private refTouchesHeldPerson(ref: EntityRef, held: Set<string>): boolean {
+    if (held.size === 0) return false;
+    if (ref.resourceType === 'persons' && held.has(ref.resourceId)) return true;
+    if (ref.subjectPersonIds) {
+      for (const pid of ref.subjectPersonIds) {
+        if (held.has(pid)) return true;
+      }
+    }
+    return false;
   }
 }
 

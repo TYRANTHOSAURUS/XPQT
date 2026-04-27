@@ -22,6 +22,14 @@ export interface EntityRef {
   resourceId: string;
   /** Tenant scope of the resource. Required for cross-tenant safety in batch ops. */
   tenantId: string;
+  /**
+   * Person ids whose PII is referenced by this row. Used by the orchestrator
+   * to filter out refs covered by a person-level legal hold. Adapters populate
+   * with the union of all person FK columns on the row (e.g. visitors:
+   * [person_id, host_person_id]; notifications: [recipient_person_id]).
+   * Empty / undefined means the row is not person-linked.
+   */
+  subjectPersonIds?: string[];
 }
 
 /** A section of the per-person export bundle (one per category). */

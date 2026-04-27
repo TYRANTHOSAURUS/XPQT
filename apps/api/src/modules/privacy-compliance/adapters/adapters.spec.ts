@@ -163,9 +163,15 @@ describe('VisitorRecordsAdapter', () => {
 
   it('scanForExpired filters by anonymized_at IS NULL + terminal status + visit_date', async () => {
     const { db, adapter } = build();
-    db.queryMany = jest.fn(async () => [{ id: 'v1' }]);
+    db.queryMany = jest.fn(async () => [{ id: 'v1', person_id: 'p-visitor', host_person_id: 'p-host' }]);
     const refs = await adapter.scanForExpired(TENANT, 180);
-    expect(refs).toEqual([{ category: 'visitor_records', resourceType: 'visitors', resourceId: 'v1', tenantId: TENANT }]);
+    expect(refs).toMatchObject([{
+      category: 'visitor_records',
+      resourceType: 'visitors',
+      resourceId: 'v1',
+      tenantId: TENANT,
+      subjectPersonIds: ['p-visitor', 'p-host'],
+    }]);
     const sql = db.queryMany.mock.calls[0][0];
     expect(sql).toContain('anonymized_at is null');
     expect(sql).toContain('checked_out');
@@ -228,12 +234,13 @@ describe('AuditEventsAdapter', () => {
     return { db, adapter: new AuditEventsAdapter(db as any, anon) };
   }
 
-  it('scanForExpired skips already-anonymized rows', async () => {
+  it('scanForExpired skips already-anonymized rows + joins users for subject_person', async () => {
     const { db, adapter } = build();
     db.queryMany = jest.fn(async () => []);
     await adapter.scanForExpired(TENANT, 2555);
     const sql = db.queryMany.mock.calls[0][0];
-    expect(sql).toContain("(details->>'anonymized')::boolean");
+    expect(sql).toMatch(/details->>'anonymized'/);
+    expect(sql).toContain('left join users u on u.id = ae.actor_user_id');
   });
 
   it('anonymize redacts each known PII key + sets anonymized flag', async () => {

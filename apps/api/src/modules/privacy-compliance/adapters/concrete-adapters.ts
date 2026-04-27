@@ -41,6 +41,7 @@ export function buildEmailNotificationsAdapter(db: DbService): DataCategoryAdapt
       capRetentionDays: 365,
       table: 'notifications',
       dateColumn: 'created_at',
+      personFkColumns: ['recipient_person_id'],
       exportForPerson: async (db, tenantId, personId) => {
         const records = await db.queryMany(
           `select id, notification_type, target_channel, related_entity_type,

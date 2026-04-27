@@ -40,12 +40,16 @@ export class AuditEventsAdapter implements DataCategoryAdapter {
   async scanForExpired(tenantId: string, retentionDays: number): Promise<EntityRef[]> {
     if (retentionDays <= 0) return [];
 
-    const rows = await this.db.queryMany<{ id: string }>(
-      `select id from audit_events
-        where tenant_id = $1
-          and created_at < now() - ($2 || ' days')::interval
-          and not coalesce((details->>'anonymized')::boolean, false)
-        order by created_at
+    // Surface the actor's linked person so the orchestrator can check it
+    // against active person-level legal holds before scrubbing.
+    const rows = await this.db.queryMany<{ id: string; subject_person_id: string | null }>(
+      `select ae.id, u.person_id as subject_person_id
+         from audit_events ae
+         left join users u on u.id = ae.actor_user_id
+        where ae.tenant_id = $1
+          and ae.created_at < now() - ($2 || ' days')::interval
+          and not coalesce((ae.details->>'anonymized')::boolean, false)
+        order by ae.created_at
         limit 100000`,
       [tenantId, retentionDays.toString()],
     );
@@ -55,6 +59,7 @@ export class AuditEventsAdapter implements DataCategoryAdapter {
       resourceType: 'audit_events',
       resourceId: r.id,
       tenantId,
+      subjectPersonIds: r.subject_person_id ? [r.subject_person_id] : undefined,
     }));
   }
 
