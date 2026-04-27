@@ -13,7 +13,8 @@ import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { formatRef } from '@/lib/format-ref';
-import { BookingDetailDrawer } from '@/components/booking-detail/booking-detail-drawer';
+import { Group, Panel, Separator } from 'react-resizable-panels';
+import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
 import { cn } from '@/lib/utils';
 
 type Scope =
@@ -126,8 +127,11 @@ export function DeskBookingsPage() {
     setParams(p, { replace: true });
   };
 
-  return (
-    <div className="flex h-full flex-col">
+  const selectedSpaceName =
+    allItems.find((r) => r.id === selectedId)?.space_name ?? null;
+
+  const list = (
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="border-b px-6 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -247,15 +251,31 @@ export function DeskBookingsPage() {
         )}
       </div>
 
-      {/* Detail drawer — reuses the portal drawer (operators have visibility) */}
-      <BookingDetailDrawer
-        reservationId={selectedId}
-        spaceName={
-          allItems.find((r) => r.id === selectedId)?.space_name ?? null
-        }
-        onClose={closeDetail}
-      />
     </div>
+  );
+
+  return (
+    <Group orientation="horizontal" style={{ height: '100%' }}>
+      {selectedId ? (
+        <>
+          <Panel id="list" defaultSize="55%" className="relative">
+            {list}
+          </Panel>
+          <Separator />
+          <Panel id="detail" defaultSize="45%" className="relative">
+            <BookingDetailPanel
+              reservationId={selectedId}
+              spaceName={selectedSpaceName}
+              onClose={closeDetail}
+            />
+          </Panel>
+        </>
+      ) : (
+        <Panel id="list" className="relative">
+          {list}
+        </Panel>
+      )}
+    </Group>
   );
 }
 
