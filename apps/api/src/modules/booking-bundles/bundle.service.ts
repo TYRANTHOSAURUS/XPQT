@@ -652,25 +652,56 @@ class Cleanup {
 
   async rollback() {
     if (this.done) return;
-    // Reverse-creation order: oli → ar → orders → bundle (only if we created it).
+    // Reverse-creation order: oli → ar → orders → bundle (only if we
+    // created it). Each step is independent — a failure in step N
+    // shouldn't skip step N+1 (the user is already getting an error;
+    // hiding orphans behind it is worse than half-failed cleanup). Best
+    // effort: each branch in its own try/catch, errors collected for
+    // a single warn-log at the end.
+    const failures: string[] = [];
     if (this.oliIds.length > 0) {
-      await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+      try {
+        await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+      } catch (err) {
+        failures.push(`oli: ${(err as Error).message}`);
+      }
     }
     if (this.assetReservationIds.length > 0) {
       // Soft-delete via status='cancelled' so the GiST exclusion stops
       // blocking; matches sub-project 1's pattern for reservations rollback.
-      await this.supabase.admin
-        .from('asset_reservations')
-        .update({ status: 'cancelled' })
-        .in('id', this.assetReservationIds);
+      try {
+        await this.supabase.admin
+          .from('asset_reservations')
+          .update({ status: 'cancelled' })
+          .in('id', this.assetReservationIds);
+      } catch (err) {
+        failures.push(`asset_reservations: ${(err as Error).message}`);
+      }
     }
     if (this.orderIds.length > 0) {
-      await this.supabase.admin.from('orders').delete().in('id', this.orderIds);
+      try {
+        await this.supabase.admin.from('orders').delete().in('id', this.orderIds);
+      } catch (err) {
+        failures.push(`orders: ${(err as Error).message}`);
+      }
     }
     for (const b of this.bundles) {
       if (!b.preExisting) {
-        await this.supabase.admin.from('booking_bundles').delete().eq('id', b.id);
+        try {
+          await this.supabase.admin.from('booking_bundles').delete().eq('id', b.id);
+        } catch (err) {
+          failures.push(`bundle ${b.id}: ${(err as Error).message}`);
+        }
       }
+    }
+    if (failures.length > 0) {
+      // Surface as a single combined log so ops can see the full picture
+      // when investigating an orphan. Doesn't re-throw — the caller's
+      // original error wins.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[bundle.rollback] ${failures.length} step(s) failed: ${failures.join('; ')}`,
+      );
     }
   }
 }

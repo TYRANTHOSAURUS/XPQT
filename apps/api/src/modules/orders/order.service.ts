@@ -786,20 +786,45 @@ class StandaloneCleanup {
 
   async rollback() {
     if (this.done) return;
+    // Same posture as BundleService.Cleanup: each step independent so a
+    // network blip on step N doesn't leave step N+1's row dangling.
+    const failures: string[] = [];
     if (this.oliIds.length > 0) {
-      await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+      try {
+        await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+      } catch (err) {
+        failures.push(`oli: ${(err as Error).message}`);
+      }
     }
     if (this.assetReservationIds.length > 0) {
-      await this.supabase.admin
-        .from('asset_reservations')
-        .update({ status: 'cancelled' })
-        .in('id', this.assetReservationIds);
+      try {
+        await this.supabase.admin
+          .from('asset_reservations')
+          .update({ status: 'cancelled' })
+          .in('id', this.assetReservationIds);
+      } catch (err) {
+        failures.push(`asset_reservations: ${(err as Error).message}`);
+      }
     }
     if (this.orderId) {
-      await this.supabase.admin.from('orders').delete().eq('id', this.orderId);
+      try {
+        await this.supabase.admin.from('orders').delete().eq('id', this.orderId);
+      } catch (err) {
+        failures.push(`order: ${(err as Error).message}`);
+      }
     }
     if (this.bundleId) {
-      await this.supabase.admin.from('booking_bundles').delete().eq('id', this.bundleId);
+      try {
+        await this.supabase.admin.from('booking_bundles').delete().eq('id', this.bundleId);
+      } catch (err) {
+        failures.push(`bundle: ${(err as Error).message}`);
+      }
+    }
+    if (failures.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[orders.standalone.rollback] ${failures.length} step(s) failed: ${failures.join('; ')}`,
+      );
     }
   }
 }
