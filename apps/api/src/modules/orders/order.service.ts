@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import {
+  loadPermissionMap,
+  loadRequesterContext,
+} from '../../common/requester-context';
 import { ApprovalRoutingService } from './approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
@@ -80,7 +84,6 @@ export interface CreateStandaloneOrderArgs {
     /** Optional asset reservation; conflict guard applies. */
     linked_asset_id?: string | null;
   }>;
-  permissions?: Record<string, boolean>;
 }
 
 export interface CreateStandaloneOrderResult {
@@ -389,7 +392,7 @@ export class OrderService {
           .eq('id', args.bundleId)
           .eq('tenant_id', args.tenantId)
           .maybeSingle(),
-        this.loadRequesterContext(args.requesterPersonId),
+        loadRequesterContext(this.supabase, args.requesterPersonId),
       ]);
       if (resRow.error) throw resRow.error;
       if (bundleRow.error) throw bundleRow.error;
@@ -407,7 +410,7 @@ export class OrderService {
         return { deniedLineIds: [], approvalLineIds: [], anyPending: false };
       }
 
-      const permissions = await this.loadPermissionMap(requesterCtx.user_id);
+      const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
 
       // Hydrate catalog_item category + fulfillment_team_id, and menu's
       // fulfillment_vendor_id, for each unique catalog_item_id / menu_id pair.
@@ -697,9 +700,8 @@ export class OrderService {
 
     const tenantId = TenantContext.current().id;
     const cleanup = new StandaloneCleanup(this.supabase);
-    const requesterCtx = await this.loadRequesterContext(args.requester_person_id);
-    const permissions =
-      args.permissions ?? (await this.loadPermissionMap(requesterCtx.user_id));
+    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
+    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
 
     try {
       // 1. Create services-only bundle (primary_reservation_id stays null).
@@ -1111,90 +1113,6 @@ export class OrderService {
     }
   }
 
-  /**
-   * Resolve requester profile (person + primary org membership + roles + linked
-   * user) for predicate evaluation. Mirrors RoomBookingRules' loadRequester.
-   */
-  private async loadRequesterContext(personId: string): Promise<{
-    id: string;
-    type: string | null;
-    cost_center: string | null;
-    org_node_id: string | null;
-    role_ids: string[];
-    user_id: string | null;
-  }> {
-    const tenantId = TenantContext.current().id;
-    const [
-      { data: person, error: pErr },
-      { data: membership, error: mErr },
-      { data: user, error: uErr },
-    ] = await Promise.all([
-      this.supabase.admin
-        .from('persons')
-        .select('id, type, cost_center')
-        .eq('id', personId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle(),
-      this.supabase.admin
-        .from('person_org_memberships')
-        .select('org_node_id')
-        .eq('person_id', personId)
-        .eq('tenant_id', tenantId)
-        .eq('is_primary', true)
-        .maybeSingle(),
-      this.supabase.admin
-        .from('users')
-        .select('id')
-        .eq('person_id', personId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle(),
-    ]);
-    if (pErr) throw pErr;
-    if (mErr) throw mErr;
-    if (uErr) throw uErr;
-    if (!person) throw new NotFoundException(`Person ${personId} not found`);
-    const userId = (user as { id: string } | null)?.id ?? null;
-
-    let roleIds: string[] = [];
-    if (userId) {
-      const { data: roles, error: rErr } = await this.supabase.admin
-        .from('user_role_assignments')
-        .select('role_id')
-        .eq('user_id', userId)
-        .eq('tenant_id', tenantId)
-        .eq('active', true);
-      if (rErr) throw rErr;
-      roleIds = ((roles ?? []) as Array<{ role_id: string }>).map((r) => r.role_id);
-    }
-
-    return {
-      id: personId,
-      type: (person as { type: string | null }).type ?? null,
-      cost_center: (person as { cost_center: string | null }).cost_center ?? null,
-      org_node_id: (membership as { org_node_id: string } | null)?.org_node_id ?? null,
-      role_ids: roleIds,
-      user_id: userId,
-    };
-  }
-
-  private async loadPermissionMap(userId: string | null): Promise<Record<string, boolean>> {
-    if (!userId) return {};
-    const tenantId = TenantContext.current().id;
-    const perms = ['rooms.override_rules', 'rooms.book_on_behalf'];
-    const result: Record<string, boolean> = {};
-    await Promise.all(
-      perms.map(async (perm) => {
-        const { data, error } = await this.supabase.admin.rpc('user_has_permission', {
-          p_user_id: userId,
-          p_tenant_id: tenantId,
-          p_permission: perm,
-        });
-        if (error) throw error;
-        result[perm] = Boolean(data);
-      }),
-    );
-    return result;
-  }
 }
 
 class StandaloneCleanup {

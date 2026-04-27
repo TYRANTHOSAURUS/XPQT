@@ -2,6 +2,11 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
+  loadPermissionMap,
+  loadRequesterContext,
+  type RequesterContext,
+} from '../../common/requester-context';
+import {
   EvaluationContext,
   PredicateEngineService,
 } from './predicate-engine.service';
@@ -114,9 +119,9 @@ export class RuleResolverService {
     // requester's user_id, so they happen inside loadRequester's branch.
     const [allRules, { requester, permissions }, spaces] = await Promise.all([
       this.fetchAllRules(),
-      this.loadRequester(requesterPersonId).then(async (r) => ({
+      loadRequesterContext(this.supabase, requesterPersonId).then(async (r) => ({
         requester: r,
-        permissions: await this.loadPermissionMap(r.user_id),
+        permissions: await loadPermissionMap(this.supabase, r.user_id),
       })),
       this.loadSpacesWithAncestors(spaceIds),
     ]);
@@ -293,88 +298,9 @@ export class RuleResolverService {
     return out;
   }
 
-  private async loadRequester(personId: string): Promise<RequesterContext> {
-    const tenant = TenantContext.current();
-    // Person + primary membership + linked user are independent — fan out.
-    // Roles still need user_id, so they chain on the user lookup.
-    const [
-      { data: person, error: pErr },
-      { data: membership, error: mErr },
-      { data: user, error: uErr },
-    ] = await Promise.all([
-      this.supabase.admin
-        .from('persons')
-        .select('id, type, cost_center')
-        .eq('id', personId)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle(),
-      this.supabase.admin
-        .from('person_org_memberships')
-        .select('org_node_id')
-        .eq('person_id', personId)
-        .eq('tenant_id', tenant.id)
-        .eq('is_primary', true)
-        .maybeSingle(),
-      this.supabase.admin
-        .from('users')
-        .select('id')
-        .eq('person_id', personId)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle(),
-    ]);
-    if (pErr) throw pErr;
-    if (mErr) throw mErr;
-    if (uErr) throw uErr;
-    if (!person) throw new NotFoundException(`Person ${personId} not found`);
-    const userId = (user as { id: string } | null)?.id ?? null;
-
-    let roleIds: string[] = [];
-    if (userId) {
-      const { data: roles, error: rErr } = await this.supabase.admin
-        .from('user_role_assignments')
-        .select('role_id')
-        .eq('user_id', userId)
-        .eq('tenant_id', tenant.id)
-        .eq('active', true);
-      if (rErr) throw rErr;
-      roleIds = ((roles ?? []) as Array<{ role_id: string }>).map((r) => r.role_id);
-    }
-
-    return {
-      id: personId,
-      type: (person as { type: string | null }).type ?? null,
-      cost_center: (person as { cost_center: string | null }).cost_center ?? null,
-      org_node_id: (membership as { org_node_id: string } | null)?.org_node_id ?? null,
-      role_ids: roleIds,
-      user_id: userId,
-    };
-  }
-
-  private async loadPermissionMap(userId: string | null): Promise<Record<string, boolean>> {
-    if (!userId) return {};
-    const tenant = TenantContext.current();
-    // We only check permissions referenced by templates today
-    // (rooms.override_rules, rooms.book_on_behalf). For each, call the
-    // existing user_has_permission RPC.
-    const perms = ['rooms.override_rules', 'rooms.book_on_behalf'];
-    const result: Record<string, boolean> = {};
-    await Promise.all(
-      perms.map(async (perm) => {
-        const { data, error } = await this.supabase.admin.rpc('user_has_permission', {
-          p_user_id: userId,
-          p_tenant_id: tenant.id,
-          p_permission: perm,
-        });
-        if (error) throw error;
-        result[perm] = Boolean(data);
-      }),
-    );
-    return result;
-  }
-
   private async buildContext(scenario: BookingScenario): Promise<EvaluationContext> {
-    const requester = await this.loadRequester(scenario.requester_person_id);
-    const permissions = await this.loadPermissionMap(requester.user_id);
+    const requester = await loadRequesterContext(this.supabase, scenario.requester_person_id);
+    const permissions = await loadPermissionMap(this.supabase, requester.user_id);
     const spaceMap = await this.loadSpacesWithAncestors([scenario.space_id]);
     const space = spaceMap.get(scenario.space_id);
     if (!space) throw new NotFoundException(`Space ${scenario.space_id} not found`);
@@ -482,15 +408,6 @@ export class RuleResolverService {
 }
 
 // ── Helpers (exported for testing) ─────────────────────────────────────
-
-interface RequesterContext {
-  id: string;
-  type: string | null;
-  cost_center: string | null;
-  org_node_id: string | null;
-  role_ids: string[];
-  user_id: string | null;
-}
 
 interface SpaceWithChain {
   id: string;
