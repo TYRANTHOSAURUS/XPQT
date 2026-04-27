@@ -133,10 +133,47 @@ export class BundleCascadeService {
     closed_approval_ids: string[];
     fulfilled_line_ids: string[];
   }> {
+    return this.cancelBundleImpl(args, { ctx });
+  }
+
+  /**
+   * Internal cascade — used when ReservationService.cancelOne already
+   * validated the user can cancel the reservation, so visibility is
+   * implicit. Reservations with bundles call this so the bundle's orders,
+   * lines, work-order tickets, asset reservations and pending approvals
+   * cascade alongside the reservation cancel.
+   *
+   * Best-effort: a failure here is logged but doesn't fail the reservation
+   * cancel that already committed.
+   */
+  async cancelBundleInternal(args: CancelBundleArgs): Promise<void> {
+    try {
+      await this.cancelBundleImpl(args, { skipVisibility: true });
+    } catch (err) {
+      this.log.warn(
+        `internal bundle cascade failed for ${args.bundle_id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async cancelBundleImpl(
+    args: CancelBundleArgs,
+    auth: { ctx?: BundleVisibilityContext; skipVisibility?: boolean },
+  ): Promise<{
+    bundle_id: string;
+    cancelled_line_ids: string[];
+    cancelled_reservation_ids: string[];
+    cancelled_ticket_ids: string[];
+    cancelled_asset_reservation_ids: string[];
+    closed_approval_ids: string[];
+    fulfilled_line_ids: string[];
+  }> {
     const tenantId = TenantContext.current().id;
     const bundle = await this.loadBundle(args.bundle_id, tenantId);
     if (!bundle) throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${args.bundle_id} not found.` });
-    await this.visibility.assertVisible(bundle, ctx);
+    if (!auth.skipVisibility && auth.ctx) {
+      await this.visibility.assertVisible(bundle, auth.ctx);
+    }
 
     const keep = new Set(args.keep_line_ids ?? []);
 

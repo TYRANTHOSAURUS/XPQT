@@ -7,6 +7,7 @@ import { ConflictGuardService } from './conflict-guard.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
 import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
+import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
 
 /**
@@ -25,6 +26,7 @@ export class ReservationService {
     private readonly visibility: ReservationVisibilityService,
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
+    @Optional() private readonly bundleCascade?: BundleCascadeService,
   ) {}
 
   // === Reads ===
@@ -296,6 +298,17 @@ export class ReservationService {
         details: { reservation_id: id, scope: 'this', reason: opts.reason ?? null },
       });
     } catch { /* best-effort */ }
+
+    // Sub-project 2 cascade: when the reservation has a bundle attached,
+    // cancel its services, work-order tickets, asset reservations, and
+    // close any pending approvals. Fulfilled lines stay (per spec §5.3).
+    // Best-effort — a failure here doesn't undo the reservation cancel.
+    if (updated.booking_bundle_id && this.bundleCascade) {
+      await this.bundleCascade.cancelBundleInternal({
+        bundle_id: updated.booking_bundle_id,
+        reason: opts.reason ?? 'reservation_cancelled',
+      });
+    }
 
     return updated;
   }
