@@ -109,8 +109,15 @@ export class ServiceRuleResolverService {
     ctx: ServiceEvaluationContext,
   ): Promise<MatchedServiceRule[]> {
     const candidates = bucketRulesBySpecificity(rules, line);
+    // Iterate buckets most-specific-first (1 = catalog_item, 4 = tenant).
+    // Map.entries() preserves insertion order, which depends on DB return
+    // order, so sort by specificity ascending here for deterministic
+    // ordering. Within a bucket, higher priority wins.
+    const sortedBuckets = Array.from(candidates.entries()).sort(
+      ([a], [b]) => a - b,
+    );
     const orderedRules: MatchedServiceRule[] = [];
-    for (const [specificity, bucket] of candidates) {
+    for (const [specificity, bucket] of sortedBuckets) {
       bucket.sort((a, b) => b.priority - a.priority);
       for (const r of bucket) orderedRules.push({ ...r, specificity });
     }

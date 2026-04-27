@@ -587,10 +587,14 @@ export class OrderService {
 
       return { deniedLineIds, approvalLineIds, anyPending };
     } catch (err) {
+      // Fail-safe: if re-eval can't run (DB hiccup, missing context), keep
+      // the order as 'submitted' so a human reviews — never silently flip
+      // to 'approved'. Returning anyPending=true preserves the pre-eval
+      // status the caller already wrote.
       this.log.warn(
         `per-occurrence rule re-eval failed for order ${args.clonedOrderId}: ${(err as Error).message}`,
       );
-      return { deniedLineIds: [], approvalLineIds: [], anyPending: false };
+      return { deniedLineIds: [], approvalLineIds: [], anyPending: true };
     }
   }
 
