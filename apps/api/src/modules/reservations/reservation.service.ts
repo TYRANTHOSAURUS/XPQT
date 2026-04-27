@@ -34,18 +34,39 @@ export class ReservationService {
   async findOne(id: string, authUid: string): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const r = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(r, ctx);
+    return r;
+  }
 
+  /**
+   * Mutation-path counterpart to `findOne(id, authUid)`. Resolves
+   * visibility against an `ActorContext` (which holds `user_id`, the
+   * app-side users.id, NOT auth_uid). The previous implementation
+   * accidentally passed `actor.user_id` as `authUid` to `findOne`,
+   * which caused the underlying `users.eq('auth_uid', actor.user_id)`
+   * lookup to return null — yielding an empty context with every
+   * permission flag false, which then failed `assertVisible` with
+   * "reservation_not_visible" for every drag-move / cancel / restore
+   * an operator attempted from the desk scheduler.
+   */
+  async findOneForActor(id: string, actor: ActorContext): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    const r = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(r, ctx);
+    return r;
+  }
+
+  private async findByIdOrThrow(id: string, tenantId: string): Promise<Reservation> {
     const { data, error } = await this.supabase.admin
       .from('reservations')
       .select('*')
       .eq('tenant_id', tenantId)
       .eq('id', id)
       .maybeSingle();
-
     if (error || !data) throw new NotFoundException('reservation_not_found');
-    const r = data as unknown as Reservation;
-    this.visibility.assertVisible(r, ctx);
-    return r;
+    return data as unknown as Reservation;
   }
 
   async listMine(authUid: string, opts: {
@@ -240,9 +261,9 @@ export class ReservationService {
     scope?: RecurrenceScope;
   }): Promise<Reservation | { scope: RecurrenceScope; cancelled: number; pivot: Reservation }> {
     const tenantId = TenantContext.current().id;
-    const r = await this.findOne(id, actor.user_id);
-
-    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    const r = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
     if (r.status === 'cancelled') return r;
     if (r.status === 'completed') throw new BadRequestException('reservation_completed');
@@ -299,13 +320,16 @@ export class ReservationService {
       });
     } catch { /* best-effort */ }
 
-    // Sub-project 2 cascade: when the reservation has a bundle attached,
-    // cancel its services, work-order tickets, asset reservations, and
-    // close any pending approvals. Fulfilled lines stay (per spec §5.3).
+    // Sub-project 2 cascade: cancel orders linked to this specific
+    // reservation (and their downstream lines, tickets, asset reservations,
+    // approvals — rescoped or auto-closed). Scoped to the reservation_id so
+    // a non-master occurrence cancel doesn't take sibling occurrences down.
+    // The helper looks up the bundle via orders.linked_reservation_id, so
+    // it works whether or not reservations.booking_bundle_id is set.
     // Best-effort — a failure here doesn't undo the reservation cancel.
-    if (updated.booking_bundle_id && this.bundleCascade) {
-      await this.bundleCascade.cancelBundleInternal({
-        bundle_id: updated.booking_bundle_id,
+    if (this.bundleCascade) {
+      await this.bundleCascade.cancelOrdersForReservation({
+        reservation_id: updated.id,
         reason: opts.reason ?? 'reservation_cancelled',
       });
     }
@@ -319,8 +343,9 @@ export class ReservationService {
    */
   async restore(id: string, actor: ActorContext): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
-    const r = await this.findOne(id, actor.user_id);
-    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    const r = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
 
     if (r.status !== 'cancelled') throw new BadRequestException('reservation_not_cancelled');
@@ -367,7 +392,7 @@ export class ReservationService {
    */
   async skipOccurrence(id: string, actor: ActorContext): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
-    const r = await this.findOne(id, actor.user_id);
+    const r = await this.findOneForActor(id, actor);
     if (!r.recurrence_series_id) {
       throw new BadRequestException('not_a_recurring_occurrence');
     }
@@ -400,8 +425,9 @@ export class ReservationService {
     host_person_id?: string;
   }): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
-    const r = await this.findOne(id, actor.user_id);
-    const ctx = await this.visibility.loadContext(actor.user_id, tenantId);
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    const r = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
 
     const next: Record<string, unknown> = {};

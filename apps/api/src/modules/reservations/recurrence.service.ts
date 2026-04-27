@@ -64,7 +64,10 @@ export class RecurrenceService {
    * as `orders`.
    */
   private bundleCascade: {
-    cancelBundleInternal: (args: { bundle_id: string; reason?: string }) => Promise<void>;
+    cancelOrdersForReservation: (args: {
+      reservation_id: string;
+      reason?: string;
+    }) => Promise<void>;
   } | null = null;
 
   // System actor used by the materialiser + rollover cron when there's no
@@ -694,22 +697,18 @@ export class RecurrenceService {
     }
     // 'series' → no time gate; cancels everything in the series.
 
-    const { data, error } = await q.select('id, booking_bundle_id');
+    const { data, error } = await q.select('id');
     if (error) throw new Error(`cancelForward failed: ${error.message}`);
 
-    // Sub-project 2 cascade: every cancelled occurrence with a bundle
-    // attached cascades the bundle (orders + lines + tickets + asset
-    // reservations + pending approvals). De-dupe bundle ids first — a
-    // single bundle can span multiple occurrences (services-only bundle
-    // shared across recurring orders).
+    // Sub-project 2 cascade: per cancelled occurrence, cancel the orders
+    // linked to that reservation (and downstream entities). Scoped per
+    // reservation rather than per bundle so we cleanly cascade occurrences'
+    // services without taking sibling occurrences down. The cascade helper
+    // is a no-op for reservations without bundle-linked orders.
     if (this.bundleCascade) {
-      const bundleIds = new Set<string>();
-      for (const row of (data ?? []) as Array<{ booking_bundle_id: string | null }>) {
-        if (row.booking_bundle_id) bundleIds.add(row.booking_bundle_id);
-      }
-      for (const bundleId of bundleIds) {
-        await this.bundleCascade.cancelBundleInternal({
-          bundle_id: bundleId,
+      for (const row of (data ?? []) as Array<{ id: string }>) {
+        await this.bundleCascade.cancelOrdersForReservation({
+          reservation_id: row.id,
           reason: `recurrence_cancel_forward:${scope}`,
         });
       }

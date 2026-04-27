@@ -92,9 +92,11 @@ export class ReservationsModule implements OnModuleInit {
       cloneOrderForOccurrence: (args) => this.orders.cloneOrderForOccurrence(args),
     });
     // Same cascade wiring for cancelForward — every cancelled occurrence's
-    // bundle needs to cascade orders + lines + tickets.
+    // bundle-linked orders need to cascade. Scoped per reservation so a
+    // single occurrence cancel doesn't take down sibling occurrences sharing
+    // the bundle.
     this.recurrence.setBundleCascade({
-      cancelBundleInternal: (args) => this.bundleCascade.cancelBundleInternal(args),
+      cancelOrdersForReservation: (args) => this.bundleCascade.cancelOrdersForReservation(args),
     });
 
     // Wire the calendar-sync intercept handler. When a Pattern-A room mailbox

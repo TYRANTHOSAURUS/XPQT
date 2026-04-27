@@ -39,6 +39,14 @@ export interface CancelBundleArgs {
   bundle_id: string;
   /** Lines to keep alive — everything else cancels. Empty = cancel all. */
   keep_line_ids?: string[];
+  /**
+   * When set, restricts the cascade to orders whose `linked_reservation_id`
+   * matches. Used by recurrence cancel paths so a single occurrence cancel
+   * doesn't take down sibling occurrences sharing the same bundle. Omitting
+   * cancels every order in the bundle (full cascade — single-occurrence /
+   * non-recurring case).
+   */
+  reservation_id?: string;
   recurrence_scope?: CancelScope;
   reason?: string;
 }
@@ -207,7 +215,10 @@ export class BundleCascadeService {
         linked_ticket_id,
         order_id
       `)
-      .in('order_id', await this.orderIdsForBundle(args.bundle_id));
+      .in(
+        'order_id',
+        await this.orderIdsForBundle(args.bundle_id, args.reservation_id),
+      );
     if (linesErr) throw linesErr;
 
     const fulfilledLineIds: string[] = [];
@@ -259,10 +270,12 @@ export class BundleCascadeService {
 
     // Cancel the reservation only when nothing remains alive (no fulfilled
     // lines AND no kept lines). Otherwise the room stays booked for the
-    // lines that are still going.
+    // lines that are still going. Skip when scoped to a specific reservation
+    // — the caller already cancelled that reservation, and other occurrences
+    // sharing the bundle's primary_reservation_id should not be touched.
     const cancelledReservationIds: string[] = [];
     const everythingCancelled = fulfilledLineIds.length === 0 && keep.size === 0;
-    if (everythingCancelled && bundle.primary_reservation_id) {
+    if (everythingCancelled && bundle.primary_reservation_id && !args.reservation_id) {
       await this.supabase.admin
         .from('reservations')
         .update({ status: 'cancelled' })
@@ -270,8 +283,24 @@ export class BundleCascadeService {
       cancelledReservationIds.push(bundle.primary_reservation_id);
     }
 
-    // Cancel pending approvals for this bundle.
-    const closedApprovalIds = await this.cancelPendingApprovalsForBundle(args.bundle_id);
+    // Approvals: if we're scoped to a single occurrence, rescope per
+    // line — full cancel would void approvals that still cover other
+    // occurrences in the bundle. Otherwise, cancel all pending approvals
+    // (this is a whole-bundle cancel).
+    let closedApprovalIds: string[] = [];
+    if (args.reservation_id) {
+      for (const line of cancellableLines) {
+        const closed = await this.rescopeApprovalsAfterLineCancel(
+          args.bundle_id,
+          line.id,
+          line.linked_ticket_id ? [line.linked_ticket_id] : [],
+          line.linked_asset_reservation_id ? [line.linked_asset_reservation_id] : [],
+        );
+        closedApprovalIds.push(...closed);
+      }
+    } else {
+      closedApprovalIds = await this.cancelPendingApprovalsForBundle(args.bundle_id);
+    }
 
     void this.audit(tenantId, 'bundle.cancelled', 'booking_bundle', args.bundle_id, {
       bundle_id: args.bundle_id,
@@ -357,13 +386,50 @@ export class BundleCascadeService {
     } | null) ?? null;
   }
 
-  private async orderIdsForBundle(bundleId: string): Promise<string[]> {
-    const { data, error } = await this.supabase.admin
+  private async orderIdsForBundle(
+    bundleId: string,
+    reservationId?: string,
+  ): Promise<string[]> {
+    let q = this.supabase.admin
       .from('orders')
       .select('id')
       .eq('booking_bundle_id', bundleId);
+    if (reservationId) q = q.eq('linked_reservation_id', reservationId);
+    const { data, error } = await q;
     if (error) throw error;
     return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
+  }
+
+  /**
+   * Locate the bundle (if any) that this reservation's orders belong to and
+   * cascade-cancel scoped to just that reservation's orders. Used by
+   * ReservationService.cancelOne and RecurrenceService.cancelForward — both
+   * already validated the reservation cancel; this is the bundle cleanup.
+   */
+  async cancelOrdersForReservation(args: {
+    reservation_id: string;
+    reason?: string;
+  }): Promise<void> {
+    try {
+      const { data, error } = await this.supabase.admin
+        .from('orders')
+        .select('booking_bundle_id')
+        .eq('linked_reservation_id', args.reservation_id)
+        .not('booking_bundle_id', 'is', null)
+        .limit(1);
+      if (error) throw error;
+      const row = ((data ?? [])[0] as { booking_bundle_id: string | null } | undefined);
+      const bundleId = row?.booking_bundle_id;
+      if (!bundleId) return;
+      await this.cancelBundleImpl(
+        { bundle_id: bundleId, reservation_id: args.reservation_id, reason: args.reason },
+        { skipVisibility: true },
+      );
+    } catch (err) {
+      this.log.warn(
+        `cancelOrdersForReservation ${args.reservation_id} failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async rescopeApprovalsAfterLineCancel(
