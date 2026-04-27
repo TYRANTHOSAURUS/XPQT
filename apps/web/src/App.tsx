@@ -70,6 +70,7 @@ const ServiceRuleDetailPage = lazyNamed(() => import('@/pages/admin/service-rule
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
 const DeskSchedulerPage = lazyNamed(() => import('@/pages/desk/scheduler'), 'DeskSchedulerPage');
 const DeskBookingsPage = lazyNamed(() => import('@/pages/desk/bookings'), 'DeskBookingsPage');
+const BookingDetailPage = lazyNamed(() => import('@/components/booking-detail/booking-detail-page'), 'BookingDetailPage');
 const TicketsPage = lazyNamed(() => import('@/pages/desk/tickets'), 'TicketsPage');
 const TicketDetailPage = lazyNamed(() => import('@/pages/desk/ticket-detail-page'), 'TicketDetailPage');
 const ApprovalsPage = lazyNamed(() => import('@/pages/desk/approvals'), 'ApprovalsPage');
@@ -202,6 +203,7 @@ export function App() {
                   <Route path="inbox" element={<InboxPage />} />
                   <Route path="scheduler" element={<DeskSchedulerPage />} />
                   <Route path="bookings" element={<DeskBookingsPage />} />
+                  <Route path="bookings/:id" element={<BookingDetailPage />} />
                   <Route path="tickets" element={<TicketsPage />} />
                   <Route path="tickets/:id" element={<TicketDetailPage />} />
                   <Route path="approvals" element={<ApprovalsPage />} />
