@@ -5,6 +5,7 @@ import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
   SettingsPageShell,
+  SettingsSection,
 } from '@/components/ui/settings-page';
 import {
   SettingsGroup,
@@ -229,12 +230,12 @@ export function PersonDetailPage() {
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsGroup
+      <SettingsSection
         title="Location grants"
-        description="Locations this person can submit requests for, beyond their default location."
+        description="Every location this person can submit requests for — their default work location, explicit grants, and grants inherited through org memberships."
       >
         <PersonLocationGrantsPanel personId={person.id} />
-      </SettingsGroup>
+      </SettingsSection>
 
       <SettingsGroup title="Danger zone">
         <SettingsRow

@@ -92,15 +92,6 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
 
   return (
     <FieldGroup>
-      <div>
-        <h3 className="text-sm font-medium mb-1">Effective portal authorization</h3>
-        <p className="text-xs text-muted-foreground">
-          Every location this person can submit requests for, with the reason
-          they're authorized: their default work location, an explicit grant,
-          or a grant inherited through an org membership.
-        </p>
-      </div>
-
       {error && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
@@ -116,11 +107,11 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
       )}
 
       {effective.length > 0 && (
-        <div className="flex flex-col divide-y border rounded-md">
+        <div className="flex flex-col divide-y">
           {effective.map((row, i) => {
             const Icon = row.source === 'default' ? Home : row.source === 'org_grant' ? Users : MapPin;
             return (
-              <div key={`${row.source}-${row.space.id}-${row.grant_id ?? i}`} className="flex items-start gap-3 p-3">
+              <div key={`${row.source}-${row.space.id}-${row.grant_id ?? i}`} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
                 <Icon className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
