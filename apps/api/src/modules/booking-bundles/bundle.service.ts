@@ -304,7 +304,7 @@ export class BundleService {
 
       cleanup.commit();
 
-      void this.audit(tenantId, 'bundle.created', {
+      void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
         bundle_id: bundle.id,
         reservation_id: reservation.id,
         order_ids: orderIds,
@@ -583,13 +583,19 @@ export class BundleService {
     };
   }
 
-  private async audit(tenantId: string, eventType: string, details: Record<string, unknown>) {
+  private async audit(
+    tenantId: string,
+    eventType: string,
+    entityType: string,
+    entityId: string | null,
+    details: Record<string, unknown>,
+  ) {
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: eventType,
-        entity_type: 'booking_bundle',
-        entity_id: (details.bundle_id as string) ?? null,
+        entity_type: entityType,
+        entity_id: entityId,
         details,
       });
     } catch (err) {

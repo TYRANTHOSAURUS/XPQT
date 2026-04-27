@@ -122,7 +122,7 @@ export class BundleCascadeService {
       args.line_id,
     );
 
-    void this.audit(tenantId, 'order.line_cancelled', {
+    void this.audit(tenantId, 'order.line_cancelled', 'order_line_item', args.line_id, {
       line_id: args.line_id,
       bundle_id: line.bundle_id,
       ticket_ids: cascaded.ticket_ids,
@@ -269,7 +269,7 @@ export class BundleCascadeService {
     // Cancel pending approvals for this bundle.
     const closedApprovalIds = await this.cancelPendingApprovalsForBundle(args.bundle_id);
 
-    void this.audit(tenantId, 'bundle.cancelled', {
+    void this.audit(tenantId, 'bundle.cancelled', 'booking_bundle', args.bundle_id, {
       bundle_id: args.bundle_id,
       cancelled_line_ids: cancelledLineIds,
       cancelled_reservation_ids: cancelledReservationIds,
@@ -421,13 +421,19 @@ export class BundleCascadeService {
     return ids;
   }
 
-  private async audit(tenantId: string, eventType: string, details: Record<string, unknown>) {
+  private async audit(
+    tenantId: string,
+    eventType: string,
+    entityType: string,
+    entityId: string | null,
+    details: Record<string, unknown>,
+  ) {
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: eventType,
-        entity_type: 'booking_bundle',
-        entity_id: (details.bundle_id as string) ?? null,
+        entity_type: entityType,
+        entity_id: entityId,
         details,
       });
     } catch (err) {

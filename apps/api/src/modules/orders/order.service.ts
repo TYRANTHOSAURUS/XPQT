@@ -267,7 +267,7 @@ export class OrderService {
       if (assetConflicted) assetConflictLineIds.push(newLineId);
     }
 
-    void this.audit(tenantId, 'order.line_cloned', {
+    void this.audit(tenantId, 'order.line_cloned', 'order', clonedOrderId, {
       master_order_id: args.masterOrderId,
       new_order_id: clonedOrderId,
       bundle_id: args.bundleId,
@@ -572,7 +572,7 @@ export class OrderService {
 
       cleanup.commit();
 
-      void this.audit(tenantId, 'order.created', {
+      void this.audit(tenantId, 'order.created', 'order', order.id, {
         order_id: order.id,
         bundle_id: bundle.id,
         order_line_item_ids: oliIds,
@@ -754,13 +754,19 @@ export class OrderService {
     return (data as { id: string }).id;
   }
 
-  private async audit(tenantId: string, eventType: string, details: Record<string, unknown>) {
+  private async audit(
+    tenantId: string,
+    eventType: string,
+    entityType: string,
+    entityId: string | null,
+    details: Record<string, unknown>,
+  ) {
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: eventType,
-        entity_type: 'order',
-        entity_id: (details.order_id as string) ?? null,
+        entity_type: entityType,
+        entity_id: entityId,
         details,
       });
     } catch (err) {
