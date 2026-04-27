@@ -18,6 +18,22 @@
 
 When this doc and the code disagree, fix the doc first, then align the code. Same rule as `docs/assignments-routing-fulfillment.md` and `docs/visibility.md`.
 
+## Quality bar — non-negotiable
+
+**Best-in-class means better than competitors across UX, user journey, platform features, quality, performance, efficient flows, and architecture.** Not lean. Not minimal. Not "MVP we'll improve later". Comprehensive scope with excellent execution.
+
+Implications for everyone working on this subsystem:
+
+- Each Tier 1 item ships **complete + polished + production-quality** at first launch.
+- Compare to the **best competitor per dimension** (Toast KDS for catering, Linear for app polish, ezCater for ordering, Uber for Business for mobile dispatch). Not to "average workplace tool".
+- Performance benchmarks are mandatory: sub-second interactions, sub-2s page loads, offline-tolerant where applicable.
+- Architecture must accommodate Tier 2 + Tier 3 items without rewrites.
+- "We'll fix it later" is not acceptable for Tier 1 unless deferred explicitly with a return plan.
+
+If a proposal feels lean / minimal / vertical-slice — it's wrong for this product. Re-scope to comprehensive, then optimize quality on the comprehensive scope.
+
+(See [`feedback_quality_bar_comprehensive`](../../.claude/projects/-Users-x-Desktop-XPQT/memory/feedback_quality_bar_comprehensive.md) for the full directive.)
+
 ---
 
 ## Table of contents
