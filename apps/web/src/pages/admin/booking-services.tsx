@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
 import {
-  Boxes,
   ChefHat,
   ListChecks,
   Truck,
@@ -10,14 +9,6 @@ import {
   SettingsPageShell,
 } from '@/components/ui/settings-page';
 
-/**
- * /admin/booking-services — index page.
- *
- * Card layout per spec §6.1: vendors / menus / items + a fourth card for
- * the rules engine. Vendors and menus already have shipped admin pages
- * (/admin/vendors, /admin/vendor-menus, /admin/catalog-hierarchy) — we
- * link to them rather than duplicating a half-baked surface here.
- */
 export function BookingServicesIndexPage() {
   return (
     <SettingsPageShell width="wide">
@@ -37,14 +28,8 @@ export function BookingServicesIndexPage() {
         <Card
           to="/admin/vendor-menus"
           icon={<ChefHat className="size-5" />}
-          title="Menus"
-          body="Banqueting menus and equipment catalogues. Vendor- or internal-team-owned; building-scoped or tenant-wide."
-        />
-        <Card
-          to="/admin/catalog-hierarchy"
-          icon={<Boxes className="size-5" />}
-          title="Catalog items"
-          body="The leaf items that menus list — sandwiches, projectors, cleaning slots. Used by service rules and bundle templates."
+          title="Menus & items"
+          body="Banqueting menus and equipment catalogues — and the leaf items inside them (sandwiches, projectors, cleaning slots). Vendor- or internal-team-owned; building-scoped or tenant-wide."
         />
         <Card
           to="/admin/booking-services/rules"

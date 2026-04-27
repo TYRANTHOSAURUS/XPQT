@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Search, Users } from 'lucide-react';
+import { ArrowDownUp, ChevronLeft, ChevronRight, Search, Users, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/toggle-group';
 import { PersonPicker } from '@/components/person-picker';
 import { useSpaceTree, type SpaceTreeNode } from '@/api/spaces';
-import type { SchedulerWindowState } from '../hooks/use-scheduler-window';
+import type { SchedulerSort, SchedulerWindowState } from '../hooks/use-scheduler-window';
 
 interface Props {
   state: SchedulerWindowState;
@@ -18,14 +18,27 @@ interface Props {
   onNext: () => void;
   onToday: () => void;
   visibleDateLabel: string;
+  /** Counts for the "X of Y" filter chip. */
+  visibleCount: number;
+  totalCount: number;
+  /** Reset every filter (building/floor/type/search/amenities) at once. */
+  onClearFilters: () => void;
 }
+
+const SORT_OPTIONS: Array<{ value: SchedulerSort; label: string }> = [
+  { value: 'name', label: 'Name (A→Z)' },
+  { value: 'capacity_asc', label: 'Capacity (low→high)' },
+  { value: 'capacity_desc', label: 'Capacity (high→low)' },
+  { value: 'status', label: 'Status (available first)' },
+];
 
 const ROOM_TYPE_AMENITIES = [
   { id: '', label: 'Any type' },
   { id: 'whiteboard', label: 'Whiteboard rooms' },
-  { id: 'video', label: 'Video rooms' },
+  { id: 'video_conference', label: 'Video rooms' },
   { id: 'phone_conf', label: 'Phone booths' },
   { id: 'projector', label: 'Projector rooms' },
+  { id: 'display', label: 'Display rooms' },
 ] as const;
 
 /**
@@ -36,10 +49,20 @@ const ROOM_TYPE_AMENITIES = [
  */
 export function SchedulerToolbar({
   state, update, onPrev, onNext, onToday, visibleDateLabel,
+  visibleCount, totalCount, onClearFilters,
 }: Props) {
   const tree = useSpaceTree();
   const buildings = useBuildingsFromTree(tree.data);
   const floors = useFloorsForBuilding(tree.data, state.buildingId);
+
+  const filtersActive = !!(
+    state.buildingId ||
+    state.floorId ||
+    state.roomTypeFilter ||
+    state.search.trim() ||
+    state.amenities.length > 0 ||
+    state.statusView !== 'all'
+  );
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b bg-background px-4 py-2.5">
@@ -137,6 +160,42 @@ export function SchedulerToolbar({
           className="h-8 w-[180px] pl-7 text-sm"
         />
       </div>
+
+      {/* Sort */}
+      <Select
+        value={state.sort}
+        onValueChange={(v) => update('sort', v as SchedulerSort)}
+      >
+        <SelectTrigger size="sm" className="h-8 w-[170px]">
+          <ArrowDownUp className="size-3.5 text-muted-foreground" />
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {SORT_OPTIONS.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {/* Result count + clear filters. Only renders when filters are
+          active so the toolbar isn't visually cluttered in the default
+          state. */}
+      {filtersActive && (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="tabular-nums">
+            {visibleCount} of {totalCount}
+          </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={onClearFilters}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="size-3" />
+            Clear filters
+          </Button>
+        </div>
+      )}
 
       <div className="ml-auto flex items-center gap-2">
         <div

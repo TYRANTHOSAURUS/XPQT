@@ -1,11 +1,61 @@
 import { memo, useMemo } from 'react';
+import {
+  AlertTriangle,
+  Ban,
+  Hourglass,
+  Users,
+  type LucideIcon,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Reservation, RuleOutcome, SchedulerRoom } from '@/api/room-booking';
 // RuleOutcome is referenced in the prop signature for `onCellClickWhenDenied`.
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { RoomThumbnail } from '@/components/room-thumbnail';
+import { amenityMeta, humanizeAmenity } from '@/components/room-amenities';
 import { SchedulerEventBlock } from './scheduler-event-block';
 import { SchedulerBufferShading } from './scheduler-buffer-shading';
 import { buildCellBackground, type CellOutcomeMap } from './scheduler-grid-cell';
 import { SchedulerRuleTag, type RuleTagOutcome } from './scheduler-rule-tag';
+
+/**
+ * Map the room's effective rule outcome to a small status badge rendered
+ * before the room name. Each non-allow state pairs a unique icon shape
+ * (Ban / Hourglass / AlertTriangle) with a unique colour — operators
+ * with red-green colour blindness can still distinguish "deny" from
+ * "require approval" because the *shapes* differ. `allow` and
+ * `allow_override` render no badge — the absence of a marker is the
+ * affirmative signal.
+ */
+interface StatusBadge {
+  Icon: LucideIcon;
+  label: string;
+  className: string;
+}
+
+function statusBadge(effect: RuleOutcome['effect']): StatusBadge | null {
+  switch (effect) {
+    case 'deny':
+      return {
+        Icon: Ban,
+        label: 'Booking denied for this person',
+        className: 'text-destructive',
+      };
+    case 'require_approval':
+      return {
+        Icon: Hourglass,
+        label: 'Requires approval for this person',
+        className: 'text-amber-600 dark:text-amber-400',
+      };
+    case 'warn':
+      return {
+        Icon: AlertTriangle,
+        label: 'Booking allowed with a warning',
+        className: 'text-yellow-600 dark:text-yellow-400',
+      };
+    default:
+      return null;
+  }
+}
 
 interface Props {
   room: SchedulerRoom;
@@ -17,11 +67,25 @@ interface Props {
   /** Px width of the leading "room name" column. */
   rowLabelWidth: number;
   /**
-   * Fixed row height (px). The virtualizer paints rows at this height; the
-   * row element clamps both its outer container and the inner slot column
-   * to keep grid lines aligned regardless of label content.
+   * Fixed row height (px) the virtualizer paints rows at. The outer grid
+   * container clamps to this value; the slot column stretches to fill the
+   * remaining content area (parent height minus the 1px bottom border)
+   * via `h-full`, so multi-line label content can't push the row past the
+   * virtualizer's estimate and create gaps between rows.
    */
   rowHeight?: number;
+  /**
+   * The toolbar already shows a building filter chip — when set, the row's
+   * own location line redundantly repeats it. Hide on a per-axis basis so
+   * the column reads as the *new* info: capacity + amenities.
+   */
+  hideBuilding?: boolean;
+  hideFloor?: boolean;
+  /** Click on the room cell — opens the page-level inspector panel. */
+  onRoomClick?: (room: SchedulerRoom) => void;
+  /** True when this row is the inspector's current selection. Highlights
+   *  the room column so operators can see what the panel is showing. */
+  isActive?: boolean;
   /** Cells the operator has shift-selected on this row (multi-room mode). */
   selectedCells: Set<number>;
   /** Per-cell outcomes when "Booking for" is set. */
@@ -75,7 +139,11 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
   windowEndIso,
   totalColumns,
   rowLabelWidth,
-  rowHeight = 56,
+  rowHeight = 68,
+  hideBuilding,
+  hideFloor,
+  onRoomClick,
+  isActive,
   selectedCells,
   cellOutcomes,
   pendingCreate,
@@ -111,14 +179,23 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
 
   const bgStyle = cellOutcomes ? buildCellBackground(cellOutcomes, totalColumns) : undefined;
 
-  // Pull the floor/building label off the parent_chain for the room column
-  // sub-line. The chain is ordered root→leaf so the last element is the
-  // closest enclosing space (typically a floor).
-  const parentLabel = (() => {
-    const chain = room.parent_chain ?? [];
-    if (chain.length === 0) return null;
-    return chain[chain.length - 1]?.name ?? null;
-  })();
+  // Resolve building / floor by chain type rather than position — avoids
+  // brittle "last element is floor" assumptions when the hierarchy is
+  // deeper (site → building → floor → wing → room) or shallower.
+  const chain = room.parent_chain ?? [];
+  const buildingNode = chain.find((c) => c.type === 'building');
+  const floorNode = chain.find((c) => c.type === 'floor');
+  const locationParts: string[] = [];
+  if (!hideBuilding && buildingNode) locationParts.push(buildingNode.name);
+  if (!hideFloor && floorNode) locationParts.push(floorNode.name);
+  const locationLabel = locationParts.length > 0 ? locationParts.join(' · ') : null;
+
+  // Cap visible amenity icons; surplus reads as "+N".
+  const visibleAmenities = room.amenities.slice(0, 4);
+  const hiddenAmenities = room.amenities.slice(visibleAmenities.length);
+  const overflowAmenities = hiddenAmenities.length;
+
+  const status = statusBadge(room.rule_outcome.effect);
 
   return (
     <div
@@ -129,37 +206,135 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
         transitionTimingFunction: 'var(--ease-snap)',
       }}
     >
-      {/* Room name column */}
-      <div className="sticky left-0 z-10 flex min-w-0 items-center gap-2 overflow-hidden border-r bg-background px-3">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium leading-tight">{room.name}</div>
-          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground leading-tight">
-            <span className="tabular-nums">
-              {room.capacity ? `${room.capacity} seats` : '—'}
-            </span>
-            {parentLabel && (
-              <>
-                <span aria-hidden className="text-muted-foreground/50">·</span>
-                <span className="truncate">{parentLabel}</span>
-              </>
+      {/* Room column. The right-edge inset shadow visibly floats the
+          pinned column over the slot canvas during horizontal scroll —
+          a plain border-r blurs into vertical hour gridlines.
+          Layout: 48px thumbnail · text stack (name / capacity+icons /
+          location). Clicking anywhere on the column opens the detail
+          modal — that's why the wrapper is a button. The slot-column
+          interactions stay isolated to that column's pointer handlers. */}
+      <button
+        type="button"
+        onClick={() => onRoomClick?.(room)}
+        className={cn(
+          'group/room sticky left-0 z-10 flex min-w-0 items-center gap-3 overflow-hidden border-r px-3 py-1.5 text-left transition-colors hover:bg-muted/30 focus-visible:relative focus-visible:z-20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-[-2px]',
+          isActive ? 'bg-primary/5' : 'bg-background',
+        )}
+        style={{
+          boxShadow: 'inset -8px 0 8px -8px rgba(0,0,0,0.06)',
+        }}
+        aria-label={`Open details for ${room.name}`}
+        aria-current={isActive ? 'true' : undefined}
+      >
+        {/* Active row indicator — a 2px primary bar on the left edge,
+            visible even when the column scrolls. */}
+        {isActive && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-primary"
+          />
+        )}
+        {/* Thumbnail (or RoomTypeIcon fallback). Lazy-loaded; the
+            scheduler virtualises rows so only ~12 are mounted at a time,
+            bounding concurrent image fetches regardless of total rooms.
+            The image is decorative — the name sits right next to it, so
+            screen readers should not double-announce. */}
+        <RoomThumbnail
+          variant="square"
+          size={44}
+          imageUrl={room.image_url}
+          capacity={room.capacity}
+          keywords={room.keywords}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+          <div className="flex min-w-0 items-center gap-1">
+            {status && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={<span />}
+                  aria-label={status.label}
+                  className={cn('flex shrink-0 items-center', status.className)}
+                >
+                  <status.Icon className="size-3" aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>{status.label}</TooltipContent>
+              </Tooltip>
             )}
-            {room.amenities.length > 0 && (
-              <>
-                <span aria-hidden className="text-muted-foreground/50">·</span>
-                <span className="truncate">
-                  {room.amenities.slice(0, 2).join(', ')}
-                  {room.amenities.length > 2 && ` +${room.amenities.length - 2}`}
-                </span>
-              </>
+            <div className="truncate text-sm font-medium leading-tight group-hover/room:underline">
+              {room.name}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 leading-tight">
+            {room.capacity != null && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={<span />}
+                  className="flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[13px] font-semibold leading-none tabular-nums text-foreground"
+                  aria-label={`Seats ${room.capacity}`}
+                >
+                  <Users aria-hidden className="size-3.5 text-foreground/70" />
+                  {room.capacity}
+                </TooltipTrigger>
+                <TooltipContent>Seats {room.capacity}</TooltipContent>
+              </Tooltip>
+            )}
+            {visibleAmenities.length > 0 && (
+              <div className="flex min-w-0 items-center gap-2">
+                {visibleAmenities.map((slug) => {
+                  const { Icon, label } = amenityMeta(slug);
+                  return (
+                    <Tooltip key={slug}>
+                      <TooltipTrigger
+                        render={<span />}
+                        aria-label={label}
+                        className="flex shrink-0 items-center text-muted-foreground group-hover/room:text-foreground/80"
+                      >
+                        {Icon ? (
+                          <Icon className="size-4" />
+                        ) : (
+                          <span className="rounded bg-muted px-1 text-[10px] uppercase tracking-wide">
+                            {label.slice(0, 3)}
+                          </span>
+                        )}
+                      </TooltipTrigger>
+                      <TooltipContent>{label}</TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+                {overflowAmenities > 0 && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<span />}
+                      className="text-[11px] tabular-nums text-muted-foreground group-hover/room:text-foreground/80"
+                      aria-label={`${overflowAmenities} more`}
+                    >
+                      +{overflowAmenities}
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {hiddenAmenities.map(humanizeAmenity).join(' · ')}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
             )}
           </div>
+          {locationLabel && (
+            <div className="truncate text-[11px] leading-tight text-muted-foreground/80">
+              {locationLabel}
+            </div>
+          )}
         </div>
-      </div>
+      </button>
 
-      {/* Slot column */}
+      {/* Slot column. Height is *not* set explicitly — the grid track
+          (`height: rowHeight` on the parent, minus the 1px border-b under
+          box-sizing: border-box) is what aligns rows. Setting an explicit
+          `height: rowHeight` here previously overflowed the parent's
+          content area by 1px and visually erased the row's bottom border. */}
       <div
-        className="relative cursor-cell overflow-hidden"
-        style={{ ...bgStyle, height: `${rowHeight}px` }}
+        className="relative h-full cursor-cell overflow-hidden"
+        style={bgStyle}
         onPointerDown={(e) => onCellPointerDown?.(e, room.space_id)}
         onPointerMove={(e) => {
           onCellPointerMove?.(e);

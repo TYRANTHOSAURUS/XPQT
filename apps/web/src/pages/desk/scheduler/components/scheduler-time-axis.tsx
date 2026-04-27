@@ -35,7 +35,7 @@ export const SchedulerTimeAxis = memo(function SchedulerTimeAxis({
   dayStartHour,
   dayEndHour,
   cellMinutes,
-  rowLabelWidth = 220,
+  rowLabelWidth = 288,
 }: Props) {
   const hoursPerDay = dayEndHour - dayStartHour;
   const cellsPerHour = Math.max(1, 60 / cellMinutes);

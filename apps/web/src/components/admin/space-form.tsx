@@ -13,13 +13,31 @@ import { SpaceTypePicker } from './space-type-picker';
 import { SpaceParentPicker } from './space-parent-picker';
 import { SPACE_TYPE_LABELS } from './space-type-icon';
 
+/**
+ * Canonical amenity vocabulary. Aligned with the seed migrations and
+ * the scheduler row's icon map so uploads, filters, and rendering all
+ * speak the same slugs. If you add a new amenity here, also add an
+ * icon entry in `apps/web/src/components/room-amenities.tsx`.
+ */
 const amenityOptions = [
+  // AV / display
+  { value: 'display', label: 'Display' },
   { value: 'projector', label: 'Projector' },
   { value: 'whiteboard', label: 'Whiteboard' },
-  { value: 'video_conferencing', label: 'Video Conferencing' },
-  { value: 'standing_desk', label: 'Standing Desk' },
-  { value: 'dual_monitor', label: 'Dual Monitor' },
-  { value: 'wheelchair_accessible', label: 'Wheelchair Accessible' },
+  { value: 'video_conference', label: 'Video conferencing' },
+  { value: 'phone_conf', label: 'Phone conferencing' },
+  // Workspace
+  { value: 'standing_desk', label: 'Standing desk' },
+  { value: 'dual_monitor', label: 'Dual monitor' },
+  { value: 'desks', label: 'Desks' },
+  // Utilities
+  { value: 'coffee', label: 'Coffee' },
+  { value: 'fridge', label: 'Fridge' },
+  { value: 'printer', label: 'Printer' },
+  { value: 'lockers', label: 'Lockers' },
+  { value: 'visitor_desk', label: 'Visitor desk' },
+  // Accessibility
+  { value: 'wheelchair_accessible', label: 'Wheelchair accessible' },
 ];
 
 type Mode =

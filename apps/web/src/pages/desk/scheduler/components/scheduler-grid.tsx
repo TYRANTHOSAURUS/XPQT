@@ -23,6 +23,19 @@ interface Props {
   rowHeight?: number;
   rowLabelWidth?: number;
 
+  /**
+   * Hide building/floor in the room column when the operator has already
+   * filtered by them in the toolbar — repeating the filter on every row is
+   * noise. Passed through to each row.
+   */
+  hideBuilding?: boolean;
+  hideFloor?: boolean;
+
+  /** Click on a room cell — used to open the page-level inspector. */
+  onRoomClick?: (room: SchedulerRoom) => void;
+  /** Currently-inspected room id. Highlighted in the row column. */
+  activeRoomId?: string | null;
+
   /** Per-room cell outcomes when "Booking for: <person>" is set. */
   cellOutcomesByRoom: Map<string, CellOutcomeMap>;
   /** Cells the operator has shift-selected (multi-room mode), keyed by space_id. */
@@ -87,8 +100,12 @@ export function SchedulerGrid({
   dayStartHour,
   dayEndHour,
   cellMinutes,
-  rowHeight = 56,
-  rowLabelWidth = 220,
+  rowHeight = 68,
+  rowLabelWidth = 288,
+  hideBuilding,
+  hideFloor,
+  onRoomClick,
+  activeRoomId,
   cellOutcomesByRoom,
   selectedCellsByRoom,
   pendingCreate,
@@ -153,6 +170,19 @@ export function SchedulerGrid({
           position: 'relative',
         }}
       >
+        {/* The now-line has to sit *inside* this content container —
+            the scroll container's box is only viewport-tall, so an
+            `absolute inset-y-0` on the scroll container would clip the
+            line to the visible area and slide it offscreen as soon as
+            the operator scrolled past row ~12. Mounted here, it spans
+            the full virtualised-rows height. */}
+        <SchedulerNowLine
+          dates={dates}
+          dayStartHour={dayStartHour}
+          dayEndHour={dayEndHour}
+          rowLabelWidth={rowLabelWidth}
+        />
+
         {virtualRows.map((vr) => {
           const room = rooms[vr.index];
           if (!room) return null;
@@ -202,6 +232,10 @@ export function SchedulerGrid({
                 totalColumns={totalColumns}
                 rowLabelWidth={rowLabelWidth}
                 rowHeight={rowHeight}
+                hideBuilding={hideBuilding}
+                hideFloor={hideFloor}
+                onRoomClick={onRoomClick}
+                isActive={activeRoomId === room.space_id}
                 selectedCells={selectedCells}
                 cellOutcomes={cellOutcomes}
                 pendingCreate={pendingCreateForRow}
@@ -220,13 +254,6 @@ export function SchedulerGrid({
           );
         })}
       </div>
-
-      <SchedulerNowLine
-        dates={dates}
-        dayStartHour={dayStartHour}
-        dayEndHour={dayEndHour}
-        rowLabelWidth={rowLabelWidth}
-      />
     </div>
   );
 }

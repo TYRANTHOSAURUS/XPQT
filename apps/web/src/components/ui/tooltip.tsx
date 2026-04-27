@@ -4,8 +4,11 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
 
+// 300ms matches Apple HIG / Linear / GitHub — long enough to suppress
+// flicker on cursor sweep, short enough to feel responsive when the
+// user actually hovers on something.
 function TooltipProvider({
-  delay = 0,
+  delay = 300,
   ...props
 }: TooltipPrimitive.Provider.Props) {
   return (

@@ -4,6 +4,28 @@ import {
   type Reservation,
   type SchedulerRoom,
 } from '@/api/room-booking';
+import type { SchedulerSort, SchedulerStatusView } from './use-scheduler-window';
+
+const STATUS_VIEW_MATCHERS: Record<
+  Exclude<SchedulerStatusView, 'all'>,
+  (effect: string) => boolean
+> = {
+  available: (e) => e === 'allow' || e === 'allow_override',
+  requires_approval: (e) => e === 'require_approval',
+  restricted: (e) => e === 'deny',
+  warning: (e) => e === 'warn',
+};
+
+// Status sort weight — lower comes first. "Available" rooms top the
+// list when the operator wants quick wins; pending/restricted at the
+// bottom signals "harder to use".
+const STATUS_WEIGHT: Record<string, number> = {
+  allow: 0,
+  allow_override: 1,
+  warn: 2,
+  require_approval: 3,
+  deny: 4,
+};
 
 /**
  * Fetches the data the desk scheduler needs to paint the grid in ONE
@@ -29,6 +51,8 @@ export function useSchedulerData(args: {
   roomTypeFilter: string | null;
   amenities: string[];
   search: string;
+  sort: SchedulerSort;
+  statusView: SchedulerStatusView;
 }) {
   const query = useSchedulerDataQuery({
     start_at: args.startAtIso,
@@ -41,20 +65,49 @@ export function useSchedulerData(args: {
   });
 
   // Filter on room type + name search client-side (the API has no
-  // dedicated filters for these in v1). If/when the API grows them, swap
-  // these for query params.
+  // dedicated filters for these in v1). Then sort by the user's chosen
+  // axis. The API returns rooms in a name-first default order, so the
+  // identity sort case is a no-op.
   const rooms = useMemo<SchedulerRoom[]>(() => {
     const all = query.data?.rooms ?? [];
     const term = args.search.trim().toLowerCase();
-    return all.filter((r) => {
+    const filtered = all.filter((r) => {
       if (term && !r.name.toLowerCase().includes(term)) return false;
       if (args.roomTypeFilter) {
         const typeMatchesAmenity = (r.amenities ?? []).includes(args.roomTypeFilter);
         if (!typeMatchesAmenity) return false;
       }
+      if (args.statusView !== 'all') {
+        const matcher = STATUS_VIEW_MATCHERS[args.statusView];
+        if (!matcher(r.rule_outcome.effect)) return false;
+      }
       return true;
     });
-  }, [query.data, args.search, args.roomTypeFilter]);
+
+    const sorted = [...filtered];
+    switch (args.sort) {
+      case 'capacity_asc':
+        sorted.sort((a, b) => (a.capacity ?? -1) - (b.capacity ?? -1) || a.name.localeCompare(b.name));
+        break;
+      case 'capacity_desc':
+        sorted.sort((a, b) => (b.capacity ?? -1) - (a.capacity ?? -1) || a.name.localeCompare(b.name));
+        break;
+      case 'status':
+        sorted.sort((a, b) => {
+          const wa = STATUS_WEIGHT[a.rule_outcome.effect] ?? 99;
+          const wb = STATUS_WEIGHT[b.rule_outcome.effect] ?? 99;
+          return wa - wb || a.name.localeCompare(b.name);
+        });
+        break;
+      case 'name':
+      default:
+        sorted.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+    }
+    return sorted;
+  }, [query.data, args.search, args.roomTypeFilter, args.sort, args.statusView]);
+
+  const totalUnfiltered = query.data?.rooms?.length ?? 0;
 
   const spaceIds = useMemo(() => rooms.map((r) => r.space_id), [rooms]);
 
@@ -80,6 +133,7 @@ export function useSchedulerData(args: {
     rooms,
     spaceIds,
     reservationsBySpaceId,
+    totalUnfiltered,
     isLoading: query.isPending,
     isFetching: query.isFetching,
     isError: query.isError,

@@ -59,6 +59,7 @@ import {
   viewPresets,
   type ViewId,
 } from "@/pages/desk/use-ticket-filters"
+import { SchedulerSidebarPanel } from "@/components/desk/scheduler-sidebar-panel"
 
 const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
@@ -429,6 +430,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
           <TicketsSidebarPanel />
         ) : activeNav.path === "/desk/bookings" ? (
           <BookingsSidebarPanel />
+        ) : activeNav.path === "/desk/scheduler" ? (
+          <SchedulerSidebarPanel />
         ) : activeNav.path === "/desk/reports" ? (
           <>
             <SidebarHeader className="gap-3.5 border-b p-4">

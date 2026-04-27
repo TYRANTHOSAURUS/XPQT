@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { toastError, toastUpdated } from '@/lib/toast';
 import { useAuth } from '@/providers/auth-provider';
 import { useEditBooking, type Reservation, type RuleOutcome, type SchedulerRoom } from '@/api/room-booking';
 import { usePerson } from '@/api/persons';
+import { useSpaceTree, type SpaceTreeNode } from '@/api/spaces';
 import { formatDayLabel } from '@/lib/format';
 import { useSchedulerWindow } from './hooks/use-scheduler-window';
 import { useSchedulerData } from './hooks/use-scheduler-data';
@@ -19,6 +21,7 @@ import { SchedulerCreatePopover } from './components/scheduler-create-popover';
 import { SchedulerEventPopover } from './components/scheduler-event-popover';
 import { SchedulerOverrideDialog } from './components/scheduler-override-dialog';
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
+import { SchedulerInspector } from './components/scheduler-inspector';
 import type { CellOutcomeMap } from './components/scheduler-grid-cell';
 
 /**
@@ -41,6 +44,57 @@ export function DeskSchedulerPage() {
 
   const win = useSchedulerWindow();
 
+  // Initial-building priority chain (resolved exactly once per page mount):
+  //   1. URL `?building=…` (handled inside useSchedulerWindow's bootstrap).
+  //   2. localStorage — last building the user picked here, persisted on
+  //      every change so the choice survives reloads and tabs.
+  //   3. The current user's `default_location_id` from their profile,
+  //      resolved up the spaces tree to the nearest building ancestor.
+  //   4. No filter — show everything.
+  //
+  // Cross-page deep-links (e.g. "Open in scheduler" from /desk/bookings
+  // with a location filter active) hit (1) and bypass everything else.
+  // "Clear filters" wipes localStorage so the next mount picks up the
+  // profile default again.
+  const currentPersonDetail = usePerson(person?.id);
+  const treeQuery = useSpaceTree();
+  const bootstrappedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrappedRef.current) return;
+    if (win.state.buildingId) {
+      bootstrappedRef.current = true;
+      return;
+    }
+    const stored = readBuildingPreference();
+    if (stored) {
+      win.update('buildingId', stored);
+      bootstrappedRef.current = true;
+      return;
+    }
+    // Wait until we have both the user's profile and the spaces tree —
+    // the default location may be a floor or room, so we need the tree
+    // to walk up to its building ancestor.
+    if (!currentPersonDetail.data || !treeQuery.data) return;
+    const fromDefault = resolveBuildingFromSpaceId(
+      currentPersonDetail.data.default_location_id ?? null,
+      treeQuery.data,
+    );
+    if (fromDefault) {
+      win.update('buildingId', fromDefault);
+    }
+    bootstrappedRef.current = true;
+  }, [win, currentPersonDetail.data, treeQuery.data]);
+
+  // Persist user's selection. Also writes when bootstrap applies a
+  // default — that's intentional: localStorage becomes the user's
+  // sticky choice. The "Clear filters" flow nulls buildingId and this
+  // effect clears the storage entry so the next mount can re-apply
+  // an updated profile default.
+  useEffect(() => {
+    if (!bootstrappedRef.current) return;
+    writeBuildingPreference(win.state.buildingId);
+  }, [win.state.buildingId]);
+
   // Resolve display name for "Booking for: <person>" so the create / override
   // popovers can say "For Sarah Lee." instead of "For yourself."
   const bookFor = usePerson(win.state.bookForPersonId);
@@ -58,6 +112,8 @@ export function DeskSchedulerPage() {
     roomTypeFilter: win.state.roomTypeFilter,
     amenities: win.state.amenities,
     search: win.state.search,
+    sort: win.state.sort,
+    statusView: win.state.statusView,
   });
 
   // Realtime — debounced cache invalidation when reservations change on
@@ -363,6 +419,107 @@ export function DeskSchedulerPage() {
   const [overrideRoom, setOverrideRoom] = useState<SchedulerRoom | null>(null);
   const [overridePayload, setOverridePayload] = useState<{ startAtIso: string; endAtIso: string } | null>(null);
 
+  // ── Inspector panel ───────────────────────────────────────────────
+  // Right-side pinned details panel. Replaces the old modal — keeps the
+  // calendar canvas visible while the operator scans different rooms.
+  // Mounted only when a room is selected; closing returns the full
+  // viewport width to the canvas. We track the *id* and re-derive the
+  // room from the live data so realtime invalidations keep the panel
+  // in sync (e.g. amenity edited in admin → reflects without a remount).
+  const [inspectorRoomId, setInspectorRoomId] = useState<string | null>(null);
+  const inspectorRoom = useMemo(
+    () => (inspectorRoomId ? data.rooms.find((r) => r.space_id === inspectorRoomId) ?? null : null),
+    [data.rooms, inspectorRoomId],
+  );
+  const onRoomClick = useCallback((room: SchedulerRoom) => {
+    setInspectorRoomId((prev) => (prev === room.space_id ? null : room.space_id));
+  }, []);
+  const onInspectorClose = useCallback(() => setInspectorRoomId(null), []);
+
+  // Default time when "Book this room" is clicked from the inspector.
+  // Picks the next 30-minute slot from now if today is in view; else
+  // 9 AM on the first visible day. 60-min duration is the most common
+  // meeting length and matches the create dialog's default.
+  const computeDefaultBookingWindow = useCallback(
+    (): { startAtIso: string; endAtIso: string } => {
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10);
+      const todayInView = win.dates.includes(todayStr);
+      const start = new Date();
+      if (todayInView) {
+        const minutes = start.getMinutes();
+        const roundUp = minutes <= 30 ? 30 - minutes : 60 - minutes;
+        start.setMinutes(start.getMinutes() + roundUp, 0, 0);
+      } else {
+        const [y, m, d] = win.dates[0].split('-').map(Number);
+        start.setFullYear(y, m - 1, d);
+        start.setHours(Math.max(9, win.state.dayStartHour), 0, 0, 0);
+      }
+      const end = new Date(start.getTime() + 60 * 60_000);
+      return { startAtIso: start.toISOString(), endAtIso: end.toISOString() };
+    },
+    [win.dates, win.state.dayStartHour],
+  );
+
+  const onBookFromInspector = useCallback(
+    (room: SchedulerRoom) => {
+      const { startAtIso, endAtIso } = computeDefaultBookingWindow();
+      setCreatePayload({ room, startAtIso, endAtIso });
+      setCreateDialogOpen(true);
+    },
+    [computeDefaultBookingWindow],
+  );
+
+  const onClearFilters = useCallback(() => {
+    win.update('buildingId', null);
+    win.update('floorId', null);
+    win.update('roomTypeFilter', null);
+    win.update('search', '');
+    win.update('amenities', []);
+    win.update('statusView', 'all');
+  }, [win]);
+
+  // Keyboard navigation: J/↓ next, K/↑ prev, Esc close inspector. Active
+  // only when the page is not focused on an input — prevents typing
+  // "j" in search from advancing the row. Skips in input/textarea/
+  // contenteditable hosts via standard event-target check.
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null): boolean {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (isTypingTarget(e.target)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const list = data.rooms;
+      if (list.length === 0) return;
+      if (e.key === 'Escape') {
+        if (inspectorRoomId) {
+          e.preventDefault();
+          setInspectorRoomId(null);
+        }
+        return;
+      }
+      const isNext = e.key === 'j' || e.key === 'ArrowDown';
+      const isPrev = e.key === 'k' || e.key === 'ArrowUp';
+      if (!isNext && !isPrev) return;
+      e.preventDefault();
+      const idx = inspectorRoomId
+        ? list.findIndex((r) => r.space_id === inspectorRoomId)
+        : -1;
+      const next = isNext
+        ? Math.min(list.length - 1, idx + 1)
+        : Math.max(0, idx - 1);
+      const safe = idx === -1 ? 0 : next;
+      setInspectorRoomId(list[safe]?.space_id ?? null);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [data.rooms, inspectorRoomId]);
+
   // Stabilised drag-event start handlers — the SchedulerGridRow is memo'd
   // so passing fresh inline closures every render makes the memo useless
   // and re-renders all visible rows on every state tick. useCallback with
@@ -439,56 +596,82 @@ export function DeskSchedulerPage() {
         </div>
       </div>
 
-      <SchedulerToolbar
-        state={win.state}
-        update={win.update}
-        onPrev={() => win.navigate(-1)}
-        onNext={() => win.navigate(1)}
-        onToday={win.goToToday}
-        visibleDateLabel={headerLabel}
-      />
+      {/* Body: calendar canvas + optional right-pinned inspector. The
+          two-pane row gives the inspector a place that doesn't cover
+          the timeline; mounting only when a room is selected returns
+          the full viewport width to the canvas in the default state. */}
+      <div className="flex flex-1 min-h-0">
+        <div className="flex flex-1 min-w-0 flex-col">
+          <SchedulerToolbar
+            state={win.state}
+            update={win.update}
+            onPrev={() => win.navigate(-1)}
+            onNext={() => win.navigate(1)}
+            onToday={win.goToToday}
+            visibleDateLabel={headerLabel}
+            visibleCount={data.rooms.length}
+            totalCount={data.totalUnfiltered}
+            onClearFilters={onClearFilters}
+          />
 
-      {data.isError ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-destructive">
-          {data.error instanceof Error ? data.error.message : 'Scheduler failed to load'}
+          {data.isError ? (
+            <div className="flex flex-1 items-center justify-center text-sm text-destructive">
+              {data.error instanceof Error ? data.error.message : 'Scheduler failed to load'}
+            </div>
+          ) : data.isLoading ? (
+            <SchedulerSkeleton />
+          ) : data.rooms.length === 0 ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <div className="text-sm font-medium">No rooms match the current filters.</div>
+              <div className="max-w-sm text-xs text-muted-foreground">
+                Try clearing the building / floor / type filters above, or widen
+                the search term.
+              </div>
+              <Button variant="outline" size="sm" onClick={onClearFilters}>
+                Clear all filters
+              </Button>
+            </div>
+          ) : (
+            <SchedulerGrid
+              rooms={data.rooms}
+              reservationsBySpaceId={data.reservationsBySpaceId}
+              windowStartIso={win.startAtIso}
+              windowEndIso={win.endAtIso}
+              totalColumns={totalColumns}
+              dates={win.dates}
+              dayStartHour={win.state.dayStartHour}
+              dayEndHour={win.state.dayEndHour}
+              cellMinutes={win.state.cellMinutes}
+              hideBuilding={!!win.state.buildingId}
+              hideFloor={!!win.state.floorId}
+              onRoomClick={onRoomClick}
+              activeRoomId={inspectorRoomId}
+              cellOutcomesByRoom={cellOutcomesByRoom}
+              selectedCellsByRoom={multiSel}
+              pendingCreate={pendingCreate}
+              pendingResize={pendingResize}
+              pendingMove={pendingMove}
+              onCellPointerDown={onCellPointerDown}
+              onCellPointerMove={onCellPointerMove}
+              onCellPointerUp={onCellPointerUp}
+              onCellShiftClick={onCellShiftClick}
+              onCellHover={onCellHover}
+              onEventClick={onEventClick}
+              onEventResizeStart={onEventResizeStart}
+              onEventMoveStart={onEventMoveStart}
+              onCellClickWhenDenied={onCellClickWhenDenied}
+            />
+          )}
         </div>
-      ) : data.isLoading ? (
-        <SchedulerSkeleton />
-      ) : data.rooms.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-          <div className="text-sm font-medium">No rooms match the current filters.</div>
-          <div className="max-w-sm text-xs text-muted-foreground">
-            Try clearing the building / floor / type filters above, or widen
-            the search term.
-          </div>
-        </div>
-      ) : (
-        <SchedulerGrid
-          rooms={data.rooms}
-          reservationsBySpaceId={data.reservationsBySpaceId}
-          windowStartIso={win.startAtIso}
-          windowEndIso={win.endAtIso}
-          totalColumns={totalColumns}
-          dates={win.dates}
-          dayStartHour={win.state.dayStartHour}
-          dayEndHour={win.state.dayEndHour}
-          cellMinutes={win.state.cellMinutes}
-          cellOutcomesByRoom={cellOutcomesByRoom}
-          selectedCellsByRoom={multiSel}
-          pendingCreate={pendingCreate}
-          pendingResize={pendingResize}
-          pendingMove={pendingMove}
-          onCellPointerDown={onCellPointerDown}
-          onCellPointerMove={onCellPointerMove}
-          onCellPointerUp={onCellPointerUp}
-          onCellShiftClick={onCellShiftClick}
-          onCellHover={onCellHover}
-          onEventClick={onEventClick}
-          onEventResizeStart={onEventResizeStart}
-          onEventMoveStart={onEventMoveStart}
-          onCellClickWhenDenied={onCellClickWhenDenied}
-        />
-      )}
+
+        {inspectorRoom && (
+          <SchedulerInspector
+            room={inspectorRoom}
+            onClose={onInspectorClose}
+            onBook={onBookFromInspector}
+          />
+        )}
+      </div>
 
       <SchedulerCreatePopover
         open={createDialogOpen}
@@ -533,6 +716,62 @@ export function DeskSchedulerPage() {
       />
     </div>
   );
+}
+
+const BUILDING_STORAGE_KEY = 'prequest.scheduler.building';
+
+function readBuildingPreference(): string | null {
+  try {
+    return typeof window !== 'undefined'
+      ? window.localStorage.getItem(BUILDING_STORAGE_KEY)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBuildingPreference(id: string | null): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (id) window.localStorage.setItem(BUILDING_STORAGE_KEY, id);
+    else window.localStorage.removeItem(BUILDING_STORAGE_KEY);
+  } catch {
+    // Quota / privacy mode / disabled — silent. The filter still
+    // works in-session; only persistence is lost.
+  }
+}
+
+/**
+ * Resolve a generic space id (which may be a site / building / floor /
+ * room) into the nearest enclosing building. Walks the spaces tree
+ * leaf-to-root from the matched node and picks the first
+ * `type === 'building'` ancestor (or the node itself if it's a building).
+ * Returns null when the spaceId isn't found, or when nothing along the
+ * ancestry is a building (e.g. the user's default is a top-level site).
+ */
+function resolveBuildingFromSpaceId(
+  spaceId: string | null,
+  tree: SpaceTreeNode[],
+): string | null {
+  if (!spaceId) return null;
+  const find = (
+    nodes: SpaceTreeNode[],
+    parents: SpaceTreeNode[],
+  ): SpaceTreeNode[] | null => {
+    for (const node of nodes) {
+      const path = [...parents, node];
+      if (node.id === spaceId) return path;
+      const hit = find(node.children ?? [], path);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const path = find(tree, []);
+  if (!path) return null;
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i].type === 'building') return path[i].id;
+  }
+  return null;
 }
 
 /**
