@@ -90,8 +90,14 @@ export interface EditBundleLinePatch {
  * line_total when qty changes. Cascades window to the linked work-order
  * ticket. Rejects if the line is `preparing | delivered | cancelled`
  * (cancel + re-add is the path).
+ *
+ * Cache invalidation is surgical: bundle detail always; reservation
+ * detail when caller passes `reservationId` (the detail page may show
+ * derived bundle status); ticket caches ONLY when the patch touched a
+ * service window (qty-only edits don't cascade to tickets, so don't
+ * waste a refetch on the inbox / scheduler ticket caches).
  */
-export function useEditBundleLine(bundleId: string) {
+export function useEditBundleLine(bundleId: string, reservationId?: string) {
   const qc = useQueryClient();
   return useMutation<
     {
@@ -109,10 +115,16 @@ export function useEditBundleLine(bundleId: string) {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, { patch }) => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
-      // Window changes cascade to the linked work-order ticket.
-      qc.invalidateQueries({ queryKey: ticketKeys.all });
+      if (reservationId) {
+        qc.invalidateQueries({ queryKey: roomBookingKeys.detail(reservationId) });
+      }
+      const windowChanged =
+        'service_window_start_at' in patch || 'service_window_end_at' in patch;
+      if (windowChanged) {
+        qc.invalidateQueries({ queryKey: ticketKeys.all });
+      }
     },
   });
 }

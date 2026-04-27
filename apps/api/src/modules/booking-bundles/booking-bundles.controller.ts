@@ -155,13 +155,18 @@ export class BookingBundlesController {
 
   /**
    * `POST /booking-bundles/:id/lines` — append service lines to an existing
-   * bundle. Closes the asymmetry where catering could be attached only at
-   * booking time. Reuses `attachServicesToReservation` so rule resolution,
-   * approval routing, and asset reservations all work the same as initial
-   * booking.
+   * bundle by bundle id. Use this when the caller already has a bundle
+   * reference (e.g. an admin tooling path that lists bundles directly,
+   * or a future per-bundle add-line surface).
    *
-   * Write gate: requester / host / `rooms.admin`. Operators with read-all
-   * but not admin cannot mutate other people's bookings.
+   * Sibling: `POST /reservations/:id/services` is the reservation-id-first
+   * entry point used by the post-booking "+ Add service" UI; that one
+   * lazy-creates the bundle on first attach. Pick the endpoint whose
+   * primary key the caller already holds — they share the same write
+   * pipeline and produce identical side-effects.
+   *
+   * Write gate: requester / host / `rooms.admin` / `rooms.write_all`.
+   * `rooms.read_all`-only operators cannot mutate other people's bookings.
    */
   @Post(':id/lines')
   async addLines(

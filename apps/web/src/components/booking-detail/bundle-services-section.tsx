@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { CheckCircle2, Clock, Truck, Pencil, Plus, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
   useBundle,
@@ -72,8 +73,8 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
       });
       toastSuccess(
         selections.length === 1
-          ? `Added ${selections[0].name}`
-          : `Added ${selections.length} services`,
+          ? `${selections[0].name} added`
+          : `${selections.length} services added`,
       );
       setPickerOpen(false);
     } catch (e) {
@@ -97,9 +98,9 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
               <Sparkles className="size-4 text-primary" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">Add catering, AV, or supplies</div>
+              <div className="text-sm font-medium">Add services</div>
               <div className="text-xs text-muted-foreground">
-                Order coffee for the room, request a microphone, or pre-arrange setup.
+                Catering, AV, supplies, or anything else for this booking.
               </div>
             </div>
             <Plus className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -167,7 +168,7 @@ function BundleServicesContent({
   const onDate = reservation.start_at.slice(0, 10);
   const { data, isLoading, error } = useBundle(bundleId);
   const cancelLine = useCancelBundleLine(bundleId);
-  const editLine = useEditBundleLine(bundleId);
+  const editLine = useEditBundleLine(bundleId, reservation.id);
 
   if (isLoading) {
     return <div className="border-t px-5 py-3 text-xs text-muted-foreground">Loading services…</div>;
@@ -195,7 +196,7 @@ function BundleServicesContent({
     if (!confirmingLine) return;
     try {
       await cancelLine.mutateAsync({ lineId: confirmingLine.id });
-      toastRemoved('Service line');
+      toastRemoved('Service line', { verb: 'cancelled' });
       onConfirmingLineChange(null);
     } catch (err) {
       toastError("Couldn't cancel line", { error: err });
@@ -420,6 +421,11 @@ function ServiceLineEditor({
     await onSave(patch);
   };
 
+  const reactId = useId();
+  const qtyId = `${reactId}-qty`;
+  const startId = `${reactId}-start`;
+  const endId = `${reactId}-end`;
+
   return (
     <>
       <div className="flex items-center justify-between gap-3">
@@ -448,45 +454,83 @@ function ServiceLineEditor({
           </Button>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-          Quantity
+      <FieldGroup
+        data-slot="field-group"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-3"
+      >
+        <FieldDescription className="col-span-full -mb-1 text-[10px] uppercase tracking-wider">
+          Times shown in your browser's timezone ({browserTimezone()}). Save will store
+          this exact wall-clock instant in UTC on the booking.
+        </FieldDescription>
+        <Field>
+          <FieldLabel
+            htmlFor={qtyId}
+            className="text-[11px] uppercase tracking-wider text-muted-foreground"
+          >
+            Quantity
+          </FieldLabel>
           <Input
+            id={qtyId}
             type="number"
             min={1}
             step={1}
             value={qty}
             onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))}
-            className="h-9 text-sm tabular-nums"
+            className="h-11 text-sm tabular-nums sm:h-9"
           />
-        </label>
-        <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-          Start
+        </Field>
+        <Field>
+          <FieldLabel
+            htmlFor={startId}
+            className="text-[11px] uppercase tracking-wider text-muted-foreground"
+          >
+            Start
+          </FieldLabel>
           <Input
+            id={startId}
             type="datetime-local"
             value={start}
             onChange={(e) => setStart(e.target.value)}
-            className="h-9 text-sm tabular-nums"
+            className="h-11 text-sm tabular-nums sm:h-9"
           />
-        </label>
-        <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-          End
+        </Field>
+        <Field>
+          <FieldLabel
+            htmlFor={endId}
+            className="text-[11px] uppercase tracking-wider text-muted-foreground"
+          >
+            End
+          </FieldLabel>
           <Input
+            id={endId}
             type="datetime-local"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            className="h-9 text-sm tabular-nums"
+            className="h-11 text-sm tabular-nums sm:h-9"
           />
-        </label>
-      </div>
+        </Field>
+      </FieldGroup>
     </>
   );
 }
 
+/** Resolve the browser's IANA timezone, e.g. "Europe/Amsterdam". Falls
+ *  back to the abbreviation if the runtime can't expose the IANA name. */
+function browserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  } catch {
+    return 'local';
+  }
+}
+
 /**
  * Convert an ISO timestamp to the local string `<input type="datetime-local">`
- * expects (YYYY-MM-DDTHH:mm). Empty string for null. Browser-native — no
- * timezone conversion needed since the Date constructor handles ISO input.
+ * expects (YYYY-MM-DDTHH:mm). Empty string for null. Browser-local tz —
+ * cross-tz editing is a known v1 limitation; the editor surfaces the
+ * caller's tz inline so a NL booking edited from US shows "3:00 AM your
+ * time = 9:00 AM Amsterdam" rather than silently mis-saving. Phase F's
+ * tz-aware picker will replace this.
  */
 function toLocalDateTimeInput(iso: string | null): string {
   if (!iso) return '';

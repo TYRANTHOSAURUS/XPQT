@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAvailableServiceItems } from '@/api/service-catalog';
 import type { AvailableServiceItem, ServiceType } from '@/api/service-catalog';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -66,9 +67,10 @@ interface Props {
  *   - Post-booking `+ Add service` on `BundleServicesSection`
  *   - Future composer flows (initial booking, scheduler create, desk list)
  *
- * Smart defaults baked in: quantity = max(1, attendeeCount) for `per_item`
- * lines on first add. Phase B will extend with personal-template chips
- * above the tabs.
+ * Smart defaults: a per_item / flat_rate first-add seeds quantity = 1; a
+ * per_person first-add seeds quantity = max(1, attendeeCount). Tab labels
+ * carry a count badge per service-type so cross-tab selections stay
+ * visible. Phase B will extend with personal-template chips above the tabs.
  */
 export function ServicePickerSheet({
   open,
@@ -82,6 +84,7 @@ export function ServicePickerSheet({
   title = 'Add services',
   subtitle,
 }: Props) {
+  const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<ServiceType>(initialServiceType);
   const [selections, setSelections] = useState<PickerSelection[]>([]);
 
@@ -103,6 +106,12 @@ export function ServicePickerSheet({
   );
   const hasSelections = selections.length > 0;
 
+  const countByType = useMemo(() => {
+    const m = new Map<ServiceType, number>();
+    for (const s of selections) m.set(s.service_type, (m.get(s.service_type) ?? 0) + 1);
+    return m;
+  }, [selections]);
+
   const handleSubmit = async () => {
     if (!hasSelections) return;
     await onConfirm(selections);
@@ -111,11 +120,12 @@ export function ServicePickerSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        side="right"
+        side={isMobile ? 'bottom' : 'right'}
         className={cn(
           'flex flex-col gap-0 p-0 sm:max-w-lg',
-          // Mobile: bottom sheet, full-height-ish
-          'data-[state=open]:[&]:bottom-0 sm:data-[state=open]:[&]:top-0',
+          // On mobile bottom-sheet: cap at 90dvh so the system UI stays
+          // visible and the user can dismiss with a swipe-down on the handle.
+          isMobile && 'h-[90dvh] rounded-t-xl',
         )}
       >
         <SheetHeader className="border-b px-5 py-4">
@@ -128,13 +138,26 @@ export function ServicePickerSheet({
           onValueChange={(v) => setActiveTab(v as ServiceType)}
           className="flex flex-1 min-h-0 flex-col"
         >
-          <TabsList className="mx-5 mt-3 grid w-auto grid-cols-4 shrink-0">
-            {TAB_DEFS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value} className="text-xs">
-                <t.Icon className="size-3.5" />
-                <span className="hidden sm:inline">{t.label}</span>
-              </TabsTrigger>
-            ))}
+          <TabsList className="mx-5 mt-3 grid w-auto grid-cols-4 shrink-0 max-[360px]:grid-cols-2 max-[360px]:auto-rows-fr">
+            {TAB_DEFS.map((t) => {
+              const count = countByType.get(t.value) ?? 0;
+              return (
+                <TabsTrigger
+                  key={t.value}
+                  value={t.value}
+                  aria-label={t.label}
+                  className="relative text-xs"
+                >
+                  <t.Icon className="size-3.5" />
+                  <span className="hidden sm:inline">{t.label}</span>
+                  {count > 0 && (
+                    <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium tabular-nums text-primary-foreground">
+                      {count}
+                    </span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
           </TabsList>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 pt-3">
@@ -237,6 +260,12 @@ function CatalogPanel({
       );
       return;
     }
+    // First add: smart-default quantity by unit kind. `per_person` lines
+    // multiply by attendees on the backend, so a quantity of 1 is the right
+    // seed (1 unit × N attendees = N persons served). `per_item` and
+    // `flat_rate` do NOT multiply, so the user typically wants either 1 or
+    // attendeeCount worth — seed with the explicit `next` value (the +
+    // button passes 1; a "Add for everyone" template path could pass N).
     onChange([
       ...selections,
       {
@@ -249,6 +278,13 @@ function CatalogPanel({
         service_type: serviceType,
       },
     ]);
+  };
+
+  // For `per_item` lines on first add, default to attendeeCount so a typical
+  // "8 sandwiches for 8 attendees" flow is one tap, not eight.
+  const initialQuantityFor = (item: AvailableServiceItem): number => {
+    if (item.unit === 'per_item') return Math.max(1, attendeeCount);
+    return 1;
   };
 
   if (!deliverySpaceId || !onDate) {
@@ -334,6 +370,7 @@ function CatalogPanel({
             <div className="flex shrink-0 flex-col items-end justify-between gap-2">
               <QuantityStepper
                 value={sel?.quantity ?? 0}
+                addInitial={initialQuantityFor(item)}
                 onChange={(n) => setQuantity(item, n)}
               />
               {linePreview != null && linePreview > 0 && (
@@ -351,9 +388,14 @@ function CatalogPanel({
 
 function QuantityStepper({
   value,
+  addInitial = 1,
   onChange,
 }: {
   value: number;
+  /** Seed quantity used when the user taps Add for the first time. Lets
+   *  per_item lines default to attendeeCount so "8 sandwiches for 8" is
+   *  one tap. */
+  addInitial?: number;
   onChange: (next: number) => void;
 }) {
   if (value === 0) {
@@ -361,8 +403,8 @@ function QuantityStepper({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3"
-        onClick={() => onChange(1)}
+        className="h-11 px-3 sm:h-9"
+        onClick={() => onChange(addInitial)}
       >
         Add
       </Button>
@@ -373,18 +415,23 @@ function QuantityStepper({
       <Button
         size="icon"
         variant="ghost"
-        className="size-9"
-        aria-label="Decrease quantity"
+        className="size-11 sm:size-9"
+        aria-label={`Decrease quantity, currently ${value}`}
         onClick={() => onChange(value - 1)}
       >
         <Minus className="size-3.5" />
       </Button>
-      <span className="w-8 text-center text-sm font-medium tabular-nums">{value}</span>
+      <span
+        className="min-w-[2ch] text-center text-sm font-medium tabular-nums"
+        aria-live="polite"
+      >
+        {value}
+      </span>
       <Button
         size="icon"
         variant="ghost"
-        className="size-9"
-        aria-label="Increase quantity"
+        className="size-11 sm:size-9"
+        aria-label={`Increase quantity, currently ${value}`}
         onClick={() => onChange(value + 1)}
       >
         <Plus className="size-3.5" />
