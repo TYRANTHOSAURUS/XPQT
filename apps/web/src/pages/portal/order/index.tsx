@@ -237,7 +237,10 @@ export function PortalOrderPage() {
               </FieldDescription>
               <Field>
                 <FieldLabel htmlFor="order-cost-center">Cost center</FieldLabel>
-                <Select value={costCenterId || '__none__'} onValueChange={(v) => setCostCenterId(v === '__none__' ? '' : v)}>
+                <Select
+                  value={costCenterId || '__none__'}
+                  onValueChange={(v) => setCostCenterId(!v || v === '__none__' ? '' : v)}
+                >
                   <SelectTrigger id="order-cost-center">
                     <SelectValue placeholder="No cost center" />
                   </SelectTrigger>
