@@ -466,7 +466,23 @@ export class BundleService {
       .insert(insertRow)
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      // 23505 = unique violation on (primary_reservation_id) WHERE NOT NULL
+      // (migration 00153). A concurrent attach already created a bundle for
+      // this reservation; fetch + reuse it instead of double-creating.
+      if ((error as { code?: string }).code === '23505') {
+        const existing = await this.supabase.admin
+          .from('booking_bundles')
+          .select('id')
+          .eq('primary_reservation_id', args.reservation.id)
+          .eq('tenant_id', args.tenantId)
+          .maybeSingle();
+        if (existing.data) {
+          return { id: (existing.data as { id: string }).id, preExisting: true };
+        }
+      }
+      throw error;
+    }
     return { id: (data as { id: string }).id, preExisting: false };
   }
 
