@@ -8,15 +8,26 @@ import {
   Patch,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import { PermissionGuard } from '../../common/permission-guard';
 import {
   BundleTemplatesService,
   type BundleTemplateUpsertDto,
 } from './bundle-templates.service';
 
+/**
+ * Reads are open: the portal /portal/rooms BundleTemplatePicker (chip row)
+ * lists active templates for any authenticated user. Writes require
+ * `rooms.admin`.
+ */
 @Controller('admin/bundle-templates')
 export class BundleTemplatesController {
-  constructor(private readonly service: BundleTemplatesService) {}
+  constructor(
+    private readonly service: BundleTemplatesService,
+    private readonly permissions: PermissionGuard,
+  ) {}
 
   @Get()
   list(@Query('active') active?: string) {
@@ -31,7 +42,8 @@ export class BundleTemplatesController {
   }
 
   @Post()
-  create(@Body() dto: BundleTemplateUpsertDto) {
+  async create(@Req() req: Request, @Body() dto: BundleTemplateUpsertDto) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
       throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
     }
@@ -39,7 +51,12 @@ export class BundleTemplatesController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: Partial<BundleTemplateUpsertDto>) {
+  async update(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() dto: Partial<BundleTemplateUpsertDto>,
+  ) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
       throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
     }
@@ -47,7 +64,8 @@ export class BundleTemplatesController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  async remove(@Req() req: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     return this.service.remove(id);
   }
 }

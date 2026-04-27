@@ -8,7 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ServiceRuleService, type ServiceRuleUpsertDto } from './service-rule.service';
@@ -31,6 +34,7 @@ export class ServiceCatalogController {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly rules: ServiceRuleService,
+    private readonly permissions: PermissionGuard,
   ) {}
 
   // ── Portal reads ───────────────────────────────────────────────────────
@@ -144,27 +148,35 @@ export class ServiceCatalogController {
     };
   }
 
-  // ── Service rule CRUD (admin) ──────────────────────────────────────────
+  // ── Service rule CRUD (admin-only) ─────────────────────────────────────
+  //
+  // All endpoints require `rooms.admin`. Service rules encode business
+  // logic (approvals, cost thresholds, role-restricted items) and aren't
+  // user-facing — same posture as room-booking rules.
 
   @Get('admin/booking-services/rule-templates')
-  listTemplates() {
+  async listTemplates(@Req() req: Request) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     return this.rules.listTemplates();
   }
 
   @Get('admin/booking-services/rules')
-  list(@Query('active') active?: string) {
+  async list(@Req() req: Request, @Query('active') active?: string) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     const filter =
       active === 'true' ? { active: true } : active === 'false' ? { active: false } : undefined;
     return this.rules.list(filter);
   }
 
   @Get('admin/booking-services/rules/:id')
-  findOne(@Param('id') id: string) {
+  async findOne(@Req() req: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     return this.rules.findOne(id);
   }
 
   @Post('admin/booking-services/rules')
-  create(@Body() dto: ServiceRuleUpsertDto) {
+  async create(@Req() req: Request, @Body() dto: ServiceRuleUpsertDto) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
       throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
     }
@@ -172,7 +184,8 @@ export class ServiceCatalogController {
   }
 
   @Patch('admin/booking-services/rules/:id')
-  update(@Param('id') id: string, @Body() dto: Partial<ServiceRuleUpsertDto>) {
+  async update(@Req() req: Request, @Param('id') id: string, @Body() dto: Partial<ServiceRuleUpsertDto>) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
       throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
     }
@@ -180,7 +193,8 @@ export class ServiceCatalogController {
   }
 
   @Delete('admin/booking-services/rules/:id')
-  remove(@Param('id') id: string) {
+  async remove(@Req() req: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
     return this.rules.remove(id);
   }
 }
