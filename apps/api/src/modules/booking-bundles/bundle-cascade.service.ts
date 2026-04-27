@@ -115,11 +115,15 @@ export class BundleCascadeService {
       .update({ fulfillment_status: 'cancelled' })
       .eq('id', args.line_id);
 
-    // Re-scope approvals: drop this line from scope_breakdown.order_line_item_ids;
-    // close any approval whose scope drops to empty.
+    // Re-scope approvals: drop the cancelled line + its linked ticket + its
+    // linked asset reservation from scope_breakdown. Otherwise an approval
+    // scoped to (oli, ticket, asset) would stay pending pointing at the now
+    // dead ticket/asset even though the underlying work is gone.
     const closedApprovalIds = await this.rescopeApprovalsAfterLineCancel(
       line.bundle_id,
       args.line_id,
+      cascaded.ticket_ids,
+      cascaded.asset_reservation_ids,
     );
 
     void this.audit(tenantId, 'order.line_cancelled', 'order_line_item', args.line_id, {
@@ -365,6 +369,8 @@ export class BundleCascadeService {
   private async rescopeApprovalsAfterLineCancel(
     bundleId: string,
     cancelledLineId: string,
+    cancelledTicketIds: string[] = [],
+    cancelledAssetReservationIds: string[] = [],
   ): Promise<string[]> {
     const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
@@ -375,11 +381,27 @@ export class BundleCascadeService {
       .eq('status', 'pending');
     if (error) throw error;
 
+    const ticketSet = new Set(cancelledTicketIds);
+    const assetSet = new Set(cancelledAssetReservationIds);
     const closed: string[] = [];
     for (const row of (data ?? []) as Array<{ id: string; scope_breakdown: Record<string, unknown> }>) {
-      const scope = (row.scope_breakdown ?? {}) as { order_line_item_ids?: string[]; reasons?: unknown };
+      const scope = (row.scope_breakdown ?? {}) as {
+        order_line_item_ids?: string[];
+        ticket_ids?: string[];
+        asset_reservation_ids?: string[];
+        reasons?: unknown;
+      };
       const newLines = (scope.order_line_item_ids ?? []).filter((id) => id !== cancelledLineId);
-      const updated: Record<string, unknown> = { ...scope, order_line_item_ids: newLines };
+      const newTickets = (scope.ticket_ids ?? []).filter((id) => !ticketSet.has(id));
+      const newAssets = (scope.asset_reservation_ids ?? []).filter(
+        (id) => !assetSet.has(id),
+      );
+      const updated: Record<string, unknown> = {
+        ...scope,
+        order_line_item_ids: newLines,
+        ticket_ids: newTickets,
+        asset_reservation_ids: newAssets,
+      };
 
       // If the entire scope (across all entity arrays) is empty, the approval
       // covers nothing — close it.
