@@ -17,6 +17,7 @@ export const GdprEventType = {
   RetentionRunCompleted:      'gdpr.retention_run_completed',
   RetentionRunSkipped:        'gdpr.retention_run_skipped',          // legal hold or empty scan
   RetentionRunFailed:         'gdpr.retention_run_failed',
+  RetentionRunDeferred:       'gdpr.retention_run_deferred',         // nightly cap hit; remainder rolls to next night
 
   // Data subject requests (Art. 15-22)
   AccessRequestInitiated:     'gdpr.access_request_initiated',

@@ -20,6 +20,25 @@ import { GdprEventType } from './event-types';
  */
 @Injectable()
 export class RetentionService {
+  /**
+   * Throttle knobs — env-overridable. Defaults are sized for an EU 03:30
+   * window where the worker has ~3 hours before users start hitting the API.
+   *
+   *   chunkSize      — rows the orchestrator passes to adapter.anonymize / .hardDelete
+   *                    per call. The adapter is expected to wrap each call in a
+   *                    bounded transaction. 1000 keeps lock duration short.
+   *   batchSleepMs   — sleep between chunks to give the DB breathing room.
+   *                    100ms × 100 chunks = +10s wall clock per 100k rows;
+   *                    cheap insurance against IOPS pegging on a hot table.
+   *   nightlyCap     — hard cap on rows processed per (tenant, category) per
+   *                    nightly run. Excess is deferred to the next night.
+   *                    Protects against the bootstrap spike (admin shortens
+   *                    retention 365→90 → 275 days of expirations queued).
+   */
+  private readonly chunkSize    = Number(process.env.GDPR_RETENTION_CHUNK_SIZE ?? 1000);
+  private readonly batchSleepMs = Number(process.env.GDPR_RETENTION_BATCH_SLEEP_MS ?? 100);
+  private readonly nightlyCap   = Number(process.env.GDPR_RETENTION_NIGHTLY_CAP ?? 50_000);
+
   constructor(
     private readonly db: DbService,
     private readonly registry: DataCategoryRegistry,
@@ -159,21 +178,24 @@ export class RetentionService {
 
   /**
    * Apply retention for a tenant+category. Filters out anything currently
-   * under a legal hold, then either anonymizes or hard-deletes per category
-   * convention (today: hard-delete only for categories without an
-   * anonymization path; anonymize otherwise).
+   * under a legal hold, applies the per-run cap (deferring overflow to next
+   * night), then chunks through the survivors with a sleep between chunks
+   * so we don't peg the DB on a long run.
    *
    * Sprint 1: returns counts only when adapter is registered. With no
    * adapters, returns zeros — safe.
+   *
+   * `options` lets callers (admin dry-run, ad-hoc forced run) override the
+   * production env defaults.
    */
   async applyRetention(
     tenantId: string,
     category: string,
-    options: { dryRun?: boolean } = {},
+    options: ApplyRetentionOptions = {},
   ): Promise<RetentionApplyResult> {
     const adapter = this.registry.get(category);
     if (!adapter) {
-      return { tenantId, category, scanned: 0, anonymized: 0, hardDeleted: 0, skippedHeld: 0, dryRun: !!options.dryRun };
+      return { tenantId, category, scanned: 0, anonymized: 0, hardDeleted: 0, skippedHeld: 0, deferred: 0, dryRun: !!options.dryRun };
     }
 
     const expired = await this.scanExpired(tenantId, category);
@@ -188,7 +210,7 @@ export class RetentionService {
         eventType: GdprEventType.RetentionRunSkipped,
         details: { data_category: category, scanned: expired.length, reason: heldByTenant ? 'tenant_wide_hold' : 'category_hold' },
       });
-      return { tenantId, category, scanned: expired.length, anonymized: 0, hardDeleted: 0, skippedHeld: expired.length, dryRun: !!options.dryRun };
+      return { tenantId, category, scanned: expired.length, anonymized: 0, hardDeleted: 0, skippedHeld: expired.length, deferred: 0, dryRun: !!options.dryRun };
     }
 
     const heldPersonIds = await this.heldPersonIds(tenantId);
@@ -204,29 +226,66 @@ export class RetentionService {
       filtered.push(ref);
     }
 
-    if (options.dryRun) {
-      return { tenantId, category, scanned: expired.length, anonymized: 0, hardDeleted: 0, skippedHeld, dryRun: true };
+    // Throttle: cap how many we process tonight. Overflow rolls to next
+    // run — the adapter's idempotency (`anonymized_at` / `hard_deleted_at`
+    // flags) means the deferred refs will resurface unchanged.
+    const cap = options.maxRows ?? this.nightlyCap;
+    const processable = cap > 0 ? filtered.slice(0, cap) : filtered;
+    const deferred = filtered.length - processable.length;
+
+    if (deferred > 0) {
+      await this.auditOutbox.emit({
+        tenantId,
+        eventType: GdprEventType.RetentionRunDeferred,
+        details: {
+          data_category: category,
+          scanned: expired.length,
+          processable: processable.length,
+          deferred,
+          cap,
+        },
+      });
     }
 
-    if (filtered.length > 0) {
-      // Convention: categories with no anonymization path opt-in via legal_basis === 'none'
-      // (e.g. calendar_event_content) or by registering hardDelete-only adapters.
-      const legal = adapter.legalBasis;
-      if (legal === 'none') {
-        await adapter.hardDelete(filtered);
-        await this.auditOutbox.emit({
-          tenantId,
-          eventType: GdprEventType.RetentionHardDeleted,
-          details: { data_category: category, count: filtered.length },
-        });
+    if (options.dryRun) {
+      return {
+        tenantId, category,
+        scanned: expired.length,
+        anonymized: 0, hardDeleted: 0, skippedHeld, deferred,
+        dryRun: true,
+      };
+    }
+
+    // Chunk + throttle. Convention: categories with no anonymization path
+    // opt-in via legal_basis === 'none' (e.g. calendar_event_content) or by
+    // registering hardDelete-only adapters.
+    const isHardDelete = adapter.legalBasis === 'none';
+    const chunkSize = options.chunkSize ?? this.chunkSize;
+    const sleepMs   = options.batchSleepMs ?? this.batchSleepMs;
+    let processed = 0;
+
+    for (let i = 0; i < processable.length; i += chunkSize) {
+      const chunk = processable.slice(i, i + chunkSize);
+      if (isHardDelete) {
+        await adapter.hardDelete(chunk);
       } else {
-        await adapter.anonymize(filtered);
-        await this.auditOutbox.emit({
-          tenantId,
-          eventType: GdprEventType.RetentionAnonymized,
-          details: { data_category: category, count: filtered.length },
-        });
+        await adapter.anonymize(chunk);
       }
+      processed += chunk.length;
+
+      // Sleep between chunks (skip after last). Clamp to >=0 for tests
+      // that pass batchSleepMs: 0 to disable.
+      if (i + chunkSize < processable.length && sleepMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      }
+    }
+
+    if (processed > 0) {
+      await this.auditOutbox.emit({
+        tenantId,
+        eventType: isHardDelete ? GdprEventType.RetentionHardDeleted : GdprEventType.RetentionAnonymized,
+        details: { data_category: category, count: processed },
+      });
     }
 
     await this.auditOutbox.emit({
@@ -235,8 +294,9 @@ export class RetentionService {
       details: {
         data_category: category,
         scanned: expired.length,
-        applied: filtered.length,
+        applied: processed,
         skipped_held: skippedHeld,
+        deferred,
       },
     });
 
@@ -244,9 +304,10 @@ export class RetentionService {
       tenantId,
       category,
       scanned: expired.length,
-      anonymized: adapter.legalBasis === 'none' ? 0 : filtered.length,
-      hardDeleted: adapter.legalBasis === 'none' ? filtered.length : 0,
+      anonymized: isHardDelete ? 0 : processed,
+      hardDeleted: isHardDelete ? processed : 0,
       skippedHeld,
+      deferred,
       dryRun: false,
     };
   }
@@ -347,5 +408,18 @@ export interface RetentionApplyResult {
   anonymized: number;
   hardDeleted: number;
   skippedHeld: number;
+  /** Refs eligible-but-deferred to next run because the nightly cap was hit. */
+  deferred: number;
   dryRun: boolean;
+}
+
+export interface ApplyRetentionOptions {
+  /** Don't actually apply — return what would happen. */
+  dryRun?: boolean;
+  /** Override per-run cap. 0 disables the cap (process everything). */
+  maxRows?: number;
+  /** Override chunk size. Default: GDPR_RETENTION_CHUNK_SIZE env or 1000. */
+  chunkSize?: number;
+  /** Override inter-chunk sleep (ms). 0 disables. */
+  batchSleepMs?: number;
 }

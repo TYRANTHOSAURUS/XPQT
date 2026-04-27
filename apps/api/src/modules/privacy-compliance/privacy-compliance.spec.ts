@@ -138,6 +138,107 @@ describe('DataCategoryRegistry', () => {
   });
 });
 
+describe('RetentionService.applyRetention throttling', () => {
+  function makeAdapter(category: string, refs: number, legalBasis: 'legitimate_interest' | 'none' = 'legitimate_interest'): DataCategoryAdapter & { calls: { anonymize: number[]; hardDelete: number[] } } {
+    const calls = { anonymize: [] as number[], hardDelete: [] as number[] };
+    return {
+      category,
+      description: 'test',
+      defaultRetentionDays: 30,
+      capRetentionDays: 90,
+      legalBasis,
+      scanForExpired: jest.fn(async (tenantId: string) => {
+        return Array.from({ length: refs }, (_, i) => ({
+          category,
+          resourceType: 'visitors',
+          resourceId: `r${i}`,
+          tenantId,
+        }));
+      }),
+      anonymize: jest.fn(async (chunk: { resourceId: string }[]) => { calls.anonymize.push(chunk.length); }),
+      hardDelete: jest.fn(async (chunk: { resourceId: string }[]) => { calls.hardDelete.push(chunk.length); }),
+      exportForPerson: jest.fn(async () => ({ category, description: 'test', records: [], totalCount: 0 })),
+      erasureRefs: jest.fn(async () => []),
+      calls,
+    } as DataCategoryAdapter & { calls: { anonymize: number[]; hardDelete: number[] } };
+  }
+
+  function makeService(adapter: DataCategoryAdapter) {
+    const fake = makeFakeDb({});
+    // Stub legal-hold queries — none active.
+    fake.db.queryOne = jest.fn(async (sql: string) => {
+      if (sql.includes('hold_type')) return { exists: false };
+      if (sql.includes('from tenant_retention_settings')) {
+        return { id: '1', tenant_id: TENANT, data_category: adapter.category, retention_days: 30, cap_retention_days: 90, lia_text: null, legal_basis: adapter.legalBasis, created_at: 'x', updated_at: 'x', lia_text_updated_at: null, lia_text_updated_by_user_id: null };
+      }
+      return null;
+    });
+    fake.db.queryMany = jest.fn(async () => []);
+    const registry = new DataCategoryRegistry();
+    registry.register(adapter);
+    const audit = new AuditOutboxService(fake.db as any);
+    const service = new RetentionService(fake.db as any, registry, audit);
+    return { service, fake, audit };
+  }
+
+  it('chunks anonymize calls at chunkSize boundary', async () => {
+    const adapter = makeAdapter('visitor_records', 2500);
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'visitor_records', { chunkSize: 1000, batchSleepMs: 0 });
+    expect(adapter.calls.anonymize).toEqual([1000, 1000, 500]);
+    expect(result.anonymized).toBe(2500);
+    expect(result.deferred).toBe(0);
+  });
+
+  it('respects nightlyCap and reports deferred count', async () => {
+    const adapter = makeAdapter('visitor_records', 5000);
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'visitor_records', { maxRows: 3000, chunkSize: 1000, batchSleepMs: 0 });
+    expect(adapter.calls.anonymize.reduce((a, b) => a + b, 0)).toBe(3000);
+    expect(result.anonymized).toBe(3000);
+    expect(result.deferred).toBe(2000);
+    expect(result.scanned).toBe(5000);
+  });
+
+  it('routes legal_basis="none" categories to hardDelete', async () => {
+    const adapter = makeAdapter('calendar_event_content', 1500, 'none');
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'calendar_event_content', { chunkSize: 1000, batchSleepMs: 0 });
+    expect(adapter.calls.hardDelete).toEqual([1000, 500]);
+    expect(adapter.calls.anonymize).toEqual([]);
+    expect(result.hardDeleted).toBe(1500);
+    expect(result.anonymized).toBe(0);
+  });
+
+  it('dry-run reports what would happen without invoking adapter', async () => {
+    const adapter = makeAdapter('visitor_records', 100);
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'visitor_records', { dryRun: true });
+    expect(adapter.calls.anonymize).toEqual([]);
+    expect(adapter.calls.hardDelete).toEqual([]);
+    expect(result.dryRun).toBe(true);
+    expect(result.scanned).toBe(100);
+    expect(result.anonymized).toBe(0);
+  });
+
+  it('zero scanned → no chunks, no audit_anonymized event, run_completed still emitted', async () => {
+    const adapter = makeAdapter('visitor_records', 0);
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'visitor_records', { chunkSize: 1000, batchSleepMs: 0 });
+    expect(adapter.calls.anonymize).toEqual([]);
+    expect(result.scanned).toBe(0);
+    expect(result.anonymized).toBe(0);
+  });
+
+  it('maxRows: 0 disables the cap (full processing)', async () => {
+    const adapter = makeAdapter('visitor_records', 75_000);
+    const { service } = makeService(adapter);
+    const result = await service.applyRetention(TENANT, 'visitor_records', { maxRows: 0, chunkSize: 25_000, batchSleepMs: 0 });
+    expect(result.anonymized).toBe(75_000);
+    expect(result.deferred).toBe(0);
+  });
+});
+
 describe('RetentionService.setCategorySettings', () => {
   function makeSubject(initialRetention: { retention_days: number; cap_retention_days: number | null; lia_text?: string | null }) {
     const fake = makeFakeDb({
