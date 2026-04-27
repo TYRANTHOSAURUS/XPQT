@@ -66,10 +66,24 @@ export class BundleCascadeService {
     const tenantId = TenantContext.current().id;
     const line = await this.loadLine(args.line_id, tenantId);
     if (!line) throw new NotFoundException({ code: 'line_not_found', message: `Line ${args.line_id} not found.` });
-    if (line.bundle_id) {
-      const bundle = await this.loadBundle(line.bundle_id, tenantId);
-      if (bundle) await this.visibility.assertVisible(bundle, ctx);
+    // Sub-project 2 only owns bundle-linked lines. A pre-bundle order line
+    // (legacy /orders flow) routes through OrderService.cancel, not this
+    // path — refuse so we don't silently let a tenant-mate cancel each
+    // other's lines.
+    if (!line.bundle_id) {
+      throw new NotFoundException({
+        code: 'line_not_in_bundle',
+        message: `Line ${args.line_id} is not part of a bundle.`,
+      });
     }
+    const bundle = await this.loadBundle(line.bundle_id, tenantId);
+    if (!bundle) {
+      throw new NotFoundException({
+        code: 'bundle_not_found',
+        message: `Bundle ${line.bundle_id} not found.`,
+      });
+    }
+    await this.visibility.assertVisible(bundle, ctx);
 
     // Fulfilled-line protection.
     if (FULFILLED_STATUSES.has(line.fulfillment_status ?? '')) {
@@ -103,9 +117,10 @@ export class BundleCascadeService {
 
     // Re-scope approvals: drop this line from scope_breakdown.order_line_item_ids;
     // close any approval whose scope drops to empty.
-    const closedApprovalIds = line.bundle_id
-      ? await this.rescopeApprovalsAfterLineCancel(line.bundle_id, args.line_id)
-      : [];
+    const closedApprovalIds = await this.rescopeApprovalsAfterLineCancel(
+      line.bundle_id,
+      args.line_id,
+    );
 
     void this.audit(tenantId, 'order.line_cancelled', {
       line_id: args.line_id,
