@@ -163,26 +163,6 @@ export class BundleCascadeService {
     return this.cancelBundleImpl(args, { ctx });
   }
 
-  /**
-   * Internal cascade — used when ReservationService.cancelOne already
-   * validated the user can cancel the reservation, so visibility is
-   * implicit. Reservations with bundles call this so the bundle's orders,
-   * lines, work-order tickets, asset reservations and pending approvals
-   * cascade alongside the reservation cancel.
-   *
-   * Best-effort: a failure here is logged but doesn't fail the reservation
-   * cancel that already committed.
-   */
-  async cancelBundleInternal(args: CancelBundleArgs): Promise<void> {
-    try {
-      await this.cancelBundleImpl(args, { skipVisibility: true });
-    } catch (err) {
-      this.log.warn(
-        `internal bundle cascade failed for ${args.bundle_id}: ${(err as Error).message}`,
-      );
-    }
-  }
-
   private async cancelBundleImpl(
     args: CancelBundleArgs,
     auth: { ctx?: BundleVisibilityContext; skipVisibility?: boolean },

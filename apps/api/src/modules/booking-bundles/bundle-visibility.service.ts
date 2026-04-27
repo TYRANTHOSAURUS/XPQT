@@ -85,6 +85,13 @@ export class BundleVisibilityService {
   }, ctx: BundleVisibilityContext): Promise<void> {
     if (ctx.has_admin) return;
 
+    // Unknown user (no row in tenant.users) — fail fast. Without a user
+    // there's no person, no role, no permission to check; everything else
+    // below would be wasted DB round-trips.
+    if (!ctx.user_id) {
+      throw new ForbiddenException({ code: 'bundle_forbidden', message: 'You do not have access to this booking.' });
+    }
+
     // Participant: requester / host
     if (ctx.person_id && (bundle.requester_person_id === ctx.person_id || bundle.host_person_id === ctx.person_id)) {
       return;
