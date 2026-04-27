@@ -169,6 +169,24 @@ export class BookingBundlesController {
     );
   }
 
+  /**
+   * `POST /booking-bundles/lines/:lineId/cancel` — single-line cancel per
+   * spec §5.3 entry point #1. Cascades to the line's work-order ticket +
+   * asset reservation and rescopes any pending approvals (auto-closing
+   * rows whose scope drops to empty).
+   */
+  @Post('lines/:lineId/cancel')
+  async cancelLine(
+    @Req() request: Request,
+    @Param('lineId') lineId: string,
+    @Body() body: { reason?: string },
+  ) {
+    const authUid = this.getAuthUid(request);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    return this.cascade.cancelLine({ line_id: lineId, reason: body?.reason }, ctx);
+  }
+
   private getAuthUid(req: Request): string {
     const u = (req as unknown as { user?: { id?: string } }).user;
     if (!u?.id) throw new UnauthorizedException('missing_user');

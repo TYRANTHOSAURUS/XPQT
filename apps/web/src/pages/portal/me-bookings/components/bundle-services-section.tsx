@@ -1,7 +1,13 @@
+import { useState } from 'react';
 import { CheckCircle2, Clock, Truck, X } from 'lucide-react';
-import { useBundle } from '@/api/booking-bundles';
+import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { useBundle, useCancelBundleLine } from '@/api/booking-bundles';
 import type { BundleLine } from '@/api/booking-bundles';
 import { formatCurrency, formatTimeShort } from '@/lib/format';
+import { toastError, toastRemoved } from '@/lib/toast';
+
+const FULFILLED = new Set<BundleLine['fulfillment_status']>(['confirmed', 'preparing', 'delivered']);
 
 interface Props {
   bundleId: string;
@@ -19,6 +25,8 @@ interface Props {
  */
 export function BundleServicesSection({ bundleId }: Props) {
   const { data, isLoading, error } = useBundle(bundleId);
+  const cancelLine = useCancelBundleLine(bundleId);
+  const [confirmingLine, setConfirmingLine] = useState<BundleLine | null>(null);
 
   if (isLoading) {
     return (
@@ -44,43 +52,95 @@ export function BundleServicesSection({ bundleId }: Props) {
     0,
   );
 
+  const handleConfirmCancel = async () => {
+    if (!confirmingLine) return;
+    try {
+      await cancelLine.mutateAsync({ lineId: confirmingLine.id });
+      toastRemoved('Service line');
+      setConfirmingLine(null);
+    } catch (err) {
+      toastError("Couldn't cancel line", { error: err });
+    }
+  };
+
   return (
     <div className="border-t">
       <div className="px-5 pt-3 pb-1 text-[11px] uppercase tracking-wider text-muted-foreground">
         Services ({lines.length})
       </div>
       <ul className="px-5 pb-2">
-        {lines.map((line) => (
-          <li
-            key={line.id}
-            className="flex items-start gap-3 border-b py-2 last:border-b-0"
-          >
-            <FulfillmentIcon status={line.fulfillment_status} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="truncate text-sm font-medium">
-                  {line.catalog_item_name ?? 'Service item'} × {line.quantity}
-                </span>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {formatCurrency(line.line_total)}
-                </span>
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                {prettyStatus(line.fulfillment_status)}
-                {line.service_window_start_at && (
-                  <span className="ml-2 tabular-nums">
-                    · {formatTimeShort(line.service_window_start_at)}
+        {lines.map((line) => {
+          const isFulfilled = FULFILLED.has(line.fulfillment_status);
+          const isCancelled = line.fulfillment_status === 'cancelled';
+          const canCancel = !isCancelled && !isFulfilled;
+          return (
+            <li
+              key={line.id}
+              className="group/line flex items-start gap-3 border-b py-2 last:border-b-0"
+            >
+              <FulfillmentIcon status={line.fulfillment_status} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span
+                    className={
+                      isCancelled
+                        ? 'truncate text-sm font-medium line-through text-muted-foreground'
+                        : 'truncate text-sm font-medium'
+                    }
+                  >
+                    {line.catalog_item_name ?? 'Service item'} × {line.quantity}
                   </span>
-                )}
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {formatCurrency(line.line_total)}
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {prettyStatus(line.fulfillment_status)}
+                  {line.service_window_start_at && (
+                    <span className="ml-2 tabular-nums">
+                      · {formatTimeShort(line.service_window_start_at)}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          </li>
-        ))}
+              {canCancel ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Cancel this line"
+                  className="h-7 w-7 opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive"
+                  onClick={() => setConfirmingLine(line)}
+                  disabled={cancelLine.isPending}
+                >
+                  <X className="size-4" />
+                </Button>
+              ) : isFulfilled ? (
+                <span
+                  className="text-[10px] uppercase tracking-wider text-muted-foreground"
+                  title="Already fulfilled — contact the fulfillment team to change"
+                >
+                  Fulfilled
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
       </ul>
       <div className="flex items-center justify-between px-5 py-2 text-xs text-muted-foreground">
         <span>Status: {prettyBundleStatus(data.status_rollup)}</span>
         <span className="tabular-nums">{formatCurrency(total)}</span>
       </div>
+
+      <ConfirmDialog
+        open={confirmingLine !== null}
+        onOpenChange={(open) => !open && setConfirmingLine(null)}
+        title={`Cancel "${confirmingLine?.catalog_item_name ?? 'this service'}"?`}
+        description="The work-order ticket and any reserved asset will be cancelled too. This cannot be undone."
+        confirmLabel="Cancel line"
+        destructive
+        onConfirm={handleConfirmCancel}
+      />
     </div>
   );
 }

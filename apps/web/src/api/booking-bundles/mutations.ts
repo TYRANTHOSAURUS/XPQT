@@ -8,7 +8,7 @@ export interface CancelBundlePayload {
   keep_line_ids?: string[];
   /** "this" / "this_and_following" / "series" for recurring scope. */
   recurrence_scope?: 'this' | 'this_and_following' | 'series';
-  comment?: string;
+  reason?: string;
 }
 
 export function useCancelBundle() {
@@ -24,6 +24,34 @@ export function useCancelBundle() {
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
       qc.invalidateQueries({ queryKey: roomBookingKeys.lists() });
       qc.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
+    },
+  });
+}
+
+/**
+ * Cancel a single service line. Used by the bundle services drawer's
+ * per-line × button. Returns the cascaded ticket + asset_reservation ids
+ * + closed approvals so the toast can mention them.
+ */
+export function useCancelBundleLine(bundleId: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    {
+      line_id: string;
+      cascaded: { ticket_ids: string[]; asset_reservation_ids: string[] };
+      closed_approval_ids: string[];
+    },
+    Error,
+    { lineId: string; reason?: string }
+  >({
+    mutationFn: ({ lineId, reason }) =>
+      apiFetch(`/booking-bundles/lines/${lineId}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
+      qc.invalidateQueries({ queryKey: bundleKeys.lists() });
     },
   });
 }
