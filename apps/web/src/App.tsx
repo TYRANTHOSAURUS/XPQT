@@ -211,6 +211,7 @@ export function App() {
                     <Route path="request-types" element={<RequestTypesReport />} />
                     <Route path="assets" element={<AssetsReport />} />
                     <Route path="vendors" element={<VendorsReport />} />
+                    <Route path="bookings" element={<RoomBookingReportsPage />} />
                   </Route>
                   <Route path="settings" element={<Navigate to="/admin" replace />} />
                 </Route>

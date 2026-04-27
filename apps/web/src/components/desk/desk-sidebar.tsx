@@ -116,6 +116,12 @@ const reportGroups: Array<{
     ],
   },
   {
+    title: "Room booking",
+    items: [
+      { to: "/desk/reports/bookings", label: "Bookings overview", icon: CalendarCheck2Icon },
+    ],
+  },
+  {
     title: "Operations",
     items: [
       { to: "/desk/reports/assets", label: "Asset analysis", icon: BoxIcon },
