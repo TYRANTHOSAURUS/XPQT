@@ -1,10 +1,17 @@
 import { Logger, Module, OnApplicationBootstrap } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { DbModule } from '../../common/db/db.module';
 import { DbService } from '../../common/db/db.service';
+import { PermissionGuard } from '../../common/permission-guard';
+import { SupabaseModule } from '../../common/supabase/supabase.module';
 import { AnonymizationAuditService } from './anonymization-audit.service';
 import { AuditOutboxService } from './audit-outbox.service';
 import { AuditOutboxWorker } from './audit-outbox.worker';
 import { DataCategoryRegistry } from './data-category-registry.service';
+import { DataSubjectService } from './data-subject.service';
+import { GdprAdminController } from './gdpr-admin.controller';
+import { PersonalDataAccessInterceptor } from './personal-data-access.interceptor';
+import { PersonalDataAccessLogService } from './personal-data-access-log.service';
 import { RetentionService } from './retention.service';
 import { RetentionWorker } from './retention.worker';
 import { VisitorRecordsAdapter } from './adapters/visitor-records.adapter';
@@ -29,7 +36,8 @@ import {
  * function's category set — warnings surface anything missing.
  */
 @Module({
-  imports: [DbModule],
+  imports: [DbModule, SupabaseModule],
+  controllers: [GdprAdminController],
   providers: [
     AuditOutboxService,
     AuditOutboxWorker,
@@ -37,17 +45,30 @@ import {
     DataCategoryRegistry,
     RetentionService,
     RetentionWorker,
+    PersonalDataAccessLogService,
+    DataSubjectService,
+    PermissionGuard,
 
     // Class-based adapters for the categories that need bespoke logic.
     VisitorRecordsAdapter,
     PersonsAdapter,
     AuditEventsAdapter,
+
+    // Global interceptor — observes every controller response and queues
+    // an access-log entry whenever the handler is decorated with
+    // @LogPersonalDataAccess. Cheap when no metadata is set (early return).
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: PersonalDataAccessInterceptor,
+    },
   ],
   exports: [
     AuditOutboxService,
     AnonymizationAuditService,
     DataCategoryRegistry,
     RetentionService,
+    PersonalDataAccessLogService,
+    DataSubjectService,
   ],
 })
 export class PrivacyComplianceModule implements OnApplicationBootstrap {
