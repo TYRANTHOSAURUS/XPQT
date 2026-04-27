@@ -11,7 +11,8 @@ export type SearchKind =
   | 'asset'
   | 'vendor'
   | 'team'
-  | 'request_type';
+  | 'request_type'
+  | 'reservation';
 
 export interface SearchHit {
   kind: SearchKind;
