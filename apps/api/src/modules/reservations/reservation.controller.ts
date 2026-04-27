@@ -340,17 +340,8 @@ export class ReservationController {
     const reservation = await this.service.findOne(id, authUid);
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
-
-    // Write gate: requester / host / admin only.
     const r = reservation as { requester_person_id: string; host_person_id?: string | null };
-    const isParticipant =
-      ctx.person_id != null && (r.requester_person_id === ctx.person_id || r.host_person_id === ctx.person_id);
-    if (!ctx.has_admin && !isParticipant) {
-      throw new UnauthorizedException({
-        code: 'reservation_write_forbidden',
-        message: 'Only the requester, host, or an admin can change this booking.',
-      });
-    }
+    this.assertReservationWritable(r, ctx);
 
     return this.bundle.attachServicesToReservation({
       reservation_id: id,
@@ -428,10 +419,13 @@ export class ReservationController {
     @Body() body: { visitor_id: string },
   ) {
     const authUid = this.getAuthUid(request);
-    // Throws if not visible.
-    await this.service.findOne(id, authUid);
+    const reservation = await this.service.findOne(id, authUid);
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
+    this.assertReservationWritable(
+      reservation as { requester_person_id: string; host_person_id?: string | null },
+      ctx,
+    );
 
     if (!body?.visitor_id) {
       throw new NotFoundException({ code: 'visitor_required', message: 'visitor_id is required' });
@@ -474,9 +468,13 @@ export class ReservationController {
     @Param('visitorId') visitorId: string,
   ) {
     const authUid = this.getAuthUid(request);
-    // Throws if not visible.
-    await this.service.findOne(id, authUid);
+    const reservation = await this.service.findOne(id, authUid);
     const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    this.assertReservationWritable(
+      reservation as { requester_person_id: string; host_person_id?: string | null },
+      ctx,
+    );
 
     const { error } = await this.supabase.admin
       .from('reservation_visitors')
@@ -490,6 +488,31 @@ export class ReservationController {
   }
 
   // ---- helpers ----
+
+  /**
+   * Three-tier write gate for reservation mutations: admin, `rooms.write_all`,
+   * or participant (requester / host). Read-only operators (`rooms.read_all`)
+   * pass `assertVisible` but must NOT pass this — that's the read-vs-write
+   * boundary. The visitor and service-attach endpoints use this gate to
+   * prevent a read-only operator from mutating bookings they can see.
+   */
+  private assertReservationWritable(
+    reservation: { requester_person_id: string; host_person_id?: string | null },
+    ctx: { has_admin: boolean; has_write_all: boolean; person_id: string | null },
+  ): void {
+    if (ctx.has_admin || ctx.has_write_all) return;
+    if (
+      ctx.person_id != null &&
+      (reservation.requester_person_id === ctx.person_id ||
+        reservation.host_person_id === ctx.person_id)
+    ) {
+      return;
+    }
+    throw new UnauthorizedException({
+      code: 'reservation_write_forbidden',
+      message: 'Only the requester, host, or an admin can change this booking.',
+    });
+  }
 
   private getAuthUid(req: Request): string {
     const u = (req as unknown as { user?: { id?: string } }).user;

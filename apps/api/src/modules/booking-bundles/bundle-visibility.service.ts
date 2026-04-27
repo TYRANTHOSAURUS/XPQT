@@ -24,6 +24,7 @@ export interface BundleVisibilityContext {
   person_id: string | null;
   tenant_id: string;
   has_read_all: boolean;
+  has_write_all: boolean;
   has_admin: boolean;
 }
 
@@ -48,15 +49,21 @@ export class BundleVisibilityService {
         person_id: null,
         tenant_id: tenantId,
         has_read_all: false,
+        has_write_all: false,
         has_admin: false,
       };
     }
 
-    const [readAllRes, adminRes] = await Promise.all([
+    const [readAllRes, writeAllRes, adminRes] = await Promise.all([
       this.supabase.admin.rpc('user_has_permission', {
         p_user_id: userRow.id,
         p_tenant_id: tenantId,
         p_permission: 'rooms.read_all',
+      }),
+      this.supabase.admin.rpc('user_has_permission', {
+        p_user_id: userRow.id,
+        p_tenant_id: tenantId,
+        p_permission: 'rooms.write_all',
       }),
       this.supabase.admin.rpc('user_has_permission', {
         p_user_id: userRow.id,
@@ -70,6 +77,7 @@ export class BundleVisibilityService {
       person_id: userRow.person_id,
       tenant_id: tenantId,
       has_read_all: !!readAllRes.data,
+      has_write_all: !!writeAllRes.data,
       has_admin: !!adminRes.data,
     };
   }

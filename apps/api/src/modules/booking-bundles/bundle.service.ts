@@ -453,18 +453,37 @@ export class BundleService {
       };
     }
 
+    // Optimistic concurrency: refuse to write if another caller has advanced
+    // the line into a frozen state between our SELECT and UPDATE. The
+    // `.eq('fulfillment_status', line.fulfillment_status)` clause turns a
+    // would-be silent override into a 0-row result we surface as 409.
     const { data: updated, error: updateErr } = await this.supabase.admin
       .from('order_line_items')
       .update(update)
       .eq('id', line.id)
       .eq('tenant_id', tenantId)
+      .eq('fulfillment_status', line.fulfillment_status)
       .select('id, quantity, line_total, service_window_start_at, service_window_end_at')
-      .single();
+      .maybeSingle();
     if (updateErr) throw updateErr;
+    if (!updated) {
+      throw new ConflictException({
+        code: 'line_state_changed',
+        message: 'This line was updated by fulfillment while you were editing. Reload to see the latest state.',
+      });
+    }
     const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null };
 
     // Cascade window change to the linked work-order ticket so SLA + dispatch
     // see the latest commitment. Only fires if the window actually moved.
+    //
+    // This is a separate write, not in the same transaction as the line
+    // update — partial failure leaves the line correct and the ticket
+    // stale. We surface the failure as a structured `bundle_line.cascade_failed`
+    // audit event (severity=high) so ops can detect drift without grepping
+    // logs. Long-term shape: move to a Postgres trigger on order_line_items
+    // for true atomicity. Tracked alongside the broader bundle-atomicity
+    // refactor noted at the top of this file.
     const windowChanged =
       'service_window_start_at' in update || 'service_window_end_at' in update;
     if (windowChanged && line.linked_ticket_id) {
@@ -478,6 +497,17 @@ export class BundleService {
         .eq('tenant_id', tenantId);
       if (ticketErr) {
         this.log.warn(`ticket cascade failed for line ${line.id}: ${ticketErr.message}`);
+        void this.audit(tenantId, 'bundle_line.cascade_failed', 'order_line_item', line.id, {
+          line_id: line.id,
+          linked_ticket_id: line.linked_ticket_id,
+          attempted_window: {
+            start_at: u.service_window_start_at,
+            end_at: u.service_window_end_at,
+          },
+          severity: 'high',
+          reason: 'ticket_update_failed',
+          error: ticketErr.message,
+        });
       }
     }
 

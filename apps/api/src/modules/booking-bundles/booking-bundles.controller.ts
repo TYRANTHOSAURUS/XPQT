@@ -305,15 +305,16 @@ export class BookingBundlesController {
   }
 
   /**
-   * Write gate: only the bundle's requester / host or a `rooms.admin` may
-   * mutate. `rooms.read_all` operators get read-only visibility. Surface as
-   * a 403 with a stable code so the frontend can show the right message.
+   * Write gate: bundle requester / host, `rooms.admin`, or `rooms.write_all`
+   * may mutate. `rooms.read_all` operators stay read-only. Mirrors the
+   * tier model in `ReservationVisibilityService.canEdit` so a `write_all`
+   * operator who can edit reservations can also edit their bundles.
    */
   private assertCanWrite(
     bundle: { requester_person_id: string; host_person_id: string | null },
-    ctx: { has_admin: boolean; person_id: string | null },
+    ctx: { has_admin: boolean; has_write_all: boolean; person_id: string | null },
   ): void {
-    if (ctx.has_admin) return;
+    if (ctx.has_admin || ctx.has_write_all) return;
     if (ctx.person_id && (bundle.requester_person_id === ctx.person_id || bundle.host_person_id === ctx.person_id)) {
       return;
     }
