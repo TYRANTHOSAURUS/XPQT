@@ -1,8 +1,5 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
-  SettingsPageHeader, SettingsPageShell,
-} from '@/components/ui/settings-page';
 import { SectionCards, type SectionCardItem } from '@/components/section-cards';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -55,30 +52,32 @@ export function RoomBookingReportsPage() {
   const setFilters = (next: FilterState) => setParams(writeFilters(params, next));
 
   return (
-    <SettingsPageShell width="ultra">
-      <SettingsPageHeader
-        title="Bookings overview"
-        description="How meeting rooms are being booked, attended, and serviced."
-        actions={<BookingsFilterBar value={filters} onChange={setFilters} />}
-      />
+    <div className="@container/main flex flex-1 flex-col gap-2">
+      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+        <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+          <BookingsFilterBar value={filters} onChange={setFilters} />
+        </div>
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertTitle>Couldn&apos;t load bookings overview</AlertTitle>
-          <AlertDescription>
-            {error instanceof Error ? error.message : 'Unexpected error'}
-          </AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <div className="px-4 lg:px-6">
+            <Alert variant="destructive">
+              <AlertTitle>Couldn&apos;t load bookings overview</AlertTitle>
+              <AlertDescription>
+                {error instanceof Error ? error.message : 'Unexpected error'}
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
 
-      {isLoading || !data ? (
-        <ReportSkeleton />
-      ) : data.kpis.total_bookings === 0 && data.kpis.rooms_in_scope > 0 ? (
-        <EmptyWindow />
-      ) : (
-        <ReportBody data={data} stale={isFetching} />
-      )}
-    </SettingsPageShell>
+        {isLoading || !data ? (
+          <ReportSkeleton />
+        ) : data.kpis.total_bookings === 0 && data.kpis.rooms_in_scope > 0 ? (
+          <EmptyWindow />
+        ) : (
+          <ReportBody data={data} stale={isFetching} />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -141,7 +140,7 @@ function ReportBody({
   ];
 
   return (
-    <div className={`@container/main flex flex-col gap-6 ${stale ? 'opacity-90' : ''}`}>
+    <div className={`flex flex-col gap-4 md:gap-6 ${stale ? 'opacity-90' : ''}`}>
       <SectionCards items={kpis} />
       <div className="px-4 lg:px-6">
         <BookingsVolumeChart data={data.volume_by_day} />
@@ -171,7 +170,7 @@ function ReportBody({
 
 function ReportSkeleton() {
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4 md:gap-6">
       <div className="grid grid-cols-1 gap-4 px-4 lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
         {Array.from({ length: 6 }).map((_, i) => (
           <Skeleton key={i} className="h-[140px] rounded-xl" />
