@@ -69,9 +69,14 @@ export class OrdersController {
    * on /portal/me-bookings sends one of these when the user tweaks a single
    * occurrence's service line. Each call sets `recurrence_overridden=true`
    * (so the materialiser leaves the line alone on series-level edits).
+   *
+   * Authorisation: the line's order must be requested by the current user,
+   * OR the user must hold rooms.read_all / rooms.admin (operator path).
+   * supabase.admin bypasses RLS so this check is mandatory.
    */
   @Patch('order-line-items/:id/override')
-  override(
+  async override(
+    @Req() request: Request,
     @Param('id') id: string,
     @Body()
     body: {
@@ -80,16 +85,19 @@ export class OrdersController {
       service_window_end_at?: string | null;
     },
   ) {
+    await this.assertCanEditLine(request, id);
     return this.orders.overrideLineForOccurrence(id, body ?? {});
   }
 
   @Patch('order-line-items/:id/skip')
-  skip(@Param('id') id: string, @Body() body: { reason?: string }) {
+  async skip(@Req() request: Request, @Param('id') id: string, @Body() body: { reason?: string }) {
+    await this.assertCanEditLine(request, id);
     return this.orders.skipLineForOccurrence(id, body?.reason);
   }
 
   @Patch('order-line-items/:id/revert')
-  revert(@Param('id') id: string) {
+  async revert(@Req() request: Request, @Param('id') id: string) {
+    await this.assertCanEditLine(request, id);
     return this.orders.revertLineForOccurrence(id);
   }
 
@@ -114,6 +122,79 @@ export class OrdersController {
       throw new UnauthorizedException({ code: 'no_person', message: 'no person record linked to this user' });
     }
     return personId;
+  }
+
+  /**
+   * Per-occurrence override / skip / revert authorisation: the line's
+   * parent order must belong to the current user, OR the user holds
+   * `rooms.read_all` / `rooms.admin` (operator override). Throws 403 on
+   * mismatch.
+   */
+  private async assertCanEditLine(req: Request, lineId: string): Promise<void> {
+    const authUid = this.getAuthUid(req);
+    const tenantId = TenantContext.current().id;
+
+    // Look up the user + their permissions in parallel with the line.
+    const [userRes, lineRes] = await Promise.all([
+      this.supabase.admin
+        .from('users')
+        .select('id, person_id')
+        .eq('auth_uid', authUid)
+        .eq('tenant_id', tenantId)
+        .maybeSingle(),
+      this.supabase.admin
+        .from('order_line_items')
+        .select('id, order_id')
+        .eq('id', lineId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle(),
+    ]);
+    if (userRes.error) throw userRes.error;
+    if (lineRes.error) throw lineRes.error;
+    const userRow = userRes.data as { id: string; person_id: string | null } | null;
+    const lineRow = lineRes.data as { id: string; order_id: string } | null;
+    if (!userRow) {
+      throw new UnauthorizedException({ code: 'no_user', message: 'no user record for this auth uid' });
+    }
+    if (!lineRow) {
+      throw new BadRequestException({ code: 'line_not_found', message: 'order line not found' });
+    }
+
+    const orderRes = await this.supabase.admin
+      .from('orders')
+      .select('requester_person_id')
+      .eq('id', lineRow.order_id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (orderRes.error) throw orderRes.error;
+    const order = orderRes.data as { requester_person_id: string } | null;
+    if (!order) {
+      throw new BadRequestException({ code: 'order_not_found', message: 'order not found' });
+    }
+
+    if (userRow.person_id && order.requester_person_id === userRow.person_id) return;
+
+    // Operator override — same posture as bundle visibility.
+    const [readAllRes, adminRes] = await Promise.all([
+      this.supabase.admin.rpc('user_has_permission', {
+        p_user_id: userRow.id,
+        p_tenant_id: tenantId,
+        p_permission: 'rooms.read_all',
+      }),
+      this.supabase.admin.rpc('user_has_permission', {
+        p_user_id: userRow.id,
+        p_tenant_id: tenantId,
+        p_permission: 'rooms.admin',
+      }),
+    ]);
+    if (readAllRes.error) throw readAllRes.error;
+    if (adminRes.error) throw adminRes.error;
+    if (readAllRes.data || adminRes.data) return;
+
+    throw new UnauthorizedException({
+      code: 'line_not_editable',
+      message: 'You do not have access to this service line.',
+    });
   }
 }
 
