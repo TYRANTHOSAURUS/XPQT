@@ -12,10 +12,18 @@ import {
   FieldSeparator,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { SpaceSelect } from '@/components/space-select';
 import { useCreateStandaloneOrder } from '@/api/orders';
+import { useCostCenters } from '@/api/cost-centers';
 import { ServiceSection, type ServiceSelection } from '@/pages/portal/book-room/components/service-section';
 import { formatCurrency } from '@/lib/format';
 import { toastError, toastSuccess } from '@/lib/toast';
@@ -47,6 +55,8 @@ export function PortalOrderPage() {
   const [cateringSelections, setCateringSelections] = useState<ServiceSelection[]>([]);
   const [avSelections, setAvSelections] = useState<ServiceSelection[]>([]);
   const [setupSelections, setSetupSelections] = useState<ServiceSelection[]>([]);
+  const [costCenterId, setCostCenterId] = useState<string>('');
+  const { data: costCenters } = useCostCenters({ active: true });
 
   // Reset selections when the location changes — different location =
   // different menus = different items.
@@ -90,6 +100,7 @@ export function PortalOrderPage() {
         delivery_space_id: deliverySpaceId,
         requested_for_start_at: startAtIso,
         requested_for_end_at: endAtIso,
+        cost_center_id: costCenterId || null,
         lines: allSelections.map((s) => ({
           catalog_item_id: s.catalog_item_id,
           menu_id: s.menu_id,
@@ -214,6 +225,36 @@ export function PortalOrderPage() {
             </div>
           )}
         </FieldSet>
+
+        {(costCenters?.length ?? 0) > 0 && (
+          <>
+            <FieldSeparator />
+            <FieldSet>
+              <FieldLegend variant="label">Cost center</FieldLegend>
+              <FieldDescription>
+                Optional GL chargeback. Approval routing for cost-center-driven rules uses the
+                cost center's default approver.
+              </FieldDescription>
+              <Field>
+                <FieldLabel htmlFor="order-cost-center">Cost center</FieldLabel>
+                <Select value={costCenterId || '__none__'} onValueChange={(v) => setCostCenterId(v === '__none__' ? '' : v)}>
+                  <SelectTrigger id="order-cost-center">
+                    <SelectValue placeholder="No cost center" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No cost center</SelectItem>
+                    {(costCenters ?? []).map((cc) => (
+                      <SelectItem key={cc.id} value={cc.id}>
+                        <span className="font-mono text-xs tabular-nums">{cc.code}</span>
+                        <span className="ml-2 text-muted-foreground">{cc.name}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </FieldSet>
+          </>
+        )}
 
         <FieldSeparator />
 
