@@ -150,7 +150,10 @@ export class OrderService {
         requested_for_start_at: newWindowStart,
         requested_for_end_at: newWindowEnd,
         recurrence_series_id: args.recurrenceSeriesId,
-        status: 'approved', // recurrence skips re-resolving rules in v1
+        // Provisional status — re-evaluated below after per-occurrence rule
+        // re-resolution (spec §5.1). Set to 'submitted' so a row is never
+        // visible as fully approved before rules have run.
+        status: 'submitted',
         policy_snapshot: {
           ...(masterOrder.data as { policy_snapshot: Record<string, unknown> }).policy_snapshot,
           cloned_from: args.masterOrderId,
@@ -185,6 +188,18 @@ export class OrderService {
     const clonedLineIds: string[] = [];
     const clonedAssetReservationIds: string[] = [];
     const assetConflictLineIds: string[] = [];
+    type ClonedLineMeta = {
+      oliId: string;
+      catalog_item_id: string;
+      menu_id: string | null;
+      quantity: number;
+      unit_price: number | null;
+      service_window_start_at: string | null;
+      service_window_end_at: string | null;
+      asset_reservation_id: string | null;
+      asset_conflicted: boolean;
+    };
+    const clonedLineMetas: ClonedLineMeta[] = [];
 
     for (const line of (masterLines.data ?? []) as Array<{
       id: string;
@@ -265,7 +280,42 @@ export class OrderService {
       const newLineId = (insertRes.data as { id: string }).id;
       clonedLineIds.push(newLineId);
       if (assetConflicted) assetConflictLineIds.push(newLineId);
+
+      clonedLineMetas.push({
+        oliId: newLineId,
+        catalog_item_id: line.catalog_item_id,
+        menu_id:
+          (line.policy_snapshot as { menu_id?: string | null } | null)?.menu_id ?? null,
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+        service_window_start_at: occurrenceStart,
+        service_window_end_at: occurrenceEnd,
+        asset_reservation_id: clonedAssetReservationId,
+        asset_conflicted: assetConflicted,
+      });
     }
+
+    // Per-spec §5.1: re-resolve service rules against each occurrence's
+    // context. Outcomes can change per occurrence (e.g. holiday-specific deny
+    // on Dec 25, weekly cost-threshold approval). Asset-conflicted lines are
+    // already skipped at clone time and are excluded from rule eval — no
+    // point evaluating a line that won't fulfil anyway.
+    const ruleEval = await this.reEvalRulesForOccurrence({
+      tenantId,
+      bundleId: args.bundleId,
+      newReservationId: args.newReservation.id,
+      newReservationStartAt: args.newReservation.start_at,
+      newReservationEndAt: args.newReservation.end_at,
+      requesterPersonId: args.requesterPersonId,
+      clonedOrderId,
+      clonedLineMetas: clonedLineMetas.filter((m) => !m.asset_conflicted),
+    });
+
+    // Set order status. submitted = pending approval; approved = clean run.
+    await this.supabase.admin
+      .from('orders')
+      .update({ status: ruleEval.anyPending ? 'submitted' : 'approved' })
+      .eq('id', clonedOrderId);
 
     void this.audit(tenantId, 'order.line_cloned', 'order', clonedOrderId, {
       master_order_id: args.masterOrderId,
@@ -274,6 +324,9 @@ export class OrderService {
       cloned_line_ids: clonedLineIds,
       cloned_asset_reservation_ids: clonedAssetReservationIds,
       asset_conflict_line_ids: assetConflictLineIds,
+      rule_denied_line_ids: ruleEval.deniedLineIds,
+      rule_approval_required_line_ids: ruleEval.approvalLineIds,
+      any_pending_approval: ruleEval.anyPending,
     });
 
     return {
@@ -282,6 +335,263 @@ export class OrderService {
       cloned_asset_reservation_ids: clonedAssetReservationIds,
       asset_conflict_line_ids: assetConflictLineIds,
     };
+  }
+
+  /**
+   * Re-evaluate service rules against the new occurrence's context and apply
+   * outcomes:
+   *   - deny → mark line `recurrence_skipped=true skip_reason='rule_deny'`,
+   *     cancel any cloned asset reservation
+   *   - require_approval → route through ApprovalRoutingService scoped to
+   *     this occurrence's order/bundle
+   *   - allow / warn → leave as-is (warns are surfaced via audit only)
+   *
+   * Failures here are logged but never throw — recurrence materialisation
+   * already swallows per-order errors at the caller, but we'd rather the
+   * occurrence land as 'submitted' than not land at all.
+   */
+  private async reEvalRulesForOccurrence(args: {
+    tenantId: string;
+    bundleId: string;
+    newReservationId: string;
+    newReservationStartAt: string;
+    newReservationEndAt: string;
+    requesterPersonId: string;
+    clonedOrderId: string;
+    clonedLineMetas: Array<{
+      oliId: string;
+      catalog_item_id: string;
+      menu_id: string | null;
+      quantity: number;
+      unit_price: number | null;
+      service_window_start_at: string | null;
+      service_window_end_at: string | null;
+      asset_reservation_id: string | null;
+    }>;
+  }): Promise<{ deniedLineIds: string[]; approvalLineIds: string[]; anyPending: boolean }> {
+    if (args.clonedLineMetas.length === 0) {
+      return { deniedLineIds: [], approvalLineIds: [], anyPending: false };
+    }
+
+    try {
+      // Reservation context (space_id) + bundle context (cost_center_id,
+      // template_id, attendee_count) are needed for the predicate engine.
+      const [resRow, bundleRow, requesterCtx] = await Promise.all([
+        this.supabase.admin
+          .from('reservations')
+          .select('id, space_id, attendee_count')
+          .eq('id', args.newReservationId)
+          .eq('tenant_id', args.tenantId)
+          .maybeSingle(),
+        this.supabase.admin
+          .from('booking_bundles')
+          .select('id, cost_center_id, template_id')
+          .eq('id', args.bundleId)
+          .eq('tenant_id', args.tenantId)
+          .maybeSingle(),
+        this.loadRequesterContext(args.requesterPersonId),
+      ]);
+      if (resRow.error) throw resRow.error;
+      if (bundleRow.error) throw bundleRow.error;
+
+      const reservation = resRow.data as
+        | { id: string; space_id: string; attendee_count: number | null }
+        | null;
+      const bundle = bundleRow.data as
+        | { id: string; cost_center_id: string | null; template_id: string | null }
+        | null;
+      if (!reservation || !bundle) {
+        this.log.warn(
+          `re-eval: reservation/bundle not found for clone ${args.clonedOrderId}`,
+        );
+        return { deniedLineIds: [], approvalLineIds: [], anyPending: false };
+      }
+
+      const permissions = await this.loadPermissionMap(requesterCtx.user_id);
+
+      // Hydrate catalog_item category + fulfillment_team_id, and menu's
+      // fulfillment_vendor_id, for each unique catalog_item_id / menu_id pair.
+      const catalogIds = Array.from(
+        new Set(args.clonedLineMetas.map((m) => m.catalog_item_id)),
+      );
+      const menuIds = Array.from(
+        new Set(
+          args.clonedLineMetas
+            .map((m) => m.menu_id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+      const [itemsRes, menusRes] = await Promise.all([
+        this.supabase.admin
+          .from('catalog_items')
+          .select('id, category, fulfillment_team_id, price_per_unit')
+          .in('id', catalogIds)
+          .eq('tenant_id', args.tenantId),
+        menuIds.length > 0
+          ? this.supabase.admin
+              .from('catalog_menus')
+              .select('id, fulfillment_vendor_id, fulfillment_team_id')
+              .in('id', menuIds)
+              .eq('tenant_id', args.tenantId)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (itemsRes.error) throw itemsRes.error;
+      if (menusRes.error) throw menusRes.error;
+      const itemsById = new Map(
+        (itemsRes.data ?? []).map((row: any) => [row.id as string, row]),
+      );
+      const menusById = new Map(
+        (menusRes.data ?? []).map((row: any) => [row.id as string, row]),
+      );
+
+      const orderTotal = args.clonedLineMetas.reduce(
+        (sum, m) => sum + (m.unit_price ?? 0) * m.quantity,
+        0,
+      );
+
+      const linesByOli = new Map(args.clonedLineMetas.map((m) => [m.oliId, m]));
+      const outcomes = await this.resolver.resolveBulk({
+        lines: args.clonedLineMetas.map((m) => ({
+          lineKey: m.oliId,
+          catalog_item_id: m.catalog_item_id,
+          catalog_item_category:
+            (itemsById.get(m.catalog_item_id) as { category: string | null } | undefined)
+              ?.category ?? null,
+          menu_id: m.menu_id,
+        })),
+        contextFor: (lineKey) => {
+          const meta = linesByOli.get(lineKey)!;
+          const item = itemsById.get(meta.catalog_item_id) as
+            | { category: string | null; fulfillment_team_id: string | null }
+            | undefined;
+          const menu = meta.menu_id
+            ? (menusById.get(meta.menu_id) as
+                | { fulfillment_vendor_id: string | null; fulfillment_team_id: string | null }
+                | undefined)
+            : undefined;
+          const startAt = meta.service_window_start_at ?? args.newReservationStartAt;
+          const leadHours = (Date.parse(startAt) - Date.now()) / 3_600_000;
+          return buildServiceEvaluationContext({
+            requester: requesterCtx,
+            bundle: {
+              id: bundle.id,
+              cost_center_id: bundle.cost_center_id,
+              template_id: bundle.template_id,
+              attendee_count: reservation.attendee_count ?? null,
+            },
+            reservation: {
+              id: reservation.id,
+              space_id: reservation.space_id,
+              start_at: args.newReservationStartAt,
+              end_at: args.newReservationEndAt,
+            },
+            line: {
+              catalog_item_id: meta.catalog_item_id,
+              catalog_item_category: item?.category ?? null,
+              menu_id: meta.menu_id,
+              quantity: meta.quantity,
+              quantity_per_attendee: null,
+              service_window_start_at: meta.service_window_start_at,
+              service_window_end_at: meta.service_window_end_at,
+              unit_price: meta.unit_price,
+              lead_time_remaining_hours: leadHours,
+              menu: {
+                fulfillment_vendor_id: menu?.fulfillment_vendor_id ?? null,
+                fulfillment_team_id:
+                  menu?.fulfillment_team_id ?? item?.fulfillment_team_id ?? null,
+              },
+            },
+            order: {
+              total_per_occurrence: orderTotal,
+              total: orderTotal,
+              line_count: args.clonedLineMetas.length,
+            },
+            permissions,
+          });
+        },
+      });
+
+      const deniedLineIds: string[] = [];
+      const approvalLineIds: string[] = [];
+      const perLineApproval: Array<{
+        line_key: string;
+        outcome: NonNullable<ReturnType<typeof outcomes.get>>;
+        scope: {
+          order_ids: string[];
+          order_line_item_ids: string[];
+          asset_reservation_ids: string[];
+        };
+      }> = [];
+
+      for (const meta of args.clonedLineMetas) {
+        const outcome = outcomes.get(meta.oliId);
+        if (!outcome) continue;
+        if (outcome.effect === 'deny') {
+          deniedLineIds.push(meta.oliId);
+          continue;
+        }
+        if (outcome.effect === 'require_approval' || outcome.effect === 'allow_override') {
+          approvalLineIds.push(meta.oliId);
+        }
+        perLineApproval.push({
+          line_key: meta.oliId,
+          outcome,
+          scope: {
+            order_ids: [args.clonedOrderId],
+            order_line_item_ids: [meta.oliId],
+            asset_reservation_ids: meta.asset_reservation_id
+              ? [meta.asset_reservation_id]
+              : [],
+          },
+        });
+      }
+
+      // Apply deny outcomes: skip the line + cancel its asset reservation.
+      for (const oliId of deniedLineIds) {
+        const meta = linesByOli.get(oliId)!;
+        await this.supabase.admin
+          .from('order_line_items')
+          .update({
+            recurrence_skipped: true,
+            recurrence_overridden: true,
+            skip_reason: 'rule_deny',
+            fulfillment_status: 'cancelled',
+          })
+          .eq('id', oliId)
+          .eq('tenant_id', args.tenantId);
+        if (meta.asset_reservation_id) {
+          await this.supabase.admin
+            .from('asset_reservations')
+            .update({ status: 'cancelled' })
+            .eq('id', meta.asset_reservation_id)
+            .eq('tenant_id', args.tenantId);
+        }
+      }
+
+      const anyPending = perLineApproval.some(
+        (p) =>
+          p.outcome.effect === 'require_approval' || p.outcome.effect === 'allow_override',
+      );
+      if (perLineApproval.length > 0) {
+        await this.approvalRouter.assemble({
+          target_entity_type: 'booking_bundle',
+          target_entity_id: args.bundleId,
+          per_line_outcomes: perLineApproval,
+          bundle_context: {
+            cost_center_id: bundle.cost_center_id,
+            requester_person_id: args.requesterPersonId,
+            bundle_id: args.bundleId,
+          },
+        });
+      }
+
+      return { deniedLineIds, approvalLineIds, anyPending };
+    } catch (err) {
+      this.log.warn(
+        `per-occurrence rule re-eval failed for order ${args.clonedOrderId}: ${(err as Error).message}`,
+      );
+      return { deniedLineIds: [], approvalLineIds: [], anyPending: false };
+    }
   }
 
   /**
@@ -372,6 +682,9 @@ export class OrderService {
 
     const tenantId = TenantContext.current().id;
     const cleanup = new StandaloneCleanup(this.supabase);
+    const requesterCtx = await this.loadRequesterContext(args.requester_person_id);
+    const permissions =
+      args.permissions ?? (await this.loadPermissionMap(requesterCtx.user_id));
 
     try {
       // 1. Create services-only bundle (primary_reservation_id stays null).
@@ -478,14 +791,7 @@ export class OrderService {
         contextFor: (lineKey) => {
           const meta = lineMetas.find((l) => l.oliId === lineKey)!;
           return buildServiceEvaluationContext({
-            requester: {
-              id: args.requester_person_id,
-              role_ids: [],
-              org_node_id: null,
-              type: null,
-              cost_center: null,
-              user_id: null,
-            },
+            requester: requesterCtx,
             bundle: {
               id: bundle.id,
               cost_center_id: args.cost_center_id ?? null,
@@ -515,7 +821,7 @@ export class OrderService {
               total: totalPerOccurrence,
               line_count: lineMetas.length,
             },
-            permissions: args.permissions ?? {},
+            permissions,
           });
         },
       });
@@ -772,6 +1078,91 @@ export class OrderService {
     } catch (err) {
       this.log.warn(`audit insert failed for ${eventType}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Resolve requester profile (person + primary org membership + roles + linked
+   * user) for predicate evaluation. Mirrors RoomBookingRules' loadRequester.
+   */
+  private async loadRequesterContext(personId: string): Promise<{
+    id: string;
+    type: string | null;
+    cost_center: string | null;
+    org_node_id: string | null;
+    role_ids: string[];
+    user_id: string | null;
+  }> {
+    const tenantId = TenantContext.current().id;
+    const [
+      { data: person, error: pErr },
+      { data: membership, error: mErr },
+      { data: user, error: uErr },
+    ] = await Promise.all([
+      this.supabase.admin
+        .from('persons')
+        .select('id, type, cost_center')
+        .eq('id', personId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle(),
+      this.supabase.admin
+        .from('person_org_memberships')
+        .select('org_node_id')
+        .eq('person_id', personId)
+        .eq('tenant_id', tenantId)
+        .eq('is_primary', true)
+        .maybeSingle(),
+      this.supabase.admin
+        .from('users')
+        .select('id')
+        .eq('person_id', personId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle(),
+    ]);
+    if (pErr) throw pErr;
+    if (mErr) throw mErr;
+    if (uErr) throw uErr;
+    if (!person) throw new NotFoundException(`Person ${personId} not found`);
+    const userId = (user as { id: string } | null)?.id ?? null;
+
+    let roleIds: string[] = [];
+    if (userId) {
+      const { data: roles, error: rErr } = await this.supabase.admin
+        .from('user_role_assignments')
+        .select('role_id')
+        .eq('user_id', userId)
+        .eq('tenant_id', tenantId)
+        .eq('active', true);
+      if (rErr) throw rErr;
+      roleIds = ((roles ?? []) as Array<{ role_id: string }>).map((r) => r.role_id);
+    }
+
+    return {
+      id: personId,
+      type: (person as { type: string | null }).type ?? null,
+      cost_center: (person as { cost_center: string | null }).cost_center ?? null,
+      org_node_id: (membership as { org_node_id: string } | null)?.org_node_id ?? null,
+      role_ids: roleIds,
+      user_id: userId,
+    };
+  }
+
+  private async loadPermissionMap(userId: string | null): Promise<Record<string, boolean>> {
+    if (!userId) return {};
+    const tenantId = TenantContext.current().id;
+    const perms = ['rooms.override_rules', 'rooms.book_on_behalf'];
+    const result: Record<string, boolean> = {};
+    await Promise.all(
+      perms.map(async (perm) => {
+        const { data, error } = await this.supabase.admin.rpc('user_has_permission', {
+          p_user_id: userId,
+          p_tenant_id: tenantId,
+          p_permission: perm,
+        });
+        if (error) throw error;
+        result[perm] = Boolean(data);
+      }),
+    );
+    return result;
   }
 }
 

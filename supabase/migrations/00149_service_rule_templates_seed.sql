@@ -48,7 +48,7 @@ insert into public.service_rule_templates
  'Deny an item on specific days of week (e.g. "no catering on Mondays").',
  'availability',
  'deny',
- '{"op":"in","left":{"path":"$.booking.start_at.day_of_week"},"right":{"const":"$.blackout_days"}}'::jsonb,
+ '{"op":"in","left":{"path":"$.booking.start_at_day_of_week"},"right":{"const":"$.blackout_days"}}'::jsonb,
  '[{"key":"blackout_days","label":"Days to block","type":"days_of_week","default":[1]}]'::jsonb,
  null),
 
