@@ -19,13 +19,14 @@ This spec brings both surfaces up to the bar of the rest of the admin app, fills
 1. `/admin/persons` adopts the split-view (`TableInspectorLayout` + `InspectorPanel`) used by `/admin/users`. The legacy edit modal is removed; the auto-save detail page is the single source of edit truth.
 2. Person detail surfaces every field the data model already supports, plus a recent-activity feed that pulls from tickets, reservations, and audit events.
 3. User detail becomes editable for the small ops we can implement today (username, status, linked person, password reset, suspend, DSR) and gains a sign-in history section backed by a tiny new auth-callback hook.
-4. Login history is captured by writing one `audit_events` row per successful sign-in plus updating `users.last_login_at`. No new tables, no new infra.
+4. Login history is captured by a Supabase Auth Hook webhook that writes one row per real sign-in into a dedicated `auth_sign_in_events` table. No in-process dedupe, no per-request work in the AuthGuard. Foundation for the next slice (active sessions list + revoke + new-device email alerts) lands without rewriting the data layer.
 
 ## Non-goals (deferred)
 
 These are real product surfaces; bolting placeholders on now creates dead UI.
 
-- **Sessions list & revoke** — needs backend control over Supabase JWT lifecycle; separate slice.
+- **Sessions list & revoke** — uses `supabase.auth.admin.listUserSessions()` + `signOut(jti)`; the data foundation lands in this spec but the UI ships in a follow-up slice.
+- **New-device email alerts** — webhook handler will have the data; the comparison against last 30 days of devices and the email send are a follow-up slice.
 - **MFA / 2FA enrollment** — no MFA implemented anywhere; needs its own UX + backend.
 - **API tokens / personal access tokens** — needs token issuance + revocation backend.
 - **Impersonate** — needs an audited admin-as-user flow; separate trust-model design.
@@ -63,14 +64,15 @@ apps/api/src/modules/
 │   ├── person.controller.ts   — GET /persons/:id/activity (returns mixed feed: tickets, reservations, audit)
 │   └── person.service.ts      — getRecentActivity(personId, limit)
 ├── user-management/
-│   ├── user.controller.ts     — GET /users/:id/sign-ins (reads audit_events filtered by event_type)
+│   ├── user.controller.ts     — GET /users/:id/sign-ins (reads auth_sign_in_events)
 │   ├── user.service.ts        — listSignIns(userId, limit), resetPassword(userId)
 │   └── (existing PATCH /users/:id is sufficient for inline edits)
 └── auth/
-    └── auth.service.ts        — on successful sign-in: write audit_events row + update users.last_login_at
+    ├── auth.controller.ts     — POST /internal/auth/sign-in-webhook (Supabase Auth Hook receiver)
+    └── auth-events.service.ts — recordSignIn(payload), recordSignOut(payload)
 ```
 
-No schema changes are required for sign-in history. We use the existing `audit_events` table with a new `event_type = 'user.signed_in'` and `entity_type = 'users'`, `entity_id = user.id`, and stash `ip_address` from the request. Activity feed is read-only and aggregates over existing tables.
+One schema change is required: a new `auth_sign_in_events` table that stores one row per real sign-in. We do **not** mix login data into the existing `audit_events` table because (a) sign-in events have a different shape (device fingerprint, geo, session_id, MFA factors, success/failure), (b) different retention policy (sign-in events typically live 12-24 months for compliance, audit events live indefinitely), and (c) we want clean indexes for common queries like "all sign-ins for this user" and "all sign-ins across the tenant in the last 24h". Activity feed is read-only and aggregates over existing tables.
 
 ### Data flow — person activity feed
 
@@ -96,20 +98,81 @@ Visibility: the endpoint runs through `TicketVisibilityService` for tickets (so 
 ### Data flow — login history
 
 ```
-auth callback (Supabase JWT verified) →
-  AuthService.recordSignIn(userId, ipAddress) →
-    UPDATE users SET last_login_at = now() WHERE id = :userId
-    INSERT INTO audit_events (event_type='user.signed_in', entity_type='users', entity_id=:userId, actor_user_id=:userId, ip_address, details={user_agent})
+Supabase Auth (real source of truth — handles password / SSO / magic link / MFA) →
+  Auth Hook fires "sign_in" or "sign_out" event →
+    POST https://<api>/internal/auth/sign-in-webhook
+      Headers: Authorization: Bearer <SUPABASE_AUTH_HOOK_SECRET>
+      Body: { type, event, user_id, session_id, ip_address, user_agent, ... }
+  ↓
+  AuthEventsService.recordSignIn(payload):
+    - Verify HMAC signature against SUPABASE_AUTH_HOOK_SECRET
+    - Resolve tenant_id from user_id (every Supabase user is linked to public.users.id → tenants table)
+    - INSERT INTO auth_sign_in_events (...) ON CONFLICT (session_id, event_kind) DO NOTHING
+    - UPDATE users SET last_login_at = now() WHERE id = :user_id (only for sign_in event)
 
 GET /users/:userId/sign-ins?limit=10 →
-  SELECT * FROM audit_events
-   WHERE event_type='user.signed_in' AND entity_id=:userId
-   ORDER BY created_at DESC LIMIT :limit
+  SELECT id, signed_in_at, ip_address, user_agent, country, city, method, mfa_used, success, failure_reason
+    FROM auth_sign_in_events
+   WHERE tenant_id = :tenant
+     AND user_id = :userId
+     AND event_kind = 'sign_in'
+   ORDER BY signed_in_at DESC LIMIT :limit
 ```
 
-We write the row from the `AuthGuard` on first request after a token is issued (via a "have we recorded this token's sign-in yet?" check using a short-lived in-memory dedupe keyed by `jti + user_id`). This avoids needing a Supabase Auth webhook and keeps the write path inside our own code where tenant context is already resolved. Misses (e.g. backend restart between login and first request) are acceptable — we accept some undercounting for v1 in exchange for zero new infrastructure.
+**Why a webhook + dedicated table over in-process tracking.** The webhook fires exactly once per real sign-in (Supabase guarantees at-least-once delivery, and the `(session_id, event_kind)` unique index makes the insert idempotent). This means:
 
-**Caveat — multi-instance deployments.** The dedupe is per-process. If we ever run more than one API instance, the same login can record multiple sign-in events (one per instance the token first hits). Today the API runs single-instance, so this is fine. When we go multi-instance, the dedupe should move to Redis or be replaced by a Supabase Auth webhook — tracked as a follow-up, not in scope for this spec.
+- **No dedupe state** in the API process — we don't need a `Map<jti, true>` or a Redis cache, the database itself is the dedupe boundary.
+- **Multi-instance safe by construction** — any API instance can receive the webhook; the unique index handles concurrent retries cleanly.
+- **Captures sign-outs too** — needed by the next slice for active-session lists ("when did this session end?") and for audit completeness.
+- **Idempotent retries** — Supabase's at-least-once delivery means retries on transient 5xx; the unique index makes that safe.
+
+**Why a dedicated table over reusing `audit_events`.** Sign-in events and admin-action audit events have different shapes, different retention curves, and different read patterns. Forcing them into one table would mean either (a) sparse columns that are mostly null for non-sign-in rows, or (b) stuffing critical fields like `ip_address` and `mfa_used` into the `details` jsonb where they can't be indexed. The dedicated table also lets us add geo and device fields incrementally without polluting the audit log.
+
+**Schema:**
+
+```sql
+create table public.auth_sign_in_events (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references public.tenants(id) on delete cascade,
+  user_id         uuid not null references public.users(id) on delete cascade,
+  event_kind      text not null check (event_kind in ('sign_in', 'sign_out', 'sign_in_failed')),
+  signed_in_at    timestamptz not null default now(),
+  session_id      text,                                  -- Supabase session id; null for failed attempts
+  ip_address      inet,
+  user_agent      text,
+  country         text,                                  -- ISO 3166-1 alpha-2; populated by geo lookup later, null for v1
+  city            text,                                  -- populated later, null for v1
+  method          text,                                  -- 'password' | 'oauth' | 'magic_link' | 'sso' — from Supabase event
+  provider        text,                                  -- 'google' | 'azure' | etc. when method='oauth'/'sso'
+  mfa_used        boolean not null default false,
+  success         boolean not null default true,
+  failure_reason  text,                                  -- populated when event_kind='sign_in_failed'
+  created_at      timestamptz not null default now()
+);
+
+create unique index auth_sign_in_events_session_event_uniq
+  on public.auth_sign_in_events (session_id, event_kind)
+  where session_id is not null;
+
+create index auth_sign_in_events_user_signed_in_at
+  on public.auth_sign_in_events (tenant_id, user_id, signed_in_at desc);
+
+create index auth_sign_in_events_tenant_signed_in_at
+  on public.auth_sign_in_events (tenant_id, signed_in_at desc);
+
+alter table public.auth_sign_in_events enable row level security;
+create policy "tenant_isolation" on public.auth_sign_in_events
+  using (tenant_id = public.current_tenant_id());
+```
+
+Retention is registered with the GDPR retention system (already shipped in Sprint 1-5) under the new data category `auth_sign_in_events`, with a tenant-configurable default of 24 months. The retention worker will purge rows past the policy.
+
+### Webhook security
+
+- The endpoint is mounted at `POST /internal/auth/sign-in-webhook` and is **not** behind the `AuthGuard` — Supabase calls it as a service-to-service request.
+- A shared secret `SUPABASE_AUTH_HOOK_SECRET` (env var) is configured in the Supabase Auth Hook settings and verified on every request. Mismatch returns 401 immediately.
+- The endpoint is rate-limited at the platform layer (Render → Cloudflare) to mitigate replay floods.
+- The handler is idempotent: the `(session_id, event_kind)` unique index lets us upsert safely on retries.
 
 ## Surface details
 
@@ -166,34 +229,61 @@ The page keeps `SettingsPageShell width="xwide"` and the existing Identity / Rol
 
 ### D. Backend — login history slice
 
-**`AuthService.recordSignIn(userId, ipAddress, userAgent)`:**
+**Migration `00168_auth_sign_in_events.sql`** — creates the table + indexes + RLS policy as defined in the Data flow section, plus registers the retention category.
 
-- Upsert in-memory dedupe key `${userId}:${jti}`. Skip if already recorded for this token.
-- `UPDATE users SET last_login_at = now() WHERE id = :userId`
-- Insert `audit_events` row: `event_type='user.signed_in'`, `entity_type='users'`, `entity_id=userId`, `actor_user_id=userId`, `ip_address`, `details={user_agent}`.
+**`AuthEventsService.recordSignIn(payload)`:**
 
-Called from the existing `AuthGuard` after token verification, before request handling continues. Failures are logged but do not block the request — sign-in history is observability, not a gate.
+- Verify HMAC signature (caller has already done this in the controller, but the service double-checks tenant resolution succeeded).
+- Resolve `tenant_id` by joining `auth.users.id` → `public.users.id` → `public.users.tenant_id`. Reject (and log) if the user does not exist in `public.users` — that's a desync we want to catch.
+- `INSERT INTO auth_sign_in_events (...) VALUES (...) ON CONFLICT (session_id, event_kind) WHERE session_id IS NOT NULL DO NOTHING`.
+- For `event_kind = 'sign_in'` only: `UPDATE users SET last_login_at = greatest(coalesce(last_login_at, '-infinity'), :signed_in_at) WHERE id = :user_id`.
+
+`recordSignOut` is the same shape with `event_kind='sign_out'`. `recordSignInFailed` writes a row with `success=false`, `session_id=null`, and `failure_reason` populated — these rows escape the unique index because the partial index excludes null session_ids, which is intentional (failures aren't dedupable).
+
+**`AuthController.signInWebhook`:**
+
+```ts
+@Post('internal/auth/sign-in-webhook')
+@Public()  // no AuthGuard — service-to-service
+async signInWebhook(@Body() payload: unknown, @Headers('authorization') auth: string) {
+  this.verifyWebhookSecret(auth);
+  const event = parseSupabaseAuthEvent(payload);  // narrows to discriminated union
+  switch (event.type) {
+    case 'sign_in':         return this.events.recordSignIn(event);
+    case 'sign_out':        return this.events.recordSignOut(event);
+    case 'sign_in_failed':  return this.events.recordSignInFailed(event);
+  }
+}
+```
+
+Failures throw 5xx so Supabase retries; 4xx responses (bad payload, unknown user) are not retried.
 
 **`UserService.listSignIns(userId, limit)`:**
 
 ```sql
-SELECT id, created_at, ip_address, details
-  FROM audit_events
+SELECT id, signed_in_at, ip_address, user_agent, country, city, method, provider, mfa_used, success, failure_reason
+  FROM auth_sign_in_events
  WHERE tenant_id = :tenant
-   AND event_type = 'user.signed_in'
-   AND entity_id = :userId
- ORDER BY created_at DESC
+   AND user_id = :userId
+   AND event_kind = 'sign_in'
+ ORDER BY signed_in_at DESC
  LIMIT :limit
 ```
 
-Returns `{ id, signed_in_at, ip_address, user_agent }[]`.
+Returns the rows with relative-time-friendly fields. The frontend never sees `event_kind` because the endpoint filters to sign-ins only.
 
 **`UserController` additions:**
 
 - `GET /users/:id/sign-ins?limit=10` → `listSignIns`
 - `POST /users/:id/password-reset` → `resetPassword(userId)` → calls `supabase.auth.admin.generateLink({ type: 'recovery', email: user.email })` and triggers the existing tenant email template.
 
-No migration needed.
+**Supabase configuration (one-time, in the Supabase dashboard or via CLI):**
+
+- Enable Auth Hooks for `sign_in`, `sign_out`, and `sign_in_failed` events.
+- Point hook URL at `https://<api>/internal/auth/sign-in-webhook`.
+- Generate `SUPABASE_AUTH_HOOK_SECRET` and store in both Supabase Auth Hook config and our API env vars.
+
+This is a deploy-time step, not code. The implementation plan will include a setup checklist.
 
 ### E. Person activity feed slice
 
@@ -235,8 +325,9 @@ Each list is mapped to the discriminated `ActivityItem` shape. Tickets pass thro
 **Backend (Jest, existing test pattern):**
 
 - `person.service.spec.ts` — `getRecentActivity` returns merged items in created_at order; respects limit; tickets honour visibility service.
-- `user.service.spec.ts` — `listSignIns` filters by event_type + entity_id; `resetPassword` calls Supabase admin; status PATCH writes audit_events.
-- `auth.service.spec.ts` — `recordSignIn` writes audit + updates last_login_at; second call with same jti is a no-op.
+- `user.service.spec.ts` — `listSignIns` filters by `user_id` + `event_kind='sign_in'` + tenant; `resetPassword` calls Supabase admin; status PATCH writes audit_events.
+- `auth-events.service.spec.ts` — `recordSignIn` inserts into `auth_sign_in_events` and updates `last_login_at`; duplicate webhook with same `(session_id, 'sign_in')` is a no-op (idempotency); `recordSignOut` inserts a `sign_out` row but does NOT touch `last_login_at`; `recordSignInFailed` writes with `success=false` and bypasses dedupe.
+- `auth.controller.spec.ts` — webhook with valid HMAC routes to the right service method; webhook with invalid HMAC returns 401; webhook with malformed payload returns 400 (no retry); webhook with unknown user logs and returns 4xx.
 
 **Frontend (Vitest + RTL, existing test pattern):**
 
@@ -246,17 +337,23 @@ Each list is mapped to the discriminated `ActivityItem` shape. Tickets pass thro
 
 ## Migration plan
 
-1. **Backend slice first** — add the auth recordSignIn write, the GET endpoints, the PATCH path for `primary_org_node_id` on persons (lift from modal), and the DSR controllers (already exist).
-2. **Frontend chunk B + C in parallel** — both detail pages get their new sections behind the existing routes. No URL changes. Persons detail picks up `PersonDetailBody` extraction.
-3. **Frontend chunk A** — flip `persons.tsx` to split-view and remove the edit dialog. This is the user-visible UX swap. Ship after B is in so the detail page is feature-complete.
-4. **Cleanup** — drop the now-unused edit modal code, drop the `setEditId` / `openEdit` paths, narrow the persons.tsx state.
+1. **Backend foundation** —
+   1.1 Migration `00168_auth_sign_in_events.sql` (table + indexes + RLS + retention category registration).
+   1.2 `AuthEventsService` + `AuthController.signInWebhook` + HMAC verification.
+   1.3 Configure Supabase Auth Hook in dashboard pointing at the new endpoint, set `SUPABASE_AUTH_HOOK_SECRET` in both places.
+   1.4 Smoke test: log in via the dev app, verify a row lands in `auth_sign_in_events`.
+2. **Backend read endpoints** — `GET /users/:id/sign-ins`, `GET /persons/:id/activity`, `POST /users/:id/password-reset`, plus the PATCH path for `primary_org_node_id` on persons (lift from modal save into the standard PATCH handler).
+3. **Frontend chunk B + C in parallel** — both detail pages get their new sections behind the existing routes. No URL changes. Persons detail picks up `PersonDetailBody` extraction.
+4. **Frontend chunk A** — flip `persons.tsx` to split-view and remove the edit dialog. This is the user-visible UX swap. Ship after B is in so the detail page is feature-complete.
+5. **Cleanup** — drop the now-unused edit modal code, drop the `setEditId` / `openEdit` paths, narrow the persons.tsx state.
 
-Each step is independently shippable. If chunk A is rolled back, B + C still improve both detail pages.
+Each step is independently shippable. If chunk A is rolled back, B + C still improve both detail pages. If the webhook configuration in Supabase isn't done yet (step 1.3), the rest of the system functions normally — sign-in history just shows "No sign-ins recorded yet".
 
 ## Open questions resolved during brainstorming
 
-- **Login event store?** → `audit_events` with `event_type='user.signed_in'`. No new table.
-- **Where to write the login event?** → AuthGuard with in-memory jti dedupe. Accepts some undercounting; defers Supabase Auth webhooks.
+- **Login event store?** → New dedicated table `auth_sign_in_events`. Reusing `audit_events` was the cheap option but mixes concerns and forces sparse columns; the dedicated table is the end-game shape.
+- **Where to write the login event?** → Supabase Auth Hook webhook → POST to our API. Idempotent via `(session_id, event_kind)` unique index. No in-process dedupe, multi-instance safe by construction. Captures sign-outs and failed attempts as a side benefit.
+- **Vendor lock-in?** → Webhook payload format and a few `supabase.auth.admin.*` calls are Supabase-specific. ~1-2 days of work in a months-long Supabase migration; noise relative to RLS, Storage, Realtime, and the auth identity model itself.
 - **Booking visibility for the activity feed?** → Tenant-only filter for v1 (matches how `/desk/bookings` lists today). Tracked as deferred work alongside ticket visibility's planned visibility-layer extension.
 - **Edit modal vs auto-save detail page?** → Drop the modal entirely. Single edit path.
-- **Account-management depth?** → Small ops only (rename, status, password reset, suspend, DSR, login history). Sessions/MFA/tokens/impersonate explicitly deferred.
+- **Account-management depth?** → Small ops only (rename, status, password reset, suspend, DSR, login history). Sessions/MFA/tokens/impersonate explicitly deferred to follow-up slices that build on the data foundation laid here.
