@@ -9,10 +9,14 @@ import {
   CreatePersonDto,
   CreateUserDto,
 } from './user-management.service';
+import { PermissionGuard } from '../../common/permission-guard';
 
 @Controller('users')
 export class UsersController {
-  constructor(private readonly service: UserManagementService) {}
+  constructor(
+    private readonly service: UserManagementService,
+    private readonly permissions: PermissionGuard,
+  ) {}
 
   // Single-hop resolver for the authenticated caller. Looks up public.users by
   // auth_uid (set by AuthGuard on request.user.id), returns the user, linked
@@ -83,16 +87,19 @@ export class UsersController {
 
   @Get(':id/sign-ins')
   async getSignIns(
+    @Req() request: Request,
     @Param('id') id: string,
     @Query('limit') limit?: string,
   ) {
+    await this.permissions.requirePermission(request, 'users.read');
     const n = limit ? Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100) : 10;
     return this.service.listSignIns(id, n);
   }
 
   @Post(':id/password-reset')
   @HttpCode(204)
-  async sendPasswordReset(@Param('id') id: string) {
+  async sendPasswordReset(@Req() request: Request, @Param('id') id: string) {
+    await this.permissions.requirePermission(request, 'users.update');
     await this.service.sendPasswordReset(id);
   }
 }

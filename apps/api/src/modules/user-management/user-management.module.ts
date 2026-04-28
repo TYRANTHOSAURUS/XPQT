@@ -7,9 +7,10 @@ import {
   PersonsAdminController,
 } from './user-management.controller';
 import { PermissionsController } from './permissions.controller';
+import { PermissionGuard } from '../../common/permission-guard';
 
 @Module({
-  providers: [UserManagementService],
+  providers: [UserManagementService, PermissionGuard],
   controllers: [
     UsersController,
     RolesController,
