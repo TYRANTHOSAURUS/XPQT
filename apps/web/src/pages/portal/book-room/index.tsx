@@ -13,6 +13,15 @@ import { FloorPlanPicker } from './components/floor-plan-picker';
 import { RealtimeAvailabilityPill } from './components/realtime-availability-pill';
 import { BookingProgressiveActions } from './components/booking-progressive-actions';
 import { BookingConfirmDialog } from './components/booking-confirm-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { BookingComposer } from '@/components/booking-composer/booking-composer';
+import { templateServicesToPickerSelections } from '@/components/booking-composer/state';
 import type { BundleTemplate } from '@/api/bundle-templates';
 import { usePickerState } from './hooks/use-picker-state';
 import { useRealtimeAvailability } from './hooks/use-realtime-availability';
@@ -182,30 +191,86 @@ export function BookRoomPage() {
         }}
       />
 
-      <BookingConfirmDialog
-        open={Boolean(pendingPrimary)}
-        onOpenChange={(o) => {
-          if (!o) {
-            setPendingPrimary(null);
-            setPendingExtras([]);
-          }
-        }}
-        primaryRoom={pendingPrimary}
-        additionalRooms={pendingExtras}
-        startAtIso={startAtIso}
-        endAtIso={endAtIso}
-        attendeeCount={state.attendeeCount}
-        attendeePersonIds={[]}
-        recurrenceRule={null}
-        templateId={activeTemplate?.id ?? null}
-        templateServices={activeTemplate?.payload?.services ?? null}
-        templateCostCenterId={activeTemplate?.payload?.default_cost_center_id ?? null}
-        requesterPersonId={requesterPersonId}
-        initialFocus={dialogFocus}
-        onBooked={() => {
-          // Success — picker auto-invalidates via the mutation hook.
-        }}
-      />
+      {/* Single-room flow → unified BookingComposer (δ.4).
+          Multi-room (pendingExtras non-empty) keeps the existing dialog
+          because the multi-room endpoint doesn't yet accept services /
+          source / recurrence (codex flagged the contract gap). */}
+      {pendingPrimary && pendingExtras.length === 0 ? (
+        <Dialog
+          open={Boolean(pendingPrimary)}
+          onOpenChange={(o) => {
+            if (!o) {
+              setPendingPrimary(null);
+              setPendingExtras([]);
+            }
+          }}
+        >
+          <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>
+                {pendingPrimary.rule_outcome?.effect === 'require_approval'
+                  ? 'Request approval to book'
+                  : 'Confirm booking'}
+              </DialogTitle>
+              <DialogDescription>{pendingPrimary.name}</DialogDescription>
+            </DialogHeader>
+            <BookingComposer
+              open={Boolean(pendingPrimary)}
+              onOpenChange={(o) => {
+                if (!o) {
+                  setPendingPrimary(null);
+                  setPendingExtras([]);
+                }
+              }}
+              mode="self"
+              entrySource="portal"
+              callerPersonId={requesterPersonId}
+              fixedRoom={pendingPrimary}
+              initial={{
+                startAt: startAtIso,
+                endAt: endAtIso,
+                attendeeCount: state.attendeeCount,
+                templateId: activeTemplate?.id ?? null,
+                costCenterId: activeTemplate?.payload?.default_cost_center_id ?? null,
+                services: activeTemplate?.payload?.services
+                  ? templateServicesToPickerSelections(
+                      activeTemplate.payload.services,
+                      state.attendeeCount,
+                    )
+                  : undefined,
+              }}
+              onBooked={() => {
+                // Success — picker auto-invalidates via the mutation hook.
+              }}
+            />
+          </DialogContent>
+        </Dialog>
+      ) : (
+        <BookingConfirmDialog
+          open={Boolean(pendingPrimary)}
+          onOpenChange={(o) => {
+            if (!o) {
+              setPendingPrimary(null);
+              setPendingExtras([]);
+            }
+          }}
+          primaryRoom={pendingPrimary}
+          additionalRooms={pendingExtras}
+          startAtIso={startAtIso}
+          endAtIso={endAtIso}
+          attendeeCount={state.attendeeCount}
+          attendeePersonIds={[]}
+          recurrenceRule={null}
+          templateId={activeTemplate?.id ?? null}
+          templateServices={activeTemplate?.payload?.services ?? null}
+          templateCostCenterId={activeTemplate?.payload?.default_cost_center_id ?? null}
+          requesterPersonId={requesterPersonId}
+          initialFocus={dialogFocus}
+          onBooked={() => {
+            // Success — picker auto-invalidates via the mutation hook.
+          }}
+        />
+      )}
     </PortalPage>
   );
 }

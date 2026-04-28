@@ -85,11 +85,13 @@ export interface InitialComposerState {
   startAt?: string | null;
   endAt?: string | null;
   attendeeCount?: number;
+  attendeePersonIds?: string[];
   requesterPersonId?: string | null;
   hostPersonId?: string | null;
   costCenterId?: string | null;
   templateId?: string | null;
   services?: PickerSelection[];
+  recurrence?: import('@/api/room-booking').RecurrenceRule | null;
 }
 
 export function initialState(seed: InitialComposerState = {}): ComposerState {
@@ -98,16 +100,48 @@ export function initialState(seed: InitialComposerState = {}): ComposerState {
     startAt: seed.startAt ?? null,
     endAt: seed.endAt ?? null,
     attendeeCount: seed.attendeeCount ?? 1,
-    attendeePersonIds: [],
+    attendeePersonIds: seed.attendeePersonIds ?? [],
     requesterPersonId: seed.requesterPersonId ?? null,
     hostPersonId: seed.hostPersonId ?? null,
     costCenterId: seed.costCenterId ?? null,
-    recurrence: null,
+    recurrence: seed.recurrence ?? null,
     services: seed.services ?? [],
     templateId: seed.templateId ?? null,
     notes: '',
     errors: {},
   };
+}
+
+/**
+ * Adapter for the bundle-template payload's `services` shape (which
+ * uses `quantity_per_attendee` for per-person seeding) → composer's
+ * `PickerSelection[]`. Resolves `quantity_per_attendee * attendeeCount`
+ * at seed time so the picker shows the right qty when the user opens it.
+ *
+ * Used by the portal book-room flow to pass `activeTemplate.payload.services`
+ * into the composer's `initial.services`.
+ */
+export function templateServicesToPickerSelections(
+  templateServices: Array<{
+    catalog_item_id: string;
+    menu_id?: string | null;
+    quantity?: number;
+    quantity_per_attendee?: number;
+  }>,
+  attendeeCount: number,
+): PickerSelection[] {
+  return templateServices.map((s) => ({
+    catalog_item_id: s.catalog_item_id,
+    menu_id: s.menu_id ?? '',
+    quantity:
+      s.quantity_per_attendee != null
+        ? Math.max(1, Math.round(s.quantity_per_attendee * Math.max(1, attendeeCount)))
+        : (s.quantity ?? 1),
+    unit_price: null, // resolved when the picker fetches current menus
+    unit: null,
+    name: 'Template item',
+    service_type: 'other',
+  }));
 }
 
 export function composerReducer(state: ComposerState, action: ComposerAction): ComposerState {

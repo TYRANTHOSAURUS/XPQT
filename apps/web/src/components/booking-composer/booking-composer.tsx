@@ -20,7 +20,9 @@ import {
 } from '@/components/ui/select';
 import { NumberStepper } from '@/components/ui/number-stepper';
 import { PersonPicker } from '@/components/person-picker';
-import { useCreateBooking } from '@/api/room-booking';
+import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
+import { ApiError } from '@/lib/api';
+import { Sparkles as SparklesIcon } from 'lucide-react';
 import type { RecurrenceRule } from '@/api/room-booking';
 import { useCostCenters } from '@/api/cost-centers';
 import { usePerson } from '@/api/persons';
@@ -63,6 +65,7 @@ export interface BookingComposerProps {
     space_id: string;
     name: string;
     capacity?: number | null;
+    rule_outcome?: { effect?: string; denial_message?: string | null } | null;
   } | null;
 
   /** Fired after a successful booking lands. The wrapper typically
@@ -155,6 +158,20 @@ export function BookingComposer({
   const submitting = createBooking.isPending;
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Approval-route detection: when the picked room's `rule_outcome.effect`
+  // is `require_approval`, the booking lands as `pending_approval`. We
+  // adapt the title + CTA copy + show the explanatory denial message.
+  const isApprovalRoute = fixedRoom?.rule_outcome?.effect === 'require_approval';
+  const approvalDenialMessage = fixedRoom?.rule_outcome?.denial_message ?? null;
+
+  // Surface the 409 alternatives a server-side conflict-guard returns,
+  // so a portal user who lost a race can rebook in one click instead of
+  // re-running the picker.
+  const conflictAlternatives = useMemo(
+    () => extractAlternatives(createBooking.error),
+    [createBooking.error],
+  );
+
   const handleSubmit = async () => {
     if (validationError) return;
     const payload = buildBookingPayload({ state, mode, entrySource, callerPersonId });
@@ -162,11 +179,14 @@ export function BookingComposer({
     try {
       const result = await createBooking.mutateAsync(payload);
       const reservationId = (result as { id?: string })?.id;
-      toastSuccess('Booked');
+      toastSuccess(isApprovalRoute ? 'Approval requested' : 'Booked');
       onOpenChange(false);
       if (reservationId) onBooked?.(reservationId);
     } catch (e) {
-      toastError("Couldn't book the room", { error: e, retry: handleSubmit });
+      toastError(
+        isApprovalRoute ? "Couldn't request approval" : "Couldn't book the room",
+        { error: e, retry: handleSubmit },
+      );
     }
   };
 
@@ -382,6 +402,36 @@ export function BookingComposer({
         onChange={(rule) => dispatch({ type: 'SET_RECURRENCE', rule })}
       />
 
+      {/* Approval-route banner */}
+      {isApprovalRoute && approvalDenialMessage && (
+        <div className="rounded-md border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-xs text-purple-800 dark:text-purple-300">
+          <SparklesIcon className="mr-1 inline size-3" />
+          {approvalDenialMessage}
+        </div>
+      )}
+
+      {/* Conflict alternatives — visible after a 409 race */}
+      {conflictAlternatives.length > 0 && (
+        <div
+          role="alert"
+          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+        >
+          <p className="font-medium text-destructive">
+            Someone booked this slot before you. Try one of these:
+          </p>
+          <ul className="space-y-1">
+            {conflictAlternatives.slice(0, 3).map((alt) => (
+              <li key={alt.space_id} className="flex justify-between">
+                <span>{alt.name}</span>
+                <span className="text-muted-foreground tabular-nums">
+                  {alt.capacity ?? '—'} cap
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Footer: error + submit */}
       <div className="flex flex-col gap-2 pt-2">
         {validationError && (
@@ -402,7 +452,15 @@ export function BookingComposer({
             disabled={Boolean(validationError) || submitting}
           >
             {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
-            {submitting ? 'Booking…' : 'Book'}
+            {submitting
+              ? isApprovalRoute
+                ? 'Submitting…'
+                : 'Booking…'
+              : isApprovalRoute
+                ? 'Submit for approval'
+                : state.services.length > 0
+                  ? `Book + ${state.services.length} service${state.services.length === 1 ? '' : 's'}`
+                  : 'Book'}
           </Button>
         </div>
       </div>
@@ -547,6 +605,23 @@ function nextQuarterHour(): Date {
   const next = Math.ceil((m + 1) / 15) * 15;
   d.setMinutes(next, 0, 0);
   return d;
+}
+
+/** Pull RankedRoom alternatives out of a 409 conflict-guard error so the
+ *  composer can render "this slot was just taken — try these" inline. */
+function extractAlternatives(error: unknown): RankedRoom[] {
+  if (!(error instanceof ApiError)) return [];
+  if (error.status !== 409) return [];
+  const details = error.details;
+  if (
+    typeof details === 'object' &&
+    details !== null &&
+    'alternatives' in details &&
+    Array.isArray((details as { alternatives?: unknown }).alternatives)
+  ) {
+    return (details as { alternatives: RankedRoom[] }).alternatives;
+  }
+  return [];
 }
 
 /** Re-export for consumers that pass through. */
