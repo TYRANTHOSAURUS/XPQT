@@ -3,15 +3,15 @@ import { Cron } from '@nestjs/schedule';
 import { DbService } from '../../common/db/db.service';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import {
-  DaglijstService,
+  DailyListService,
   ListCancelledError,
-} from './daglijst.service';
-import { DaglijstEventType } from './event-types';
+} from './daily-list.service';
+import { DailyListEventType } from './event-types';
 
 /**
- * Cron-driven daglijst scheduler.
+ * Cron-driven daily-list scheduler.
  *
- * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §4 DaglijstSchedulerService.
+ * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §4 DailyListSchedulerService.
  *
  * Algorithm per cron tick:
  *   1. Find every (tenant, vendor in paper_only|hybrid mode, building,
@@ -29,24 +29,24 @@ import { DaglijstEventType } from './event-types';
  * in this tick rolls forward to the next.
  *
  * Env knobs (production tuning):
- *   DAGLIJST_SCHEDULER_ENABLED       — set 'false' to disable in tests/migrations
- *   DAGLIJST_SCHEDULER_MAX_PER_TICK  — bucket-batch cap per tick (default 200)
+ *   DAILY_LIST_SCHEDULER_ENABLED       — set 'false' to disable in tests/migrations
+ *   DAILY_LIST_SCHEDULER_MAX_PER_TICK  — bucket-batch cap per tick (default 200)
  */
 @Injectable()
-export class DaglijstSchedulerService {
-  private readonly log = new Logger(DaglijstSchedulerService.name);
+export class DailyListSchedulerService {
+  private readonly log = new Logger(DailyListSchedulerService.name);
 
   /** Lock-key namespace for pg_advisory_xact_lock — distinct from retention/audit. */
   private static readonly LOCK_NS = 0x4441_4753;                       // 'DAGS' as 4 ASCII bytes
 
-  private readonly enabled = process.env.DAGLIJST_SCHEDULER_ENABLED !== 'false';
-  private readonly maxPerTick = Number(process.env.DAGLIJST_SCHEDULER_MAX_PER_TICK ?? 200);
+  private readonly enabled = process.env.DAILY_LIST_SCHEDULER_ENABLED !== 'false';
+  private readonly maxPerTick = Number(process.env.DAILY_LIST_SCHEDULER_MAX_PER_TICK ?? 200);
 
   private running = false;
 
   constructor(
     private readonly db: DbService,
-    private readonly daglijst: DaglijstService,
+    private readonly dailyList: DailyListService,
     private readonly auditOutbox: AuditOutboxService,
   ) {}
 
@@ -76,7 +76,7 @@ export class DaglijstSchedulerService {
       // in a previous tick, the worker died before commit, and now the
       // 'sending' state is older than the sweep threshold.
       try {
-        const reclaimedRows = await this.daglijst.reclaimStuckSendingRows();
+        const reclaimedRows = await this.dailyList.reclaimStuckSendingRows();
         reclaimed = reclaimedRows.length;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -217,7 +217,7 @@ export class DaglijstSchedulerService {
    * Process one bucket — retry an unsent prior version when present, else
    * generate v_n+1, then send. The advisory lock prevents two scheduler
    * instances from double-version-bumping; the row-level CAS inside
-   * DaglijstService.send prevents two from double-mailing.
+   * DailyListService.send prevents two from double-mailing.
    *
    * Codex Sprint 2 fixes wired here:
    *   - #2 retry-existing: findUnsentRowForBucket before generate. Avoids
@@ -238,13 +238,13 @@ export class DaglijstSchedulerService {
     const tenantId = bucket.tenant_id;
 
     // Phase 1: under advisory lock, decide which row to send.
-    let daglijstId: string | null = null;
+    let dailyListId: string | null = null;
     let phase1Outcome: 'reuse' | 'generated' | 'skipped' | 'cancelled' | 'failed' = 'skipped';
 
     phase1Outcome = await this.db.tx(async (client) => {
       const got = await client.query<{ locked: boolean }>(
         `select pg_try_advisory_xact_lock($1, $2) as locked`,
-        [DaglijstSchedulerService.LOCK_NS, lockKey],
+        [DailyListSchedulerService.LOCK_NS, lockKey],
       );
       if (!got.rows[0]?.locked) {
         return 'skipped';
@@ -265,20 +265,20 @@ export class DaglijstSchedulerService {
       }
 
       // Retry path (codex fix #2): is there a prior unsent row?
-      const existing = await this.daglijst.findUnsentRowForBucket({
+      const existing = await this.dailyList.findUnsentRowForBucket({
         tenantId, vendorId: bucket.vendor_id,
         buildingId: bucket.building_id,
         serviceType: bucket.service_type,
         listDate: bucket.list_date,
       });
       if (existing) {
-        daglijstId = existing.id;
+        dailyListId = existing.id;
         return 'reuse';
       }
 
       // Mint a new version.
       try {
-        const generated = await this.daglijst.generate({
+        const generated = await this.dailyList.generate({
           tenantId,
           vendorId: bucket.vendor_id,
           buildingId: bucket.building_id,
@@ -286,7 +286,7 @@ export class DaglijstSchedulerService {
           listDate: bucket.list_date,
           triggeredBy: 'auto',
         });
-        daglijstId = generated.id;
+        dailyListId = generated.id;
         return 'generated';
       } catch (err) {
         if (err instanceof ListCancelledError) {
@@ -297,14 +297,14 @@ export class DaglijstSchedulerService {
             `scheduler skipped cancelled bucket tenant=${tenantId} vendor=${bucket.vendor_id} ` +
             `date=${bucket.list_date} svc=${bucket.service_type}`,
           );
-          // Codex round-2 fix: emit the dedicated 'daglijst.cancelled'
+          // Codex round-2 fix: emit the dedicated 'daily_list.cancelled'
           // event (NOT send_failed). Operationally these are different
           // categories — cancelled means "no work to do, all good", failed
           // means "we tried and the mailer broke". Mixing them muddies the
           // failure-rate metric ops watches for paging.
           await this.auditOutbox.emitTx(client, {
             tenantId,
-            eventType: DaglijstEventType.Cancelled,
+            eventType: DailyListEventType.Cancelled,
             entityType: 'vendors',
             entityId: bucket.vendor_id,
             details: {
@@ -329,7 +329,7 @@ export class DaglijstSchedulerService {
       return phase1Outcome;
     }
 
-    // Phase 2: send (DaglijstService.send has its own row-level CAS that
+    // Phase 2: send (DailyListService.send has its own row-level CAS that
     // serializes concurrent send attempts on the same row, so it's safe
     // to run outside the advisory lock).
     //
@@ -339,7 +339,7 @@ export class DaglijstSchedulerService {
     // another worker holds the CAS (this tick lost the race); we count
     // it as 'skipped' rather than 'sent' so tick metrics don't lie.
     try {
-      const outcome = await this.daglijst.send({ tenantId, daglijstId: daglijstId! });
+      const outcome = await this.dailyList.send({ tenantId, dailyListId: dailyListId! });
       if (outcome.status === 'sent') return 'sent';
       // 'already_sent', 'skipped_in_flight', or 'lease_revoked' — none of
       // these represent a successful send dispatched + persisted by THIS
@@ -350,7 +350,7 @@ export class DaglijstSchedulerService {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.error(
         `scheduler send failed tenant=${tenantId} vendor=${bucket.vendor_id} ` +
-        `daglijst=${daglijstId} ${phase1Outcome}: ${msg}`,
+        `daglijst=${dailyListId} ${phase1Outcome}: ${msg}`,
       );
       return 'failed';
     }

@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { renderToBuffer } from '@react-pdf/renderer';
-import { CateringDaglijstTemplate } from './templates/catering-daglijst-template';
-import type { DaglijstPayload } from './daglijst.service';
+import { CateringDailyListTemplate } from './templates/catering-daily-list-template';
+import type { DailyListPayload } from './daily-list.service';
 
 /**
- * Compile a Daglijst payload into a PDF buffer using @react-pdf/renderer.
+ * Compile a Daily-list payload into a PDF buffer using @react-pdf/renderer.
  *
  * Sprint 2 ships only the catering NL template. AV / supplies templates
  * (different page layout) land later when those service types graduate
@@ -19,8 +19,8 @@ export class PdfRendererService {
   async renderDaglijst(input: RenderInput): Promise<RenderResult> {
     const startedAt = Date.now();
     // Sprint 2 only catering. Switching by service_type when AV/supplies
-    // ship — keep the dispatch table here, not in DaglijstService.
-    const element = CateringDaglijstTemplate({
+    // ship — keep the dispatch table here, not in DailyListService.
+    const element = CateringDailyListTemplate({
       payload: input.payload,
       generation: input.generation,
     });
@@ -46,7 +46,7 @@ export class PdfRendererService {
 }
 
 export interface RenderInput {
-  payload: DaglijstPayload;
+  payload: DailyListPayload;
   generation: {
     version: number;
     generated_at: string;

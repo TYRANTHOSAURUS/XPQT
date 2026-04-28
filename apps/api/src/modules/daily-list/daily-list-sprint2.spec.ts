@@ -1,9 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import {
-  DaglijstService,
+  DailyListService,
   type VendorDailyListRow,
-} from './daglijst.service';
+} from './daily-list.service';
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
 const VENDOR = 'b2c3d4e5-f6a7-4b89-8cde-f0123456789a';
@@ -48,7 +48,7 @@ function makeRow(overrides: Partial<VendorDailyListRow> = {}): VendorDailyListRo
 
 interface FakeOptions {
   row?: VendorDailyListRow | null;
-  /** When true, mailer.sendDaglijst throws. */
+  /** When true, mailer.sendDailyList throws. */
   mailerFails?: boolean;
   /** Storage upload returns an error (string = error message). */
   uploadError?: string | null;
@@ -155,7 +155,7 @@ function makeFakeMailer(opts: { fails?: boolean } = {}) {
   const calls: unknown[] = [];
   return {
     calls,
-    sendDaglijst: jest.fn(async (input: unknown) => {
+    sendDailyList: jest.fn(async (input: unknown) => {
       calls.push(input);
       if (opts.fails) throw new Error('SMTP unreachable');
       return { messageId: 'msg-test', acceptedAt: new Date().toISOString() };
@@ -189,7 +189,7 @@ function buildSvc(opts: FakeOptions = {}) {
   });
   const pdfRenderer = makeFakePdfRenderer();
   const mailer = makeFakeMailer({ fails: opts.mailerFails });
-  const svc = new DaglijstService(
+  const svc = new DailyListService(
     db as never,
     supabase as never,
     new AuditOutboxService(db as never),
@@ -203,10 +203,10 @@ function buildSvc(opts: FakeOptions = {}) {
 // renderAndUpload
 // =====================================================================
 
-describe('DaglijstService.renderAndUpload', () => {
+describe('DailyListService.renderAndUpload', () => {
   it('renders the PDF + uploads to Storage + persists pdf_storage_path', async () => {
     const { svc, pdfRenderer } = buildSvc();
-    const r = await svc.renderAndUpload({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const r = await svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(pdfRenderer.renderDaglijst).toHaveBeenCalledTimes(1);
     expect(r.pdf_storage_path).toContain(TENANT);
     expect(r.pdf_storage_path).toContain(VENDOR);
@@ -217,7 +217,7 @@ describe('DaglijstService.renderAndUpload', () => {
     const { svc, pdfRenderer } = buildSvc({
       row: makeRow({ pdf_storage_path: 'tenant/vendor/2026-05-01/cafeteria/catering-v1.pdf' }),
     });
-    await svc.renderAndUpload({ tenantId: TENANT, daglijstId: DAGLIJST });
+    await svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(pdfRenderer.renderDaglijst).not.toHaveBeenCalled();
   });
 
@@ -225,14 +225,14 @@ describe('DaglijstService.renderAndUpload', () => {
     const { svc, pdfRenderer } = buildSvc({
       row: makeRow({ pdf_storage_path: 'existing/path.pdf' }),
     });
-    await svc.renderAndUpload({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    await svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST, force: true });
     expect(pdfRenderer.renderDaglijst).toHaveBeenCalledTimes(1);
   });
 
   it('throws BadRequest on Storage upload failure', async () => {
     const { svc } = buildSvc({ uploadError: 'bucket missing' });
     await expect(
-      svc.renderAndUpload({ tenantId: TENANT, daglijstId: DAGLIJST }),
+      svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
@@ -241,12 +241,12 @@ describe('DaglijstService.renderAndUpload', () => {
 // getDownloadUrl — TTL choice
 // =====================================================================
 
-describe('DaglijstService.getDownloadUrl', () => {
+describe('DailyListService.getDownloadUrl', () => {
   it('mints a short admin-TTL signed URL by default (~1h)', async () => {
     const { svc } = buildSvc({
       row: makeRow({ pdf_storage_path: 'tenant/vendor/.../catering-v1.pdf' }),
     });
-    const r = await svc.getDownloadUrl({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const r = await svc.getDownloadUrl({ tenantId: TENANT, dailyListId: DAGLIJST });
     const expiresAt = new Date(r.expiresAt).getTime();
     const now = Date.now();
     // Approx 1 hour window — generous slack for test runtime.
@@ -258,7 +258,7 @@ describe('DaglijstService.getDownloadUrl', () => {
     const { svc } = buildSvc({
       row: makeRow({ pdf_storage_path: 'tenant/vendor/.../catering-v1.pdf' }),
     });
-    const r = await svc.getDownloadUrl({ tenantId: TENANT, daglijstId: DAGLIJST, ttl: 'email' });
+    const r = await svc.getDownloadUrl({ tenantId: TENANT, dailyListId: DAGLIJST, ttl: 'email' });
     const expiresAt = new Date(r.expiresAt).getTime();
     const now = Date.now();
     expect(expiresAt - now).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
@@ -267,7 +267,7 @@ describe('DaglijstService.getDownloadUrl', () => {
 
   it('auto-renders + uploads when pdf_storage_path is null', async () => {
     const { svc, pdfRenderer } = buildSvc({ row: makeRow({ pdf_storage_path: null }) });
-    await svc.getDownloadUrl({ tenantId: TENANT, daglijstId: DAGLIJST });
+    await svc.getDownloadUrl({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(pdfRenderer.renderDaglijst).toHaveBeenCalledTimes(1);
   });
 });
@@ -276,10 +276,10 @@ describe('DaglijstService.getDownloadUrl', () => {
 // send
 // =====================================================================
 
-describe('DaglijstService.send', () => {
+describe('DailyListService.send', () => {
   it('renders + sends + locks lines + audits + returns status=sent on success', async () => {
     const { svc, db, mailer } = buildSvc();
-    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(outcome.status).toBe('sent');
     expect(mailer.calls).toHaveLength(1);
     const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
@@ -293,7 +293,7 @@ describe('DaglijstService.send', () => {
 
   it('captures email_error + emits SendFailed + clears sending_acquired_at on mailer failure', async () => {
     const { svc, db } = buildSvc({ mailerFails: true });
-    await expect(svc.send({ tenantId: TENANT, daglijstId: DAGLIJST })).rejects.toThrow(/send failed/);
+    await expect(svc.send({ tenantId: TENANT, dailyListId: DAGLIJST })).rejects.toThrow(/send failed/);
     const failureUpdate = db.captured.find((c) =>
       c.sql.includes('update vendor_daily_lists') && c.sql.includes("'failed'"),
     );
@@ -302,21 +302,21 @@ describe('DaglijstService.send', () => {
     // sweeper doesn't re-process the row.
     expect(/sending_acquired_at\s*=\s*null/.test(failureUpdate!.sql)).toBe(true);
     const failureAudit = db.captured.find((c) =>
-      c.sql.includes('insert into audit_outbox') && (c.params?.[1] === 'daglijst.send_failed'),
+      c.sql.includes('insert into audit_outbox') && (c.params?.[1] === 'daily_list.send_failed'),
     );
     expect(failureAudit).toBeDefined();
   });
 
   it('throws BadRequest when vendor has no daglijst_email', async () => {
     const { svc } = buildSvc({ row: makeRow({ recipient_email: null }) });
-    await expect(svc.send({ tenantId: TENANT, daglijstId: DAGLIJST })).rejects.toThrow(/no daglijst_email/);
+    await expect(svc.send({ tenantId: TENANT, dailyListId: DAGLIJST })).rejects.toThrow(/no daglijst_email/);
   });
 
   it('returns status=already_sent without dispatching when row is sent + !force', async () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(outcome.status).toBe('already_sent');
     expect(mailer.calls).toHaveLength(0);
   });
@@ -325,7 +325,7 @@ describe('DaglijstService.send', () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    const outcome = await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST, force: true });
     expect(outcome.status).toBe('sent');
     expect(mailer.calls).toHaveLength(1);
   });
@@ -338,14 +338,14 @@ describe('DaglijstService.send', () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ email_status: 'sending', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(outcome.status).toBe('skipped_in_flight');
     expect(mailer.calls).toHaveLength(0);
   });
 
   it('CAS UPDATE stamps sending_acquired_at = now()', async () => {
     const { svc, db } = buildSvc();
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     const casUpdate = db.captured.find((c) =>
       /update vendor_daily_lists/.test(c.sql)
       && /email_status\s*=\s*'sending'/.test(c.sql)
@@ -361,9 +361,9 @@ describe('DaglijstService.send', () => {
     // retries — same logical email, same key, provider returns cached
     // success). NO per-attempt nonce on natural sends.
     const { svc, mailer } = buildSvc();
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     const call = mailer.calls[0] as { correlationId?: string };
-    expect(call.correlationId).toBe('daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
+    expect(call.correlationId).toBe('daily-list:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
   });
 
   it('correlationId on retry of a failed row stays stable (provider dedupes)', async () => {
@@ -373,19 +373,19 @@ describe('DaglijstService.send', () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ email_status: 'failed', email_error: 'prior smtp blip', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     const call = mailer.calls[0] as { correlationId?: string };
-    expect(call.correlationId).toBe('daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
+    expect(call.correlationId).toBe('daily-list:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
   });
 
   it('force=true correlationId appends a nonce so admins can override cached results', async () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST, force: true });
     const call = mailer.calls[0] as { correlationId?: string };
     expect(call.correlationId).toMatch(
-      /^daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1:force:[0-9a-z]+$/,
+      /^daily-list:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1:force:[0-9a-z]+$/,
     );
   });
 
@@ -411,7 +411,7 @@ describe('DaglijstService.send', () => {
     const supabase = makeFakeSupabase();
     const pdfRenderer = makeFakePdfRenderer();
     const mailer = makeFakeMailer();
-    const svc = new DaglijstService(
+    const svc = new DailyListService(
       db as never,
       supabase as never,
       new AuditOutboxService(db as never),
@@ -419,7 +419,7 @@ describe('DaglijstService.send', () => {
       mailer as never,
     );
 
-    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, dailyListId: DAGLIJST });
     expect(mailer.calls).toHaveLength(1);                    // mail DID dispatch
     expect(outcome.status).toBe('lease_revoked');
     if (outcome.status === 'lease_revoked') {
@@ -432,7 +432,7 @@ describe('DaglijstService.send', () => {
     const reclaimAudit = db.captured.find((c) =>
       !c.tx
       && c.sql.includes('insert into audit_outbox')
-      && c.params?.[1] === 'daglijst.sending_reclaimed',
+      && c.params?.[1] === 'daily_list.sending_reclaimed',
     );
     expect(reclaimAudit).toBeDefined();
   });
@@ -442,7 +442,7 @@ describe('DaglijstService.send', () => {
 // reclaimStuckSendingRows (sweeper)
 // =====================================================================
 
-describe('DaglijstService.reclaimStuckSendingRows', () => {
+describe('DailyListService.reclaimStuckSendingRows', () => {
   it('emits SendingReclaimed audit per row reclaimed', async () => {
     const { svc, db } = buildSvc({
       reclaimedRows: [
@@ -453,7 +453,7 @@ describe('DaglijstService.reclaimStuckSendingRows', () => {
     const reclaimed = await svc.reclaimStuckSendingRows();
     expect(reclaimed).toHaveLength(2);
     const audits = db.captured.filter((c) =>
-      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daglijst.sending_reclaimed',
+      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daily_list.sending_reclaimed',
     );
     expect(audits).toHaveLength(2);
   });
@@ -463,7 +463,7 @@ describe('DaglijstService.reclaimStuckSendingRows', () => {
     const reclaimed = await svc.reclaimStuckSendingRows();
     expect(reclaimed).toHaveLength(0);
     const audits = db.captured.filter((c) =>
-      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daglijst.sending_reclaimed',
+      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daily_list.sending_reclaimed',
     );
     expect(audits).toHaveLength(0);
   });

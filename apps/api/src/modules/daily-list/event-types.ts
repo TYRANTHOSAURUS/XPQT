@@ -1,5 +1,5 @@
 /**
- * Audit-event taxonomy for the daglijst subsystem.
+ * Audit-event taxonomy for the daily list subsystem.
  *
  * Convention matches the cross-spec §10 naming rule (`<domain>.<verb>`).
  * Wired through the existing AuditOutboxService — Sprint 1 emits the
@@ -7,24 +7,24 @@
  *
  * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §3.
  */
-export const DaglijstEventType = {
-  Generated:                'daglijst.generated',
-  Sent:                     'daglijst.sent',
-  Regenerated:              'daglijst.regenerated',
-  SendFailed:               'daglijst.send_failed',
+export const DailyListEventType = {
+  Generated:                'daily_list.generated',
+  Sent:                     'daily_list.sent',
+  Regenerated:              'daily_list.regenerated',
+  SendFailed:               'daily_list.send_failed',
   /**
    * Bucket cancelled before send — every line in the bucket was removed or
    * cancelled between the scheduler tick that picked it up and the moment we
    * tried to assemble. Distinct from SendFailed (operational metric:
    * "tonight 0/127 buckets cancelled, 2/127 failed, 125/127 sent").
    */
-  Cancelled:                'daglijst.cancelled',
+  Cancelled:                'daily_list.cancelled',
   /**
    * Sweeper-driven recovery: a row was found in 'sending' state past the
    * sweep threshold and rolled back to 'failed' so the next tick can retry.
    * Emitted per row reclaimed.
    */
-  SendingReclaimed:         'daglijst.sending_reclaimed',
+  SendingReclaimed:         'daily_list.sending_reclaimed',
 
   OrderPostCutoffChange:    'order.post_cutoff_change',
   OrderPhoneFollowupConfirmed: 'order.phone_followup_confirmed',
@@ -32,4 +32,4 @@ export const DaglijstEventType = {
   OrderLineStatusInferred:  'order_line_item.status_inferred',
 } as const;
 
-export type DaglijstEventType = (typeof DaglijstEventType)[keyof typeof DaglijstEventType];
+export type DailyListEventType = (typeof DailyListEventType)[keyof typeof DailyListEventType];

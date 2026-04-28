@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
-import type { DaglijstPayload } from '../daglijst.service';
+import type { DailyListPayload } from '../daily-list.service';
 
 /**
  * NL-localised catering daglijst PDF template (v1).
@@ -125,8 +125,8 @@ const styles = StyleSheet.create({
   },
 });
 
-export interface CateringDaglijstTemplateProps {
-  payload: DaglijstPayload;
+export interface CateringDailyListTemplateProps {
+  payload: DailyListPayload;
   /** Generation metadata surfaced in the header. */
   generation: {
     version: number;
@@ -192,14 +192,14 @@ function formatDateNL(ymd: string): string {
  * The template is exported as a function returning a `Document` element.
  * `@react-pdf/renderer` consumes the element + emits a buffer.
  */
-export function CateringDaglijstTemplate(props: CateringDaglijstTemplateProps) {
+export function CateringDailyListTemplate(props: CateringDailyListTemplateProps) {
   const { payload, generation } = props;
   const buildingLabel = payload.building?.name ?? 'Alle gebouwen';
 
   return createElement(
     Document,
     {
-      title: `Daglijst ${payload.vendor.name} ${payload.list_date}`,
+      title: `Daily-list ${payload.vendor.name} ${payload.list_date}`,
       author: 'Prequest',
       subject: `Catering daglijst ${payload.list_date}`,
     },
@@ -211,7 +211,7 @@ export function CateringDaglijstTemplate(props: CateringDaglijstTemplateProps) {
       createElement(
         View,
         { style: styles.header, fixed: true },
-        createElement(Text, { style: styles.title }, 'Daglijst catering'),
+        createElement(Text, { style: styles.title }, 'Daily-list catering'),
         createElement(Text, { style: styles.subtitle }, `${formatDateNL(payload.list_date)} · ${buildingLabel}`),
         createElement(Text, { style: styles.subtitle }, `Voor ${payload.vendor.name}`),
         createElement(

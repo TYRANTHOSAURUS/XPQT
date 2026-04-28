@@ -1,19 +1,19 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
-import { DaglijstService } from './daglijst.service';
+import { DailyListService } from './daily-list.service';
 import { PdfRendererService } from './pdf-renderer.service';
 
 /**
- * Sprint 2 added: SupabaseService + PdfRenderer + DaglijstMailer to the
+ * Sprint 2 added: SupabaseService + PdfRenderer + DailyListMailer to the
  * constructor. Sprint 1 tests only exercised assemble + record, neither
  * of which touches Storage / PDF / mail — so we pass minimal stubs.
  */
 const stubSupabase = { admin: { storage: { from: () => ({}) } } } as never;
 const stubPdfRenderer = { renderDaglijst: jest.fn() } as unknown as PdfRendererService;
-const stubMailer = { sendDaglijst: jest.fn() } as never;
+const stubMailer = { sendDailyList: jest.fn() } as never;
 
 function buildSvc(db: unknown) {
-  return new DaglijstService(
+  return new DailyListService(
     db as never,
     stubSupabase,
     new AuditOutboxService(db as never),
@@ -159,7 +159,7 @@ function makeFakeDb(setup: FakeSetup = {}) {
   };
 }
 
-describe('DaglijstService.assemble', () => {
+describe('DailyListService.assemble', () => {
   it('throws NotFoundException when vendor missing', async () => {
     const db = makeFakeDb({ vendor: null });
     const svc = buildSvc(db);
@@ -209,7 +209,7 @@ describe('DaglijstService.assemble', () => {
   });
 });
 
-describe('DaglijstService.record', () => {
+describe('DailyListService.record', () => {
   it('writes a v1 row when no prior version exists', async () => {
     const db = makeFakeDb({ existingVersion: 0 });
     const svc = buildSvc(db);
@@ -271,6 +271,6 @@ describe('DaglijstService.record', () => {
     const auditEmit = db.captured.find((c) => c.tx && c.sql.includes('insert into audit_outbox'));
     expect(auditEmit).toBeDefined();
     // event_type is the second parameter of the outbox insert.
-    expect(auditEmit?.params?.[1]).toBe('daglijst.regenerated');
+    expect(auditEmit?.params?.[1]).toBe('daily_list.regenerated');
   });
 });

@@ -151,12 +151,12 @@ export function buildPendingSpecAdapters(): DataCategoryAdapter[] {
       pendingSpec: 'MS Graph integration — Phase 2 attendee snapshot table',
     }),
     makePendingSpecAdapter({
-      category: 'daglijst_pdfs',
+      category: 'daily_list_pdfs',
       description: 'Generated daily-list PDFs for paper vendors.',
       defaultRetentionDays: 90,
       capRetentionDays: 365,
       legalBasis: 'legitimate_interest',
-      pendingSpec: 'vendor portal Phase A (daglijst) spec',
+      pendingSpec: 'vendor portal Phase A (vendor daily-list / daglijst) spec',
     }),
     makePendingSpecAdapter({
       category: 'ghost_persons',

@@ -41,7 +41,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templates.module';
 import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
-import { DaglijstModule } from './modules/daglijst/daglijst.module';
+import { DailyListModule } from './modules/daily-list/daily-list.module';
 import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
 
 @Module({
@@ -87,7 +87,7 @@ import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module
     BundleTemplatesModule,
     CostCentersModule,
     PrivacyComplianceModule,
-    DaglijstModule,
+    DailyListModule,
     VendorPortalModule,
   ],
   controllers: [HealthController],

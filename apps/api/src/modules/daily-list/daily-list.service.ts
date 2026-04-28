@@ -9,10 +9,10 @@ import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import {
-  DAGLIJST_MAILER,
-  type DaglijstMailer,
-} from './daglijst-mailer.service';
-import { DaglijstEventType } from './event-types';
+  DAILY_LIST_MAILER,
+  type DailyListMailer,
+} from './daily-list-mailer.service';
+import { DailyListEventType } from './event-types';
 import { PdfRendererService } from './pdf-renderer.service';
 
 /**
@@ -32,8 +32,8 @@ import { PdfRendererService } from './pdf-renderer.service';
  * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §4.
  */
 @Injectable()
-export class DaglijstService {
-  private readonly log = new Logger(DaglijstService.name);
+export class DailyListService {
+  private readonly log = new Logger(DailyListService.name);
 
   /** Storage bucket from migration 00174. */
   private static readonly PDF_BUCKET = 'daglijst-pdfs';
@@ -47,7 +47,7 @@ export class DaglijstService {
     private readonly supabase: SupabaseService,
     private readonly auditOutbox: AuditOutboxService,
     private readonly pdfRenderer: PdfRendererService,
-    @Inject(DAGLIJST_MAILER) private readonly mailer: DaglijstMailer,
+    @Inject(DAILY_LIST_MAILER) private readonly mailer: DailyListMailer,
   ) {}
 
   /**
@@ -55,7 +55,7 @@ export class DaglijstService {
    * date) bucket. Pure read operation — no DB writes, no side effects, so
    * it's safe to call from `preview()` (Sprint 2) without locking lines.
    */
-  async assemble(args: AssembleArgs): Promise<DaglijstPayload> {
+  async assemble(args: AssembleArgs): Promise<DailyListPayload> {
     const { tenantId, vendorId, buildingId, serviceType, listDate } = args;
 
     const vendor = await this.db.queryOne<VendorRow>(
@@ -68,7 +68,7 @@ export class DaglijstService {
     if (!vendor) throw new NotFoundException(`Vendor ${vendorId} not found`);
     if (vendor.fulfillment_mode === 'portal') {
       throw new BadRequestException(
-        `Vendor ${vendor.name} is in portal-only mode — daglijst not applicable.`,
+        `Vendor ${vendor.name} is in portal-only mode  daily list not applicable.`,
       );
     }
 
@@ -199,7 +199,7 @@ export class DaglijstService {
   }
 
   /**
-   * Persist a fresh daglijst version + lock the included lines + emit audits.
+   * Persist a fresh list version + lock the included lines + emit audits.
    * Caller passes the assembled payload so we don't re-run the join.
    */
   async record(args: RecordArgs): Promise<VendorDailyListRow> {
@@ -242,10 +242,10 @@ export class DaglijstService {
           recipient.rows[0]?.daglijst_email ?? null,
         ],
       );
-      const daglijst = inserted.rows[0];
+      const inserted_row = inserted.rows[0];
 
       // NOTE: line-locking deliberately NOT applied here. The spec is
-      // "lock on send" — a daglijst can be generated (preview, regenerate,
+      // "lock on send" — a daily list can be generated (preview, regenerate,
       // post-cutoff retry) without committing the lines into a sent
       // bucket. Sprint 2 will set daglijst_locked_at + daglijst_id atomically
       // with sent_at when DaglijstSendService delivers the email.
@@ -254,14 +254,14 @@ export class DaglijstService {
       const lineIds = payload.lines.map((l) => l.line_id);
 
       const eventType = nextVersion === 1
-        ? DaglijstEventType.Generated
-        : DaglijstEventType.Regenerated;
+        ? DailyListEventType.Generated
+        : DailyListEventType.Regenerated;
 
       await this.auditOutbox.emitTx(client, {
         tenantId,
         eventType,
         entityType: 'vendor_daily_lists',
-        entityId: daglijst.id,
+        entityId: inserted_row.id,
         actorUserId: generatedByUserId ?? null,
         details: {
           vendor_id: vendorId,
@@ -275,7 +275,7 @@ export class DaglijstService {
         },
       });
 
-      return daglijst;
+      return inserted_row;
     });
   }
 
@@ -371,7 +371,7 @@ export class DaglijstService {
       for (const r of reclaimed) {
         await this.auditOutbox.emit({
           tenantId: r.tenant_id,
-          eventType: DaglijstEventType.SendingReclaimed,
+          eventType: DailyListEventType.SendingReclaimed,
           entityType: 'vendor_daily_lists',
           entityId: r.id,
           details: {
@@ -381,7 +381,7 @@ export class DaglijstService {
         });
       }
       this.log.warn(
-        `daglijst sweeper reclaimed ${reclaimed.length} row(s) stuck in 'sending'`,
+        `sweeper reclaimed ${reclaimed.length} row(s) stuck in 'sending'`,
       );
     }
     return reclaimed;
@@ -395,7 +395,7 @@ export class DaglijstService {
    * Codex Sprint 2 fix #4: when assemble returns an empty payload (every
    * line cancelled between scan + send), throw a ListCancelled to signal
    * the caller. Spec §4 says "emit a 'list cancelled' notification to
-   * vendor instead of empty daglijst." Sprint 4 wires the cancellation
+   * vendor instead of empty list." Sprint 4 wires the cancellation
    * mailer; today the scheduler swallows + audits + skips the bucket.
    */
   async generate(args: GenerateArgs): Promise<VendorDailyListRow> {
@@ -436,10 +436,10 @@ export class DaglijstService {
    * `<tenant>/<vendor>/<list_date>/<building_or_tenant>/<service>-v<n>.pdf`.
    */
   async renderAndUpload(args: RenderAndUploadArgs): Promise<VendorDailyListRow> {
-    const { tenantId, daglijstId, force = false } = args;
+    const { tenantId, dailyListId, force = false } = args;
 
-    const dl = await this.getById(tenantId, daglijstId);
-    if (!dl) throw new NotFoundException('Daglijst not found');
+    const dl = await this.getById(tenantId, dailyListId);
+    if (!dl) throw new NotFoundException('Daily-list not found');
     if (dl.pdf_storage_path && !force) return dl;
 
     const rendered = await this.pdfRenderer.renderDaglijst({
@@ -454,7 +454,7 @@ export class DaglijstService {
     const path = pdfStoragePath(dl);
 
     const { error: uploadErr } = await this.supabase.admin.storage
-      .from(DaglijstService.PDF_BUCKET)
+      .from(DailyListService.PDF_BUCKET)
       .upload(path, rendered.buffer, {
         contentType: rendered.mimeType,
         upsert: true,                                    // re-render replaces in place
@@ -468,13 +468,13 @@ export class DaglijstService {
           set pdf_storage_path = $3
         where tenant_id = $1 and id = $2
         returning *`,
-      [tenantId, daglijstId, path],
+      [tenantId, dailyListId, path],
     );
     return updated ?? dl;
   }
 
   /**
-   * Mint a signed download URL for the daglijst PDF. Two TTLs available:
+   * Mint a signed download URL for the daily list PDF. Two TTLs available:
    *   - 'admin' (default): 1 hour — used by the admin Fulfillment tab.
    *   - 'email': 7 days — used by the email recipient link.
    *
@@ -482,20 +482,20 @@ export class DaglijstService {
    * for legacy rows pre-Sprint-2 backfill).
    */
   async getDownloadUrl(args: GetDownloadUrlArgs): Promise<{ url: string; expiresAt: string }> {
-    const { tenantId, daglijstId, ttl = 'admin' } = args;
+    const { tenantId, dailyListId, ttl = 'admin' } = args;
 
-    let dl = await this.getById(tenantId, daglijstId);
-    if (!dl) throw new NotFoundException('Daglijst not found');
+    let dl = await this.getById(tenantId, dailyListId);
+    if (!dl) throw new NotFoundException('Daily-list not found');
     if (!dl.pdf_storage_path) {
-      dl = await this.renderAndUpload({ tenantId, daglijstId });
+      dl = await this.renderAndUpload({ tenantId, dailyListId });
     }
 
     const ttlSec = ttl === 'email'
-      ? DaglijstService.EMAIL_SIGNED_URL_TTL_SECONDS
-      : DaglijstService.ADMIN_SIGNED_URL_TTL_SECONDS;
+      ? DailyListService.EMAIL_SIGNED_URL_TTL_SECONDS
+      : DailyListService.ADMIN_SIGNED_URL_TTL_SECONDS;
 
     const { data, error } = await this.supabase.admin.storage
-      .from(DaglijstService.PDF_BUCKET)
+      .from(DailyListService.PDF_BUCKET)
       .createSignedUrl(dl.pdf_storage_path!, ttlSec);
     if (error || !data) {
       throw new BadRequestException(`Signed URL mint failed: ${error?.message ?? 'unknown'}`);
@@ -506,7 +506,7 @@ export class DaglijstService {
   }
 
   /**
-   * Render + upload (if needed) + dispatch via DaglijstMailer + record
+   * Render + upload (if needed) + dispatch via DailyListMailer + record
    * delivery state on the row. Idempotent on already-sent rows unless
    * `force=true` (admin "resend" path).
    *
@@ -523,12 +523,12 @@ export class DaglijstService {
    * Failure path: email_status='failed', email_error captured, no lock.
    */
   async send(args: SendArgs): Promise<SendOutcome> {
-    const { tenantId, daglijstId, force = false } = args;
+    const { tenantId, dailyListId, force = false } = args;
 
-    const dl = await this.renderAndUpload({ tenantId, daglijstId });
+    const dl = await this.renderAndUpload({ tenantId, dailyListId });
 
     if (dl.sent_at && !force) {
-      this.log.debug(`daglijst ${daglijstId} already sent; skipping (use force=true to resend)`);
+      this.log.debug(`daily-list ${dailyListId} already sent; skipping (use force=true to resend)`);
       return { status: 'already_sent', row: dl };
     }
     if (!dl.recipient_email) {
@@ -562,16 +562,16 @@ export class DaglijstService {
           and id = $2
           and email_status = any($3::text[])
         returning id, sending_acquired_at`,
-      [tenantId, daglijstId, fromStatuses],
+      [tenantId, dailyListId, fromStatuses],
     );
     if (!cas) {
       // Another worker is already sending this row, or it's already sent
       // and !force, or the sweeper just reset it. Re-fetch + return a
       // discriminated outcome so the scheduler can count it as
       // "skipped_in_flight" instead of "sent".
-      const current = await this.getById(tenantId, daglijstId);
+      const current = await this.getById(tenantId, dailyListId);
       this.log.debug(
-        `daglijst ${daglijstId} CAS skipped — current state ${current?.email_status ?? 'unknown'}`,
+        `daily-list ${dailyListId} CAS skipped — current state ${current?.email_status ?? 'unknown'}`,
       );
       return {
         status: current?.email_status === 'sent' ? 'already_sent' : 'skipped_in_flight',
@@ -590,11 +590,11 @@ export class DaglijstService {
     const leaseTs = cas.sending_acquired_at;
     let pdfUrl: string;
     let expiresAt: string;
-    let sendResult: Awaited<ReturnType<DaglijstMailer['sendDaglijst']>> | undefined;
+    let sendResult: Awaited<ReturnType<DailyListMailer['sendDailyList']>> | undefined;
     let sendError: string | null = null;
 
     try {
-      const url = await this.getDownloadUrl({ tenantId, daglijstId, ttl: 'email' });
+      const url = await this.getDownloadUrl({ tenantId, dailyListId, ttl: 'email' });
       pdfUrl = url.url;
       expiresAt = url.expiresAt;
 
@@ -612,14 +612,14 @@ export class DaglijstService {
       // dedupe across workers — codex round-3 caught this combined with
       // the missing lease fence.)
       const correlationId = force
-        ? `daglijst:${dl.id}:v${dl.version}:force:${Date.now().toString(36)}`
-        : `daglijst:${dl.id}:v${dl.version}`;
+        ? `daily-list:${dl.id}:v${dl.version}:force:${Date.now().toString(36)}`
+        : `daily-list:${dl.id}:v${dl.version}`;
 
       try {
-        sendResult = await this.mailer.sendDaglijst({
+        sendResult = await this.mailer.sendDailyList({
           tenantId,
           vendorId: dl.vendor_id,
-          daglijstId: dl.id,
+          dailyListId: dl.id,
           recipientEmail: dl.recipient_email,
           vendorName: dl.payload.vendor.name,
           subject,
@@ -661,23 +661,23 @@ export class DaglijstService {
             and email_status = 'sending'
             and sending_acquired_at = $4
           returning id`,
-        [tenantId, daglijstId, errMsg.slice(0, 500), leaseTs],
+        [tenantId, dailyListId, errMsg.slice(0, 500), leaseTs],
       );
       if (!rollback) {
         this.log.warn(
-          `daglijst ${daglijstId} failure rollback skipped — lease revoked ` +
+          `daily-list ${dailyListId} failure rollback skipped — lease revoked ` +
           `(sweeper/another worker has authority); error was: ${errMsg.slice(0, 200)}`,
         );
       } else {
         await this.auditOutbox.emit({
           tenantId,
-          eventType: DaglijstEventType.SendFailed,
+          eventType: DailyListEventType.SendFailed,
           entityType: 'vendor_daily_lists',
-          entityId: daglijstId,
+          entityId: dailyListId,
           details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
         });
       }
-      throw new BadRequestException(`Daglijst send failed: ${errMsg}`);
+      throw new BadRequestException(`Daily-list send failed: ${errMsg}`);
     }
 
     // Successful send — lock the lines + update the row + audit.
@@ -710,7 +710,7 @@ export class DaglijstService {
             and email_status = 'sending'
             and sending_acquired_at = $5
           returning *`,
-        [tenantId, daglijstId, sendResult.messageId, expiresAt, leaseTs],
+        [tenantId, dailyListId, sendResult.messageId, expiresAt, leaseTs],
       );
 
       if (updated.rowCount === 0) {
@@ -727,11 +727,11 @@ export class DaglijstService {
         // tx (audits inside this tx would be discarded when the tx
         // aborts on the throw).
         this.log.warn(
-          `daglijst ${daglijstId} success update skipped — lease revoked; ` +
+          `daily-list ${dailyListId} success update skipped — lease revoked; ` +
           `provider message_id=${sendResult.messageId} (mail already dispatched, ` +
           `state managed by newer worker)`,
         );
-        throw new LeaseRevokedAfterDispatchError(daglijstId, sendResult.messageId);
+        throw new LeaseRevokedAfterDispatchError(dailyListId, sendResult.messageId);
       }
 
       // Lock-on-send (deferred from record() per codex Sprint 1 fix).
@@ -744,15 +744,15 @@ export class DaglijstService {
             where tenant_id = $1
               and id = any($3::uuid[])
               and daglijst_locked_at is null`,
-          [tenantId, daglijstId, lineIds],
+          [tenantId, dailyListId, lineIds],
         );
       }
 
       await this.auditOutbox.emitTx(client, {
         tenantId,
-        eventType: DaglijstEventType.Sent,
+        eventType: DailyListEventType.Sent,
         entityType: 'vendor_daily_lists',
-        entityId: daglijstId,
+        entityId: dailyListId,
         details: {
           vendor_id: dl.vendor_id,
           recipient: dl.recipient_email,
@@ -770,9 +770,9 @@ export class DaglijstService {
         // never written, so there's nothing to atomically pair this with.
         await this.auditOutbox.emit({
           tenantId,
-          eventType: DaglijstEventType.SendingReclaimed,
+          eventType: DailyListEventType.SendingReclaimed,
           entityType: 'vendor_daily_lists',
-          entityId: daglijstId,
+          entityId: dailyListId,
           details: {
             outcome: 'lease_revoked_after_mail_dispatch',
             provider_message_id: err.providerMessageId,
@@ -787,11 +787,11 @@ export class DaglijstService {
     return { status: 'sent', row: finalRow };
   }
 
-  async getById(tenantId: string, daglijstId: string): Promise<VendorDailyListRow | null> {
+  async getById(tenantId: string, dailyListId: string): Promise<VendorDailyListRow | null> {
     return this.db.queryOne<VendorDailyListRow>(
       `select * from vendor_daily_lists
         where tenant_id = $1 and id = $2`,
-      [tenantId, daglijstId],
+      [tenantId, dailyListId],
     );
   }
 
@@ -825,7 +825,7 @@ export class ListCancelledError extends Error {
     public readonly vendorId: string,
     public readonly listDate: string,
   ) {
-    super(`Daglijst bucket has zero live lines (cancelled between scan and send)`);
+    super(`Daily-list bucket has zero live lines (cancelled between scan and send)`);
     this.name = 'ListCancelledError';
   }
 }
@@ -839,30 +839,30 @@ export class ListCancelledError extends Error {
  */
 class LeaseRevokedAfterDispatchError extends Error {
   constructor(
-    public readonly daglijstId: string,
+    public readonly dailyListId: string,
     public readonly providerMessageId: string,
   ) {
-    super(`Daglijst ${daglijstId} lease revoked after mail dispatch (provider msg=${providerMessageId})`);
+    super(`Daily-list ${dailyListId} lease revoked after mail dispatch (provider msg=${providerMessageId})`);
     this.name = 'LeaseRevokedAfterDispatchError';
   }
 }
 
 export interface RenderAndUploadArgs {
   tenantId: string;
-  daglijstId: string;
+  dailyListId: string;
   force?: boolean;
 }
 
 export interface GetDownloadUrlArgs {
   tenantId: string;
-  daglijstId: string;
+  dailyListId: string;
   /** 'admin' = 1h TTL (default); 'email' = 7d TTL. */
   ttl?: 'admin' | 'email';
 }
 
 export interface SendArgs {
   tenantId: string;
-  daglijstId: string;
+  dailyListId: string;
   /** Resend an already-sent daglijst (admin path). */
   force?: boolean;
 }
@@ -922,9 +922,9 @@ function buildSubjectLine(dl: VendorDailyListRow): string {
   const total = dl.payload.total_quantity;
   const buildingLabel = dl.payload.building?.name ?? 'alle gebouwen';
   if (lang === 'nl') {
-    return `Daglijst ${dl.list_date} · ${buildingLabel} · ${total} eenheden`;
+    return `Daily-list ${dl.list_date} · ${buildingLabel} · ${total} eenheden`;
   }
-  return `Daglijst ${dl.list_date} · ${buildingLabel} · ${total} units`;
+  return `Daily-list ${dl.list_date} · ${buildingLabel} · ${total} units`;
 }
 
 function buildTextBody(dl: VendorDailyListRow, pdfUrl: string): string {
@@ -1003,7 +1003,7 @@ export interface GenerateArgs extends AssembleArgs {
 }
 
 export interface RecordArgs extends AssembleArgs {
-  payload: DaglijstPayload;
+  payload: DailyListPayload;
   triggeredBy: TriggeredBy;
   generatedByUserId?: string | null;
 }
@@ -1015,7 +1015,7 @@ export interface HistoryArgs {
   since?: string | null;
 }
 
-export interface DaglijstPayload {
+export interface DailyListPayload {
   tenant_id: string;
   vendor: { id: string; name: string; language: string };
   building: { id: string; name: string } | null;
@@ -1047,7 +1047,7 @@ export interface VendorDailyListRow {
   service_type: string;
   list_date: string;
   version: number;
-  payload: DaglijstPayload;
+  payload: DailyListPayload;
   pdf_storage_path: string | null;
   pdf_url_expires_at: string | null;
   generated_at: string;

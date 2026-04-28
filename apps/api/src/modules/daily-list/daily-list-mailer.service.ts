@@ -11,14 +11,14 @@ import { Injectable, Logger } from '@nestjs/common';
  *
  * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §6.
  */
-export interface DaglijstMailer {
-  sendDaglijst(input: SendDaglijstInput): Promise<DaglijstSendResult>;
+export interface DailyListMailer {
+  sendDailyList(input: SendDailyListInput): Promise<DailyListSendResult>;
 }
 
-export interface SendDaglijstInput {
+export interface SendDailyListInput {
   tenantId: string;
   vendorId: string;
-  daglijstId: string;
+  dailyListId: string;
   recipientEmail: string;
   vendorName: string;
   /** Pre-formatted human-readable subject for the email. */
@@ -67,9 +67,9 @@ export interface SendDaglijstInput {
    *     correlationId returns the cached receipt without dispatching
    *     a second email to the vendor.
    *
-   * DaglijstService always supplies one. Shape:
-   *   - natural send:  `daglijst:<daglijst_id>:v<n>`        (stable)
-   *   - force resend:  `daglijst:<daglijst_id>:v<n>:force:<nonce>`
+   * DailyListService always supplies one. Shape:
+   *   - natural send:  `daily-list:<daglijst_id>:v<n>`        (stable)
+   *   - force resend:  `daily-list:<daglijst_id>:v<n>:force:<nonce>`
    *
    * The stable shape is REQUIRED for the cross-worker dedupe to work —
    * codex round-3 review caught a regression where a per-attempt nonce
@@ -82,7 +82,7 @@ export interface SendDaglijstInput {
   correlationId?: string;
 }
 
-export interface DaglijstSendResult {
+export interface DailyListSendResult {
   /** Provider-side message id. Sprint 2 logging mailer returns a synthetic id. */
   messageId: string;
   acceptedAt: string;
@@ -98,22 +98,22 @@ export interface DaglijstSendResult {
  * Postmark/Resend EU.
  */
 @Injectable()
-export class LoggingDaglijstMailer implements DaglijstMailer {
-  private readonly log = new Logger(LoggingDaglijstMailer.name);
+export class LoggingDailyListMailer implements DailyListMailer {
+  private readonly log = new Logger(LoggingDailyListMailer.name);
 
-  async sendDaglijst(input: SendDaglijstInput): Promise<DaglijstSendResult> {
+  async sendDailyList(input: SendDailyListInput): Promise<DailyListSendResult> {
     this.log.warn(
       `event=daglijst_send tenant=${input.tenantId} vendor=${input.vendorId} ` +
-      `daglijst=${input.daglijstId} email=${input.recipientEmail} ` +
+      `daglijst=${input.dailyListId} email=${input.recipientEmail} ` +
       `subject="${input.subject}" lang=${input.language} ` +
       `pdf_url=${input.pdfDownloadUrl}`,
     );
     return {
-      messageId: `dev:${input.daglijstId}:${Date.now()}`,
+      messageId: `dev:${input.dailyListId}:${Date.now()}`,
       acceptedAt: new Date().toISOString(),
     };
   }
 }
 
 /** DI token; swap in production via VENDOR_MAILER-style provide useExisting. */
-export const DAGLIJST_MAILER = Symbol('DAGLIJST_MAILER');
+export const DAILY_LIST_MAILER = Symbol('DAILY_LIST_MAILER');
