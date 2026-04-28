@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -8,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { DbService } from '../../common/db/db.service';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { VendorPortalEventType } from './event-types';
+import { VENDOR_MAILER, type VendorMailer } from './vendor-mailer.service';
 
 /**
  * Magic-link auth for vendor portal users.
@@ -37,6 +39,7 @@ export class VendorAuthService {
   constructor(
     private readonly db: DbService,
     private readonly auditOutbox: AuditOutboxService,
+    @Inject(VENDOR_MAILER) private readonly mailer: VendorMailer,
   ) {}
 
   // -------------------- Invite + magic link issuance --------------------
@@ -55,7 +58,22 @@ export class VendorAuthService {
       throw new BadRequestException('role must be fulfiller or manager');
     }
 
-    return this.db.tx(async (client) => {
+    // Defense in depth (the composite FK from migration 00171 also enforces this):
+    // verify the vendor belongs to the supplied tenant before the upsert.
+    // Without this check a tenant A admin could craft a request that tries
+    // to attach a vendor_user to tenant B's vendor_id; the FK rejects it
+    // but we want a clean 400 not a 23503.
+    const tenantVendor = await this.db.queryOne<{ id: string; name: string }>(
+      `select id, name from vendors where tenant_id = $1 and id = $2`,
+      [input.tenantId, input.vendorId],
+    );
+    if (!tenantVendor) {
+      throw new BadRequestException(
+        `Vendor ${input.vendorId} does not belong to tenant ${input.tenantId}`,
+      );
+    }
+
+    const { vendorUser, magicLinkToken, magicLinkExpiresAt } = await this.db.tx(async (client) => {
       // Upsert by (tenant, vendor, lower(email)). Re-inviting a deactivated
       // user reactivates them — admin intent.
       const upsert = await client.query<VendorUserRow>(
@@ -105,6 +123,24 @@ export class VendorAuthService {
         magicLinkExpiresAt: link.expiresAt,
       };
     });
+
+    // Dispatch the magic-link email AFTER the tx commits — never inside.
+    // If the mailer 500s the user is still invited; admin can resend.
+    // The raw token NEVER leaves this scope: the controller / API caller
+    // gets the InviteResult without `magicLinkToken`.
+    await this.mailer.sendMagicLink({
+      tenantId: input.tenantId,
+      vendorId: input.vendorId,
+      vendorUserId: vendorUser.id,
+      email: vendorUser.email,
+      displayName: vendorUser.display_name,
+      rawToken: magicLinkToken,
+      expiresAt: magicLinkExpiresAt,
+      reason: 'invited',
+      invitationMessage: input.invitationMessage ?? null,
+    });
+
+    return { vendorUser, magicLinkExpiresAt };
   }
 
   /**
@@ -113,7 +149,7 @@ export class VendorAuthService {
    * guards land in Sprint 4.
    */
   async issueMagicLink(input: IssueMagicLinkInput): Promise<IssueMagicLinkResult> {
-    return this.db.tx(async (client) => {
+    const { vendorUser, token, expiresAt } = await this.db.tx(async (client) => {
       const vu = await client.query<VendorUserRow>(
         `select * from vendor_users where tenant_id = $1 and id = $2`,
         [input.tenantId, input.vendorUserId],
@@ -135,8 +171,21 @@ export class VendorAuthService {
         details: { magic_link_expires_at: link.expiresAt },
       });
 
-      return { magicLinkToken: link.token, magicLinkExpiresAt: link.expiresAt };
+      return { vendorUser, token: link.token, expiresAt: link.expiresAt };
     });
+
+    await this.mailer.sendMagicLink({
+      tenantId: vendorUser.tenant_id,
+      vendorId: vendorUser.vendor_id,
+      vendorUserId: vendorUser.id,
+      email: vendorUser.email,
+      displayName: vendorUser.display_name,
+      rawToken: token,
+      expiresAt,
+      reason: 'resent',
+    });
+
+    return { magicLinkExpiresAt: expiresAt };
   }
 
   // -------------------- Redemption --------------------
@@ -259,11 +308,22 @@ export class VendorAuthService {
    * Look up an active session by raw token. Returns null if expired,
    * revoked, or unknown. Caller (Sprint 2 portal guard) attaches the
    * vendor user to the request for downstream services.
+   *
+   * SCOPE comes from vendor_users (not from the session row) — defense
+   * in depth: even if a session row's tenant_id/vendor_id columns
+   * drifted from the vendor user, downstream queries always run with
+   * the canonical scope. The composite FK in migration 00171 makes
+   * drift impossible at the DB layer; this is the matching app-layer
+   * guarantee.
    */
   async validate(rawSessionToken: string): Promise<ActiveSessionLookup | null> {
     const tokenHash = sha256Hex(rawSessionToken);
     const row = await this.db.queryOne<ActiveSessionLookup>(
-      `select s.id, s.vendor_user_id, s.tenant_id, s.vendor_id, s.expires_at,
+      `select s.id          as id,
+              s.vendor_user_id,
+              vu.tenant_id  as tenant_id,
+              vu.vendor_id  as vendor_id,
+              s.expires_at,
               vu.email, vu.display_name, vu.role, vu.active
          from vendor_user_sessions s
          join vendor_users vu on vu.id = s.vendor_user_id
@@ -274,6 +334,30 @@ export class VendorAuthService {
       [tokenHash],
     );
     return row;
+  }
+
+  /**
+   * Sliding-expiry refresh. Spec §4 says sessions are refreshed on use
+   * (30 days from last use, not from creation). The Sprint 2 portal
+   * guard calls this after a successful validate() so an actively-used
+   * session never expires under a vendor mid-shift.
+   *
+   * Idempotent + cheap: a single targeted UPDATE. Skips when the new
+   * expiry isn't materially later than the current one (60s threshold)
+   * to avoid one UPDATE per request.
+   */
+  async touch(rawSessionToken: string): Promise<void> {
+    const tokenHash = sha256Hex(rawSessionToken);
+    const newExpiresAt = new Date(Date.now() + this.sessionTtlMs).toISOString();
+    await this.db.query(
+      `update vendor_user_sessions
+          set expires_at = $2
+        where session_token_hash = $1
+          and revoked_at is null
+          and expires_at > now()
+          and expires_at < $2::timestamptz - interval '60 seconds'`,
+      [tokenHash, newExpiresAt],
+    );
   }
 
   /** Revoke a single session (logout). Idempotent. */
@@ -316,9 +400,15 @@ export class VendorAuthService {
    * counter; locks the user after maxFailedLogins for lockoutMs. Called by
    * the Sprint 2 controller before redeem() if it can identify the target
    * vendor_user from the request.
+   *
+   * Emits a vendor_user.login_failed audit on every failure so abuse
+   * patterns surface in the audit log even before the lockout fires.
    */
-  async recordFailedLogin(vendorUserId: string): Promise<void> {
-    await this.db.query(
+  async recordFailedLogin(vendorUserId: string, reason: string): Promise<void> {
+    const result = await this.db.query<{
+      id: string; tenant_id: string; vendor_id: string;
+      failed_login_count: number; locked_until: string | null;
+    }>(
       `update vendor_users
           set failed_login_count = failed_login_count + 1,
               locked_until = case
@@ -326,9 +416,25 @@ export class VendorAuthService {
                   then now() + ($3 || ' milliseconds')::interval
                 else locked_until
               end
-        where id = $1`,
+        where id = $1
+        returning id, tenant_id, vendor_id, failed_login_count, locked_until`,
       [vendorUserId, this.maxFailedLogins, this.lockoutMs.toString()],
     );
+    const updated = result.rows[0];
+    if (!updated) return;
+
+    await this.auditOutbox.emit({
+      tenantId: updated.tenant_id,
+      eventType: VendorPortalEventType.VendorUserLoginFailed,
+      entityType: 'vendor_users',
+      entityId: updated.id,
+      details: {
+        reason,
+        failed_login_count: updated.failed_login_count,
+        locked_until: updated.locked_until,
+        vendor_id: updated.vendor_id,
+      },
+    });
   }
 
   // -------------------- private helpers --------------------
@@ -382,12 +488,18 @@ export interface InviteInput {
   displayName?: string | null;
   role?: 'fulfiller' | 'manager' | null;
   invitedByUserId: string;
+  invitationMessage?: string | null;
 }
 
+/**
+ * Public invite result. The raw magic-link token is INTENTIONALLY absent
+ * — it ships only via VendorMailer.sendMagicLink (Sprint 1 logging mailer
+ * dev-mode; Sprint 4 real email). Returning the token to the API caller
+ * leaks it through devtools, request logs, screenshots, support
+ * tickets, etc.
+ */
 export interface InviteResult {
   vendorUser: VendorUserRow;
-  /** Raw plaintext magic-link token. Only returned by invite/issue once — never readable from DB. */
-  magicLinkToken: string;
   magicLinkExpiresAt: string;
 }
 
@@ -398,7 +510,6 @@ export interface IssueMagicLinkInput {
 }
 
 export interface IssueMagicLinkResult {
-  magicLinkToken: string;
   magicLinkExpiresAt: string;
 }
 

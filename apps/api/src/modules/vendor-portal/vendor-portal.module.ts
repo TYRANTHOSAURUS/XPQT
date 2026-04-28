@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
 import { PrivacyComplianceModule } from '../privacy-compliance/privacy-compliance.module';
 import { VendorAuthService } from './vendor-auth.service';
+import { LoggingVendorMailer, VENDOR_MAILER } from './vendor-mailer.service';
 
 /**
  * Vendor portal — Phase B.
@@ -18,7 +19,16 @@ import { VendorAuthService } from './vendor-auth.service';
  */
 @Module({
   imports: [DbModule, PrivacyComplianceModule],
-  providers: [VendorAuthService],
-  exports: [VendorAuthService],
+  providers: [
+    VendorAuthService,
+    LoggingVendorMailer,
+    {
+      provide: VENDOR_MAILER,
+      // Sprint 1: log-only dev mailer. Sprint 4 swaps in a real EU
+      // delivery provider (Postmark / Resend) here.
+      useExisting: LoggingVendorMailer,
+    },
+  ],
+  exports: [VendorAuthService, VENDOR_MAILER],
 })
 export class VendorPortalModule {}
