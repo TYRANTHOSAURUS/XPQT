@@ -344,7 +344,7 @@ export class ReservationController {
     const reservation = await this.service.findOne(id, authUid);
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
-    const r = reservation as { requester_person_id: string; host_person_id?: string | null };
+    const r = reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null };
     this.assertReservationWritable(r, ctx);
 
     return this.bundle.attachServicesToReservation({
@@ -427,7 +427,7 @@ export class ReservationController {
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
     this.assertReservationWritable(
-      reservation as { requester_person_id: string; host_person_id?: string | null },
+      reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null },
       ctx,
     );
 
@@ -476,7 +476,7 @@ export class ReservationController {
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
     this.assertReservationWritable(
-      reservation as { requester_person_id: string; host_person_id?: string | null },
+      reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null },
       ctx,
     );
 
@@ -494,15 +494,29 @@ export class ReservationController {
   // ---- helpers ----
 
   /**
-   * Three-tier write gate for reservation mutations: admin, `rooms.write_all`,
-   * or participant (requester / host). Read-only operators (`rooms.read_all`)
-   * pass `assertVisible` but must NOT pass this — that's the read-vs-write
-   * boundary. The visitor and service-attach endpoints use this gate to
-   * prevent a read-only operator from mutating bookings they can see.
+   * Write gate for reservation mutations (services, visitors). Mirrors
+   * `ReservationVisibilityService.canEdit` so anyone authorised to edit a
+   * reservation can also attach services / visitors to it:
+   *
+   *   - admin / `rooms.write_all` → always allow
+   *   - requester (person_id matches reservation.requester_person_id) → allow
+   *   - host (person_id matches reservation.host_person_id) → allow
+   *   - whoever clicked book (user_id matches reservation.booked_by_user_id)
+   *     → allow. Critical for operators who booked on behalf and need to
+   *     add services after the fact without being a participant in their
+   *     own person record.
+   *
+   * Read-only operators (`rooms.read_all`) pass `assertVisible` but must
+   * NOT pass this — the read-vs-write boundary that codex flagged on the
+   * 2026-04-27 review.
    */
   private assertReservationWritable(
-    reservation: { requester_person_id: string; host_person_id?: string | null },
-    ctx: { has_admin: boolean; has_write_all: boolean; person_id: string | null },
+    reservation: {
+      requester_person_id: string;
+      host_person_id?: string | null;
+      booked_by_user_id?: string | null;
+    },
+    ctx: { has_admin: boolean; has_write_all: boolean; person_id: string | null; user_id: string },
   ): void {
     if (ctx.has_admin || ctx.has_write_all) return;
     if (
@@ -512,9 +526,16 @@ export class ReservationController {
     ) {
       return;
     }
+    if (
+      ctx.user_id &&
+      reservation.booked_by_user_id != null &&
+      reservation.booked_by_user_id === ctx.user_id
+    ) {
+      return;
+    }
     throw new UnauthorizedException({
       code: 'reservation_write_forbidden',
-      message: 'Only the requester, host, or an admin can change this booking.',
+      message: 'Only the requester, host, booker, or an admin can change this booking.',
     });
   }
 
