@@ -66,14 +66,30 @@ export class DaglijstSchedulerService {
     let sent = 0;
     let skipped = 0;
     let failed = 0;
+    let cancelled = 0;
+    let reclaimed = 0;
 
     try {
+      // Codex round-2 fix: sweep stuck-in-'sending' rows BEFORE finding
+      // due buckets so the retry-existing path can pick them up in this
+      // same tick. Bounded crash recovery — the row's CAS-acquire happened
+      // in a previous tick, the worker died before commit, and now the
+      // 'sending' state is older than the sweep threshold.
+      try {
+        const reclaimedRows = await this.daglijst.reclaimStuckSendingRows();
+        reclaimed = reclaimedRows.length;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`scheduler sweeper failed (continuing): ${msg}`);
+      }
+
       const due = await this.findDueBuckets();
       buckets = due.length;
       for (const bucket of due) {
         const result = await this.processBucket(bucket);
         if (result === 'sent') sent += 1;
         else if (result === 'skipped') skipped += 1;
+        else if (result === 'cancelled') cancelled += 1;
         else failed += 1;
       }
     } catch (err) {
@@ -81,10 +97,11 @@ export class DaglijstSchedulerService {
       this.log.error(`scheduler tick failed: ${msg}`);
     } finally {
       this.running = false;
-      if (buckets > 0) {
+      if (buckets > 0 || reclaimed > 0) {
         this.log.log(
           `scheduler tick: buckets=${buckets} sent=${sent} skipped=${skipped} ` +
-          `failed=${failed} elapsed_ms=${Date.now() - startedAt}`,
+          `cancelled=${cancelled} failed=${failed} reclaimed=${reclaimed} ` +
+          `elapsed_ms=${Date.now() - startedAt}`,
         );
       }
     }
@@ -280,9 +297,14 @@ export class DaglijstSchedulerService {
             `scheduler skipped cancelled bucket tenant=${tenantId} vendor=${bucket.vendor_id} ` +
             `date=${bucket.list_date} svc=${bucket.service_type}`,
           );
+          // Codex round-2 fix: emit the dedicated 'daglijst.cancelled'
+          // event (NOT send_failed). Operationally these are different
+          // categories — cancelled means "no work to do, all good", failed
+          // means "we tried and the mailer broke". Mixing them muddies the
+          // failure-rate metric ops watches for paging.
           await this.auditOutbox.emitTx(client, {
             tenantId,
-            eventType: DaglijstEventType.SendFailed,
+            eventType: DaglijstEventType.Cancelled,
             entityType: 'vendors',
             entityId: bucket.vendor_id,
             details: {
@@ -310,9 +332,18 @@ export class DaglijstSchedulerService {
     // Phase 2: send (DaglijstService.send has its own row-level CAS that
     // serializes concurrent send attempts on the same row, so it's safe
     // to run outside the advisory lock).
+    //
+    // Codex round-2 fix: send() now returns a discriminated SendOutcome
+    // — we MUST branch on outcome.status instead of treating any
+    // non-throwing return as "sent". A 'skipped_in_flight' result means
+    // another worker holds the CAS (this tick lost the race); we count
+    // it as 'skipped' rather than 'sent' so tick metrics don't lie.
     try {
-      await this.daglijst.send({ tenantId, daglijstId: daglijstId! });
-      return 'sent';
+      const outcome = await this.daglijst.send({ tenantId, daglijstId: daglijstId! });
+      if (outcome.status === 'sent') return 'sent';
+      // already_sent or skipped_in_flight — we didn't actually send mail
+      // this tick. Don't double-count as success.
+      return 'skipped';
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log.error(

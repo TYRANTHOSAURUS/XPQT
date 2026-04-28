@@ -54,6 +54,8 @@ interface FakeOptions {
   uploadError?: string | null;
   /** createSignedUrl returns an error (string = error message). */
   signedUrlError?: string | null;
+  /** Pre-canned reclaimed rows the sweeper UPDATE should return. */
+  reclaimedRows?: Array<{ id: string; tenant_id: string; sending_acquired_at: string }>;
 }
 
 function makeFakeDb(opts: FakeOptions = {}) {
@@ -85,6 +87,7 @@ function makeFakeDb(opts: FakeOptions = {}) {
       return { rows: [], rowCount: 0 };
     }),
     queryOne: jest.fn(async (sql: string, params?: unknown[]) => {
+      captured.push({ sql, params });
       const base = opts.row ?? makeRow();
       // getById path
       if (sql.includes('select * from vendor_daily_lists')) {
@@ -98,9 +101,11 @@ function makeFakeDb(opts: FakeOptions = {}) {
       }
       // Sprint 2 codex fix #1 — CAS state machine: only succeeds when the
       // current row's email_status is in the from-list ($3 = string[]).
+      // (Uses regex for the SET email_status assignment so column-aligned
+      //  spacing in the real SQL doesn't drift the mock.)
       if (
         sql.includes('update vendor_daily_lists')
-        && sql.includes("email_status = 'sending'")
+        && /email_status\s*=\s*'sending'/.test(sql)
         && sql.includes('email_status = any($3::text[])')
       ) {
         const fromStatuses = (params?.[2] as string[]) ?? [];
@@ -111,7 +116,14 @@ function makeFakeDb(opts: FakeOptions = {}) {
       }
       return null;
     }),
-    queryMany: jest.fn(async () => []),
+    queryMany: jest.fn(async (sql: string, _params?: unknown[]) => {
+      captured.push({ sql, params: _params });
+      // Sweeper UPDATE returns reclaimed rows. Default empty (no stuck rows).
+      if (sql.includes("update vendor_daily_lists") && sql.includes("'reclaimed: stuck in sending past sweep threshold'")) {
+        return opts.reclaimedRows ?? [];
+      }
+      return [];
+    }),
     rpc: jest.fn(),
     tx: jest.fn(async (fn: (c: typeof txClient) => Promise<unknown>) => fn(txClient)),
   };
@@ -254,24 +266,30 @@ describe('DaglijstService.getDownloadUrl', () => {
 // =====================================================================
 
 describe('DaglijstService.send', () => {
-  it('renders + sends + locks lines + audits on success', async () => {
+  it('renders + sends + locks lines + audits + returns status=sent on success', async () => {
     const { svc, db, mailer } = buildSvc();
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    expect(outcome.status).toBe('sent');
     expect(mailer.calls).toHaveLength(1);
     const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
     // line lock + status update + audit emit
     expect(txSqls.some((s) => s.includes('update order_line_items') && s.includes('daglijst_locked_at'))).toBe(true);
-    expect(txSqls.some((s) => s.includes('update vendor_daily_lists') && s.includes("email_status         = 'sent'"))).toBe(true);
+    expect(txSqls.some((s) => /email_status\s*=\s*'sent'/.test(s))).toBe(true);
     expect(txSqls.some((s) => s.includes('insert into audit_outbox'))).toBe(true);
+    // success path clears sending_acquired_at
+    expect(txSqls.some((s) => /sending_acquired_at\s*=\s*null/.test(s))).toBe(true);
   });
 
-  it('captures email_error + emits SendFailed on mailer failure', async () => {
+  it('captures email_error + emits SendFailed + clears sending_acquired_at on mailer failure', async () => {
     const { svc, db } = buildSvc({ mailerFails: true });
     await expect(svc.send({ tenantId: TENANT, daglijstId: DAGLIJST })).rejects.toThrow(/send failed/);
     const failureUpdate = db.captured.find((c) =>
       c.sql.includes('update vendor_daily_lists') && c.sql.includes("'failed'"),
     );
     expect(failureUpdate).toBeDefined();
+    // Codex round-2 fix: failure rollback clears sending_acquired_at so the
+    // sweeper doesn't re-process the row.
+    expect(/sending_acquired_at\s*=\s*null/.test(failureUpdate!.sql)).toBe(true);
     const failureAudit = db.captured.find((c) =>
       c.sql.includes('insert into audit_outbox') && (c.params?.[1] === 'daglijst.send_failed'),
     );
@@ -283,19 +301,94 @@ describe('DaglijstService.send', () => {
     await expect(svc.send({ tenantId: TENANT, daglijstId: DAGLIJST })).rejects.toThrow(/no daglijst_email/);
   });
 
-  it('skips already-sent daglijst unless force=true', async () => {
+  it('returns status=already_sent without dispatching when row is sent + !force', async () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    expect(outcome.status).toBe('already_sent');
     expect(mailer.calls).toHaveLength(0);
   });
 
-  it('resends when force=true', async () => {
+  it('resends + returns status=sent when force=true', async () => {
     const { svc, mailer } = buildSvc({
       row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
-    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    expect(outcome.status).toBe('sent');
     expect(mailer.calls).toHaveLength(1);
+  });
+
+  it('CAS skip path returns status=skipped_in_flight when row is already sending', async () => {
+    // Codex round-2 fix #1: scheduler must distinguish "we just sent it"
+    // from "another worker holds the CAS / row is mid-send". The mock's
+    // CAS check returns null when current email_status isn't in the
+    // from-list; 'sending' is never in that list (without force).
+    const { svc, mailer } = buildSvc({
+      row: makeRow({ email_status: 'sending', pdf_storage_path: 'tenant/.../v1.pdf' }),
+    });
+    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    expect(outcome.status).toBe('skipped_in_flight');
+    expect(mailer.calls).toHaveLength(0);
+  });
+
+  it('CAS UPDATE stamps sending_acquired_at = now()', async () => {
+    const { svc, db } = buildSvc();
+    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const casUpdate = db.captured.find((c) =>
+      /update vendor_daily_lists/.test(c.sql)
+      && /email_status\s*=\s*'sending'/.test(c.sql)
+      && /sending_acquired_at\s*=\s*now\(\)/.test(c.sql),
+    );
+    expect(casUpdate).toBeDefined();
+  });
+
+  it('passes correlationId with per-attempt nonce to mailer', async () => {
+    const { svc, mailer } = buildSvc();
+    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const call = mailer.calls[0] as { correlationId?: string };
+    expect(call.correlationId).toMatch(
+      /^daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1:first:[0-9a-z]+$/,
+    );
+  });
+
+  it('correlationId uses :retry suffix for failed-then-resent rows', async () => {
+    const { svc, mailer } = buildSvc({
+      row: makeRow({ email_status: 'failed', email_error: 'prior smtp blip', pdf_storage_path: 'tenant/.../v1.pdf' }),
+    });
+    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    const call = mailer.calls[0] as { correlationId?: string };
+    expect(call.correlationId).toMatch(/:retry:/);
+  });
+});
+
+// =====================================================================
+// reclaimStuckSendingRows (sweeper)
+// =====================================================================
+
+describe('DaglijstService.reclaimStuckSendingRows', () => {
+  it('emits SendingReclaimed audit per row reclaimed', async () => {
+    const { svc, db } = buildSvc({
+      reclaimedRows: [
+        { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', tenant_id: TENANT, sending_acquired_at: '2026-04-30T18:50:00Z' },
+        { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', tenant_id: TENANT, sending_acquired_at: '2026-04-30T18:55:00Z' },
+      ],
+    });
+    const reclaimed = await svc.reclaimStuckSendingRows();
+    expect(reclaimed).toHaveLength(2);
+    const audits = db.captured.filter((c) =>
+      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daglijst.sending_reclaimed',
+    );
+    expect(audits).toHaveLength(2);
+  });
+
+  it('returns empty array + emits no audit when no rows are stuck', async () => {
+    const { svc, db } = buildSvc();   // no reclaimedRows → mock returns []
+    const reclaimed = await svc.reclaimStuckSendingRows();
+    expect(reclaimed).toHaveLength(0);
+    const audits = db.captured.filter((c) =>
+      c.sql.includes('insert into audit_outbox') && c.params?.[1] === 'daglijst.sending_reclaimed',
+    );
+    expect(audits).toHaveLength(0);
   });
 });

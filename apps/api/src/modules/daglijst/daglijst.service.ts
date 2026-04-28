@@ -280,12 +280,18 @@ export class DaglijstService {
   }
 
   /**
-   * Find the most-recent NOT-YET-SENT row for a bucket, if any. Used by
-   * the scheduler to retry a 'failed' / 'sending' row instead of minting
-   * a new version on every transient outage (codex Sprint 2 fix #2).
+   * Find the most-recent RETRY-ELIGIBLE row for a bucket, if any. Used by
+   * the scheduler to retry a 'failed' row instead of minting a new
+   * version on every transient outage (codex Sprint 2 fix #2).
    *
-   * Returns null when the bucket has either no rows or only sent ones —
-   * in which case the scheduler proceeds with generate() to mint v_n+1.
+   * Codex round-2 fix: explicitly scope to email_status in
+   * ('never_sent','failed'). 'sending' rows are NOT eligible for retry —
+   * either another worker holds them (CAS denies) or they're stuck and
+   * the sweeper will reclaim them to 'failed' first.
+   *
+   * Returns null when the bucket has either no rows or only sent/in-flight
+   * ones — in which case the scheduler proceeds with generate() to mint
+   * v_n+1.
    */
   async findUnsentRowForBucket(args: AssembleArgs): Promise<VendorDailyListRow | null> {
     const { tenantId, vendorId, buildingId, serviceType, listDate } = args;
@@ -297,10 +303,71 @@ export class DaglijstService {
           and service_type = $4
           and list_date    = $5
           and sent_at is null
+          and email_status in ('never_sent','failed')
         order by version desc
         limit 1`,
       [tenantId, vendorId, buildingId, serviceType, listDate],
     );
+  }
+
+  /**
+   * Sweeper: reclaim rows stuck in 'sending' past a threshold. The CAS
+   * state machine in send() can leave a row in 'sending' if the worker
+   * crashes or fails post-CAS (e.g. createSignedUrl throw, audit emit DB
+   * failure, OOM, pod kill) before the explicit failure rollback.
+   * Without this sweeper such rows are unrecoverable — the next CAS is
+   * denied because email_status is already 'sending', and the retry path
+   * only matches 'never_sent'/'failed'.
+   *
+   * Strategy: any row with email_status='sending' and sending_acquired_at
+   * older than `olderThanMs` (default 5 min — well past p99 send latency)
+   * is reset to 'failed' with a descriptive error, so the next scheduler
+   * tick + findUnsentRowForBucket picks it up for retry.
+   *
+   * Called once per scheduler tick BEFORE findDueBuckets.
+   *
+   * Returns the number of rows reclaimed (caller emits per-row audit).
+   */
+  async reclaimStuckSendingRows(args: { olderThanMs?: number } = {}): Promise<
+    Array<{ id: string; tenant_id: string; sending_acquired_at: string }>
+  > {
+    const olderThanMs = args.olderThanMs ?? 5 * 60_000;
+    const reclaimed = await this.db.queryMany<{
+      id: string;
+      tenant_id: string;
+      sending_acquired_at: string;
+    }>(
+      `update vendor_daily_lists
+          set email_status         = 'failed',
+              email_error          = 'reclaimed: stuck in sending past sweep threshold',
+              sending_acquired_at  = null
+        where email_status = 'sending'
+          and sending_acquired_at is not null
+          and sending_acquired_at < now() - ($1::int || ' milliseconds')::interval
+        returning id, tenant_id, sending_acquired_at`,
+      [olderThanMs],
+    );
+    if (reclaimed.length > 0) {
+      // Audit per row so ops can see exactly which buckets the sweeper
+      // recovered and correlate with the SendFailed events that follow
+      // on the next tick's retry attempt.
+      for (const r of reclaimed) {
+        await this.auditOutbox.emit({
+          tenantId: r.tenant_id,
+          eventType: DaglijstEventType.SendingReclaimed,
+          entityType: 'vendor_daily_lists',
+          entityId: r.id,
+          details: {
+            stuck_since: r.sending_acquired_at,
+            threshold_ms: olderThanMs,
+          },
+        });
+      }
+      this.log.warn(
+        `daglijst sweeper reclaimed ${reclaimed.length} row(s) stuck in 'sending'`,
+      );
+    }
+    return reclaimed;
   }
 
   /**
@@ -438,14 +505,14 @@ export class DaglijstService {
    *
    * Failure path: email_status='failed', email_error captured, no lock.
    */
-  async send(args: SendArgs): Promise<VendorDailyListRow> {
+  async send(args: SendArgs): Promise<SendOutcome> {
     const { tenantId, daglijstId, force = false } = args;
 
     const dl = await this.renderAndUpload({ tenantId, daglijstId });
 
     if (dl.sent_at && !force) {
       this.log.debug(`daglijst ${daglijstId} already sent; skipping (use force=true to resend)`);
-      return dl;
+      return { status: 'already_sent', row: dl };
     }
     if (!dl.recipient_email) {
       throw new BadRequestException('Vendor has no daglijst_email configured; cannot send');
@@ -458,13 +525,18 @@ export class DaglijstService {
     //   - 'failed'     → 'sending'   retry path (codex fix #2)
     //   - already 'sending' → cas returns 0 rows → another worker has it → bail
     //   - 'sent' + force → use 'sent' as the CAS-from state on resend.
+    //
+    // Codex round-2 fix: also stamp `sending_acquired_at = now()` so the
+    // sweeper (reclaimStuckSendingRows) can detect rows where the worker
+    // crashed post-CAS and reset them to 'failed' for retry.
     const fromStatuses = force
       ? ['never_sent', 'failed', 'sent']
       : ['never_sent', 'failed'];
     const cas = await this.db.queryOne<{ id: string }>(
       `update vendor_daily_lists
-          set email_status = 'sending',
-              email_error  = null
+          set email_status        = 'sending',
+              email_error         = null,
+              sending_acquired_at = now()
         where tenant_id = $1
           and id = $2
           and email_status = any($3::text[])
@@ -472,83 +544,115 @@ export class DaglijstService {
       [tenantId, daglijstId, fromStatuses],
     );
     if (!cas) {
-      // Another worker is already sending this row (or it's already sent
-      // and !force). Re-fetch + return — caller's API-level retry can
-      // re-poll if they care.
+      // Another worker is already sending this row, or it's already sent
+      // and !force, or the sweeper just reset it. Re-fetch + return a
+      // discriminated outcome so the scheduler can count it as
+      // "skipped_in_flight" instead of "sent".
       const current = await this.getById(tenantId, daglijstId);
       this.log.debug(
         `daglijst ${daglijstId} CAS skipped — current state ${current?.email_status ?? 'unknown'}`,
       );
-      return current ?? dl;
+      return {
+        status: current?.email_status === 'sent' ? 'already_sent' : 'skipped_in_flight',
+        row: current ?? dl,
+      };
     }
 
-    const { url: pdfUrl, expiresAt } = await this.getDownloadUrl({
-      tenantId,
-      daglijstId,
-      ttl: 'email',
-    });
-
-    const subject = buildSubjectLine(dl);
-    const textBody = buildTextBody(dl, pdfUrl);
-    // Stable correlation id so Sprint 4 mail providers can reject duplicate
-    // network retries via Idempotency-Key. Increments per attempt — the
-    // version + email_status counter make consecutive retries distinct.
-    const correlationId = `daglijst:${dl.id}:v${dl.version}:${dl.email_message_id ? 'retry' : 'first'}`;
-
-    let sendResult;
+    // Codex round-2 fix: from this point on we own the 'sending' acquisition.
+    // ANY thrown exception before the success commit must roll back to
+    // 'failed' so the row isn't stuck. Wrap the rest in try/catch with a
+    // finally-style rollback.
+    let pdfUrl: string;
+    let expiresAt: string;
+    let sendResult: Awaited<ReturnType<DaglijstMailer['sendDaglijst']>> | undefined;
     let sendError: string | null = null;
+
     try {
-      sendResult = await this.mailer.sendDaglijst({
-        tenantId,
-        vendorId: dl.vendor_id,
-        daglijstId: dl.id,
-        recipientEmail: dl.recipient_email,
-        vendorName: dl.payload.vendor.name,
-        subject,
-        textBody,
-        htmlBody: null,                                  // Sprint 4 wires this
-        pdfDownloadUrl: pdfUrl,
-        attachment: null,                                // Sprint 4 wires real attachment
-        language: dl.payload.vendor.language ?? 'nl',
-        correlationId,
-      });
-    } catch (err) {
-      sendError = err instanceof Error ? err.message : String(err);
+      const url = await this.getDownloadUrl({ tenantId, daglijstId, ttl: 'email' });
+      pdfUrl = url.url;
+      expiresAt = url.expiresAt;
+
+      const subject = buildSubjectLine(dl);
+      const textBody = buildTextBody(dl, pdfUrl);
+      // Codex round-2 fix: correlation id varies per attempt. Reusing
+      // ":first" on every retry would make the mail provider's
+      // Idempotency-Key suppress legit retries. Append the
+      // sending_acquired_at clock so each CAS gets a unique key.
+      const acquiredNonce = Date.now().toString(36);
+      const correlationId = `daglijst:${dl.id}:v${dl.version}:${
+        dl.email_message_id || dl.email_status === 'failed' ? 'retry' : 'first'
+      }:${acquiredNonce}`;
+
+      try {
+        sendResult = await this.mailer.sendDaglijst({
+          tenantId,
+          vendorId: dl.vendor_id,
+          daglijstId: dl.id,
+          recipientEmail: dl.recipient_email,
+          vendorName: dl.payload.vendor.name,
+          subject,
+          textBody,
+          htmlBody: null,                                  // Sprint 4 wires this
+          pdfDownloadUrl: pdfUrl,
+          attachment: null,                                // Sprint 4 wires real attachment
+          language: dl.payload.vendor.language ?? 'nl',
+          correlationId,
+        });
+      } catch (err) {
+        sendError = err instanceof Error ? err.message : String(err);
+      }
+    } catch (preMailerErr) {
+      // getDownloadUrl threw (signed URL mint failed, storage outage, etc).
+      // Treat this as a send failure so the row rolls back + retry runs.
+      sendError = preMailerErr instanceof Error
+        ? `pre-mailer: ${preMailerErr.message}`
+        : `pre-mailer: ${String(preMailerErr)}`;
     }
 
-    if (sendError) {
+    if (sendError || !sendResult) {
+      const errMsg = sendError ?? 'mailer returned no result';
       // Roll the CAS state back to 'failed' so the next scheduler tick
       // can retry the SAME row (codex Sprint 2 fix #2 — no version-bump-
-      // forever spiral).
+      // forever spiral). Clear sending_acquired_at so the sweeper doesn't
+      // re-process it.
       await this.db.query(
         `update vendor_daily_lists
-            set email_status = 'failed',
-                email_error  = $3
+            set email_status        = 'failed',
+                email_error         = $3,
+                sending_acquired_at = null
           where tenant_id = $1 and id = $2`,
-        [tenantId, daglijstId, sendError.slice(0, 500)],
+        [tenantId, daglijstId, errMsg.slice(0, 500)],
       );
       await this.auditOutbox.emit({
         tenantId,
         eventType: DaglijstEventType.SendFailed,
         entityType: 'vendor_daily_lists',
         entityId: daglijstId,
-        details: { error: sendError.slice(0, 500), recipient: dl.recipient_email },
+        details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
       });
-      throw new BadRequestException(`Daglijst send failed: ${sendError}`);
+      throw new BadRequestException(`Daglijst send failed: ${errMsg}`);
     }
 
     // Successful send — lock the lines + update the row + audit.
-    return this.db.tx(async (client) => {
+    //
+    // Codex round-2 fix: even success-path post-mailer failures (DB blip
+    // during the tx, audit outbox insert error) now leave the row stuck
+    // in 'sending' until this tx completes. The success UPDATE clears
+    // sending_acquired_at; if the tx itself rolls back the sweeper will
+    // recover the row on a later tick. The mail provider's
+    // Idempotency-Key (correlationId) prevents duplicate sends on retry.
+    const finalRow = await this.db.tx(async (client) => {
       const updated = await client.query<VendorDailyListRow>(
         `update vendor_daily_lists
             set sent_at              = now(),
                 email_status         = 'sent',
                 email_message_id     = $3,
                 email_error          = null,
-                pdf_url_expires_at   = $4
+                pdf_url_expires_at   = $4,
+                sending_acquired_at  = null
           where tenant_id = $1 and id = $2
           returning *`,
-        [tenantId, daglijstId, sendResult!.messageId, expiresAt],
+        [tenantId, daglijstId, sendResult.messageId, expiresAt],
       );
 
       // Lock-on-send (deferred from record() per codex Sprint 1 fix).
@@ -573,13 +677,15 @@ export class DaglijstService {
         details: {
           vendor_id: dl.vendor_id,
           recipient: dl.recipient_email,
-          message_id: sendResult!.messageId,
+          message_id: sendResult.messageId,
           line_count: lineIds.length,
         },
       });
 
       return updated.rows[0] ?? dl;
     });
+
+    return { status: 'sent', row: finalRow };
   }
 
   async getById(tenantId: string, daglijstId: string): Promise<VendorDailyListRow | null> {
@@ -644,6 +750,22 @@ export interface SendArgs {
   /** Resend an already-sent daglijst (admin path). */
   force?: boolean;
 }
+
+/**
+ * Discriminated result of `send()`. The scheduler (and any other caller
+ * counting outcomes) MUST branch on `status` instead of treating any
+ * non-throwing return as a successful send. CAS-skipped rows return
+ * here too — the caller decides whether that counts as success/failure
+ * for tick metrics.
+ *
+ * Codex round-2 fix: previously send() returned a bare row, which made
+ * "another worker is already sending this" indistinguishable from "we
+ * just sent it". Stuck-sending rows could be reported as sent forever.
+ */
+export type SendOutcome =
+  | { status: 'sent';              row: VendorDailyListRow }
+  | { status: 'already_sent';      row: VendorDailyListRow }
+  | { status: 'skipped_in_flight'; row: VendorDailyListRow };
 
 // =====================================================================
 // Helpers

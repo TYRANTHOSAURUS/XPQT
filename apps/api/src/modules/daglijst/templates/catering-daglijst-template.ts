@@ -136,32 +136,45 @@ export interface CateringDaglijstTemplateProps {
 }
 
 /**
- * Format a delivery-time-ish input as HH:mm. Three shapes come from
- * upstream queries + payload assembly:
+ * Format a delivery-time-ish input as HH:mm in Europe/Amsterdam. Three
+ * shapes come from upstream queries + payload assembly:
  *   - 'HH:mm:ss'   (postgres `time` cast to text — the common case)
  *   - 'HH:mm'      (admin-edited)
- *   - ISO timestamp (when assemble pulls from requested_for_start_at)
+ *   - ISO timestamp (when assemble pulls from requested_for_start_at,
+ *                    or generation.generated_at)
  *
- * The earlier draft did `new Date('12:00')` which is INVALID in Node and
- * produced NaN — every cell rendered '—'. Codex Sprint 2 flagged this.
- * Fix: parse HH[:mm[:ss]] directly; fall through to Date only for true
- * timestamps.
+ * The Sprint 2 fix replaced `new Date('12:00')` (which was NaN in Node
+ * and rendered every cell as '—'). Codex round-2 review flagged that the
+ * ISO branch still used `getHours()/getMinutes()` which is process-tz
+ * dependent — a server in UTC would render `generated_at` an hour off
+ * the vendor's wall clock. Fix: format ISO inputs in Europe/Amsterdam
+ * explicitly via Intl.DateTimeFormat. Tenant-configurable timezone is a
+ * Sprint 4 follow-up; today every Benelux vendor is on Amsterdam local
+ * (matches the scheduler's bucket math).
  */
+const AMSTERDAM_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  timeZone: 'Europe/Amsterdam',
+});
+
 function formatTime(input: string | null | undefined): string {
   if (!input) return '—';
 
-  // 'HH:mm' or 'HH:mm:ss' — pull the first two components.
+  // 'HH:mm' or 'HH:mm:ss' — naive postgres `time`, already in vendor-local.
+  // Pull the first two components verbatim.
   const timeOnly = /^(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(input);
   if (timeOnly) {
     return `${timeOnly[1]}:${timeOnly[2]}`;
   }
 
-  // ISO with 'T' / full timestamp — Date parsing is defined.
+  // ISO with 'T' / full timestamp — Date parsing is defined. Render in
+  // Europe/Amsterdam so generated_at always reads as the vendor's wall
+  // clock regardless of the API server's TZ.
   const d = new Date(input);
   if (Number.isNaN(d.getTime())) return '—';
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
+  return AMSTERDAM_TIME_FMT.format(d);
 }
 
 function formatDateNL(ymd: string): string {

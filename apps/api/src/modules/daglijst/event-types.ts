@@ -12,6 +12,19 @@ export const DaglijstEventType = {
   Sent:                     'daglijst.sent',
   Regenerated:              'daglijst.regenerated',
   SendFailed:               'daglijst.send_failed',
+  /**
+   * Bucket cancelled before send — every line in the bucket was removed or
+   * cancelled between the scheduler tick that picked it up and the moment we
+   * tried to assemble. Distinct from SendFailed (operational metric:
+   * "tonight 0/127 buckets cancelled, 2/127 failed, 125/127 sent").
+   */
+  Cancelled:                'daglijst.cancelled',
+  /**
+   * Sweeper-driven recovery: a row was found in 'sending' state past the
+   * sweep threshold and rolled back to 'failed' so the next tick can retry.
+   * Emitted per row reclaimed.
+   */
+  SendingReclaimed:         'daglijst.sending_reclaimed',
 
   OrderPostCutoffChange:    'order.post_cutoff_change',
   OrderPhoneFollowupConfirmed: 'order.phone_followup_confirmed',

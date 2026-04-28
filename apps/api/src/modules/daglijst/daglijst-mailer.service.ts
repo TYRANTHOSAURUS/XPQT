@@ -56,12 +56,20 @@ export interface SendDaglijstInput {
   } | null;
   language: string;            // 'nl' | 'fr' | 'en' | 'de'
   /**
-   * Stable correlation id for provider-side idempotency. Sprint 4
+   * Per-attempt correlation id for provider-side idempotency. Sprint 4
    * implementations pass this as Postmark MessageStream / Resend
-   * Idempotency-Key. Without it, network retries create duplicate sends.
-   * Recommended shape: `daglijst:<daglijst_id>:<email_status_attempt>`.
+   * Idempotency-Key so network retries don't create duplicate sends.
+   *
+   * Optional at the interface level so non-Sprint-2 callers and external
+   * mailer implementations don't need to retrofit. The DaglijstService
+   * always supplies a correlationId in its CAS-acquired send path with
+   * a per-attempt nonce so each retry gets a unique key (codex round-2
+   * fix — reusing the same `:first` suffix on retries was suppressing
+   * legitimate retries via the provider's idempotency cache).
+   *
+   * Recommended shape: `daglijst:<daglijst_id>:v<n>:<first|retry>:<nonce>`.
    */
-  correlationId: string;
+  correlationId?: string;
 }
 
 export interface DaglijstSendResult {
