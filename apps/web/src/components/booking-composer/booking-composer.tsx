@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AlertTriangle, CalendarClock, Check, Loader2, MapPin, Sparkles } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Check, ChevronLeft, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,7 +30,7 @@ import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { toastError, toastSuccess } from '@/lib/toast';
 import { InlineBanner } from '@/components/ui/inline-banner';
-import { ServicePickerSheet } from './service-picker-sheet';
+import { ServicePickerBody } from './service-picker-sheet';
 import {
   composerReducer,
   initialState,
@@ -223,7 +223,36 @@ export function BookingComposer({
   const createBooking = useCreateBooking();
   const createMultiRoom = useMultiRoomBooking();
   const submitting = createBooking.isPending || createMultiRoom.isPending;
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Drill-down view inside the composer — services live here as a
+  // sub-pane, NOT a stacked Sheet. Single primary CTA (the composer
+  // footer's Book button) regardless of which pane the user is on.
+  // Entry: "Browse services" / "Edit" sets view='services'. Exit: the
+  // back chevron sets view='main'. Reopening the composer always lands
+  // on main.
+  const [view, setView] = useState<'main' | 'services'>('main');
+  useEffect(() => {
+    if (open) setView('main');
+  }, [open]);
+  // When drilling into the services pane, scroll the surrounding
+  // overflow container (DialogContent/SheetContent) back to the top so
+  // the user lands on the pane title rather than mid-form. The pane
+  // itself doesn't own the scroll context, so we look up to the
+  // closest scrollable ancestor.
+  const servicesPaneRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (view !== 'services') return;
+    const el = servicesPaneRef.current;
+    if (!el) return;
+    let node: HTMLElement | null = el.parentElement;
+    while (node) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        node.scrollTop = 0;
+        return;
+      }
+      node = node.parentElement;
+    }
+  }, [view]);
   // Submit-success beat — after the mutation lands we hold the button
   // in a 'success' state for ~260ms before closing. Anchors the "yes
   // it worked" feedback to where the user clicked, so the toast that
@@ -458,6 +487,52 @@ export function BookingComposer({
 
   return (
     <FieldGroup>
+      {view === 'services' && (
+        <div
+          // Drill-down pane. Single primary CTA at the bottom (the
+          // composer footer's Book button) — no second "Add to booking"
+          // CTA inside this pane. The user picks/edits services and
+          // either taps Back to return or taps Book to commit the
+          // whole reservation. animate-in: subtle fade + 4px slide
+          // from the right so the pane reads as "we drilled in" without
+          // a heavy modal-on-modal feel.
+          key="services-view"
+          ref={servicesPaneRef}
+          className="flex flex-col gap-5 animate-in fade-in slide-in-from-right-1 duration-200 ease-[var(--ease-smooth)]"
+        >
+          <button
+            type="button"
+            onClick={() => setView('main')}
+            aria-label="Back to booking details"
+            className="-ml-2 inline-flex h-7 w-fit items-center gap-1 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-[background-color,color,transform] duration-150 ease-[var(--ease-snap)] hover:bg-accent hover:text-foreground active:translate-y-px focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <ChevronLeft className="size-4" aria-hidden />
+            Back
+          </button>
+          <div>
+            <h3 className="text-base font-semibold tracking-tight">
+              {state.services.length > 0 ? 'Edit services' : 'Add services'}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Catering, AV, room setup. Each spawns a work order.
+            </p>
+          </div>
+          <ServicePickerBody
+            deliverySpaceId={state.spaceId}
+            onDate={onDate}
+            attendeeCount={state.attendeeCount}
+            bookingStartAt={state.startAt}
+            bookingEndAt={state.endAt}
+            selections={state.services}
+            onSelectionsChange={(services) =>
+              dispatch({ type: 'SET_SERVICES', services })
+            }
+          />
+        </div>
+      )}
+
+      {view === 'main' && (
+        <>
       {/* Operator: who is this for? */}
       {mode === 'operator' && (
         <Field>
@@ -589,7 +664,7 @@ export function BookingComposer({
             type="button"
             variant="outline"
             className="h-10"
-            onClick={() => setPickerOpen(true)}
+            onClick={() => setView('services')}
             disabled={!state.spaceId || !onDate}
           >
             <Sparkles className="size-3.5" />
@@ -637,7 +712,7 @@ export function BookingComposer({
                   variant="ghost"
                   size="sm"
                   className="h-7 px-2 text-xs"
-                  onClick={() => setPickerOpen(true)}
+                  onClick={() => setView('services')}
                 >
                   Edit
                 </Button>
@@ -815,6 +890,9 @@ export function BookingComposer({
         </InlineBanner>
       )}
 
+        </>
+      )}
+
       {/* Footer: error + submit. Sticky on mobile so it's always
           reachable without scrolling through a long form (services +
           recurrence + warnings can push it well below the fold). The
@@ -838,11 +916,16 @@ export function BookingComposer({
             (emil pass). */}
         <div className="relative min-h-[1.25rem]" aria-live="polite">
           {(() => {
-            const msg =
-              validationError ??
-              (leadTimeWarnings.length > 0
-                ? 'Resolve the lead-time conflicts above before submitting.'
-                : null);
+            // In services view the lead-time warnings (rendered in the
+            // main view) are off-screen, so "above" is wrong — point the
+            // user back to where the offending field actually is.
+            const leadTimeMsg =
+              leadTimeWarnings.length > 0
+                ? view === 'services'
+                  ? 'Lead-time conflicts in the booking details — go back to fix.'
+                  : 'Resolve the lead-time conflicts above before submitting.'
+                : null;
+            const msg = validationError ?? leadTimeMsg;
             return msg ? (
               <p
                 key={msg}
@@ -916,22 +999,6 @@ export function BookingComposer({
         </div>
       </div>
 
-      <ServicePickerSheet
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        deliverySpaceId={state.spaceId}
-        onDate={onDate}
-        attendeeCount={state.attendeeCount}
-        bookingStartAt={state.startAt}
-        bookingEndAt={state.endAt}
-        initialSelections={state.services}
-        onConfirm={async (selections) => {
-          dispatch({ type: 'SET_SERVICES', services: selections });
-          setPickerOpen(false);
-        }}
-        title={state.services.length > 0 ? 'Edit services' : 'Add services'}
-        subtitle="Defaults to your meeting time and attendee count."
-      />
     </FieldGroup>
   );
 }

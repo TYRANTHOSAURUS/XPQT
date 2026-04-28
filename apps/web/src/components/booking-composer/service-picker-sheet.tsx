@@ -52,15 +52,127 @@ const TAB_DEFS: Array<{
   { value: 'other', label: 'Other', Icon: ShoppingBag, description: 'Anything else' },
 ];
 
-interface Props {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+interface BodyProps {
   /** Driving inputs from the booking the user is amending. */
   deliverySpaceId: string | null;
   onDate: string | null;
   attendeeCount: number;
   /** Booking start/end ISO. Used as the default service window when the
    *  user expands "Different time?" on a catalog row. */
+  bookingStartAt?: string | null;
+  bookingEndAt?: string | null;
+  /** Controlled selections — body is headless. Caller owns the array; body
+   *  emits a new array on every quantity / window change. */
+  selections: PickerSelection[];
+  onSelectionsChange: (next: PickerSelection[]) => void;
+  /** Default tab to focus when this body mounts. Subsequent caller changes
+   *  re-sync (e.g. swapping from "+ Add catering" to "+ Add AV"). */
+  initialServiceType?: ServiceType;
+  /** Outer container styling — caller controls horizontal padding so this
+   *  body lays out the same inside a Sheet, a Dialog, or a drill-down
+   *  pane. */
+  className?: string;
+}
+
+/**
+ * Headless catalog browser for booking services. Renders the recent-bundles
+ * chip row and the four-tab catalog grid; the caller wraps with whatever
+ * surface chrome is appropriate (Sheet for post-booking add-ons, drill-down
+ * pane for in-composer, etc.) and supplies its own commit affordance.
+ *
+ * Controlled — the body never owns selections, so a single primary CTA at
+ * the surface level is the only thing that ever "saves." This is the fix
+ * for the modal-on-modal anti-pattern that used to live here.
+ */
+export function ServicePickerBody({
+  deliverySpaceId,
+  onDate,
+  attendeeCount,
+  bookingStartAt = null,
+  bookingEndAt = null,
+  selections,
+  onSelectionsChange,
+  initialServiceType = 'catering',
+  className,
+}: BodyProps) {
+  const [activeTab, setActiveTab] = useState<ServiceType>(initialServiceType);
+
+  // Re-seed activeTab when the caller swaps the focused tab — e.g. opening
+  // the body from a "+ Add catering" chip vs an "+ Add AV" chip — so the
+  // user lands on the relevant grid without an extra click.
+  useEffect(() => {
+    setActiveTab(initialServiceType);
+  }, [initialServiceType]);
+
+  const countByType = useMemo(() => {
+    const m = new Map<ServiceType, number>();
+    for (const s of selections) m.set(s.service_type, (m.get(s.service_type) ?? 0) + 1);
+    return m;
+  }, [selections]);
+
+  return (
+    <div className={cn('flex flex-1 min-h-0 flex-col', className)}>
+      <RecentBundlesChips
+        onApply={(bundle) => onSelectionsChange(seedSelectionsFromBundle(bundle))}
+      />
+
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => setActiveTab(v as ServiceType)}
+        className="flex flex-1 min-h-0 flex-col"
+      >
+        <TabsList className="mt-3 grid w-full grid-cols-4 shrink-0 max-[360px]:grid-cols-2 max-[360px]:auto-rows-fr">
+          {TAB_DEFS.map((t) => {
+            const count = countByType.get(t.value) ?? 0;
+            return (
+              <TabsTrigger
+                key={t.value}
+                value={t.value}
+                aria-label={t.label}
+                className="relative text-xs"
+              >
+                <t.Icon className="size-3.5" />
+                <span className="hidden sm:inline">{t.label}</span>
+                {count > 0 && (
+                  <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium tabular-nums text-primary-foreground">
+                    {count}
+                  </span>
+                )}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4 pt-3">
+          {TAB_DEFS.map((t) => (
+            <TabsContent key={t.value} value={t.value} className="m-0">
+              <CatalogPanel
+                serviceType={t.value}
+                description={t.description}
+                deliverySpaceId={deliverySpaceId}
+                onDate={onDate}
+                attendeeCount={attendeeCount}
+                bookingStartAt={bookingStartAt}
+                bookingEndAt={bookingEndAt}
+                selections={selections}
+                onChange={onSelectionsChange}
+                active={activeTab === t.value}
+              />
+            </TabsContent>
+          ))}
+        </div>
+      </Tabs>
+    </div>
+  );
+}
+
+interface SheetProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Driving inputs from the booking the user is amending. */
+  deliverySpaceId: string | null;
+  onDate: string | null;
+  attendeeCount: number;
   bookingStartAt?: string | null;
   bookingEndAt?: string | null;
   /** Existing selections to hydrate when re-opening the picker for edit.
@@ -80,19 +192,11 @@ interface Props {
 }
 
 /**
- * Bottom-sheet on mobile, right-sheet on desktop. Tabbed catalog browser
- * — each tab lazy-fetches `GET /service-catalog/available-items` for its
- * service-type. Selections accumulate in local state across tabs; one
- * Submit button at the bottom commits everything via `onConfirm`.
- *
- * Used by:
- *   - Post-booking `+ Add service` on `BundleServicesSection`
- *   - Future composer flows (initial booking, scheduler create, desk list)
- *
- * Smart defaults: a per_item / flat_rate first-add seeds quantity = 1; a
- * per_person first-add seeds quantity = max(1, attendeeCount). Tab labels
- * carry a count badge per service-type so cross-tab selections stay
- * visible. Phase B will extend with personal-template chips above the tabs.
+ * Bottom-sheet on mobile, right-sheet on desktop. Used by the post-booking
+ * detail surface (`BundleServicesSection`) where the picker IS the only
+ * overlay and "Add to booking" is the real commit. The booking composer
+ * does NOT use this Sheet anymore — it embeds `ServicePickerBody` directly
+ * in a drill-down pane to avoid the modal-on-modal stack.
  */
 export function ServicePickerSheet({
   open,
@@ -108,23 +212,23 @@ export function ServicePickerSheet({
   submitting,
   title = 'Add services',
   subtitle,
-}: Props) {
+}: SheetProps) {
   const isMobile = useIsMobile();
-  const [activeTab, setActiveTab] = useState<ServiceType>(initialServiceType);
   const [selections, setSelections] = useState<PickerSelection[]>(
     initialSelections ?? [],
   );
+  // Bumped each time the sheet opens so the embedded body remounts with
+  // a fresh `activeTab = initialServiceType`. Without this, re-opening
+  // the sheet leaves the user on whichever tab they last visited, which
+  // is wrong for the "+ Add catering" chip flow on the detail page.
+  const [openVersion, setOpenVersion] = useState(0);
 
-  // Hydrate from initialSelections on every open so re-entering Edit
-  // doesn't wipe the cart. The reset-to-empty was the cause of the
-  // accidental "edit clears my picks" footgun codex flagged on the
-  // holistic review.
   useEffect(() => {
     if (open) {
-      setActiveTab(initialServiceType);
       setSelections(initialSelections ?? []);
+      setOpenVersion((v) => v + 1);
     }
-  }, [open, initialServiceType, initialSelections]);
+  }, [open, initialSelections]);
 
   const total = useMemo(
     () =>
@@ -135,12 +239,6 @@ export function ServicePickerSheet({
     [selections, attendeeCount],
   );
   const hasSelections = selections.length > 0;
-
-  const countByType = useMemo(() => {
-    const m = new Map<ServiceType, number>();
-    for (const s of selections) m.set(s.service_type, (m.get(s.service_type) ?? 0) + 1);
-    return m;
-  }, [selections]);
 
   const handleSubmit = async () => {
     if (!hasSelections) return;
@@ -163,56 +261,18 @@ export function ServicePickerSheet({
           {subtitle && <SheetDescription>{subtitle}</SheetDescription>}
         </SheetHeader>
 
-        <RecentBundlesChips
-          onApply={(bundle) => setSelections(seedSelectionsFromBundle(bundle))}
+        <ServicePickerBody
+          key={openVersion}
+          deliverySpaceId={deliverySpaceId}
+          onDate={onDate}
+          attendeeCount={attendeeCount}
+          bookingStartAt={bookingStartAt}
+          bookingEndAt={bookingEndAt}
+          selections={selections}
+          onSelectionsChange={setSelections}
+          initialServiceType={initialServiceType}
+          className="px-5"
         />
-
-        <Tabs
-          value={activeTab}
-          onValueChange={(v) => setActiveTab(v as ServiceType)}
-          className="flex flex-1 min-h-0 flex-col"
-        >
-          <TabsList className="mx-5 mt-3 grid w-auto grid-cols-4 shrink-0 max-[360px]:grid-cols-2 max-[360px]:auto-rows-fr">
-            {TAB_DEFS.map((t) => {
-              const count = countByType.get(t.value) ?? 0;
-              return (
-                <TabsTrigger
-                  key={t.value}
-                  value={t.value}
-                  aria-label={t.label}
-                  className="relative text-xs"
-                >
-                  <t.Icon className="size-3.5" />
-                  <span className="hidden sm:inline">{t.label}</span>
-                  {count > 0 && (
-                    <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium tabular-nums text-primary-foreground">
-                      {count}
-                    </span>
-                  )}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 pt-3">
-            {TAB_DEFS.map((t) => (
-              <TabsContent key={t.value} value={t.value} className="m-0">
-                <CatalogPanel
-                  serviceType={t.value}
-                  description={t.description}
-                  deliverySpaceId={deliverySpaceId}
-                  onDate={onDate}
-                  attendeeCount={attendeeCount}
-                  bookingStartAt={bookingStartAt}
-                  bookingEndAt={bookingEndAt}
-                  selections={selections}
-                  onChange={setSelections}
-                  active={activeTab === t.value}
-                />
-              </TabsContent>
-            ))}
-          </div>
-        </Tabs>
 
         <SheetFooter className="border-t bg-card px-5 py-3 sm:flex-col sm:items-stretch sm:gap-2">
           <div className="flex items-center justify-between text-sm">
@@ -662,7 +722,7 @@ function RecentBundlesChips({
   if (bundles.length === 0) return null;
 
   return (
-    <div className="border-b px-5 py-3">
+    <div className="border-b py-3">
       <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
         Your usual
       </div>
