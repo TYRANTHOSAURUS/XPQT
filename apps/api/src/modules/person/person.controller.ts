@@ -11,12 +11,14 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { PersonService } from './person.service';
+import { PersonActivityService } from './person-activity.service';
 import { PermissionGuard } from '../../common/permission-guard';
 
 @Controller('persons')
 export class PersonController {
   constructor(
     private readonly personService: PersonService,
+    private readonly activity: PersonActivityService,
     private readonly permissions: PermissionGuard,
   ) {}
 
@@ -96,5 +98,16 @@ export class PersonController {
   async listEffectiveAuthorization(@Req() request: Request, @Param('id') id: string) {
     await this.permissions.requirePermission(request, 'people.read');
     return this.personService.listEffectiveAuthorization(id);
+  }
+
+  @Get(':id/activity')
+  async getActivity(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    await this.permissions.requirePermission(request, 'people.read');
+    const n = limit ? Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100) : 20;
+    return this.activity.getRecentActivity(id, n);
   }
 }
