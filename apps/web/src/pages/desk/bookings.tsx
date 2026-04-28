@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
-  CalendarClock, CalendarDays, CheckCircle2, Inbox, Plus, Search, Users as UsersIcon, X,
+  AlertTriangle, CalendarClock, CalendarDays, CheckCircle2, Inbox, Plus, Search, Users as UsersIcon, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -233,12 +233,21 @@ export function DeskBookingsPage() {
           <LateChangesWidget />
         </div>
         {error ? (
-          <div className="m-6 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
-            <p className="font-medium text-destructive">Failed to load bookings</p>
-            <p className="text-muted-foreground mt-1">
+          <div
+            role="alert"
+            className="flex flex-col items-center gap-3 px-6 py-16 text-center"
+          >
+            <span
+              aria-hidden
+              className="flex size-10 items-center justify-center rounded-full bg-destructive/10"
+            >
+              <AlertTriangle className="size-5 text-destructive" />
+            </span>
+            <h2 className="text-base font-semibold">Couldn't load bookings</h2>
+            <p className="max-w-sm text-sm text-muted-foreground">
               {error instanceof Error ? error.message : 'Unknown error'}
             </p>
-            <p className="text-muted-foreground mt-2 text-xs">
+            <p className="text-xs text-muted-foreground">
               This page requires the <code className="chip">rooms.read_all</code> or{' '}
               <code className="chip">rooms.admin</code> permission.
             </p>

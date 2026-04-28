@@ -1,4 +1,5 @@
 import { Calendar, CheckCircle2, AlertCircle, RefreshCw, Unplug } from 'lucide-react';
+import { InlineBanner } from '@/components/ui/inline-banner';
 import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
 import { useState } from 'react';
 import {
@@ -90,23 +91,20 @@ export function PortalCalendarSyncPage() {
       ) : (
         <>
           {hasError && link?.last_error && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="size-4 mt-0.5 text-destructive shrink-0" />
-                <div className="flex flex-col gap-1">
-                  <div className="font-medium text-destructive">Sync error</div>
-                  <p className="text-muted-foreground">{link.last_error}</p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2 w-fit gap-1.5"
-                    onClick={onConnect}
-                  >
-                    Reconnect
-                  </Button>
-                </div>
+            <InlineBanner tone="destructive" icon={AlertCircle} role="alert">
+              <div className="flex flex-col gap-1">
+                <div className="font-medium text-destructive">Sync error</div>
+                <p className="text-muted-foreground">{link.last_error}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 w-fit gap-1.5"
+                  onClick={onConnect}
+                >
+                  Reconnect
+                </Button>
               </div>
-            </div>
+            </InlineBanner>
           )}
 
           <SettingsGroup>

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { toastError, toastSuccess } from '@/lib/toast';
-import { ShieldAlert } from 'lucide-react';
+import { AlertTriangle, ShieldAlert } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { InlineBanner } from '@/components/ui/inline-banner';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { useCreateBooking, type SchedulerRoom } from '@/api/room-booking';
@@ -96,10 +97,10 @@ export function SchedulerOverrideDialog({
         </DialogHeader>
 
         {denialMessage && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            <strong className="font-medium">Rule denial: </strong>
-            {denialMessage}
-          </div>
+          <InlineBanner tone="destructive" icon={AlertTriangle}>
+            <div className="font-medium text-destructive">Rule denial</div>
+            <p className="mt-0.5 text-muted-foreground">{denialMessage}</p>
+          </InlineBanner>
         )}
 
         <FieldGroup>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, ArrowRight } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight } from 'lucide-react';
+import { InlineBanner } from '@/components/ui/inline-banner';
 import { PortalPage } from '@/components/portal/portal-page';
 import { usePortal } from '@/providers/portal-provider';
 import { useAuth } from '@/providers/auth-provider';
@@ -154,11 +155,12 @@ export function BookRoomPage() {
       )}
 
       {picker.isError && (
-        <div
-          role="alert"
-          className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-xs text-destructive"
-        >
-          {picker.error instanceof Error ? picker.error.message : 'Picker error'}
+        <div className="mt-4">
+          <InlineBanner tone="destructive" icon={AlertTriangle} role="alert">
+            <span className="text-destructive">
+              {picker.error instanceof Error ? picker.error.message : 'Picker error'}
+            </span>
+          </InlineBanner>
         </div>
       )}
 

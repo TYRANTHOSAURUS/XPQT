@@ -1,6 +1,7 @@
-import { ChevronRight, ExternalLink, Plus, Users, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, ExternalLink, Plus, Users, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { InlineBanner } from '@/components/ui/inline-banner';
 import { RoomThumbnail } from '@/components/room-thumbnail';
 import { amenityMeta } from '@/components/room-amenities';
 import { SPACE_TYPE_LABELS } from '@/components/admin/space-type-icon';
@@ -167,9 +168,9 @@ export function SchedulerInspector({ room, onClose, onBook }: Props) {
         )}
 
         {room.rule_outcome.denial_message && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            {room.rule_outcome.denial_message}
-          </div>
+          <InlineBanner tone="destructive" icon={AlertTriangle} role="status">
+            <span className="text-destructive">{room.rule_outcome.denial_message}</span>
+          </InlineBanner>
         )}
       </div>
 
