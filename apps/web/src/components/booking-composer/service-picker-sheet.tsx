@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Coffee, Speaker, Boxes, ShoppingBag, Loader2, Minus, Plus } from 'lucide-react';
+import { Coffee, Speaker, LayoutPanelLeft, ShoppingBag, Loader2 } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useAvailableServiceItems } from '@/api/service-catalog';
 import type { AvailableServiceItem, ServiceType } from '@/api/service-catalog';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { NumberStepper } from '@/components/ui/number-stepper';
 import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -35,7 +36,7 @@ const TAB_DEFS: Array<{
 }> = [
   { value: 'catering', label: 'Catering', Icon: Coffee, description: 'Coffee, lunch, snacks' },
   { value: 'av_equipment', label: 'AV', Icon: Speaker, description: 'Mics, screens, recording' },
-  { value: 'supplies', label: 'Supplies', Icon: Boxes, description: 'Whiteboards, markers' },
+  { value: 'facilities_services', label: 'Setup', Icon: LayoutPanelLeft, description: 'Layout, signage, flipcharts' },
   { value: 'other', label: 'Other', Icon: ShoppingBag, description: 'Anything else' },
 ];
 
@@ -403,7 +404,7 @@ function QuantityStepper({
       <Button
         size="sm"
         variant="outline"
-        className="h-11 px-3 sm:h-9"
+        className="h-10 px-3"
         onClick={() => onChange(addInitial)}
       >
         Add
@@ -411,32 +412,14 @@ function QuantityStepper({
     );
   }
   return (
-    <div className="flex items-center gap-0.5 rounded-md border bg-background">
-      <Button
-        size="icon"
-        variant="ghost"
-        className="size-11 sm:size-9"
-        aria-label={`Decrease quantity, currently ${value}`}
-        onClick={() => onChange(value - 1)}
-      >
-        <Minus className="size-3.5" />
-      </Button>
-      <span
-        className="min-w-[2ch] text-center text-sm font-medium tabular-nums"
-        aria-live="polite"
-      >
-        {value}
-      </span>
-      <Button
-        size="icon"
-        variant="ghost"
-        className="size-11 sm:size-9"
-        aria-label={`Increase quantity, currently ${value}`}
-        onClick={() => onChange(value + 1)}
-      >
-        <Plus className="size-3.5" />
-      </Button>
-    </div>
+    <NumberStepper
+      value={value}
+      onChange={onChange}
+      min={0}
+      max={999}
+      size="md"
+      aria-label="Quantity"
+    />
   );
 }
 

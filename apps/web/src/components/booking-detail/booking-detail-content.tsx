@@ -5,14 +5,15 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  useReservationDetail, useCheckInBooking, useRestoreBooking,
+  useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
 } from '@/api/room-booking';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
+import { NumberStepper } from '@/components/ui/number-stepper';
 import { BookingStatusPill } from './booking-status-pill';
 import { BookingEditForm } from './booking-edit-form';
 import { BundleServicesSection } from './bundle-services-section';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastError, toastSuccess, toastUpdated } from '@/lib/toast';
 
 const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
@@ -47,6 +48,7 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
 
   const checkIn = useCheckInBooking();
   const restore = useRestoreBooking();
+  const editBooking = useEditBooking();
 
   if (isPending && !reservation) {
     return <div className="px-5 py-6 text-sm text-muted-foreground">Loading…</div>;
@@ -117,11 +119,47 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
         </DetailRow>
 
         <DetailRow icon={<UsersIcon className="size-3.5" />} label="Attendees">
-          <div className="text-sm">{reservation.attendee_count ?? 0} expected</div>
-          {reservation.attendee_person_ids.length > 0 && (
-            <div className="text-xs text-muted-foreground">
-              {reservation.attendee_person_ids.length} internal · others external
+          {showEdit ? (
+            <div className="flex items-center gap-2">
+              <NumberStepper
+                value={reservation.attendee_count ?? 1}
+                onChange={() => {
+                  // Optimistic local change is no-op — onCommit drives the
+                  // mutation. We rely on react-query to refresh the row.
+                }}
+                onCommit={async (next) => {
+                  if (next === (reservation.attendee_count ?? 0)) return;
+                  try {
+                    await editBooking.mutateAsync({
+                      id: reservation.id,
+                      patch: { attendee_count: next },
+                    });
+                    toastUpdated('Attendee count');
+                  } catch (e) {
+                    toastError("Couldn't update attendees", { error: e });
+                  }
+                }}
+                min={1}
+                max={500}
+                size="sm"
+                aria-label="Attendees"
+                suffix={(reservation.attendee_count ?? 1) === 1 ? 'person' : 'people'}
+              />
+              {reservation.attendee_person_ids.length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  · {reservation.attendee_person_ids.length} internal
+                </span>
+              )}
             </div>
+          ) : (
+            <>
+              <div className="text-sm">{reservation.attendee_count ?? 0} expected</div>
+              {reservation.attendee_person_ids.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  {reservation.attendee_person_ids.length} internal · others external
+                </div>
+              )}
+            </>
           )}
         </DetailRow>
 
