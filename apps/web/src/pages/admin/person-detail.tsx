@@ -232,7 +232,6 @@ export function PersonDetailBody({ personId }: { personId: string }) {
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
 
   // Hydrate from server response on first load + when the id changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!person) return;
     setFirstName(person.first_name ?? '');
