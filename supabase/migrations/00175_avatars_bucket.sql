@@ -1,7 +1,13 @@
--- 00173 — avatars storage bucket
+-- 00175 — avatars storage bucket
 -- Used by the person-detail avatar upload (people-and-users-surface slice).
 -- Avatar URLs are stored as `persons.avatar_url` (column added in 00118)
 -- and rendered via PersonAvatar across the app.
+--
+-- NOTE: originally numbered 00173 and pushed to remote under that name; the
+-- bucket + policies are already live in iwbqnyrvycqgnatratrk. Renumbered to
+-- 00175 to avoid collision with main's 00173 (bundle_lines_realtime). All
+-- statements in this file are idempotent (`on conflict do update`,
+-- `drop policy if exists ... create policy`), so replaying is safe.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (

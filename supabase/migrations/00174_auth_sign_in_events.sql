@@ -1,6 +1,12 @@
--- 00172 — auth_sign_in_events
+-- 00174 — auth_sign_in_events
 -- Per-sign-in audit trail fed by Supabase Auth Hook webhook.
 -- See docs/superpowers/specs/2026-04-28-people-and-users-surface-design.md.
+--
+-- NOTE: this file was originally numbered 00172 and pushed to remote under
+-- that name (table + indexes + RLS already live in iwbqnyrvycqgnatratrk).
+-- Renumbered to 00174 at merge time to avoid collision with main's 00172
+-- (booking-services demo seed). Already applied to remote — do NOT re-run.
+-- New environments pick it up cleanly on first reset.
 
 create table public.auth_sign_in_events (
   id              uuid primary key default gen_random_uuid(),
