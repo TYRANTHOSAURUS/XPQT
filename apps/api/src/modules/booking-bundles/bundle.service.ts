@@ -903,6 +903,30 @@ class Cleanup {
         failures.push(`orders: ${(err as Error).message}`);
       }
     }
+    // Void any approvals already persisted for the rolled-back bundles /
+    // orders / lines. Without this, ApprovalRoutingService.assemble's
+    // pre-anyDeny inserts orphan: approvers see a pending row in their
+    // queue for entities that no longer exist. Codex flagged this on
+    // the multi-room contract widening review (2026-04-28).
+    const approvalTargetIds = [
+      ...this.bundles.map((b) => b.id),
+      ...this.orderIds,
+      ...this.oliIds,
+    ];
+    if (approvalTargetIds.length > 0) {
+      try {
+        await this.supabase.admin
+          .from('approvals')
+          .update({
+            status: 'cancelled',
+            comments: 'Auto-voided — bundle creation rolled back (orphan prevention).',
+          })
+          .in('target_entity_id', approvalTargetIds)
+          .eq('status', 'pending');
+      } catch (err) {
+        failures.push(`approvals: ${(err as Error).message}`);
+      }
+    }
     for (const b of this.bundles) {
       if (!b.preExisting) {
         try {

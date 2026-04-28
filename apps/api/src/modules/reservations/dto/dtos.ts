@@ -97,10 +97,37 @@ export interface FindTimeDto {
 export interface MultiRoomBookingDto {
   space_ids: string[];
   requester_person_id: string;
+  host_person_id?: string | null;
   start_at: string;
   end_at: string;
   attendee_count?: number;
   attendee_person_ids?: string[];
+  source?: string;
+  /**
+   * Service lines (catering / AV / setup) attached to the PRIMARY room
+   * only. Multi-room atomicity binds rooms; services bind to one bundle
+   * — typically catering for the main hall, breakouts go without. The
+   * service ships with the first space_id in the array.
+   *
+   * Recurrence on multi-room remains unsupported (the conflict-guard
+   * semantics for "atomic group across multiple occurrences" need their
+   * own design); the controller rejects multi-room + recurrence at the
+   * boundary.
+   */
+  services?: Array<{
+    catalog_item_id: string;
+    menu_id?: string | null;
+    quantity: number;
+    service_window_start_at?: string | null;
+    service_window_end_at?: string | null;
+    repeats_with_series?: boolean;
+    linked_asset_id?: string | null;
+  }>;
+  bundle?: {
+    bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+    cost_center_id?: string | null;
+    template_id?: string | null;
+  };
 }
 
 /**

@@ -82,6 +82,14 @@ describe('MultiRoomBookingService.createGroup', () => {
         }
         if (table === 'reservations') {
           return {
+            // .select(...).eq(...).eq(...) — used by the rollback path
+            // to discover any reservations that landed under this group
+            // even when BookingFlowService.create threw mid-attach.
+            select: (_cols?: unknown) => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
             update: (_row: unknown) => ({
               eq: () => ({
                 eq: () => ({
@@ -126,7 +134,7 @@ describe('MultiRoomBookingService.createGroup', () => {
         makeReservation(`R-${input.space_id}`, input.space_id),
       ),
     };
-    const svc = new MultiRoomBookingService(supabase as never, bookingFlow as never);
+    const svc = new MultiRoomBookingService(supabase as never, bookingFlow as never, { cancelOrdersForReservation: jest.fn() } as never);
 
     const result = await TenantContext.run(TENANT, () =>
       svc.createGroup(
@@ -148,7 +156,7 @@ describe('MultiRoomBookingService.createGroup', () => {
 
   it('rejects single-room input', async () => {
     const supabase = makeSupabase();
-    const svc = new MultiRoomBookingService(supabase as never, {} as never);
+    const svc = new MultiRoomBookingService(supabase as never, {} as never, { cancelOrdersForReservation: jest.fn() } as never);
     await expect(
       TenantContext.run(TENANT, () =>
         svc.createGroup(
@@ -179,7 +187,7 @@ describe('MultiRoomBookingService.createGroup', () => {
         return makeReservation(`R-${input.space_id}`, input.space_id);
       }),
     };
-    const svc = new MultiRoomBookingService(supabase as never, bookingFlow as never);
+    const svc = new MultiRoomBookingService(supabase as never, bookingFlow as never, { cancelOrdersForReservation: jest.fn() } as never);
 
     await expect(
       TenantContext.run(TENANT, () =>

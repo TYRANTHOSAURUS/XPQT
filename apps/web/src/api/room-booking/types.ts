@@ -182,8 +182,20 @@ export interface BookingPayload {
 export interface MultiRoomBookingPayload {
   space_ids: string[];
   requester_person_id: string;
+  host_person_id?: string | null;
   start_at: string;
   end_at: string;
   attendee_count?: number;
   attendee_person_ids?: string[];
+  source?: ReservationSource;
+  /**
+   * Services attach to the PRIMARY room only (first id in `space_ids`)
+   * — multi-room atomicity is room-only; one bundle per group.
+   */
+  services?: ServiceLinePayload[];
+  bundle?: {
+    bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+    cost_center_id?: string | null;
+    template_id?: string | null;
+  };
 }

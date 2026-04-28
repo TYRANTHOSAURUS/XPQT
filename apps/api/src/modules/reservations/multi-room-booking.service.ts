@@ -4,6 +4,7 @@ import {
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BookingFlowService } from './booking-flow.service';
+import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import type { ActorContext, Reservation } from './dto/types';
 
 /**
@@ -32,6 +33,7 @@ export class MultiRoomBookingService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly bookingFlow: BookingFlowService,
+    private readonly bundleCascade: BundleCascadeService,
   ) {}
 
   async createGroup(
@@ -43,6 +45,21 @@ export class MultiRoomBookingService {
       attendee_count?: number;
       attendee_person_ids?: string[];
       host_person_id?: string | null;
+      source?: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto';
+      services?: Array<{
+        catalog_item_id: string;
+        menu_id?: string | null;
+        quantity: number;
+        service_window_start_at?: string | null;
+        service_window_end_at?: string | null;
+        repeats_with_series?: boolean;
+        linked_asset_id?: string | null;
+      }>;
+      bundle?: {
+        bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+        cost_center_id?: string | null;
+        template_id?: string | null;
+      };
     },
     actor: ActorContext,
   ): Promise<{ group_id: string; reservations: Reservation[] }> {
@@ -86,7 +103,18 @@ export class MultiRoomBookingService {
     // 2. Create per-room reservations in sequence. Sequential keeps the
     //    same-tenant connection ordering predictable and lets us short-
     //    circuit on the first failure cheaply.
+    //
+    // Services bind to the PRIMARY room only (the first space_id) — a
+    // multi-room event has one bundle for catering/AV regardless of how
+    // many rooms the attendees spread across. The non-primary rooms are
+    // booked room-only and link via multi_room_group_id.
+    const resolvedSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto' =
+      actor.user_id.startsWith('system:')
+        ? 'auto'
+        : input.source ?? 'portal';
+
     for (const spaceId of spaceIds) {
+      const isPrimary = spaceId === spaceIds[0];
       try {
         const r = await this.bookingFlow.create(
           {
@@ -98,7 +126,9 @@ export class MultiRoomBookingService {
             attendee_count: input.attendee_count,
             attendee_person_ids: input.attendee_person_ids,
             multi_room_group_id: groupId,
-            source: actor.user_id.startsWith('system:') ? 'auto' : 'portal',
+            source: resolvedSource,
+            services: isPrimary ? input.services : undefined,
+            bundle: isPrimary ? input.bundle : undefined,
           },
           actor,
         );
@@ -116,22 +146,71 @@ export class MultiRoomBookingService {
     }
 
     if (failures.length > 0) {
-      // 3. Rollback: cancel everything we already created.
-      for (const r of created) {
+      // 3. Rollback. Codex flagged on the contract-widening review:
+      //    the previous version (a) missed reservations that landed but
+      //    failed during attachServicesToReservation (the row sits in
+      //    DB but BookingFlowService.create threw before pushing into
+      //    `created`), and (b) raw-updated reservations.status without
+      //    cascading to bundle/orders/tickets/assets.
+      //
+      //    Fix: re-query by multi_room_group_id so we capture orphans,
+      //    then cascade through BundleCascadeService.cancelOrdersForReservation
+      //    before flipping the reservation status.
+      // Union: rooms BookingFlowService.create returned cleanly + any
+      // orphans we discover via group_id (e.g. the primary's attach-
+      // services step threw after the reservation already landed).
+      const captured = new Map<string, { id: string; status: string }>();
+      for (const r of created) captured.set(r.id, { id: r.id, status: r.status });
+      const { data: groupRes, error: groupQueryErr } = await this.supabase.admin
+        .from('reservations')
+        .select('id, status')
+        .eq('tenant_id', tenantId)
+        .eq('multi_room_group_id', groupId);
+      // If the compensating read fails, log and proceed with `created`
+      // alone. The orphan prevention loses one branch but the booking-
+      // flow's own Cleanup.rollback (now also voids bundle approvals)
+      // means the worst case is a stale reservation row, not a stale
+      // bundle/order/ticket cluster.
+      if (groupQueryErr) {
+        this.log.warn(
+          `multi-room rollback: compensating read failed for group ${groupId}: ${groupQueryErr.message}`,
+        );
+      } else {
+        for (const r of (groupRes ?? []) as Array<{ id: string; status: string }>) {
+          if (!captured.has(r.id)) captured.set(r.id, r);
+        }
+      }
+      const allInGroup = [...captured.values()].filter((r) => r.status !== 'cancelled');
+
+      // Cascade bundles/orders/tickets first; then flip the reservation
+      // row. Best-effort cascade — if the bundle service throws, log and
+      // continue so the reservation rollback still happens.
+      for (const r of allInGroup) {
+        try {
+          await this.bundleCascade.cancelOrdersForReservation({
+            reservation_id: r.id,
+            reason: 'Multi-room booking rolled back — sibling reservation failed.',
+          });
+        } catch (err) {
+          this.log.warn(`bundle cascade on rollback failed for ${r.id}: ${(err as Error).message}`);
+        }
+      }
+
+      for (const r of allInGroup) {
         await this.supabase.admin
           .from('reservations')
           .update({ status: 'cancelled', cancellation_grace_until: null })
           .eq('tenant_id', tenantId)
-          .eq('id', r.id)
-          .eq('status', r.status);
+          .eq('id', r.id);
       }
       // Cancel any approval rows the BookingFlow may have created for the
       // rolled-back reservations. Without this, approvers receive a
       // notification + see a pending row in /desk/approvals for a booking
       // that no longer exists. We update — not delete — so the audit
       // trail keeps a record of "this approval was opened then voided
-      // because the group rolled back".
-      if (created.length > 0) {
+      // because the group rolled back". Use the by-group set so an
+      // attach-failure orphan also gets its approval voided.
+      if (allInGroup.length > 0) {
         await this.supabase.admin
           .from('approvals')
           .update({
@@ -140,15 +219,15 @@ export class MultiRoomBookingService {
           })
           .eq('tenant_id', tenantId)
           .eq('target_entity_type', 'reservation')
-          .in('target_entity_id', created.map((r) => r.id))
+          .in('target_entity_id', allInGroup.map((r) => r.id))
           .eq('status', 'pending');
       }
-      // Drop the group row too — easier than leaving an orphan.
-      await this.supabase.admin
-        .from('multi_room_groups')
-        .delete()
-        .eq('tenant_id', tenantId)
-        .eq('id', groupId);
+      // The group row stays — the FK in 00125 (reservations.multi_room_group_id
+      // → multi_room_groups.id) lacks ON DELETE CASCADE, so a delete would
+      // throw with cancelled reservations still pointing at it. Leaving the
+      // row preserves the audit + analytics linkage; the rolled-back state
+      // is determined from reservation.status, not from the group's
+      // existence.
 
       // Audit — phase K. Distinct from `reservation.multi_room_created`
       // so reporting can see how often atomic groups roll back and which
@@ -161,7 +240,7 @@ export class MultiRoomBookingService {
           entity_id: groupId,
           details: {
             attempted_space_ids: input.space_ids,
-            cancelled_reservation_ids: created.map((r) => r.id),
+            cancelled_reservation_ids: allInGroup.map((r) => r.id),
             failures,
           },
         });
@@ -171,7 +250,7 @@ export class MultiRoomBookingService {
         code: 'multi_room_booking_failed',
         message: 'One or more rooms could not be booked. No partial bookings created.',
         failed: failures,
-        rolled_back_count: created.length,
+        rolled_back_count: allInGroup.length,
       });
     }
 

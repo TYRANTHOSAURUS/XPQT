@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param,
+  BadRequestException, Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param,
   Patch, Post, Query, Req, Res, UnauthorizedException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -119,14 +119,32 @@ export class ReservationController {
   async createMultiRoom(@Req() request: Request, @Body() dto: MultiRoomBookingDto) {
     const actor = await this.actorFromRequest(request);
     const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
+    // Multi-room + recurrence is an unsupported combination — the conflict-guard
+    // semantics for "atomic group across multiple occurrences" need their own
+    // design. The portal dialog rejects client-side; this is the server-side
+    // gate for direct API callers (codex flagged the gap on the contract-
+    // widening review).
+    if (
+      'recurrence_rule' in dto &&
+      (dto as { recurrence_rule?: unknown }).recurrence_rule != null
+    ) {
+      throw new BadRequestException({
+        code: 'multi_room_recurrence_unsupported',
+        message: 'Recurrence on multi-room bookings is not supported. Book a single room or turn off recurrence.',
+      });
+    }
     return this.multiRoom.createGroup(
       {
         space_ids: dto.space_ids,
         requester_person_id: requesterPersonId,
+        host_person_id: dto.host_person_id ?? null,
         start_at: dto.start_at,
         end_at: dto.end_at,
         attendee_count: dto.attendee_count,
         attendee_person_ids: dto.attendee_person_ids,
+        source: dto.source as 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto' | undefined,
+        services: dto.services,
+        bundle: dto.bundle,
       },
       actor,
     );
