@@ -21,6 +21,7 @@ import {
 import { NumberStepper } from '@/components/ui/number-stepper';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Command,
   CommandEmpty,
@@ -907,10 +908,16 @@ function RecurrenceField({
   }
 
   const r = rule ?? { frequency: 'weekly', interval: 1, count: 8 };
+  // End mode: "after N occurrences" or "on a specific date". The
+  // `RecurrenceRule` carries `count` OR `until` (both can be null/absent —
+  // backend treats absent as "no explicit end" and bounds annualisation by
+  // calendar). Surface as an explicit radio so the user picks intent
+  // rather than discovering precedence.
+  const endMode: 'count' | 'until' = r.until ? 'until' : 'count';
   return (
     <FieldSet>
       <FieldLegend variant="label">Recurrence</FieldLegend>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field>
           <FieldLabel htmlFor="composer-rec-freq">Frequency</FieldLabel>
           <Select
@@ -940,18 +947,75 @@ function RecurrenceField({
             aria-label="Recurrence interval"
           />
         </Field>
-        <Field>
-          <FieldLabel htmlFor="composer-rec-count">Occurrences</FieldLabel>
-          <NumberStepper
-            id="composer-rec-count"
-            value={r.count ?? 8}
-            onChange={(n) => onChange({ ...r, count: Math.max(2, n) })}
-            min={2}
-            max={52}
-            aria-label="Recurrence count"
-          />
-        </Field>
       </div>
+      <Field>
+        <FieldLabel>Ends</FieldLabel>
+        <div className="flex flex-col gap-2">
+          <ToggleGroup
+            value={[endMode]}
+            onValueChange={(v) => {
+              const next = v[0] as 'count' | 'until' | undefined;
+              if (next === 'count') {
+                onChange({ ...r, count: r.count ?? 8, until: undefined });
+              } else if (next === 'until') {
+                const d = new Date();
+                d.setMonth(d.getMonth() + 3);
+                onChange({
+                  ...r,
+                  count: undefined,
+                  until: endOfDayIso(d.toISOString().slice(0, 10)),
+                });
+              }
+            }}
+            variant="default"
+            className="w-fit"
+          >
+            <ToggleGroupItem value="count" className="h-8 px-3 text-xs">
+              After
+            </ToggleGroupItem>
+            <ToggleGroupItem value="until" className="h-8 px-3 text-xs">
+              On
+            </ToggleGroupItem>
+          </ToggleGroup>
+          {/* Contextual control fades in via key change so the swap reads
+              as one knob rotating, not two widgets blinking. */}
+          <div
+            key={endMode}
+            className="duration-150 ease-[var(--ease-snap)] animate-in fade-in slide-in-from-left-1"
+          >
+            {endMode === 'count' ? (
+              <NumberStepper
+                value={r.count ?? 8}
+                onChange={(n) => onChange({ ...r, count: Math.max(2, n) })}
+                min={2}
+                max={104}
+                size="sm"
+                aria-label="Number of occurrences"
+                suffix={
+                  r.frequency === 'daily'
+                    ? 'days'
+                    : r.frequency === 'weekly'
+                      ? 'weeks'
+                      : 'months'
+                }
+              />
+            ) : (
+              <Input
+                type="date"
+                value={(r.until ?? '').slice(0, 10)}
+                onChange={(e) =>
+                  onChange({
+                    ...r,
+                    until: e.target.value ? endOfDayIso(e.target.value) : undefined,
+                  })
+                }
+                className="h-9 w-auto text-sm tabular-nums"
+                aria-label="End date"
+              />
+            )}
+          </div>
+        </div>
+      </Field>
       <Button
         type="button"
         variant="ghost"
@@ -1030,6 +1094,19 @@ function estimateOccurrences(
 
   const explicitCount = count > 0 ? count : Infinity;
   return Math.max(0, Math.min(explicitCount, yearCap, timeCap));
+}
+
+/** Convert a YYYY-MM-DD date string to an ISO timestamp at 23:59:59 in
+ *  the user's local zone. Backend recurrence honors `until` as an
+ *  inclusive bound — without end-of-day a recurring 9 AM meeting on the
+ *  chosen date would be excluded because date-only parses to midnight. */
+function endOfDayIso(dateStr: string): string {
+  // dateStr is YYYY-MM-DD; new Date(dateStr) parses as UTC midnight,
+  // which we don't want. Build the local date explicitly.
+  const [y, m, d] = dateStr.split('-').map((s) => Number(s));
+  if (!y || !m || !d) return dateStr;
+  const local = new Date(y, m - 1, d, 23, 59, 59, 999);
+  return local.toISOString();
 }
 
 function nextQuarterHour(): Date {
