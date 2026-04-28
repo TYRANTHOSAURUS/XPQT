@@ -28,6 +28,7 @@ import { useCostCenters } from '@/api/cost-centers';
 import { usePerson } from '@/api/persons';
 import { formatCurrency } from '@/lib/format';
 import { toastError, toastSuccess } from '@/lib/toast';
+import { InlineBanner } from '@/components/ui/inline-banner';
 import { ServicePickerSheet } from './service-picker-sheet';
 import {
   composerReducer,
@@ -656,77 +657,61 @@ export function BookingComposer({
         onChange={(rule) => dispatch({ type: 'SET_RECURRENCE', rule })}
       />
 
-      {/* Approval-route banner. Same neutral/icon-tinted shape as the
-          capacity warning so all four banner kinds (approval, capacity,
-          lead-time, conflict) read as one family. Animate-in slide-from-
-          top so warnings emerging mid-edit don't flicker. */}
+      {/* Approval-route advisory. Neutral chrome with a purple Sparkles
+          icon to telegraph the routing tier without screaming "error". */}
       {isApprovalRoute && approvalDenialMessage && (
-        <div className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1">
-          <Sparkles
-            className="size-3.5 shrink-0 text-purple-700 dark:text-purple-400"
-            aria-hidden
-          />
-          <span>{approvalDenialMessage}</span>
-        </div>
+        <InlineBanner
+          tone="info"
+          icon={Sparkles}
+          iconClassName="text-purple-700 dark:text-purple-400"
+        >
+          {approvalDenialMessage}
+        </InlineBanner>
       )}
 
       {/* Capacity warning — picked room is smaller than attendees. Soft
           (non-blocking; the user might know better than the listed
-          capacity, e.g. standing-only event). One line, neutral type,
-          color only on the icon — anything louder reads as a form error. */}
+          capacity, e.g. standing-only event). Neutral chrome, amber icon
+          — anything louder reads as a form error. role=status because
+          this recomputes mid-edit (attendee/room change). */}
       {capacityWarning && (
-        <div
+        <InlineBanner
+          tone="info"
+          icon={AlertTriangle}
+          iconClassName="text-amber-700 dark:text-amber-400"
           role="status"
-          aria-live="polite"
-          className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
         >
-          <AlertTriangle
-            className="size-3.5 shrink-0 text-amber-700 dark:text-amber-400"
-            aria-hidden
-          />
-          <span>
-            <strong className="font-medium">Tight fit.</strong>{' '}
-            {capacityWarning.roomName} seats {capacityWarning.roomCapacity}, you
-            have {capacityWarning.attendees}.
-          </span>
-        </div>
+          <strong className="font-medium">Tight fit.</strong>{' '}
+          {capacityWarning.roomName} seats {capacityWarning.roomCapacity}, you
+          have {capacityWarning.attendees}.
+        </InlineBanner>
       )}
 
       {/* Lead-time warnings — pre-empts a submit-time 422. Polite live
           region — these recompute on every attendee/service change and
           assertive role would re-announce noisily. */}
       {leadTimeWarnings.length > 0 && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
-        >
-          <p className="flex items-center gap-1 font-medium">
-            <AlertTriangle className="size-3.5" />
-            Some services need more notice
-          </p>
-          <ul className="space-y-0.5">
+        <InlineBanner tone="warning" icon={AlertTriangle} role="status">
+          <p className="font-medium">Some services need more notice</p>
+          <ul className="mt-1 space-y-0.5">
             {leadTimeWarnings.slice(0, 3).map((w) => (
               <li key={w.name}>
                 {w.name} requires {w.needHours}h lead time. Move the meeting later or drop the line.
               </li>
             ))}
           </ul>
-        </div>
+        </InlineBanner>
       )}
 
       {/* Conflict alternatives — visible after a 409 race. Each row is a
           one-click rebook: dispatches SET_SPACE then re-submits without
           the user having to re-open the room picker. */}
       {conflictAlternatives.length > 0 && !fixedRoom && (
-        <div
-          role="alert"
-          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
-        >
+        <InlineBanner tone="destructive" icon={AlertTriangle} role="alert">
           <p className="font-medium text-destructive">
             Someone booked this slot before you. Try one of these:
           </p>
-          <ul className="space-y-1">
+          <ul className="mt-1.5 space-y-1">
             {conflictAlternatives.slice(0, 3).map((alt) => (
               <li key={alt.space_id}>
                 <button
@@ -739,11 +724,7 @@ export function BookingComposer({
                     dispatch({ type: 'SET_SPACE', spaceId: alt.space_id });
                     void handleSubmit({ spaceId: alt.space_id });
                   }}
-                  className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-destructive/10"
-                  style={{
-                    transitionDuration: '120ms',
-                    transitionTimingFunction: 'var(--ease-snap)',
-                  }}
+                  className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left outline-none [transition:background-color_120ms_var(--ease-snap)] hover:bg-destructive/10 focus-visible:ring-2 focus-visible:ring-destructive/40 active:translate-y-px"
                 >
                   <span className="truncate font-medium">{alt.name}</span>
                   <span className="shrink-0 text-muted-foreground tabular-nums">
@@ -753,23 +734,20 @@ export function BookingComposer({
               </li>
             ))}
           </ul>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
             Click any room above to rebook with the same time + services.
           </p>
-        </div>
+        </InlineBanner>
       )}
       {/* When fixedRoom is set (scheduler drag-create), one-click rebook
           would override the operator's deliberate cell pick — fall back to
           the read-only summary they had before. */}
       {conflictAlternatives.length > 0 && fixedRoom && (
-        <div
-          role="alert"
-          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
-        >
+        <InlineBanner tone="destructive" icon={AlertTriangle} role="alert">
           <p className="font-medium text-destructive">
             Someone booked this slot before you. Try one of these:
           </p>
-          <ul className="space-y-1">
+          <ul className="mt-1.5 space-y-1">
             {conflictAlternatives.slice(0, 3).map((alt) => (
               <li key={alt.space_id} className="flex justify-between">
                 <span>{alt.name}</span>
@@ -779,7 +757,7 @@ export function BookingComposer({
               </li>
             ))}
           </ul>
-        </div>
+        </InlineBanner>
       )}
 
       {/* Footer: error + submit. Sticky on mobile so it's always
@@ -797,17 +775,26 @@ export function BookingComposer({
                       pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-0
                       sticky bottom-0 sm:static -mx-4 px-4 sm:mx-0 sm:px-0">
         {/* Reserved-height slot prevents the footer from jumping 16px
-            on every keystroke that flips validity. Always rendered;
-            content swaps with fade. */}
-        <p
-          className="min-h-[1.25rem] text-xs text-amber-700 transition-opacity duration-150 ease-[var(--ease-smooth)] dark:text-amber-400"
-          aria-live="polite"
-        >
-          {validationError ??
-            (leadTimeWarnings.length > 0
-              ? 'Resolve the lead-time conflicts above before submitting.'
-              : '')}
-        </p>
+            on every keystroke that flips validity. Content swaps via
+            key-driven crossfade so two messages never overlap mid-fade
+            (emil pass). */}
+        <div className="relative min-h-[1.25rem]" aria-live="polite">
+          {(() => {
+            const msg =
+              validationError ??
+              (leadTimeWarnings.length > 0
+                ? 'Resolve the lead-time conflicts above before submitting.'
+                : null);
+            return msg ? (
+              <p
+                key={msg}
+                className="text-xs text-amber-700 duration-150 ease-[var(--ease-smooth)] animate-in fade-in dark:text-amber-300"
+              >
+                {msg}
+              </p>
+            ) : null;
+          })()}
+        </div>
         <div className="flex items-center justify-end gap-2">
           <Button
             type="button"
