@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -110,17 +109,7 @@ const TicketTableRow = memo(function TicketTableRow({
           </TableCell>
           <TableCell className="px-3 py-2">
             <div className="min-w-0">
-              <span
-                className="text-sm block truncate"
-                // Name lives on the row when it's NOT the selected one.
-                // The detail panel's h1 always carries the name; pairing
-                // produces the row→detail morph on open and the reverse
-                // on close. When the row IS selected the name moves
-                // to the detail h1, avoiding a duplicate-name collision.
-                style={{ viewTransitionName: selected ? undefined : `ticket-${ticket.id}-title` }}
-              >
-                {ticket.title}
-              </span>
+              <span className="text-sm block truncate">{ticket.title}</span>
               {(ticket.requester || ticket.location) && (
                 <span className="text-xs text-muted-foreground block truncate mt-0.5">
                   {ticket.requester
@@ -228,7 +217,11 @@ function TicketTable({
         <TableBody className="desk-stagger">
           {loading && tickets.length === 0 && (
             <>
-              {Array.from({ length: 8 }).map((_, i) => (
+              {/* 6 rows fills the typical above-the-fold viewport for a
+                  desk laptop without overpromising what the page-size
+                  defaults to — the eye reads the count as "results are
+                  arriving," not "expect exactly 6." */}
+              {Array.from({ length: 6 }).map((_, i) => (
                 <TableRow key={`skeleton-${i}`} className="hover:bg-transparent">
                   <TableCell className="px-3 py-2"><div className="portal-skeleton size-4 rounded" /></TableCell>
                   <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-14 rounded" /></TableCell>
@@ -527,27 +520,11 @@ function TicketsView({
 export function TicketsPage() {
   const navigate = useNavigate();
   const filtersHook = useTicketFilters();
-  const [selectedTicketId, setSelectedTicketIdRaw] = useState<string | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setViewState] = useState<ViewMode>(readStoredView);
   const [reclassifyTarget, setReclassifyTarget] = useState<Ticket | null>(null);
   const [addWorkOrderTarget, setAddWorkOrderTarget] = useState<Ticket | null>(null);
-
-  /**
-   * Selecting a ticket morphs the row's title into the detail panel's
-   * title via the `ticket-${id}-title` view-transition name. Wrap the
-   * state update so the browser pairs the named elements between the
-   * old (no-detail) and new (detail-open) snapshots. flushSync forces
-   * React to commit synchronously inside the transition callback.
-   */
-  const setSelectedTicketId = useCallback((next: string | null) => {
-    const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
-    if (typeof start === 'function') {
-      start.call(document, () => flushSync(() => setSelectedTicketIdRaw(next)));
-    } else {
-      setSelectedTicketIdRaw(next);
-    }
-  }, []);
 
   const setView = (v: ViewMode) => {
     setViewState(v);
@@ -602,6 +579,10 @@ export function TicketsPage() {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Bail when something else (Radix dropdown/menu, dialog) has
+      // already consumed the key. Otherwise our row-stepping fights
+      // the overlay's own arrow-key handling.
+      if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (target?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;

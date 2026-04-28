@@ -376,26 +376,17 @@ img[data-portal-fade][data-loaded="true"] {
   animation: portal-rise var(--dur-desk-enter) var(--ease-portal) both;
 }
 
-/* Indeterminate progress bar — sliding 30%-wide segment, used for
-   background-fetch indicators on detail pages. Reads as "fetching"
-   instead of "thinking". */
+/* Indeterminate progress bar — sliding 33%-wide segment that's always
+   on-screen during the cycle. Used for background-fetch indicators on
+   detail pages. -50% → 150% keeps the bar visible end-to-end (it
+   enters from off-left, traverses, exits off-right) so the cycle reads
+   as continuous motion rather than a brief flash. */
 @keyframes desk-progress-slide {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(400%);  }
+  0%   { transform: translateX(-50%); }
+  100% { transform: translateX(150%); }
 }
 .desk-progress-slide {
   animation: desk-progress-slide 1100ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
-/* Brief one-shot highlight for a freshly-arrived activity item or
-   list row. Plays once on mount; consumers add the class via React
-   only when the item is "new" relative to the last-seen-id. */
-@keyframes desk-flash-highlight {
-  0%   { background-color: color-mix(in oklab, var(--ring) 22%, transparent); }
-  100% { background-color: transparent; }
-}
-.desk-flash {
-  animation: desk-flash-highlight 1100ms ease-out forwards;
 }
 
 /* Workflow editor — subtle animated flow on edges */

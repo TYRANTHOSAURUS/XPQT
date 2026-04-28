@@ -499,9 +499,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   }
 
   if (ticketPending || !ticket) {
-    // Structured skeleton — preserves the two-pane layout so the spinner
-    // jump goes away when the ticket resolves. We keep this lightweight:
-    // title bar, meta strip, description block, sidebar group blocks.
+    // Main-column skeleton only. We don't render a sidebar skeleton
+    // because the real ResizablePanel uses a persisted layout we can't
+    // mirror here cheaply — a fixed-width skeleton would jump when the
+    // panel hydrates. The sidebar simply slides in when data arrives.
     return (
       <div className="flex h-full">
         <div className="flex-1 min-w-0 overflow-hidden">
@@ -515,16 +516,6 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
             </div>
             <div className="portal-skeleton h-20 rounded-md" />
           </div>
-        </div>
-        <div className="w-px bg-border/60 shrink-0" aria-hidden />
-        <div className="w-[320px] shrink-0 p-3 space-y-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="space-y-2">
-              <div className="portal-skeleton h-3 w-16 rounded" />
-              <div className="portal-skeleton h-8 rounded-md" />
-              <div className="portal-skeleton h-8 rounded-md" />
-            </div>
-          ))}
         </div>
       </div>
     );
@@ -618,22 +609,13 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
               {formatTicketRef(displayedTicket!.ticket_kind, displayedTicket!.module_number)}
             </code>
 
-            {/* Title — view-transition pair with the row in the list page.
-                Browsers morph the text from row → here on selection and
-                back on close. */}
+            {/* Title */}
             <InlineTextEditor
               value={displayedTicket!.title}
               placeholder="Untitled"
               singleLine
               onSave={(next) => { if (next) patch({ title: next }); }}
-              renderView={(v) => (
-                <h1
-                  className="text-2xl font-semibold leading-tight tracking-tight"
-                  style={{ viewTransitionName: `ticket-${ticketId}-title` }}
-                >
-                  {v || 'Untitled'}
-                </h1>
-              )}
+              renderView={(v) => <h1 className="text-2xl font-semibold leading-tight tracking-tight">{v || 'Untitled'}</h1>}
               editorClassName="text-2xl font-semibold leading-tight tracking-tight border-0 shadow-none focus-visible:ring-0 px-0"
               viewClassName="rounded-md"
             />
@@ -739,43 +721,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
             {/* Comment input */}
             <div className="mt-10">
-              <Tabs
-                value={commentVisibility}
-                onValueChange={(v) => {
-                  // Wrap in startViewTransition so the underline indicator
-                  // morphs between the two tab triggers via the shared
-                  // `viewTransitionName: ticket-comment-tab-indicator`.
-                  const next = v as 'internal' | 'external';
-                  if (next === commentVisibility) return;
-                  const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
-                  if (typeof start === 'function') {
-                    start.call(document, () => setCommentVisibility(next));
-                  } else {
-                    setCommentVisibility(next);
-                  }
-                }}
-              >
-                <TabsList className="mb-3 relative">
-                  <TabsTrigger value="internal" className="relative">
-                    <MessageSquare className="h-4 w-4 mr-1.5" /> Internal note
-                    {commentVisibility === 'internal' && (
-                      <span
-                        aria-hidden
-                        className="absolute -bottom-[7px] left-2 right-2 h-[2px] rounded-full bg-foreground"
-                        style={{ viewTransitionName: 'ticket-comment-tab-indicator' }}
-                      />
-                    )}
-                  </TabsTrigger>
-                  <TabsTrigger value="external" className="relative">
-                    <Send className="h-4 w-4 mr-1.5" /> Reply
-                    {commentVisibility === 'external' && (
-                      <span
-                        aria-hidden
-                        className="absolute -bottom-[7px] left-2 right-2 h-[2px] rounded-full bg-foreground"
-                        style={{ viewTransitionName: 'ticket-comment-tab-indicator' }}
-                      />
-                    )}
-                  </TabsTrigger>
+              <Tabs value={commentVisibility} onValueChange={(v) => setCommentVisibility(v as 'internal' | 'external')}>
+                <TabsList className="mb-3">
+                  <TabsTrigger value="internal"><MessageSquare className="h-4 w-4 mr-1.5" /> Internal note</TabsTrigger>
+                  <TabsTrigger value="external"><Send className="h-4 w-4 mr-1.5" /> Reply</TabsTrigger>
                 </TabsList>
               </Tabs>
               <div

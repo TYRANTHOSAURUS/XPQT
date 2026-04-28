@@ -88,15 +88,7 @@ function TicketListRowImpl({
       </div>
 
       <div className="flex-1 min-w-0">
-        <div
-          className="truncate text-sm"
-          // Name lives on the row when it's NOT the selected one. The
-          // detail panel's h1 always carries the name; the pair morphs
-          // on open + reverses on close.
-          style={{ viewTransitionName: selected ? undefined : `ticket-${ticket.id}-title` }}
-        >
-          {ticket.title}
-        </div>
+        <div className="truncate text-sm">{ticket.title}</div>
         {(ticket.requester || ticket.location) && (
           <div className="truncate text-xs text-muted-foreground">
             {ticket.requester ? `${ticket.requester.first_name} ${ticket.requester.last_name}` : ''}
