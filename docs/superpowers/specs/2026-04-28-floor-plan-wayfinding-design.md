@@ -40,10 +40,10 @@ This spec ships **one** rendering engine that all spatial surfaces consume: room
 
 ### Non-goals
 
-- **CAD import / DWG / Revit ingestion.** Tier 3. The pragmatic input is a PNG/PDF/SVG floor outline + manual region tracing per spec §3.
+- **CAD / DWG / Revit / IFC ingestion in v1.** Phase 1-4 (this spec) ships rect-tracing + manual polygon authoring. CAD ingestion is **Tier 2 — separate Phase 5+ effort** per §3.3. (Earlier draft labeled it Tier 3; that contradicts `docs/spec.md`'s enterprise import promise. Corrected.)
 - **Real-time occupancy via sensors** (people counting, heat-mapping). Tier 3 — depends on hardware partners we don't have.
 - **3D visualisation** (Matterport-style walkthroughs). Tier 3 — too much production cost for the demo value at our market segment.
-- **Routing algorithm for "shortest path between rooms."** Tier 2 — wayfinding v1 is "highlight target + show building map"; turn-by-turn is later iteration.
+- **True turn-by-turn (corridor graph + step-by-step instructions).** Tier 2 — v1 ships directional-pointer + distance per §7.
 - **AR overlay** (point your phone at a hallway and see room labels). Tier 3.
 - **Per-employee desk-history visualisation** ("most-booked desks last 30 days"). Tier 2 analytics; reporting surface, not the floor-plan engine.
 
@@ -113,82 +113,74 @@ Trade-off acknowledged: at >5000 regions per floor SVG starts to get slow on low
 
 ## 3. Data model
 
-### Schema additions to `spaces`
+### 3.1 Existing schema we extend (don't duplicate)
+
+The repo already ships:
+
+- **`floor_plans` table** (`supabase/migrations/00127_floor_plans.sql`): `id, tenant_id, space_id (the floor), image_url, width_px, height_px, active`. One per floor, replaced on re-upload.
+- **`spaces.floor_plan_polygon jsonb`** (`supabase/migrations/00120_spaces_room_booking_columns.sql`): per-room polygon coords on its floor's plan.
+
+This spec **extends** that schema rather than introducing a parallel one. A previous draft proposed `floor_plan_regions` + `floor_plan_image_assets` tables; that draft was wrong — codex flagged it on 2026-04-28. The existing tables already cover the use cases; the gaps are in metadata + per-region presentation, not in the storage shape.
+
+### 3.2 Schema additions
 
 ```sql
+-- Extend the existing floor_plans table — no new image-asset table.
+alter table floor_plans
+  add column orientation        text default 'north_up'
+    check (orientation in ('north_up','north_right','north_down','north_left')),
+  add column mime_type          text,                          -- 'image/svg+xml' | 'image/png' | 'application/pdf' (PDF→PNG server-side)
+  add column sanitization_log   jsonb,                         -- list of stripped <script>, on*, etc. (SVG path)
+  add column uploaded_by_user_id uuid references users(id);
+
+-- Extend spaces with rect-coordinate fast-path + presentation hints. The
+-- existing floor_plan_polygon stays; rect coords are an additional shape
+-- option for the simple case (any 4-sided room) and the scaffold for v2
+-- polygon authoring.
 alter table spaces
-  add column floor_plan_image_storage_path text,                    -- per-floor base image
-  add column floor_plan_image_mime         text,                    -- 'image/svg+xml' | 'image/png' | 'application/pdf'
-  add column floor_plan_natural_width      int,                     -- pixels of the base image
-  add column floor_plan_natural_height     int,
-  add column floor_plan_orientation        text default 'north_up'  -- 'north_up' | 'north_left' | ... for compass overlay
-    check (floor_plan_orientation in ('north_up','north_right','north_down','north_left'));
+  add column floor_plan_rect_x        int,
+  add column floor_plan_rect_y        int,
+  add column floor_plan_rect_w        int,
+  add column floor_plan_rect_h        int,
+  add column floor_plan_rect_rotation int default 0,
+  add column floor_plan_label_position text default 'center'
+    check (floor_plan_label_position in ('center','top_left','top_right','bottom_left','bottom_right')),
+  add column floor_plan_icon          text,                    -- lucide icon name
+  add column floor_plan_color_hint    text;                    -- override default per-status color (rare)
+
+-- v1 picks ONE shape per space — either rect XOR polygon. Constraint:
+alter table spaces
+  add constraint spaces_floor_plan_shape_xor check (
+    floor_plan_polygon is null
+    or (floor_plan_rect_x is null and floor_plan_rect_y is null
+        and floor_plan_rect_w is null and floor_plan_rect_h is null)
+  );
 ```
 
-`spaces` rows where `type = 'floor'` carry the base-image columns. Rooms / desks under that floor use the floor's image as their plan.
+This means:
+- A space can have NO floor-plan presence (default — `parent` floors, generic zones, etc.).
+- A space can have a `floor_plan_rect_*` (simple case — most rooms).
+- A space can have a `floor_plan_polygon` jsonb (curved/L-shaped rooms; CAD-imported shapes).
+- Never both — the rect is just a syntactic shortcut.
 
-### `floor_plan_regions`
+### 3.3 CAD / BIM / IWMS ingestion (Tier 2, not Tier 3)
 
-One row per (room, desk, amenity, zone) drawn on a floor.
+The main `docs/spec.md` promises CAD/BIM/IWMS import. The earlier draft of this spec downgraded that to Tier 3, contradicting a stated enterprise commitment. Corrected:
 
-```sql
-create table floor_plan_regions (
-  id              uuid primary key default gen_random_uuid(),
-  tenant_id       uuid not null references tenants(id) on delete cascade,
-  floor_id        uuid not null references spaces(id) on delete cascade,    -- the floor this region lives on
-  space_id        uuid not null references spaces(id) on delete cascade,    -- the room / desk / zone the region represents
-  shape           text not null default 'rect'                              -- v1 ships rect; future polygon
-    check (shape in ('rect','polygon')),
-  /* rect coordinates: pixel space relative to floor_plan_natural_width/height */
-  rect_x          int,
-  rect_y          int,
-  rect_w          int,
-  rect_h          int,
-  rect_rotation   int default 0,                                            -- degrees; for slanted rooms
-  /* polygon coordinates: array of [x, y] pairs */
-  polygon_points  jsonb,
-  /* presentation hints */
-  label_position  text default 'center'
-    check (label_position in ('center','top_left','top_right','bottom_left','bottom_right')),
-  icon            text,                                                     -- lucide icon name (Door / Coffee / Printer / WC)
-  color_hint      text,                                                     -- override the default per-status color (rare)
-  created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now(),
-  unique (tenant_id, space_id),                                             -- one region per space (rooms can't be drawn twice)
+- **Tier 1 (this spec, Phase 1-4):** rect-tracing + manual polygon authoring covers 95% of customers up to ~50 buildings. Robin/Eptura/Condeco demos lead with this; tracing UX is the wedge for SMB.
+- **Tier 2 (separate Phase 5+ effort, post Wave 4):** CAD/DWG/Revit/IFC ingestion. Pipeline:
+  1. Admin uploads .dwg / .ifc → backend converts to SVG via a sandboxed worker (Vercel Sandbox-style isolated job per memory `vercel:vercel-sandbox.md`).
+  2. Polygons extracted from layer metadata → matched to existing `spaces.code` values via fuzzy match → admin confirms.
+  3. Result: `floor_plans.image_url` = the converted SVG, `spaces.floor_plan_polygon` populated automatically.
+  4. Re-upload + re-match supported; per-space `external_source_id` preserves the link to the CAD layer for round-tripping.
 
-  constraint floor_plan_region_shape_complete check (
-    (shape = 'rect'    and rect_x is not null and rect_y is not null and rect_w is not null and rect_h is not null)
-    or (shape = 'polygon' and polygon_points is not null)
-  )
-);
+Tier 2 not Tier 3 because: (a) main spec promises it, (b) it's a meaningful enterprise upsell wedge, (c) the schema we ship in Tier 1 is forward-compatible (CAD ingestion populates the same polygon column).
 
-create index idx_fpr_floor on floor_plan_regions (floor_id);
-create index idx_fpr_space on floor_plan_regions (space_id);
-```
+### 3.4 Audit events
 
-### `floor_plan_image_assets`
-
-For the base-image upload pipeline. Sanitization lives here since SVG can carry script.
-
-```sql
-create table floor_plan_image_assets (
-  id                  uuid primary key default gen_random_uuid(),
-  tenant_id           uuid not null references tenants(id) on delete cascade,
-  floor_id            uuid not null references spaces(id) on delete cascade,
-  storage_path        text not null,                                  -- Supabase storage path
-  natural_width       int  not null,
-  natural_height      int  not null,
-  mime_type           text not null,
-  uploaded_by_user_id uuid not null references users(id),
-  uploaded_at         timestamptz not null default now(),
-  /* SVG inputs go through tenant SVG sanitizer (apps/api/src/modules/tenant/svg-sanitizer.ts) */
-  sanitization_log    jsonb,                                          -- list of stripped <script>, on*, etc.
-  active              boolean not null default true,
-  unique (floor_id, active) deferrable                                -- one active per floor
-);
-```
-
-`spaces.floor_plan_image_storage_path` derefs to the active asset; uploading a new one rotates the active flag in a transaction.
+- `floor_plan.image_uploaded` — admin uploaded a new base image for a floor.
+- `floor_plan.region_created|updated|deleted` — admin authored regions.
+- `floor_plan.cad_imported` (Tier 2) — successful CAD ingestion run.
 
 ### Status snapshot — not a table
 
@@ -353,9 +345,26 @@ Behind the scenes: existing global search infra (per memory `project_global_sear
 
 When the user opens the floor plan from the portal home, default selection = their `default_location_id` floor (per memory `project_person_default_location.md`). When they open it from a meeting reminder or visitor email, default = the relevant booking's `space_id`'s floor.
 
-### Turn-by-turn (deferred)
+### v1 wayfinding — directional pointer (Tier 1)
 
-Tier 2. Initial wayfinding ships highlight + zoom + path-as-the-crow-flies arrow from current selection to target. True turn-by-turn requires a graph of corridor connections per floor — that's a significant data-entry effort per tenant + a graph algorithm. Defer until a Tier-A customer asks.
+`competitive-benchmark.md` §3 lists mobile turn-by-turn as parity. A pure "highlight + zoom" without any direction reads visibly behind in demos. Codex flagged this on 2026-04-28; corrected.
+
+v1 ships:
+
+- **Highlight + zoom-to** the destination on its floor (Tier 1, ships Phase 3).
+- **Directional pointer** at the user's current device-pose-relative reference: an arrow on the floor view from the user's current "anchor" (last-tapped room, or "I'm at reception" hard-coded for visitor mode) to the destination, plus straight-line distance ("Boardroom 4 — 35m, that way →"). No corridor graph required; uses the rect/polygon centroid math we already have. (Tier 1, ships Phase 3.)
+- **Cross-floor handoff:** when destination is on a different floor, pointer points to the nearest stairwell/elevator on the current floor (a `spaces.type = 'amenity'` of category 'circulation') with a "go up 2 floors" sub-instruction. (Tier 1, ships Phase 3.)
+
+### v2 wayfinding — full turn-by-turn (Tier 2)
+
+Corridor-graph turn-by-turn with step-by-step instructions ("turn left, walk 20m, turn right at the kitchen"). Requires:
+
+- Corridor graph: a `floor_corridor_segments` table linking points on each floor.
+- Authoring UX: admin draws corridors on top of the floor plan.
+- Pathfinding: A* on the corridor graph.
+- Multi-floor: links between stairwell/elevator segments.
+
+Tier 2 because corridor authoring is per-tenant manual work and the demo value of full turn-by-turn vs the directional-pointer is incremental at smaller-tenant scale. Promote to Tier 1 if customer demand confirms (campus-style customers with >5 buildings + multi-corridor floors).
 
 ---
 
@@ -507,13 +516,11 @@ A11y:
 
 ## 16. Out of scope
 
-- CAD / DWG / Revit ingestion.
 - 3D walkthrough / Matterport.
 - Sensor-based real-time occupancy.
-- Turn-by-turn directions (deferred to Tier 2).
-- Free-form polygon authoring (deferred to v2).
-- Per-region custom shapes (curves, rotations beyond rect.rotation).
 - AR overlay.
+
+(Note: CAD/DWG/Revit ingestion is **Tier 2, not out of scope** — see §3.3. The earlier draft of this spec listed it here in error. Polygon authoring + true turn-by-turn are also Tier 2, not Tier 3 / out-of-scope.)
 
 ---
 

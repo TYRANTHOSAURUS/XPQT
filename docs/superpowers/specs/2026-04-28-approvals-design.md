@@ -8,7 +8,7 @@
 
 **Why this spec exists:** the platform roadmap labels approvals Tier 1 across §G3-G6 (cost-center approval routing, manager-chain resolution, delegation, dashboard, mobile/Teams approve-in-place). The codex review of the orchestration plan on 2026-04-28 surfaced the gap that no design spec existed for it. Approvals are a daily-driver workflow for any tenant >50 employees; without a coherent design we ship N variants of "approval" across services / room booking / visitor management, drift between them, and create the same N audit-log query that ServiceNow has.
 
-This spec consolidates what already ships (the `approval` + `delegation` modules in `apps/api/src/modules/`, parallel + sequential chains, scope_breakdown dedup) and specifies what's missing: the **manager-chain resolver**, the **approver dashboard UI**, the **mobile + Teams approve-in-place flow**, and the **escalation-on-timeout policy**.
+This spec consolidates what already ships (see §2.1 below) and specifies what's missing: the **manager-chain resolver**, real **sequential-step gating + chain advance** (the schema is there; the logic isn't), **durable delegation** (currently re-resolved at request time, not pre-baked at chain creation), the **approver dashboard UI**, the **mobile + Teams approve-in-place flow**, and the **escalation-on-timeout policy**. It also extends — not duplicates — the existing `ApprovalRoutingService` in `apps/api/src/modules/orders/approval-routing.service.ts`; that service's scope_breakdown dedup is preserved and rehomed into the new resolver.
 
 **Context:**
 - [`docs/booking-platform-roadmap.md`](../../booking-platform-roadmap.md) §G3-G6 + §F17.
@@ -32,7 +32,7 @@ This spec consolidates what already ships (the `approval` + `delegation` modules
 1. **Single resolver** — when a request needs approval, exactly one resolver decides who must approve and in what order. Today's services / room booking / visitor management each describe their own approval flow; converge on one.
 2. **Manager-chain resolution** — `requester.manager_person_id` walked N levels until threshold matches (cost / amount / role). Today the data is in `persons.manager_person_id` (496 rows already populated) but the resolver doesn't use it.
 3. **Cost-center default approvers** — `cost_centers.default_approver_person_id` already exists (memory `project_industry_mix.md` flags this as the corporate HQ wedge). Surface it as a first-class resolver source.
-4. **Delegation that survives chain creation** — admin sets up delegation; existing chains in flight resolve to the delegate, new chains see the delegate from the start.
+4. **Durable delegation pre-baked at chain creation** — today's code re-resolves delegations at request time, so a delegation expiring mid-chain reroutes in-flight approvals. Target: resolver writes `delegated_to_person_id` at chain creation, and that field is the source of truth for the rest of the chain's life. New chains see the new delegate. Existing in-flight approvals don't reroute when the delegation expires (intentional — the work was already in flight; rerouting would be confusing).
 5. **Approver dashboard** — every approver sees one inbox across services / rooms / visitors / orders, sorted by SLA-clock, with batch-approve for compatible items. Memory `feedback_quality_bar_comprehensive.md`: comprehensive scope, not lean — this is the daily-driver UX.
 6. **Mobile-first approve** — phone-formatted inbox + one-tap approve / reject + reason capture. ~50% of approvals happen on mobile per benchmark §3.
 7. **Teams approve-in-place** — adaptive card in Teams chat with Approve / Decline / Need-info actions; backend processes the action without a portal round-trip. Depends on MS Graph Phase 3 + Phase 4.
@@ -52,6 +52,39 @@ This spec consolidates what already ships (the `approval` + `delegation` modules
 ---
 
 ## 2. Architecture overview
+
+### 2.1 Current state (codex post-review correction, 2026-04-28)
+
+A previous draft of this spec implied the existing approvals subsystem already supported step-gated sequential chains + durable delegation. That was wrong. Concrete current state:
+
+| Component | Reality | Intended end-state | Sprint to deliver |
+|---|---|---|---|
+| `approvals` table + RLS | ✅ shipped | unchanged | — |
+| `delegations` table | ✅ shipped | unchanged | — |
+| `persons.manager_person_id` (496 rows populated) | ✅ shipped | resolver consumes it | Sprint 1 |
+| `ApprovalRoutingService.assemble` (orders/bundles, scope_breakdown dedup, cost-center default approver) | ✅ shipped at `apps/api/src/modules/orders/approval-routing.service.ts` | **rehomed** into the new domain-agnostic resolver; orders import the resolver instead | Sprint 1 |
+| `ApprovalService.createSequentialChain` | ⚠️ inserts every step as `pending` simultaneously; no waiting state in the schema; surfaces `step_number` but never gates by it | resolver-driven chain creation + `respond()` enforces "current step must complete before later steps surface as actionable" | Sprint 1 |
+| `ApprovalService.respond` | ⚠️ accepts a response on any pending row regardless of `step_number` | extends to check prior-step completion before accepting | Sprint 1 |
+| `ApprovalService.advanceChain` | ⚠️ no-op (`_completedStep` arg unused) | drives next-step notifications + auto-skip self-as-approver + audit emit | Sprint 1 |
+| Delegation routing | ⚠️ `respond()` checks `delegations` at request time; if a delegation expires mid-chain the in-flight approval reroutes mid-stream | resolver pre-bakes `delegated_to_person_id` at chain creation; expiry doesn't reroute in-flight approvals | Sprint 1 |
+| Manager-chain resolver | ❌ not shipped — `persons.manager_person_id` is unused | climbing walker with cycle-detection + threshold-by-amount | Sprint 1 |
+| Approver dashboard | ❌ not shipped | per-approver inbox + batch + Realtime | Sprint 2 |
+| Escalation worker + reminders | ❌ not shipped | `approval_step_timeouts` + cron worker | Sprint 1 |
+| Teams approve-in-place | ❌ not shipped — depends on MS Graph Phase 3 + 4 | adaptive cards | Sprint 4 (Wave 4 of cross-spec; gated by MS Graph Phase 4 landing) |
+| Admin override surface | ❌ not shipped | reversal + reason + audit | Sprint 4 |
+
+The headline correction: **Sprint 1 is bigger than originally suggested.** It must close the gating + advance + delegation gaps in `ApprovalService` AND ship the new resolver AND the escalation worker. That moves Sprint 1 from "1.5 weeks" to "~2 weeks." Total remains 5-6 weeks because Sprint 5 polish absorbs the slack.
+
+### 2.2 Why one resolver, not a sidecar
+
+`ApprovalRoutingService.assemble` already implements the dedup algorithm + cost-center-default approver lookup for orders + bundles. Booking-services-roadmap §4.4 explicitly says "do not add a sidecar" — new approval flows extend the existing path.
+
+This spec's `ApprovalResolverService` is the **refactored, domain-agnostic** version of `ApprovalRoutingService`:
+
+- All of `assemble`'s dedup + cost-center-default + scope_breakdown logic moves into the resolver as the "rule outcomes → chain template steps" reduction.
+- Orders + bundles call the resolver via the same entry point they call today — the function signature stays compatible (Sprint 1 keeps a thin shim for backward compat; Sprint 5 deletes it).
+- Room booking + visitor management add NEW entry points to the resolver — they don't re-implement scope_breakdown dedup.
+- Net result: one approval-routing stack across all four entity types, not two.
 
 ### Module layout
 
@@ -493,15 +526,22 @@ Each writes to `approval_overrides` with the reason; emits `approval.overridden`
 
 ## 11. Phased delivery
 
-### Sprint 1 (1.5 wks): Resolver + chain templates + escalation worker
+### Sprint 1 (~2 wks): Resolver + chain templates + step gating + escalation worker
+
+(Larger than v1 of this spec implied — see §2.1. Closes the gating, advance, and durable-delegation gaps in `ApprovalService` while shipping the new resolver.)
 
 - Migrations: `approval_chain_templates`, `approval_step_timeouts`, `approval_overrides`; `approvals` adds `step_timeout_minutes` + `escalated_from_step_number`.
-- `ApprovalResolverService` with all 5 resolution sources + delegation interleave + edge-case handling.
-- `ApprovalEscalationWorker` (5-min cron) + reminder logic.
-- `manager_chain` walker + circuit-breaker for cycles.
+- **Refactor of `ApprovalService` — fix the gating gaps:**
+  - `respond()` checks prior-step completion (looks for `status='pending' AND step_number < this.step_number`); rejects if anything earlier is unresolved.
+  - `advanceChain()` actually advances — emits the next-step notification, auto-skips when the next approver is the requester, emits audit.
+  - Sequential `createSequentialChain` only creates the chain rows; only step 1 is "actionable" per the new gating in `respond()`. Optional column `is_actionable` not needed (gating is purely from `step_number`).
+- **`ApprovalResolverService`** as the refactored, domain-agnostic version of `ApprovalRoutingService.assemble`. Backward-compat shim in orders + bundles so callers don't break; deleted in Sprint 5.
+- 5 resolution sources + delegation pre-bake + edge-case handling per §4.
+- `manager_chain` walker + cycle-detection.
+- `ApprovalEscalationWorker` (5-min cron) + reminder timeouts.
 - Backfill: existing in-flight approvals get default 24h timeout + `manager_of_approver` escalation.
 
-**Acceptance:** request creation hits resolver; resolver picks template per priority; escalation auto-fires at T+0.
+**Acceptance:** sequential 3-step chain created; only step 1 actionable in `respond()`; step 1 approves → step 2 surfaces + notifies; manager-chain walker handles a 2-level climb; escalation auto-fires at T+0.
 
 ### Sprint 2 (1.5 wks): Approver dashboard + Realtime
 
@@ -522,14 +562,22 @@ Each writes to `approval_overrides` with the reason; emits `approval.overridden`
 
 **Acceptance:** admin authors a 3-step chain (cost-center default → manager_chain levels=2 → CFO team) and previews resolution against a real requester.
 
-### Sprint 4 (1 wk): Teams approve-in-place + override surface
+### Sprint 4 (1 wk): Override surface (always); Teams approve-in-place (when MS Graph Phase 4 lands)
 
-- Adaptive-card builder per spec §6 — depends on MS Graph Phase 3 + Phase 4 landing.
-- `/api/teams/adaptive-card-action` controller integrated with `ApprovalService.respond`.
+**Sequencing note (post-codex correction):** The override surface is independent and ships in Wave 3 alongside Sprints 1-3. Teams approve-in-place is a hard-dep on MS Graph Phase 3 (Teams adapter) + Phase 4 (adaptive-card actions); it ships in **Wave 4**, NOT Wave 3, even though it's nominally "Sprint 4" of approvals. The cross-spec dep map sequences this correctly.
+
+Override surface (Wave 3):
 - `/admin/approvals/overrides` admin surface with reason capture.
+- `approval_overrides` table writes + audit emit.
+
+Teams approve-in-place (Wave 4 — gated by MS Graph Phase 4):
+- Adaptive-card builder per spec §6.
+- `/api/teams/adaptive-card-action` controller integrated with `ApprovalService.respond`.
 - Audit completeness sweep — every transition emits via `audit_outbox`.
 
-**Acceptance:** approver in Teams chat clicks Approve on a card → Prequest registers the decision + the card updates in place; admin can reverse a decision from `/admin/approvals/overrides` with reason captured.
+**Acceptance (Wave 3 part):** admin can reverse a decision from `/admin/approvals/overrides` with reason captured; original chain reactivates at the timed-out step.
+
+**Acceptance (Wave 4 part):** approver in Teams chat clicks Approve on a card → Prequest registers the decision + the card updates in place identically to the dashboard path.
 
 ### Sprint 5 (~3 days): Polish + i18n + a11y audit
 

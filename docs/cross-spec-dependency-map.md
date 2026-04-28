@@ -282,19 +282,21 @@ Once Wave 1 closes, these can run in any order — they share no remaining hard-
 - **MS Graph Phase 2** — bi-di sync + conflict prevention.
 - **MS Graph Phase 3** — Teams adapter (notifications) — needed by Phase B order alerts, requester rating prompts, visitor host notify, scorecard alerts.
 
-### Wave 3 — Approvals + analytics + KDS
+### Wave 3 — Approvals (1-3) + analytics + KDS + floor-plan
 
-- **Approvals (spec #10)** — Sprints 1-4 covering manager-chain, delegation, dashboard, mobile/Teams approve-in-place. **Critical path** — Tier 1 per benchmark and roadmap §G3-G6.
+- **Approvals (spec #10) Sprints 1-3 + override surface** — manager-chain, dashboard, batch approve, override. **Critical path** — Tier 1 per benchmark and roadmap §G3-G6. **Sprint 4 (Teams approve-in-place) deferred to Wave 4** because it hard-deps on MS Graph Phase 4.
+- **Floor-plan / wayfinding (spec #11) Phases 1-3** — rendering engine + rooms + desks + wayfinding directional pointer. **Critical path** for Robin/Eptura parity.
 - **Vendor scorecards** — after Phase A + B + Sprint 3 status events provide enough data quality.
 - **Requester rating** — feeds scorecards.
-- **Visitor mgmt Phases 4-5** — lobby panel + bundle integration + analytics + GDPR retention worker (consumes the GDPR adapter from Wave 0).
+- **Visitor mgmt Phases 4-5** — lobby panel + bundle integration + analytics + GDPR retention worker (consumes the GDPR adapter from Wave 0; consumes floor-plan engine from this wave).
 - **Vendor execution UX Phase 1 (KDS catering)** — biggest vendor adoption driver per memory `project_internal_team_modes.md`.
 
-### Wave 4 — Floor-plan, execution UX rollout, Teams card actions
+### Wave 4 — MS Graph Phase 3-4 + execution UX rollout + Teams approvals
 
-- **Floor-plan / wayfinding (spec #11)** — Phases 1-3 (rendering engine + rooms + desks). Critical path for parity. Visitor lobby-panel rendering reuses this in Phase 4.
+- **MS Graph Phase 3 + 4** — Teams adapter (notifications) + adaptive-card approvals.
+- **Approvals Sprint 4** — Teams approve-in-place (consumes MS Graph Phase 4 adaptive-card actions).
+- **Floor-plan Phase 4** — visitor lobby-panel rendering + PDF reuse (consumes visitor mgmt Phase 1-3 from Wave 2).
 - **Vendor execution UX Phases 2-4** — AV / cleaning / transport.
-- **MS Graph Phase 4** — Teams adaptive-card approvals (depends on approvals spec landing).
 
 ### Wave 5 — Tier 2 / optional iteration
 
@@ -342,30 +344,47 @@ If we want to ship to first wave-1 customers in Q1 2027, we have some buffer for
 **Cannot ship to first customers without these.** Marked with ⭐.
 
 ```
-GDPR baseline Sprint 1-2 (audit outbox + retention) ⭐
+GDPR baseline Sprint 1-2 (audit outbox + retention) ⭐  ✅ SHIPPED 2026-04-28
    ↓
-Daglijst Phase A ⭐ (NL/BE adoption blocker)
-Vendor portal Phase B Sprint 1-3 ⭐ (Phase B core)
+Daglijst Phase A ⭐ (NL/BE adoption blocker)                  Sprint 1 ✅; 2-3 pending
+Vendor portal Phase B Sprint 1-3 ⭐ (Phase B core)            Sprint 1 ✅; 2-3 pending
 MS Graph Phase 1 ⭐ (Outlook gap closer)
-Visual rule builder Sprint 1 ⭐ (replace unusable JSON editor)
+Visual rule builder Sprint 1-2 ⭐ (replace unusable JSON editor)  Sprint 1A ✅; 1B-2 pending
    ↓
 MS Graph Phase 2 ⭐ (conflict prevention)
 Visitor management Phase 1-3 ⭐ (Envoy parity gate)
    ↓
-GDPR Sprint 3-5 ⭐ (right of access + erasure + breach runbook)
+Approvals Sprint 1-3 ⭐ (manager-chain + dashboard + override) — gates first-customer
+                                                                 because cost-center
+                                                                 approvals are core
+                                                                 corporate HQ wedge
+                                                                 (memory project_industry_mix.md)
+Floor-plan / wayfinding Phase 1-3 ⭐ (Robin/Eptura parity gate; rooms + desks + visitor)
+   ↓
+GDPR Sprint 3-5 ⭐ (right of access + erasure + breach runbook)  ✅ SHIPPED 2026-04-28
 Visual rule builder Sprint 2 (advanced)  ←←← deferrable
 Vendor scorecards (after Phase B + Daglijst data) ⭐ (procurement gate)
+   ↓
+MS Graph Phase 3 + 4 (Teams notifications + adaptive-card actions) ⭐
+   ↓
+Approvals Sprint 4 ⭐ — Teams approve-in-place (gated by MS Graph Phase 4)
+Floor-plan Phase 4 (visitor lobby panel + PDF reuse)
    ↓
 [Ready for first customer migrations]
 ```
 
+**Cross-spec sequencing constraints baked in (post-codex correction 2026-04-28):**
+- Approvals Sprint 4 (Teams approve-in-place) is **after** MS Graph Phase 4. Earlier draft of approvals spec implied Sprint 4 lands in Wave 3; corrected to Wave 4 — Teams adaptive-card actions are a hard-dep.
+- Floor-plan Phase 4 (visitor lobby panel) is **after** visitor management Phase 1-3 since it consumes the visitors data + Realtime channels.
+- Approvals Sprint 1-3 + override surface are independent and ship in Wave 3.
+
 **Items NOT on critical path (deferrable to post-launch iteration):**
-- MS Graph Phase 3-4 (Teams notifications + adaptive cards) — defer if Teams adoption isn't hot.
-- MS Graph Phase 5 (Outlook add-in) — explicitly deferred per spec.
+- MS Graph Phase 5 (Outlook add-in) — explicitly Tier 2 per §13.1.
 - Vendor execution UX Phase 2-4 (AV, cleaning, transport) — KDS Phase 1 is highest-payoff; others can roll out post-launch.
 - Requester rating system — can ship a few weeks post-launch.
 - Visitor management Phase 4-5 (lobby panel + analytics + bundle integration) — Phase 1-3 alone is shippable.
 - Visual rule builder Sprint 3-4 (room domain + i18n) — Sprint 1-2 alone covers service rules.
+- Floor-plan Tier 2 (CAD/BIM/IWMS ingestion + true turn-by-turn) — Phase 5+; deferrable.
 
 ---
 
