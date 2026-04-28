@@ -26,6 +26,11 @@ export interface PickerSelection {
   unit: 'per_item' | 'per_person' | 'flat_rate' | null;
   name: string;
   service_type: ServiceType;
+  /** ISO timestamps. Null = use the booking window. Set per-line when the
+   *  user expands "Different time?" on a catalog row (e.g. coffee at 8:45
+   *  for a 9:00 meeting). */
+  service_window_start_at?: string | null;
+  service_window_end_at?: string | null;
 }
 
 const TAB_DEFS: Array<{
@@ -47,6 +52,10 @@ interface Props {
   deliverySpaceId: string | null;
   onDate: string | null;
   attendeeCount: number;
+  /** Booking start/end ISO. Used as the default service window when the
+   *  user expands "Different time?" on a catalog row. */
+  bookingStartAt?: string | null;
+  bookingEndAt?: string | null;
   /** Default tab to focus when opened (e.g. "catering" if invoked from a "+ Add catering" button). */
   initialServiceType?: ServiceType;
   /** Confirm — the parent fires the mutation. */
@@ -79,6 +88,8 @@ export function ServicePickerSheet({
   deliverySpaceId,
   onDate,
   attendeeCount,
+  bookingStartAt = null,
+  bookingEndAt = null,
   initialServiceType = 'catering',
   onConfirm,
   submitting,
@@ -170,6 +181,8 @@ export function ServicePickerSheet({
                   deliverySpaceId={deliverySpaceId}
                   onDate={onDate}
                   attendeeCount={attendeeCount}
+                  bookingStartAt={bookingStartAt}
+                  bookingEndAt={bookingEndAt}
                   selections={selections}
                   onChange={setSelections}
                   active={activeTab === t.value}
@@ -218,6 +231,8 @@ function CatalogPanel({
   deliverySpaceId,
   onDate,
   attendeeCount,
+  bookingStartAt,
+  bookingEndAt,
   selections,
   onChange,
   active,
@@ -227,6 +242,8 @@ function CatalogPanel({
   deliverySpaceId: string | null;
   onDate: string | null;
   attendeeCount: number;
+  bookingStartAt: string | null;
+  bookingEndAt: string | null;
   selections: PickerSelection[];
   onChange: (next: PickerSelection[]) => void;
   active: boolean;
@@ -288,6 +305,23 @@ function CatalogPanel({
     return 1;
   };
 
+  const setSelectionWindow = (
+    catalogItemId: string,
+    window: { start_at: string | null; end_at: string | null } | null,
+  ) => {
+    onChange(
+      selections.map((s) =>
+        s.catalog_item_id === catalogItemId
+          ? {
+              ...s,
+              service_window_start_at: window?.start_at ?? null,
+              service_window_end_at: window?.end_at ?? null,
+            }
+          : s,
+      ),
+    );
+  };
+
   if (!deliverySpaceId || !onDate) {
     return (
       <p className="py-8 text-center text-xs text-muted-foreground">
@@ -337,54 +371,185 @@ function CatalogPanel({
           <li
             key={item.catalog_item_id}
             className={cn(
-              'flex items-stretch gap-3 rounded-lg border bg-card p-3',
+              'flex flex-col gap-2 rounded-lg border bg-card p-3',
               sel && 'border-primary/30 bg-primary/5',
             )}
           >
-            {item.image_url && (
-              <div
-                className="size-16 shrink-0 rounded-md bg-muted bg-cover bg-center"
-                style={{ backgroundImage: `url(${item.image_url})` }}
-                aria-hidden
-              />
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium leading-tight">{item.name}</div>
-              {item.description && (
-                <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
-                  {item.description}
-                </p>
+            <div className="flex items-stretch gap-3">
+              {item.image_url && (
+                <div
+                  className="size-16 shrink-0 rounded-md bg-muted bg-cover bg-center"
+                  style={{ backgroundImage: `url(${item.image_url})` }}
+                  aria-hidden
+                />
               )}
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <span className="tabular-nums">{formatCurrency(item.price)}</span>
-                {item.unit && <span className="normal-case">/ {prettyUnit(item.unit)}</span>}
-                {item.lead_time_hours != null && (
-                  <span className="normal-case">· {item.lead_time_hours}h lead</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium leading-tight">{item.name}</div>
+                {item.description && (
+                  <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
+                    {item.description}
+                  </p>
                 )}
-                {item.dietary_tags.length > 0 && (
-                  <span className="normal-case">
-                    · {item.dietary_tags.slice(0, 2).join(', ')}
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <span className="tabular-nums">{formatCurrency(item.price)}</span>
+                  {item.unit && <span className="normal-case">/ {prettyUnit(item.unit)}</span>}
+                  {item.lead_time_hours != null && (
+                    <span className="normal-case">· {item.lead_time_hours}h lead</span>
+                  )}
+                  {item.dietary_tags.length > 0 && (
+                    <span className="normal-case">
+                      · {item.dietary_tags.slice(0, 2).join(', ')}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end justify-between gap-2">
+                <QuantityStepper
+                  value={sel?.quantity ?? 0}
+                  addInitial={initialQuantityFor(item)}
+                  onChange={(n) => setQuantity(item, n)}
+                />
+                {linePreview != null && linePreview > 0 && (
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {formatCurrency(linePreview)}
                   </span>
                 )}
               </div>
             </div>
-            <div className="flex shrink-0 flex-col items-end justify-between gap-2">
-              <QuantityStepper
-                value={sel?.quantity ?? 0}
-                addInitial={initialQuantityFor(item)}
-                onChange={(n) => setQuantity(item, n)}
+            {sel && (
+              <ItemWindowOverride
+                sel={sel}
+                bookingStartAt={bookingStartAt}
+                bookingEndAt={bookingEndAt}
+                onChange={(w) => setSelectionWindow(item.catalog_item_id, w)}
               />
-              {linePreview != null && linePreview > 0 && (
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {formatCurrency(linePreview)}
-                </span>
-              )}
-            </div>
+            )}
           </li>
         );
       })}
     </ul>
   );
+}
+
+/**
+ * Per-line "different time?" disclosure shown below a selected catalog row.
+ * Collapsed: a small inline link saying "At meeting time · Set different time".
+ * Expanded: two `<input type="time">` fields anchored to the booking date,
+ * plus "Use meeting time" reset.
+ *
+ * Times are stored as full ISO timestamps in PickerSelection; the date
+ * component is taken from `bookingStartAt`. If no booking window is known
+ * (rare — composer flows pass it), the override is hidden so the user
+ * doesn't end up with a half-functional control.
+ */
+function ItemWindowOverride({
+  sel,
+  bookingStartAt,
+  bookingEndAt,
+  onChange,
+}: {
+  sel: PickerSelection;
+  bookingStartAt: string | null;
+  bookingEndAt: string | null;
+  onChange: (window: { start_at: string | null; end_at: string | null } | null) => void;
+}) {
+  const [expanded, setExpanded] = useState(
+    Boolean(sel.service_window_start_at || sel.service_window_end_at),
+  );
+
+  if (!bookingStartAt || !bookingEndAt) return null;
+
+  const hasOverride = Boolean(sel.service_window_start_at || sel.service_window_end_at);
+  const effectiveStart = sel.service_window_start_at ?? bookingStartAt;
+  const effectiveEnd = sel.service_window_end_at ?? bookingEndAt;
+  const startTime = isoToLocalTime(effectiveStart);
+  const endTime = isoToLocalTime(effectiveEnd);
+  const dateStamp = bookingStartAt.slice(0, 10);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {hasOverride
+          ? `At ${formatWindowSummary(effectiveStart, effectiveEnd)} · adjust`
+          : 'At meeting time · set different time'}
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-dashed pt-2">
+      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        Service window
+      </span>
+      <input
+        type="time"
+        value={startTime}
+        onChange={(e) =>
+          onChange({
+            start_at: combineDateTime(dateStamp, e.target.value),
+            end_at: sel.service_window_end_at ?? bookingEndAt,
+          })
+        }
+        className="h-8 rounded-md border bg-background px-2 text-sm tabular-nums focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+        aria-label="Service window start"
+      />
+      <span aria-hidden className="text-xs text-muted-foreground">
+        to
+      </span>
+      <input
+        type="time"
+        value={endTime}
+        onChange={(e) =>
+          onChange({
+            start_at: sel.service_window_start_at ?? bookingStartAt,
+            end_at: combineDateTime(dateStamp, e.target.value),
+          })
+        }
+        className="h-8 rounded-md border bg-background px-2 text-sm tabular-nums focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+        aria-label="Service window end"
+      />
+      {hasOverride && (
+        <button
+          type="button"
+          onClick={() => {
+            onChange(null);
+            setExpanded(false);
+          }}
+          className="text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          Use meeting time
+        </button>
+      )}
+    </div>
+  );
+}
+
+function isoToLocalTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/** Combine YYYY-MM-DD + HH:MM (browser local) → ISO timestamp. */
+function combineDateTime(date: string, time: string): string {
+  if (!time) return new Date(`${date}T00:00`).toISOString();
+  return new Date(`${date}T${time}`).toISOString();
+}
+
+const TIME_FMT = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+function formatWindowSummary(startIso: string, endIso: string): string {
+  const start = TIME_FMT.format(new Date(startIso));
+  const end = TIME_FMT.format(new Date(endIso));
+  return `${start}–${end}`;
 }
 
 function QuantityStepper({

@@ -67,8 +67,8 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
           catalog_item_id: s.catalog_item_id,
           menu_id: s.menu_id,
           quantity: s.quantity,
-          // Default service window = booking window. Picker doesn't override
-          // today; phase B will add a per-line "different time?" toggle.
+          service_window_start_at: s.service_window_start_at ?? null,
+          service_window_end_at: s.service_window_end_at ?? null,
         })),
       });
       toastSuccess(
@@ -113,6 +113,8 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
           deliverySpaceId={reservation.space_id}
           onDate={onDate}
           attendeeCount={reservation.attendee_count ?? 1}
+          bookingStartAt={reservation.start_at}
+          bookingEndAt={reservation.end_at}
           onConfirm={handleAdd}
           submitting={attach.isPending}
           subtitle="Defaults to your meeting time and attendee count."
@@ -268,6 +270,8 @@ function BundleServicesContent({
         deliverySpaceId={reservation.space_id}
         onDate={onDate}
         attendeeCount={reservation.attendee_count ?? 1}
+        bookingStartAt={reservation.start_at}
+        bookingEndAt={reservation.end_at}
         onConfirm={onAddServices}
         submitting={addPending}
         title="Add services"
