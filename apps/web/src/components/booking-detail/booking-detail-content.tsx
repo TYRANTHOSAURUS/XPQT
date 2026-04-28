@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  CalendarClock, CheckCircle2, Pencil, RefreshCw, Users as UsersIcon, X,
+  CalendarClock, CheckCircle2, Layers, Pencil, RefreshCw, Users as UsersIcon, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { NumberStepper } from '@/components/ui/number-stepper';
 import { BookingStatusPill } from './booking-status-pill';
 import { BookingEditForm } from './booking-edit-form';
 import { BundleServicesSection } from './bundle-services-section';
+import { BundleWorkOrdersSection } from './bundle-work-orders-section';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
 import { toastError, toastSuccess, toastUpdated } from '@/lib/toast';
 
@@ -188,6 +189,15 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
           </DetailRow>
         )}
 
+        {reservation.multi_room_group_id && (
+          <DetailRow icon={<Layers className="size-3.5" />} label="Multi-room">
+            <div className="text-sm">Part of a multi-room group</div>
+            <div className="text-xs text-muted-foreground">
+              All rooms share the same start/end and atomic cancellation.
+            </div>
+          </DetailRow>
+        )}
+
         {reservation.policy_snapshot.rule_evaluations &&
           reservation.policy_snapshot.rule_evaluations.some((e) => e.matched) && (
             <DetailRow label="Rules applied">
@@ -214,6 +224,14 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
         canEdit={showEdit}
       />
 
+      {/* Work-orders / cases attached to this booking. Mounts only when
+          a bundle exists (no bundle = no work orders). Renders nothing
+          when the bundle has zero tickets so we don't confuse the user
+          with an empty section. Service desk uses this to jump straight
+          into the ticket without losing the booking context. */}
+      {reservation.booking_bundle_id && (
+        <BundleWorkOrdersSection bundleId={reservation.booking_bundle_id} />
+      )}
 
       {(showCheckIn || showRestore || showEdit) && (
         <div className="border-t px-5 py-3">
