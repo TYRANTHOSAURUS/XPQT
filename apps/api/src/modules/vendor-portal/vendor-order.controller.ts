@@ -1,8 +1,11 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Get,
   Param,
   ParseUUIDPipe,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -11,6 +14,10 @@ import { Public } from '../auth/public.decorator';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { PersonalDataAccessLogService } from '../privacy-compliance/personal-data-access-log.service';
 import { VendorPortalEventType } from './event-types';
+import {
+  VendorOrderStatusService,
+  isVendorTransitionStatus,
+} from './vendor-order-status.service';
 import { VendorOrderService } from './vendor-order.service';
 import {
   VendorPortalGuard,
@@ -33,6 +40,7 @@ export class VendorOrderController {
 
   constructor(
     private readonly orders: VendorOrderService,
+    private readonly status: VendorOrderStatusService,
     private readonly auditOutbox: AuditOutboxService,
     private readonly pdal: PersonalDataAccessLogService,
   ) {}
@@ -115,6 +123,69 @@ export class VendorOrderController {
     });
 
     return detail;
+  }
+
+  // -------------------- POST /vendor/orders/:id/status --------------------
+
+  @Post(':id/status')
+  async updateStatus(
+    @Req() req: RequestWithVendorSession,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { to_status?: string; note?: string },
+  ) {
+    if (!body?.to_status || typeof body.to_status !== 'string') {
+      throw new BadRequestException('to_status is required');
+    }
+    if (!isVendorTransitionStatus(body.to_status)) {
+      throw new BadRequestException(
+        `to_status must be one of: confirmed, preparing, en_route, delivered`,
+      );
+    }
+    const session = req.vendorSession!;
+    return this.status.updateStatus({
+      tenantId: session.tenant_id,
+      vendorId: session.vendor_id,
+      orderId: id,
+      newStatus: body.to_status,
+      note: body.note ?? null,
+      vendorUserId: session.vendor_user_id,
+    });
+  }
+
+  // -------------------- POST /vendor/orders/:id/decline --------------------
+
+  @Post(':id/decline')
+  async decline(
+    @Req() req: RequestWithVendorSession,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { reason?: string },
+  ) {
+    if (!body?.reason || typeof body.reason !== 'string') {
+      throw new BadRequestException('reason is required');
+    }
+    const session = req.vendorSession!;
+    return this.status.decline({
+      tenantId: session.tenant_id,
+      vendorId: session.vendor_id,
+      orderId: id,
+      reason: body.reason,
+      vendorUserId: session.vendor_user_id,
+    });
+  }
+
+  // -------------------- GET /vendor/orders/:id/events --------------------
+
+  @Get(':id/events')
+  async listEvents(
+    @Req() req: RequestWithVendorSession,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const session = req.vendorSession!;
+    return this.status.listEventsForOrder({
+      tenantId: session.tenant_id,
+      vendorId: session.vendor_id,
+      orderId: id,
+    });
   }
 }
 

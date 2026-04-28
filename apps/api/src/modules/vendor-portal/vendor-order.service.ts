@@ -39,8 +39,11 @@ export class VendorOrderService {
     // Validate the status filter against the closed enum the LATERAL produces
     // — anything else returns an empty filter (no leakage of unknown statuses
     // into the SQL).
+    // Closed enum the LATERAL produces; every entry below must be derivable
+    // from the CASE expression in the same query.
     const VALID_STATUSES = new Set([
-      'requires_phone_followup', 'delivered', 'preparing', 'ordered',
+      'requires_phone_followup', 'cancelled', 'delivered', 'en_route',
+      'preparing', 'confirmed', 'ordered',
     ]);
     const safeStatus = statusFilter && VALID_STATUSES.has(statusFilter)
       ? statusFilter
@@ -89,10 +92,17 @@ export class VendorOrderService {
        cross join lateral (
          select
            case
+             /* Most-blocking wins. Phone-followup is the loudest signal:
+                vendor declined, desk needs to call. Then the natural state
+                machine: cancelled (terminal-bad) > delivered (terminal-ok) >
+                en_route > preparing > confirmed > ordered (initial). */
              when bool_or(oli.requires_phone_followup and oli.desk_confirmed_phoned_at is null)
                   then 'requires_phone_followup'
+             when bool_and(oli.fulfillment_status = 'cancelled') then 'cancelled'
              when bool_and(oli.fulfillment_status = 'delivered') then 'delivered'
-             when bool_or(oli.fulfillment_status = 'preparing') then 'preparing'
+             when bool_or(oli.fulfillment_status = 'en_route')   then 'en_route'
+             when bool_or(oli.fulfillment_status = 'preparing')  then 'preparing'
+             when bool_or(oli.fulfillment_status = 'confirmed')  then 'confirmed'
              else 'ordered'
            end as fulfillment_status,
            bool_or(oli.requires_phone_followup and oli.desk_confirmed_phoned_at is null)

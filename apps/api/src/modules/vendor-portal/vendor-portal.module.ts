@@ -6,6 +6,7 @@ import { VendorAuthService } from './vendor-auth.service';
 import { LoggingVendorMailer, VENDOR_MAILER } from './vendor-mailer.service';
 import { VendorOrderController } from './vendor-order.controller';
 import { VendorOrderService } from './vendor-order.service';
+import { VendorOrderStatusService } from './vendor-order-status.service';
 import { VendorPortalGuard } from './vendor-portal.guard';
 
 /**
@@ -27,6 +28,7 @@ import { VendorPortalGuard } from './vendor-portal.guard';
   providers: [
     VendorAuthService,
     VendorOrderService,
+    VendorOrderStatusService,
     VendorPortalGuard,
     LoggingVendorMailer,
     {
@@ -36,6 +38,6 @@ import { VendorPortalGuard } from './vendor-portal.guard';
       useExisting: LoggingVendorMailer,
     },
   ],
-  exports: [VendorAuthService, VendorOrderService, VendorPortalGuard, VENDOR_MAILER],
+  exports: [VendorAuthService, VendorOrderService, VendorOrderStatusService, VendorPortalGuard, VENDOR_MAILER],
 })
 export class VendorPortalModule {}
