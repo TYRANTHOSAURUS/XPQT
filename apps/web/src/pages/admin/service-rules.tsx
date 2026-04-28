@@ -4,28 +4,6 @@ import { Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Table,
   TableBody,
   TableCell,
@@ -39,16 +17,12 @@ import {
 } from '@/components/ui/settings-page';
 import { cn } from '@/lib/utils';
 import {
-  useCreateServiceRule,
-  useServiceRuleTemplates,
   useServiceRules,
   type ServiceRule,
   type ServiceRuleEffect,
   type ServiceRuleTargetKind,
-  type ServiceRuleTemplate,
 } from '@/api/service-rules';
-import { Sparkles } from 'lucide-react';
-import { toastCreated, toastError } from '@/lib/toast';
+import { ServiceRuleTemplateDialog } from './service-rules/components/service-rule-template-dialog';
 
 const TARGET_KIND_LABEL: Record<ServiceRuleTargetKind, string> = {
   catalog_item: 'Catalog item',
@@ -74,6 +48,7 @@ const EFFECT_LABEL: Record<ServiceRuleEffect, string> = {
  */
 export function ServiceRulesPage() {
   const { data, isLoading } = useServiceRules();
+  const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
 
   return (
@@ -114,7 +89,11 @@ export function ServiceRulesPage() {
         </Table>
       )}
 
-      <CreateDialog open={creating} onOpenChange={setCreating} />
+      <ServiceRuleTemplateDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={(id) => navigate(`/admin/booking-services/rules/${id}`)}
+      />
     </SettingsPageShell>
   );
 }
@@ -195,170 +174,3 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function CreateDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (next: boolean) => void;
-}) {
-  const navigate = useNavigate();
-  const create = useCreateServiceRule();
-  const { data: templates } = useServiceRuleTemplates();
-  const [name, setName] = useState('');
-  const [targetKind, setTargetKind] = useState<ServiceRuleTargetKind>('tenant');
-  const [effect, setEffect] = useState<ServiceRuleEffect>('require_approval');
-  const [appliesWhen, setAppliesWhen] = useState<Record<string, unknown>>({});
-  const [appliedTemplateId, setAppliedTemplateId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleApplyTemplate = (template: ServiceRuleTemplate) => {
-    if (appliedTemplateId === template.id) {
-      // Toggle off — clear back to defaults.
-      setAppliedTemplateId(null);
-      setAppliesWhen({});
-      return;
-    }
-    setAppliedTemplateId(template.id);
-    setName(template.name);
-    setEffect(template.effect_default);
-    // Use the template's predicate as a starting point; admins refine on
-    // the detail page (replace `$.threshold` placeholders, etc.).
-    setAppliesWhen(template.applies_when_template);
-  };
-
-  const handleCreate = async () => {
-    if (!name.trim()) {
-      setError('Name is required.');
-      return;
-    }
-    try {
-      const r = await create.mutateAsync({
-        name: name.trim(),
-        target_kind: targetKind,
-        target_id: null,
-        effect,
-        applies_when: appliesWhen,
-        priority: 100,
-        active: false, // start inactive — admins activate after wiring up the predicate
-        template_id: appliedTemplateId,
-      });
-      toastCreated('Service rule', {
-        onView: () => navigate(`/admin/booking-services/rules/${r.id}`),
-      });
-      onOpenChange(false);
-      setName('');
-      setAppliesWhen({});
-      setAppliedTemplateId(null);
-      setError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Create failed';
-      setError(message);
-      toastError("Couldn't create service rule", { error: err });
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>New service rule</DialogTitle>
-          <DialogDescription>
-            Start from a template or pick a name + scope + effect. The rule starts inactive so it
-            doesn't fire while you're still setting it up.
-          </DialogDescription>
-        </DialogHeader>
-        <FieldGroup>
-          {(templates?.length ?? 0) > 0 && (
-            <Field>
-              <FieldLabel>Start from template</FieldLabel>
-              <FieldDescription>
-                Pre-fills name + effect + a predicate skeleton with{' '}
-                <code className="chip">$.params</code> placeholders to fill in on the detail page.
-              </FieldDescription>
-              <div className="flex flex-wrap gap-1.5">
-                {(templates ?? []).map((t) => {
-                  const selected = appliedTemplateId === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => handleApplyTemplate(t)}
-                      className={
-                        selected
-                          ? 'inline-flex items-center gap-1 rounded-full border border-primary bg-primary/10 px-2.5 py-1 text-xs text-primary'
-                          : 'inline-flex items-center gap-1 rounded-full border border-input bg-card px-2.5 py-1 text-xs hover:bg-accent/40'
-                      }
-                      title={t.description}
-                    >
-                      <Sparkles className="size-3" />
-                      {t.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </Field>
-          )}
-          <Field>
-            <FieldLabel htmlFor="sr-name">Name</FieldLabel>
-            <Input
-              id="sr-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="External vendor approval"
-              autoFocus
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="sr-target-kind">Scope</FieldLabel>
-            <Select
-              value={targetKind}
-              onValueChange={(v) => setTargetKind(v as ServiceRuleTargetKind)}
-            >
-              <SelectTrigger id="sr-target-kind">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="tenant">Tenant-wide</SelectItem>
-                <SelectItem value="catalog_category">Catalog category</SelectItem>
-                <SelectItem value="menu">Specific menu</SelectItem>
-                <SelectItem value="catalog_item">Specific item</SelectItem>
-              </SelectContent>
-            </Select>
-            <FieldDescription>
-              Pick the rule's target on the detail page after creation.
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="sr-effect">Effect</FieldLabel>
-            <Select value={effect} onValueChange={(v) => setEffect(v as ServiceRuleEffect)}>
-              <SelectTrigger id="sr-effect">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="require_approval">Require approval</SelectItem>
-                <SelectItem value="deny">Deny</SelectItem>
-                <SelectItem value="warn">Warn</SelectItem>
-                <SelectItem value="allow_override">Allow override</SelectItem>
-                <SelectItem value="allow">Allow</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          {error && (
-            <p role="alert" className="text-xs text-destructive">
-              {error}
-            </p>
-          )}
-        </FieldGroup>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={create.isPending}>
-            Cancel
-          </Button>
-          <Button onClick={handleCreate} disabled={create.isPending}>
-            {create.isPending ? 'Creating…' : 'Create rule'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}

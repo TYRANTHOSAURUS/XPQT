@@ -13,6 +13,58 @@ import type {
   ServiceRuleTargetKind,
 } from './dto/types';
 
+export interface CreateFromTemplateArgs {
+  templateKey: string;
+  params: Record<string, unknown>;
+  targetKind: ServiceRuleTargetKind;
+  targetId?: string | null;
+  /** Override the template's default name. */
+  name?: string;
+  description?: string | null;
+  priority?: number;
+  active?: boolean;
+}
+
+/**
+ * Walk a template predicate (or approval-config) JSON tree, replacing
+ * any string literal of the form "$.paramKey" with the value at
+ * params[paramKey]. Templates use this lightweight const-substitution
+ * model; visual AST is Sprint 2.
+ *
+ * Examples:
+ *   compile({ const: '$.threshold' }, { threshold: 500 })
+ *     → { const: 500 }
+ *   compile({ op: '>', left: {...}, right: { const: '$.threshold' } }, ...)
+ *     → { op: '>', left: {...}, right: { const: 500 } }
+ *
+ * Arrays + nested objects are walked recursively. Non-template strings
+ * pass through unchanged so non-placeholder predicate values still work.
+ */
+export function compileTemplatePredicate(
+  template: unknown,
+  params: Record<string, unknown>,
+): Record<string, unknown> | unknown {
+  if (template == null) return template;
+  if (typeof template === 'string') {
+    if (template.startsWith('$.')) {
+      const key = template.slice(2);
+      if (key in params) return params[key];
+    }
+    return template;
+  }
+  if (Array.isArray(template)) {
+    return template.map((entry) => compileTemplatePredicate(entry, params));
+  }
+  if (typeof template === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(template as Record<string, unknown>)) {
+      out[k] = compileTemplatePredicate(v, params);
+    }
+    return out;
+  }
+  return template;
+}
+
 export interface ServiceRuleUpsertDto {
   name: string;
   description?: string | null;
@@ -202,6 +254,98 @@ export class ServiceRuleService {
       .order('name', { ascending: true });
     if (error) throw error;
     return (data ?? []) as ServiceRuleTemplate[];
+  }
+
+  /**
+   * Sprint 1B — template-driven create. Substitutes admin-provided
+   * params into the template's `applies_when_template` placeholders,
+   * carries the template's `effect_default` + `approval_config_template`
+   * unless the caller overrides, and inserts a fresh service_rules row.
+   *
+   * Templates store predicate JSON with `"$.<paramKey>"` shaped const
+   * references that we resolve by walking the JSON tree. This is
+   * deliberately a small, predictable substitution — the rule builder
+   * spec §6 calls it out as the v1 simple shape; visual AST + computed
+   * vocabulary are Sprint 2 territory.
+   */
+  async createFromTemplate(args: CreateFromTemplateArgs): Promise<ServiceRuleRow> {
+    const { templateKey, params, targetKind, targetId, name, description, priority, active } = args;
+    if (!templateKey) {
+      throw new BadRequestException({ code: 'template_required', message: 'templateKey required' });
+    }
+
+    const tenant = TenantContext.current();
+    const tplLookup = await this.supabase.admin
+      .from('service_rule_templates')
+      .select('*')
+      .eq('template_key', templateKey)
+      .eq('active', true)
+      .maybeSingle();
+    if (tplLookup.error) throw tplLookup.error;
+    const tpl = tplLookup.data as ServiceRuleTemplate | null;
+    if (!tpl) {
+      throw new NotFoundException({
+        code: 'template_not_found',
+        message: `Template ${templateKey} not found.`,
+      });
+    }
+
+    // Validate every required param is present.
+    const supplied = params ?? {};
+    for (const spec of tpl.param_specs ?? []) {
+      if ((spec as { required?: boolean }).required === false) continue;
+      if (supplied[spec.key] === undefined || supplied[spec.key] === null) {
+        if (spec.default !== undefined) {
+          supplied[spec.key] = spec.default;
+        } else {
+          throw new BadRequestException({
+            code: 'param_required',
+            message: `Template ${templateKey} requires param '${spec.key}' (${spec.label}).`,
+          });
+        }
+      }
+    }
+
+    // Compile the predicate by substituting "$.<paramKey>" const refs.
+    const compiled = compileTemplatePredicate(
+      tpl.applies_when_template ?? {},
+      supplied,
+    );
+
+    // Validate the compiled predicate runs through the engine.
+    try {
+      this.engine.validate(compiled);
+    } catch (err) {
+      throw new BadRequestException({
+        code: 'invalid_compiled_predicate',
+        message: `Template compiled to an invalid predicate: ${(err as Error).message}`,
+      });
+    }
+
+    const compiledApprovalConfig = tpl.approval_config_template
+      ? compileTemplatePredicate(tpl.approval_config_template, supplied) as ApprovalConfig
+      : null;
+
+    const { data, error } = await this.supabase.admin
+      .from('service_rules')
+      .insert({
+        tenant_id: tenant.id,
+        name: (name ?? tpl.name).trim(),
+        description: description ?? tpl.description ?? null,
+        target_kind: targetKind,
+        target_id: targetKind === 'tenant' ? null : targetId ?? null,
+        applies_when: compiled,
+        effect: tpl.effect_default,
+        approval_config: tpl.effect_default === 'require_approval' ? compiledApprovalConfig : null,
+        denial_message: null,
+        priority: priority ?? 100,
+        active: active ?? true,
+        template_id: tpl.id,
+      })
+      .select('*')
+      .single();
+    if (error) throw error;
+    return data as ServiceRuleRow;
   }
 
   // ── Validation ─────────────────────────────────────────────────────────

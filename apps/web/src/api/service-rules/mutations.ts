@@ -46,6 +46,36 @@ export function useUpdateServiceRule() {
   });
 }
 
+/**
+ * Sprint 1B — template-driven create. Admin picks a template, fills
+ * params; backend substitutes `$.<paramKey>` placeholders, applies
+ * effect_default + approval_config_template, inserts a fresh row.
+ */
+export interface CreateServiceRuleFromTemplatePayload {
+  template_key: string;
+  params: Record<string, unknown>;
+  target_kind: ServiceRuleTargetKind;
+  target_id?: string | null;
+  name?: string;
+  description?: string | null;
+  priority?: number;
+  active?: boolean;
+}
+
+export function useCreateServiceRuleFromTemplate() {
+  const qc = useQueryClient();
+  return useMutation<ServiceRule, Error, CreateServiceRuleFromTemplatePayload>({
+    mutationFn: (payload) =>
+      apiFetch<ServiceRule>('/admin/booking-services/rules/from-template', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: serviceRuleKeys.lists() });
+    },
+  });
+}
+
 export function useDeleteServiceRule() {
   const qc = useQueryClient();
   return useMutation<{ id: string }, Error, string>({

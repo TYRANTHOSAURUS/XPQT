@@ -183,6 +183,41 @@ export class ServiceCatalogController {
     return this.rules.create(dto);
   }
 
+  /**
+   * Sprint 1B — template-driven rule creation. Body shape mirrors the
+   * room-booking-rules /from-template endpoint so the frontend can share
+   * editor primitives. Body is validated by the service.
+   */
+  @Post('admin/booking-services/rules/from-template')
+  async createFromTemplate(
+    @Req() req: Request,
+    @Body() body: {
+      template_key: string;
+      params: Record<string, unknown>;
+      target_kind: 'tenant' | 'menu' | 'catalog_item' | 'catalog_category';
+      target_id?: string | null;
+      name?: string;
+      description?: string | null;
+      priority?: number;
+      active?: boolean;
+    },
+  ) {
+    await this.permissions.requirePermission(req, 'rooms.admin');
+    if (!body || typeof body !== 'object') {
+      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+    }
+    return this.rules.createFromTemplate({
+      templateKey: body.template_key,
+      params: body.params ?? {},
+      targetKind: body.target_kind,
+      targetId: body.target_id ?? null,
+      name: body.name,
+      description: body.description ?? null,
+      priority: body.priority,
+      active: body.active,
+    });
+  }
+
   @Patch('admin/booking-services/rules/:id')
   async update(@Req() req: Request, @Param('id') id: string, @Body() dto: Partial<ServiceRuleUpsertDto>) {
     await this.permissions.requirePermission(req, 'rooms.admin');
