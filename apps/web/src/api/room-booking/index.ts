@@ -14,13 +14,14 @@ export type {
 export {
   reservationListOptions, useReservationList,
   reservationDetailOptions, useReservationDetail,
+  reservationGroupSiblingsOptions, useReservationGroupSiblings,
   pickerOptions, usePicker,
   findTimeOptions, useFindTime,
   schedulerWindowOptions, useSchedulerReservations,
   schedulerDataOptions, useSchedulerData,
   operatorReservationListOptions, useOperatorReservations,
 } from './queries';
-export type { OperatorReservationItem, MyReservationItem, SchedulerRoom } from './queries';
+export type { OperatorReservationItem, MyReservationItem, SchedulerRoom, GroupSibling } from './queries';
 
 export {
   useCreateBooking, useDryRunBooking, useMultiRoomBooking,

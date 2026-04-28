@@ -46,6 +46,11 @@ export interface BundleTicketRef {
   assigned_team_id: string | null;
   assigned_vendor_id: string | null;
   module_number: number | null;
+  /** Denormalized human-readable assignee — vendor name, team name, or
+   *  user's full name. Null when nothing is assigned yet. Computed by the
+   *  backend so the frontend doesn't need to thread separate lookup
+   *  tables through the booking-detail surface. */
+  assignee_label: string | null;
 }
 
 export interface BookingBundle {

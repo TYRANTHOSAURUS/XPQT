@@ -58,6 +58,45 @@ export class ReservationService {
     return r;
   }
 
+  /**
+   * Sibling reservations in the same multi_room_group. Used by the
+   * booking detail surface so an operator can navigate to any room in
+   * the atomic group without leaving the detail context. Returns []
+   * for solo bookings (no group). Visibility is inherited from the
+   * pivot reservation — the group is atomic, so if you can see one you
+   * can see the rest.
+   */
+  async listGroupSiblings(
+    id: string,
+    authUid: string,
+  ): Promise<{
+    items: Array<{ id: string; space_id: string; space_name: string | null; status: string }>;
+  }> {
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const pivot = await this.findByIdOrThrow(id, tenantId);
+    this.visibility.assertVisible(pivot, ctx);
+    if (!pivot.multi_room_group_id) return { items: [] };
+
+    const { data, error } = await this.supabase.admin
+      .from('reservations')
+      .select('id, space_id, status, space:spaces(name)')
+      .eq('tenant_id', tenantId)
+      .eq('multi_room_group_id', pivot.multi_room_group_id)
+      .order('created_at', { ascending: true });
+    if (error) throw new BadRequestException(`group_siblings_failed:${error.message}`);
+
+    type Row = { id: string; space_id: string; status: string; space?: { name: string | null } | null };
+    return {
+      items: ((data ?? []) as unknown as Row[]).map((r) => ({
+        id: r.id,
+        space_id: r.space_id,
+        space_name: r.space?.name ?? null,
+        status: r.status,
+      })),
+    };
+  }
+
   private async findByIdOrThrow(id: string, tenantId: string): Promise<Reservation> {
     const { data, error } = await this.supabase.admin
       .from('reservations')

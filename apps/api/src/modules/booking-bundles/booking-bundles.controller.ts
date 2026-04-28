@@ -221,7 +221,12 @@ export class BookingBundlesController {
         .eq('booking_bundle_id', id),
       this.supabase.admin
         .from('tickets')
-        .select('id, ticket_kind, status_category, assigned_user_id, assigned_team_id, assigned_vendor_id, module_number')
+        .select(
+          'id, ticket_kind, status_category, assigned_user_id, assigned_team_id, assigned_vendor_id, module_number, ' +
+            'assigned_user:users!assigned_user_id(person:persons!person_id(first_name,last_name)), ' +
+            'assigned_team:teams!assigned_team_id(name), ' +
+            'assigned_vendor:vendors!assigned_vendor_id(name)',
+        )
         .eq('booking_bundle_id', id),
     ]);
 
@@ -291,11 +296,52 @@ export class BookingBundlesController {
 
     const statusRow = statusRes.data as { status_rollup: string } | null;
 
+    // Denormalize an assignee_label per ticket so the frontend renders
+    // "Sarah Lim" / "Catering team" / "Acme Catering" instead of a
+    // category placeholder. Joins above already pulled the name fields.
+    type TicketJoinRow = {
+      id: string;
+      ticket_kind: string;
+      status_category: string | null;
+      assigned_user_id: string | null;
+      assigned_team_id: string | null;
+      assigned_vendor_id: string | null;
+      module_number: number | null;
+      assigned_user?:
+        | { person?: { first_name: string | null; last_name: string | null } | null }
+        | null;
+      assigned_team?: { name: string | null } | null;
+      assigned_vendor?: { name: string | null } | null;
+    };
+    const tickets = ((ticketsRes.data ?? []) as unknown as TicketJoinRow[]).map((t) => {
+      const userPerson = t.assigned_user?.person ?? null;
+      const userName = userPerson
+        ? `${userPerson.first_name ?? ''} ${userPerson.last_name ?? ''}`.trim()
+        : null;
+      const assignee_label = t.assigned_vendor_id
+        ? t.assigned_vendor?.name ?? 'Vendor'
+        : t.assigned_team_id
+          ? t.assigned_team?.name ?? 'Team'
+          : t.assigned_user_id
+            ? userName || 'User'
+            : null;
+      return {
+        id: t.id,
+        ticket_kind: t.ticket_kind,
+        status_category: t.status_category,
+        assigned_user_id: t.assigned_user_id,
+        assigned_team_id: t.assigned_team_id,
+        assigned_vendor_id: t.assigned_vendor_id,
+        module_number: t.module_number,
+        assignee_label,
+      };
+    });
+
     return {
       ...bundle,
       status_rollup: statusRow?.status_rollup ?? 'pending',
       orders: ordersRes.data ?? [],
-      tickets: ticketsRes.data ?? [],
+      tickets,
       lines,
     };
   }

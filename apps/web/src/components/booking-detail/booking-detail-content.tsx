@@ -4,8 +4,10 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Link } from 'react-router-dom';
 import {
   useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
+  useReservationGroupSiblings,
 } from '@/api/room-booking';
 import { useAuth } from '@/providers/auth-provider';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
@@ -48,6 +50,15 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
   const { hasRole } = useAuth();
   const [editing, setEditing] = useState(false);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+
+  // Multi-room siblings — fetched only when this reservation has a group
+  // so solo bookings don't pay the round-trip. The component below renders
+  // a chip strip so the operator can navigate to any sibling room without
+  // leaving the booking detail context.
+  const groupSiblings = useReservationGroupSiblings(
+    reservationId ?? '',
+    Boolean(reservation?.multi_room_group_id),
+  );
 
   // Service desk / admin is rendering this — they always need to SEE the
   // children of a booking (services, work orders, multi-room) even when
@@ -201,8 +212,37 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
 
         {reservation.multi_room_group_id && (
           <DetailRow icon={<Layers className="size-3.5" />} label="Multi-room">
-            <div className="text-sm">Part of a multi-room group</div>
-            <div className="text-xs text-muted-foreground">
+            {groupSiblings.data && groupSiblings.data.items.length > 1 ? (
+              <>
+                <div className="text-sm">
+                  Part of a {groupSiblings.data.items.length}-room group
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {groupSiblings.data.items.map((s) => {
+                    const isCurrent = s.id === reservation.id;
+                    return isCurrent ? (
+                      <span
+                        key={s.id}
+                        className="inline-flex h-6 items-center rounded-full bg-foreground px-2.5 text-[11px] font-medium text-background"
+                      >
+                        {s.space_name ?? 'Room'}
+                      </span>
+                    ) : (
+                      <Link
+                        key={s.id}
+                        to={`/desk/bookings/${s.id}`}
+                        className="inline-flex h-6 items-center rounded-full border bg-card px-2.5 text-[11px] [transition:background-color_120ms_var(--ease-snap)] hover:bg-accent/40"
+                      >
+                        {s.space_name ?? 'Room'}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="text-sm">Part of a multi-room group</div>
+            )}
+            <div className="mt-1 text-xs text-muted-foreground">
               All rooms share the same start/end and atomic cancellation.
             </div>
           </DetailRow>

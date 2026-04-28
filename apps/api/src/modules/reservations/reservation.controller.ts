@@ -70,6 +70,23 @@ export class ReservationController {
     return this.service.findOne(id, authUid);
   }
 
+  /**
+   * `GET /reservations/:id/group-siblings` — every reservation in the
+   * same multi_room_group_id, with room name + status. Lets the booking
+   * detail surface render a clickable chip strip of the sibling rooms
+   * so an operator cancelling/rescheduling one room can see the rest of
+   * the atomic group at a glance.
+   *
+   * Visibility-gated through the same context as findOne — if the
+   * caller can see this reservation, they can see its siblings (the
+   * group is atomic).
+   */
+  @Get(':id/group-siblings')
+  async findGroupSiblings(@Req() request: Request, @Param('id') id: string) {
+    const authUid = this.getAuthUid(request);
+    return this.service.listGroupSiblings(id, authUid);
+  }
+
   // ---- Mutations ----
 
   @Post()

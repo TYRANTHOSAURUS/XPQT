@@ -109,6 +109,29 @@ export function useReservationDetail(id: string) {
   return useQuery(reservationDetailOptions(id));
 }
 
+export interface GroupSibling {
+  id: string;
+  space_id: string;
+  space_name: string | null;
+  status: string;
+}
+
+export function reservationGroupSiblingsOptions(id: string, enabled: boolean) {
+  return queryOptions({
+    queryKey: [...roomBookingKeys.detail(id), 'group-siblings'] as const,
+    queryFn: ({ signal }) =>
+      apiFetch<{ items: GroupSibling[] }>(`/reservations/${id}/group-siblings`, {
+        signal,
+      }),
+    staleTime: 30_000,
+    enabled: Boolean(id) && enabled,
+  });
+}
+
+export function useReservationGroupSiblings(id: string, enabled: boolean) {
+  return useQuery(reservationGroupSiblingsOptions(id, enabled));
+}
+
 interface PickerResponse {
   rooms: RankedRoom[];
 }

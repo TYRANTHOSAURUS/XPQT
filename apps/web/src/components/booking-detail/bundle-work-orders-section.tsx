@@ -109,6 +109,11 @@ function TicketRow({ ticket }: { ticket: BundleTicketRef }) {
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
               {isCase ? 'Case' : 'Work order'}
             </span>
+            {ticket.assignee_label && (
+              <span className="truncate text-[11px] text-muted-foreground">
+                · {ticket.assignee_label}
+              </span>
+            )}
           </div>
           <div className="mt-0.5 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground capitalize">
             <span aria-hidden className={cn('size-1.5 rounded-full', dotClass)} />
