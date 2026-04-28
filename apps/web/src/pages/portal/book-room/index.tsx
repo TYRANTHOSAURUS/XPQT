@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, ArrowRight } from 'lucide-react';
 import { InlineBanner } from '@/components/ui/inline-banner';
 import { PortalPage } from '@/components/portal/portal-page';
@@ -34,6 +34,7 @@ import { useRealtimeAvailability } from './hooks/use-realtime-availability';
 export function BookRoomPage() {
   const { data: portal } = usePortal();
   const { person, hasRole } = useAuth();
+  const navigate = useNavigate();
 
   const sites = useMemo(() => {
     const locs = portal?.authorized_locations ?? [];
@@ -241,8 +242,19 @@ export function BookRoomPage() {
                     )
                   : undefined,
               }}
-              onBooked={() => {
-                // Success — picker auto-invalidates via the mutation hook.
+              onBooked={(reservationId) => {
+                // Land the user on /me/bookings/{id} so they see exactly
+                // what happened — especially critical for pending_approval
+                // bookings, where the booking exists but isn't confirmed
+                // yet. Without this, the dialog just closes and the user
+                // is left on the picker with no clear feedback that their
+                // booking is in flight. The toast alone is too transient
+                // to be the only signal something happened.
+                if (reservationId) {
+                  navigate(`/portal/me/bookings/${reservationId}`);
+                } else {
+                  navigate('/portal/me/bookings');
+                }
               }}
             />
           </DialogContent>

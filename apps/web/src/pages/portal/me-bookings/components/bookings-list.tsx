@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { CalendarPlus } from 'lucide-react';
+import { ArrowRight, CalendarPlus, Clock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { buttonVariants } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import {
 import type { MyReservationItem } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
 import { toastError, toastSuccess } from '@/lib/toast';
+import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { BookingRow } from './booking-row';
 import { BookingDayGroup } from './booking-day-group';
 import { BookingNextUpCard } from './booking-next-up-card';
@@ -73,22 +74,38 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
   // Grouping. Upcoming gets calendar-style buckets (Today / Tomorrow / Wed,
   // Apr 30 / Wed, May 7). Past + cancelled keep flat reverse-chronological
   // order — date headers there read like noise.
-  const groups = useMemo(() => groupByDay(items, tab), [items, tab]);
+  // Pending-approval items live in their own callout above and are filtered
+  // out here so they don't appear twice on the Upcoming tab.
+  const groupedItems = useMemo(
+    () =>
+      tab === 'upcoming'
+        ? items.filter((r) => r.status !== 'pending_approval')
+        : items,
+    [items, tab],
+  );
+  const groups = useMemo(() => groupByDay(groupedItems, tab), [groupedItems, tab]);
 
-  // The hero only shows on the Upcoming tab and only when there's a sensible
-  // candidate. We pick the most-imminent active booking — confirmed,
-  // checked_in, or pending_approval — because "next up" should reflect what
-  // the user actually has to action, not a cancelled or released slot.
+  // The hero shows only on Upcoming tab + only when a *confirmed* booking
+  // is the user's nearest action. Pending-approval bookings are NOT
+  // candidates — they get their own callout above so they don't look like
+  // "ready to attend" decisions.
   const heroBooking = useMemo(() => {
     if (tab !== 'upcoming') return null;
     return (
       items.find(
-        (r) =>
-          r.status === 'confirmed' ||
-          r.status === 'checked_in' ||
-          r.status === 'pending_approval',
+        (r) => r.status === 'confirmed' || r.status === 'checked_in',
       ) ?? null
     );
+  }, [items, tab]);
+
+  // Surface pending-approval bookings as their own section so the user
+  // can SEE that their request landed and is in flight. Without this,
+  // pending bookings sat at the bottom of the date-grouped list with
+  // only a small purple pill — easy to miss when you're scanning for
+  // "what's next." Empty when no pending exists.
+  const pendingItems = useMemo(() => {
+    if (tab !== 'upcoming') return [];
+    return items.filter((r) => r.status === 'pending_approval');
   }, [items, tab]);
 
   return (
@@ -112,6 +129,14 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
           className="flex flex-col gap-6"
           data-fetching={isFetching ? 'true' : 'false'}
         >
+          {pendingItems.length > 0 && (
+            <PendingApprovalsSection
+              items={pendingItems}
+              resolveSpaceName={resolveSpaceName}
+              buildHref={buildHref}
+            />
+          )}
+
           {heroBooking && (
             <BookingNextUpCard
               reservation={heroBooking}
@@ -231,6 +256,68 @@ function ListSkeleton() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Standalone "Pending approval" section, rendered above Next-up so a
+ * just-submitted approval-route booking is impossible to miss. Each
+ * row is a clear "we know about your request, here's where it stands"
+ * line — purple accent matches the status pill, ArrowRight on hover
+ * confirms it's clickable to the detail.
+ */
+function PendingApprovalsSection({
+  items,
+  resolveSpaceName,
+  buildHref,
+}: {
+  items: MyReservationItem[];
+  resolveSpaceName: (r: MyReservationItem) => string | null;
+  buildHref: (id: string) => string;
+}) {
+  return (
+    <section
+      aria-labelledby="pending-approval-header"
+      className="overflow-hidden rounded-2xl border border-purple-500/30 bg-purple-500/[0.04] dark:border-purple-500/40 dark:bg-purple-500/10"
+    >
+      <header className="flex items-center justify-between gap-2 border-b border-purple-500/20 px-4 py-2.5 dark:border-purple-500/30">
+        <div className="flex items-center gap-2">
+          <Clock className="size-3.5 text-purple-700 dark:text-purple-300" />
+          <h3
+            id="pending-approval-header"
+            className="text-[11px] font-medium uppercase tracking-wider text-purple-800 dark:text-purple-200"
+          >
+            Awaiting approval
+          </h3>
+        </div>
+        <span className="text-[11px] tabular-nums text-purple-700/80 dark:text-purple-300/80">
+          {items.length === 1 ? '1 request' : `${items.length} requests`}
+        </span>
+      </header>
+      <ul className="divide-y divide-purple-500/15 dark:divide-purple-500/25">
+        {items.map((r) => (
+          <li key={r.id}>
+            <Link
+              to={buildHref(r.id)}
+              className="group/pending flex items-center gap-3 px-4 py-3 [transition:background-color_120ms_var(--ease-snap)] hover:bg-purple-500/10 focus-visible:bg-purple-500/10 focus-visible:outline-none"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {resolveSpaceName(r) ?? 'Room'}
+                </div>
+                <div className="mt-0.5 text-[12px] text-muted-foreground tabular-nums">
+                  {formatFullTimestamp(r.start_at)}
+                  <span className="ml-2 text-[11px] text-purple-700 dark:text-purple-300">
+                    Submitted {formatRelativeTime(r.created_at)}
+                  </span>
+                </div>
+              </div>
+              <ArrowRight className="size-3.5 shrink-0 text-purple-700/60 opacity-0 transition-opacity group-hover/pending:opacity-100 dark:text-purple-300/70" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
