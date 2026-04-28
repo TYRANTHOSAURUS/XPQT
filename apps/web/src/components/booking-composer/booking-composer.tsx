@@ -326,22 +326,39 @@ export function BookingComposer({
           </Button>
         ) : (
           <div className="rounded-md border bg-card divide-y">
-            {state.services.map((s) => (
-              <div
-                key={s.catalog_item_id}
-                className="flex items-center justify-between gap-3 px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{s.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    × {s.quantity}
+            {state.services.map((s) => {
+              // Template seeds carry a placeholder name + null unit_price
+              // until the picker fetches the current menu offer. Render
+              // those as a single "from template" chip rather than a
+              // misleading "Template item × N · —".
+              const isTemplateSeed = s.name === 'Template item' && s.unit_price == null;
+              return (
+                <div
+                  key={s.catalog_item_id}
+                  className="flex items-center justify-between gap-3 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    {isTemplateSeed ? (
+                      <div className="text-sm italic text-muted-foreground">
+                        From template — open picker to confirm
+                      </div>
+                    ) : (
+                      <>
+                        <div className="truncate text-sm font-medium">{s.name}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          × {s.quantity}
+                        </div>
+                      </>
+                    )}
                   </div>
+                  {!isTemplateSeed && (
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {formatCurrency(s.unit_price)}
+                    </span>
+                  )}
                 </div>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {formatCurrency(s.unit_price)}
-                </span>
-              </div>
-            ))}
+              );
+            })}
             <div className="flex items-center justify-between px-3 py-2">
               <Button
                 type="button"
