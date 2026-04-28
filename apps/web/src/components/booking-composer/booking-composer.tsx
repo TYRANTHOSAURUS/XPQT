@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { AlertTriangle, CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -634,17 +634,68 @@ function RoomPickerInline({
   onChange: (spaceId: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [buildingFilter, setBuildingFilter] = useState<string | null>(null);
   const { data: spaces, isPending } = useSpaces();
+
+  // Index every space by id once so the building lookup is O(depth) per room
+  // instead of O(n) per room.
+  const byId = useMemo(() => {
+    const m = new Map<string, Space>();
+    for (const s of spaces ?? []) m.set(s.id, s);
+    return m;
+  }, [spaces]);
+
+  // Walk the parent chain and surface the first ancestor of type 'building'.
+  const buildingFor = useCallback(
+    (s: Space): Space | null => {
+      let cur: Space | undefined = s;
+      let hops = 0;
+      while (cur && hops < 12) {
+        if (cur.type === 'building') return cur;
+        cur = cur.parent_id ? byId.get(cur.parent_id) : undefined;
+        hops += 1;
+      }
+      return null;
+    },
+    [byId],
+  );
 
   const reservable = useMemo<Space[]>(
     () => (spaces ?? []).filter((s) => s.reservable && s.active),
     [spaces],
   );
 
+  // Distinct buildings whose rooms are reservable. Ordered alphabetically
+  // so a tenant with a stable set of sites sees the same chip order on
+  // every open.
+  const buildings = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Space[] = [];
+    for (const room of reservable) {
+      const b = buildingFor(room);
+      if (b && !seen.has(b.id)) {
+        seen.add(b.id);
+        out.push(b);
+      }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [reservable, buildingFor]);
+
+  const filteredRooms = useMemo(() => {
+    if (!buildingFilter) return reservable;
+    return reservable.filter((r) => buildingFor(r)?.id === buildingFilter);
+  }, [reservable, buildingFilter, buildingFor]);
+
   const selected = useMemo(
     () => reservable.find((r) => r.id === value) ?? null,
     [reservable, value],
   );
+
+  // Reset building filter when the selection clears so the next pick
+  // doesn't surprise the user with a hidden subset.
+  useEffect(() => {
+    if (!value) setBuildingFilter(null);
+  }, [value]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -676,12 +727,48 @@ function RoomPickerInline({
       >
         <Command>
           <CommandInput placeholder="Search rooms…" />
+          {buildings.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => setBuildingFilter(null)}
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-xs font-medium',
+                  '[transition:background-color_140ms_var(--ease-snap),color_140ms_var(--ease-snap)]',
+                  'active:translate-y-px',
+                  buildingFilter === null
+                    ? 'text-foreground'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted',
+                )}
+              >
+                All
+              </button>
+              <span aria-hidden className="h-3 w-px bg-border" />
+              {buildings.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setBuildingFilter(b.id === buildingFilter ? null : b.id)}
+                  className={cn(
+                    'rounded-full border px-2 py-0.5 text-xs font-medium',
+                    '[transition:background-color_140ms_var(--ease-snap),color_140ms_var(--ease-snap),border-color_140ms_var(--ease-snap)]',
+                    'active:translate-y-px',
+                    buildingFilter === b.id
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                >
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          )}
           <CommandList className="max-h-72">
             <CommandEmpty>
               {isPending ? 'Loading…' : 'No rooms match.'}
             </CommandEmpty>
             <CommandGroup>
-              {reservable.map((room) => {
+              {filteredRooms.map((room) => {
                 const isSel = room.id === value;
                 return (
                   <CommandItem
