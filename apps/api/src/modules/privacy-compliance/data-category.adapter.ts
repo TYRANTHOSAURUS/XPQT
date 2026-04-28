@@ -43,6 +43,19 @@ export interface ExportSection {
   totalCount: number;
 }
 
+export interface AnonymizeContext {
+  /**
+   * Why is this anonymization happening?
+   *   - `retention`         (default): nightly worker; 7-day restore window applies.
+   *   - `erasure_request`:  subject-driven Art. 17 erasure; NO restore window —
+   *                         adapters MUST skip the snapshot to prevent recovery.
+   *   - `departure_cleanup`: triggered by `persons.left_at`; behaves like retention.
+   */
+  reason: 'retention' | 'erasure_request' | 'departure_cleanup';
+  /** Initiating admin user (DSR fulfillments); null for the retention worker. */
+  initiatedByUserId?: string | null;
+}
+
 export type LegalBasis =
   | 'legitimate_interest'
   | 'consent'
@@ -74,8 +87,13 @@ export interface DataCategoryAdapter {
    * Replace PII fields in-place with placeholders, preserving FK integrity
    * (id stays). After this call, .scanForExpired must NOT return the same
    * refs — the adapter's "is anonymized" predicate must flip.
+   *
+   * `context.reason` lets the orchestrator distinguish retention from
+   * subject-driven erasure. Adapters MUST propagate this to
+   * AnonymizationAuditService.snapshotTx so erasure does NOT create a
+   * 7-day restore window (defeats Art. 17). Default is `retention`.
    */
-  anonymize(refs: EntityRef[]): Promise<void>;
+  anonymize(refs: EntityRef[], context?: AnonymizeContext): Promise<void>;
 
   /**
    * Hard-delete records that have no anonymization path (e.g. cctv_footage,

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DbService } from '../../../common/db/db.service';
 import { AnonymizationAuditService } from '../anonymization-audit.service';
 import type {
+  AnonymizeContext,
   DataCategoryAdapter,
   EntityRef,
   ExportSection,
@@ -63,7 +64,7 @@ export class AuditEventsAdapter implements DataCategoryAdapter {
     }));
   }
 
-  async anonymize(refs: EntityRef[]): Promise<void> {
+  async anonymize(refs: EntityRef[], context: AnonymizeContext = { reason: 'retention' }): Promise<void> {
     if (refs.length === 0) return;
     const tenantId = refs[0].tenantId;
     const ids = refs.map((r) => r.resourceId);
@@ -72,7 +73,8 @@ export class AuditEventsAdapter implements DataCategoryAdapter {
       await this.anonAudit.snapshotTx(client, {
         dataCategory: this.category,
         refs,
-        reason: 'retention',
+        reason: context.reason,
+        initiatedByUserId: context.initiatedByUserId ?? null,
         fetchOriginals: async () => {
           const r = await client.query<{ id: string; details: unknown; ip_address: string | null }>(
             `select id, details, ip_address

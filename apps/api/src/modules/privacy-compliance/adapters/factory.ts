@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { DbService } from '../../../common/db/db.service';
 import type {
+  AnonymizeContext,
   DataCategoryAdapter,
   EntityRef,
   ExportSection,
@@ -95,7 +96,7 @@ export function makeHardDeleteByDateAdapter(
       });
     },
 
-    async anonymize(_refs: EntityRef[]): Promise<void> {
+    async anonymize(_refs: EntityRef[], _context: AnonymizeContext = { reason: 'retention' }): Promise<void> {
       // Hard-delete categories don't have an anonymization path. Orchestrator
       // routes to hardDelete because legalBasis === 'none'; this should never fire.
       log.warn('anonymize() invoked on a hard-delete-only adapter — orchestrator misroute');
@@ -156,7 +157,7 @@ export function makeNoOpAdapter(config: NoOpAdapterConfig): DataCategoryAdapter 
     capRetentionDays: config.capRetentionDays,
     legalBasis: config.legalBasis,
     async scanForExpired() { return []; },
-    async anonymize() {},
+    async anonymize(_refs: EntityRef[], _context: AnonymizeContext = { reason: 'retention' }) {},
     async hardDelete() {},
     async exportForPerson() {
       return { category: config.category, description: config.description, records: [], totalCount: 0 };

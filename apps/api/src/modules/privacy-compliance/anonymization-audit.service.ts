@@ -27,9 +27,15 @@ export class AnonymizationAuditService {
    * Multiple snapshots per ref are intentional: each represents a distinct
    * anonymization event (e.g. anonymize → admin restore → re-anonymize).
    * The 7-day expires_at + nightly purge keeps growth bounded.
+   *
+   * **Erasure short-circuit:** `reason === 'erasure_request'` skips the
+   * snapshot entirely. Subject-driven Art. 17 erasure must NOT create a
+   * 7-day recoverable copy of the same PII the subject just asked us to
+   * delete. This is enforced here so any caller path is safe.
    */
   async snapshot(input: SnapshotInput): Promise<void> {
     if (input.refs.length === 0) return;
+    if (input.reason === 'erasure_request') return;
 
     const originals = await input.fetchOriginals(input.refs);
     if (originals.length === 0) return;
@@ -43,9 +49,13 @@ export class AnonymizationAuditService {
   /**
    * Tx-scoped variant — used when the snapshot must commit/rollback with the
    * surrounding anonymization UPDATE in a single transaction (recommended).
+   *
+   * Same erasure short-circuit as snapshot(): erasure-driven calls do not
+   * write to the restore-window table.
    */
   async snapshotTx(client: PoolClient, input: SnapshotInput): Promise<void> {
     if (input.refs.length === 0) return;
+    if (input.reason === 'erasure_request') return;
 
     const originals = await input.fetchOriginals(input.refs);
     if (originals.length === 0) return;

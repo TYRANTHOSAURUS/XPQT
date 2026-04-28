@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { DbService } from '../../../common/db/db.service';
 import { AnonymizationAuditService } from '../anonymization-audit.service';
 import type {
+  AnonymizeContext,
   DataCategoryAdapter,
   EntityRef,
   ExportSection,
@@ -62,17 +63,18 @@ export class PersonsAdapter implements DataCategoryAdapter {
     }));
   }
 
-  async anonymize(refs: EntityRef[]): Promise<void> {
+  async anonymize(refs: EntityRef[], context: AnonymizeContext = { reason: 'retention' }): Promise<void> {
     if (refs.length === 0) return;
     const tenantId = refs[0].tenantId;
     const ids = refs.map((r) => r.resourceId);
 
     await this.db.tx(async (client) => {
-      // Snapshot originals → 7-day restore window.
+      // Snapshot originals → 7-day restore window (skipped for erasure).
       await this.anonAudit.snapshotTx(client, {
         dataCategory: this.category,
         refs,
-        reason: 'retention',
+        reason: context.reason,
+        initiatedByUserId: context.initiatedByUserId ?? null,
         fetchOriginals: async () => {
           const r = await client.query<{
             id: string; first_name: string | null; last_name: string | null;
@@ -99,20 +101,22 @@ export class PersonsAdapter implements DataCategoryAdapter {
 
       // In-place anonymize. Each person gets a stable hash-based placeholder
       // so re-runs are idempotent and audit logs that already captured the
-      // placeholder still resolve consistently.
+      // placeholder still resolve consistently. anonymized_reason matches
+      // the AnonymizeContext so the persons row tells the truth about why
+      // it was scrubbed.
       for (const id of ids) {
         const placeholder = personPlaceholder(id);
         await client.query(
           `update persons
-              set first_name      = $3,
-                  last_name       = $4,
-                  email           = null,
-                  phone           = null,
-                  avatar_url      = null,
-                  anonymized_at   = now(),
-                  anonymized_reason = 'retention'
+              set first_name        = $3,
+                  last_name         = $4,
+                  email             = null,
+                  phone             = null,
+                  avatar_url        = null,
+                  anonymized_at     = now(),
+                  anonymized_reason = $5
             where tenant_id = $1 and id = $2 and anonymized_at is null`,
-          [tenantId, id, 'Former employee', placeholder],
+          [tenantId, id, 'Former employee', placeholder, context.reason],
         );
       }
     });

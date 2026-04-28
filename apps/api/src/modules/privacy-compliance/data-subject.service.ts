@@ -95,7 +95,8 @@ export class DataSubjectService {
 
     const adapters = this.registry.all();
     const sections: Record<string, unknown> = {};
-    const breakdown: Record<string, { count: number; description: string }> = {};
+    const breakdown: Record<string, { count: number; description: string; failed?: boolean }> = {};
+    let anyFailed = false;
 
     for (const adapter of adapters) {
       try {
@@ -108,7 +109,8 @@ export class DataSubjectService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.log.warn(`adapter ${adapter.category} export failed: ${message}`);
-        breakdown[adapter.category] = { count: 0, description: `export failed: ${message}` };
+        breakdown[adapter.category] = { count: 0, description: `export failed: ${message}`, failed: true };
+        anyFailed = true;
       }
     }
 
@@ -148,16 +150,21 @@ export class DataSubjectService {
 
     const expiresAt = new Date(Date.now() + DataSubjectService.SIGNED_URL_TTL_SECONDS * 1000);
 
+    // Fail-closed: when any adapter export failed we mark the DSR partial,
+    // not completed. Defensibility: "fulfilled" must mean every category was
+    // actually exported.
+    const finalStatus: 'completed' | 'partial' = anyFailed ? 'partial' : 'completed';
+
     const updated = await this.db.queryOne<DsrRow>(
       `update data_subject_requests
-          set status                = 'completed',
+          set status                = $6,
               completed_at          = now(),
               scope_breakdown       = $3::jsonb,
               output_storage_path   = $4,
               output_url_expires_at = $5
         where tenant_id = $1 and id = $2
         returning *`,
-      [input.tenantId, input.requestId, JSON.stringify(breakdown), path, expiresAt.toISOString()],
+      [input.tenantId, input.requestId, JSON.stringify(breakdown), path, expiresAt.toISOString(), finalStatus],
     );
 
     await this.auditOutbox.emit({
@@ -170,6 +177,8 @@ export class DataSubjectService {
         subject_person_id: dsr.subject_person_id,
         section_count: Object.keys(sections).length,
         record_total: Object.values(breakdown).reduce((sum, b) => sum + b.count, 0),
+        status: finalStatus,
+        failed_categories: Object.entries(breakdown).filter(([, b]) => b.failed).map(([k]) => k),
       },
     });
 
@@ -294,9 +303,59 @@ export class DataSubjectService {
     if (dsr.status === 'denied') throw new BadRequestException('DSR already denied');
     if (dsr.status === 'completed') throw new BadRequestException('DSR already completed');
 
+    // Re-check legal holds at fulfillment time. createErasureRequest checks
+    // them at intake; if a hold was placed in the gap, we must NOT scrub.
+    const activeHold = await this.db.queryOne<{ id: string; hold_type: string; reason: string }>(
+      `select id, hold_type, reason from legal_holds
+        where tenant_id = $1
+          and released_at is null
+          and (expires_at is null or expires_at > now())
+          and (
+            hold_type = 'tenant_wide'
+            or (hold_type = 'person' and subject_person_id = $2)
+          )
+        limit 1`,
+      [input.tenantId, dsr.subject_person_id],
+    );
+    if (activeHold) {
+      const denied = await this.db.queryOne<DsrRow>(
+        `update data_subject_requests
+            set status = 'denied',
+                decision_reason = $3,
+                completed_at = now()
+          where tenant_id = $1 and id = $2
+          returning *`,
+        [
+          input.tenantId,
+          input.requestId,
+          `Denied at fulfillment: ${activeHold.hold_type} legal hold became active. Hold reason: ${activeHold.reason}`,
+        ],
+      );
+      await this.auditOutbox.emit({
+        tenantId: input.tenantId,
+        eventType: GdprEventType.ErasureRequestDenied,
+        entityType: 'data_subject_requests',
+        entityId: input.requestId,
+        actorUserId: input.actorUserId,
+        details: {
+          subject_person_id: dsr.subject_person_id,
+          denial_reason: 'active_legal_hold_at_fulfillment',
+          hold_id: activeHold.id,
+          hold_type: activeHold.hold_type,
+        },
+      });
+      return {
+        request: denied ?? dsr,
+        breakdown: {},
+        totalProcessed: 0,
+        status: 'partial',
+      };
+    }
+
     const adapters = this.registry.all();
-    const breakdown: Record<string, { anonymized: number; hardDeleted: number; description: string }> = {};
+    const breakdown: Record<string, { anonymized: number; hardDeleted: number; description: string; failed?: boolean }> = {};
     let totalProcessed = 0;
+    let anyFailed = false;
 
     for (const adapter of adapters) {
       try {
@@ -311,18 +370,41 @@ export class DataSubjectService {
           await adapter.hardDelete(refs);
           breakdown[adapter.category] = { anonymized: 0, hardDeleted: refs.length, description: adapter.description };
         } else {
-          await adapter.anonymize(refs);
+          // Erasure-aware anonymization — adapters propagate `erasure_request`
+          // to AnonymizationAuditService.snapshotTx, which short-circuits the
+          // 7-day restore window. Without this the subject's "erased" PII
+          // would be recoverable for a week — defeats Art. 17.
+          await adapter.anonymize(refs, {
+            reason: 'erasure_request',
+            initiatedByUserId: input.actorUserId,
+          });
           breakdown[adapter.category] = { anonymized: refs.length, hardDeleted: 0, description: adapter.description };
         }
         totalProcessed += refs.length;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.log.warn(`adapter ${adapter.category} erasure failed: ${message}`);
-        breakdown[adapter.category] = { anonymized: 0, hardDeleted: 0, description: `failed: ${message}` };
+        breakdown[adapter.category] = { anonymized: 0, hardDeleted: 0, description: `failed: ${message}`, failed: true };
+        anyFailed = true;
       }
     }
 
-    const finalStatus = totalProcessed > 0 ? 'completed' : 'partial';
+    // Belt-and-braces: if any anonymization snapshot slipped past the
+    // erasure short-circuit (e.g. a future adapter forgets to thread the
+    // context), purge any restore-window rows for this subject in this
+    // request's window.
+    await this.db.query(
+      `delete from anonymization_audit
+        where tenant_id = $1
+          and reason = 'erasure_request'
+          and resource_type = 'persons'
+          and resource_id   = $2`,
+      [input.tenantId, dsr.subject_person_id],
+    );
+
+    // Fail-closed: any adapter failure → partial. Empty processing without
+    // failure (e.g. nothing to erase) → completed; that's a valid outcome.
+    const finalStatus: 'completed' | 'partial' = anyFailed ? 'partial' : 'completed';
 
     const updated = await this.db.queryOne<DsrRow>(
       `update data_subject_requests
@@ -345,6 +427,8 @@ export class DataSubjectService {
       details: {
         subject_person_id: dsr.subject_person_id,
         total_processed: totalProcessed,
+        any_failed: anyFailed,
+        failed_categories: Object.entries(breakdown).filter(([, b]) => b.failed).map(([k]) => k),
         breakdown,
       },
     });

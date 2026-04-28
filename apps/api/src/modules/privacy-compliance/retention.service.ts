@@ -268,7 +268,7 @@ export class RetentionService {
       if (isHardDelete) {
         await adapter.hardDelete(chunk);
       } else {
-        await adapter.anonymize(chunk);
+        await adapter.anonymize(chunk, { reason: 'retention' });
       }
       processed += chunk.length;
 

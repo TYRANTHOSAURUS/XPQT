@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DbService } from '../../../common/db/db.service';
 import { AnonymizationAuditService } from '../anonymization-audit.service';
 import type {
+  AnonymizeContext,
   DataCategoryAdapter,
   EntityRef,
   ExportSection,
@@ -57,20 +58,22 @@ export class VisitorRecordsAdapter implements DataCategoryAdapter {
     }));
   }
 
-  async anonymize(refs: EntityRef[]): Promise<void> {
+  async anonymize(refs: EntityRef[], context: AnonymizeContext = { reason: 'retention' }): Promise<void> {
     if (refs.length === 0) return;
     const tenantId = refs[0].tenantId;
     const ids = refs.map((r) => r.resourceId);
 
     await this.db.tx(async (client) => {
       // 1. Snapshot originals → anonymization_audit (7-day restore window).
+      // For erasure_request, snapshotTx short-circuits — no recoverable copy.
       await this.anonAudit.snapshotTx(client, {
         dataCategory: this.category,
         refs,
-        reason: 'retention',
+        reason: context.reason,
+        initiatedByUserId: context.initiatedByUserId ?? null,
         fetchOriginals: async () => {
           const rows = await client.query<{
-            id: string; badge_id: string | null; person_id: string;
+            id: string; badge_id: string | null; person_id: string | null;
             host_person_id: string; status: string; visit_date: string;
           }>(
             `select id, badge_id, person_id, host_person_id, status, visit_date
@@ -92,13 +95,16 @@ export class VisitorRecordsAdapter implements DataCategoryAdapter {
         },
       });
 
-      // 2. In-place anonymize. badge_id removed; person FKs preserved (the
-      // person rows themselves are anonymized by PersonsAdapter at their
-      // own retention schedule). Analytics columns (visit_date, site_id,
-      // status) preserved.
+      // 2. In-place anonymize. NULL person_id to break the visitor-identity
+      //    chain (a non-null FK would still resolve to a recoverable name +
+      //    email via the persons row). host_person_id is kept — hosts are
+      //    employees, anonymized separately by PersonsAdapter at their own
+      //    retention schedule. badge_id removed. Analytics columns
+      //    (visit_date, site_id, status) preserved.
       await client.query(
         `update visitors
             set badge_id      = null,
+                person_id     = null,
                 anonymized_at = now()
           where tenant_id = $1 and id = any($2::uuid[])
             and anonymized_at is null`,
