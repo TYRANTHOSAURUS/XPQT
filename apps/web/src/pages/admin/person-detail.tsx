@@ -210,7 +210,12 @@ export function PersonDetailBody({
                   !(costCenters ?? []).some((cc) => cc.code === costCenter) && (
                     <SelectItem value={costCenter}>
                       <span className="font-mono text-xs tabular-nums">{costCenter}</span>
-                      <span className="ml-2 text-muted-foreground">(not in catalog)</span>
+                      <Badge
+                        variant="outline"
+                        className="ml-2 border-amber-500/40 text-amber-900 dark:text-amber-100 text-[10px] uppercase tracking-wider"
+                      >
+                        Not in catalog
+                      </Badge>
                     </SelectItem>
                   )}
               </SelectContent>

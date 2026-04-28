@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -390,7 +391,12 @@ export function PersonsPage() {
                       !(costCenters ?? []).some((cc) => cc.code === costCenter) && (
                         <SelectItem value={costCenter}>
                           <span className="font-mono text-xs tabular-nums">{costCenter}</span>
-                          <span className="ml-2 text-muted-foreground">(not in catalog)</span>
+                          <Badge
+                            variant="outline"
+                            className="ml-2 border-amber-500/40 text-amber-900 dark:text-amber-100 text-[10px] uppercase tracking-wider"
+                          >
+                            Not in catalog
+                          </Badge>
                         </SelectItem>
                       )}
                   </SelectContent>
@@ -455,19 +461,30 @@ function PersonsTable({
   hasSelection: boolean;
 }) {
   if (loading) {
-    return <div className="px-6 py-6 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="flex flex-col gap-2 px-6 py-6" aria-label="Loading persons">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <Skeleton key={i} className="h-9 w-full" />
+        ))}
+      </div>
+    );
   }
 
   if (isEmpty) {
     return (
       <div className="flex flex-col items-center gap-3 py-16 text-center">
-        <Users className="size-10 text-muted-foreground" />
-        <div className="text-sm font-medium">No persons yet</div>
-        <p className="max-w-sm text-sm text-muted-foreground">
+        <Users className="size-10 text-muted-foreground animate-in fade-in slide-in-from-bottom-2 duration-300 [animation-fill-mode:both]" />
+        <div className="text-sm font-medium animate-in fade-in slide-in-from-bottom-2 duration-300 [animation-delay:60ms] [animation-fill-mode:both]">
+          No persons yet
+        </div>
+        <p className="max-w-sm text-sm text-muted-foreground animate-in fade-in slide-in-from-bottom-2 duration-300 [animation-delay:120ms] [animation-fill-mode:both]">
           Add a person to start building your directory. You can invite them to the platform once they
           have an email on file.
         </p>
-        <Button className="gap-1.5" onClick={onAdd}>
+        <Button
+          className="gap-1.5 animate-in fade-in slide-in-from-bottom-2 duration-300 [animation-delay:180ms] [animation-fill-mode:both]"
+          onClick={onAdd}
+        >
           <Plus className="size-4" />
           Add person
         </Button>
@@ -512,14 +529,14 @@ function PersonsTable({
               data-selected={selected ? 'true' : undefined}
               onClick={() => onSelect(person.id)}
               className={cn(
-                'cursor-pointer transition-colors',
+                'cursor-pointer transition-colors duration-150 ease-[var(--ease-snap)]',
                 selected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-muted/40',
               )}
             >
               <TableCell
                 className={cn(
-                  'font-medium px-6',
-                  selected && 'border-l-2 border-l-primary pl-[22px]',
+                  'font-medium px-6 border-l-2 border-l-transparent transition-colors duration-150 ease-[var(--ease-snap)]',
+                  selected && 'border-l-primary',
                 )}
               >
                 <div className="min-w-0">
@@ -547,7 +564,7 @@ function PersonsTable({
                 {linkedUser ? (
                   <a
                     href={`/admin/users/${linkedUser.id}`}
-                    className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                    className="text-xs text-primary inline-flex items-center gap-1 underline underline-offset-4 decoration-primary/30 hover:decoration-primary transition-[text-decoration-color] duration-150 ease-[var(--ease-snap)]"
                   >
                     <Badge
                       variant={linkedUser.status === 'active' ? 'default' : 'secondary'}
@@ -593,9 +610,21 @@ function PersonInspectorContent({
   onDeactivated: () => void;
 }) {
   const { data: person } = usePerson(personId);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
-    <div className="flex flex-col gap-8 px-6 pt-6 pb-10">
+    <div
+      data-mounted={mounted ? '' : undefined}
+      className={cn(
+        'flex flex-col gap-8 px-6 pt-6 pb-10',
+        'transition-[opacity,transform] duration-200 ease-[var(--ease-smooth)]',
+        'opacity-0 translate-y-1',
+        'data-[mounted]:opacity-100 data-[mounted]:translate-y-0',
+      )}
+    >
       {person && (
         <div className="flex flex-col gap-2">
           <div className="flex items-start justify-between gap-3">
