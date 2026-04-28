@@ -1,11 +1,12 @@
 import { createElement } from 'react';
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
 import type { DailyListPayload } from '../daily-list.service';
+import { getStrings, type DailyListLocale } from './strings';
 
 /**
- * NL-localised catering daglijst PDF template (v1).
+ * Localised catering daily-list (NL: "daglijst") PDF template.
  *
- * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §5.
+ * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md §5,§11.
  *
  * Constraints baked into the layout:
  *   - Single-page-per-bucket where possible; spans pages cleanly when long.
@@ -17,9 +18,9 @@ import type { DailyListPayload } from '../daily-list.service';
  *   - Allergen / dietary notes prominent — the kitchen staples a
  *     printout in front of the prep station.
  *
- * Sprint 4 will add FR + EN templates per the i18n stack pattern.
- * Today's NL strings are inline; refactor into a string-bundle when the
- * second locale lands.
+ * Sprint 4 added FR + EN + DE bundles (templates/strings.ts). The
+ * template body is locale-agnostic; all user-facing copy comes from
+ * the bundle resolved by `payload.vendor.language`.
  */
 
 const styles = StyleSheet.create({
@@ -144,13 +145,10 @@ export interface CateringDailyListTemplateProps {
  *                    or generation.generated_at)
  *
  * The Sprint 2 fix replaced `new Date('12:00')` (which was NaN in Node
- * and rendered every cell as '—'). Codex round-2 review flagged that the
- * ISO branch still used `getHours()/getMinutes()` which is process-tz
- * dependent — a server in UTC would render `generated_at` an hour off
- * the vendor's wall clock. Fix: format ISO inputs in Europe/Amsterdam
- * explicitly via Intl.DateTimeFormat. Tenant-configurable timezone is a
- * Sprint 4 follow-up; today every Benelux vendor is on Amsterdam local
- * (matches the scheduler's bucket math).
+ * and rendered every cell as '—'). Codex round-2 review flagged that
+ * the ISO branch still used `getHours()/getMinutes()` which is
+ * process-tz dependent. Fix: format ISO inputs in Europe/Amsterdam
+ * explicitly via Intl.DateTimeFormat.
  */
 const AMSTERDAM_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
   hour: '2-digit',
@@ -161,31 +159,13 @@ const AMSTERDAM_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
 
 function formatTime(input: string | null | undefined): string {
   if (!input) return '—';
-
-  // 'HH:mm' or 'HH:mm:ss' — naive postgres `time`, already in vendor-local.
-  // Pull the first two components verbatim.
   const timeOnly = /^(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(input);
   if (timeOnly) {
     return `${timeOnly[1]}:${timeOnly[2]}`;
   }
-
-  // ISO with 'T' / full timestamp — Date parsing is defined. Render in
-  // Europe/Amsterdam so generated_at always reads as the vendor's wall
-  // clock regardless of the API server's TZ.
   const d = new Date(input);
   if (Number.isNaN(d.getTime())) return '—';
   return AMSTERDAM_TIME_FMT.format(d);
-}
-
-function formatDateNL(ymd: string): string {
-  // 2026-05-01 → "1 mei 2026"
-  const months = [
-    'januari', 'februari', 'maart', 'april', 'mei', 'juni',
-    'juli', 'augustus', 'september', 'oktober', 'november', 'december',
-  ];
-  const [y, m, d] = ymd.split('-').map((n) => Number(n));
-  if (!y || !m || !d) return ymd;
-  return `${d} ${months[m - 1]} ${y}`;
 }
 
 /**
@@ -194,14 +174,15 @@ function formatDateNL(ymd: string): string {
  */
 export function CateringDailyListTemplate(props: CateringDailyListTemplateProps) {
   const { payload, generation } = props;
-  const buildingLabel = payload.building?.name ?? 'Alle gebouwen';
+  const t = getStrings(payload.vendor.language as DailyListLocale | null | undefined);
+  const buildingLabel = payload.building?.name ?? t.allBuildings;
 
   return createElement(
     Document,
     {
-      title: `Daily-list ${payload.vendor.name} ${payload.list_date}`,
+      title: `${t.documentTitle} ${payload.vendor.name} ${payload.list_date}`,
       author: 'Prequest',
-      subject: `Catering daglijst ${payload.list_date}`,
+      subject: `${t.header} ${payload.list_date}`,
     },
     createElement(
       Page,
@@ -211,32 +192,32 @@ export function CateringDailyListTemplate(props: CateringDailyListTemplateProps)
       createElement(
         View,
         { style: styles.header, fixed: true },
-        createElement(Text, { style: styles.title }, 'Daily-list catering'),
-        createElement(Text, { style: styles.subtitle }, `${formatDateNL(payload.list_date)} · ${buildingLabel}`),
-        createElement(Text, { style: styles.subtitle }, `Voor ${payload.vendor.name}`),
+        createElement(Text, { style: styles.title }, t.header),
+        createElement(Text, { style: styles.subtitle }, `${t.formatDate(payload.list_date)} · ${buildingLabel}`),
+        createElement(Text, { style: styles.subtitle }, t.forVendor(payload.vendor.name)),
         createElement(
           View,
           { style: styles.meta },
           createElement(
             Text,
             { style: styles.metaItem },
-            'Versie ',
+            `${t.versionLabel} `,
             createElement(Text, { style: styles.metaItemValue }, `v${generation.version}`),
           ),
           createElement(
             Text,
             { style: styles.metaItem },
-            'Aangemaakt ',
+            `${t.generatedLabel} `,
             createElement(Text, { style: styles.metaItemValue }, formatTime(generation.generated_at)),
           ),
           createElement(
             Text,
             { style: styles.metaItem },
-            'Bron ',
+            `${t.sourceLabel} `,
             createElement(
               Text,
               { style: styles.metaItemValue },
-              generation.triggered_by === 'auto' ? 'automatisch' : 'handmatig',
+              generation.triggered_by === 'auto' ? t.sourceAuto : t.sourceManual,
             ),
           ),
         ),
@@ -246,13 +227,13 @@ export function CateringDailyListTemplate(props: CateringDailyListTemplateProps)
           createElement(
             Text,
             null,
-            createElement(Text, { style: styles.totalsLabel }, 'Bestellingen: '),
+            createElement(Text, { style: styles.totalsLabel }, `${t.ordersLabel}: `),
             createElement(Text, { style: styles.totalsValue }, `${payload.total_lines}`),
           ),
           createElement(
             Text,
             null,
-            createElement(Text, { style: styles.totalsLabel }, 'Totale hoeveelheid: '),
+            createElement(Text, { style: styles.totalsLabel }, `${t.totalQuantityLabel}: `),
             createElement(Text, { style: styles.totalsValue }, `${payload.total_quantity}`),
           ),
         ),
@@ -273,9 +254,9 @@ export function CateringDailyListTemplate(props: CateringDailyListTemplateProps)
             Text,
             { style: styles.lineRequester },
             line.requester_first_name
-              ? `Voor ${line.requester_first_name}`
-              : 'Voor: onbekend',
-            line.headcount ? ` · ${line.headcount} personen` : '',
+              ? t.forRequester(line.requester_first_name)
+              : t.forRequesterUnknown,
+            line.headcount ? t.headcountSuffix(line.headcount) : '',
           ),
           createElement(
             View,
@@ -287,7 +268,7 @@ export function CateringDailyListTemplate(props: CateringDailyListTemplateProps)
             ? createElement(
                 View,
                 { style: styles.diet },
-                createElement(Text, null, `Dieetwensen: ${line.dietary_notes}`),
+                createElement(Text, null, `${t.dietaryPrefix}: ${line.dietary_notes}`),
               )
             : null,
         ),
@@ -297,14 +278,13 @@ export function CateringDailyListTemplate(props: CateringDailyListTemplateProps)
       createElement(
         View,
         { style: styles.footer, fixed: true },
-        createElement(Text, null, 'Geleverd via Prequest'),
+        createElement(Text, null, t.footerBrand),
         createElement(
           Text,
           null,
-          `Pagina `,
           createElement(Text, {
             render: ({ pageNumber, totalPages }: { pageNumber: number; totalPages: number }) =>
-              `${pageNumber} van ${totalPages}`,
+              t.footerPagination(pageNumber, totalPages),
           }),
         ),
       ),

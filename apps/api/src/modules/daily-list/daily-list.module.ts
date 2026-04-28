@@ -13,6 +13,7 @@ import {
 import { DailyListSchedulerService } from './daily-list-scheduler.service';
 import { DailyListService } from './daily-list.service';
 import { PdfRendererService } from './pdf-renderer.service';
+import { DailyListStatusInferenceService } from './status-inference.service';
 
 /**
  * Vendor daily-list subsystem — Dutch market name "daglijst", but every
@@ -57,6 +58,7 @@ import { PdfRendererService } from './pdf-renderer.service';
     PermissionGuard,
     DailyListService,
     DailyListFollowupService,
+    DailyListStatusInferenceService,
     PdfRendererService,
     DailyListSchedulerService,
     LoggingDailyListMailer,
