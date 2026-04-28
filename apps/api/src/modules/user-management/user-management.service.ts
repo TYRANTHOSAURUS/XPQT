@@ -581,6 +581,24 @@ export class UserManagementService {
    * role, the concrete expansion (wildcards resolved into catalog entries),
    * and per-permission attribution so the UI can show "granted by role X".
    */
+  // ─── Sign-in events ──────────────────────────────────────────────────────
+
+  async listSignIns(userId: string, limit = 10) {
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('auth_sign_in_events')
+      .select('id, signed_in_at, ip_address, user_agent, country, city, method, provider, mfa_used, success, failure_reason')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', userId)
+      .eq('event_kind', 'sign_in')
+      .order('signed_in_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data ?? [];
+  }
+
+  // ─── Effective permissions ────────────────────────────────────────────────
+
   async getEffectivePermissions(userId: string) {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin

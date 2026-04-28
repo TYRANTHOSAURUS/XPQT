@@ -80,6 +80,15 @@ export class UsersController {
   async audit(@Param('id') id: string) {
     return this.service.listRoleAuditEvents({ user_id: id });
   }
+
+  @Get(':id/sign-ins')
+  async getSignIns(
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    const n = limit ? Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100) : 10;
+    return this.service.listSignIns(id, n);
+  }
 }
 
 @Controller('roles')
