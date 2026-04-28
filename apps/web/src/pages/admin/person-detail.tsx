@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
-import { Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { Trash2, UserPlus } from 'lucide-react';
+import { toastCreated, toastError, toastRemoved } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import {
   SettingsPageHeader,
   SettingsPageShell,
@@ -15,7 +17,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select,
   SelectContent,
@@ -24,10 +27,25 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { PersonAvatar } from '@/components/person-avatar';
+import { PersonPicker } from '@/components/person-picker';
+import { LocationCombobox } from '@/components/location-combobox';
+import { OrgNodeCombobox } from '@/components/org-node-combobox';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
-import { usePerson, useUpdatePerson, personFullName } from '@/api/persons';
+import { PersonActivityFeed } from '@/components/admin/person-activity-feed';
+import { DsrActionsCard } from '@/components/admin/dsr-actions-card';
+import {
+  usePerson,
+  useUpdatePerson,
+  personFullName,
+  personKeys,
+  type Person,
+  type PersonLinkedUser,
+} from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
+import { apiFetch } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 
 const PERSON_TYPES: Array<{ value: string; label: string }> = [
   { value: 'employee', label: 'Employee' },
@@ -37,12 +55,169 @@ const PERSON_TYPES: Array<{ value: string; label: string }> = [
   { value: 'temporary_worker', label: 'Temporary worker' },
 ];
 
-export function PersonDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const { data: person, isLoading } = usePerson(id);
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const ACCEPTED_AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+export function getPrimaryOrgNode(
+  person: Person,
+): { id: string; name: string; code: string | null } | null {
+  const memberships = person.primary_membership ?? [];
+  const primary = memberships.find((m) => m.is_primary);
+  if (!primary) return null;
+  const node = Array.isArray(primary.org_node) ? primary.org_node[0] : primary.org_node;
+  return node ?? null;
+}
+
+export function getLinkedUser(person: Person): PersonLinkedUser | null {
+  const u = person.user;
+  if (!u) return null;
+  return Array.isArray(u) ? u[0] ?? null : u;
+}
+
+async function uploadAvatar(personId: string, tenantId: string, file: File): Promise<string> {
+  if (file.size > MAX_AVATAR_BYTES) throw new Error('Avatar must be 2 MB or smaller');
+  if (!ACCEPTED_AVATAR_TYPES.includes(file.type))
+    throw new Error('Avatar must be JPEG, PNG, or WebP');
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const path = `${tenantId}/${personId}.${ext}`;
+  const { error: uploadErr } = await supabase.storage
+    .from('avatars')
+    .upload(path, file, { upsert: true, cacheControl: '3600', contentType: file.type });
+  if (uploadErr) throw uploadErr;
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  return `${data.publicUrl}?v=${Date.now()}`;
+}
+
+// ---------------------------------------------------------------------------
+// AvatarUploadRow
+// ---------------------------------------------------------------------------
+
+function AvatarUploadRow({
+  person,
+  onUploaded,
+  onRemoved,
+}: {
+  person: Person;
+  onUploaded: (url: string) => void;
+  onRemoved: () => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!person.tenant_id) {
+      toastError("Couldn't upload avatar", {
+        error: new Error('person has no tenant id'),
+      });
+      e.target.value = '';
+      return;
+    }
+    setUploading(true);
+    try {
+      const url = await uploadAvatar(person.id, person.tenant_id, file);
+      onUploaded(url);
+    } catch (err) {
+      toastError("Couldn't upload avatar", { error: err as Error });
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      <PersonAvatar person={person} size="lg" />
+      <label
+        className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}
+      >
+        {uploading ? 'Uploading…' : person.avatar_url ? 'Replace' : 'Upload'}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="sr-only"
+          onChange={handleFile}
+          disabled={uploading}
+        />
+      </label>
+      {person.avatar_url && (
+        <Button variant="ghost" size="sm" onClick={onRemoved} disabled={uploading}>
+          Remove
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LinkedUserControl
+// ---------------------------------------------------------------------------
+
+function LinkedUserControl({ person }: { person: Person }) {
+  const qc = useQueryClient();
+  const linked = getLinkedUser(person);
+  const [inviting, setInviting] = useState(false);
+
+  if (linked) {
+    return (
+      <div className="flex items-center gap-2">
+        <Badge
+          variant={linked.status === 'active' ? 'default' : 'secondary'}
+          className="text-[10px] capitalize"
+        >
+          {linked.status}
+        </Badge>
+        <Link
+          to={`/admin/users/${linked.id}`}
+          className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+        >
+          Open user
+        </Link>
+      </div>
+    );
+  }
+
+  if (!person.email) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Add an email above to invite this person.
+      </span>
+    );
+  }
+
+  const handleInvite = async () => {
+    setInviting(true);
+    try {
+      await apiFetch('/users', {
+        method: 'POST',
+        body: JSON.stringify({ person_id: person.id, email: person.email, status: 'active' }),
+      });
+      qc.invalidateQueries({ queryKey: personKeys.detail(person.id) });
+      toastCreated('User account');
+    } catch (err) {
+      toastError("Couldn't create account", { error: err as Error, retry: handleInvite });
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  return (
+    <Button variant="outline" size="sm" onClick={handleInvite} disabled={inviting}>
+      <UserPlus className="size-4" />
+      {inviting ? 'Inviting…' : 'Invite as user'}
+    </Button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PersonDetailBody — exported so persons.tsx split-view inspector can reuse it
+// ---------------------------------------------------------------------------
+
+export function PersonDetailBody({ personId }: { personId: string }) {
+  const { data: person, isLoading } = usePerson(personId);
   const { data: costCenters } = useCostCenters({ active: true });
-  const update = useUpdatePerson(id);
+  const update = useUpdatePerson(personId);
+  const navigate = useNavigate();
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -51,11 +226,13 @@ export function PersonDetailPage() {
   const [costCenter, setCostCenter] = useState('');
   const [type, setType] = useState<string>('employee');
   const [active, setActive] = useState(true);
+  const [primaryOrgNodeId, setPrimaryOrgNodeId] = useState<string | null>(null);
+  const [defaultLocationId, setDefaultLocationId] = useState<string | null>(null);
+  const [managerId, setManagerId] = useState('');
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
 
-  // Hydrate local state from server response. Subsequent edits go through
-  // useDebouncedSave; we only sync from server on first load + id change.
-  const personId = person?.id;
+  // Hydrate from server response on first load + when the id changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!person) return;
     setFirstName(person.first_name ?? '');
@@ -65,13 +242,14 @@ export function PersonDetailPage() {
     setCostCenter(person.cost_center ?? '');
     setType((person.type as string) ?? 'employee');
     setActive(person.active ?? true);
-  }, [personId]); // eslint-disable-line react-hooks/exhaustive-deps
+    setDefaultLocationId(person.default_location_id ?? null);
+    setManagerId(person.manager_person_id ?? '');
+    setPrimaryOrgNodeId(getPrimaryOrgNode(person)?.id ?? null);
+  }, [person?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Surface PATCH failures as toasts so silent save errors stop being silent.
   useEffect(() => {
-    if (update.error) {
-      toastError("Couldn't save changes", { error: update.error });
-    }
+    if (update.error) toastError("Couldn't save changes", { error: update.error });
   }, [update.error]);
 
   useDebouncedSave(firstName, (v) => {
@@ -91,51 +269,33 @@ export function PersonDetailPage() {
     update.mutate({ phone: v || null });
   });
 
-  const headline = useMemo(() => {
-    if (!person) return 'Loading…';
-    return personFullName(person) || person.email || 'Unnamed person';
-  }, [person]);
-
-  if (!id) return null;
-
-  if (isLoading) {
-    return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader
-          backTo="/admin/persons"
-          title="Loading…"
-          description="Fetching person details"
-        />
-      </SettingsPageShell>
-    );
-  }
-
+  if (isLoading) return <Skeleton className="h-96" />;
   if (!person) {
     return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader
-          backTo="/admin/persons"
-          title="Not found"
-          description={`No person with id ${id} in this tenant.`}
-        />
-      </SettingsPageShell>
+      <p className="text-sm text-muted-foreground">
+        This person doesn't exist or you don't have access.
+      </p>
     );
   }
 
   return (
-    <SettingsPageShell width="xwide">
-      <SettingsPageHeader
-        backTo="/admin/persons"
-        title={headline}
-        description={person.email ?? 'Person profile and access scope.'}
-        actions={
-          <Badge variant={active ? 'default' : 'outline'} className="text-[10px] uppercase tracking-wider">
-            {active ? 'Active' : 'Inactive'}
-          </Badge>
-        }
-      />
-
-      <SettingsGroup title="Identity" description="Display name and contact details.">
+    <>
+      {/* ------------------------------------------------------------------ */}
+      {/* Identity                                                             */}
+      {/* ------------------------------------------------------------------ */}
+      <SettingsGroup title="Identity" description="Display name, contact details, and avatar.">
+        <SettingsRow
+          label="Avatar"
+          description="Shown across the app where this person appears."
+        >
+          <SettingsRowValue>
+            <AvatarUploadRow
+              person={person}
+              onUploaded={(url) => update.mutate({ avatar_url: url })}
+              onRemoved={() => update.mutate({ avatar_url: null })}
+            />
+          </SettingsRowValue>
+        </SettingsRow>
         <SettingsRow label="First name">
           <SettingsRowValue>
             <Input
@@ -254,13 +414,91 @@ export function PersonDetailPage() {
         </SettingsRow>
       </SettingsGroup>
 
+      {/* ------------------------------------------------------------------ */}
+      {/* Organisation & access                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <SettingsGroup
+        title="Organisation & access"
+        description="Where this person sits in the org tree, their default work location, manager, and platform account."
+      >
+        <SettingsRow
+          label="Primary organisation"
+          description="The person's primary node in the org tree. Inherits the node's location grants in the portal."
+        >
+          <SettingsRowValue>
+            <OrgNodeCombobox
+              value={primaryOrgNodeId}
+              onChange={(v) => {
+                setPrimaryOrgNodeId(v);
+                update.mutate({ primary_org_node_id: v });
+              }}
+              placeholder="No organisation"
+            />
+          </SettingsRowValue>
+        </SettingsRow>
+        <SettingsRow
+          label="Default work location"
+          description="Sets the portal's default site/building for new requests. Sites and buildings only."
+        >
+          <SettingsRowValue>
+            <LocationCombobox
+              value={defaultLocationId}
+              onChange={(v) => {
+                setDefaultLocationId(v);
+                update.mutate({ default_location_id: v });
+              }}
+              typesFilter={['site', 'building']}
+              activeOnly
+              placeholder="None"
+            />
+          </SettingsRowValue>
+        </SettingsRow>
+        <SettingsRow label="Manager">
+          <SettingsRowValue>
+            <PersonPicker
+              value={managerId}
+              onChange={(v) => {
+                setManagerId(v);
+                update.mutate({ manager_person_id: v || null });
+              }}
+              excludeId={personId}
+              placeholder="No manager"
+            />
+          </SettingsRowValue>
+        </SettingsRow>
+        <SettingsRow
+          label="Linked user account"
+          description="Whether this person can sign in to the platform."
+        >
+          <SettingsRowValue>
+            <LinkedUserControl person={person} />
+          </SettingsRowValue>
+        </SettingsRow>
+      </SettingsGroup>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Location grants                                                       */}
+      {/* ------------------------------------------------------------------ */}
       <SettingsSection
         title="Location grants"
-        description="Every location this person can submit requests for — their default work location, explicit grants, and grants inherited through org memberships."
+        description="Every location this person can submit requests for — default + grants + org inheritance."
       >
-        <PersonLocationGrantsPanel personId={person.id} />
+        <PersonLocationGrantsPanel personId={personId} />
       </SettingsSection>
 
+      {/* ------------------------------------------------------------------ */}
+      {/* Activity                                                              */}
+      {/* ------------------------------------------------------------------ */}
+      <SettingsSection
+        title="Activity"
+        description="Recent tickets, bookings, and audit events for this person."
+      >
+        <PersonActivityFeed personId={personId} limit={20} />
+      </SettingsSection>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Danger zone                                                           */}
+      {/* ------------------------------------------------------------------ */}
       <SettingsGroup title="Danger zone">
         <SettingsRow
           label="Deactivate person"
@@ -278,23 +516,68 @@ export function PersonDetailPage() {
             </Button>
           </SettingsRowValue>
         </SettingsRow>
+        <DsrActionsCard
+          personId={personId}
+          subjectName={personFullName(person) || person.email || 'this person'}
+        />
       </SettingsGroup>
 
       <ConfirmDialog
         open={confirmDeactivate}
         onOpenChange={setConfirmDeactivate}
-        title={`Deactivate ${headline}?`}
-        description="They will be hidden from request submission and assignment. You can reactivate them later from this page."
+        title={`Deactivate ${personFullName(person)}?`}
+        description="They will be hidden from request submission and assignment. You can reactivate later."
         confirmLabel="Deactivate"
         destructive
         onConfirm={async () => {
           await update.mutateAsync({ active: false });
           setActive(false);
           setConfirmDeactivate(false);
-          toastRemoved(headline, { verb: 'deactivated' });
+          toastRemoved(personFullName(person), { verb: 'deactivated' });
           navigate('/admin/persons');
         }}
       />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PersonDetailPage — thin route shell
+// ---------------------------------------------------------------------------
+
+export function PersonDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const { data: person, isLoading } = usePerson(id);
+
+  if (!id) return null;
+
+  const headline = !person
+    ? isLoading
+      ? 'Loading…'
+      : 'Not found'
+    : personFullName(person) || person.email || 'Unnamed person';
+
+  return (
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        backTo="/admin/persons"
+        title={headline}
+        description={person?.email ?? 'Person profile and access scope.'}
+        actions={
+          person ? (
+            <div className="flex items-center gap-2">
+              <PersonAvatar person={person} size="default" />
+              <Badge
+                variant={person.active ? 'default' : 'outline'}
+                className="text-[10px] uppercase tracking-wider"
+              >
+                {person.active ? 'Active' : 'Inactive'}
+              </Badge>
+            </div>
+          ) : null
+        }
+      />
+      <PersonDetailBody personId={id} />
     </SettingsPageShell>
   );
 }

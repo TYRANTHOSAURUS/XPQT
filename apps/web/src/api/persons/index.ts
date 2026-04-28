@@ -1,6 +1,21 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
+export interface PersonOrgMembership {
+  org_node_id: string;
+  is_primary: boolean;
+  org_node:
+    | { id: string; name: string; code: string | null }
+    | { id: string; name: string; code: string | null }[]
+    | null;
+}
+
+export interface PersonLinkedUser {
+  id: string;
+  email: string;
+  status: string;
+}
+
 export interface Person {
   id: string;
   first_name: string;
@@ -14,12 +29,31 @@ export interface Person {
   active?: boolean;
   default_location_id?: string | null;
   avatar_url?: string | null;
+  tenant_id?: string;
+  manager_person_id?: string | null;
+  manager?: { id: string; first_name: string; last_name: string } | null;
+  primary_membership?: PersonOrgMembership[] | null;
+  user?: PersonLinkedUser | PersonLinkedUser[] | null;
   /** @deprecated kept for backwards compatibility — column was dropped in 00118+. */
   department?: string | null;
 }
 
 export type UpdatePersonPayload = Partial<
-  Pick<Person, 'first_name' | 'last_name' | 'email' | 'phone' | 'cost_center' | 'type' | 'active' | 'default_location_id'>
+  Pick<
+    Person,
+    | 'first_name'
+    | 'last_name'
+    | 'email'
+    | 'phone'
+    | 'cost_center'
+    | 'type'
+    | 'active'
+    | 'default_location_id'
+    | 'avatar_url'
+    | 'manager_person_id'
+  > & {
+    primary_org_node_id: string | null;
+  }
 >;
 
 export function personFullName(p: Pick<Person, 'first_name' | 'last_name' | 'full_name'>): string {
