@@ -12,7 +12,6 @@ import { BundleTemplatePicker } from './components/bundle-template-picker';
 import { FloorPlanPicker } from './components/floor-plan-picker';
 import { RealtimeAvailabilityPill } from './components/realtime-availability-pill';
 import { BookingProgressiveActions } from './components/booking-progressive-actions';
-import { BookingConfirmDialog } from './components/booking-confirm-dialog';
 import {
   Dialog,
   DialogContent,
@@ -60,15 +59,11 @@ export function BookRoomPage() {
 
   const [pendingPrimary, setPendingPrimary] = useState<RankedRoom | null>(null);
   const [pendingExtras, setPendingExtras] = useState<RankedRoom[]>([]);
-  const [dialogFocus, setDialogFocus] = useState<
-    'identity' | 'attendees' | 'multi-room' | 'recurring' | undefined
-  >(undefined);
   const [activeTemplate, setActiveTemplate] = useState<BundleTemplate | null>(null);
 
   const onBook = (room: RankedRoom) => {
     setPendingPrimary(room);
     setPendingExtras([]);
-    setDialogFocus('identity');
   };
 
   const showRestricted = hasRole('agent');
@@ -176,26 +171,23 @@ export function BookRoomPage() {
         onAddAttendees={() => {
           if (!rooms[0]) return;
           setPendingPrimary(rooms[0]);
-          setDialogFocus('attendees');
         }}
         onAddRoom={() => {
           if (!rooms[0]) return;
           setPendingPrimary(rooms[0]);
           setPendingExtras(rooms.slice(1, 2));
-          setDialogFocus('multi-room');
         }}
         onMakeRecurring={() => {
           if (!rooms[0]) return;
           setPendingPrimary(rooms[0]);
-          setDialogFocus('recurring');
         }}
       />
 
-      {/* Single-room flow → unified BookingComposer (δ.4).
-          Multi-room (pendingExtras non-empty) keeps the existing dialog
-          because the multi-room endpoint doesn't yet accept services /
-          source / recurrence (codex flagged the contract gap). */}
-      {pendingPrimary && pendingExtras.length === 0 ? (
+      {/* Unified BookingComposer for both single-room and multi-room.
+          The legacy BookingConfirmDialog has been retired — composer
+          now covers every case it did (services, recurrence, multi-
+          room, approval-route, conflict-alternatives, template seed). */}
+      {pendingPrimary && (
         <Dialog
           open={Boolean(pendingPrimary)}
           onOpenChange={(o) => {
@@ -210,9 +202,16 @@ export function BookRoomPage() {
               <DialogTitle>
                 {pendingPrimary.rule_outcome?.effect === 'require_approval'
                   ? 'Request approval to book'
-                  : 'Confirm booking'}
+                  : pendingExtras.length > 0
+                    ? `Confirm booking — ${pendingExtras.length + 1} rooms`
+                    : 'Confirm booking'}
               </DialogTitle>
-              <DialogDescription>{pendingPrimary.name}</DialogDescription>
+              <DialogDescription>
+                {pendingPrimary.name}
+                {pendingExtras.length > 0
+                  ? ` and ${pendingExtras.length} more`
+                  : ''}
+              </DialogDescription>
             </DialogHeader>
             <BookingComposer
               open={Boolean(pendingPrimary)}
@@ -230,6 +229,7 @@ export function BookRoomPage() {
                 startAt: startAtIso,
                 endAt: endAtIso,
                 attendeeCount: state.attendeeCount,
+                additionalSpaceIds: pendingExtras.map((r) => r.space_id),
                 templateId: activeTemplate?.id ?? null,
                 costCenterId: activeTemplate?.payload?.default_cost_center_id ?? null,
                 services: activeTemplate?.payload?.services
@@ -245,31 +245,6 @@ export function BookRoomPage() {
             />
           </DialogContent>
         </Dialog>
-      ) : (
-        <BookingConfirmDialog
-          open={Boolean(pendingPrimary)}
-          onOpenChange={(o) => {
-            if (!o) {
-              setPendingPrimary(null);
-              setPendingExtras([]);
-            }
-          }}
-          primaryRoom={pendingPrimary}
-          additionalRooms={pendingExtras}
-          startAtIso={startAtIso}
-          endAtIso={endAtIso}
-          attendeeCount={state.attendeeCount}
-          attendeePersonIds={[]}
-          recurrenceRule={null}
-          templateId={activeTemplate?.id ?? null}
-          templateServices={activeTemplate?.payload?.services ?? null}
-          templateCostCenterId={activeTemplate?.payload?.default_cost_center_id ?? null}
-          requesterPersonId={requesterPersonId}
-          initialFocus={dialogFocus}
-          onBooked={() => {
-            // Success — picker auto-invalidates via the mutation hook.
-          }}
-        />
       )}
     </PortalPage>
   );

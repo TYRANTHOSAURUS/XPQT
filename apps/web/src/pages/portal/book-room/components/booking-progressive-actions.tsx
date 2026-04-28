@@ -19,8 +19,9 @@ interface Props {
 /**
  * Spec §4.1 progressive disclosure footer. Three pill buttons that escalate
  * the booking from the simple-default flow into find-time / multi-room /
- * recurring. Selecting any one of them opens the same confirm dialog with
- * the relevant section expanded — see <BookingConfirmDialog />.
+ * recurring. Selecting any one of them opens the unified BookingComposer.
+ * (Auto-scroll-to-section was deferred when the legacy BookingConfirmDialog
+ * was retired — composer doesn't yet honor an `initialFocus` prop.)
  *
  * The actions auto-select the top-ranked room from the picker. We surface
  * which room that is in the trailing hint so the user isn't surprised when

@@ -89,6 +89,11 @@ export interface InitialComposerState {
    *  on `RESET`. Useful for surface-specific seeds (e.g. drag-create
    *  pre-selects spaceId + startAt + endAt). */
   spaceId?: string | null;
+  /** Multi-room atomic-group seed. The portal book-room flow accumulates
+   *  pendingExtras via the BookingProgressiveActions chip row; pass
+   *  those ids here on dialog open so the composer enters in
+   *  multi-room mode. */
+  additionalSpaceIds?: string[];
   startAt?: string | null;
   endAt?: string | null;
   attendeeCount?: number;
@@ -104,7 +109,7 @@ export interface InitialComposerState {
 export function initialState(seed: InitialComposerState = {}): ComposerState {
   return {
     spaceId: seed.spaceId ?? null,
-    additionalSpaceIds: [],
+    additionalSpaceIds: seed.additionalSpaceIds ?? [],
     startAt: seed.startAt ?? null,
     endAt: seed.endAt ?? null,
     attendeeCount: seed.attendeeCount ?? 1,
