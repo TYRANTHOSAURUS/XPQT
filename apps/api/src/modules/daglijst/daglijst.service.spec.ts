@@ -216,13 +216,15 @@ describe('DaglijstService.record', () => {
     expect(r.email_status).toBe('never_sent');
 
     // Verify the tx contained: advisory lock, version lookup, recipient lookup,
-    // insert, line-locking update, and audit emit.
+    // insert, audit emit. Line-locking is INTENTIONALLY NOT in record() — it
+    // happens on the send path in Sprint 2 ("lock on send" per spec).
     const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
     expect(txSqls.some((s) => s.includes('pg_advisory_xact_lock'))).toBe(true);
     expect(txSqls.some((s) => s.includes('select max(version)'))).toBe(true);
     expect(txSqls.some((s) => s.includes('insert into vendor_daily_lists'))).toBe(true);
-    expect(txSqls.some((s) => s.includes('update order_line_items'))).toBe(true);
     expect(txSqls.some((s) => s.includes('insert into audit_outbox'))).toBe(true);
+    // Critical: NO line lock on record — that's Sprint 2 send-path territory.
+    expect(txSqls.some((s) => s.includes('update order_line_items'))).toBe(false);
   });
 
   it('bumps to v2 when a prior version exists, and the audit event reflects regenerate', async () => {

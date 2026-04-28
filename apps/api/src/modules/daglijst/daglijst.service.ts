@@ -60,8 +60,42 @@ export class DaglijstService {
       : null;
 
     // Pull every active order line for the bucket.
-    // First-name only on the requester per privacy guidance + the spec
-    // explicit note (§4 step 3).
+    // First-name only on the requester per privacy guidance + spec §4 step 3.
+    //
+    // Building filter: resolve descendants via a recursive CTE on
+    // spaces.parent_id so a top-level building covers every floor + room
+    // beneath it.
+    //
+    // Service-type filter: order_line_items don't carry service_type
+    // directly. The right join is via menu_items → catalog_menus.service_type
+    // (catering / av_equipment / supplies / facilities_services). Lines
+    // without a menu_item (rare; legacy data) are excluded from the
+    // typed bucket — the spec explicitly buckets per service type.
+    //
+    // Tenant predicates on every joined table — defense-in-depth against a
+    // bad FK or stale row leaking across tenants.
+    const params: unknown[] = [tenantId, vendorId, listDate];
+    let buildingClause = '';
+    if (buildingId) {
+      params.push(buildingId);
+      buildingClause = `
+        and ord.delivery_location_id in (
+          with recursive descendants(id) as (
+            select id from spaces where tenant_id = $1 and id = $${params.length}
+            union all
+            select s.id from spaces s
+              join descendants d on s.parent_id = d.id
+             where s.tenant_id = $1
+          )
+          select id from descendants
+        )`;
+    }
+    let serviceTypeClause = '';
+    if (serviceType) {
+      params.push(serviceType);
+      serviceTypeClause = `and cm.service_type = $${params.length}`;
+    }
+
     const lines = await this.db.queryMany<DaglijstLineRow>(
       `select oli.id                        as line_id,
               oli.order_id                  as order_id,
@@ -82,25 +116,33 @@ export class DaglijstService {
               p.first_name                  as requester_first_name,
               s.name                        as delivery_location_name
          from order_line_items oli
-         join orders ord on ord.id = oli.order_id
-         left join catalog_items ci on ci.id = oli.catalog_item_id
-         left join persons p on p.id = ord.requester_person_id
-         left join spaces s on s.id = ord.delivery_location_id
+         join orders ord
+           on ord.id = oli.order_id
+          and ord.tenant_id = $1
+         left join catalog_items ci
+           on ci.id = oli.catalog_item_id
+          and ci.tenant_id = $1
+         left join menu_items mi
+           on mi.id = oli.menu_item_id
+          and mi.tenant_id = $1
+         left join catalog_menus cm
+           on cm.id = mi.menu_id
+          and cm.tenant_id = $1
+         left join persons p
+           on p.id = ord.requester_person_id
+          and p.tenant_id = $1
+         left join spaces s
+           on s.id = ord.delivery_location_id
+          and s.tenant_id = $1
         where oli.tenant_id = $1
           and oli.vendor_id = $2
           and ord.delivery_date = $3
-          ${serviceType ? `and ci.category = $5` : ''}
-          ${buildingId ? `and (s.id = $4 or coalesce((s.path)::text, '') like $4 || '%')` : ''}
           and ord.status not in ('cancelled')
           and oli.recurrence_skipped is not true
+          ${serviceTypeClause}
+          ${buildingClause}
         order by ord.delivery_time nulls last, oli.id`,
-      buildingId
-        ? serviceType
-          ? [tenantId, vendorId, listDate, buildingId, serviceType]
-          : [tenantId, vendorId, listDate, buildingId]
-        : serviceType
-          ? [tenantId, vendorId, listDate, null, serviceType]
-          : [tenantId, vendorId, listDate],
+      params,
     );
 
     return {
@@ -182,20 +224,14 @@ export class DaglijstService {
       );
       const daglijst = inserted.rows[0];
 
-      // Lock the order_line_items into this version. Subsequent edits
-      // trigger requires_phone_followup via DaglijstLockService (Sprint 2).
+      // NOTE: line-locking deliberately NOT applied here. The spec is
+      // "lock on send" — a daglijst can be generated (preview, regenerate,
+      // post-cutoff retry) without committing the lines into a sent
+      // bucket. Sprint 2 will set daglijst_locked_at + daglijst_id atomically
+      // with sent_at when DaglijstSendService delivers the email.
+      // Locking on record would falsely flag every line as
+      // requires_phone_followup the moment Sprint 2 hits a transient bounce.
       const lineIds = payload.lines.map((l) => l.line_id);
-      if (lineIds.length > 0) {
-        await client.query(
-          `update order_line_items
-              set daglijst_locked_at = now(),
-                  daglijst_id        = $2
-            where tenant_id = $1
-              and id = any($3::uuid[])
-              and daglijst_locked_at is null`,
-          [tenantId, daglijst.id, lineIds],
-        );
-      }
 
       const eventType = nextVersion === 1
         ? DaglijstEventType.Generated
