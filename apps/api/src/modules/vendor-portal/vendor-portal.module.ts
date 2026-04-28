@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
 import { PrivacyComplianceModule } from '../privacy-compliance/privacy-compliance.module';
+import { VendorAuthController } from './vendor-auth.controller';
 import { VendorAuthService } from './vendor-auth.service';
 import { LoggingVendorMailer, VENDOR_MAILER } from './vendor-mailer.service';
+import { VendorOrderController } from './vendor-order.controller';
+import { VendorOrderService } from './vendor-order.service';
+import { VendorPortalGuard } from './vendor-portal.guard';
 
 /**
  * Vendor portal — Phase B.
@@ -19,8 +23,11 @@ import { LoggingVendorMailer, VENDOR_MAILER } from './vendor-mailer.service';
  */
 @Module({
   imports: [DbModule, PrivacyComplianceModule],
+  controllers: [VendorAuthController, VendorOrderController],
   providers: [
     VendorAuthService,
+    VendorOrderService,
+    VendorPortalGuard,
     LoggingVendorMailer,
     {
       provide: VENDOR_MAILER,
@@ -29,6 +36,6 @@ import { LoggingVendorMailer, VENDOR_MAILER } from './vendor-mailer.service';
       useExisting: LoggingVendorMailer,
     },
   ],
-  exports: [VendorAuthService, VENDOR_MAILER],
+  exports: [VendorAuthService, VendorOrderService, VendorPortalGuard, VENDOR_MAILER],
 })
 export class VendorPortalModule {}
