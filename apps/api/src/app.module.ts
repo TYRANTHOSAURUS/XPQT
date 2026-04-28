@@ -41,6 +41,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templates.module';
 import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
+import { DaglijstModule } from './modules/daglijst/daglijst.module';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-co
     BundleTemplatesModule,
     CostCentersModule,
     PrivacyComplianceModule,
+    DaglijstModule,
   ],
   controllers: [HealthController],
   providers: [
