@@ -7,7 +7,13 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
-import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useRoles } from '@/api/roles';
 import type { ServiceRuleTemplate } from '@/api/service-rules';
 
@@ -121,12 +127,18 @@ function ParamField({ spec, value, onChange }: ParamFieldProps) {
       );
 
     case 'role':
+      /* Codex Sprint 1B round-1 fix: 'role' is SINGULAR (one role-id
+         string). Round-0 rendered a multi-checkbox that produced
+         string[] which the templates' compile-time `contains(roles, [..])`
+         couldn't match against. The single-role select produces a
+         scalar UUID, matching role_restricted_item's target_role_id
+         and external_vendor_approval's finance_role_id. */
       return (
         <Field>
           <FieldLabel htmlFor={id}>{labelText}</FieldLabel>
-          <RolePickerMulti
+          <RolePickerSingle
             id={id}
-            value={Array.isArray(value) ? (value as string[]) : []}
+            value={typeof value === 'string' ? value : null}
             onChange={onChange}
           />
         </Field>
@@ -204,21 +216,17 @@ function DaysOfWeekPicker({
   );
 }
 
-function RolePickerMulti({
+function RolePickerSingle({
   id,
   value,
   onChange,
 }: {
   id: string;
-  value: string[];
-  onChange: (next: string[]) => void;
+  value: string | null;
+  onChange: (next: string | null) => void;
 }) {
   const { data: roles } = useRoles();
   const list = roles ?? [];
-  const toggle = (roleId: string) => {
-    if (value.includes(roleId)) onChange(value.filter((x) => x !== roleId));
-    else onChange([...value, roleId]);
-  };
   if (list.length === 0) {
     return (
       <div id={id} className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
@@ -227,19 +235,17 @@ function RolePickerMulti({
     );
   }
   return (
-    <div id={id} className="flex flex-col gap-1.5">
-      {list.map((r) => (
-        <Field key={r.id} orientation="horizontal">
-          <Checkbox
-            id={`${id}-${r.id}`}
-            checked={value.includes(r.id)}
-            onCheckedChange={() => toggle(r.id)}
-          />
-          <FieldLabel htmlFor={`${id}-${r.id}`} className="font-normal">
+    <Select value={value ?? ''} onValueChange={(v) => onChange(v || null)}>
+      <SelectTrigger id={id}>
+        <SelectValue placeholder="Pick a role…" />
+      </SelectTrigger>
+      <SelectContent>
+        {list.map((r) => (
+          <SelectItem key={r.id} value={r.id}>
             {r.name}
-          </FieldLabel>
-        </Field>
-      ))}
-    </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

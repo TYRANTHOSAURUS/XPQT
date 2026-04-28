@@ -26,24 +26,49 @@ export interface CreateFromTemplateArgs {
 }
 
 /**
- * Walk a template predicate (or approval-config) JSON tree, replacing
- * any string literal of the form "$.paramKey" with the value at
- * params[paramKey]. Templates use this lightweight const-substitution
- * model; visual AST is Sprint 2.
+ * Compile a service-rule template predicate (or approval-config) into
+ * the AST shape `PredicateEngineService` actually evaluates.
  *
- * Examples:
- *   compile({ const: '$.threshold' }, { threshold: 500 })
- *     → { const: 500 }
- *   compile({ op: '>', left: {...}, right: { const: '$.threshold' } }, ...)
- *     → { op: '>', left: {...}, right: { const: 500 } }
+ * Templates are seeded in a HUMAN-READABLE shape (migration 00149):
+ *   - ASCII operators: `>`, `<`, `=`, `!=`, `>=`, `<=`, `in`, `contains`.
+ *   - Wrappers: `{ path: '$.foo.bar' }` for context refs, `{ const: <v> }`
+ *     for literal values (often `'$.<param_key>'` placeholders).
+ *   - Composition: `and`/`or`/`not` with `args: [...]`.
+ *   - Synthetic op `is_not_null` (no engine fn equivalent today).
  *
- * Arrays + nested objects are walked recursively. Non-template strings
- * pass through unchanged so non-placeholder predicate values still work.
+ * The engine accepts:
+ *   - Symbolic ops: `eq, ne, gt, gte, lt, lte, in, contains` on
+ *     `{ op, left, right }` shape.
+ *   - Bare `$.<path>` strings as refs (no `{path}` wrapper).
+ *   - Literals as plain JS values (no `{const}` wrapper).
+ *   - `and/or/not` with `args: [...]`.
+ *
+ * Compile in two passes:
+ *   1. Substitute params: walk the tree, replace any literal string
+ *      `'$.<paramKey>'` with `params[paramKey]`.
+ *   2. Normalise: walk again, translate ASCII ops to symbolic, unwrap
+ *      `{path}` / `{const}`, translate `is_not_null(x)` to
+ *      `{op:'ne', left:x, right:null}`.
+ *
+ * Codex Sprint 1B round-1 fix: round-0 only did pass 1, so the
+ * compiled output still had `{op:'>', left:{path:'…'}, right:{const:N}}`
+ * which fails `engine.validate()` ("unknown op: >"). REJECT.
  */
 export function compileTemplatePredicate(
   template: unknown,
   params: Record<string, unknown>,
-): Record<string, unknown> | unknown {
+): unknown {
+  return normalizeForEngine(substituteParams(template, params));
+}
+
+/**
+ * Pass 1 — purely a value substitution. Replaces string literals of the
+ * form `"$.paramKey"` with `params[paramKey]`. Walks objects + arrays.
+ * Substituted values are NOT recursively scanned (so a param value that
+ * happens to start with "$." is treated as a literal string, never a
+ * second-level placeholder).
+ */
+function substituteParams(template: unknown, params: Record<string, unknown>): unknown {
   if (template == null) return template;
   if (typeof template === 'string') {
     if (template.startsWith('$.')) {
@@ -53,16 +78,104 @@ export function compileTemplatePredicate(
     return template;
   }
   if (Array.isArray(template)) {
-    return template.map((entry) => compileTemplatePredicate(entry, params));
+    return template.map((entry) => substituteParams(entry, params));
   }
   if (typeof template === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(template as Record<string, unknown>)) {
-      out[k] = compileTemplatePredicate(v, params);
+      out[k] = substituteParams(v, params);
     }
     return out;
   }
   return template;
+}
+
+/**
+ * Map ASCII op symbols to the engine's symbolic op names. `is_not_null`
+ * is rewritten to a `ne` against `null` since the engine has no
+ * is_not_null fn. ASCII ops not in this map fall through unchanged
+ * (and would later be caught by `engine.validate()`).
+ */
+const ASCII_OP_TO_ENGINE: Record<string, string> = {
+  '>':  'gt',
+  '<':  'lt',
+  '>=': 'gte',
+  '<=': 'lte',
+  '=':  'eq',
+  '==': 'eq',
+  '!=': 'ne',
+  /* Symbolic ops (engine-native) pass through. */
+  in:        'in',
+  contains:  'contains',
+  eq:        'eq',
+  ne:        'ne',
+  gt:        'gt',
+  gte:       'gte',
+  lt:        'lt',
+  lte:       'lte',
+};
+
+/**
+ * Pass 2 — walk the tree and translate every node into the engine's
+ * accepted shape:
+ *   - {path: 'X'}  → 'X'                           (bare ref)
+ *   - {const: V}   → V                             (literal)
+ *   - {op: '>',  left, right}    → {op: 'gt',  left, right}
+ *   - {op: 'is_not_null', args}  → {op: 'ne', left, right: null}
+ *   - {op: 'and'|'or'|'not', args} stays composition.
+ */
+function normalizeForEngine(node: unknown): unknown {
+  if (node == null) return node;
+  if (typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(normalizeForEngine);
+
+  const obj = node as Record<string, unknown>;
+
+  /* Wrapper unwrap. */
+  if ('path' in obj && typeof obj.path === 'string') {
+    return obj.path;             // 'path' wrapper → bare $.foo string
+  }
+  if ('const' in obj && Object.keys(obj).length === 1) {
+    return normalizeForEngine(obj.const);
+  }
+
+  /* is_not_null synthetic. */
+  if (obj.op === 'is_not_null') {
+    const args = (obj.args as unknown[]) ?? [];
+    const left = normalizeForEngine(args[0]);
+    return { op: 'ne', left, right: null };
+  }
+
+  /* Composition (and/or/not) — keep shape, recurse args. */
+  if (obj.op === 'and' || obj.op === 'or' || obj.op === 'not') {
+    return { op: obj.op, args: ((obj.args as unknown[]) ?? []).map(normalizeForEngine) };
+  }
+
+  /* Comparison op — translate ASCII → symbolic, recurse left/right. */
+  if (typeof obj.op === 'string') {
+    const mapped = ASCII_OP_TO_ENGINE[obj.op] ?? obj.op;
+    const out: Record<string, unknown> = { op: mapped };
+    if ('left' in obj)  out.left  = normalizeForEngine(obj.left);
+    if ('right' in obj) out.right = normalizeForEngine(obj.right);
+    if ('args' in obj)  out.args  = ((obj.args as unknown[]) ?? []).map(normalizeForEngine);
+    return out;
+  }
+
+  /* fn nodes pass through with args recursed. */
+  if (typeof obj.fn === 'string') {
+    return {
+      ...obj,
+      args: ((obj.args as unknown[]) ?? []).map(normalizeForEngine),
+    };
+  }
+
+  /* Plain object literal (e.g. inside approval_config_template). Walk
+     children so nested wrapped values still get unwrapped. */
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = normalizeForEngine(v);
+  }
+  return out;
 }
 
 export interface ServiceRuleUpsertDto {
@@ -274,6 +387,28 @@ export class ServiceRuleService {
       throw new BadRequestException({ code: 'template_required', message: 'templateKey required' });
     }
 
+    /* Codex Sprint 1B round-1 fix: enforce the same surface contract as
+       create() so the /from-template endpoint can't bypass validation
+       (empty name, missing target_id when not tenant, etc). */
+    if (!targetKind) {
+      throw new BadRequestException({
+        code: 'target_kind_required',
+        message: 'target_kind is required',
+      });
+    }
+    if (targetKind !== 'tenant' && (!targetId || !targetId.trim())) {
+      throw new BadRequestException({
+        code: 'target_id_required',
+        message: 'target_id is required when target_kind is not tenant',
+      });
+    }
+    if (name !== undefined && !name.trim()) {
+      throw new BadRequestException({
+        code: 'name_required',
+        message: 'name cannot be empty',
+      });
+    }
+
     const tenant = TenantContext.current();
     const tplLookup = await this.supabase.admin
       .from('service_rule_templates')
@@ -290,11 +425,21 @@ export class ServiceRuleService {
       });
     }
 
-    // Validate every required param is present.
+    /* Required-param check. The default fallback covers templates that
+       ship a sensible default (e.g. cost_threshold_approval default
+       500) so admins can mint a rule with one click. Whitespace-only
+       strings + empty arrays are treated as missing — same gate the
+       dialog applies on the frontend. */
     const supplied = params ?? {};
     for (const spec of tpl.param_specs ?? []) {
       if ((spec as { required?: boolean }).required === false) continue;
-      if (supplied[spec.key] === undefined || supplied[spec.key] === null) {
+      const v = supplied[spec.key];
+      const isEmpty =
+        v === undefined
+        || v === null
+        || (typeof v === 'string' && v.trim() === '')
+        || (Array.isArray(v) && v.length === 0);
+      if (isEmpty) {
         if (spec.default !== undefined) {
           supplied[spec.key] = spec.default;
         } else {
