@@ -280,9 +280,39 @@ export class DaglijstService {
   }
 
   /**
+   * Find the most-recent NOT-YET-SENT row for a bucket, if any. Used by
+   * the scheduler to retry a 'failed' / 'sending' row instead of minting
+   * a new version on every transient outage (codex Sprint 2 fix #2).
+   *
+   * Returns null when the bucket has either no rows or only sent ones —
+   * in which case the scheduler proceeds with generate() to mint v_n+1.
+   */
+  async findUnsentRowForBucket(args: AssembleArgs): Promise<VendorDailyListRow | null> {
+    const { tenantId, vendorId, buildingId, serviceType, listDate } = args;
+    return this.db.queryOne<VendorDailyListRow>(
+      `select * from vendor_daily_lists
+        where tenant_id = $1
+          and vendor_id = $2
+          and (building_id is not distinct from $3)
+          and service_type = $4
+          and list_date    = $5
+          and sent_at is null
+        order by version desc
+        limit 1`,
+      [tenantId, vendorId, buildingId, serviceType, listDate],
+    );
+  }
+
+  /**
    * One-shot: assemble fresh + record. The Sprint 2 scheduler calls this
    * once per bucket per cutoff time; admin manual regenerate calls it via
    * the Sprint 3 admin endpoint.
+   *
+   * Codex Sprint 2 fix #4: when assemble returns an empty payload (every
+   * line cancelled between scan + send), throw a ListCancelled to signal
+   * the caller. Spec §4 says "emit a 'list cancelled' notification to
+   * vendor instead of empty daglijst." Sprint 4 wires the cancellation
+   * mailer; today the scheduler swallows + audits + skips the bucket.
    */
   async generate(args: GenerateArgs): Promise<VendorDailyListRow> {
     const payload = await this.assemble({
@@ -292,6 +322,15 @@ export class DaglijstService {
       serviceType: args.serviceType,
       listDate: args.listDate,
     });
+
+    // Codex Sprint 2 fix #4: empty-bucket short-circuit. Don't mint a v_n
+    // PDF with zero lines when every order got cancelled between the
+    // scheduler scan and the send time. Caller (scheduler) treats
+    // ListCancelledError as "skip this bucket + audit + don't retry."
+    if (payload.lines.length === 0) {
+      throw new ListCancelledError(args.tenantId, args.vendorId, args.listDate);
+    }
+
     return this.record({
       tenantId: args.tenantId,
       vendorId: args.vendorId,
@@ -412,6 +451,37 @@ export class DaglijstService {
       throw new BadRequestException('Vendor has no daglijst_email configured; cannot send');
     }
 
+    // Codex Sprint 2 fix #1: CAS-acquire the row before calling the mailer.
+    // Two workers / a stuck retry / a parallel admin "send now" can't both
+    // dispatch the same email because only one wins this UPDATE.
+    //   - 'never_sent' → 'sending'   normal first try
+    //   - 'failed'     → 'sending'   retry path (codex fix #2)
+    //   - already 'sending' → cas returns 0 rows → another worker has it → bail
+    //   - 'sent' + force → use 'sent' as the CAS-from state on resend.
+    const fromStatuses = force
+      ? ['never_sent', 'failed', 'sent']
+      : ['never_sent', 'failed'];
+    const cas = await this.db.queryOne<{ id: string }>(
+      `update vendor_daily_lists
+          set email_status = 'sending',
+              email_error  = null
+        where tenant_id = $1
+          and id = $2
+          and email_status = any($3::text[])
+        returning id`,
+      [tenantId, daglijstId, fromStatuses],
+    );
+    if (!cas) {
+      // Another worker is already sending this row (or it's already sent
+      // and !force). Re-fetch + return — caller's API-level retry can
+      // re-poll if they care.
+      const current = await this.getById(tenantId, daglijstId);
+      this.log.debug(
+        `daglijst ${daglijstId} CAS skipped — current state ${current?.email_status ?? 'unknown'}`,
+      );
+      return current ?? dl;
+    }
+
     const { url: pdfUrl, expiresAt } = await this.getDownloadUrl({
       tenantId,
       daglijstId,
@@ -420,6 +490,10 @@ export class DaglijstService {
 
     const subject = buildSubjectLine(dl);
     const textBody = buildTextBody(dl, pdfUrl);
+    // Stable correlation id so Sprint 4 mail providers can reject duplicate
+    // network retries via Idempotency-Key. Increments per attempt — the
+    // version + email_status counter make consecutive retries distinct.
+    const correlationId = `daglijst:${dl.id}:v${dl.version}:${dl.email_message_id ? 'retry' : 'first'}`;
 
     let sendResult;
     let sendError: string | null = null;
@@ -432,14 +506,20 @@ export class DaglijstService {
         vendorName: dl.payload.vendor.name,
         subject,
         textBody,
+        htmlBody: null,                                  // Sprint 4 wires this
         pdfDownloadUrl: pdfUrl,
+        attachment: null,                                // Sprint 4 wires real attachment
         language: dl.payload.vendor.language ?? 'nl',
+        correlationId,
       });
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
     }
 
     if (sendError) {
+      // Roll the CAS state back to 'failed' so the next scheduler tick
+      // can retry the SAME row (codex Sprint 2 fix #2 — no version-bump-
+      // forever spiral).
       await this.db.query(
         `update vendor_daily_lists
             set email_status = 'failed',
@@ -525,6 +605,23 @@ export class DaglijstService {
         limit 200`,
       [tenantId, vendorId, since ?? null],
     );
+  }
+}
+
+/**
+ * Thrown by generate() when the bucket has no live lines at send time
+ * (every order_line_item was cancelled between scan + cutoff). Caller
+ * decides whether to send a "list cancelled" notification (Sprint 4) or
+ * just audit + skip (Sprint 2 scheduler).
+ */
+export class ListCancelledError extends Error {
+  constructor(
+    public readonly tenantId: string,
+    public readonly vendorId: string,
+    public readonly listDate: string,
+  ) {
+    super(`Daglijst bucket has zero live lines (cancelled between scan and send)`);
+    this.name = 'ListCancelledError';
   }
 }
 

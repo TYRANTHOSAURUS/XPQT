@@ -96,6 +96,19 @@ function makeFakeDb(opts: FakeOptions = {}) {
       if (sql.includes('update vendor_daily_lists') && sql.includes('pdf_storage_path = $3')) {
         return { ...base, pdf_storage_path: (params?.[2] as string) ?? 'fallback.pdf' };
       }
+      // Sprint 2 codex fix #1 — CAS state machine: only succeeds when the
+      // current row's email_status is in the from-list ($3 = string[]).
+      if (
+        sql.includes('update vendor_daily_lists')
+        && sql.includes("email_status = 'sending'")
+        && sql.includes('email_status = any($3::text[])')
+      ) {
+        const fromStatuses = (params?.[2] as string[]) ?? [];
+        if (fromStatuses.includes(base.email_status ?? 'never_sent')) {
+          return { id: base.id };
+        }
+        return null;
+      }
       return null;
     }),
     queryMany: jest.fn(async () => []),

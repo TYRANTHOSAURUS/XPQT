@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DbService } from '../../common/db/db.service';
-import { DaglijstService } from './daglijst.service';
+import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
+import {
+  DaglijstService,
+  ListCancelledError,
+} from './daglijst.service';
+import { DaglijstEventType } from './event-types';
 
 /**
  * Cron-driven daglijst scheduler.
@@ -42,6 +47,7 @@ export class DaglijstSchedulerService {
   constructor(
     private readonly db: DbService,
     private readonly daglijst: DaglijstService,
+    private readonly auditOutbox: AuditOutboxService,
   ) {}
 
   /**
@@ -94,6 +100,14 @@ export class DaglijstSchedulerService {
    * Returns at most maxPerTick buckets, oldest-cutoff-first.
    */
   private async findDueBuckets(): Promise<DueBucket[]> {
+    // Codex Sprint 2 fix #3: cutoff math runs in Europe/Amsterdam, NOT
+    // the DB session timezone. Postgres handles DST transitions correctly
+    // when we explicitly cast through `AT TIME ZONE 'Europe/Amsterdam'` —
+    // the date `2026-03-29` (DST spring-forward) gets a 23-hour day, the
+    // 'send at 19:00' clock-mode resolves correctly without a 1-hour drift.
+    //
+    // Tenant-configurable timezone is a Sprint 4 follow-up; today every
+    // tenant in our market is NL/BE so Amsterdam is correct.
     return this.db.queryMany<DueBucket>(
       `with bucket as (
          select
@@ -121,32 +135,52 @@ export class DaglijstSchedulerService {
             and oli.daglijst_locked_at is null
             and oli.recurrence_skipped is not true
             and ord.status not in ('cancelled')
-            and ord.delivery_date between current_date and current_date + interval '1 day'
+            /* Window in Amsterdam local: today + tomorrow. */
+            and ord.delivery_date between
+                  (now() at time zone 'Europe/Amsterdam')::date
+              and (now() at time zone 'Europe/Amsterdam')::date + interval '1 day'
           group by v.tenant_id, v.id, ord.delivery_location_id, service_type,
                    ord.delivery_date,
                    v.daglijst_cutoff_offset_minutes, v.daglijst_send_clock_time
        )
        select
          tenant_id, vendor_id, building_id, service_type, list_date,
-         /* Compute next_send_at for each bucket. clock_time wins when set. */
+         /*
+          * Compute next_send_at as a Europe/Amsterdam local time, then
+          * cast to timestamptz so we can compare against now().
+          *
+          * - clock mode: list_date - 1 day @ clock_time, AT TIME ZONE Amsterdam
+          * - offset mode: list_date @ earliest_delivery_time - offset_minutes,
+          *                AT TIME ZONE Amsterdam
+          *
+          * The (local_ts AT TIME ZONE 'Europe/Amsterdam') cast tells
+          * Postgres "this naive timestamp IS in Amsterdam local"; the
+          * resulting timestamptz is in UTC for comparison. DST handled
+          * automatically.
+          */
          case
            when clock_time is not null then
-             ((list_date - interval '1 day')::date + clock_time)::timestamptz
+             (((list_date - interval '1 day')::date + clock_time)
+                at time zone 'Europe/Amsterdam')
            else
-             (list_date::timestamptz + earliest_delivery_time::time
-               - (offset_minutes::text || ' minutes')::interval)
+             ((list_date::timestamp + earliest_delivery_time)
+                at time zone 'Europe/Amsterdam'
+                - (offset_minutes::text || ' minutes')::interval)
          end as next_send_at
        from bucket b
        where
-         /* due: cutoff passed */
          case
            when clock_time is not null then
-             ((list_date - interval '1 day')::date + clock_time)::timestamptz <= now()
+             (((list_date - interval '1 day')::date + clock_time)
+                at time zone 'Europe/Amsterdam') <= now()
            else
-             (list_date::timestamptz + earliest_delivery_time::time
-               - (offset_minutes::text || ' minutes')::interval) <= now()
+             ((list_date::timestamp + earliest_delivery_time)
+                at time zone 'Europe/Amsterdam'
+                - (offset_minutes::text || ' minutes')::interval) <= now()
          end
-         /* and no v1 already emitted for this bucket */
+         /* and no row already SENT for this bucket. Unsent/failed rows
+            are retried by processBucket() rather than triggering a new
+            version mint (codex Sprint 2 fix #2). */
          and not exists (
            select 1 from vendor_daily_lists vdl
             where vdl.tenant_id = b.tenant_id
@@ -163,45 +197,69 @@ export class DaglijstSchedulerService {
   }
 
   /**
-   * Generate (assemble + record + render + upload) + send a single bucket
-   * inside an advisory lock so two scheduler instances can't double-fire
-   * the same tuple.
+   * Process one bucket — retry an unsent prior version when present, else
+   * generate v_n+1, then send. The advisory lock prevents two scheduler
+   * instances from double-version-bumping; the row-level CAS inside
+   * DaglijstService.send prevents two from double-mailing.
+   *
+   * Codex Sprint 2 fixes wired here:
+   *   - #2 retry-existing: findUnsentRowForBucket before generate. Avoids
+   *        the version-bump-forever loop on transient failures.
+   *   - #4 empty-list:     generate() throws ListCancelledError when every
+   *        line is cancelled at send time; we audit + skip the bucket
+   *        instead of recording a zero-line PDF.
+   *
+   * The advisory lock is now scoped to the version-bump decision only —
+   * once we have a daglijst_id, the per-row CAS in send() is the
+   * authoritative concurrency primitive. Releasing the advisory lock
+   * before the mail call is intentional (the mailer is a network call;
+   * blocking other buckets while it runs would serialize the whole
+   * tick).
    */
-  private async processBucket(bucket: DueBucket): Promise<'sent' | 'skipped' | 'failed'> {
+  private async processBucket(bucket: DueBucket): Promise<'sent' | 'skipped' | 'failed' | 'cancelled'> {
     const lockKey = bucketLockKey(bucket);
     const tenantId = bucket.tenant_id;
 
-    return this.db.tx(async (client) => {
+    // Phase 1: under advisory lock, decide which row to send.
+    let daglijstId: string | null = null;
+    let phase1Outcome: 'reuse' | 'generated' | 'skipped' | 'cancelled' | 'failed' = 'skipped';
+
+    phase1Outcome = await this.db.tx(async (client) => {
       const got = await client.query<{ locked: boolean }>(
         `select pg_try_advisory_xact_lock($1, $2) as locked`,
         [DaglijstSchedulerService.LOCK_NS, lockKey],
       );
       if (!got.rows[0]?.locked) {
-        return 'skipped';                              // another worker has it
-      }
-
-      // Re-check inside the lock — another worker may have just sent it.
-      const stillPending = await client.query(
-        `select 1 from vendor_daily_lists
-          where tenant_id = $1
-            and vendor_id = $2
-            and (building_id is not distinct from $3)
-            and service_type = $4
-            and list_date    = $5
-            and sent_at is not null
-          limit 1`,
-        [
-          tenantId,
-          bucket.vendor_id,
-          bucket.building_id,
-          bucket.service_type,
-          bucket.list_date,
-        ],
-      );
-      if (stillPending.rowCount && stillPending.rowCount > 0) {
         return 'skipped';
       }
 
+      // Re-check inside the lock — another worker may have just SENT it.
+      const sentAlready = await client.query(
+        `select 1 from vendor_daily_lists
+          where tenant_id = $1 and vendor_id = $2
+            and (building_id is not distinct from $3)
+            and service_type = $4 and list_date = $5
+            and sent_at is not null
+          limit 1`,
+        [tenantId, bucket.vendor_id, bucket.building_id, bucket.service_type, bucket.list_date],
+      );
+      if ((sentAlready.rowCount ?? 0) > 0) {
+        return 'skipped';
+      }
+
+      // Retry path (codex fix #2): is there a prior unsent row?
+      const existing = await this.daglijst.findUnsentRowForBucket({
+        tenantId, vendorId: bucket.vendor_id,
+        buildingId: bucket.building_id,
+        serviceType: bucket.service_type,
+        listDate: bucket.list_date,
+      });
+      if (existing) {
+        daglijstId = existing.id;
+        return 'reuse';
+      }
+
+      // Mint a new version.
       try {
         const generated = await this.daglijst.generate({
           tenantId,
@@ -211,18 +269,58 @@ export class DaglijstSchedulerService {
           listDate: bucket.list_date,
           triggeredBy: 'auto',
         });
-        // generate() doesn't itself send. Render + upload + email here.
-        await this.daglijst.send({ tenantId, daglijstId: generated.id });
-        return 'sent';
+        daglijstId = generated.id;
+        return 'generated';
       } catch (err) {
+        if (err instanceof ListCancelledError) {
+          // Empty bucket — every line cancelled between scan + send.
+          // Audit + skip. Sprint 4 will dispatch a "list cancelled"
+          // notification instead.
+          this.log.warn(
+            `scheduler skipped cancelled bucket tenant=${tenantId} vendor=${bucket.vendor_id} ` +
+            `date=${bucket.list_date} svc=${bucket.service_type}`,
+          );
+          await this.auditOutbox.emitTx(client, {
+            tenantId,
+            eventType: DaglijstEventType.SendFailed,
+            entityType: 'vendors',
+            entityId: bucket.vendor_id,
+            details: {
+              reason: 'list_cancelled_empty_bucket',
+              list_date: bucket.list_date,
+              building_id: bucket.building_id,
+              service_type: bucket.service_type,
+            },
+          });
+          return 'cancelled';
+        }
         const msg = err instanceof Error ? err.message : String(err);
         this.log.error(
-          `scheduler bucket failed tenant=${tenantId} vendor=${bucket.vendor_id} ` +
+          `scheduler generate failed tenant=${tenantId} vendor=${bucket.vendor_id} ` +
           `date=${bucket.list_date} svc=${bucket.service_type}: ${msg}`,
         );
         return 'failed';
       }
     });
+
+    if (phase1Outcome !== 'reuse' && phase1Outcome !== 'generated') {
+      return phase1Outcome;
+    }
+
+    // Phase 2: send (DaglijstService.send has its own row-level CAS that
+    // serializes concurrent send attempts on the same row, so it's safe
+    // to run outside the advisory lock).
+    try {
+      await this.daglijst.send({ tenantId, daglijstId: daglijstId! });
+      return 'sent';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(
+        `scheduler send failed tenant=${tenantId} vendor=${bucket.vendor_id} ` +
+        `daglijst=${daglijstId} ${phase1Outcome}: ${msg}`,
+      );
+      return 'failed';
+    }
   }
 }
 

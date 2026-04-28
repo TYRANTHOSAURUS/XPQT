@@ -136,12 +136,28 @@ export interface CateringDaglijstTemplateProps {
 }
 
 /**
- * Format an ISO timestamp as HH:mm in NL locale (24h). Pure function so
- * snapshot tests are deterministic.
+ * Format a delivery-time-ish input as HH:mm. Three shapes come from
+ * upstream queries + payload assembly:
+ *   - 'HH:mm:ss'   (postgres `time` cast to text — the common case)
+ *   - 'HH:mm'      (admin-edited)
+ *   - ISO timestamp (when assemble pulls from requested_for_start_at)
+ *
+ * The earlier draft did `new Date('12:00')` which is INVALID in Node and
+ * produced NaN — every cell rendered '—'. Codex Sprint 2 flagged this.
+ * Fix: parse HH[:mm[:ss]] directly; fall through to Date only for true
+ * timestamps.
  */
-function formatTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
+function formatTime(input: string | null | undefined): string {
+  if (!input) return '—';
+
+  // 'HH:mm' or 'HH:mm:ss' — pull the first two components.
+  const timeOnly = /^(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(input);
+  if (timeOnly) {
+    return `${timeOnly[1]}:${timeOnly[2]}`;
+  }
+
+  // ISO with 'T' / full timestamp — Date parsing is defined.
+  const d = new Date(input);
   if (Number.isNaN(d.getTime())) return '—';
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');

@@ -24,14 +24,44 @@ export interface SendDaglijstInput {
   /** Pre-formatted human-readable subject for the email. */
   subject: string;
   /**
-   * Plain-text body. Sprint 4 wires HTML templates; Sprint 2 ships text-
-   * only so the spec-required body content (date, location count, total
-   * quantity, link) is delivery-channel-agnostic.
+   * Plain-text body — always provided; Sprint 4 ships htmlBody alongside
+   * for the branded version. The spec-required body content (date,
+   * location count, total quantity, link) lives here.
    */
   textBody: string;
-  /** Signed URL to the PDF in Supabase Storage; TTL ≤ 1 hour. */
+  /**
+   * Optional HTML body. Sprint 2 leaves null; Sprint 4 emits a branded
+   * email-template render alongside text fallback. Mailers that only
+   * support multipart should fall back to textBody.
+   */
+  htmlBody?: string | null;
+  /**
+   * Signed URL to the PDF in Supabase Storage. Sprint 2 ships only this
+   * (link in body); Sprint 4 may switch to actual attachment per spec §6.
+   */
   pdfDownloadUrl: string;
-  language: string;            // 'nl' | 'fr' | 'en' | 'de' for future templates
+  /**
+   * Optional PDF attachment payload. Sprint 4 wires either the in-memory
+   * buffer (for fresh renders) or a storage_path the mailer can fetch
+   * server-side. Sprint 2's logging mailer ignores this field.
+   */
+  attachment?: {
+    filename: string;          // e.g. 'daglijst-2026-05-01-v1.pdf'
+    contentType: 'application/pdf';
+    /** Either inline bytes OR a storage path the mailer fetches. */
+    bytes?: Buffer;
+    storagePath?: string;
+    /** When storagePath is set, which bucket. */
+    storageBucket?: string;
+  } | null;
+  language: string;            // 'nl' | 'fr' | 'en' | 'de'
+  /**
+   * Stable correlation id for provider-side idempotency. Sprint 4
+   * implementations pass this as Postmark MessageStream / Resend
+   * Idempotency-Key. Without it, network retries create duplicate sends.
+   * Recommended shape: `daglijst:<daglijst_id>:<email_status_attempt>`.
+   */
+  correlationId: string;
 }
 
 export interface DaglijstSendResult {
