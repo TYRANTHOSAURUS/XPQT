@@ -656,11 +656,17 @@ export function BookingComposer({
         onChange={(rule) => dispatch({ type: 'SET_RECURRENCE', rule })}
       />
 
-      {/* Approval-route banner */}
+      {/* Approval-route banner. Same neutral/icon-tinted shape as the
+          capacity warning so all four banner kinds (approval, capacity,
+          lead-time, conflict) read as one family. Animate-in slide-from-
+          top so warnings emerging mid-edit don't flicker. */}
       {isApprovalRoute && approvalDenialMessage && (
-        <div className="rounded-md border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-xs text-purple-800 dark:text-purple-300">
-          <Sparkles className="mr-1 inline size-3" />
-          {approvalDenialMessage}
+        <div className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1">
+          <Sparkles
+            className="size-3.5 shrink-0 text-purple-700 dark:text-purple-400"
+            aria-hidden
+          />
+          <span>{approvalDenialMessage}</span>
         </div>
       )}
 
@@ -672,7 +678,7 @@ export function BookingComposer({
         <div
           role="status"
           aria-live="polite"
-          className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground"
+          className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
         >
           <AlertTriangle
             className="size-3.5 shrink-0 text-amber-700 dark:text-amber-400"
@@ -693,7 +699,7 @@ export function BookingComposer({
         <div
           role="status"
           aria-live="polite"
-          className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+          className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
         >
           <p className="flex items-center gap-1 font-medium">
             <AlertTriangle className="size-3.5" />
@@ -715,7 +721,7 @@ export function BookingComposer({
       {conflictAlternatives.length > 0 && !fixedRoom && (
         <div
           role="alert"
-          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
         >
           <p className="font-medium text-destructive">
             Someone booked this slot before you. Try one of these:
@@ -758,7 +764,7 @@ export function BookingComposer({
       {conflictAlternatives.length > 0 && fixedRoom && (
         <div
           role="alert"
-          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs duration-200 ease-[var(--ease-smooth)] animate-in fade-in slide-in-from-top-1"
         >
           <p className="font-medium text-destructive">
             Someone booked this slot before you. Try one of these:
@@ -787,17 +793,21 @@ export function BookingComposer({
           codex flagged a 4px horizontal scroll trigger. Reverts to
           inline on sm+ (the desktop dialog isn't tall enough to need
           stickiness). pb honors iOS home-indicator safe area. */}
-      <div className="flex flex-col gap-2 border-t bg-background pt-3 sm:border-t-0 sm:bg-transparent sm:pt-2
+      <div className="flex flex-col gap-2 border-t bg-background/85 backdrop-blur-md pt-3 sm:border-t-0 sm:bg-transparent sm:backdrop-blur-none sm:pt-2
                       pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-0
                       sticky bottom-0 sm:static -mx-4 px-4 sm:mx-0 sm:px-0">
-        {validationError && (
-          <p className="text-xs text-amber-700 dark:text-amber-400">{validationError}</p>
-        )}
-        {!validationError && leadTimeWarnings.length > 0 && (
-          <p className="text-xs text-amber-700 dark:text-amber-400">
-            Resolve the lead-time conflicts above before submitting.
-          </p>
-        )}
+        {/* Reserved-height slot prevents the footer from jumping 16px
+            on every keystroke that flips validity. Always rendered;
+            content swaps with fade. */}
+        <p
+          className="min-h-[1.25rem] text-xs text-amber-700 transition-opacity duration-150 ease-[var(--ease-smooth)] dark:text-amber-400"
+          aria-live="polite"
+        >
+          {validationError ??
+            (leadTimeWarnings.length > 0
+              ? 'Resolve the lead-time conflicts above before submitting.'
+              : '')}
+        </p>
         <div className="flex items-center justify-end gap-2">
           <Button
             type="button"
@@ -815,8 +825,13 @@ export function BookingComposer({
               submitting ||
               leadTimeWarnings.length > 0
             }
+            // Lock min-width so the label crossfade between 'Book' /
+            // 'Booking…' / 'Submit for approval' / 'Book + 3 services'
+            // doesn't reflow the footer on every state flip. emil pass:
+            // submit reflow is the biggest 'this app is amateurish' tell.
+            className="min-w-[10rem]"
           >
-            {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
+            {submitting ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
             {submitting
               ? isApprovalRoute
                 ? 'Submitting…'
