@@ -1,26 +1,42 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { queryOptions, useQuery } from '@tanstack/react-query';
 import { Shield, AlertTriangle, Clock, MapPin, Building2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
-import { formatFullTimestamp } from '@/lib/format';
+import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import {
   SettingsPageHeader,
   SettingsPageShell,
   SettingsSection,
 } from '@/components/ui/settings-page';
+import { SettingsGroup, SettingsRow, SettingsRowValue } from '@/components/ui/settings-row';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
-import { buttonVariants } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   useEffectivePermissions,
   type EffectivePermissionsModule,
   type EffectivePermissionGrant,
 } from '@/api/permissions';
 import { useUserAudit } from '@/api/roles';
+import { useUpdateUser, useSendPasswordReset } from '@/api/users';
+import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { RoleAuditFeed } from '@/components/admin/role-audit-feed';
+import { UserSignInHistory } from '@/components/admin/user-sign-in-history';
+import { DsrActionsCard } from '@/components/admin/dsr-actions-card';
+import { PersonPicker } from '@/components/person-picker';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { toastSuccess, toastError } from '@/lib/toast';
 
 interface PersonShort {
   id: string;
@@ -45,6 +61,7 @@ export interface UserDetail {
   email: string;
   username: string | null;
   status: string;
+  last_login_at: string | null;
   person_id: string | null;
   person?: PersonShort | null;
   role_assignments?: RoleAssignment[];
@@ -75,6 +92,11 @@ export function UserDetailBody({ userId }: { userId: string }) {
   const userQuery = useQuery(userDetailOptions(userId));
   const effectiveQuery = useEffectivePermissions(userId);
   const auditQuery = useUserAudit(userId);
+  const update = useUpdateUser(userId);
+  const sendReset = useSendPasswordReset();
+
+  const [confirmSuspend, setConfirmSuspend] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const user = userQuery.data;
   const effective = effectiveQuery.data;
@@ -91,35 +113,87 @@ export function UserDetailBody({ userId }: { userId: string }) {
     );
   }
 
+  const personId = user.person_id ?? user.person?.id ?? null;
+  const subjectName = user.person
+    ? `${user.person.first_name} ${user.person.last_name}`
+    : user.email;
+
   return (
     <>
-      <SettingsSection title="Identity">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <Field label="Email" value={user.email} />
-          <Field label="Username" value={user.username ?? '—'} />
-          <Field
-            label="Status"
-            value={
-              <Badge
-                variant={user.status === 'active' ? 'default' : 'secondary'}
-                className="capitalize"
+      <SettingsGroup title="Identity" description="Login email is fixed; everything else can be edited.">
+        <SettingsRow label="Email" description="Authentication identifier; change via Supabase Auth.">
+          <SettingsRowValue>
+            <span className="text-sm text-muted-foreground">{user.email}</span>
+          </SettingsRowValue>
+        </SettingsRow>
+        <UsernameRow user={user} onChange={(v) => update.mutate({ username: v || null })} />
+        <SettingsRow label="Status">
+          <SettingsRowValue>
+            <Select
+              value={user.status}
+              onValueChange={(v) => {
+                if (v) update.mutate({ status: v });
+              }}
+            >
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="inactive">Inactive</SelectItem>
+                <SelectItem value="suspended">Suspended</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRowValue>
+        </SettingsRow>
+        <SettingsRow label="Linked person" description="The person record this account represents.">
+          <SettingsRowValue>
+            <PersonPicker
+              value={personId ?? ''}
+              onChange={(v) => update.mutate({ person_id: v || null })}
+              placeholder="No linked person"
+            />
+          </SettingsRowValue>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Sign-in" description="Recent sign-ins and account recovery.">
+        <SettingsRow label="Last sign-in">
+          <SettingsRowValue>
+            {user.last_login_at ? (
+              <time
+                className="tabular-nums text-sm"
+                dateTime={user.last_login_at}
+                title={formatFullTimestamp(user.last_login_at)}
               >
-                {user.status}
-              </Badge>
-            }
-          />
-          <Field
-            label="Linked person"
-            value={
-              user.person
-                ? `${user.person.first_name} ${user.person.last_name}${
-                    user.person.type ? ` · ${user.person.type}` : ''
-                  }`
-                : 'None'
-            }
-          />
-        </div>
-      </SettingsSection>
+                {formatRelativeTime(user.last_login_at)}
+              </time>
+            ) : (
+              <span className="text-sm text-muted-foreground">Never</span>
+            )}
+          </SettingsRowValue>
+        </SettingsRow>
+        <SettingsRow label="Recent sign-ins" description="Last 10 successful sign-ins.">
+          <div className="px-3 py-2 w-full">
+            <UserSignInHistory userId={userId} limit={10} />
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label="Send password reset"
+          description="Triggers Supabase Auth recovery email to the user's address."
+        >
+          <SettingsRowValue>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmReset(true)}
+              disabled={sendReset.isPending}
+            >
+              {sendReset.isPending ? 'Sending…' : 'Send reset email'}
+            </Button>
+          </SettingsRowValue>
+        </SettingsRow>
+      </SettingsGroup>
 
       <SettingsSection title="Roles">
         <RolesList assignments={user.role_assignments ?? []} />
@@ -140,7 +214,96 @@ export function UserDetailBody({ userId }: { userId: string }) {
           emptyLabel="No role changes for this user yet."
         />
       </SettingsSection>
+
+      <SettingsGroup title="Danger zone">
+        <SettingsRow
+          label={user.status === 'suspended' ? 'Reactivate account' : 'Suspend account'}
+          description="Suspended accounts cannot sign in. Existing sessions are not revoked."
+        >
+          <SettingsRowValue>
+            <Button
+              variant={user.status === 'suspended' ? 'outline' : 'destructive'}
+              size="sm"
+              onClick={() => setConfirmSuspend(true)}
+            >
+              {user.status === 'suspended' ? 'Reactivate' : 'Suspend'}
+            </Button>
+          </SettingsRowValue>
+        </SettingsRow>
+        <DsrActionsCard personId={personId} subjectName={subjectName} />
+      </SettingsGroup>
+
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title={`Send password reset to ${user.email}?`}
+        description="The user will receive a recovery link via email."
+        confirmLabel="Send reset email"
+        onConfirm={async () => {
+          try {
+            await sendReset.mutateAsync({ userId });
+            toastSuccess('Reset email sent', { description: user.email });
+          } catch (err) {
+            toastError("Couldn't send reset email", {
+              error: err,
+              retry: () => sendReset.mutate({ userId }),
+            });
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmSuspend}
+        onOpenChange={setConfirmSuspend}
+        title={
+          user.status === 'suspended'
+            ? `Reactivate ${subjectName}?`
+            : `Suspend ${subjectName}?`
+        }
+        description={
+          user.status === 'suspended'
+            ? 'They can sign in again immediately.'
+            : 'They will be blocked from signing in. Existing sessions stay valid until they expire.'
+        }
+        confirmLabel={user.status === 'suspended' ? 'Reactivate' : 'Suspend'}
+        destructive={user.status !== 'suspended'}
+        onConfirm={async () => {
+          await update.mutateAsync({
+            status: user.status === 'suspended' ? 'active' : 'suspended',
+          });
+        }}
+      />
     </>
+  );
+}
+
+function UsernameRow({
+  user,
+  onChange,
+}: {
+  user: UserDetail;
+  onChange: (v: string) => void;
+}) {
+  const [value, setValue] = useState(user.username ?? '');
+  // Re-sync when the underlying user changes (different id)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setValue(user.username ?? ''); }, [user.id]);
+  useDebouncedSave(value, (v) => {
+    if (v === (user.username ?? '')) return;
+    onChange(v);
+  });
+  return (
+    <SettingsRow label="Username" description="Optional handle. Doesn't affect login.">
+      <SettingsRowValue>
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="h-8 w-56"
+          placeholder="None"
+          aria-label="Username"
+        />
+      </SettingsRowValue>
+    </SettingsRow>
   );
 }
 
@@ -188,15 +351,6 @@ export function UserDetailPage() {
       />
       <UserDetailBody userId={id} />
     </SettingsPageShell>
-  );
-}
-
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <div className="text-sm break-words">{value}</div>
-    </div>
   );
 }
 
