@@ -103,8 +103,8 @@ export class LoggingDailyListMailer implements DailyListMailer {
 
   async sendDailyList(input: SendDailyListInput): Promise<DailyListSendResult> {
     this.log.warn(
-      `event=daglijst_send tenant=${input.tenantId} vendor=${input.vendorId} ` +
-      `daglijst=${input.dailyListId} email=${input.recipientEmail} ` +
+      `event=daily_list_send tenant=${input.tenantId} vendor=${input.vendorId} ` +
+      `daily_list=${input.dailyListId} email=${input.recipientEmail} ` +
       `subject="${input.subject}" lang=${input.language} ` +
       `pdf_url=${input.pdfDownloadUrl}`,
     );

@@ -249,7 +249,7 @@ export function describeCategory(category: string): string {
     personal_data_access_logs:      'Read-side audit log',
     calendar_event_content:         'Calendar event content',
     calendar_attendees_snapshot:    'Calendar attendee snapshots',
-    daglijst_pdfs:                  'Daily-list PDF exports',
+    daily_list_pdfs:                'Daily-list PDF exports',
     email_notifications:            'Outbound notification log',
     webhook_notifications:          'Inbound webhook event log',
     ghost_persons:                  'Auto-created Outlook attendees',

@@ -50,6 +50,9 @@ export class DailyListAdminController {
   ) {
     await this.permissions.requirePermission(req, 'vendors.read');
     const tenantId = TenantContext.current().id;
+    if (since !== undefined && since !== '' && !isValidIsoDate(since)) {
+      throw new BadRequestException('since must be a valid YYYY-MM-DD date');
+    }
     const rows = await this.dailyList.getHistory({ tenantId, vendorId, since });
     /* Strip payload from list response — admins only need it on the
        preview/detail surface. Keeps the JSON small for tenants with
@@ -191,12 +194,29 @@ interface PreviewBody {
   serviceType: ServiceType;
 }
 
+/**
+ * Verify YYYY-MM-DD shape AND a real calendar date (the regex alone
+ * accepts '2026-13-45'; codex Sprint 3A review caught this).
+ */
+export function isValidIsoDate(s: string | undefined | null): boolean {
+  if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map((n) => Number(n));
+  if (m < 1 || m > 12) return false;
+  if (d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y
+    && dt.getUTCMonth() === m - 1
+    && dt.getUTCDate() === d
+  );
+}
+
 function assertPreviewBody(body: PreviewBody): void {
   if (!body || typeof body !== 'object') {
     throw new BadRequestException('Body required');
   }
-  if (!body.listDate || !/^\d{4}-\d{2}-\d{2}$/.test(body.listDate)) {
-    throw new BadRequestException('listDate must be YYYY-MM-DD');
+  if (!isValidIsoDate(body.listDate)) {
+    throw new BadRequestException('listDate must be a valid YYYY-MM-DD date');
   }
   if (!body.serviceType) {
     throw new BadRequestException('serviceType required');

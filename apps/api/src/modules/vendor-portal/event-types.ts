@@ -22,8 +22,8 @@ export const VendorPortalEventType = {
   OrderDeclined:               'vendor.order_declined',
   OrderViewed:                 'vendor.order_viewed',
 
-  // Daglijst link (cross-spec)
-  DaglijstDownloaded:          'vendor.daglijst_downloaded',
+  // Daily-list link (cross-spec — Phase A vendor portal)
+  DailyListDownloaded:         'vendor.daily_list_downloaded',
 
   // Webhook delivery (Sprint 4)
   WebhookDelivered:            'vendor.webhook_delivered',

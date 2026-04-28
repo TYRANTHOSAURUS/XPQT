@@ -16,10 +16,25 @@ import { PdfRendererService } from './pdf-renderer.service';
 
 /**
  * Vendor daily-list subsystem — Dutch market name "daglijst", but every
- * code identifier is in English. The PDF template still emits the NL
- * "Daglijst" title because that's the vendor-facing string Dutch
- * caterers expect; FR / EN / DE templates ship in Sprint 4 and use the
- * appropriate localised title.
+ * code identifier is in English. Three places intentionally retain the
+ * Dutch term:
+ *   1. The NL PDF template title ("Daglijst catering") because that's
+ *      the string Dutch caterers expect on their printed list.
+ *      FR/EN/DE templates ship in Sprint 4 with localised titles.
+ *   2. The Supabase Storage bucket name `daglijst-pdfs` — renaming a
+ *      live bucket requires creating a new one + moving objects + RLS
+ *      policy migration; deferred behind a flag day. Storage path
+ *      shape (`<tenant>/<vendor>/<date>/<building>/...pdf`) is
+ *      module-internal so callers can't see the bucket.
+ *   3. DB column names on `vendors` and `order_line_items`:
+ *      daglijst_email, daglijst_language, daglijst_cutoff_offset_minutes,
+ *      daglijst_send_clock_time, daglijst_inferred_status_grace_minutes,
+ *      daglijst_locked_at, daglijst_id. RENAME COLUMN is cheap but every
+ *      code path touching them needs flipping in the same migration;
+ *      deferred until a clean batch sweep.
+ *
+ * If you need to rename any of those three, do it as one focused
+ * migration + code sweep — don't fix in passing.
  *
  * Sprint 1: schema + assemble/record skeleton + audit event taxonomy.
  * Sprint 2: @react-pdf/renderer NL template + Supabase Storage upload +

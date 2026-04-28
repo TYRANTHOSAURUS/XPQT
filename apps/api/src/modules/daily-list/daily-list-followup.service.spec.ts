@@ -51,10 +51,14 @@ function row(overrides: Partial<FollowupRow> = {}): FollowupRow {
 
 interface FakeOptions {
   rows?: FollowupRow[];
-  /** When set, the confirm UPDATE returns 0 rows (already-confirmed/missing). */
-  confirmEmpty?: boolean;
-  /** When confirmEmpty is true, control whether the existence-probe finds the row. */
-  lineExists?: boolean;
+  /**
+   * Pre-state of the line as seen by the SELECT FOR UPDATE inside
+   * confirmPhoned. Use null to model "row doesn't exist for this tenant".
+   */
+  preState?: {
+    requires_phone_followup: boolean;
+    desk_confirmed_phoned_at: string | null;
+  } | null;
   /** Override the desk_confirmed_phoned_at returned by a successful UPDATE. */
   confirmedAt?: string;
 }
@@ -65,21 +69,30 @@ function makeFakeDb(opts: FakeOptions = {}) {
   const txClient = {
     query: jest.fn(async (sql: string, params?: unknown[]) => {
       captured.push({ sql, params, tx: true });
-      if (sql.includes('update public.order_line_items')) {
-        if (opts.confirmEmpty) {
+      // SELECT … FOR UPDATE pre-state lookup.
+      if (sql.includes('select id, requires_phone_followup')) {
+        if (opts.preState === undefined) {
+          // Default: the row exists and IS flagged.
+          return {
+            rows: [{ id: LINE, requires_phone_followup: true, desk_confirmed_phoned_at: null }],
+            rowCount: 1,
+          };
+        }
+        if (opts.preState === null) {
           return { rows: [], rowCount: 0 };
         }
         return {
-          rows: [{
-            id: LINE,
-            desk_confirmed_phoned_at: opts.confirmedAt ?? '2026-04-30T19:00:00Z',
-            was_already_confirmed: false,
-          }],
+          rows: [{ id: LINE, ...opts.preState }],
           rowCount: 1,
         };
       }
-      if (sql.includes('select 1 from public.order_line_items')) {
-        return { rows: [], rowCount: opts.lineExists ?? false ? 1 : 0 };
+      if (sql.includes('update public.order_line_items')) {
+        return {
+          rows: [{
+            desk_confirmed_phoned_at: opts.confirmedAt ?? '2026-04-30T19:00:00Z',
+          }],
+          rowCount: 1,
+        };
       }
       if (sql.includes('insert into audit_outbox')) {
         return { rows: [], rowCount: 1 };
@@ -154,9 +167,10 @@ describe('DailyListFollowupService.listPostCutoffChanges', () => {
 });
 
 describe('DailyListFollowupService.confirmPhoned', () => {
-  it('stamps the line + emits OrderPhoneFollowupConfirmed audit', async () => {
+  it('stamps the line + emits OrderPhoneFollowupConfirmed audit + returns status=confirmed', async () => {
     const { svc, db } = buildSvc({ confirmedAt: '2026-04-30T19:30:00Z' });
     const r = await svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER });
+    expect(r.status).toBe('confirmed');
     expect(r.confirmed_at).toBe('2026-04-30T19:30:00Z');
     const audit = db.captured.find((c) =>
       c.tx && c.sql.includes('insert into audit_outbox')
@@ -165,15 +179,58 @@ describe('DailyListFollowupService.confirmPhoned', () => {
     expect(audit).toBeDefined();
   });
 
+  it('idempotent on already-confirmed line — no audit, returns existing timestamp', async () => {
+    // Codex Sprint 3A round-1 fix: a second confirm of the SAME edit
+    // must not throw and must not re-emit audit. The DB trigger is the
+    // mechanism that re-flags on subsequent edits.
+    const { svc, db } = buildSvc({
+      preState: {
+        requires_phone_followup: false,
+        desk_confirmed_phoned_at: '2026-04-30T19:30:00Z',
+      },
+    });
+    const r = await svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER });
+    expect(r.status).toBe('already_confirmed');
+    expect(r.confirmed_at).toBe('2026-04-30T19:30:00Z');
+    const audit = db.captured.find((c) =>
+      c.tx && c.sql.includes('insert into audit_outbox')
+      && c.params?.[1] === 'order.phone_followup_confirmed',
+    );
+    expect(audit).toBeUndefined();
+  });
+
+  it('re-confirms after a fresh edit (preState flagged again)', async () => {
+    // The trigger flips requires_phone_followup back to true on edit
+    // even when desk_confirmed_phoned_at carries a prior timestamp;
+    // confirmPhoned re-stamps on the current timestamp + emits audit.
+    const { svc, db } = buildSvc({
+      preState: {
+        requires_phone_followup: true,
+        desk_confirmed_phoned_at: '2026-04-30T19:30:00Z',          // stale
+      },
+      confirmedAt: '2026-04-30T20:00:00Z',
+    });
+    const r = await svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER });
+    expect(r.status).toBe('confirmed');
+    expect(r.confirmed_at).toBe('2026-04-30T20:00:00Z');
+    const audit = db.captured.find((c) =>
+      c.tx && c.sql.includes('insert into audit_outbox')
+      && c.params?.[1] === 'order.phone_followup_confirmed',
+    );
+    expect(audit).toBeDefined();
+  });
+
   it('throws NotFound when the line does not exist for this tenant', async () => {
-    const { svc } = buildSvc({ confirmEmpty: true, lineExists: false });
+    const { svc } = buildSvc({ preState: null });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('throws BadRequest when the line exists but is not flagged', async () => {
-    const { svc } = buildSvc({ confirmEmpty: true, lineExists: true });
+  it('throws BadRequest when the line exists, has never been flagged, and is not currently flagged', async () => {
+    const { svc } = buildSvc({
+      preState: { requires_phone_followup: false, desk_confirmed_phoned_at: null },
+    });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
     ).rejects.toBeInstanceOf(BadRequestException);

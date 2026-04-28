@@ -118,57 +118,68 @@ export class DailyListFollowupService {
    * scorecards (Sprint 4 status inference + Phase B portal) can see the
    * full follow-up history.
    *
-   * Idempotent on already-confirmed rows: returns the existing
-   * confirmation without re-emitting audit. The DB trigger ensures a
-   * subsequent edit re-flags the line, so a second confirmation is a
-   * legitimate distinct event then.
+   * IDEMPOTENT: a second confirm of an already-confirmed line returns
+   * the original confirmation timestamp without re-emitting audit. The
+   * DB trigger ensures a subsequent EDIT re-flags the line, so the next
+   * confirm AFTER an edit is a legitimate distinct event with a fresh
+   * audit emit. (Codex Sprint 3A round-1 fix — round-0 used a
+   * `WHERE requires_phone_followup = true` predicate that broke
+   * idempotency.)
+   *
+   * Returns:
+   *   - status='confirmed': fresh confirm; audit emitted
+   *   - status='already_confirmed': no-op; no audit emitted
+   *   - throws NotFound if the line doesn't exist for this tenant
    */
-  async confirmPhoned(args: ConfirmPhonedArgs): Promise<{ confirmed_at: string }> {
+  async confirmPhoned(args: ConfirmPhonedArgs): Promise<ConfirmPhonedResult> {
     const { tenantId, lineId, userId } = args;
 
     return this.db.tx(async (client) => {
-      const updated = await client.query<{
+      /* Read FOR UPDATE so the row is locked while we decide whether
+         to write — prevents a concurrent edit from flipping the flag
+         under us between SELECT and UPDATE. */
+      const lookup = await client.query<{
         id: string;
-        desk_confirmed_phoned_at: string;
-        was_already_confirmed: boolean;
+        requires_phone_followup: boolean;
+        desk_confirmed_phoned_at: string | null;
       }>(
-        `update public.order_line_items
-            set desk_confirmed_phoned_at      = case
-                  when desk_confirmed_phoned_at is not null then desk_confirmed_phoned_at
-                  else now()
-                end,
-                desk_confirmed_phoned_by_user_id = case
-                  when desk_confirmed_phoned_at is not null then desk_confirmed_phoned_by_user_id
-                  else $3
-                end,
-                requires_phone_followup        = false
-          where tenant_id = $1
-            and id = $2
-            and requires_phone_followup = true
-          returning id,
-                    desk_confirmed_phoned_at,
-                    /* True if the row was ALREADY confirmed before this
-                       UPDATE — used to skip the audit emit on no-ops. */
-                    (xmax::text = '0')::boolean as was_already_confirmed`,
-        [tenantId, lineId, userId],
+        `select id, requires_phone_followup, desk_confirmed_phoned_at
+           from public.order_line_items
+          where tenant_id = $1 and id = $2
+          for update`,
+        [tenantId, lineId],
       );
-      if (updated.rowCount === 0) {
-        /* Either the line doesn't exist, doesn't belong to this tenant,
-           or is already not flagged. Distinguish so the UI can show the
-           right message. */
-        const exists = await client.query(
-          `select 1 from public.order_line_items
-            where tenant_id = $1 and id = $2 limit 1`,
-          [tenantId, lineId],
-        );
-        if (exists.rowCount === 0) {
-          throw new NotFoundException(`Line ${lineId} not found`);
-        }
+      if (lookup.rowCount === 0) {
+        throw new NotFoundException(`Line ${lineId} not found`);
+      }
+      const before = lookup.rows[0];
+
+      /* Already confirmed AND not re-flagged → no-op, no audit. */
+      if (!before.requires_phone_followup && before.desk_confirmed_phoned_at) {
+        return {
+          status: 'already_confirmed' as const,
+          confirmed_at: before.desk_confirmed_phoned_at,
+        };
+      }
+
+      /* Not flagged AND never confirmed → caller mistake; tell them. */
+      if (!before.requires_phone_followup && !before.desk_confirmed_phoned_at) {
         throw new BadRequestException({
           code: 'not_flagged',
           message: 'Line is not flagged for phone follow-up.',
         });
       }
+
+      /* Flagged → stamp + clear flag. */
+      const updated = await client.query<{ desk_confirmed_phoned_at: string }>(
+        `update public.order_line_items
+            set desk_confirmed_phoned_at        = now(),
+                desk_confirmed_phoned_by_user_id = $3,
+                requires_phone_followup          = false
+          where tenant_id = $1 and id = $2
+          returning desk_confirmed_phoned_at`,
+        [tenantId, lineId, userId],
+      );
       const row = updated.rows[0];
       await this.auditOutbox.emitTx(client, {
         tenantId,
@@ -178,7 +189,7 @@ export class DailyListFollowupService {
         actorUserId: userId,
         details: { confirmed_at: row.desk_confirmed_phoned_at },
       });
-      return { confirmed_at: row.desk_confirmed_phoned_at };
+      return { status: 'confirmed' as const, confirmed_at: row.desk_confirmed_phoned_at };
     });
   }
 }
@@ -188,6 +199,10 @@ export interface ConfirmPhonedArgs {
   lineId: string;
   userId: string;
 }
+
+export type ConfirmPhonedResult =
+  | { status: 'confirmed';          confirmed_at: string }
+  | { status: 'already_confirmed';  confirmed_at: string };
 
 export interface PostCutoffGroup {
   vendor_id: string | null;
