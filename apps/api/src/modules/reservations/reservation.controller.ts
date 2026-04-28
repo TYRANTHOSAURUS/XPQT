@@ -1,6 +1,6 @@
 import {
-  Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Patch, Post,
-  Query, Req, Res, UnauthorizedException,
+  Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param,
+  Patch, Post, Query, Req, Res, UnauthorizedException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,7 @@ import { ReservationVisibilityService } from './reservation-visibility.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
 import { BundleService, type ServiceLineInput } from '../booking-bundles/bundle.service';
+import { resolveRequesterForActor } from './book-on-behalf.gate';
 import { Public } from '../auth/public.decorator';
 import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -74,10 +75,11 @@ export class ReservationController {
   @Post()
   async create(@Req() request: Request, @Body() dto: CreateReservationDto) {
     const actor = await this.actorFromRequest(request);
+    const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
     const input: CreateReservationInput = {
       reservation_type: dto.reservation_type,
       space_id: dto.space_id,
-      requester_person_id: dto.requester_person_id ?? actor.person_id ?? '',
+      requester_person_id: requesterPersonId,
       host_person_id: dto.host_person_id,
       start_at: dto.start_at,
       end_at: dto.end_at,
@@ -93,10 +95,11 @@ export class ReservationController {
   @Post('dry-run')
   async dryRun(@Req() request: Request, @Body() dto: CreateReservationDto) {
     const actor = await this.actorFromRequest(request);
+    const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
     const input: CreateReservationInput = {
       reservation_type: dto.reservation_type,
       space_id: dto.space_id,
-      requester_person_id: dto.requester_person_id ?? actor.person_id ?? '',
+      requester_person_id: requesterPersonId,
       host_person_id: dto.host_person_id,
       start_at: dto.start_at,
       end_at: dto.end_at,
@@ -111,10 +114,11 @@ export class ReservationController {
   @Post('multi-room')
   async createMultiRoom(@Req() request: Request, @Body() dto: MultiRoomBookingDto) {
     const actor = await this.actorFromRequest(request);
+    const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
     return this.multiRoom.createGroup(
       {
         space_ids: dto.space_ids,
-        requester_person_id: dto.requester_person_id ?? actor.person_id ?? '',
+        requester_person_id: requesterPersonId,
         start_at: dto.start_at,
         end_at: dto.end_at,
         attendee_count: dto.attendee_count,
@@ -518,6 +522,16 @@ export class ReservationController {
     const u = (req as unknown as { user?: { id?: string } }).user;
     if (!u?.id) throw new UnauthorizedException('missing_user');
     return u.id;
+  }
+
+  /** Delegates to the pure `resolveRequesterForActor` so the gate logic is
+   *  testable in isolation. See `book-on-behalf.gate.ts` for the four-branch
+   *  semantics + unit tests. */
+  private assertCanRequestForPerson(
+    requested: string | null | undefined,
+    actor: ActorContext,
+  ): string {
+    return resolveRequesterForActor(requested, actor);
   }
 
   /**
