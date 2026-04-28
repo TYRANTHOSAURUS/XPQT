@@ -4,17 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <script>
+      (function() {
+        var override = localStorage.getItem('pq.theme_mode');
+        var cached = localStorage.getItem('pq.theme_resolved');
+        var dark;
+        if (override === 'dark') dark = true;
+        else if (override === 'light') dark = false;
+        else if (cached === 'dark') dark = true;
+        else if (cached === 'light') dark = false;
+        else dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var de = document.documentElement;
+        de.classList.toggle('dark', dark);
+        de.style.colorScheme = dark ? 'dark' : 'light';
+      })();
+    </script>
+    <style>
+      html { background-color: oklch(1 0 0); }
+      html.dark { background-color: #1a1a1f; }
+    </style>
     <title>Prequest</title>
   </head>
   <body>
-    <script>
-      // Prevent flash of wrong theme
-      (function() {
-        var t = localStorage.getItem('prequest-theme') || 'system';
-        var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-        if (dark) document.documentElement.classList.add('dark');
-      })();
-    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

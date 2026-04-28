@@ -23,7 +23,7 @@ import {
   SunIcon,
   UserIcon,
 } from 'lucide-react';
-import { useTheme } from '@/hooks/use-theme';
+import { useTheme } from '@/providers/theme-provider';
 import { useAuth } from '@/providers/auth-provider';
 
 interface Props {

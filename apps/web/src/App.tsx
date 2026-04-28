@@ -9,7 +9,6 @@ import { DeskLayout } from '@/layouts/desk-layout';
 import { PortalLayout } from '@/layouts/portal-layout';
 import { AdminLayout } from '@/layouts/admin-layout';
 import { ReportsLayout } from '@/layouts/reports-layout';
-import { useTheme } from '@/hooks/use-theme';
 import { features } from '@/lib/features';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
@@ -143,8 +142,6 @@ function RouteFallback() {
 }
 
 export function App() {
-  useTheme();
-
   return (
     <BrandingProvider>
       <ThemeProvider>

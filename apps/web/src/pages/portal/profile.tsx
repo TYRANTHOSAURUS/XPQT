@@ -27,7 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { useAuth } from '@/providers/auth-provider';
 import { usePortal, type AuthorizedLocation } from '@/providers/portal-provider';
-import { useTheme } from '@/hooks/use-theme';
+import { useTheme } from '@/providers/theme-provider';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { cn } from '@/lib/utils';
 
