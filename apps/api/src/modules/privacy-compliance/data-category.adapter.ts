@@ -97,7 +97,7 @@ export interface DataCategoryAdapter {
 
   /**
    * Hard-delete records that have no anonymization path (e.g. cctv_footage,
-   * daglijst_pdfs — both files in storage). Most categories use anonymize().
+   * daily_list_pdfs — both files in storage). Most categories use anonymize().
    */
   hardDelete(refs: EntityRef[]): Promise<void>;
 

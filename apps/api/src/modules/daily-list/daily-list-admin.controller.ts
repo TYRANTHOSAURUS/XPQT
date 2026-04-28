@@ -50,10 +50,14 @@ export class DailyListAdminController {
   ) {
     await this.permissions.requirePermission(req, 'vendors.read');
     const tenantId = TenantContext.current().id;
-    if (since !== undefined && since !== '' && !isValidIsoDate(since)) {
+    /* Normalise empty/whitespace to undefined so the service uses its
+       default 30-day window. Reject any other malformed value before
+       it hits the SQL `$3::date` cast. */
+    const sinceNorm = since && since.trim() !== '' ? since : undefined;
+    if (sinceNorm !== undefined && !isValidIsoDate(sinceNorm)) {
       throw new BadRequestException('since must be a valid YYYY-MM-DD date');
     }
-    const rows = await this.dailyList.getHistory({ tenantId, vendorId, since });
+    const rows = await this.dailyList.getHistory({ tenantId, vendorId, since: sinceNorm });
     /* Strip payload from list response — admins only need it on the
        preview/detail surface. Keeps the JSON small for tenants with
        a multi-month history. */
