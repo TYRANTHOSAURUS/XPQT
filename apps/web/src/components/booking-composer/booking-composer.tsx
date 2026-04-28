@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
-import { CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -175,6 +175,38 @@ export function BookingComposer({
   // adapt the title + CTA copy + show the explanatory denial message.
   const isApprovalRoute = fixedRoom?.rule_outcome?.effect === 'require_approval';
   const approvalDenialMessage = fixedRoom?.rule_outcome?.denial_message ?? null;
+
+  // Lead-time pre-flight: surface a warning when a selected service's
+  // lead_time_hours exceeds the gap between now and booking start. The
+  // bundle service still enforces this on submit (rule resolver's
+  // `lead_time_remaining_hours` gate); surfacing client-side gives the
+  // user a chance to adjust the booking time or drop the line BEFORE
+  // they hit "Book" and see a 422.
+  const leadTimeWarnings = useMemo(() => {
+    if (!state.startAt || state.services.length === 0) return [] as Array<{ name: string; needHours: number }>;
+    const startMs = new Date(state.startAt).getTime();
+    if (Number.isNaN(startMs)) return [];
+    const hoursUntilStart = (startMs - Date.now()) / 3_600_000;
+    // Only warn when start is in the future — past bookings are validation
+    // errors handled elsewhere.
+    if (hoursUntilStart <= 0) return [];
+    return state.services
+      .filter((s) => {
+        // ServicePickerSheet's PickerSelection doesn't carry lead_time_hours
+        // today — the picker tracks it on AvailableServiceItem. To avoid
+        // re-fetching the catalog inside the composer, leverage the fact
+        // that the picker has already applied lead-time visibility (lead-
+        // time-violating items shouldn't appear). Until we plumb lead_time
+        // onto PickerSelection, this warning fires only when lead_time
+        // metadata exists on the selection (future expansion).
+        const lead = (s as { lead_time_hours?: number | null }).lead_time_hours;
+        return typeof lead === 'number' && lead > hoursUntilStart;
+      })
+      .map((s) => ({
+        name: s.name,
+        needHours: (s as { lead_time_hours?: number }).lead_time_hours ?? 0,
+      }));
+  }, [state.startAt, state.services]);
 
   // Surface the 409 alternatives a server-side conflict-guard returns,
   // so a portal user who lost a race can rebook in one click instead of
@@ -435,6 +467,26 @@ export function BookingComposer({
         </div>
       )}
 
+      {/* Lead-time warnings — pre-empts a submit-time 422. */}
+      {leadTimeWarnings.length > 0 && (
+        <div
+          role="alert"
+          className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+        >
+          <p className="flex items-center gap-1 font-medium">
+            <AlertTriangle className="size-3.5" />
+            Some services need more notice
+          </p>
+          <ul className="space-y-0.5">
+            {leadTimeWarnings.slice(0, 3).map((w) => (
+              <li key={w.name}>
+                {w.name} requires {w.needHours}h lead time. Move the meeting later or drop the line.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Conflict alternatives — visible after a 409 race */}
       {conflictAlternatives.length > 0 && (
         <div
@@ -543,25 +595,27 @@ function RoomPickerInline({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className="h-10 w-full justify-between font-normal"
-        >
-          <span className="truncate text-sm">
-            {selected ? selected.name : isPending ? 'Loading rooms…' : 'Pick a room…'}
-          </span>
-          {selected?.capacity != null && (
-            <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
-              {selected.capacity} cap
+      <PopoverTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="h-10 w-full justify-between font-normal"
+          >
+            <span className="truncate text-sm">
+              {selected ? selected.name : isPending ? 'Loading rooms…' : 'Pick a room…'}
             </span>
-          )}
-          <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
+            {selected?.capacity != null && (
+              <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                {selected.capacity} cap
+              </span>
+            )}
+            <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
+          </Button>
+        }
+      />
       <PopoverContent
         className="p-0"
         align="start"

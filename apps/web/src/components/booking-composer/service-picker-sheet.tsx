@@ -30,6 +30,9 @@ export interface PickerSelection {
   unit: 'per_item' | 'per_person' | 'flat_rate' | null;
   name: string;
   service_type: ServiceType;
+  /** Carried through from the catalog item so consumers (e.g. the composer)
+   *  can pre-flight lead-time vs booking start without a re-fetch. */
+  lead_time_hours?: number | null;
   /** ISO timestamps. Null = use the booking window. Set per-line when the
    *  user expands "Different time?" on a catalog row (e.g. coffee at 8:45
    *  for a 9:00 meeting). */
@@ -302,6 +305,7 @@ function CatalogPanel({
         unit: item.unit,
         name: item.name,
         service_type: serviceType,
+        lead_time_hours: item.lead_time_hours ?? null,
       },
     ]);
   };
