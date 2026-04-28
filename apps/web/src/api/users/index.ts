@@ -25,6 +25,8 @@ export const userKeys = {
   list: () => [...userKeys.lists(), {}] as const,
   details: () => [...userKeys.all, 'detail'] as const,
   detail: (id: string) => [...userKeys.details(), id] as const,
+  signIns: (userId: string, limit: number = 10) =>
+    [...userKeys.detail(userId), 'sign-ins', limit] as const,
 } as const;
 
 export function usersListOptions() {
@@ -54,5 +56,52 @@ export function useUpsertUser() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: userKeys.all }),
+  });
+}
+
+export interface UserSignInRow {
+  id: string;
+  signed_in_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
+  country: string | null;
+  city: string | null;
+  method: string | null;
+  provider: string | null;
+  mfa_used: boolean;
+  success: boolean;
+  failure_reason: string | null;
+}
+
+export function userSignInsOptions(userId: string | undefined, limit = 10) {
+  return queryOptions({
+    queryKey: userKeys.signIns(userId ?? '', limit),
+    queryFn: ({ signal }) =>
+      apiFetch<UserSignInRow[]>(`/users/${userId}/sign-ins?limit=${limit}`, { signal }),
+    enabled: Boolean(userId),
+    staleTime: 30_000,
+  });
+}
+
+export function useUserSignIns(userId: string | undefined, limit = 10) {
+  return useQuery(userSignInsOptions(userId, limit));
+}
+
+export function useSendPasswordReset() {
+  return useMutation<void, Error, { userId: string }>({
+    mutationFn: ({ userId }) =>
+      apiFetch<void>(`/users/${userId}/password-reset`, { method: 'POST' }),
+  });
+}
+
+export function useUpdateUser(userId: string) {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, Record<string, unknown>>({
+    mutationFn: (patch) =>
+      apiFetch(`/users/${userId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: userKeys.detail(userId) });
+      qc.invalidateQueries({ queryKey: userKeys.lists() });
+    },
   });
 }

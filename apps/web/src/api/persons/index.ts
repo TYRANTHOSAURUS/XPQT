@@ -32,6 +32,8 @@ export const personKeys = {
   list: (search: string | null) => [...personKeys.lists(), { search }] as const,
   details: () => [...personKeys.all, 'detail'] as const,
   detail: (id: string) => [...personKeys.details(), id] as const,
+  activity: (personId: string, limit: number = 20) =>
+    [...personKeys.detail(personId), 'activity', limit] as const,
 } as const;
 
 /**
@@ -110,4 +112,23 @@ export function useUpdatePerson(id: string | null | undefined) {
       qc.invalidateQueries({ queryKey: personKeys.all });
     },
   });
+}
+
+export type PersonActivityItem =
+  | { kind: 'ticket';  id: string; title: string; status: string; created_at: string }
+  | { kind: 'booking'; id: string; space_name: string; starts_at: string; status: string; created_at: string }
+  | { kind: 'audit';   id: string; event_type: string; details: unknown; actor_name: string | null; created_at: string };
+
+export function personActivityOptions(personId: string | undefined, limit = 20) {
+  return queryOptions({
+    queryKey: personKeys.activity(personId ?? '', limit),
+    queryFn: ({ signal }) =>
+      apiFetch<PersonActivityItem[]>(`/persons/${personId}/activity?limit=${limit}`, { signal }),
+    enabled: Boolean(personId),
+    staleTime: 30_000,
+  });
+}
+
+export function usePersonActivity(personId: string | undefined, limit = 20) {
+  return useQuery(personActivityOptions(personId, limit));
 }
