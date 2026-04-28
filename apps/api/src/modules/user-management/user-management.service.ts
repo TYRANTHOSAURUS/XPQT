@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Request } from 'express';
 import {
   expandGranted,
@@ -595,6 +595,30 @@ export class UserManagementService {
       .limit(limit);
     if (error) throw error;
     return data ?? [];
+  }
+
+  async sendPasswordReset(userId: string): Promise<void> {
+    const tenant = TenantContext.current();
+
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select('email')
+      .eq('id', userId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data?.email) {
+      throw new NotFoundException(`user ${userId} not found in tenant ${tenant.id}`);
+    }
+
+    const { error: linkError } = await this.supabase.admin.auth.admin.generateLink({
+      type: 'recovery',
+      email: (data as { email: string }).email,
+    });
+    if (linkError) {
+      const msg = (linkError as { message?: string }).message ?? 'Failed to generate recovery link';
+      throw new Error(msg);
+    }
   }
 
   // ─── Effective permissions ────────────────────────────────────────────────

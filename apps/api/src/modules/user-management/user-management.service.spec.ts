@@ -65,3 +65,80 @@ describe('UserManagementService.listSignIns', () => {
     expect(rows).toEqual([]);
   });
 });
+
+describe('UserManagementService.sendPasswordReset', () => {
+  it('looks up the user email and calls generateLink with type recovery', async () => {
+    const generateLink = jest.fn(async () => ({
+      data: { properties: { action_link: 'https://example/recovery?...' } },
+      error: null,
+    }));
+    const supabase = {
+      admin: {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({ data: { email: 'jane@example.com' }, error: null }),
+              }),
+            }),
+          }),
+        }),
+        auth: { admin: { generateLink } },
+      },
+    };
+
+    const tenantStore = { id: TENANT, slug: 't' };
+    await TenantContext.run(tenantStore as never, async () => {
+      const svc = new UserManagementService(supabase as never);
+      await svc.sendPasswordReset(USER);
+    });
+
+    expect(generateLink).toHaveBeenCalledWith({ type: 'recovery', email: 'jane@example.com' });
+  });
+
+  it('throws NotFoundException when the user is not found', async () => {
+    const supabase = {
+      admin: {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({ data: null, error: null }),
+              }),
+            }),
+          }),
+        }),
+        auth: { admin: { generateLink: jest.fn() } },
+      },
+    };
+
+    const tenantStore = { id: TENANT, slug: 't' };
+    await TenantContext.run(tenantStore as never, async () => {
+      const svc = new UserManagementService(supabase as never);
+      await expect(svc.sendPasswordReset(USER)).rejects.toThrow(/not found/i);
+    });
+  });
+
+  it('throws when generateLink returns an error', async () => {
+    const supabase = {
+      admin: {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({ data: { email: 'jane@example.com' }, error: null }),
+              }),
+            }),
+          }),
+        }),
+        auth: { admin: { generateLink: jest.fn(async () => ({ data: null, error: { message: 'rate limited' } })) } },
+      },
+    };
+
+    const tenantStore = { id: TENANT, slug: 't' };
+    await TenantContext.run(tenantStore as never, async () => {
+      const svc = new UserManagementService(supabase as never);
+      await expect(svc.sendPasswordReset(USER)).rejects.toThrow(/rate limited/i);
+    });
+  });
+});

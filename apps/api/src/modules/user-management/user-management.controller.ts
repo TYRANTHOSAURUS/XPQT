@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UnauthorizedException,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UnauthorizedException, HttpCode,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
@@ -88,6 +88,12 @@ export class UsersController {
   ) {
     const n = limit ? Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100) : 10;
     return this.service.listSignIns(id, n);
+  }
+
+  @Post(':id/password-reset')
+  @HttpCode(204)
+  async sendPasswordReset(@Param('id') id: string) {
+    await this.service.sendPasswordReset(id);
   }
 }
 
