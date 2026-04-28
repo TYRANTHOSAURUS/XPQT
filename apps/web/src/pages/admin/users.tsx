@@ -26,6 +26,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useUsers, userKeys } from '@/api/users';
 import { usePersons } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
+import { userStatusDotClass } from '@/lib/status-tone';
 import { UserDetailBody, userDisplayName } from './user-detail';
 
 interface Person {
@@ -369,9 +370,13 @@ function UsersTable({
                 <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
               )}
               <TableCell>
-                <Badge variant={user.status === 'active' ? 'default' : 'secondary'} className="capitalize">
-                  {user.status}
-                </Badge>
+                <span className="inline-flex items-center gap-1.5 text-xs">
+                  <span
+                    className={cn('size-1.5 rounded-full shrink-0', userStatusDotClass(user.status))}
+                    aria-hidden
+                  />
+                  <span className="capitalize">{user.status}</span>
+                </span>
               </TableCell>
               {!hasSelection && (
                 <TableCell>
@@ -429,9 +434,13 @@ function UserInspectorContent({ userId }: { userId: string }) {
               {userDisplayName(headerUser)}
             </h2>
             <Badge
-              variant={headerUser.status === 'active' ? 'default' : 'secondary'}
-              className="capitalize shrink-0 mt-1.5"
+              variant="outline"
+              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
             >
+              <span
+                className={cn('size-1.5 rounded-full', userStatusDotClass(headerUser.status))}
+                aria-hidden
+              />
               {headerUser.status}
             </Badge>
           </div>

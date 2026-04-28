@@ -28,6 +28,8 @@ import { PersonLocationGrantsPanel } from '@/components/admin/person-location-gr
 import { usePerson, useUpdatePerson, personFullName, type Person } from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
+import { userStatusDotClass } from '@/lib/status-tone';
+import { cn } from '@/lib/utils';
 
 const PERSON_TYPES: Array<{ value: string; label: string }> = [
   { value: 'employee', label: 'Employee' },
@@ -328,9 +330,16 @@ export function PersonDetailPage() {
         description={person.email ?? 'Person profile and access scope.'}
         actions={
           <Badge
-            variant={person.active ? 'default' : 'outline'}
-            className="text-[10px] uppercase tracking-wider"
+            variant="outline"
+            className="text-[10px] uppercase tracking-wider gap-1.5"
           >
+            <span
+              className={cn(
+                'size-1.5 rounded-full',
+                userStatusDotClass(person.active ? 'active' : 'inactive'),
+              )}
+              aria-hidden
+            />
             {person.active ? 'Active' : 'Inactive'}
           </Badge>
         }

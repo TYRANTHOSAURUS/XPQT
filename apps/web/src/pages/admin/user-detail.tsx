@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { buttonVariants } from '@/components/ui/button';
+import { userStatusDotClass } from '@/lib/status-tone';
 import {
   useEffectivePermissions,
   type EffectivePermissionsModule,
@@ -100,12 +101,13 @@ export function UserDetailBody({ userId }: { userId: string }) {
           <Field
             label="Status"
             value={
-              <Badge
-                variant={user.status === 'active' ? 'default' : 'secondary'}
-                className="capitalize"
-              >
-                {user.status}
-              </Badge>
+              <span className="inline-flex items-center gap-1.5 text-sm">
+                <span
+                  className={cn('size-1.5 rounded-full shrink-0', userStatusDotClass(user.status))}
+                  aria-hidden
+                />
+                <span className="capitalize">{user.status}</span>
+              </span>
             }
           />
           <Field

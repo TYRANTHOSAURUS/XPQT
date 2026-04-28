@@ -23,9 +23,10 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   TableInspectorLayout, InspectorPanel,
 } from '@/components/ui/table-inspector-layout';
-import { Plus, UserPlus, Users, Search } from 'lucide-react';
+import { Plus, UserPlus, Users, Search, ArrowUpRight } from 'lucide-react';
 import { toast, toastCreated, toastError } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { userStatusDotClass } from '@/lib/status-tone';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePersons, personKeys, usePerson } from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
@@ -87,11 +88,11 @@ const personTypes = [
   { value: 'temporary_worker', label: 'Temporary Worker' },
 ];
 
-const typeColors: Record<string, 'default' | 'secondary' | 'outline'> = {
-  employee: 'default',
-  contractor: 'secondary',
-  vendor_contact: 'outline',
-  temporary_worker: 'outline',
+const typeDot: Record<string, string> = {
+  employee: 'bg-blue-500',
+  contractor: 'bg-violet-500',
+  vendor_contact: 'bg-orange-500',
+  temporary_worker: 'bg-cyan-500',
 };
 
 
@@ -500,10 +501,20 @@ function PersonsTable({
     );
   }
 
-  const getTypeBadge = (t: string) => {
+  const renderType = (t: string) => {
     const label = personTypes.find((x) => x.value === t)?.label ?? t;
-    const variant = typeColors[t] ?? 'outline';
-    return <Badge variant={variant} className="capitalize text-xs">{label}</Badge>;
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs">
+        <span
+          className={cn(
+            'size-1.5 rounded-full shrink-0',
+            typeDot[t] ?? 'bg-muted-foreground/40',
+          )}
+          aria-hidden
+        />
+        <span>{label}</span>
+      </span>
+    );
   };
 
   return (
@@ -556,7 +567,7 @@ function PersonsTable({
               {!hasSelection && (
                 <TableCell className="text-muted-foreground text-sm">{person.phone ?? '—'}</TableCell>
               )}
-              <TableCell>{getTypeBadge(person.type)}</TableCell>
+              <TableCell>{renderType(person.type)}</TableCell>
               {!hasSelection && (
                 <TableCell className="text-muted-foreground text-sm">{orgNode?.name ?? '—'}</TableCell>
               )}
@@ -564,15 +575,18 @@ function PersonsTable({
                 {linkedUser ? (
                   <a
                     href={`/admin/users/${linkedUser.id}`}
-                    className="text-xs text-primary inline-flex items-center gap-1 underline underline-offset-4 decoration-primary/30 hover:decoration-primary transition-[text-decoration-color] duration-150 ease-[var(--ease-snap)]"
+                    className="group inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 ease-[var(--ease-snap)]"
+                    title="Open linked user"
                   >
-                    <Badge
-                      variant={linkedUser.status === 'active' ? 'default' : 'secondary'}
-                      className="text-[10px] capitalize"
-                    >
-                      {linkedUser.status}
-                    </Badge>
-                    View user
+                    <span
+                      className={cn('size-1.5 rounded-full shrink-0', userStatusDotClass(linkedUser.status))}
+                      aria-hidden
+                    />
+                    <span className="capitalize">{linkedUser.status}</span>
+                    <ArrowUpRight
+                      className="size-3 opacity-40 -translate-x-0.5 transition-all duration-150 ease-[var(--ease-snap)] group-hover:opacity-100 group-hover:translate-x-0 group-focus-visible:opacity-100 group-focus-visible:translate-x-0"
+                      aria-hidden
+                    />
                   </a>
                 ) : person.email ? (
                   <Button
@@ -632,9 +646,16 @@ function PersonInspectorContent({
               {personHeadline(person)}
             </h2>
             <Badge
-              variant={person.active ? 'default' : 'outline'}
-              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5"
+              variant="outline"
+              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
             >
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  userStatusDotClass(person.active ? 'active' : 'inactive'),
+                )}
+                aria-hidden
+              />
               {person.active ? 'Active' : 'Inactive'}
             </Badge>
           </div>
