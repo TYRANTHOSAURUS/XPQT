@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select';
 import { NumberStepper } from '@/components/ui/number-stepper';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Command,
   CommandEmpty,
@@ -175,6 +176,53 @@ export function BookingComposer({
   // adapt the title + CTA copy + show the explanatory denial message.
   const isApprovalRoute = fixedRoom?.rule_outcome?.effect === 'require_approval';
   const approvalDenialMessage = fixedRoom?.rule_outcome?.denial_message ?? null;
+
+  // Cost preview — sum of selected services. `per_person` lines multiply
+  // by attendees on the backend, so mirror that here so the preview
+  // matches the actual landed total. `unit_price` is null until the
+  // picker resolves the current menu offer; those lines show as 0
+  // until confirmed.
+  const servicesTotal = useMemo(() => {
+    return state.services.reduce((sum, s) => {
+      if (s.unit_price == null || !Number.isFinite(s.unit_price)) return sum;
+      switch (s.unit) {
+        case 'per_person':
+          return sum + s.unit_price * s.quantity * Math.max(1, state.attendeeCount);
+        case 'flat_rate':
+          return sum + s.unit_price;
+        case 'per_item':
+        default:
+          return sum + s.unit_price * s.quantity;
+      }
+    }, 0);
+  }, [state.services, state.attendeeCount]);
+
+  // Annualised projection — when the booking is recurring, multiply the
+  // single-occurrence services cost by the estimated occurrences so the
+  // user sees the ongoing cost commitment, not just the first meeting.
+  // Mirrors the backend's `estimateAnnualisedOccurrences` including the
+  // `until` bound (so a 'weekly until 6 weeks from now' rule projects
+  // 6, not 52 / yr).
+  const annualisedOccurrences = useMemo(() => {
+    if (!state.recurrence || !state.startAt) return 0;
+    return estimateOccurrences(
+      state.recurrence.frequency,
+      state.recurrence.interval,
+      state.recurrence.count ?? 0,
+      state.recurrence.until ?? null,
+      state.startAt,
+    );
+  }, [state.recurrence, state.startAt]);
+  const annualisedTotal = annualisedOccurrences * servicesTotal;
+
+  // True when at least one selected service has a resolved unit_price.
+  // Template seeds carry unit_price=null until the user opens the picker
+  // and confirms; until then we prefer 'Pending pricing' over a misleading
+  // €0 footer.
+  const hasResolvedPricing = useMemo(
+    () => state.services.some((s) => s.unit_price != null),
+    [state.services],
+  );
 
   // Lead-time pre-flight: surface a warning when a selected service's
   // lead_time_hours exceeds the gap between now and booking start. The
@@ -400,18 +448,39 @@ export function BookingComposer({
               );
             })}
             <div className="flex items-center justify-between px-3 py-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => setPickerOpen(true)}
-              >
-                Edit
-              </Button>
-              <span className="text-xs tabular-nums">
-                {state.services.length} item{state.services.length !== 1 ? 's' : ''}
-              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setPickerOpen(true)}
+                >
+                  Edit
+                </Button>
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  {state.services.length} item{state.services.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                {hasResolvedPricing ? (
+                  <>
+                    {annualisedOccurrences > 0 && annualisedTotal > 0 && (
+                      <span
+                        className="text-[11px] text-muted-foreground tabular-nums"
+                        title={`${annualisedOccurrences} occurrences over the next year`}
+                      >
+                        est. {formatCurrency(annualisedTotal)}/yr
+                      </span>
+                    )}
+                    <span className="text-sm font-semibold tabular-nums">
+                      {formatCurrency(servicesTotal)}
+                    </span>
+                  </>
+                ) : (
+                  <Skeleton className="h-4 w-20" />
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -909,6 +978,58 @@ function isoToLocalInput(iso: string | null): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const mi = String(d.getMinutes()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+/** Mirrors the backend's `estimateAnnualisedOccurrences` including the
+ *  `until` bound. Caps at the natural year limit when no count/until is
+ *  set — a "weekly forever" rule annualises to 52, not infinity. The
+ *  canonical figure comes from `CostService.computeBundleCost` after the
+ *  bundle lands; this is preview-only. */
+function estimateOccurrences(
+  frequency: 'daily' | 'weekly' | 'monthly',
+  interval: number,
+  count: number,
+  until: string | null,
+  startAtIso: string,
+): number {
+  const safeInterval = Math.max(1, interval);
+  const yearCap = (() => {
+    switch (frequency) {
+      case 'daily':
+        return Math.floor(365 / safeInterval);
+      case 'weekly':
+        return Math.floor(52 / safeInterval);
+      case 'monthly':
+        return Math.floor(12 / safeInterval);
+      default:
+        return 0;
+    }
+  })();
+
+  // Time-bounded cap when `until` is set within the next year — e.g.
+  // "weekly until 6 weeks from now" → cap at 6 not 52.
+  let timeCap = Infinity;
+  if (until) {
+    const startMs = new Date(startAtIso).getTime();
+    const untilMs = new Date(until).getTime();
+    if (Number.isFinite(startMs) && Number.isFinite(untilMs) && untilMs > startMs) {
+      const days = Math.floor((untilMs - startMs) / 86_400_000) + 1;
+      switch (frequency) {
+        case 'daily':
+          timeCap = Math.floor(days / safeInterval);
+          break;
+        case 'weekly':
+          timeCap = Math.floor(days / 7 / safeInterval);
+          break;
+        case 'monthly':
+          timeCap = Math.floor(days / 30 / safeInterval);
+          break;
+      }
+    }
+  }
+
+  const explicitCount = count > 0 ? count : Infinity;
+  return Math.max(0, Math.min(explicitCount, yearCap, timeCap));
 }
 
 function nextQuarterHour(): Date {
