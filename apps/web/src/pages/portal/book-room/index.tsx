@@ -199,7 +199,7 @@ export function BookRoomPage() {
             }
           }}
         >
-          <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
                 {pendingPrimary.rule_outcome?.effect === 'require_approval'

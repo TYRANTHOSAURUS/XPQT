@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AlertTriangle, CalendarClock, Loader2, MapPin, Sparkles } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Check, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
@@ -27,6 +27,7 @@ import { spacesListOptions } from '@/api/spaces';
 import { useCostCenters } from '@/api/cost-centers';
 import { usePerson } from '@/api/persons';
 import { formatCurrency } from '@/lib/format';
+import { cn } from '@/lib/utils';
 import { toastError, toastSuccess } from '@/lib/toast';
 import { InlineBanner } from '@/components/ui/inline-banner';
 import { ServicePickerSheet } from './service-picker-sheet';
@@ -223,6 +224,40 @@ export function BookingComposer({
   const createMultiRoom = useMultiRoomBooking();
   const submitting = createBooking.isPending || createMultiRoom.isPending;
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Submit-success beat — after the mutation lands we hold the button
+  // in a 'success' state for ~260ms before closing. Anchors the "yes
+  // it worked" feedback to where the user clicked, so the toast that
+  // appears in the corner reads as confirmation rather than the only
+  // signal anything happened. Reduced-motion users skip the beat
+  // entirely (emil: don't make them stare at a static green button).
+  const [submitState, setSubmitState] = useState<'idle' | 'success'>('idle');
+  const submitBtnRef = useRef<HTMLButtonElement | null>(null);
+  // Track the success-beat timeout so an ESC dismiss / parent-driven
+  // close mid-beat doesn't fire stale onBooked navigation against a
+  // wrapper that already moved on.
+  const successTimerRef = useRef<number | null>(null);
+  // Reset success state whenever the wrapper re-opens (so a re-used
+  // composer instance doesn't briefly flash the previous success).
+  useEffect(() => {
+    if (open) setSubmitState('idle');
+  }, [open]);
+  // Clean up the success timer on unmount so a mid-beat dismiss (ESC,
+  // backdrop click, parent state change) doesn't fire post-unmount.
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current != null) {
+        window.clearTimeout(successTimerRef.current);
+        successTimerRef.current = null;
+      }
+    };
+  }, []);
+  // Same cleanup if `open` flips false externally during the beat.
+  useEffect(() => {
+    if (!open && successTimerRef.current != null) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+  }, [open]);
 
   // Approval-route detection: when the picked room's `rule_outcome.effect`
   // is `require_approval`, the booking lands as `pending_approval`. We
@@ -385,8 +420,28 @@ export function BookingComposer({
             ? `Booked ${effectiveState.additionalSpaceIds.length + 1} rooms`
             : 'Booked',
       );
-      onOpenChange(false);
-      if (reservationId) onBooked?.(reservationId);
+      // Reduced-motion users skip the beat entirely — toast is the
+      // sole signal. Otherwise: anchor the green-check 'Booked!' state
+      // for 260ms so the action lands visually before the dialog/sheet
+      // collapses out from under the user. Re-focus the Submit button
+      // (the rebook-from-conflict path fires this from the conflict
+      // banner button — without re-focusing, the beat happens off the
+      // user's attention and reads as orphaned).
+      const reduce =
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduce) {
+        onOpenChange(false);
+        if (reservationId) onBooked?.(reservationId);
+        return;
+      }
+      setSubmitState('success');
+      submitBtnRef.current?.focus();
+      successTimerRef.current = window.setTimeout(() => {
+        successTimerRef.current = null;
+        onOpenChange(false);
+        if (reservationId) onBooked?.(reservationId);
+      }, 260);
     } catch (e) {
       toastError(
         isApprovalRoute
@@ -766,14 +821,17 @@ export function BookingComposer({
           calling sheet/dialog wraps the composer in an overflow-y-auto
           container, so we pin to the bottom of THAT scroll context with
           `sticky bottom-0` and a bg/border so the form content scrolls
-          underneath cleanly. No negative-margin bleed because the two
-          mounts (Sheet px-5, Dialog p-4) have different paddings —
-          codex flagged a 4px horizontal scroll trigger. Reverts to
-          inline on sm+ (the desktop dialog isn't tall enough to need
-          stickiness). pb honors iOS home-indicator safe area. */}
+          underneath cleanly. We deliberately do NOT use a negative
+          margin to bleed the bg to the wrapper's full width — the
+          three mount points (Sheet px-5, portal Dialog p-6, scheduler
+          Dialog p-6) all have different paddings, and any single
+          -mx value triggered a horizontal scroll on at least one of
+          them. Content-width is good enough; the bg still covers the
+          scrolling content underneath because that content lives in
+          the same padded box. pb honors iOS home-indicator safe area. */}
       <div className="flex flex-col gap-2 border-t bg-background/85 backdrop-blur-md pt-3 sm:border-t-0 sm:bg-transparent sm:backdrop-blur-none sm:pt-2
                       pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-0
-                      sticky bottom-0 sm:static -mx-4 px-4 sm:mx-0 sm:px-0">
+                      sticky bottom-0 sm:static">
         {/* Reserved-height slot prevents the footer from jumping 16px
             on every keystroke that flips validity. Content swaps via
             key-driven crossfade so two messages never overlap mid-fade
@@ -800,34 +858,60 @@ export function BookingComposer({
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
-            disabled={submitting}
+            // Cancel is locked through both the submitting AND success
+            // beat — once the mutation succeeded the user can't undo by
+            // closing the composer mid-celebration.
+            disabled={submitting || submitState === 'success'}
           >
             Cancel
           </Button>
           <Button
+            ref={submitBtnRef}
             type="button"
             onClick={() => void handleSubmit()}
             disabled={
               Boolean(validationError) ||
               submitting ||
+              submitState === 'success' ||
               leadTimeWarnings.length > 0
             }
             // Lock min-width so the label crossfade between 'Book' /
             // 'Booking…' / 'Submit for approval' / 'Book + 3 services'
-            // doesn't reflow the footer on every state flip. emil pass:
-            // submit reflow is the biggest 'this app is amateurish' tell.
-            className="min-w-[10rem]"
+            // / 'Booked!' doesn't reflow the footer on every state flip.
+            // emil pass: submit reflow is the biggest 'this app is
+            // amateurish' tell. Success beat replaces background with
+            // an emerald snap (no fade — the snap IS the signal) and
+            // the icon zooms in 75ms after so the eye lands on the
+            // color first, then watches the check resolve.
+            className={cn(
+              'min-w-[10rem]',
+              submitState === 'success' &&
+                'border-emerald-500/60 bg-emerald-500 text-white hover:bg-emerald-500',
+            )}
           >
-            {submitting ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
-            {submitting
+            {submitState === 'success' ? (
+              <Check
+                className="mr-1 size-4 delay-75 duration-200 ease-[var(--ease-snap)] animate-in zoom-in-75"
+                aria-hidden
+              />
+            ) : submitting ? (
+              <Loader2 className="mr-1 size-4 animate-spin" />
+            ) : null}
+            {submitState === 'success'
               ? isApprovalRoute
-                ? 'Submitting…'
-                : 'Booking…'
-              : isApprovalRoute
-                ? 'Submit for approval'
-                : state.services.length > 0
-                  ? `Book + ${state.services.length} service${state.services.length === 1 ? '' : 's'}`
-                  : 'Book'}
+                ? 'Requested!'
+                : state.additionalSpaceIds.length > 0
+                  ? `Booked ${state.additionalSpaceIds.length + 1}!`
+                  : 'Booked!'
+              : submitting
+                ? isApprovalRoute
+                  ? 'Submitting…'
+                  : 'Booking…'
+                : isApprovalRoute
+                  ? 'Submit for approval'
+                  : state.services.length > 0
+                    ? `Book + ${state.services.length} service${state.services.length === 1 ? '' : 's'}`
+                    : 'Book'}
           </Button>
         </div>
       </div>

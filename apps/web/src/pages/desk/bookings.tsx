@@ -297,7 +297,7 @@ export function DeskBookingsPage() {
       <SheetContent
         side={isMobile ? 'bottom' : 'right'}
         className={cn(
-          'flex flex-col gap-0 p-0 sm:max-w-xl',
+          'flex flex-col gap-0 p-0 sm:max-w-2xl',
           isMobile && 'h-[90dvh] rounded-t-xl',
         )}
       >
