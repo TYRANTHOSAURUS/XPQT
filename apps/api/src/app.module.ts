@@ -101,7 +101,7 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(TenantMiddleware)
-      .exclude('api/health', 'api/webhooks/ingest', 'api/webhooks/outlook')
+      .exclude('api/health', 'api/webhooks/ingest', 'api/webhooks/outlook', 'api/webhooks/auth/sign-in')
       .forRoutes('*');
   }
 }
