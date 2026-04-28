@@ -32,8 +32,12 @@ import {
 } from '@/components/ui/command';
 import { PersonPicker } from '@/components/person-picker';
 import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
-import { useSpaces } from '@/api/spaces';
+import { spacesListOptions, useSpaces } from '@/api/spaces';
 import type { Space } from '@/api/spaces';
+import { useQuery } from '@tanstack/react-query';
+// Note: useSpaces is imported but used only by RoomPickerInline below;
+// the composer top-level uses spacesListOptions + useQuery with enabled
+// so fixedRoom flows skip the fetch.
 import { cn } from '@/lib/utils';
 import { ApiError } from '@/lib/api';
 import { Sparkles as SparklesIcon } from 'lucide-react';
@@ -143,6 +147,31 @@ export function BookingComposer({
   const { data: costCenters } = useCostCenters({ active: true });
   const costCentersList = costCenters ?? [];
 
+  // Read the spaces cache to surface room metadata (capacity, name) on
+  // top-level UX — capacity warning, header summary, etc. Skipped when
+  // `fixedRoom` is set (scheduler drag-create already supplied the room
+  // shape, no need to over-fetch). When the inline picker is the source
+  // of state.spaceId, the picker has already mounted useSpaces() so this
+  // call hits the same QueryClient cache.
+  const { data: spacesCache } = useQuery({
+    ...spacesListOptions(),
+    enabled: !fixedRoom,
+  });
+  const pickedRoom = useMemo(() => {
+    if (fixedRoom) {
+      return {
+        space_id: fixedRoom.space_id,
+        name: fixedRoom.name,
+        capacity: fixedRoom.capacity ?? null,
+      };
+    }
+    if (!state.spaceId || !spacesCache) return null;
+    const s = spacesCache.find((sp) => sp.id === state.spaceId);
+    return s
+      ? { space_id: s.id, name: s.name, capacity: s.capacity ?? null }
+      : null;
+  }, [fixedRoom, state.spaceId, spacesCache]);
+
   // Resolve person.cost_center (code) → cost_center_id when the picker
   // changes, so the bundle insert hits a real id. Operator can override
   // via the dropdown; this is just the smart prefill.
@@ -215,6 +244,24 @@ export function BookingComposer({
     );
   }, [state.recurrence, state.startAt]);
   const annualisedTotal = annualisedOccurrences * servicesTotal;
+
+  // Capacity check: warn when the picked room is smaller than the
+  // attendee count. Operators in particular routinely book on behalf
+  // of a room that's tight — surfacing this client-side before submit
+  // saves a "yes I confirm" round-trip.
+  const capacityWarning = useMemo(() => {
+    if (
+      pickedRoom?.capacity != null &&
+      pickedRoom.capacity < state.attendeeCount
+    ) {
+      return {
+        roomCapacity: pickedRoom.capacity,
+        attendees: state.attendeeCount,
+        roomName: pickedRoom.name,
+      };
+    }
+    return null;
+  }, [pickedRoom, state.attendeeCount]);
 
   // True when at least one selected service has a resolved unit_price.
   // Template seeds carry unit_price=null until the user opens the picker
@@ -372,6 +419,7 @@ export function BookingComposer({
             </FieldLabel>
             <RoomPickerInline
               value={state.spaceId}
+              attendeeCount={state.attendeeCount}
               onChange={(spaceId) => dispatch({ type: 'SET_SPACE', spaceId })}
             />
           </Field>
@@ -537,6 +585,27 @@ export function BookingComposer({
         </div>
       )}
 
+      {/* Capacity warning — picked room is smaller than attendees. Soft
+          (non-blocking; the user might know better than the listed
+          capacity, e.g. standing-only event). One line, neutral type,
+          color only on the icon — anything louder reads as a form error. */}
+      {capacityWarning && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground"
+        >
+          <AlertTriangle
+            className="size-3.5 shrink-0 text-amber-700 dark:text-amber-400"
+            aria-hidden
+          />
+          <span>
+            <strong className="font-medium">Tight fit.</strong>{' '}
+            {capacityWarning.roomName} seats {capacityWarning.roomCapacity}, you
+            have {capacityWarning.attendees}.
+          </span>
+        </div>
+      )}
+
       {/* Lead-time warnings — pre-empts a submit-time 422. */}
       {leadTimeWarnings.length > 0 && (
         <div
@@ -698,9 +767,11 @@ export function BookingComposer({
  */
 function RoomPickerInline({
   value,
+  attendeeCount,
   onChange,
 }: {
   value: string | null;
+  attendeeCount: number;
   onChange: (spaceId: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -863,9 +934,7 @@ function RoomPickerInline({
                       </div>
                     </div>
                     {room.capacity != null && (
-                      <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                        {room.capacity}
-                      </span>
+                      <CapacityBadge capacity={room.capacity} attendees={attendeeCount} />
                     )}
                   </CommandItem>
                 );
@@ -875,6 +944,34 @@ function RoomPickerInline({
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** Capacity badge — neutral capacity figure in the room picker rows.
+ *  When the room is tight (capacity < attendees), surfaces an amber
+ *  AlertTriangle inline. The digit itself stays muted so tabular-nums
+ *  scan down the column cleanly; color is reserved for the deviation. */
+function CapacityBadge({
+  capacity,
+  attendees,
+}: {
+  capacity: number;
+  attendees: number;
+}) {
+  const tight = attendees > 1 && capacity < attendees;
+  return (
+    <span
+      className="ml-2 inline-flex shrink-0 items-center gap-0.5 text-xs tabular-nums text-muted-foreground"
+      title={tight ? 'Smaller than attendee count' : undefined}
+    >
+      {tight && (
+        <AlertTriangle
+          className="size-3 text-amber-700 dark:text-amber-400"
+          aria-hidden
+        />
+      )}
+      {capacity}
+    </span>
   );
 }
 
