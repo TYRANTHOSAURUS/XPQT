@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AlertTriangle, CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -130,6 +130,10 @@ export function BookingComposer({
   useEffect(() => {
     if (open) {
       dispatch({ type: 'RESET', partial: initialState(composedSeed) });
+      // RESET also clears the manual-CC-edit flag — a fresh open is a
+      // fresh derivation context, so the next requester pick should
+      // re-prefill from their profile.
+      ccManuallyEditedRef.current = false;
     }
     // composedSeed is captured by useMemo + reference equality on its
     // dep set; RESET fires only on edge-trigger of `open` so a stable
@@ -172,18 +176,43 @@ export function BookingComposer({
       : null;
   }, [fixedRoom, state.spaceId, spacesCache]);
 
-  // Resolve person.cost_center (code) → cost_center_id when the picker
-  // changes, so the bundle insert hits a real id. Operator can override
-  // via the dropdown; this is just the smart prefill.
+  // Track whether the operator manually edited the cost-center, so we
+  // can re-derive the default when the "Booking for" person changes
+  // WITHOUT clobbering an explicit operator choice. Codex flagged the
+  // one-shot prefill as stale-on-requester-change on the holistic review.
+  const ccManuallyEditedRef = useRef(false);
+
+  // Resolve person.cost_center (code) → cost_center_id whenever the
+  // requester person changes (re-derives), unless the operator has
+  // explicitly picked a CC.
   useEffect(() => {
     if (mode !== 'operator') return;
-    if (!requesterPerson?.cost_center) return;
-    if (state.costCenterId) return; // already set — don't overwrite operator's pick
+    if (ccManuallyEditedRef.current) return;
+    if (!requesterPerson?.cost_center) {
+      // No default available — clear so we don't carry the previous
+      // requester's CC into a new requester's bundle.
+      if (state.costCenterId) {
+        dispatch({ type: 'SET_COST_CENTER', costCenterId: null });
+      }
+      return;
+    }
     const match = costCentersList.find((cc) => cc.code === requesterPerson.cost_center);
     if (match) {
-      dispatch({ type: 'SET_COST_CENTER', costCenterId: match.id });
+      if (match.id !== state.costCenterId) {
+        dispatch({ type: 'SET_COST_CENTER', costCenterId: match.id });
+      }
+    } else {
+      // Requester carries a code that doesn't match any active CC —
+      // clear rather than retain the previous requester's id (codex
+      // flagged this stale carry-over on the holistic re-review).
+      if (state.costCenterId) {
+        dispatch({ type: 'SET_COST_CENTER', costCenterId: null });
+      }
     }
-  }, [mode, requesterPerson?.cost_center, costCentersList, state.costCenterId]);
+    // Intentionally NOT depending on state.costCenterId — that would
+    // re-fire and reseed when the operator manually clears it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, requesterPerson?.cost_center, costCentersList]);
 
   // Quick-create UX: time defaults to "next quarter-hour, 1h duration"
   // when the wrapper didn't pre-seed.
@@ -312,9 +341,30 @@ export function BookingComposer({
     [createBooking.error],
   );
 
-  const handleSubmit = async () => {
-    if (validationError) return;
-    const payload = buildBookingPayload({ state, mode, entrySource, callerPersonId });
+  /**
+   * Submit the booking. `overrides` lets callers (the conflict-alternative
+   * one-click rebook in particular) inject a different spaceId without
+   * waiting for the reducer's next render — the reducer-set value is
+   * captured by `state` in the closure here, so a `dispatch + setTimeout`
+   * pattern is racy. Codex flagged this on the holistic review.
+   */
+  const handleSubmit = async (overrides?: { spaceId?: string }) => {
+    const effectiveState: ComposerState = overrides?.spaceId
+      ? { ...state, spaceId: overrides.spaceId }
+      : state;
+    // Re-validate with the override applied. The rebook path supplies a
+    // valid spaceId so the original 'spaceId required' validationError
+    // resolves; OTHER validation (attendees, requester) must still
+    // block. Codex flagged that an unconditional bypass when overrides
+    // exist let an invalid form one-click rebook.
+    const overrideValidation = validateForSubmit(effectiveState, mode);
+    if (overrideValidation) return;
+    const payload = buildBookingPayload({
+      state: effectiveState,
+      mode,
+      entrySource,
+      callerPersonId,
+    });
     if (!payload) return;
     try {
       const result = await createBooking.mutateAsync(payload);
@@ -325,7 +375,7 @@ export function BookingComposer({
     } catch (e) {
       toastError(
         isApprovalRoute ? "Couldn't request approval" : "Couldn't book the room",
-        { error: e, retry: handleSubmit },
+        { error: e, retry: () => handleSubmit(overrides) },
       );
     }
   };
@@ -541,12 +591,13 @@ export function BookingComposer({
           <FieldLabel htmlFor="composer-cc">Cost center</FieldLabel>
           <Select
             value={state.costCenterId ?? '__none__'}
-            onValueChange={(v) =>
+            onValueChange={(v) => {
+              ccManuallyEditedRef.current = true;
               dispatch({
                 type: 'SET_COST_CENTER',
                 costCenterId: v === '__none__' ? null : v,
-              })
-            }
+              });
+            }}
           >
             <SelectTrigger id="composer-cc">
               <SelectValue placeholder="Pick a cost center" />
@@ -591,7 +642,8 @@ export function BookingComposer({
           color only on the icon — anything louder reads as a form error. */}
       {capacityWarning && (
         <div
-          role="alert"
+          role="status"
+          aria-live="polite"
           className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2 text-xs text-foreground"
         >
           <AlertTriangle
@@ -606,10 +658,13 @@ export function BookingComposer({
         </div>
       )}
 
-      {/* Lead-time warnings — pre-empts a submit-time 422. */}
+      {/* Lead-time warnings — pre-empts a submit-time 422. Polite live
+          region — these recompute on every attendee/service change and
+          assertive role would re-announce noisily. */}
       {leadTimeWarnings.length > 0 && (
         <div
-          role="alert"
+          role="status"
+          aria-live="polite"
           className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
         >
           <p className="flex items-center gap-1 font-medium">
@@ -643,11 +698,12 @@ export function BookingComposer({
                 <button
                   type="button"
                   onClick={() => {
+                    // Pass the alternative directly so buildBookingPayload
+                    // sees the new spaceId without depending on reducer
+                    // timing. Also dispatch so the rest of the composer
+                    // reflects the new pick.
                     dispatch({ type: 'SET_SPACE', spaceId: alt.space_id });
-                    // Defer one tick so SET_SPACE lands before submit reads
-                    // state. Without the rAF the buildBookingPayload reads
-                    // the prior closure's spaceId and rebooks the lost slot.
-                    requestAnimationFrame(() => void handleSubmit());
+                    void handleSubmit({ spaceId: alt.space_id });
                   }}
                   className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-destructive/10"
                   style={{
@@ -725,7 +781,7 @@ export function BookingComposer({
           </Button>
           <Button
             type="button"
-            onClick={handleSubmit}
+            onClick={() => void handleSubmit()}
             disabled={
               Boolean(validationError) ||
               submitting ||
@@ -754,6 +810,7 @@ export function BookingComposer({
         attendeeCount={state.attendeeCount}
         bookingStartAt={state.startAt}
         bookingEndAt={state.endAt}
+        initialSelections={state.services}
         onConfirm={async (selections) => {
           dispatch({ type: 'SET_SERVICES', services: selections });
           setPickerOpen(false);

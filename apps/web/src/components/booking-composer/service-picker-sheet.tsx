@@ -63,6 +63,11 @@ interface Props {
    *  user expands "Different time?" on a catalog row. */
   bookingStartAt?: string | null;
   bookingEndAt?: string | null;
+  /** Existing selections to hydrate when re-opening the picker for edit.
+   *  Without this, "Edit" reopens with an empty cart and the user's
+   *  prior picks vanish on the next confirm — codex flagged on the
+   *  holistic review. */
+  initialSelections?: PickerSelection[];
   /** Default tab to focus when opened (e.g. "catering" if invoked from a "+ Add catering" button). */
   initialServiceType?: ServiceType;
   /** Confirm — the parent fires the mutation. */
@@ -97,6 +102,7 @@ export function ServicePickerSheet({
   attendeeCount,
   bookingStartAt = null,
   bookingEndAt = null,
+  initialSelections,
   initialServiceType = 'catering',
   onConfirm,
   submitting,
@@ -105,15 +111,20 @@ export function ServicePickerSheet({
 }: Props) {
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<ServiceType>(initialServiceType);
-  const [selections, setSelections] = useState<PickerSelection[]>([]);
+  const [selections, setSelections] = useState<PickerSelection[]>(
+    initialSelections ?? [],
+  );
 
-  // Reset state on open so a previously cancelled session doesn't bleed in.
+  // Hydrate from initialSelections on every open so re-entering Edit
+  // doesn't wipe the cart. The reset-to-empty was the cause of the
+  // accidental "edit clears my picks" footgun codex flagged on the
+  // holistic review.
   useEffect(() => {
     if (open) {
       setActiveTab(initialServiceType);
-      setSelections([]);
+      setSelections(initialSelections ?? []);
     }
-  }, [open, initialServiceType]);
+  }, [open, initialServiceType, initialSelections]);
 
   const total = useMemo(
     () =>

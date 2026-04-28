@@ -113,13 +113,26 @@ export function initialState(seed: InitialComposerState = {}): ComposerState {
 }
 
 /**
- * Adapter for the bundle-template payload's `services` shape (which
- * uses `quantity_per_attendee` for per-person seeding) → composer's
- * `PickerSelection[]`. Resolves `quantity_per_attendee * attendeeCount`
- * at seed time so the picker shows the right qty when the user opens it.
+ * Adapter for the bundle-template payload's `services` shape →
+ * composer's `PickerSelection[]`. Used by the portal book-room flow to
+ * pass `activeTemplate.payload.services` into `initial.services`.
  *
- * Used by the portal book-room flow to pass `activeTemplate.payload.services`
- * into the composer's `initial.services`.
+ * Quantity semantics — codex caught a real bug here on 2026-04-28:
+ *
+ * Template items can carry `quantity` (a fixed total) or
+ * `quantity_per_attendee` (a per-head ratio). The picker's
+ * `estimateLine` already multiplies `per_person` units by
+ * `attendeeCount` server-side; pre-multiplying templates by attendees
+ * over-orders by attendees² for any `per_person` line. Since unit is
+ * not on the template payload (only on the resolved menu offer), the
+ * safest seed is to PRESERVE the per-attendee value as the raw line
+ * quantity. The picker shows "1 × Lunch Bowl · €N" for `per_person`
+ * (correct: backend multiplies by attendees) and "1 × Sandwich" for
+ * `per_item` (under-seeded; user bumps in the picker).
+ *
+ * Trade-off: under-seeded `per_item` requires one extra tap. But
+ * over-charge (the prior bug) trains finance to distrust the system
+ * and is the worse failure mode.
  */
 export function templateServicesToPickerSelections(
   templateServices: Array<{
@@ -128,15 +141,14 @@ export function templateServicesToPickerSelections(
     quantity?: number;
     quantity_per_attendee?: number;
   }>,
-  attendeeCount: number,
+  // attendeeCount kept in the signature for API stability — older callers
+  // passed it for the old (buggy) multiplication. Currently unused.
+  _attendeeCount: number,
 ): PickerSelection[] {
   return templateServices.map((s) => ({
     catalog_item_id: s.catalog_item_id,
     menu_id: s.menu_id ?? '',
-    quantity:
-      s.quantity_per_attendee != null
-        ? Math.max(1, Math.round(s.quantity_per_attendee * Math.max(1, attendeeCount)))
-        : (s.quantity ?? 1),
+    quantity: s.quantity_per_attendee ?? s.quantity ?? 1,
     unit_price: null, // resolved when the picker fetches current menus
     unit: null,
     name: 'Template item',
@@ -162,8 +174,17 @@ export function composerReducer(state: ComposerState, action: ComposerAction): C
       return { ...state, hostPersonId: action.personId };
     case 'SET_COST_CENTER':
       return { ...state, costCenterId: action.costCenterId };
-    case 'SET_RECURRENCE':
-      return { ...state, recurrence: action.rule };
+    case 'SET_RECURRENCE': {
+      // XOR the end modes — a rule with BOTH count and until is
+      // semantically ambiguous (which bound wins?). When both are set,
+      // prefer `until` (the explicit calendar bound) and drop `count`.
+      // Codex flagged the duplicate end-mode possibility on 2026-04-28.
+      const r = action.rule;
+      if (r && r.until && r.count != null) {
+        return { ...state, recurrence: { ...r, count: undefined } };
+      }
+      return { ...state, recurrence: r };
+    }
     case 'SET_SERVICES':
       return { ...state, services: action.services };
     case 'SET_TEMPLATE_ID':
