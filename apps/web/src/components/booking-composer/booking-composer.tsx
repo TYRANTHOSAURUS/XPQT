@@ -692,8 +692,20 @@ export function BookingComposer({
         </div>
       )}
 
-      {/* Footer: error + submit */}
-      <div className="flex flex-col gap-2 pt-2">
+      {/* Footer: error + submit. Sticky on mobile so it's always
+          reachable without scrolling through a long form (services +
+          recurrence + warnings can push it well below the fold). The
+          calling sheet/dialog wraps the composer in an overflow-y-auto
+          container, so we pin to the bottom of THAT scroll context with
+          `sticky bottom-0` and a bg/border so the form content scrolls
+          underneath cleanly. No negative-margin bleed because the two
+          mounts (Sheet px-5, Dialog p-4) have different paddings —
+          codex flagged a 4px horizontal scroll trigger. Reverts to
+          inline on sm+ (the desktop dialog isn't tall enough to need
+          stickiness). pb honors iOS home-indicator safe area. */}
+      <div className="flex flex-col gap-2 border-t bg-background pt-3 sm:border-t-0 sm:bg-transparent sm:pt-2
+                      pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-0
+                      sticky bottom-0 sm:static -mx-4 px-4 sm:mx-0 sm:px-0">
         {validationError && (
           <p className="text-xs text-amber-700 dark:text-amber-400">{validationError}</p>
         )}
