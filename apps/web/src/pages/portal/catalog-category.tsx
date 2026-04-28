@@ -58,7 +58,7 @@ export function CatalogCategoryPage() {
   const empty = !loading && subcategories.length === 0 && services.length === 0;
 
   return (
-    <PortalPage bleed>
+    <PortalPage>
       <PortalCategoryBanner
         id={categoryId}
         name={dbCategory?.name ?? categoryRow?.name ?? 'Services'}
@@ -70,7 +70,7 @@ export function CatalogCategoryPage() {
         cover_image_url={dbCategory?.cover_image_url ?? null}
       />
 
-      <div className="px-4 md:px-6 lg:px-8 mt-8 md:mt-10 space-y-10">
+      <div className="mt-8 md:mt-10 space-y-10">
         {loading && (
           <div className="space-y-10">
             {/* Subcategory rail skeleton */}
