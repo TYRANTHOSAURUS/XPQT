@@ -2,11 +2,10 @@ import { apiFetch } from '@/lib/api';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   personFullName,
+  personKeys,
   type Person,
 } from '@/api/persons';
 import type { EntityAdapter } from '../types';
-
-const SEARCH_KEY = ['persons', 'entity-picker-search'] as const;
 
 export const personEntityAdapter: EntityAdapter<Person> = {
   type: 'person',
@@ -15,8 +14,11 @@ export const personEntityAdapter: EntityAdapter<Person> = {
 
   searchQueryOptions(query, filter) {
     const trimmed = query.trim();
+    // Persons has a real backend search endpoint, so we key by `q` and let
+    // each unique search be its own cache slot. Prefix matches personKeys.lists()
+    // so mutations that invalidate persons list cascade through the picker.
     return {
-      queryKey: [...SEARCH_KEY, { q: trimmed, filter: filter ?? null }] as const,
+      queryKey: [...personKeys.lists(), { search: trimmed, filter: filter ?? null }] as const,
       queryFn: ({ signal }) =>
         apiFetch<Person[]>('/persons', {
           signal,
@@ -32,8 +34,10 @@ export const personEntityAdapter: EntityAdapter<Person> = {
   },
 
   detailQueryOptions(id) {
+    // Same key shape as personDetailOptions in @/api/persons so a picker
+    // pre-fetched detail satisfies every other consumer of the same id.
     return {
-      queryKey: ['persons', 'detail', id] as const,
+      queryKey: personKeys.detail(id || '__none__'),
       queryFn: ({ signal }) => apiFetch<Person>(`/persons/${id}`, { signal }),
       staleTime: 5 * 60_000,
       enabled: Boolean(id),

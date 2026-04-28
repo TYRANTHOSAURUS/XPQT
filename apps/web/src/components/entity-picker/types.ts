@@ -12,6 +12,13 @@ export interface EntityQueryOptions<TData> {
   staleTime?: number;
   gcTime?: number;
   enabled?: boolean;
+  /**
+   * Optional client-side projection. Lets adapters that share a cached base
+   * list per filter (catalog/cost-center/request-type) apply substring
+   * matching synchronously without refetching. React Query memoizes the
+   * select result for the same input, so each keystroke is cheap.
+   */
+  select?: (data: TData) => TData;
 }
 
 /**

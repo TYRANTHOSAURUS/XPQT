@@ -1,12 +1,11 @@
 import { apiFetch } from '@/lib/api';
 import {
+  requestTypeKeys,
   type RequestTypeDetail,
   type RequestTypeListItem,
 } from '@/api/request-types';
 import { Badge } from '@/components/ui/badge';
 import type { EntityAdapter } from '../types';
-
-const LIST_KEY = ['request-types', 'entity-picker'] as const;
 
 export const requestTypeEntityAdapter: EntityAdapter<RequestTypeListItem> = {
   type: 'request_type',
@@ -17,15 +16,19 @@ export const requestTypeEntityAdapter: EntityAdapter<RequestTypeListItem> = {
     const trimmed = query.trim().toLowerCase();
     const domain = (filter?.domain as string | undefined) ?? null;
     return {
-      queryKey: [...LIST_KEY, { q: trimmed, domain }] as const,
-      queryFn: async ({ signal }) => {
+      // Cache the per-(domain) base list once. Substring search is a `select`.
+      queryKey: [...requestTypeKeys.lists(), { domain }] as const,
+      queryFn: async ({ signal }: { signal: AbortSignal }) => {
         const params = new URLSearchParams();
         if (domain) params.set('domain', domain);
         const qs = params.toString();
-        const items = await apiFetch<RequestTypeListItem[]>(
+        return apiFetch<RequestTypeListItem[]>(
           `/request-types${qs ? `?${qs}` : ''}`,
           { signal },
         );
+      },
+      staleTime: 60_000,
+      select: (items: RequestTypeListItem[]) => {
         if (!trimmed) return items;
         return items.filter(
           (i) =>
@@ -33,13 +36,12 @@ export const requestTypeEntityAdapter: EntityAdapter<RequestTypeListItem> = {
             (i.domain ?? '').toLowerCase().includes(trimmed),
         );
       },
-      staleTime: 60_000,
-    };
+    } as unknown as ReturnType<EntityAdapter<RequestTypeListItem>['searchQueryOptions']>;
   },
 
   detailQueryOptions(id) {
     return {
-      queryKey: [...LIST_KEY, 'detail', id] as const,
+      queryKey: requestTypeKeys.detail(id),
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
         const detail = await apiFetch<RequestTypeDetail>(`/request-types/${id}`, { signal });
         return detail as RequestTypeListItem;

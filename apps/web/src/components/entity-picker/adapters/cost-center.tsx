@@ -1,8 +1,6 @@
 import { apiFetch } from '@/lib/api';
-import type { CostCenter } from '@/api/cost-centers';
+import { costCenterKeys, type CostCenter } from '@/api/cost-centers';
 import type { EntityAdapter } from '../types';
-
-const LIST_KEY = ['cost-centers', 'entity-picker'] as const;
 
 export const costCenterEntityAdapter: EntityAdapter<CostCenter> = {
   type: 'cost_center',
@@ -13,15 +11,18 @@ export const costCenterEntityAdapter: EntityAdapter<CostCenter> = {
     const trimmed = query.trim().toLowerCase();
     const onlyActive = (filter?.active ?? true) === true;
     return {
-      queryKey: [...LIST_KEY, { q: trimmed, active: onlyActive }] as const,
-      queryFn: async ({ signal }) => {
+      queryKey: costCenterKeys.list({ active: onlyActive }),
+      queryFn: async ({ signal }: { signal: AbortSignal }) => {
         const params = new URLSearchParams();
         if (onlyActive) params.set('active', 'true');
         const qs = params.toString();
-        const rows = await apiFetch<CostCenter[]>(
+        return apiFetch<CostCenter[]>(
           `/admin/cost-centers${qs ? `?${qs}` : ''}`,
           { signal },
         );
+      },
+      staleTime: 30_000,
+      select: (rows: CostCenter[]) => {
         if (!trimmed) return rows;
         return rows.filter(
           (c) =>
@@ -29,13 +30,12 @@ export const costCenterEntityAdapter: EntityAdapter<CostCenter> = {
             c.name.toLowerCase().includes(trimmed),
         );
       },
-      staleTime: 30_000,
-    };
+    } as unknown as ReturnType<EntityAdapter<CostCenter>['searchQueryOptions']>;
   },
 
   detailQueryOptions(id) {
     return {
-      queryKey: [...LIST_KEY, 'detail', id] as const,
+      queryKey: costCenterKeys.detail(id),
       queryFn: ({ signal }: { signal: AbortSignal }) => apiFetch<CostCenter>(`/admin/cost-centers/${id}`, { signal }),
       staleTime: 30_000,
       enabled: Boolean(id),

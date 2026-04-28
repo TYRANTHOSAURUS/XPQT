@@ -1,15 +1,19 @@
 import { apiFetch } from '@/lib/api';
-import type { CatalogItem } from '@/api/catalog';
+import { catalogKeys, type CatalogItem } from '@/api/catalog';
 import type { EntityAdapter } from '../types';
-
-const LIST_KEY = ['catalog-items', 'entity-picker'] as const;
 
 /**
  * Catalog items have no server-side search endpoint today (`/catalog-items`
- * returns the full set). The picker filters client-side after the initial
- * fetch — fine for typical tenant catalogues (<500 items). When sets grow,
- * extend the API with a `?search=q` param and update searchQueryOptions
- * here; the adapter is the only call site.
+ * returns the full set). To keep the React Query cache effective the
+ * picker fetches the full list ONCE per `filter` shape (no `q` in the key)
+ * and applies the substring filter via `select`. This means each new
+ * keystroke is a free synchronous filter rather than a refetch.
+ *
+ * Detail by id pulls from the same fetch — the items list is the only
+ * source. Key prefix matches `catalogKeys.itemsList()` so mutations that
+ * invalidate that list bust the picker's cache too.
+ *
+ * When the API grows a `?search=q` endpoint, swap to keying by `q`.
  */
 export const catalogItemEntityAdapter: EntityAdapter<CatalogItem> = {
   type: 'catalog_item',
@@ -19,12 +23,13 @@ export const catalogItemEntityAdapter: EntityAdapter<CatalogItem> = {
   searchQueryOptions(query, filter) {
     const trimmed = query.trim().toLowerCase();
     return {
-      queryKey: [...LIST_KEY, { q: trimmed, filter: filter ?? null }] as const,
-      queryFn: async ({ signal }) => {
-        const items = await apiFetch<CatalogItem[]>('/catalog-items', { signal });
+      queryKey: [...catalogKeys.itemsList(), { filter: filter ?? null }] as const,
+      queryFn: ({ signal }: { signal: AbortSignal }) => apiFetch<CatalogItem[]>('/catalog-items', { signal }),
+      staleTime: 60_000,
+      // Substring match on name + category. React Query memoizes `select`
+      // so successive renders with the same trimmed query reuse the result.
+      select: (items: CatalogItem[]) => {
         if (!trimmed) return items;
-        // Substring match on name + category — sublabel matching is the
-        // typical UX expectation for picker search.
         return items.filter(
           (i) =>
             i.name.toLowerCase().includes(trimmed) ||
@@ -32,13 +37,12 @@ export const catalogItemEntityAdapter: EntityAdapter<CatalogItem> = {
             (i.subcategory ?? '').toLowerCase().includes(trimmed),
         );
       },
-      staleTime: 60_000,
-    };
+    } as unknown as ReturnType<EntityAdapter<CatalogItem>['searchQueryOptions']>;
   },
 
   detailQueryOptions(id) {
     return {
-      queryKey: [...LIST_KEY, 'detail', id] as const,
+      queryKey: catalogKeys.itemDetail(id),
       queryFn: async ({ signal }) => {
         const items = await apiFetch<CatalogItem[]>('/catalog-items', { signal });
         return items.find((i) => i.id === id) ?? null;
