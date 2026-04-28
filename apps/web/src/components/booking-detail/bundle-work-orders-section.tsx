@@ -6,6 +6,10 @@ import { cn } from '@/lib/utils';
 
 interface Props {
   bundleId: string;
+  /** When true (operator surfaces), render an empty header even when
+   *  there are no tickets so the operator can SEE that nothing is
+   *  dispatched yet. */
+  alwaysShow?: boolean;
 }
 
 // Status dot palette — matches the desk surface's status semantics:
@@ -34,25 +38,32 @@ const STATUS_DOT: Record<string, string> = {
  * Reads from the same `useBundle(bundleId)` cache the services
  * section uses — TanStack Query dedupes, no extra fetch.
  */
-export function BundleWorkOrdersSection({ bundleId }: Props) {
+export function BundleWorkOrdersSection({ bundleId, alwaysShow = false }: Props) {
   const { data, isLoading } = useBundle(bundleId);
 
   if (isLoading || !data) return null;
   const tickets = data.tickets ?? [];
-  if (tickets.length === 0) return null;
+  if (tickets.length === 0 && !alwaysShow) return null;
 
   return (
     <div className="border-t">
       <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Fulfillment ({tickets.length})
+          {tickets.length === 0 ? 'Fulfillment' : `Fulfillment · ${tickets.length}`}
         </span>
       </div>
-      <ul className="px-5 pb-3">
-        {tickets.map((t) => (
-          <TicketRow key={t.id} ticket={t} />
-        ))}
-      </ul>
+      {tickets.length === 0 ? (
+        <p className="px-5 pb-3 text-xs text-muted-foreground">
+          Nothing dispatched yet — work orders appear here once services
+          are attached and assigned.
+        </p>
+      ) : (
+        <ul className="px-5 pb-3">
+          {tickets.map((t) => (
+            <TicketRow key={t.id} ticket={t} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

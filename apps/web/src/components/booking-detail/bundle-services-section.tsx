@@ -35,6 +35,12 @@ interface Props {
   reservation: Reservation;
   /** True when the requester / host / admin is viewing — gates +/edit/cancel buttons. */
   canEdit: boolean;
+  /** When true (service-desk / admin surfaces), always render the section
+   *  even when the booking has no bundle and no lines. Operators need to
+   *  SEE that nothing is attached vs. seeing nothing at all (the latter
+   *  reads as "broken"). Requester surfaces leave this false so the
+   *  page stays clean when there's nothing to act on. */
+  alwaysShow?: boolean;
 }
 
 /**
@@ -51,7 +57,7 @@ interface Props {
  * The picker sheet is shared across this component and the future booking
  * composer; mobile-bottom-sheet rendering comes from the sheet primitive.
  */
-export function BundleServicesSection({ reservation, canEdit }: Props) {
+export function BundleServicesSection({ reservation, canEdit, alwaysShow = false }: Props) {
   const bundleId = reservation.booking_bundle_id;
   const onDate = reservation.start_at.slice(0, 10);
 
@@ -83,8 +89,62 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
     }
   };
 
-  // No bundle yet — empty-state with CTA.
+  // No bundle yet — branch on operator vs requester surface.
+  // Operator (alwaysShow): explicit "no services" header so the section is
+  //   visible and they know nothing is attached. Add CTA when canEdit.
+  // Requester (canEdit): full add-services empty-state with hero CTA.
+  // Neither: hide the section.
   if (!bundleId) {
+    if (alwaysShow) {
+      return (
+        <>
+          <div className="border-t">
+            <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
+              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Services
+              </span>
+              {canEdit && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setPickerOpen(true)}
+                >
+                  <Plus className="size-3.5" />
+                  Add
+                </Button>
+              )}
+            </div>
+            <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
+              <span
+                aria-hidden
+                className="flex size-9 items-center justify-center rounded-full bg-muted/60"
+              >
+                <Sparkles className="size-4 text-muted-foreground" />
+              </span>
+              <p className="text-sm font-medium">No services yet</p>
+              <p className="max-w-xs text-xs text-muted-foreground">
+                Catering, AV, and supplies attached to this booking will
+                appear here.
+              </p>
+            </div>
+          </div>
+          <ServicePickerSheet
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
+            deliverySpaceId={reservation.space_id}
+            onDate={onDate}
+            attendeeCount={reservation.attendee_count ?? 1}
+            bookingStartAt={reservation.start_at}
+            bookingEndAt={reservation.end_at}
+            onConfirm={handleAdd}
+            submitting={attach.isPending}
+            subtitle="Defaults to your meeting time and attendee count."
+          />
+        </>
+      );
+    }
     if (!canEdit) return null;
     return (
       <>
@@ -129,6 +189,7 @@ export function BundleServicesSection({ reservation, canEdit }: Props) {
       reservation={reservation}
       bundleId={bundleId}
       canEdit={canEdit}
+      alwaysShow={alwaysShow}
       pickerOpen={pickerOpen}
       onPickerOpenChange={setPickerOpen}
       onAddServices={handleAdd}
@@ -145,6 +206,7 @@ interface ContentProps {
   reservation: Reservation;
   bundleId: string;
   canEdit: boolean;
+  alwaysShow: boolean;
   pickerOpen: boolean;
   onPickerOpenChange: (open: boolean) => void;
   onAddServices: (selections: PickerSelection[]) => Promise<void>;
@@ -159,6 +221,7 @@ function BundleServicesContent({
   reservation,
   bundleId,
   canEdit,
+  alwaysShow,
   pickerOpen,
   onPickerOpenChange,
   onAddServices,
@@ -198,7 +261,9 @@ function BundleServicesContent({
   if (!data) return null;
 
   const lines = data.lines ?? [];
-  if (lines.length === 0 && !canEdit) return null;
+  // Operator surface always renders the header so "no lines" is visible
+  // (vs. silently missing). Requester surface hides empty sections.
+  if (lines.length === 0 && !canEdit && !alwaysShow) return null;
 
   const total = lines.reduce(
     (sum, l) => sum + (l.line_total != null && Number.isFinite(l.line_total) ? Number(l.line_total) : 0),
@@ -221,7 +286,7 @@ function BundleServicesContent({
       <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
         <div className="flex items-center gap-2">
           <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Services ({lines.length})
+            {lines.length === 0 ? 'Services' : `Services · ${lines.length}`}
           </span>
           {orderIds.length > 0 && (
             <span
@@ -247,34 +312,51 @@ function BundleServicesContent({
         )}
       </div>
 
-      <ul className="px-5 pb-2">
-        {lines.map((line) => (
-          <ServiceLineRow
-            key={line.id}
-            line={line}
-            canEdit={canEdit}
-            editing={editingLineId === line.id}
-            onStartEdit={() => onEditingLineIdChange(line.id)}
-            onCancelEdit={() => onEditingLineIdChange(null)}
-            onSaveEdit={async (patch) => {
-              try {
-                await editLine.mutateAsync({ lineId: line.id, patch });
-                toastUpdated('Service line');
-                onEditingLineIdChange(null);
-              } catch (err) {
-                toastError("Couldn't update line", { error: err });
-              }
-            }}
-            saving={editLine.isPending}
-            onRequestCancel={() => onConfirmingLineChange(line)}
-          />
-        ))}
-      </ul>
+      {lines.length === 0 && alwaysShow ? (
+        <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
+          <span
+            aria-hidden
+            className="flex size-9 items-center justify-center rounded-full bg-muted/60"
+          >
+            <Sparkles className="size-4 text-muted-foreground" />
+          </span>
+          <p className="text-sm font-medium">No services yet</p>
+          <p className="max-w-xs text-xs text-muted-foreground">
+            A bundle exists but no lines are attached.
+          </p>
+        </div>
+      ) : (
+        <>
+          <ul className="px-5 pb-2">
+            {lines.map((line) => (
+              <ServiceLineRow
+                key={line.id}
+                line={line}
+                canEdit={canEdit}
+                editing={editingLineId === line.id}
+                onStartEdit={() => onEditingLineIdChange(line.id)}
+                onCancelEdit={() => onEditingLineIdChange(null)}
+                onSaveEdit={async (patch) => {
+                  try {
+                    await editLine.mutateAsync({ lineId: line.id, patch });
+                    toastUpdated('Service line');
+                    onEditingLineIdChange(null);
+                  } catch (err) {
+                    toastError("Couldn't update line", { error: err });
+                  }
+                }}
+                saving={editLine.isPending}
+                onRequestCancel={() => onConfirmingLineChange(line)}
+              />
+            ))}
+          </ul>
 
-      <div className="flex items-center justify-between px-5 py-2 text-xs text-muted-foreground">
-        <span>Status: {prettyBundleStatus(data.status_rollup)}</span>
-        <span className="tabular-nums">{formatCurrency(total)}</span>
-      </div>
+          <div className="flex items-center justify-between px-5 py-2 text-xs text-muted-foreground">
+            <span>Status: {prettyBundleStatus(data.status_rollup)}</span>
+            <span className="tabular-nums">{formatCurrency(total)}</span>
+          </div>
+        </>
+      )}
 
       <ConfirmDialog
         open={confirmingLine !== null}

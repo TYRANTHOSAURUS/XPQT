@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import {
   useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
 } from '@/api/room-booking';
+import { useAuth } from '@/providers/auth-provider';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { NumberStepper } from '@/components/ui/number-stepper';
 import { BookingStatusPill } from './booking-status-pill';
@@ -44,8 +45,17 @@ export interface BookingDetailContentProps {
  */
 export function BookingDetailContent({ reservationId, onDismiss }: BookingDetailContentProps) {
   const { data: reservation, isPending } = useReservationDetail(reservationId ?? '');
+  const { hasRole } = useAuth();
   const [editing, setEditing] = useState(false);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+
+  // Service desk / admin is rendering this — they always need to SEE the
+  // children of a booking (services, work orders, multi-room) even when
+  // the booking is past or has nothing attached. The requester surface
+  // hides empty sections to keep the page clean; the operator surface
+  // never does, because "nothing here" is itself important information
+  // for someone investigating a booking.
+  const isOperator = hasRole('agent');
 
   const checkIn = useCheckInBooking();
   const restore = useRestoreBooking();
@@ -222,15 +232,20 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
       <BundleServicesSection
         reservation={reservation}
         canEdit={showEdit}
+        alwaysShow={isOperator}
       />
 
       {/* Work-orders / cases attached to this booking. Mounts only when
-          a bundle exists (no bundle = no work orders). Renders nothing
-          when the bundle has zero tickets so we don't confuse the user
-          with an empty section. Service desk uses this to jump straight
-          into the ticket without losing the booking context. */}
+          a bundle exists (no bundle = no work orders). For operators,
+          the header always renders with an explicit empty state so a
+          dispatched-yet booking is distinguishable from a not-yet-
+          dispatched one. Requesters see nothing when there are no
+          tickets — work orders are an operator concept. */}
       {reservation.booking_bundle_id && (
-        <BundleWorkOrdersSection bundleId={reservation.booking_bundle_id} />
+        <BundleWorkOrdersSection
+          bundleId={reservation.booking_bundle_id}
+          alwaysShow={isOperator}
+        />
       )}
 
       {(showCheckIn || showRestore || showEdit) && (
