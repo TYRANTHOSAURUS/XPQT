@@ -1,33 +1,43 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DbModule } from '../db/db.module';
 import { LoggingMailProvider } from './logging-mail-provider';
 import { MailWebhookController } from './mail-webhook.controller';
-import { MAIL_PROVIDER } from './mail-provider';
-import { PostmarkMailProvider } from './postmark-mail-provider';
+import { MAIL_PROVIDER, type MailProvider } from './mail-provider';
+import { ResendMailProvider } from './resend-mail-provider';
 
 /**
- * Boot-time provider selection. When POSTMARK_SERVER_TOKEN is set in
- * the environment, use the real EU Postmark adapter. Otherwise fall
- * back to the LoggingMailProvider. Tests + local dev get logs without
- * needing credentials; staging / production point at Postmark via env.
+ * Mail-delivery substrate module. The MAIL_PROVIDER token resolves to
+ * the real provider when env credentials are configured, otherwise the
+ * dev-mode LoggingMailProvider.
  *
- * Per-tenant provider selection (tenant A on Postmark, tenant B on
- * Resend) is a Sprint 5 follow-up — for v1 the platform owns the
- * sender domain + token.
+ * Codex 2026-04-28 round-1 caught: provider-selection at module-import
+ * time read process.env BEFORE ConfigModule.forRoot() loaded `.env`,
+ * leaving production permanently bound to LoggingMailProvider. Fix:
+ * useFactory with ConfigService injection so resolution happens at
+ * runtime after the env is loaded.
+ *
+ * Per-tenant provider routing (tenant A on Resend, tenant B on SES)
+ * is a Sprint 5 follow-up — for v1 the platform owns the sender
+ * domain + token.
  */
-const provider = process.env.POSTMARK_SERVER_TOKEN
-  ? PostmarkMailProvider
-  : LoggingMailProvider;
-
 @Module({
   imports: [DbModule],
   controllers: [MailWebhookController],
   providers: [
     LoggingMailProvider,
-    PostmarkMailProvider,
+    ResendMailProvider,
     {
       provide: MAIL_PROVIDER,
-      useExisting: provider,
+      inject: [ConfigService, ResendMailProvider, LoggingMailProvider],
+      useFactory: (
+        config: ConfigService,
+        resend: ResendMailProvider,
+        logging: LoggingMailProvider,
+      ): MailProvider => {
+        const apiKey = config.get<string>('RESEND_API_KEY');
+        return apiKey ? resend : logging;
+      },
     },
   ],
   exports: [MAIL_PROVIDER],

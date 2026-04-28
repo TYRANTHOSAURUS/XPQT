@@ -20,13 +20,14 @@ import {
 
 /**
  * Receives signed webhook callbacks from the configured mail provider
- * (Postmark today; future Resend / SES routes here too via the
+ * (Resend today; future SES / Postmark route here too via the
  * MailProvider abstraction).
  *
  * Auth: the provider's signature header. Bearer auth + tenant
  * middleware are skipped — the provider has no tenant context to send.
  * The provider is wired to send to a single tenant-less endpoint;
- * correlation happens by provider_message_id lookup.
+ * correlation happens via the platform-owned `daily_list_id` tag
+ * (preferred; race-free) or by provider message id (fallback).
  *
  * Endpoint MUST be exempted from the global TenantMiddleware. See
  * `apps/api/src/common/middleware/tenant.middleware.ts` exclude list.
@@ -106,7 +107,7 @@ export class MailWebhookController {
   private async ingest(event: MailWebhookEvent): Promise<void> {
     /* Correlate first — we need the tenant_id to write the audit row + to
        update the right entity. */
-    const correlated = await this.correlate(event.providerMessageId);
+    const correlated = await this.correlate(event);
 
     /* Persist the raw event regardless — even un-correlated events stay
        in the table so ops can reprocess after fixing the correlation. */
@@ -140,18 +141,44 @@ export class MailWebhookController {
     }
   }
 
-  private async correlate(messageId: string): Promise<CorrelatedEntity | null> {
-    /* Daily list — only correlated entity for v1. Vendor magic-link
-       delivery state is informational (the auth flow doesn't depend
-       on bounce events) and the magic_links table doesn't yet carry
-       email_message_id; Sprint 5 wires it. Until then magic-link
-       webhook events get persisted with correlated_entity_type='unknown'
-       so ops can still see them. */
+  /**
+   * Correlate a webhook event to its originating row.
+   *
+   * Codex round-1 fix: round-0 only correlated by
+   * vendor_daily_lists.email_message_id, but that column is set in the
+   * post-send tx UPDATE. If the provider posts a delivery callback
+   * BEFORE the send-tx commits (Resend has dispatched faster than
+   * Postgres on local benchmarks), correlation lost the row and the
+   * email_status state machine stayed at 'sent'.
+   *
+   * Two-layer correlation:
+   *   1. Tags-first: every send tags `daily_list_id` (we own the value),
+   *      so the row id is in the webhook payload regardless of
+   *      message_id timing.
+   *   2. Message-id fallback: for legacy events from before tagging
+   *      was added, AND for vendor magic-link sends (Sprint 5).
+   */
+  private async correlate(event: MailWebhookEvent): Promise<CorrelatedEntity | null> {
+    const tags = extractTags(event.raw);
+    const tagDailyListId = tags?.daily_list_id;
+    if (tagDailyListId) {
+      const dl = await this.db.queryOne<{ id: string; tenant_id: string }>(
+        `select id, tenant_id from public.vendor_daily_lists
+          where id = $1
+          limit 1`,
+        [tagDailyListId],
+      );
+      if (dl) {
+        return { tenantId: dl.tenant_id, entityType: 'vendor_daily_list', entityId: dl.id };
+      }
+    }
+    /* Fallback: provider message id. Used when tags are missing or
+       when the row id is yet to flow into the email tag pipeline. */
     const dl = await this.db.queryOne<{ id: string; tenant_id: string }>(
       `select id, tenant_id from public.vendor_daily_lists
         where email_message_id = $1
         limit 1`,
-      [messageId],
+      [event.providerMessageId],
     );
     if (dl) {
       return { tenantId: dl.tenant_id, entityType: 'vendor_daily_list', entityId: dl.id };
@@ -199,4 +226,33 @@ interface CorrelatedEntity {
   tenantId: string;
   entityType: 'vendor_daily_list';
   entityId: string;
+}
+
+/**
+ * Pull our platform tags out of a provider-native event payload.
+ *
+ * Resend echoes tags back in the webhook payload at `data.tags` as an
+ * array of `{name, value}` pairs. Future providers (SES) inline tags
+ * differently — this helper normalises by walking `data.tags` and
+ * `data.headers['X-Tag']`, returning a flat string-string map.
+ *
+ * The codex round-1 fix correlates by `daily_list_id` from this map
+ * to dodge the email_message_id timing race.
+ */
+function extractTags(rawEvent: unknown): Record<string, string> | null {
+  if (!rawEvent || typeof rawEvent !== 'object') return null;
+  const ev = rawEvent as Record<string, unknown>;
+  const data = (ev.data as Record<string, unknown> | undefined) ?? {};
+  const tags = data.tags;
+  if (!Array.isArray(tags)) return null;
+  const out: Record<string, string> = {};
+  for (const t of tags) {
+    if (t && typeof t === 'object' && 'name' in t && 'value' in t) {
+      const tt = t as { name: unknown; value: unknown };
+      if (typeof tt.name === 'string' && tt.value != null) {
+        out[tt.name] = String(tt.value);
+      }
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }

@@ -588,15 +588,26 @@ export class DailyListService {
     // post-mailer UPDATE can fence on it and abandon the write if the
     // sweeper or another worker has revoked our acquisition.
     const leaseTs = cas.sending_acquired_at;
-    let pdfUrl: string;
-    let expiresAt: string;
+    /* Codex Sprint 4 round-1 fix: attachment-first means the signed-URL
+       mint is now a soft dependency (the link is a body fallback, the
+       PDF attachment is the primary delivery vector). Don't abort the
+       send if URL minting throws — log + send with empty link. */
+    let pdfUrl = '';
+    let expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     let sendResult: Awaited<ReturnType<DailyListMailer['sendDailyList']>> | undefined;
     let sendError: string | null = null;
 
     try {
-      const url = await this.getDownloadUrl({ tenantId, dailyListId, ttl: 'email' });
-      pdfUrl = url.url;
-      expiresAt = url.expiresAt;
+      try {
+        const url = await this.getDownloadUrl({ tenantId, dailyListId, ttl: 'email' });
+        pdfUrl = url.url;
+        expiresAt = url.expiresAt;
+      } catch (urlErr) {
+        const msg = urlErr instanceof Error ? urlErr.message : String(urlErr);
+        this.log.warn(
+          `daily-list ${dailyListId} signed URL mint failed (continuing with attachment only): ${msg}`,
+        );
+      }
 
       const subject = buildSubjectLine(dl);
       const textBody = buildTextBody(dl, pdfUrl);
