@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -10,10 +10,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
 import {
-  SettingsPageHeader,
-  SettingsPageShell,
-} from '@/components/ui/settings-page';
-import {
   Field,
   FieldGroup,
   FieldLabel,
@@ -23,18 +19,21 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Pencil, UserPlus } from 'lucide-react';
-import { toast, toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import {
+  TableInspectorLayout, InspectorPanel,
+} from '@/components/ui/table-inspector-layout';
+import { Plus, UserPlus, Users, Search } from 'lucide-react';
+import { toast, toastCreated, toastError } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { useQueryClient } from '@tanstack/react-query';
-import { usePersons, personKeys } from '@/api/persons';
+import { usePersons, personKeys, usePerson } from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
 import { apiFetch } from '@/lib/api';
 import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
 import { OrgNodeCombobox } from '@/components/org-node-combobox';
-import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
 import { FieldSeparator } from '@/components/ui/field';
-import { TableLoading, TableEmpty } from '@/components/table-states';
+import { PersonDetailBody, personHeadline } from './person-detail';
 
 interface PrimaryMembership {
   org_node_id: string;
@@ -97,13 +96,44 @@ const typeColors: Record<string, 'default' | 'secondary' | 'outline'> = {
 
 export function PersonsPage() {
   const qc = useQueryClient();
-  const [typeFilter, setTypeFilter] = useState('all');
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get('p');
+  const typeFilter = searchParams.get('type') ?? 'all';
+  const [search, setSearch] = useState('');
+
   const { data, isPending: loading } = usePersons(typeFilter) as { data: Person[] | undefined; isPending: boolean };
   const { data: costCenters } = useCostCenters({ active: true });
   const refetch = () => qc.invalidateQueries({ queryKey: personKeys.all });
 
+  const setTypeFilter = (next: string) => {
+    const sp = new URLSearchParams(searchParams);
+    if (!next || next === 'all') sp.delete('type');
+    else sp.set('type', next);
+    setSearchParams(sp, { replace: true });
+  };
+
+  const selectPerson = (id: string | null) => {
+    const sp = new URLSearchParams(searchParams);
+    if (id) sp.set('p', id);
+    else sp.delete('p');
+    setSearchParams(sp, { replace: true });
+  };
+
+  const filteredPersons = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return data ?? [];
+    return (data ?? []).filter((p) => {
+      const name = `${p.first_name} ${p.last_name}`.toLowerCase();
+      return (
+        name.includes(q) ||
+        (p.email ?? '').toLowerCase().includes(q) ||
+        (p.phone ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [data, search]);
+
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editId, setEditId] = useState<string | null>(null);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -115,7 +145,6 @@ export function PersonsPage() {
   const [primaryOrgNodeId, setPrimaryOrgNodeId] = useState<string | null>(null);
 
   const resetForm = () => {
-    setEditId(null);
     setFirstName('');
     setLastName('');
     setEmail('');
@@ -127,7 +156,7 @@ export function PersonsPage() {
     setPrimaryOrgNodeId(null);
   };
 
-  const handleSave = async () => {
+  const handleCreate = async () => {
     if (!firstName.trim() || !lastName.trim()) return;
     const body = {
       first_name: firstName,
@@ -141,26 +170,29 @@ export function PersonsPage() {
       primary_org_node_id: primaryOrgNodeId,
     };
     try {
-      if (editId) {
-        await apiFetch(`/persons/${editId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        toastUpdated('Person');
-      } else {
-        await apiFetch('/persons', { method: 'POST', body: JSON.stringify(body) });
-        toastCreated('Person');
-      }
+      const created = await apiFetch<{ id: string }>('/persons', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
       resetForm();
       setDialogOpen(false);
       refetch();
+      toastCreated('Person', { onView: () => selectPerson(created.id) });
     } catch (err) {
       toastError("Couldn't save person", { error: err });
     }
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setDialogOpen(true);
   };
 
   const handleInvite = async (person: Person) => {
     if (!person.email) {
       toast.message('Add an email to invite this person', {
         description: 'Open the person, fill in their email, then try again.',
-        action: { label: 'Edit person', onClick: () => openEdit(person) },
+        action: { label: 'Open person', onClick: () => selectPerson(person.id) },
       });
       return;
     }
@@ -188,50 +220,87 @@ export function PersonsPage() {
     }
   };
 
-  const openEdit = (person: Person) => {
-    setEditId(person.id);
-    setFirstName(person.first_name);
-    setLastName(person.last_name);
-    setEmail(person.email ?? '');
-    setPhone(person.phone ?? '');
-    setType(person.type);
-    setCostCenter(person.cost_center ?? '');
-    setManagerId(person.manager_person_id ?? '');
-    setDefaultLocationId(person.default_location_id ?? null);
-    setPrimaryOrgNodeId(getPrimaryOrgNode(person)?.id ?? null);
-    setDialogOpen(true);
-  };
+  const isEmpty = !loading && (data?.length ?? 0) === 0;
+  const hasSelection = Boolean(selectedId);
 
-  const openCreate = () => {
-    resetForm();
-    setDialogOpen(true);
-  };
+  const tableEl = (
+    <PersonsTable
+      persons={filteredPersons}
+      loading={loading}
+      isEmpty={isEmpty}
+      selectedId={selectedId}
+      onSelect={selectPerson}
+      onAdd={openCreate}
+      onInvite={handleInvite}
+      hasSelection={hasSelection}
+    />
+  );
 
-  const getTypeBadge = (t: string) => {
-    const label = personTypes.find((x) => x.value === t)?.label ?? t;
-    const variant = typeColors[t] ?? 'outline';
-    return <Badge variant={variant} className="capitalize text-xs">{label}</Badge>;
-  };
+  const inspectorEl = hasSelection && selectedId ? (
+    <InspectorPanel
+      onClose={() => selectPerson(null)}
+      onExpand={() => navigate(`/admin/persons/${selectedId}`)}
+    >
+      <PersonInspectorContent
+        personId={selectedId}
+        onDeactivated={() => selectPerson(null)}
+      />
+    </InspectorPanel>
+  ) : null;
 
   return (
-    <SettingsPageShell width="xwide">
-      <SettingsPageHeader
-        title="Persons"
-        description="Employee, contractor, and vendor contact records. Invite a person to the platform from here to create a linked user account."
-        actions={
-          <Button className="gap-1.5" onClick={openCreate}>
-            <Plus className="size-4" /> Add person
-          </Button>
+    <>
+      <TableInspectorLayout
+        header={
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b px-6 py-4">
+            <div className="min-w-0">
+              <h1 className="text-lg font-semibold">Persons</h1>
+              <p className="text-xs text-muted-foreground max-w-2xl">
+                Employee, contractor, and vendor contact records. Click a row to inspect; manage location
+                grants and access on the detail page.
+              </p>
+            </div>
+            <Button className="gap-1.5 shrink-0" onClick={openCreate}>
+              <Plus className="size-4" /> Add person
+            </Button>
+          </div>
         }
+        toolbar={
+          <div className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
+            <div className="relative w-full max-w-sm">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, email, or phone…"
+                className="h-8 pl-8"
+              />
+            </div>
+            <Tabs value={typeFilter} onValueChange={setTypeFilter}>
+              <TabsList>
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="employee">Employees</TabsTrigger>
+                <TabsTrigger value="contractor">Contractors</TabsTrigger>
+                <TabsTrigger value="vendor_contact">Vendors</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+              {filteredPersons.length} {filteredPersons.length === 1 ? 'person' : 'persons'}
+            </span>
+          </div>
+        }
+        list={tableEl}
+        inspector={inspectorEl}
       />
 
+      {/* Add person dialog. Editing happens inline via the inspector / detail page. */}
       <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
         <DialogContent className="sm:max-w-[540px]">
-            <DialogHeader>
-              <DialogTitle>{editId ? 'Edit' : 'Add'} Person</DialogTitle>
-              <DialogDescription>Manage employee, contractor, and vendor contact records.</DialogDescription>
-            </DialogHeader>
-            <ScrollArea className="max-h-[70vh] pr-3">
+          <DialogHeader>
+            <DialogTitle>Add Person</DialogTitle>
+            <DialogDescription>Manage employee, contractor, and vendor contact records.</DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[70vh] pr-3">
             <FieldGroup>
               <div className="grid grid-cols-2 gap-4">
                 <Field>
@@ -333,7 +402,6 @@ export function PersonsPage() {
                 <PersonPicker
                   value={managerId}
                   onChange={setManagerId}
-                  excludeId={editId}
                   placeholder="Select manager..."
                 />
               </Field>
@@ -353,102 +421,200 @@ export function PersonsPage() {
                   The portal defaults to this location for submissions. Only sites and buildings are allowed; floor/room-level defaults aren't supported.
                 </p>
               </Field>
-
-              {editId && (
-                <>
-                  <FieldSeparator />
-                  <PersonLocationGrantsPanel personId={editId} />
-                </>
-              )}
             </FieldGroup>
-            </ScrollArea>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button onClick={handleSave} disabled={!firstName.trim() || !lastName.trim()}>
-                {editId ? 'Save' : 'Create'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleCreate} disabled={!firstName.trim() || !lastName.trim()}>
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
       </Dialog>
+    </>
+  );
+}
 
-      <Tabs value={typeFilter} onValueChange={setTypeFilter} className="mb-2">
-        <TabsList>
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="employee">Employees</TabsTrigger>
-          <TabsTrigger value="contractor">Contractors</TabsTrigger>
-          <TabsTrigger value="vendor_contact">Vendors</TabsTrigger>
-        </TabsList>
-      </Tabs>
+function PersonsTable({
+  persons,
+  loading,
+  isEmpty,
+  selectedId,
+  onSelect,
+  onAdd,
+  onInvite,
+  hasSelection,
+}: {
+  persons: Person[];
+  loading: boolean;
+  isEmpty: boolean;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  onInvite: (p: Person) => void;
+  hasSelection: boolean;
+}) {
+  if (loading) {
+    return <div className="px-6 py-6 text-sm text-muted-foreground">Loading…</div>;
+  }
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Name</TableHead>
-            <TableHead className="w-[200px]">Email</TableHead>
-            <TableHead className="w-[130px]">Phone</TableHead>
-            <TableHead className="w-[120px]">Type</TableHead>
-            <TableHead className="w-[200px]">Organisation</TableHead>
-            <TableHead className="w-[160px]">Platform access</TableHead>
-            <TableHead className="w-[60px]" />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {loading && <TableLoading cols={7} />}
-          {!loading && (!data || data.length === 0) && <TableEmpty cols={7} message="No persons found." />}
-          {(data ?? []).map((person) => {
-            const orgNode = getPrimaryOrgNode(person);
-            const linkedUser = getLinkedUser(person);
-            return (
-              <TableRow key={person.id}>
-                <TableCell className="font-medium">
-                  <Link to={`/admin/persons/${person.id}`} className="hover:underline">
+  if (isEmpty) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <Users className="size-10 text-muted-foreground" />
+        <div className="text-sm font-medium">No persons yet</div>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Add a person to start building your directory. You can invite them to the platform once they
+          have an email on file.
+        </p>
+        <Button className="gap-1.5" onClick={onAdd}>
+          <Plus className="size-4" />
+          Add person
+        </Button>
+      </div>
+    );
+  }
+
+  if (persons.length === 0) {
+    return (
+      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+        No persons match the current filters.
+      </div>
+    );
+  }
+
+  const getTypeBadge = (t: string) => {
+    const label = personTypes.find((x) => x.value === t)?.label ?? t;
+    const variant = typeColors[t] ?? 'outline';
+    return <Badge variant={variant} className="capitalize text-xs">{label}</Badge>;
+  };
+
+  return (
+    <Table containerClassName="overflow-visible">
+      <TableHeader className="bg-muted/30 sticky top-0 z-10 backdrop-blur-sm">
+        <TableRow>
+          <TableHead className="px-6">Name</TableHead>
+          {!hasSelection && <TableHead className="w-[220px]">Email</TableHead>}
+          {!hasSelection && <TableHead className="w-[140px]">Phone</TableHead>}
+          <TableHead className="w-[140px]">Type</TableHead>
+          {!hasSelection && <TableHead className="w-[200px]">Organisation</TableHead>}
+          <TableHead className="w-[160px]">Platform access</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {persons.map((person) => {
+          const orgNode = getPrimaryOrgNode(person);
+          const linkedUser = getLinkedUser(person);
+          const selected = selectedId === person.id;
+          return (
+            <TableRow
+              key={person.id}
+              data-selected={selected ? 'true' : undefined}
+              onClick={() => onSelect(person.id)}
+              className={cn(
+                'cursor-pointer transition-colors',
+                selected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-muted/40',
+              )}
+            >
+              <TableCell
+                className={cn(
+                  'font-medium px-6',
+                  selected && 'border-l-2 border-l-primary pl-[22px]',
+                )}
+              >
+                <div className="min-w-0">
+                  <div className="truncate">
                     {person.first_name} {person.last_name}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-muted-foreground text-sm">{person.email ?? '---'}</TableCell>
-                <TableCell className="text-muted-foreground text-sm">{person.phone ?? '---'}</TableCell>
-                <TableCell>{getTypeBadge(person.type)}</TableCell>
-                <TableCell className="text-muted-foreground text-sm">{orgNode?.name ?? '---'}</TableCell>
-                <TableCell>
-                  {linkedUser ? (
-                    <a
-                      href={`/admin/users/${linkedUser.id}`}
-                      className="text-xs text-primary hover:underline inline-flex items-center gap-1"
-                    >
-                      <Badge
-                        variant={linkedUser.status === 'active' ? 'default' : 'secondary'}
-                        className="text-[10px] capitalize"
-                      >
-                        {linkedUser.status}
-                      </Badge>
-                      View user
-                    </a>
-                  ) : person.email ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() => handleInvite(person)}
-                    >
-                      <UserPlus className="h-3 w-3" />
-                      Invite
-                    </Button>
-                  ) : (
-                    <span className="text-xs text-muted-foreground" title="Add an email first">
-                      No email
-                    </span>
+                  </div>
+                  {hasSelection && (person.email || person.phone) && (
+                    <div className="text-xs text-muted-foreground truncate mt-0.5">
+                      {person.email ?? person.phone}
+                    </div>
                   )}
-                </TableCell>
-                <TableCell>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(person)}>
-                    <Pencil className="h-4 w-4" />
+                </div>
+              </TableCell>
+              {!hasSelection && (
+                <TableCell className="text-muted-foreground text-sm">{person.email ?? '—'}</TableCell>
+              )}
+              {!hasSelection && (
+                <TableCell className="text-muted-foreground text-sm">{person.phone ?? '—'}</TableCell>
+              )}
+              <TableCell>{getTypeBadge(person.type)}</TableCell>
+              {!hasSelection && (
+                <TableCell className="text-muted-foreground text-sm">{orgNode?.name ?? '—'}</TableCell>
+              )}
+              <TableCell onClick={(e) => e.stopPropagation()}>
+                {linkedUser ? (
+                  <a
+                    href={`/admin/users/${linkedUser.id}`}
+                    className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  >
+                    <Badge
+                      variant={linkedUser.status === 'active' ? 'default' : 'secondary'}
+                      className="text-[10px] capitalize"
+                    >
+                      {linkedUser.status}
+                    </Badge>
+                    View user
+                  </a>
+                ) : person.email ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => onInvite(person)}
+                  >
+                    <UserPlus className="h-3 w-3" />
+                    Invite
                   </Button>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </SettingsPageShell>
+                ) : (
+                  <span className="text-xs text-muted-foreground" title="Add an email first">
+                    No email
+                  </span>
+                )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+/**
+ * Body of the inspector: identity heading + PersonDetailBody sections. Chrome
+ * (close, expand, panel sizing, scroll wrapper) is provided by InspectorPanel.
+ */
+function PersonInspectorContent({
+  personId,
+  onDeactivated,
+}: {
+  personId: string;
+  onDeactivated: () => void;
+}) {
+  const { data: person } = usePerson(personId);
+
+  return (
+    <div className="flex flex-col gap-8 px-6 pt-6 pb-10">
+      {person && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="text-2xl font-semibold tracking-tight truncate">
+              {personHeadline(person)}
+            </h2>
+            <Badge
+              variant={person.active ? 'default' : 'outline'}
+              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5"
+            >
+              {person.active ? 'Active' : 'Inactive'}
+            </Badge>
+          </div>
+          {person.email && (
+            <p className="text-sm text-muted-foreground truncate">{person.email}</p>
+          )}
+        </div>
+      )}
+      <PersonDetailBody personId={personId} onDeactivated={onDeactivated} />
+    </div>
   );
 }

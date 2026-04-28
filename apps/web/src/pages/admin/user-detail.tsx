@@ -178,7 +178,7 @@ export function UserDetailPage() {
         actions={
           user.person ? (
             <Link
-              to={`/admin/persons?highlight=${user.person.id}`}
+              to={`/admin/persons?p=${user.person.id}`}
               className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
             >
               View person

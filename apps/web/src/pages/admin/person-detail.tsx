@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
-import { usePerson, useUpdatePerson, personFullName } from '@/api/persons';
+import { usePerson, useUpdatePerson, personFullName, type Person } from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 
@@ -37,12 +37,25 @@ const PERSON_TYPES: Array<{ value: string; label: string }> = [
   { value: 'temporary_worker', label: 'Temporary worker' },
 ];
 
-export function PersonDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const { data: person, isLoading } = usePerson(id);
+export function personHeadline(person: Pick<Person, 'first_name' | 'last_name' | 'full_name' | 'email'>): string {
+  return personFullName(person) || person.email || 'Unnamed person';
+}
+
+/**
+ * Body sections for the person detail view. Shared by the dedicated route
+ * (PersonDetailPage) and the inspector panel on /admin/persons. Renders
+ * Identity rows + Location grants + Danger zone — no shell or header chrome.
+ */
+export function PersonDetailBody({
+  personId,
+  onDeactivated,
+}: {
+  personId: string;
+  onDeactivated?: () => void;
+}) {
+  const { data: person, isLoading } = usePerson(personId);
   const { data: costCenters } = useCostCenters({ active: true });
-  const update = useUpdatePerson(id);
+  const update = useUpdatePerson(personId);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -55,7 +68,7 @@ export function PersonDetailPage() {
 
   // Hydrate local state from server response. Subsequent edits go through
   // useDebouncedSave; we only sync from server on first load + id change.
-  const personId = person?.id;
+  const loadedId = person?.id;
   useEffect(() => {
     if (!person) return;
     setFirstName(person.first_name ?? '');
@@ -65,7 +78,7 @@ export function PersonDetailPage() {
     setCostCenter(person.cost_center ?? '');
     setType((person.type as string) ?? 'employee');
     setActive(person.active ?? true);
-  }, [personId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loadedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Surface PATCH failures as toasts so silent save errors stop being silent.
   useEffect(() => {
@@ -91,50 +104,17 @@ export function PersonDetailPage() {
     update.mutate({ phone: v || null });
   });
 
-  const headline = useMemo(() => {
-    if (!person) return 'Loading…';
-    return personFullName(person) || person.email || 'Unnamed person';
-  }, [person]);
-
-  if (!id) return null;
-
   if (isLoading) {
-    return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader
-          backTo="/admin/persons"
-          title="Loading…"
-          description="Fetching person details"
-        />
-      </SettingsPageShell>
-    );
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+  if (!person) {
+    return <p className="text-sm text-muted-foreground">Person not found.</p>;
   }
 
-  if (!person) {
-    return (
-      <SettingsPageShell width="xwide">
-        <SettingsPageHeader
-          backTo="/admin/persons"
-          title="Not found"
-          description={`No person with id ${id} in this tenant.`}
-        />
-      </SettingsPageShell>
-    );
-  }
+  const headline = personHeadline(person);
 
   return (
-    <SettingsPageShell width="xwide">
-      <SettingsPageHeader
-        backTo="/admin/persons"
-        title={headline}
-        description={person.email ?? 'Person profile and access scope.'}
-        actions={
-          <Badge variant={active ? 'default' : 'outline'} className="text-[10px] uppercase tracking-wider">
-            {active ? 'Active' : 'Inactive'}
-          </Badge>
-        }
-      />
-
+    <>
       <SettingsGroup title="Identity" description="Display name and contact details.">
         <SettingsRow label="First name">
           <SettingsRowValue>
@@ -292,8 +272,67 @@ export function PersonDetailPage() {
           setActive(false);
           setConfirmDeactivate(false);
           toastRemoved(headline, { verb: 'deactivated' });
-          navigate('/admin/persons');
+          onDeactivated?.();
         }}
+      />
+    </>
+  );
+}
+
+export function PersonDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { data: person, isLoading } = usePerson(id);
+
+  const headline = useMemo(() => {
+    if (!person) return 'Loading…';
+    return personHeadline(person);
+  }, [person]);
+
+  if (!id) return null;
+
+  if (isLoading) {
+    return (
+      <SettingsPageShell width="xwide">
+        <SettingsPageHeader
+          backTo="/admin/persons"
+          title="Loading…"
+          description="Fetching person details"
+        />
+      </SettingsPageShell>
+    );
+  }
+
+  if (!person) {
+    return (
+      <SettingsPageShell width="xwide">
+        <SettingsPageHeader
+          backTo="/admin/persons"
+          title="Not found"
+          description={`No person with id ${id} in this tenant.`}
+        />
+      </SettingsPageShell>
+    );
+  }
+
+  return (
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        backTo="/admin/persons"
+        title={headline}
+        description={person.email ?? 'Person profile and access scope.'}
+        actions={
+          <Badge
+            variant={person.active ? 'default' : 'outline'}
+            className="text-[10px] uppercase tracking-wider"
+          >
+            {person.active ? 'Active' : 'Inactive'}
+          </Badge>
+        }
+      />
+      <PersonDetailBody
+        personId={id}
+        onDeactivated={() => navigate('/admin/persons')}
       />
     </SettingsPageShell>
   );
