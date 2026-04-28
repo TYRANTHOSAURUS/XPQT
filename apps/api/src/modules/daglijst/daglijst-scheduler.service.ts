@@ -341,8 +341,10 @@ export class DaglijstSchedulerService {
     try {
       const outcome = await this.daglijst.send({ tenantId, daglijstId: daglijstId! });
       if (outcome.status === 'sent') return 'sent';
-      // already_sent or skipped_in_flight — we didn't actually send mail
-      // this tick. Don't double-count as success.
+      // 'already_sent', 'skipped_in_flight', or 'lease_revoked' — none of
+      // these represent a successful send dispatched + persisted by THIS
+      // worker. Count as 'skipped' so tick metrics don't double-count one
+      // logical delivery across racing workers.
       return 'skipped';
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

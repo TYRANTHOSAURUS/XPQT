@@ -56,18 +56,28 @@ export interface SendDaglijstInput {
   } | null;
   language: string;            // 'nl' | 'fr' | 'en' | 'de'
   /**
-   * Per-attempt correlation id for provider-side idempotency. Sprint 4
-   * implementations pass this as Postmark MessageStream / Resend
-   * Idempotency-Key so network retries don't create duplicate sends.
+   * Stable correlation id for provider-side idempotency.
+   *
+   * Sprint 4 implementations MUST pass this as Postmark MessageStream /
+   * Resend / SES Idempotency-Key so:
+   *  1. Network retries to the provider don't create duplicate sends
+   *     (provider returns the cached success).
+   *  2. Cross-worker race retries (worker A's lease revoked by sweeper,
+   *     worker B retries the same logical delivery) get deduped — same
+   *     correlationId returns the cached receipt without dispatching
+   *     a second email to the vendor.
+   *
+   * DaglijstService always supplies one. Shape:
+   *   - natural send:  `daglijst:<daglijst_id>:v<n>`        (stable)
+   *   - force resend:  `daglijst:<daglijst_id>:v<n>:force:<nonce>`
+   *
+   * The stable shape is REQUIRED for the cross-worker dedupe to work —
+   * codex round-3 review caught a regression where a per-attempt nonce
+   * defeated this guarantee.
    *
    * Optional at the interface level so non-Sprint-2 callers and external
-   * mailer implementations don't need to retrofit. The DaglijstService
-   * always supplies a correlationId in its CAS-acquired send path with
-   * a per-attempt nonce so each retry gets a unique key (codex round-2
-   * fix — reusing the same `:first` suffix on retries was suppressing
-   * legitimate retries via the provider's idempotency cache).
-   *
-   * Recommended shape: `daglijst:<daglijst_id>:v<n>:<first|retry>:<nonce>`.
+   * mailer implementations don't need to retrofit, but Sprint 4 mailers
+   * SHOULD treat it as required.
    */
   correlationId?: string;
 }

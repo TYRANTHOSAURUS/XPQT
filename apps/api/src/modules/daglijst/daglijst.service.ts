@@ -694,7 +694,9 @@ export class DaglijstService {
     // we don't claim 'sent' state — another worker is the authority.
     // The provider's idempotency cache already deduped the actual mail
     // dispatch (stable correlationId).
-    const finalRow = await this.db.tx(async (client) => {
+    let finalRow: VendorDailyListRow;
+    try {
+      finalRow = await this.db.tx(async (client) => {
       const updated = await client.query<VendorDailyListRow>(
         `update vendor_daily_lists
             set sent_at              = now(),
@@ -718,23 +720,18 @@ export class DaglijstService {
         // sweeper set it to. Don't claim 'sent', don't lock lines, don't
         // emit Sent audit. Caller (scheduler) will re-poll and either
         // see 'sent' (winner committed) or 'failed' (winner is retrying).
+        //
+        // Codex round-3 follow-up: throw a typed sentinel so the outer
+        // catch translates it into SendOutcome { status: 'lease_revoked' }
+        // and emits the SendingReclaimed audit OUTSIDE the rolled-back
+        // tx (audits inside this tx would be discarded when the tx
+        // aborts on the throw).
         this.log.warn(
           `daglijst ${daglijstId} success update skipped — lease revoked; ` +
           `provider message_id=${sendResult.messageId} (mail already dispatched, ` +
           `state managed by newer worker)`,
         );
-        await this.auditOutbox.emitTx(client, {
-          tenantId,
-          eventType: DaglijstEventType.SendingReclaimed,
-          entityType: 'vendor_daily_lists',
-          entityId: daglijstId,
-          details: {
-            outcome: 'lease_revoked_after_mail_dispatch',
-            provider_message_id: sendResult.messageId,
-            recipient: dl.recipient_email,
-          },
-        });
-        return dl;
+        throw new LeaseRevokedAfterDispatchError(daglijstId, sendResult.messageId);
       }
 
       // Lock-on-send (deferred from record() per codex Sprint 1 fix).
@@ -764,8 +761,28 @@ export class DaglijstService {
         },
       });
 
-      return updated.rows[0] ?? dl;
-    });
+        return updated.rows[0] ?? dl;
+      });
+    } catch (err) {
+      if (err instanceof LeaseRevokedAfterDispatchError) {
+        // Emit the SendingReclaimed audit OUTSIDE the rolled-back tx so
+        // it actually persists. Use non-tx emit() — the row state was
+        // never written, so there's nothing to atomically pair this with.
+        await this.auditOutbox.emit({
+          tenantId,
+          eventType: DaglijstEventType.SendingReclaimed,
+          entityType: 'vendor_daily_lists',
+          entityId: daglijstId,
+          details: {
+            outcome: 'lease_revoked_after_mail_dispatch',
+            provider_message_id: err.providerMessageId,
+            recipient: dl.recipient_email,
+          },
+        });
+        return { status: 'lease_revoked', row: dl, providerMessageId: err.providerMessageId };
+      }
+      throw err;
+    }
 
     return { status: 'sent', row: finalRow };
   }
@@ -813,6 +830,23 @@ export class ListCancelledError extends Error {
   }
 }
 
+/**
+ * Internal sentinel — thrown from inside the success-path tx closure when
+ * the success UPDATE matches 0 rows (lease revoked while mailer was
+ * in-flight). Caught one stack frame up to translate into a typed
+ * SendOutcome { status: 'lease_revoked', ... } without rolling back the
+ * tx artificially. Not exported; not part of the public surface.
+ */
+class LeaseRevokedAfterDispatchError extends Error {
+  constructor(
+    public readonly daglijstId: string,
+    public readonly providerMessageId: string,
+  ) {
+    super(`Daglijst ${daglijstId} lease revoked after mail dispatch (provider msg=${providerMessageId})`);
+    this.name = 'LeaseRevokedAfterDispatchError';
+  }
+}
+
 export interface RenderAndUploadArgs {
   tenantId: string;
   daglijstId: string;
@@ -847,7 +881,18 @@ export interface SendArgs {
 export type SendOutcome =
   | { status: 'sent';              row: VendorDailyListRow }
   | { status: 'already_sent';      row: VendorDailyListRow }
-  | { status: 'skipped_in_flight'; row: VendorDailyListRow };
+  | { status: 'skipped_in_flight'; row: VendorDailyListRow }
+  /**
+   * Mail dispatched, but our state UPDATE was lease-revoked between the
+   * mailer call and the row write. The provider's idempotency cache (or
+   * the newer worker, if mail wasn't actually sent) is the authority.
+   * Scheduler counts this as 'skipped' not 'sent' so tick metrics don't
+   * double-count a single logical delivery.
+   *
+   * `providerMessageId` is the receipt the lease-stale worker got back —
+   * surfaced in audit so ops can correlate with the newer worker's row.
+   */
+  | { status: 'lease_revoked';     row: VendorDailyListRow; providerMessageId: string };
 
 // =====================================================================
 // Helpers

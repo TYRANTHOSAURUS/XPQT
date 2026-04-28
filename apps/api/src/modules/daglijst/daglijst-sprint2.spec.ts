@@ -389,29 +389,23 @@ describe('DaglijstService.send', () => {
     );
   });
 
-  it('lease-revoked-after-mail-dispatch: does NOT mark sent, audits SendingReclaimed', async () => {
-    // Codex round-3 fix: simulate the cross-worker race. The success
-    // UPDATE matches 0 rows (lease was revoked while mailer was in
-    // flight). We must:
+  it('lease-revoked-after-mail-dispatch: returns status=lease_revoked, audits SendingReclaimed', async () => {
+    // Codex round-3 follow-up: simulate the cross-worker race. The
+    // success UPDATE matches 0 rows (lease was revoked while mailer was
+    // in flight). We must:
     //   - NOT claim 'sent' status (newer worker is the authority)
     //   - NOT lock lines
     //   - emit a SendingReclaimed audit with outcome=lease_revoked_after_mail_dispatch
-    //   - return SendOutcome { status: 'sent', row: <unchanged> } per the
-    //     caller contract (mail DID dispatch — provider receipt is real).
+    //   - return SendOutcome { status: 'lease_revoked', ..., providerMessageId }
+    //     so the scheduler counts as 'skipped' not 'sent' (no double-count).
     const db = makeFakeDb();
     // Override the txClient so the success UPDATE returns 0 rows (fence
-    // failed). The audit emit + line lock should NOT run.
+    // failed). The throw-then-rollback path must trigger.
     db.txClient.query.mockImplementation(async (sql: string, params?: unknown[]) => {
       db.captured.push({ sql, params, tx: true });
       if (sql.includes('update vendor_daily_lists') && sql.includes("'sent'")) {
         return { rows: [], rowCount: 0 };           // lease revoked
       }
-      if (sql.includes('update vendor_daily_lists')) {
-        // any other UPDATE — keep generic shape
-        return { rows: [], rowCount: 0 };
-      }
-      // audit_outbox INSERT path stays open so the SendingReclaimed
-      // audit can be emitted.
       return { rows: [], rowCount: 0 };
     });
     const supabase = makeFakeSupabase();
@@ -426,17 +420,18 @@ describe('DaglijstService.send', () => {
     );
 
     const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
-    // Mail DID dispatch (mailer was called).
-    expect(mailer.calls).toHaveLength(1);
-    // We don't claim 'sent' state — return the unchanged row.
-    expect(outcome.status).toBe('sent');
-    expect(outcome.row.email_status).toBe('never_sent');     // base row untouched
+    expect(mailer.calls).toHaveLength(1);                    // mail DID dispatch
+    expect(outcome.status).toBe('lease_revoked');
+    if (outcome.status === 'lease_revoked') {
+      expect(outcome.providerMessageId).toBe('msg-test');
+    }
     // Line lock UPDATE must NOT run when the lease is revoked.
     const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
     expect(txSqls.some((s) => s.includes('update order_line_items'))).toBe(false);
-    // SendingReclaimed audit emitted with the lease-revoked outcome marker.
+    // SendingReclaimed audit emitted OUTSIDE the rolled-back tx (non-tx capture).
     const reclaimAudit = db.captured.find((c) =>
-      c.sql.includes('insert into audit_outbox')
+      !c.tx
+      && c.sql.includes('insert into audit_outbox')
       && c.params?.[1] === 'daglijst.sending_reclaimed',
     );
     expect(reclaimAudit).toBeDefined();
