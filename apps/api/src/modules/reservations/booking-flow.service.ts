@@ -9,6 +9,7 @@ import { ConflictGuardService } from './conflict-guard.service';
 import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
+import { ListBookableRoomsService } from './list-bookable-rooms.service';
 import type {
   ActorContext, CreateReservationInput, PolicySnapshot, RecurrenceScope, Reservation,
 } from './dto/types';
@@ -42,6 +43,11 @@ export class BookingFlowService {
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
     @Optional() private readonly bundle?: BundleService,
+    /** Used on 409 conflict to suggest 3 alternative rooms at the same
+     *  time/criteria so the user can one-click rebook instead of redoing
+     *  the whole reservation. Optional to keep specs that mock booking-flow
+     *  without needing the full picker pipeline. */
+    @Optional() private readonly picker?: ListBookableRoomsService,
   ) {}
 
   /**
@@ -170,16 +176,42 @@ export class BookingFlowService {
 
     if (error) {
       if (this.conflict.isExclusionViolation(error)) {
-        // Look up the conflicting rows + (TODO) ask picker for alternatives.
+        // Look up the conflicting rows + ask the picker for alternative
+        // rooms at the same time so the frontend can render a one-click
+        // rebook list. Without this, the user sees a generic "couldn't
+        // book" toast and has to redo the whole reservation by hand —
+        // exactly the bug the user reported.
         const conflicts = await this.conflict.preCheck({
           space_id: input.space_id,
           effective_start_at: this.subtractMinutes(input.start_at, buffers.setup_buffer_minutes),
           effective_end_at: this.addMinutes(input.end_at, buffers.teardown_buffer_minutes),
         });
+        let alternatives: Array<{ space_id: string; name: string; capacity: number | null }> = [];
+        if (this.picker) {
+          try {
+            const result = await this.picker.list(
+              {
+                start_at: input.start_at,
+                end_at: input.end_at,
+                attendee_count: input.attendee_count ?? 1,
+                requester_id: input.requester_person_id,
+                limit: 4,
+              },
+              actor,
+            );
+            alternatives = result.rooms
+              .filter((r) => r.space_id !== input.space_id)
+              .slice(0, 3)
+              .map((r) => ({ space_id: r.space_id, name: r.name, capacity: r.capacity }));
+          } catch (e) {
+            this.log.warn(`alternatives lookup failed: ${(e as Error).message}`);
+          }
+        }
         throw new ConflictException({
           code: 'reservation_slot_conflict',
           message: 'Just booked — pick another slot.',
           conflicts: conflicts.map((c) => ({ id: c.id, start_at: c.start_at, end_at: c.end_at })),
+          alternatives,
         });
       }
       this.log.error(`reservation insert failed: ${error.message}`);

@@ -96,17 +96,43 @@ export class ListBookableRoomsService {
       this.loadParentChainsBulk(tenantId, candidateIds),
     ]);
 
-    const conflictBySpace = new Map<string, Array<{ start_at: string; end_at: string; status: string }>>();
+    const conflictBySpace = new Map<string, Array<{ start_at: string; end_at: string; effective_start_at: string; effective_end_at: string; status: string }>>();
     for (const c of conflicts) {
       const arr = conflictBySpace.get(c.space_id) ?? [];
-      arr.push({ start_at: c.start_at, end_at: c.end_at, status: c.status });
+      arr.push({
+        start_at: c.start_at,
+        end_at: c.end_at,
+        effective_start_at: c.effective_start_at,
+        effective_end_at: c.effective_end_at,
+        status: c.status,
+      });
       conflictBySpace.set(c.space_id, arr);
     }
 
     // 5. Score + assemble
+    const requestedStartMs = new Date(input.start_at).getTime();
+    const requestedEndMs = new Date(input.end_at).getTime();
     const ranked: RankedRoom[] = [];
     for (const space of candidates) {
-      const overlap = conflictBySpace.get(space.id) ?? [];
+      // Per-space conflict filter using THIS room's setup/teardown buffer.
+      // The wider conflict query above pulled potential conflicts within
+      // ±60 min; here we apply the actual room's buffer to determine which
+      // are real conflicts vs. neighbours that merely fall in the buffer
+      // window (no overlap once we apply the room's actual buffer).
+      const setupMs = (space.setup_buffer_minutes ?? 0) * 60_000;
+      const teardownMs = (space.teardown_buffer_minutes ?? 0) * 60_000;
+      const effectiveStartMs = requestedStartMs - setupMs;
+      const effectiveEndMs = requestedEndMs + teardownMs;
+      const candidateConflicts = (conflictBySpace.get(space.id) ?? []).filter((c) => {
+        const cStart = new Date(c.effective_start_at).getTime();
+        const cEnd = new Date(c.effective_end_at).getTime();
+        return cStart < effectiveEndMs && cEnd > effectiveStartMs;
+      });
+      const overlap = candidateConflicts.map(({ start_at, end_at, status }) => ({
+        start_at,
+        end_at,
+        status,
+      }));
       const isAvailable = overlap.length === 0;
       const ruleOutcome = ruleOutcomes.get(space.id);
       const outcome: RuleOutcome = ruleOutcome
@@ -363,6 +389,8 @@ export class ListBookableRoomsService {
     parent_id: string | null;
     default_search_keywords: string[] | null;
     attributes: Record<string, unknown> | null;
+    setup_buffer_minutes: number | null;
+    teardown_buffer_minutes: number | null;
   }>> {
     // Apply the most specific location filter first: floor > building > site.
     // Without this every picker call ignored the toolbar's building / floor
@@ -387,7 +415,7 @@ export class ListBookableRoomsService {
 
     let q = this.supabase.admin
       .from('spaces')
-      .select('id, name, type, capacity, min_attendees, amenities, parent_id, default_search_keywords, attributes')
+      .select('id, name, type, capacity, min_attendees, amenities, parent_id, default_search_keywords, attributes, setup_buffer_minutes, teardown_buffer_minutes')
       .eq('tenant_id', tenantId)
       .eq('reservable', true)
       .eq('active', true)
@@ -415,15 +443,26 @@ export class ListBookableRoomsService {
     spaceIds: string[],
     startAt: string,
     endAt: string,
-  ): Promise<Array<{ space_id: string; start_at: string; end_at: string; status: string }>> {
+  ): Promise<Array<{ space_id: string; start_at: string; end_at: string; effective_start_at: string; effective_end_at: string; status: string }>> {
+    // Widen the conflict window by 60 min on each side. Why: the candidate
+    // room's setup/teardown buffer expands the EFFECTIVE range we'd be
+    // booking. The conflict guard at submit time rejects on the buffered
+    // range, so the picker has to use the same logic — otherwise it
+    // returns a "best match" room that the conflict guard then rejects
+    // (the user-reported 'best match was a booked room' bug). 60 min is
+    // a generous cap that covers any sane setup/teardown configuration
+    // without bloating the result set; per-room filtering happens below.
+    const BUFFER_CAP_MS = 60 * 60_000;
+    const widenedStart = new Date(new Date(startAt).getTime() - BUFFER_CAP_MS).toISOString();
+    const widenedEnd = new Date(new Date(endAt).getTime() + BUFFER_CAP_MS).toISOString();
     const { data, error } = await this.supabase.admin
       .from('reservations')
-      .select('space_id, start_at, end_at, status')
+      .select('space_id, start_at, end_at, effective_start_at, effective_end_at, status')
       .eq('tenant_id', tenantId)
       .in('space_id', spaceIds)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
-      .lt('effective_start_at', endAt)
-      .gt('effective_end_at', startAt);
+      .lt('effective_start_at', widenedEnd)
+      .gt('effective_end_at', widenedStart);
     if (error) {
       this.log.warn(`loadConflicts error: ${error.message}`);
       return [];
