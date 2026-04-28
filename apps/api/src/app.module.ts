@@ -42,6 +42,7 @@ import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templat
 import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
 import { DaglijstModule } from './modules/daglijst/daglijst.module';
+import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
 
 @Module({
   imports: [
@@ -87,6 +88,7 @@ import { DaglijstModule } from './modules/daglijst/daglijst.module';
     CostCentersModule,
     PrivacyComplianceModule,
     DaglijstModule,
+    VendorPortalModule,
   ],
   controllers: [HealthController],
   providers: [
