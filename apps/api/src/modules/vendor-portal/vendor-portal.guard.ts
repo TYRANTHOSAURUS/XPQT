@@ -2,6 +2,7 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -23,6 +24,8 @@ export class VendorPortalGuard implements CanActivate {
   /** Cookie name used by /vendor/auth/redeem and read here. */
   static readonly COOKIE_NAME = 'prequest_vendor_session';
 
+  private readonly log = new Logger(VendorPortalGuard.name);
+
   constructor(private readonly auth: VendorAuthService) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -38,8 +41,14 @@ export class VendorPortalGuard implements CanActivate {
     }
 
     req.vendorSession = session;
-    // Sliding-TTL refresh — fire-and-forget, never block the request.
-    void this.auth.touch(token);
+    // Sliding-TTL refresh — fire-and-forget, never block the request. The
+    // .catch() is non-negotiable: an unhandled rejection from this path
+    // would terminate the Node process under modern defaults.
+    void this.auth.touch(token).catch((err: unknown) => {
+      this.log.warn(
+        `vendor session touch failed (silent): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     return true;
   }
 }

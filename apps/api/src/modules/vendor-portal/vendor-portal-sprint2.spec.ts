@@ -130,14 +130,16 @@ describe('VendorOrderService.listForVendor', () => {
 });
 
 describe('VendorOrderService.getDetailForVendor', () => {
-  it('selects requester FIRST NAME ONLY; never last name / email / phone', async () => {
+  it('selects requester FIRST NAME ONLY + audit_subject_person_id (internal); never last name / email / phone', async () => {
     const db = makeFakeDb();
+    const requesterPersonId = 'fffffff1-ffff-4fff-8fff-ffffffffffff';
     db.queryOne = jest.fn(async () => ({
       id: ORDER_ID,
       external_ref: ORDER_ID,
       delivery_at: '2026-04-30T11:30:00+02:00',
       headcount: 12,
       requester_first_name: 'Marleen',
+      audit_subject_person_id: requesterPersonId,
       room_name: 'Boardroom 4A',
       floor_label: '4th floor',
       building_name: 'HQ Amsterdam',
@@ -149,19 +151,22 @@ describe('VendorOrderService.getDetailForVendor', () => {
     db.queryMany = jest.fn(async () => []);
 
     const svc = new VendorOrderService(db as never);
-    const detail = await svc.getDetailForVendor({ tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID });
+    const result = await svc.getDetailForVendor({ tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID });
 
     const sql = (db.queryOne as jest.Mock).mock.calls[0][0] as string;
     expect(sql).toContain('p.first_name');
+    expect(sql).toContain('ord.requester_person_id'); // pulled internally for audit
     expect(sql).not.toMatch(/p\.last_name|p\.email\b|p\.phone/);
     expect(sql).not.toMatch(/total_estimated_cost/);
 
-    // Detail shape: only the safe fields surface.
-    expect(detail.requester_first_name).toBe('Marleen');
-    expect(detail).not.toHaveProperty('requester_last_name');
-    expect(detail).not.toHaveProperty('requester_email');
-    expect(detail.delivery_location.navigation_hint).toBe('Reception');
-    expect(detail.desk_contact.phone).toBe('+31');
+    // Result wraps the public DTO + the internal audit subject id.
+    expect(result.auditSubjectPersonId).toBe(requesterPersonId);
+    expect(result.detail.requester_first_name).toBe('Marleen');
+    expect(result.detail).not.toHaveProperty('requester_last_name');
+    expect(result.detail).not.toHaveProperty('requester_email');
+    expect(result.detail).not.toHaveProperty('audit_subject_person_id');
+    expect(result.detail.delivery_location.navigation_hint).toBe('Reception');
+    expect(result.detail.desk_contact.phone).toBe('+31');
   });
 
   it('throws 404 (not 403) when the order is not visible to this vendor', async () => {
@@ -178,6 +183,7 @@ describe('VendorOrderService.getDetailForVendor', () => {
     db.queryOne = jest.fn(async () => ({
       id: ORDER_ID, external_ref: ORDER_ID, delivery_at: '2026-04-30',
       headcount: 1, requester_first_name: 'X',
+      audit_subject_person_id: null,
       room_name: 'R', floor_label: 'F', building_name: 'B',
       service_window_start_at: null, service_window_end_at: null,
       policy_snapshot: { internal_pricing: 999, secret_field: 'no-leak' },
@@ -185,7 +191,7 @@ describe('VendorOrderService.getDetailForVendor', () => {
     }));
     db.queryMany = jest.fn(async () => []);
     const svc = new VendorOrderService(db as never);
-    const detail = await svc.getDetailForVendor({ tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID });
+    const { detail } = await svc.getDetailForVendor({ tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID });
 
     expect(detail.desk_contact.phone).toBeNull();
     expect(detail.desk_contact.email).toBeNull();
@@ -193,5 +199,35 @@ describe('VendorOrderService.getDetailForVendor', () => {
     // policy_snapshot internal fields must not leak.
     expect(JSON.stringify(detail)).not.toContain('internal_pricing');
     expect(JSON.stringify(detail)).not.toContain('secret_field');
+  });
+
+  it('list includes tenant_id on EVERY order_line_items lookup (codex fix #3)', async () => {
+    const db = makeFakeDb();
+    db.queryMany = jest.fn(async () => []);
+    const svc = new VendorOrderService(db as never);
+    await svc.listForVendor({
+      tenantId: TENANT, vendorId: VENDOR,
+      fromDate: '2026-04-28', toDate: '2026-05-12',
+    });
+    const sql = (db.queryMany as jest.Mock).mock.calls[0][0] as string;
+    // Every oli lookup must scope by tenant_id = ord.tenant_id.
+    const oliMatches = sql.match(/oli\.tenant_id\s*=\s*ord\.tenant_id/g) ?? [];
+    expect(oliMatches.length).toBeGreaterThanOrEqual(1);
+    // Aggregate via LATERAL, not correlated subqueries (codex fix #5).
+    expect(sql).toContain('cross join lateral');
+  });
+
+  it('list filters statusFilter against the closed enum; unknown values become no-op', async () => {
+    const db = makeFakeDb();
+    db.queryMany = jest.fn(async () => []);
+    const svc = new VendorOrderService(db as never);
+    // Unknown status — should NOT inject $5 / a status predicate.
+    await svc.listForVendor({
+      tenantId: TENANT, vendorId: VENDOR,
+      fromDate: '2026-04-28', toDate: '2026-05-12',
+      statusFilter: 'pwned; drop table orders --',
+    });
+    const params = (db.queryMany as jest.Mock).mock.calls[0][1] as unknown[];
+    expect(params).toHaveLength(4); // no $5 → unknown status was rejected
   });
 });

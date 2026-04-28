@@ -36,6 +36,26 @@ export class VendorOrderService {
   async listForVendor(input: ListInput): Promise<VendorOrderListItem[]> {
     const { tenantId, vendorId, fromDate, toDate, statusFilter } = input;
 
+    // Validate the status filter against the closed enum the LATERAL produces
+    // — anything else returns an empty filter (no leakage of unknown statuses
+    // into the SQL).
+    const VALID_STATUSES = new Set([
+      'requires_phone_followup', 'delivered', 'preparing', 'ordered',
+    ]);
+    const safeStatus = statusFilter && VALID_STATUSES.has(statusFilter)
+      ? statusFilter
+      : null;
+
+    // Aggregate `fulfillment_status` is computed once via LATERAL; the
+    // statusFilter then applies to the SAME aggregate (codex Sprint 2 fix
+    // — the previous version filtered raw line status, which mismatched the
+    // returned aggregate and would mis-route Sprint 3's `received` /
+    // `en_route` flow).
+    //
+    // Every order_line_items correlated lookup adds `oli.tenant_id =
+    // ord.tenant_id` (codex fix — order_line_items has no DB-level
+    // composite FK to orders.tenant_id, so a drifted row could otherwise
+    // satisfy visibility checks across tenants).
     return this.db.queryMany<VendorOrderListItem>(
       `select
          ord.id                                  as id,
@@ -53,41 +73,9 @@ export class VendorOrderService {
            (ord.policy_snapshot->>'service_type')::text,
            'catering'
          )                                       as service_type,
-         /* Aggregate fulfillment status — most-blocking line wins. */
-         (
-           select case
-             when bool_or(oli.requires_phone_followup) then 'requires_phone_followup'
-             when bool_and(oli.fulfillment_status = 'delivered') then 'delivered'
-             when bool_or(oli.fulfillment_status = 'preparing') then 'preparing'
-             else 'ordered'
-           end
-             from order_line_items oli
-            where oli.order_id = ord.id
-              and oli.vendor_id = $2
-              and oli.recurrence_skipped is not true
-         )                                       as fulfillment_status,
-         exists (
-           select 1 from order_line_items oli
-            where oli.order_id = ord.id
-              and oli.vendor_id = $2
-              and oli.requires_phone_followup = true
-              and oli.desk_confirmed_phoned_at is null
-         )                                       as requires_phone_followup,
-         /* lines_summary: human-readable single-line digest (no pricing). */
-         (
-           select string_agg(
-             oli.quantity || '× ' || coalesce(ci.name, 'Item'),
-             ' · '
-             order by oli.id
-           )
-             from order_line_items oli
-             left join catalog_items ci
-               on ci.id = oli.catalog_item_id
-              and ci.tenant_id = ord.tenant_id
-            where oli.order_id = ord.id
-              and oli.vendor_id = $2
-              and oli.recurrence_skipped is not true
-         )                                       as lines_summary
+         agg.fulfillment_status                  as fulfillment_status,
+         agg.requires_phone_followup             as requires_phone_followup,
+         agg.lines_summary                       as lines_summary
        from orders ord
        left join spaces s_room
          on s_room.id = ord.delivery_location_id
@@ -98,26 +86,41 @@ export class VendorOrderService {
        left join spaces s_building
          on s_building.id = s_floor.parent_id
         and s_building.tenant_id = ord.tenant_id
+       cross join lateral (
+         select
+           case
+             when bool_or(oli.requires_phone_followup and oli.desk_confirmed_phoned_at is null)
+                  then 'requires_phone_followup'
+             when bool_and(oli.fulfillment_status = 'delivered') then 'delivered'
+             when bool_or(oli.fulfillment_status = 'preparing') then 'preparing'
+             else 'ordered'
+           end as fulfillment_status,
+           bool_or(oli.requires_phone_followup and oli.desk_confirmed_phoned_at is null)
+                  as requires_phone_followup,
+           string_agg(
+             oli.quantity || '× ' || coalesce(ci.name, 'Item'),
+             ' · '
+             order by oli.id
+           ) as lines_summary,
+           count(*) as line_count
+         from order_line_items oli
+         left join catalog_items ci
+           on ci.id = oli.catalog_item_id
+          and ci.tenant_id = ord.tenant_id
+         where oli.order_id = ord.id
+           and oli.tenant_id = ord.tenant_id
+           and oli.vendor_id = $2
+           and oli.recurrence_skipped is not true
+       ) agg
        where ord.tenant_id = $1
          and ord.delivery_date between $3::date and $4::date
          and ord.status not in ('cancelled')
-         and exists (
-           select 1 from order_line_items oli
-            where oli.order_id = ord.id
-              and oli.vendor_id = $2
-              and oli.recurrence_skipped is not true
-         )
-         ${statusFilter ? `and exists (
-           select 1 from order_line_items oli2
-            where oli2.order_id = ord.id
-              and oli2.vendor_id = $2
-              and oli2.fulfillment_status = $5
-              and oli2.recurrence_skipped is not true
-         )` : ''}
+         and agg.line_count > 0
+         ${safeStatus ? `and agg.fulfillment_status = $5` : ''}
        order by delivery_at asc
        limit 500`,
-      statusFilter
-        ? [tenantId, vendorId, fromDate, toDate, statusFilter]
+      safeStatus
+        ? [tenantId, vendorId, fromDate, toDate, safeStatus]
         : [tenantId, vendorId, fromDate, toDate],
     );
   }
@@ -126,8 +129,13 @@ export class VendorOrderService {
    * Detail projection. Same PII rules. Throws 404 (not 403) when the order
    * isn't visible to this vendor — leaking "exists but you can't see it"
    * is itself information.
+   *
+   * Returns the public DTO **plus** the internal `audit_subject_person_id`
+   * for the access-log writer. The id is NOT exposed in the response shape
+   * — controllers extract it for `personal_data_access_logs` then strip it
+   * before returning the body.
    */
-  async getDetailForVendor(input: DetailInput): Promise<VendorOrderDetail> {
+  async getDetailForVendor(input: DetailInput): Promise<VendorOrderDetailWithAudit> {
     const { tenantId, vendorId, orderId } = input;
 
     const order = await this.db.queryOne<VendorOrderDetailRow>(
@@ -137,8 +145,12 @@ export class VendorOrderService {
          coalesce(ord.requested_for_start_at, ord.delivery_date::timestamptz + ord.delivery_time::time)
                                                  as delivery_at,
          ord.headcount                           as headcount,
-         /* Requester FIRST NAME ONLY. Last name + email + phone never selected. */
+         /* Requester FIRST NAME ONLY for the response. requester_person_id
+            is selected for the access-log writer ONLY (stripped before the
+            controller returns the body). Last name + email + phone never
+            selected. */
          p.first_name                            as requester_first_name,
+         ord.requester_person_id                 as audit_subject_person_id,
          /* Delivery-location object surfaces three labels; no FK ids. */
          s_room.name                             as room_name,
          s_floor.name                            as floor_label,
@@ -168,6 +180,7 @@ export class VendorOrderService {
          and exists (
            select 1 from order_line_items oli
             where oli.order_id = ord.id
+              and oli.tenant_id = ord.tenant_id   -- codex fix: defense-in-depth tenant scope
               and oli.vendor_id = $3
               and oli.recurrence_skipped is not true
          )`,
@@ -201,25 +214,28 @@ export class VendorOrderService {
     );
 
     return {
-      id: order.id,
-      external_ref: order.external_ref,
-      delivery_at: order.delivery_at,
-      headcount: order.headcount,
-      requester_first_name: order.requester_first_name,
-      delivery_location: {
-        room_name: order.room_name,
-        floor_label: order.floor_label,
-        building_name: order.building_name,
-        navigation_hint: pickNavigationHint(order.policy_snapshot),
+      detail: {
+        id: order.id,
+        external_ref: order.external_ref,
+        delivery_at: order.delivery_at,
+        headcount: order.headcount,
+        requester_first_name: order.requester_first_name,
+        delivery_location: {
+          room_name: order.room_name,
+          floor_label: order.floor_label,
+          building_name: order.building_name,
+          navigation_hint: pickNavigationHint(order.policy_snapshot),
+        },
+        service_window_start_at: order.service_window_start_at,
+        service_window_end_at: order.service_window_end_at,
+        lines,
+        desk_contact: pickDeskContact(order.policy_snapshot),
+        policy: {
+          cancellation_cutoff_at: pickPolicyValue(order.policy_snapshot, 'cancellation_cutoff_at'),
+        },
+        tenant_name: order.tenant_name,
       },
-      service_window_start_at: order.service_window_start_at,
-      service_window_end_at: order.service_window_end_at,
-      lines,
-      desk_contact: pickDeskContact(order.policy_snapshot),
-      policy: {
-        cancellation_cutoff_at: pickPolicyValue(order.policy_snapshot, 'cancellation_cutoff_at'),
-      },
-      tenant_name: order.tenant_name,
+      auditSubjectPersonId: order.audit_subject_person_id,
     };
   }
 }
@@ -311,12 +327,24 @@ export interface VendorOrderDetail {
   tenant_name: string | null;
 }
 
+/**
+ * Internal-only return shape from getDetailForVendor: the public DTO + the
+ * audit_subject_person_id needed for `personal_data_access_logs`. The
+ * controller writes the access log then returns ONLY `.detail` to the
+ * vendor — the subject person id is never exposed in the response body.
+ */
+export interface VendorOrderDetailWithAudit {
+  detail: VendorOrderDetail;
+  auditSubjectPersonId: string | null;
+}
+
 interface VendorOrderDetailRow {
   id: string;
   external_ref: string;
   delivery_at: string;
   headcount: number | null;
   requester_first_name: string | null;
+  audit_subject_person_id: string | null;
   room_name: string | null;
   floor_label: string | null;
   building_name: string | null;

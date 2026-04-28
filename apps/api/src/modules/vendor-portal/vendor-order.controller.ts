@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
+import { PersonalDataAccessLogService } from '../privacy-compliance/personal-data-access-log.service';
 import { VendorPortalEventType } from './event-types';
 import { VendorOrderService } from './vendor-order.service';
 import {
@@ -33,6 +34,7 @@ export class VendorOrderController {
   constructor(
     private readonly orders: VendorOrderService,
     private readonly auditOutbox: AuditOutboxService,
+    private readonly pdal: PersonalDataAccessLogService,
   ) {}
 
   // -------------------- GET /vendor/orders --------------------
@@ -66,16 +68,40 @@ export class VendorOrderController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     const session = req.vendorSession!;
-    const detail = await this.orders.getDetailForVendor({
+    const { detail, auditSubjectPersonId } = await this.orders.getDetailForVendor({
       tenantId: session.tenant_id,
       vendorId: session.vendor_id,
       orderId: id,
     });
 
-    // Read-side audit. Per gdpr-baseline-design.md §7 we'd normally use the
-    // @LogPersonalDataAccess decorator + the global interceptor, but vendor
-    // requests don't go through tenant TenantContext so the decorator's
-    // tenant lookup wouldn't fire. We emit explicitly here.
+    // Read-side audit goes to TWO sinks per gdpr-baseline-design.md §7:
+    //
+    //   1. personal_data_access_logs — answers "who accessed Marleen's
+    //      data?" queries. Subject person id captured here is the
+    //      requester_person_id pulled internally; it is NOT in the
+    //      response body the vendor sees. Without this, the §7 acceptance
+    //      criterion (admin runs the access-log report) misses every
+    //      vendor read.
+    //   2. audit_outbox — surfaces the read in the standard event stream
+    //      with the `vendor.order_viewed` event type for cross-spec
+    //      reporting.
+    //
+    // Both are fire-and-forget per the GDPR spec batched-writer contract;
+    // a PDAL flush failure must not break a successful read.
+    this.pdal.enqueue({
+      tenantId: session.tenant_id,
+      // Vendor users are external — no users.id mapping. We capture the
+      // vendor_user_id via a separate channel (audit_outbox below) and set
+      // actor_user_id null here. actor_role disambiguates.
+      actorAuthUid: null,
+      actorRole: 'vendor_user',
+      subjectPersonId: auditSubjectPersonId,
+      dataCategory: 'past_orders',
+      resourceType: 'orders',
+      resourceId: id,
+      accessMethod: 'detail_view',
+    });
+
     await this.auditOutbox.emit({
       tenantId: session.tenant_id,
       eventType: VendorPortalEventType.OrderViewed,
@@ -84,6 +110,7 @@ export class VendorOrderController {
       details: {
         vendor_id: session.vendor_id,
         vendor_user_id: session.vendor_user_id,
+        subject_person_id: auditSubjectPersonId,
       },
     });
 

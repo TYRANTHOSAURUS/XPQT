@@ -26,13 +26,16 @@ import {
  *                                     portal shell to gate routing).
  * - POST /api/vendor/auth/logout   — revoke + clear cookie.
  *
- * The redeem + logout endpoints are public (no tenant Bearer token); they
- * rely on the magic-link token / session cookie respectively. `@Public()`
- * opts out of the global `AuthGuard` so the unauthenticated browser can
- * reach them.
+ * **All three endpoints opt out of the global tenant-Bearer `AuthGuard`
+ * via the controller-level `@Public()`.** Vendors authenticate via the
+ * session cookie (or, for /redeem, via a one-time magic-link token in the
+ * body) — they never see a tenant Bearer token. Without this, the global
+ * AuthGuard rejects vendor-cookie requests with 401 before VendorPortalGuard
+ * ever runs and the portal shell can't bootstrap on /me.
  *
  * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-b-design.md §4.
  */
+@Public()
 @Controller('vendor/auth')
 export class VendorAuthController {
   /** 30 days in seconds — matches VendorAuthService.sessionTtlMs. */
@@ -42,7 +45,6 @@ export class VendorAuthController {
 
   // -------------------- POST /vendor/auth/redeem --------------------
 
-  @Public()
   @Post('redeem')
   async redeem(
     @Req() req: Request,
@@ -68,7 +70,10 @@ export class VendorAuthController {
       sameSite: 'strict',
       // 30 days; server enforces sliding refresh via VendorAuthService.touch.
       maxAge: VendorAuthController.COOKIE_MAX_AGE_SECONDS * 1000,
-      path: '/',
+      // Narrow path to the vendor-portal API surface — the cookie never
+      // ships on requests outside /api/vendor/*. Defense in depth on top of
+      // HttpOnly + SameSite=Strict.
+      path: '/api/vendor',
     });
 
     return {
@@ -106,14 +111,13 @@ export class VendorAuthController {
 
   // -------------------- POST /vendor/auth/logout --------------------
 
-  @Public()
   @Post('logout')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = readCookie(req, VendorPortalGuard.COOKIE_NAME);
     if (token) {
       await this.auth.revoke({ sessionToken: token, reason: 'user_initiated' });
     }
-    res.clearCookie(VendorPortalGuard.COOKIE_NAME, { path: '/' });
+    res.clearCookie(VendorPortalGuard.COOKIE_NAME, { path: '/api/vendor' });
     return { ok: true };
   }
 }
