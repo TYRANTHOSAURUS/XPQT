@@ -952,7 +952,18 @@ function buildTextBody(dl: VendorDailyListRow, pdfUrl: string): string {
   const lang = dl.payload.vendor.language ?? 'nl';
   const lines = dl.payload.total_lines;
   const total = dl.payload.total_quantity;
-  const buildingLabel = dl.payload.building?.name ?? 'alle gebouwen';
+  const buildingLabel = dl.payload.building?.name ?? (lang === 'nl' ? 'alle gebouwen' : 'all buildings');
+  /* Codex round-2 fix: when pdfUrl is empty (Storage URL mint failed —
+     attachment is still attached), don't render a misleading "Download
+     here:" line that would render as `Download here: ` with nothing
+     after, plus a stale "valid 7 days" claim. The attachment in the
+     email IS the canonical delivery; the URL is a fallback for clients
+     that can't show the attachment. */
+  const linkSection = pdfUrl
+    ? (lang === 'nl'
+        ? [`Download de PDF: ${pdfUrl}`, `(De link is 7 dagen geldig.)`, ``]
+        : [`Download PDF: ${pdfUrl}`, `(Link valid for 7 days.)`, ``])
+    : [];
   if (lang === 'nl') {
     return [
       `Beste ${dl.payload.vendor.name},`,
@@ -962,9 +973,7 @@ function buildTextBody(dl: VendorDailyListRow, pdfUrl: string): string {
       `Bestellingen: ${lines}`,
       `Totale hoeveelheid: ${total}`,
       ``,
-      `Download de PDF: ${pdfUrl}`,
-      `(De link is 7 dagen geldig.)`,
-      ``,
+      ...linkSection,
       `Met vriendelijke groet,`,
       `Prequest`,
     ].join('\n');
@@ -977,9 +986,7 @@ function buildTextBody(dl: VendorDailyListRow, pdfUrl: string): string {
     `Orders: ${lines}`,
     `Total quantity: ${total}`,
     ``,
-    `Download PDF: ${pdfUrl}`,
-    `(Link valid for 7 days.)`,
-    ``,
+    ...linkSection,
     `Best regards,`,
     `Prequest`,
   ].join('\n');

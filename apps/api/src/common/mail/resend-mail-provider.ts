@@ -184,14 +184,22 @@ export class ResendMailProvider implements MailProvider {
   }
 
   private translateResendEvent(payload: unknown): MailWebhookEvent | null {
-    const ev = payload as { type?: string; data?: Record<string, unknown> };
+    const ev = payload as {
+      type?: string;
+      created_at?: string;
+      data?: Record<string, unknown>;
+    };
     if (!ev?.type || !ev.data) return null;
     const data = ev.data;
     const messageId = String(data.email_id ?? data.id ?? '');
     const recipient = Array.isArray(data.to)
       ? String((data.to as unknown[])[0] ?? '')
       : String(data.to ?? '');
-    const at = String(data.created_at ?? new Date().toISOString());
+    /* Codex round-2 fix: use the TOP-LEVEL `created_at` (event time —
+       when the delivery / bounce happened), not data.created_at (email
+       creation time). Falls back to data.created_at for older payload
+       shapes, then to wall-clock as last resort. */
+    const at = String(ev.created_at ?? data.created_at ?? new Date().toISOString());
 
     switch (ev.type) {
       case 'email.delivered':
@@ -210,12 +218,19 @@ export class ResendMailProvider implements MailProvider {
         return { type: 'complained', providerMessageId: messageId, recipient, at, raw: payload };
       case 'email.delivery_delayed':
       case 'email.failed':
+        /* Codex round-2 fix: Resend's failed payload uses
+           `data.failed.reason`, not `data.error.message`. Try both
+           since Resend has shipped both shapes historically. */
         return {
           type: 'failed',
           providerMessageId: messageId,
           recipient,
           at,
-          reason: String((data.error as { message?: string })?.message ?? ev.type),
+          reason: String(
+            (data.failed as { reason?: string })?.reason
+            ?? (data.error as { message?: string })?.message
+            ?? ev.type,
+          ),
           raw: payload,
         };
       case 'email.sent':
@@ -244,7 +259,11 @@ function serializeAttachment(att: MailAttachment): Record<string, unknown> {
 }
 
 function escapeQuoted(s: string): string {
-  return s.replace(/[\r\n"]/g, ' ').trim();
+  /* Codex round-2 fix: also strip commas (Resend treats `to` as
+     comma-separated, so a comma in the display name splits into
+     bogus extra recipients) and angle brackets (interfere with the
+     "Display Name <email>" parser). CR/LF prevent header injection. */
+  return s.replace(/[\r\n",<>]/g, ' ').trim();
 }
 
 function assertNoCommaOrLineBreak(addr: string): string {
@@ -255,9 +274,14 @@ function assertNoCommaOrLineBreak(addr: string): string {
 }
 
 function mapResendBounceSubtype(subtype: string): 'hard' | 'soft' | 'block' | 'unknown' {
-  if (subtype === 'general' || subtype === 'NoEmail' || subtype === 'permanent') return 'hard';
-  if (subtype === 'mailbox-full' || subtype === 'message-too-large' || subtype === 'transient') return 'soft';
-  if (subtype === 'suppressed' || subtype === 'on-account-suppression-list') return 'block';
+  /* Codex round-2 fix: Resend's documented values are TitleCase
+     ('General', 'Suppressed', 'Transient'). Round-1 mapped lowercase
+     and mis-handled real bounces. Lowercase the input + carry both
+     historical shapes. */
+  const k = subtype.toLowerCase();
+  if (k === 'general' || k === 'noemail' || k === 'permanent') return 'hard';
+  if (k === 'mailbox-full' || k === 'message-too-large' || k === 'transient') return 'soft';
+  if (k === 'suppressed' || k === 'on-account-suppression-list') return 'block';
   return 'unknown';
 }
 

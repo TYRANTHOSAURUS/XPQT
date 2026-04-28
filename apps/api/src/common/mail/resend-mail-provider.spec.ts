@@ -143,27 +143,34 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     const provider = new ResendMailProvider();
     const raw = JSON.stringify({
       type: 'email.delivered',
+      created_at: '2026-04-30T12:05:00Z',                  // top-level event time
       data: {
         email_id: 'resend-msg-123',
         to: ['orders@vendor.example'],
-        created_at: '2026-04-30T12:05:00Z',
+        created_at: '2026-04-30T11:50:00Z',                // email creation time (older)
       },
     });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('delivered');
     expect(events[0].providerMessageId).toBe('resend-msg-123');
+    /* Codex round-2 fix: `at` MUST be the top-level event time, not
+       data.created_at (which is when the email was originally created). */
+    expect(events[0].at).toBe('2026-04-30T12:05:00Z');
   });
 
-  it('translates email.bounced with subtype mapping', () => {
+  it('translates email.bounced with TitleCase subtype mapping (Resend real shape)', () => {
+    /* Codex round-2 fix: Resend documents bounce subtypes as
+       'General', 'Suppressed', 'Transient' (TitleCase). Round-1
+       lowercased the comparison and missed real bounces. */
     const provider = new ResendMailProvider();
     const raw = JSON.stringify({
       type: 'email.bounced',
+      created_at: '2026-04-30T12:05:00Z',
       data: {
         email_id: 'resend-msg-456',
         to: ['bad@example.com'],
-        bounce: { subType: 'general', message: 'mailbox does not exist' },
-        created_at: '2026-04-30T12:05:00Z',
+        bounce: { subType: 'General', message: 'mailbox does not exist' },
       },
     });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
@@ -171,6 +178,46 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     if (events[0].type === 'bounced') {
       expect(events[0].bounceType).toBe('hard');
       expect(events[0].reason).toBe('mailbox does not exist');
+    }
+  });
+
+  it('translates Suppressed / Transient bounces correctly (regression)', () => {
+    const provider = new ResendMailProvider();
+    const rawSup = JSON.stringify({
+      type: 'email.bounced',
+      created_at: '2026-04-30T12:05:00Z',
+      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Suppressed', message: 'on suppression list' } },
+    });
+    const sup = provider.verifyWebhook({ rawBody: rawSup, headers: svixHeaders(rawSup) });
+    if (sup[0].type === 'bounced') expect(sup[0].bounceType).toBe('block');
+
+    const rawTrans = JSON.stringify({
+      type: 'email.bounced',
+      created_at: '2026-04-30T12:05:00Z',
+      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Transient', message: 'temporary' } },
+    });
+    const trans = provider.verifyWebhook({ rawBody: rawTrans, headers: svixHeaders(rawTrans) });
+    if (trans[0].type === 'bounced') expect(trans[0].bounceType).toBe('soft');
+  });
+
+  it('translates email.failed with data.failed.reason (Resend real shape)', () => {
+    /* Codex round-2 fix: Resend's failed payload uses
+       data.failed.reason. Round-1 read data.error.message and lost
+       the failure reason on every real event. */
+    const provider = new ResendMailProvider();
+    const raw = JSON.stringify({
+      type: 'email.failed',
+      created_at: '2026-04-30T12:05:00Z',
+      data: {
+        email_id: 'resend-msg-fail',
+        to: ['x@y.example'],
+        failed: { reason: 'Mailbox quota exceeded' },
+      },
+    });
+    const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
+    expect(events[0].type).toBe('failed');
+    if (events[0].type === 'failed') {
+      expect(events[0].reason).toBe('Mailbox quota exceeded');
     }
   });
 

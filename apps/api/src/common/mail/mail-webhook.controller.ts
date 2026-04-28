@@ -231,27 +231,37 @@ interface CorrelatedEntity {
 /**
  * Pull our platform tags out of a provider-native event payload.
  *
- * Resend echoes tags back in the webhook payload at `data.tags` as an
- * array of `{name, value}` pairs. Future providers (SES) inline tags
- * differently — this helper normalises by walking `data.tags` and
- * `data.headers['X-Tag']`, returning a flat string-string map.
+ * Resend echoes tags back in the webhook payload at `data.tags`. Send-
+ * payload shape is `[{name, value}]`; webhook-payload shape is the
+ * flat `{key: value}` object. Codex round-2 caught that round-1 only
+ * handled the array shape, so daily_list_id was never read from
+ * documented webhook payloads.
  *
- * The codex round-1 fix correlates by `daily_list_id` from this map
- * to dodge the email_message_id timing race.
+ * Handle both shapes so future provider variations don't reintroduce
+ * the race.
  */
 function extractTags(rawEvent: unknown): Record<string, string> | null {
   if (!rawEvent || typeof rawEvent !== 'object') return null;
   const ev = rawEvent as Record<string, unknown>;
   const data = (ev.data as Record<string, unknown> | undefined) ?? {};
   const tags = data.tags;
-  if (!Array.isArray(tags)) return null;
+  if (!tags) return null;
   const out: Record<string, string> = {};
-  for (const t of tags) {
-    if (t && typeof t === 'object' && 'name' in t && 'value' in t) {
-      const tt = t as { name: unknown; value: unknown };
-      if (typeof tt.name === 'string' && tt.value != null) {
-        out[tt.name] = String(tt.value);
+
+  if (Array.isArray(tags)) {
+    /* [{name, value}] shape — what we send. */
+    for (const t of tags) {
+      if (t && typeof t === 'object' && 'name' in t && 'value' in t) {
+        const tt = t as { name: unknown; value: unknown };
+        if (typeof tt.name === 'string' && tt.value != null) {
+          out[tt.name] = String(tt.value);
+        }
       }
+    }
+  } else if (typeof tags === 'object') {
+    /* {key: value} flat-map shape — what Resend echoes back. */
+    for (const [k, v] of Object.entries(tags as Record<string, unknown>)) {
+      if (v != null) out[k] = String(v);
     }
   }
   return Object.keys(out).length > 0 ? out : null;
