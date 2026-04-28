@@ -42,6 +42,7 @@ function TicketListRowImpl({
     <div
       role="button"
       tabIndex={0}
+      data-selected={selected ? 'true' : undefined}
       onClick={() => onSelect(ticket.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -51,16 +52,20 @@ function TicketListRowImpl({
       }}
       className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${
         selected
-          ? 'bg-accent border-l-2 border-l-primary pl-[10px]'
+          ? 'bg-accent'
           : menuOpen
-            ? 'bg-muted/50 border-l-2 border-l-transparent'
-            : 'border-l-2 border-l-transparent hover:bg-muted/30'
+            ? 'bg-muted/50'
+            : 'hover:bg-muted/30'
       }`}
-      // Skip rendering work for rows scrolled off-screen. Browser-native
-      // virtualization — the column layout uses fixed widths so column drift
-      // (the failure mode for `<tr>` rows) doesn't apply here. The intrinsic
-      // size matches the typical row height so the scrollbar stays stable.
-      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 52px' }}
+      // Inset shadow over border + padding shift — keeps cell text
+      // anchored when selection toggles. contentVisibility skips render
+      // work for rows scrolled off-screen; intrinsic size keeps the
+      // scrollbar stable.
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: 'auto 52px',
+        boxShadow: selected ? 'inset 2px 0 0 var(--primary)' : undefined,
+      }}
     >
       <div className="w-4 shrink-0" onClick={(e) => e.stopPropagation()}>
         <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
@@ -71,7 +76,10 @@ function TicketListRowImpl({
       </span>
 
       <div className="flex w-28 items-center gap-2 shrink-0">
-        <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
+        <div
+          className={`h-2 w-2 rounded-full shrink-0 transition-colors ${status.dotColor}`}
+          style={{ transitionDuration: 'var(--dur-portal-hover)', transitionTimingFunction: 'var(--ease-portal)' }}
+        />
         <span className="text-xs text-muted-foreground truncate">{status.label}</span>
       </div>
 
@@ -80,7 +88,15 @@ function TicketListRowImpl({
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="truncate text-sm">{ticket.title}</div>
+        <div
+          className="truncate text-sm"
+          // Name lives on the row when it's NOT the selected one. The
+          // detail panel's h1 always carries the name; the pair morphs
+          // on open + reverses on close.
+          style={{ viewTransitionName: selected ? undefined : `ticket-${ticket.id}-title` }}
+        >
+          {ticket.title}
+        </div>
         {(ticket.requester || ticket.location) && (
           <div className="truncate text-xs text-muted-foreground">
             {ticket.requester ? `${ticket.requester.first_name} ${ticket.requester.last_name}` : ''}

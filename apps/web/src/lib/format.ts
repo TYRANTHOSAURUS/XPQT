@@ -53,6 +53,31 @@ export function formatRelativeTime(input: Date | string | number | null | undefi
   return rtf.format(0, 'second');
 }
 
+/**
+ * Compact past-relative ("5m", "2h", "3d"). For dense table cells where
+ * the full RTF wording ("2 hours ago") would crowd the column. Ignores
+ * future timestamps — those become "now" — because the columns this is
+ * for (Age, Created) only show past events.
+ */
+export function formatRelativeTimeCompact(input: Date | string | number | null | undefined): string {
+  if (input == null) return '—';
+  const ts = input instanceof Date ? input.getTime() : new Date(input).getTime();
+  if (!Number.isFinite(ts)) return '—';
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSeconds < 60) return 'now';
+  const minutes = Math.floor(diffSeconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
 const fullFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
   timeStyle: 'short',

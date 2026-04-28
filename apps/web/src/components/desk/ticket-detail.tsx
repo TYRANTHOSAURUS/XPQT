@@ -77,6 +77,7 @@ import {
 } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
+import { formatFullTimestamp } from '@/lib/format';
 import { toastError, toastSuccess } from '@/lib/toast';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
@@ -498,9 +499,33 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   }
 
   if (ticketPending || !ticket) {
+    // Structured skeleton — preserves the two-pane layout so the spinner
+    // jump goes away when the ticket resolves. We keep this lightweight:
+    // title bar, meta strip, description block, sidebar group blocks.
     return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner className="size-6 text-muted-foreground" />
+      <div className="flex h-full">
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8 pt-8 space-y-5">
+            <div className="portal-skeleton h-3 w-20 rounded" />
+            <div className="portal-skeleton h-9 w-2/3 rounded" />
+            <div className="flex flex-wrap gap-2">
+              <div className="portal-skeleton h-5 w-24 rounded-full" />
+              <div className="portal-skeleton h-5 w-32 rounded-full" />
+              <div className="portal-skeleton h-5 w-28 rounded-full" />
+            </div>
+            <div className="portal-skeleton h-20 rounded-md" />
+          </div>
+        </div>
+        <div className="w-px bg-border/60 shrink-0" aria-hidden />
+        <div className="w-[320px] shrink-0 p-3 space-y-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="space-y-2">
+              <div className="portal-skeleton h-3 w-16 rounded" />
+              <div className="portal-skeleton h-8 rounded-md" />
+              <div className="portal-skeleton h-8 rounded-md" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -514,9 +539,13 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     >
       {/* Main content */}
       <ResizablePanel id="main" minSize="480px" className="flex flex-col min-w-0 relative overflow-hidden">
-        {/* Background-refetch indicator — 2px bar, stays out of the way during optimistic saves */}
+        {/* Background-refetch indicator — sliding indeterminate segment.
+            Reads as "fetching" rather than the ambiguous "thinking" pulse;
+            also matches what users see in Linear/Vercel during refetches. */}
         {ticketFetching && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary/40" />
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+            <div className="desk-progress-slide h-full w-1/3 rounded-full bg-primary/60" />
+          </div>
         )}
         {/* Top actions */}
         <div className="flex items-center gap-1 px-6 py-2 shrink-0">
@@ -577,7 +606,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
+          {/* desk-stagger composes the page section-by-section on mount.
+              Re-renders from refetches don't re-fire because the children
+              keep their identity across React reconciles. */}
+          <div className="desk-stagger mx-auto w-full max-w-[960px] px-6 pb-10 sm:px-8">
             {/* Reference number — copy-able, non-editable */}
             <code
               data-chip
@@ -586,13 +618,22 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
               {formatTicketRef(displayedTicket!.ticket_kind, displayedTicket!.module_number)}
             </code>
 
-            {/* Title */}
+            {/* Title — view-transition pair with the row in the list page.
+                Browsers morph the text from row → here on selection and
+                back on close. */}
             <InlineTextEditor
               value={displayedTicket!.title}
               placeholder="Untitled"
               singleLine
               onSave={(next) => { if (next) patch({ title: next }); }}
-              renderView={(v) => <h1 className="text-2xl font-semibold leading-tight tracking-tight">{v || 'Untitled'}</h1>}
+              renderView={(v) => (
+                <h1
+                  className="text-2xl font-semibold leading-tight tracking-tight"
+                  style={{ viewTransitionName: `ticket-${ticketId}-title` }}
+                >
+                  {v || 'Untitled'}
+                </h1>
+              )}
               editorClassName="text-2xl font-semibold leading-tight tracking-tight border-0 shadow-none focus-visible:ring-0 px-0"
               viewClassName="rounded-md"
             />
@@ -625,7 +666,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
             {displayedTicket?.form_data && Object.keys(displayedTicket.form_data).length > 0 && (
               <div className="mt-8 space-y-3">
-                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Custom Fields</h3>
+                <h3 className="text-sm font-medium">Custom fields</h3>
                 <div className="grid gap-3 rounded-md border p-4 bg-muted/20">
                   {Object.entries(displayedTicket.form_data).map(([key, value]) => {
                     const field = schemaFields.find((f) => f.id === key);
@@ -698,13 +739,53 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
             {/* Comment input */}
             <div className="mt-10">
-              <Tabs value={commentVisibility} onValueChange={(v) => setCommentVisibility(v as 'internal' | 'external')}>
-                <TabsList className="mb-3">
-                  <TabsTrigger value="internal"><MessageSquare className="h-4 w-4 mr-1.5" /> Internal note</TabsTrigger>
-                  <TabsTrigger value="external"><Send className="h-4 w-4 mr-1.5" /> Reply</TabsTrigger>
+              <Tabs
+                value={commentVisibility}
+                onValueChange={(v) => {
+                  // Wrap in startViewTransition so the underline indicator
+                  // morphs between the two tab triggers via the shared
+                  // `viewTransitionName: ticket-comment-tab-indicator`.
+                  const next = v as 'internal' | 'external';
+                  if (next === commentVisibility) return;
+                  const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
+                  if (typeof start === 'function') {
+                    start.call(document, () => setCommentVisibility(next));
+                  } else {
+                    setCommentVisibility(next);
+                  }
+                }}
+              >
+                <TabsList className="mb-3 relative">
+                  <TabsTrigger value="internal" className="relative">
+                    <MessageSquare className="h-4 w-4 mr-1.5" /> Internal note
+                    {commentVisibility === 'internal' && (
+                      <span
+                        aria-hidden
+                        className="absolute -bottom-[7px] left-2 right-2 h-[2px] rounded-full bg-foreground"
+                        style={{ viewTransitionName: 'ticket-comment-tab-indicator' }}
+                      />
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="external" className="relative">
+                    <Send className="h-4 w-4 mr-1.5" /> Reply
+                    {commentVisibility === 'external' && (
+                      <span
+                        aria-hidden
+                        className="absolute -bottom-[7px] left-2 right-2 h-[2px] rounded-full bg-foreground"
+                        style={{ viewTransitionName: 'ticket-comment-tab-indicator' }}
+                      />
+                    )}
+                  </TabsTrigger>
                 </TabsList>
               </Tabs>
-              <div className="rounded-lg border border-border/70 bg-card/70 transition-shadow focus-within:shadow-md">
+              <div
+                className="
+                  rounded-lg border border-border/70 bg-card/70
+                  transition-[border-color,box-shadow]
+                  focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/40
+                "
+                style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
+              >
                 <div className="relative">
                   <Textarea
                     ref={textareaRef}
@@ -766,7 +847,16 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                     <div
                       role="listbox"
                       aria-label="Mention suggestions"
-                      className="absolute left-3 top-full z-20 mt-1 w-[340px] overflow-hidden rounded-lg border border-border/70 bg-popover p-1 shadow-lg"
+                      className="
+                        absolute left-3 top-full z-20 mt-1 w-[340px]
+                        overflow-hidden rounded-lg border border-border/70 bg-popover p-1 shadow-lg
+                        animate-in fade-in-0 zoom-in-95
+                      "
+                      style={{
+                        transformOrigin: 'top left',
+                        animationDuration: '150ms',
+                        animationTimingFunction: 'var(--ease-portal)',
+                      }}
                       onMouseDown={(e) => e.preventDefault()}
                     >
                       {mentionLoading && (
@@ -1137,9 +1227,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
           {/* Created */}
           <div>
             <div className="text-xs text-muted-foreground mb-1.5">Created</div>
-            <div className="text-sm">{new Date(displayedTicket!.created_at).toLocaleDateString('en-GB', { // design-check:allow — legacy; migrate to formatFullTimestamp
-              day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-            })}</div>
+            <div className="text-sm">{formatFullTimestamp(displayedTicket!.created_at)}</div>
           </div>
           </SidebarGroup>
         </div>

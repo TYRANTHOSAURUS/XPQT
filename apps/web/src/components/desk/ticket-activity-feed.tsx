@@ -1,6 +1,7 @@
-import { memo } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Clock, Download, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/format';
 
 interface ActivityAttachment {
   name: string;
@@ -19,16 +20,6 @@ interface Activity {
   author?: { first_name: string; last_name: string };
   metadata: Record<string, unknown> | null;
   created_at: string;
-}
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function formatFileSize(bytes: number): string {
@@ -54,9 +45,52 @@ export const TicketActivityFeed = memo(function TicketActivityFeed({
 }: {
   activities: Activity[];
 }) {
+  // Track which activity ids we've already rendered. Anything new in a
+  // subsequent render gets the desk-flash highlight (1.1s background wash
+  // that fades to transparent). The first render (mount) doesn't flash —
+  // it relies on the desk-stagger entry instead.
+  //
+  // `flashingIds` is component state (not a ref) so React keeps the class
+  // applied across the full animation window — a ref alone would clear
+  // the class on the next render and cut the keyframe short.
+  const seenIdsRef = useRef<Set<string> | null>(null);
+  const [flashingIds, setFlashingIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (seenIdsRef.current === null) {
+      seenIdsRef.current = new Set(activities.map((a) => a.id));
+      return;
+    }
+    const fresh: string[] = [];
+    for (const a of activities) {
+      if (!seenIdsRef.current.has(a.id)) {
+        fresh.push(a.id);
+        seenIdsRef.current.add(a.id);
+      }
+    }
+    if (fresh.length === 0) return;
+    setFlashingIds((prev) => {
+      const next = new Set(prev);
+      for (const id of fresh) next.add(id);
+      return next;
+    });
+    // Animation is 1.1s; give 100ms buffer so the keyframe definitely
+    // completes before the class disappears.
+    const handle = window.setTimeout(() => {
+      setFlashingIds((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Set(prev);
+        for (const id of fresh) next.delete(id);
+        return next;
+      });
+    }, 1200);
+    return () => window.clearTimeout(handle);
+  }, [activities]);
+
   return (
-    <div className="space-y-6">
+    <div className="desk-stagger space-y-6">
       {activities.map((activity) => {
+        const isNew = flashingIds.has(activity.id);
         if (activity.visibility === 'system') {
           const eventText =
             ((activity.metadata as Record<string, unknown> | null)?.event as string | undefined)
@@ -65,16 +99,25 @@ export const TicketActivityFeed = memo(function TicketActivityFeed({
             ? `${activity.author.first_name ?? ''} ${activity.author.last_name ?? ''}`.trim() || 'System'
             : 'System';
           return (
-            <div key={activity.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div
+              key={activity.id}
+              className={cn(
+                'flex items-center gap-2 rounded text-xs text-muted-foreground',
+                isNew && 'desk-flash -mx-1 px-1',
+              )}
+            >
               <Clock className="h-3 w-3 shrink-0" />
               <span className="text-foreground/80 font-medium shrink-0">{who}</span>
               <span className="truncate">{eventText}</span>
-              <span className="shrink-0">· {timeAgo(activity.created_at)}</span>
+              <span className="shrink-0">· {formatRelativeTime(activity.created_at)}</span>
             </div>
           );
         }
         return (
-          <div key={activity.id} className="flex gap-4">
+          <div
+            key={activity.id}
+            className={cn('flex gap-4 rounded', isNew && 'desk-flash -mx-2 px-2 py-1')}
+          >
             <div className="shrink-0 mt-0.5">
               <div
                 className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold ${
@@ -98,7 +141,7 @@ export const TicketActivityFeed = memo(function TicketActivityFeed({
                 {activity.visibility === 'internal' && (
                   <span className="text-[11px] text-yellow-600 dark:text-yellow-400">internal</span>
                 )}
-                <span className="text-xs text-muted-foreground">{timeAgo(activity.created_at)}</span>
+                <span className="text-xs text-muted-foreground">{formatRelativeTime(activity.created_at)}</span>
               </div>
               {(activity.content || (activity.attachments?.length ?? 0) > 0) ? (
                 <div className="mt-2 overflow-hidden rounded-lg border border-border/70 bg-card/80">

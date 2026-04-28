@@ -148,6 +148,13 @@
     --dur-portal-hover: 180ms;
     --dur-portal-enter: 380ms;
     --dur-portal-route: 240ms;
+
+    /* Desk-specific motion tempo. Desk surfaces are denser and faster —
+       agents work through them at speed and large entry animations get
+       in the way. Use these for tickets table, scheduler, dashboards. */
+    --dur-desk-press: 80ms;
+    --dur-desk-hover: 120ms;
+    --dur-desk-enter: 220ms;
     }
   body {
     @apply bg-background text-foreground antialiased;
@@ -346,6 +353,49 @@ img[data-portal-fade] {
 }
 img[data-portal-fade][data-loaded="true"] {
   opacity: 1;
+}
+
+/* ─── Desk surfaces ────────────────────────────────────────────────────
+   Same rise keyframe, faster cadence. Caps stagger at 8 children — past
+   that, the cascade outlasts attention on a dense ops list. */
+
+.desk-stagger > * {
+  animation: portal-rise var(--dur-desk-enter) var(--ease-portal) both;
+}
+.desk-stagger > *:nth-child(1) { animation-delay: 0ms;   }
+.desk-stagger > *:nth-child(2) { animation-delay: 25ms;  }
+.desk-stagger > *:nth-child(3) { animation-delay: 50ms;  }
+.desk-stagger > *:nth-child(4) { animation-delay: 75ms;  }
+.desk-stagger > *:nth-child(5) { animation-delay: 100ms; }
+.desk-stagger > *:nth-child(6) { animation-delay: 125ms; }
+.desk-stagger > *:nth-child(7) { animation-delay: 150ms; }
+.desk-stagger > *:nth-child(8) { animation-delay: 175ms; }
+/* anything past 8 just snaps in — protects perceived perf on long lists */
+
+.desk-rise {
+  animation: portal-rise var(--dur-desk-enter) var(--ease-portal) both;
+}
+
+/* Indeterminate progress bar — sliding 30%-wide segment, used for
+   background-fetch indicators on detail pages. Reads as "fetching"
+   instead of "thinking". */
+@keyframes desk-progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%);  }
+}
+.desk-progress-slide {
+  animation: desk-progress-slide 1100ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Brief one-shot highlight for a freshly-arrived activity item or
+   list row. Plays once on mount; consumers add the class via React
+   only when the item is "new" relative to the last-seen-id. */
+@keyframes desk-flash-highlight {
+  0%   { background-color: color-mix(in oklab, var(--ring) 22%, transparent); }
+  100% { background-color: transparent; }
+}
+.desk-flash {
+  animation: desk-flash-highlight 1100ms ease-out forwards;
 }
 
 /* Workflow editor — subtle animated flow on edges */

@@ -1,5 +1,6 @@
 import { AlertTriangle, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatRelativeTimeCompact } from '@/lib/format';
 
 export interface Ticket {
   id: string;
@@ -165,12 +166,9 @@ export function SlaCell({ dueAt, breachedAt }: { dueAt: string | null; breachedA
   );
 }
 
-export function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'now';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
+/**
+ * Re-exports the compact formatter from `lib/format.ts` under the legacy
+ * name so all the existing call sites keep working. Prefer importing
+ * `formatRelativeTimeCompact` directly in new code.
+ */
+export const timeAgo = formatRelativeTimeCompact;

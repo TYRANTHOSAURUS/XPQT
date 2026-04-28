@@ -4,6 +4,7 @@ import { CornerDownRight, History, MapPin, Tag, User } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { useWorkOrders } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/format';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 
@@ -23,17 +24,6 @@ interface TicketMetaRowProps {
    * Lets the desk TicketsPage swap the detail panel inline rather than going to an unrouted URL.
    */
   onOpenTicket?: (id: string) => void;
-}
-
-function formatRelative(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 const DOMAIN_TONE: Record<string, string> = {
@@ -197,7 +187,7 @@ export function TicketMetaRow({
           render={(props) => (
             <span {...props}>
               <History className="h-3 w-3" />
-              <span className="text-foreground/80">Reclassified {formatRelative(reclassifiedAt)}</span>
+              <span className="text-foreground/80">Reclassified {formatRelativeTime(reclassifiedAt)}</span>
             </span>
           )}
         />

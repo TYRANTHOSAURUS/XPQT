@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -14,7 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { Search, X, LayoutList, Table as TableIcon } from 'lucide-react';
+import { Search, X, LayoutList, Table as TableIcon, Inbox } from 'lucide-react';
 import { useTicketList, usePrefetchTicket, useTicketDetail } from '@/api/tickets';
 import { TicketDetail } from '@/components/desk/ticket-detail';
 import { CreateTicketDialog } from '@/components/desk/create-ticket-dialog';
@@ -94,14 +95,14 @@ const TicketTableRow = memo(function TicketTableRow({
                 ? 'bg-muted/60'
                 : 'hover:bg-muted/40',
           )}
+          // Inset shadow over border + padding shift — keeps cell text
+          // anchored when selection toggles.
+          style={selected ? { boxShadow: 'inset 2px 0 0 var(--primary)' } : undefined}
           onClick={() => onSelect(ticket.id)}
           onMouseEnter={() => onPrefetch(ticket.id)}
           onFocus={() => onPrefetch(ticket.id)}
         >
-          <TableCell
-            className={`px-3 py-2 ${selected ? 'border-l-2 border-l-primary pl-[10px]' : ''}`}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <TableCell className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
             <Checkbox checked={checked} onCheckedChange={() => onToggleCheck(ticket.id)} />
           </TableCell>
           <TableCell className="px-3 py-2 font-mono text-xs text-muted-foreground tabular-nums">
@@ -109,7 +110,17 @@ const TicketTableRow = memo(function TicketTableRow({
           </TableCell>
           <TableCell className="px-3 py-2">
             <div className="min-w-0">
-              <span className="text-sm block truncate">{ticket.title}</span>
+              <span
+                className="text-sm block truncate"
+                // Name lives on the row when it's NOT the selected one.
+                // The detail panel's h1 always carries the name; pairing
+                // produces the row→detail morph on open and the reverse
+                // on close. When the row IS selected the name moves
+                // to the detail h1, avoiding a duplicate-name collision.
+                style={{ viewTransitionName: selected ? undefined : `ticket-${ticket.id}-title` }}
+              >
+                {ticket.title}
+              </span>
               {(ticket.requester || ticket.location) && (
                 <span className="text-xs text-muted-foreground block truncate mt-0.5">
                   {ticket.requester
@@ -122,7 +133,10 @@ const TicketTableRow = memo(function TicketTableRow({
           </TableCell>
           <TableCell className="px-3 py-2">
             <div className="flex items-center gap-2">
-              <div className={`h-2 w-2 rounded-full shrink-0 ${status.dotColor}`} />
+              <div
+                className={cn('h-2 w-2 rounded-full shrink-0 transition-colors', status.dotColor)}
+                style={{ transitionDuration: 'var(--dur-portal-hover)', transitionTimingFunction: 'var(--ease-portal)' }}
+              />
               <span className="text-xs text-muted-foreground">{status.label}</span>
             </div>
           </TableCell>
@@ -189,55 +203,60 @@ function TicketTable({
     else setSelectedIds(new Set(tickets.map((t) => t.id)));
   };
 
+  const headHeaderClass = 'h-8 px-3 text-xs font-medium text-muted-foreground';
+
   return (
     <div className="mx-6 rounded-md border">
       <Table containerClassName="overflow-visible">
         <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur-sm">
           <TableRow className="hover:bg-transparent bg-transparent">
-            <TableHead className="h-8 w-10 px-3 text-xs uppercase text-muted-foreground">
+            <TableHead className={cn(headHeaderClass, 'w-10')}>
               <Checkbox
                 checked={tickets.length > 0 && selectedIds.size === tickets.length}
                 onCheckedChange={toggleSelectAll}
               />
             </TableHead>
-            <TableHead className="h-8 w-[90px] px-3 text-xs uppercase text-muted-foreground">
-              Ref
-            </TableHead>
-            <TableHead className="h-8 min-w-[250px] px-3 text-xs uppercase text-muted-foreground">
-              Title
-            </TableHead>
-            <TableHead className="h-8 w-[120px] px-3 text-xs uppercase text-muted-foreground">
-              Status
-            </TableHead>
-            <TableHead className="h-8 w-[70px] px-3 text-xs uppercase text-muted-foreground">
-              Priority
-            </TableHead>
-            <TableHead className="h-8 w-[150px] px-3 text-xs uppercase text-muted-foreground">
-              Team
-            </TableHead>
-            <TableHead className="h-8 w-[110px] px-3 text-xs uppercase text-muted-foreground">
-              SLA
-            </TableHead>
-            <TableHead className="h-8 w-[70px] px-3 text-xs uppercase text-muted-foreground">
-              Age
-            </TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[90px]')}>Ref</TableHead>
+            <TableHead className={cn(headHeaderClass, 'min-w-[250px]')}>Title</TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[120px]')}>Status</TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[70px]')}>Priority</TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[150px]')}>Team</TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[110px]')}>SLA</TableHead>
+            <TableHead className={cn(headHeaderClass, 'w-[70px]')}>Age</TableHead>
           </TableRow>
         </TableHeader>
-        <TableBody>
+        <TableBody className="desk-stagger">
           {loading && tickets.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
-                Loading tickets...
-              </TableCell>
-            </TableRow>
+            <>
+              {Array.from({ length: 8 }).map((_, i) => (
+                <TableRow key={`skeleton-${i}`} className="hover:bg-transparent">
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton size-4 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-14 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2">
+                    <div className="space-y-1.5">
+                      <div className="portal-skeleton h-3.5 w-2/5 rounded" />
+                      <div className="portal-skeleton h-2.5 w-1/4 rounded" />
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-20 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-3 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-24 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-16 rounded" /></TableCell>
+                  <TableCell className="px-3 py-2"><div className="portal-skeleton h-3 w-8 rounded" /></TableCell>
+                </TableRow>
+              ))}
+            </>
           )}
           {!loading && tickets.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={8} className="h-32 text-center">
-                <p className="text-lg font-medium text-muted-foreground">No tickets found</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Try adjusting your filters or search
-                </p>
+            <TableRow className="hover:bg-transparent">
+              <TableCell colSpan={8} className="px-6 py-16">
+                <div className="flex flex-col items-center gap-3 text-center desk-rise">
+                  <Inbox className="size-6 text-muted-foreground/60" aria-hidden />
+                  <div>
+                    <p className="text-sm font-medium">No tickets here.</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Try adjusting your filters or search.</p>
+                  </div>
+                </div>
               </TableCell>
             </TableRow>
           )}
@@ -305,7 +324,7 @@ function TicketList({
   return (
     <div className="mx-6 rounded-md border">
       {/* Muted column label strip — matches row column widths */}
-      <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-1.5 border-b bg-muted/30 backdrop-blur-sm text-xs uppercase text-muted-foreground">
+      <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-1.5 border-b bg-muted/30 backdrop-blur-sm text-xs font-medium text-muted-foreground">
         <div className="w-4 shrink-0">
           <Checkbox
             checked={tickets.length > 0 && selectedIds.size === tickets.length}
@@ -322,18 +341,35 @@ function TicketList({
       </div>
 
       {loading && tickets.length === 0 && (
-        <div className="h-32 flex items-center justify-center text-sm text-muted-foreground">
-          Loading tickets...
+        <div className="desk-stagger divide-y">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={`skeleton-${i}`} className="flex items-center gap-3 px-3 py-2">
+              <div className="portal-skeleton size-4 shrink-0 rounded" />
+              <div className="portal-skeleton h-3 w-14 shrink-0 rounded" />
+              <div className="portal-skeleton h-3 w-20 shrink-0 rounded" />
+              <div className="portal-skeleton h-3 w-3 shrink-0 rounded" />
+              <div className="flex-1 space-y-1.5">
+                <div className="portal-skeleton h-3.5 w-2/5 rounded" />
+                <div className="portal-skeleton h-2.5 w-1/4 rounded" />
+              </div>
+              <div className="portal-skeleton h-3 w-24 shrink-0 rounded" />
+              <div className="portal-skeleton h-3 w-16 shrink-0 rounded" />
+              <div className="portal-skeleton h-3 w-8 shrink-0 rounded" />
+            </div>
+          ))}
         </div>
       )}
       {!loading && tickets.length === 0 && (
-        <div className="h-32 flex flex-col items-center justify-center">
-          <p className="text-lg font-medium text-muted-foreground">No tickets found</p>
-          <p className="text-sm text-muted-foreground mt-1">Try adjusting your filters or search</p>
+        <div className="desk-rise flex flex-col items-center gap-3 px-6 py-16 text-center">
+          <Inbox className="size-6 text-muted-foreground/60" aria-hidden />
+          <div>
+            <p className="text-sm font-medium">No tickets here.</p>
+            <p className="mt-1 text-xs text-muted-foreground">Try adjusting your filters or search.</p>
+          </div>
         </div>
       )}
 
-      <div className="divide-y">
+      <div className="desk-stagger divide-y">
         {tickets.map((ticket) => (
           <TicketContextMenu
             key={ticket.id}
@@ -491,11 +527,27 @@ function TicketsView({
 export function TicketsPage() {
   const navigate = useNavigate();
   const filtersHook = useTicketFilters();
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [selectedTicketId, setSelectedTicketIdRaw] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setViewState] = useState<ViewMode>(readStoredView);
   const [reclassifyTarget, setReclassifyTarget] = useState<Ticket | null>(null);
   const [addWorkOrderTarget, setAddWorkOrderTarget] = useState<Ticket | null>(null);
+
+  /**
+   * Selecting a ticket morphs the row's title into the detail panel's
+   * title via the `ticket-${id}-title` view-transition name. Wrap the
+   * state update so the browser pairs the named elements between the
+   * old (no-detail) and new (detail-open) snapshots. flushSync forces
+   * React to commit synchronously inside the transition callback.
+   */
+  const setSelectedTicketId = useCallback((next: string | null) => {
+    const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
+    if (typeof start === 'function') {
+      start.call(document, () => flushSync(() => setSelectedTicketIdRaw(next)));
+    } else {
+      setSelectedTicketIdRaw(next);
+    }
+  }, []);
 
   const setView = (v: ViewMode) => {
     setViewState(v);
@@ -537,6 +589,60 @@ export function TicketsPage() {
   // Stable callbacks so the memoized rows don't bail out of `memo`'s shallow compare.
   const onReclassify = useCallback((ticket: Ticket) => setReclassifyTarget(ticket), []);
   const onAddWorkOrder = useCallback((ticket: Ticket) => setAddWorkOrderTarget(ticket), []);
+
+  /**
+   * Keyboard navigation — j/k or ArrowDown/ArrowUp moves selection
+   * through visible rows; Escape closes the detail panel. Bails out
+   * when the user is typing in an input/textarea/contenteditable so
+   * the search bar and dialogs keep their native key behaviour.
+   *
+   * Each step goes through the transitioned setter so the row→detail
+   * morph fires; the browser cancels in-flight transitions on rapid
+   * keypresses, so holding j/k feels smooth, not queued.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (target?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === 'Escape' && selectedTicketId) {
+        e.preventDefault();
+        setSelectedTicketId(null);
+        return;
+      }
+
+      const isDown = e.key === 'j' || e.key === 'ArrowDown';
+      const isUp = e.key === 'k' || e.key === 'ArrowUp';
+      if (!isDown && !isUp) return;
+      if (tickets.length === 0) return;
+
+      e.preventDefault();
+      const currentIdx = tickets.findIndex((t) => t.id === selectedTicketId);
+      const nextIdx = currentIdx === -1
+        ? (isDown ? 0 : tickets.length - 1)
+        : (isDown ? Math.min(currentIdx + 1, tickets.length - 1) : Math.max(currentIdx - 1, 0));
+      if (nextIdx === currentIdx) return;
+      setSelectedTicketId(tickets[nextIdx].id);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [tickets, selectedTicketId, setSelectedTicketId]);
+
+  /**
+   * Scroll the newly-selected row into view (no-op if already visible).
+   * Uses `block: 'nearest'` so the row only moves the minimum needed —
+   * agents pressing j repeatedly stay anchored at the bottom of the
+   * viewport instead of every step centring the row.
+   */
+  useEffect(() => {
+    if (!selectedTicketId) return;
+    const row = document.querySelector('[data-selected="true"]');
+    if (row && 'scrollIntoView' in row) {
+      (row as HTMLElement).scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedTicketId]);
 
   const viewProps: TicketsViewProps = {
     tickets,
