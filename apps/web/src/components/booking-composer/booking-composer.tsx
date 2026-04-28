@@ -487,8 +487,52 @@ export function BookingComposer({
         </div>
       )}
 
-      {/* Conflict alternatives — visible after a 409 race */}
-      {conflictAlternatives.length > 0 && (
+      {/* Conflict alternatives — visible after a 409 race. Each row is a
+          one-click rebook: dispatches SET_SPACE then re-submits without
+          the user having to re-open the room picker. */}
+      {conflictAlternatives.length > 0 && !fixedRoom && (
+        <div
+          role="alert"
+          className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
+        >
+          <p className="font-medium text-destructive">
+            Someone booked this slot before you. Try one of these:
+          </p>
+          <ul className="space-y-1">
+            {conflictAlternatives.slice(0, 3).map((alt) => (
+              <li key={alt.space_id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    dispatch({ type: 'SET_SPACE', spaceId: alt.space_id });
+                    // Defer one tick so SET_SPACE lands before submit reads
+                    // state. Without the rAF the buildBookingPayload reads
+                    // the prior closure's spaceId and rebooks the lost slot.
+                    requestAnimationFrame(() => void handleSubmit());
+                  }}
+                  className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left transition-colors hover:bg-destructive/10"
+                  style={{
+                    transitionDuration: '120ms',
+                    transitionTimingFunction: 'var(--ease-snap)',
+                  }}
+                >
+                  <span className="truncate font-medium">{alt.name}</span>
+                  <span className="shrink-0 text-muted-foreground tabular-nums">
+                    {alt.capacity ?? '—'} cap
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-muted-foreground">
+            Click any room above to rebook with the same time + services.
+          </p>
+        </div>
+      )}
+      {/* When fixedRoom is set (scheduler drag-create), one-click rebook
+          would override the operator's deliberate cell pick — fall back to
+          the read-only summary they had before. */}
+      {conflictAlternatives.length > 0 && fixedRoom && (
         <div
           role="alert"
           className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs"
