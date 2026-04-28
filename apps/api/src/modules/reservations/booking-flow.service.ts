@@ -57,6 +57,12 @@ export class BookingFlowService {
   async create(input: CreateReservationInput, actor: ActorContext): Promise<Reservation> {
     this.assertValid(input);
     const tenantId = TenantContext.current().id;
+    // Trace incoming payload so we can diagnose the disappearing-services
+    // bug when it shows up. Logs at LOG (not DEBUG) so it lands in the
+    // default Nest output without needing log-level changes.
+    this.log.log(
+      `[create] space=${input.space_id} services_len=${input.services?.length ?? 0} bundle_present=${!!input.bundle} source=${input.source ?? 'portal'}`,
+    );
 
     // 1+2. Load space + snapshot
     const space = await this.loadSpace(input.space_id);
@@ -216,6 +222,22 @@ export class BookingFlowService {
     // cloneOrderForOccurrence fires per occurrence. Putting startSeries
     // first leaves a race where some early-materialised occurrences land
     // without their services.
+    // Trace + invariant. If the caller submitted services we MUST have the
+    // bundle service injected — otherwise we'd silently drop services on
+    // the floor, leaving the reservation with no bundle and the user
+    // staring at "no services attached" on the detail view (the
+    // disappearing-services bug). Fail loudly instead.
+    if (input.services && input.services.length > 0) {
+      this.log.log(
+        `[booking-flow] services=${input.services.length} bundle_present=${!!input.bundle} for reservation ${reservation.id}`,
+      );
+      if (!this.bundle) {
+        throw new Error(
+          'BundleService not injected — booking-flow cannot attach services. ' +
+            'Wire BookingBundlesModule into ReservationsModule.imports.',
+        );
+      }
+    }
     if (input.services && input.services.length > 0 && this.bundle) {
       try {
         // BundleSource is a stricter subset of ReservationSource — drop
