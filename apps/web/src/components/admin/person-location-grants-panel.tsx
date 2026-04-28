@@ -3,6 +3,7 @@ import { MapPin, Plus, Trash2, Home, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import {
   Field,
   FieldDescription,
@@ -25,6 +26,12 @@ interface EffectiveAuth {
   note: string | null;
   org_node: { id: string; name: string } | null;
 }
+
+const SOURCE_TONE: Record<AuthSource, { label: string; dot: string }> = {
+  default: { label: 'Default', dot: 'bg-emerald-500' },
+  grant: { label: 'Grant', dot: 'bg-blue-500' },
+  org_grant: { label: 'Via org', dot: 'bg-violet-500' },
+};
 
 interface Props {
   personId: string;
@@ -116,16 +123,17 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium truncate">{row.space.name}</span>
-                    <Badge variant="outline" className="text-xs capitalize">{row.space.type}</Badge>
-                    {row.source === 'default' && (
-                      <Badge variant="secondary" className="text-[10px]">default</Badge>
-                    )}
-                    {row.source === 'grant' && (
-                      <Badge variant="secondary" className="text-[10px]">grant</Badge>
-                    )}
-                    {row.source === 'org_grant' && (
-                      <Badge variant="secondary" className="text-[10px]">via org</Badge>
-                    )}
+                    <span className="text-xs text-muted-foreground capitalize">{row.space.type}</span>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] uppercase tracking-wider gap-1.5"
+                    >
+                      <span
+                        className={cn('size-1.5 rounded-full', SOURCE_TONE[row.source].dot)}
+                        aria-hidden
+                      />
+                      {SOURCE_TONE[row.source].label}
+                    </Badge>
                   </div>
                   {row.source === 'default' && (
                     <p className="text-xs text-muted-foreground mt-0.5">
@@ -184,6 +192,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
             <Button
               type="button"
               size="sm"
+              variant={addSpaceId ? 'default' : 'outline'}
               onClick={() => void onAdd()}
               disabled={adding || !addSpaceId}
               className="gap-1"

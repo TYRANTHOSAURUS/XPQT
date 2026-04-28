@@ -27,6 +27,7 @@ import { useUsers, userKeys } from '@/api/users';
 import { usePersons } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
 import { userStatusDotClass } from '@/lib/status-tone';
+import { PersonAvatar } from '@/components/person-avatar';
 import { UserDetailBody, userDisplayName } from './user-detail';
 
 interface Person {
@@ -421,30 +422,39 @@ function UserInspectorContent({ userId }: { userId: string }) {
     <div
       data-mounted={mounted ? '' : undefined}
       className={cn(
-        'flex flex-col gap-8 px-6 pt-6 pb-10',
+        'flex flex-col gap-8 px-6 pt-6 pb-10 max-w-3xl mx-auto w-full',
         'transition-[opacity,transform] duration-200 ease-[var(--ease-smooth)]',
         'opacity-0 translate-y-1',
         'data-[mounted]:opacity-100 data-[mounted]:translate-y-0',
       )}
     >
       {headerUser && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-start justify-between gap-3">
-            <h2 className="text-2xl font-semibold tracking-tight truncate">
-              {userDisplayName(headerUser)}
-            </h2>
-            <Badge
-              variant="outline"
-              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
-            >
-              <span
-                className={cn('size-1.5 rounded-full', userStatusDotClass(headerUser.status))}
-                aria-hidden
-              />
-              {headerUser.status}
-            </Badge>
+        <div className="flex items-center gap-3">
+          <PersonAvatar
+            person={headerUser.person ?? { email: headerUser.email }}
+            size="lg"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-2xl font-semibold tracking-tight truncate">
+                {userDisplayName(headerUser)}
+              </h2>
+              <Badge
+                variant="outline"
+                className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full transition-colors duration-200 ease-[var(--ease-smooth)]',
+                    userStatusDotClass(headerUser.status),
+                  )}
+                  aria-hidden
+                />
+                {headerUser.status}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground truncate">{headerUser.email}</p>
           </div>
-          <p className="text-sm text-muted-foreground truncate">{headerUser.email}</p>
         </div>
       )}
       <UserDetailBody userId={userId} />

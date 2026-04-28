@@ -22,6 +22,7 @@ import {
 } from '@/api/permissions';
 import { useUserAudit } from '@/api/roles';
 import { RoleAuditFeed } from '@/components/admin/role-audit-feed';
+import { PersonAvatar } from '@/components/person-avatar';
 
 interface PersonShort {
   id: string;
@@ -103,7 +104,10 @@ export function UserDetailBody({ userId }: { userId: string }) {
             value={
               <span className="inline-flex items-center gap-1.5 text-sm">
                 <span
-                  className={cn('size-1.5 rounded-full shrink-0', userStatusDotClass(user.status))}
+                  className={cn(
+                    'size-1.5 rounded-full shrink-0 transition-colors duration-200 ease-[var(--ease-smooth)]',
+                    userStatusDotClass(user.status),
+                  )}
                   aria-hidden
                 />
                 <span className="capitalize">{user.status}</span>
@@ -153,7 +157,7 @@ export function UserDetailPage() {
 
   if (userQuery.isLoading) {
     return (
-      <SettingsPageShell width="xwide">
+      <SettingsPageShell width="default">
         <SettingsPageHeader title="User" backTo="/admin/users" />
         <Skeleton className="h-96" />
       </SettingsPageShell>
@@ -162,7 +166,7 @@ export function UserDetailPage() {
 
   if (!user || !id) {
     return (
-      <SettingsPageShell width="xwide">
+      <SettingsPageShell width="default">
         <SettingsPageHeader title="User not found" backTo="/admin/users" />
         <p className="text-sm text-muted-foreground">
           This user doesn't exist or you don't have access.
@@ -172,11 +176,17 @@ export function UserDetailPage() {
   }
 
   return (
-    <SettingsPageShell width="xwide">
+    <SettingsPageShell width="default">
       <SettingsPageHeader
         backTo="/admin/users"
         title={userDisplayName(user)}
         description={user.email}
+        leadingMedia={
+          <PersonAvatar
+            person={user.person ?? { email: user.email }}
+            size="lg"
+          />
+        }
         actions={
           user.person ? (
             <Link

@@ -25,6 +25,8 @@ import {
 } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
+import { PersonAvatar } from '@/components/person-avatar';
+import { SaveIndicator } from '@/components/save-indicator';
 import { usePerson, useUpdatePerson, personFullName, type Person } from '@/api/persons';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
@@ -115,15 +117,24 @@ export function PersonDetailBody({
 
   const headline = personHeadline(person);
 
+  const matchedCostCenter = (costCenters ?? []).find((cc) => cc.code === costCenter);
+
   return (
     <>
-      <SettingsGroup title="Identity" description="Display name and contact details.">
+      <div className="flex justify-end min-h-5">
+        <SaveIndicator
+          isPending={update.isPending}
+          submittedAt={update.submittedAt}
+          isSuccess={update.isSuccess}
+        />
+      </div>
+      <SettingsGroup title="Identity">
         <SettingsRow label="First name">
           <SettingsRowValue>
             <Input
               value={firstName}
               onChange={(e) => setFirstName(e.target.value)}
-              className="h-8 w-56"
+              className="h-8 w-80"
               aria-label="First name"
             />
           </SettingsRowValue>
@@ -133,7 +144,7 @@ export function PersonDetailBody({
             <Input
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
-              className="h-8 w-56"
+              className="h-8 w-80"
               aria-label="Last name"
             />
           </SettingsRowValue>
@@ -144,23 +155,23 @@ export function PersonDetailBody({
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="h-8 w-72"
+              className="h-8 w-80"
               aria-label="Email"
             />
           </SettingsRowValue>
         </SettingsRow>
-        <SettingsRow label="Phone">
+        <SettingsRow label={<>Phone <span className="text-muted-foreground font-normal">(optional)</span></>}>
           <SettingsRowValue>
             <Input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="h-8 w-56"
+              className="h-8 w-80"
               aria-label="Phone"
             />
           </SettingsRowValue>
         </SettingsRow>
-        <SettingsRow label="Type" description="What kind of person this record represents.">
+        <SettingsRow label="Type">
           <SettingsRowValue>
             <Select
               value={type}
@@ -170,7 +181,7 @@ export function PersonDetailBody({
                 update.mutate({ type: v });
               }}
             >
-              <SelectTrigger className="h-8 w-56">
+              <SelectTrigger className="h-8 w-80">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -184,8 +195,8 @@ export function PersonDetailBody({
           </SettingsRowValue>
         </SettingsRow>
         <SettingsRow
-          label="Cost center"
-          description="Internal accounting tag, optional. Pick from the catalog managed under Admin · Cost centers."
+          label={<>Cost center <span className="text-muted-foreground font-normal">(optional)</span></>}
+          description="Pick from the catalog managed under Admin · Cost centers."
         >
           <SettingsRowValue>
             <Select
@@ -197,8 +208,24 @@ export function PersonDetailBody({
                 update.mutate({ cost_center: next || null });
               }}
             >
-              <SelectTrigger className="h-8 w-72" aria-label="Cost center">
-                <SelectValue placeholder="No cost center" />
+              <SelectTrigger className="h-8 w-80" aria-label="Cost center">
+                {costCenter ? (
+                  <span className="inline-flex items-center gap-2 min-w-0">
+                    <span className="font-mono text-xs tabular-nums shrink-0">{costCenter}</span>
+                    {matchedCostCenter ? (
+                      <span className="text-muted-foreground truncate">{matchedCostCenter.name}</span>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/40 text-amber-900 dark:text-amber-100 text-[10px] uppercase tracking-wider shrink-0"
+                      >
+                        Not in catalog
+                      </Badge>
+                    )}
+                  </span>
+                ) : (
+                  <SelectValue placeholder="No cost center" />
+                )}
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">No cost center</SelectItem>
@@ -208,18 +235,17 @@ export function PersonDetailBody({
                     <span className="ml-2 text-muted-foreground">{cc.name}</span>
                   </SelectItem>
                 ))}
-                {costCenter &&
-                  !(costCenters ?? []).some((cc) => cc.code === costCenter) && (
-                    <SelectItem value={costCenter}>
-                      <span className="font-mono text-xs tabular-nums">{costCenter}</span>
-                      <Badge
-                        variant="outline"
-                        className="ml-2 border-amber-500/40 text-amber-900 dark:text-amber-100 text-[10px] uppercase tracking-wider"
-                      >
-                        Not in catalog
-                      </Badge>
-                    </SelectItem>
-                  )}
+                {costCenter && !matchedCostCenter && (
+                  <SelectItem value={costCenter}>
+                    <span className="font-mono text-xs tabular-nums">{costCenter}</span>
+                    <Badge
+                      variant="outline"
+                      className="ml-2 border-amber-500/40 text-amber-900 dark:text-amber-100 text-[10px] uppercase tracking-wider"
+                    >
+                      Not in catalog
+                    </Badge>
+                  </SelectItem>
+                )}
               </SelectContent>
             </Select>
           </SettingsRowValue>
@@ -243,7 +269,7 @@ export function PersonDetailBody({
 
       <SettingsSection
         title="Location grants"
-        description="Every location this person can submit requests for — their default work location, explicit grants, and grants inherited through org memberships."
+        description="Default work location, explicit grants, and grants inherited through org memberships."
       >
         <PersonLocationGrantsPanel personId={person.id} />
       </SettingsSection>
@@ -300,7 +326,7 @@ export function PersonDetailPage() {
 
   if (isLoading) {
     return (
-      <SettingsPageShell width="xwide">
+      <SettingsPageShell width="default">
         <SettingsPageHeader
           backTo="/admin/persons"
           title="Loading…"
@@ -312,7 +338,7 @@ export function PersonDetailPage() {
 
   if (!person) {
     return (
-      <SettingsPageShell width="xwide">
+      <SettingsPageShell width="default">
         <SettingsPageHeader
           backTo="/admin/persons"
           title="Not found"
@@ -323,11 +349,12 @@ export function PersonDetailPage() {
   }
 
   return (
-    <SettingsPageShell width="xwide">
+    <SettingsPageShell width="default">
       <SettingsPageHeader
         backTo="/admin/persons"
         title={headline}
         description={person.email ?? 'Person profile and access scope.'}
+        leadingMedia={<PersonAvatar person={person} size="lg" />}
         actions={
           <Badge
             variant="outline"
@@ -335,7 +362,7 @@ export function PersonDetailPage() {
           >
             <span
               className={cn(
-                'size-1.5 rounded-full',
+                'size-1.5 rounded-full transition-colors duration-200 ease-[var(--ease-smooth)]',
                 userStatusDotClass(person.active ? 'active' : 'inactive'),
               )}
               aria-hidden

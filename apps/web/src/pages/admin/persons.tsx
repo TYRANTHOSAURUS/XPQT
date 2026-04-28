@@ -35,6 +35,7 @@ import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
 import { OrgNodeCombobox } from '@/components/org-node-combobox';
 import { FieldSeparator } from '@/components/ui/field';
+import { PersonAvatar } from '@/components/person-avatar';
 import { PersonDetailBody, personHeadline } from './person-detail';
 
 interface PrimaryMembership {
@@ -633,35 +634,38 @@ function PersonInspectorContent({
     <div
       data-mounted={mounted ? '' : undefined}
       className={cn(
-        'flex flex-col gap-8 px-6 pt-6 pb-10',
+        'flex flex-col gap-8 px-6 pt-6 pb-10 max-w-3xl mx-auto w-full',
         'transition-[opacity,transform] duration-200 ease-[var(--ease-smooth)]',
         'opacity-0 translate-y-1',
         'data-[mounted]:opacity-100 data-[mounted]:translate-y-0',
       )}
     >
       {person && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-start justify-between gap-3">
-            <h2 className="text-2xl font-semibold tracking-tight truncate">
-              {personHeadline(person)}
-            </h2>
-            <Badge
-              variant="outline"
-              className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
-            >
-              <span
-                className={cn(
-                  'size-1.5 rounded-full',
-                  userStatusDotClass(person.active ? 'active' : 'inactive'),
-                )}
-                aria-hidden
-              />
-              {person.active ? 'Active' : 'Inactive'}
-            </Badge>
+        <div className="flex items-center gap-3">
+          <PersonAvatar person={person} size="lg" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-2xl font-semibold tracking-tight truncate">
+                {personHeadline(person)}
+              </h2>
+              <Badge
+                variant="outline"
+                className="text-[10px] uppercase tracking-wider shrink-0 mt-1.5 gap-1.5"
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full transition-colors duration-200 ease-[var(--ease-smooth)]',
+                    userStatusDotClass(person.active ? 'active' : 'inactive'),
+                  )}
+                  aria-hidden
+                />
+                {person.active ? 'Active' : 'Inactive'}
+              </Badge>
+            </div>
+            {person.email && (
+              <p className="text-sm text-muted-foreground truncate">{person.email}</p>
+            )}
           </div>
-          {person.email && (
-            <p className="text-sm text-muted-foreground truncate">{person.email}</p>
-          )}
         </div>
       )}
       <PersonDetailBody personId={personId} onDeactivated={onDeactivated} />

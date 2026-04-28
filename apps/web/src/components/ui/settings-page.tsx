@@ -78,9 +78,21 @@ interface SettingsPageHeaderProps {
   title: string;
   description?: string;
   actions?: React.ReactNode;
+  /**
+   * Optional leading visual (avatar, icon-in-tile) rendered to the left of
+   * the title block. Used for entity detail pages that need a stronger
+   * identity anchor at the top of the page.
+   */
+  leadingMedia?: React.ReactNode;
 }
 
-export function SettingsPageHeader({ backTo, title, description, actions }: SettingsPageHeaderProps) {
+export function SettingsPageHeader({
+  backTo,
+  title,
+  description,
+  actions,
+  leadingMedia,
+}: SettingsPageHeaderProps) {
   return (
     <div className="flex flex-col gap-4">
       {backTo && (
@@ -93,11 +105,14 @@ export function SettingsPageHeader({ backTo, title, description, actions }: Sett
         </Link>
       )}
       <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+        <div className="flex items-center gap-4 min-w-0">
+          {leadingMedia}
+          <div className="flex flex-col gap-1.5 min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight truncate">{title}</h1>
+            {description && <p className="text-sm text-muted-foreground truncate">{description}</p>}
+          </div>
         </div>
-        {actions && <div className="flex items-center gap-2">{actions}</div>}
+        {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
       </div>
     </div>
   );
