@@ -397,6 +397,18 @@ order by decided_at desc;
 
 The trace is the single source of truth for "why did this ticket land where it did?"
 
+### Visibility-side read endpoint (UI breadcrumb)
+
+`RoutingAuditService.listDecisions` (under `/api/routing/studio/decisions`) gates behind `routing.read` — admin only. To surface the latest decision on the **ticket detail page** for any operator who can see the ticket, there's a thin sibling endpoint:
+
+```
+GET /api/tickets/:id/routing-decision
+```
+
+Implemented by `TicketService.getLatestRoutingDecision` (`apps/api/src/modules/ticket/ticket.service.ts`). Same visibility gate as `GET /tickets/:id` — `TicketVisibilityService.assertVisible(id, ctx, 'read')`. Returns the latest `routing_decisions` row with the rule name resolved, or `null` if none exists. The frontend renders this as the "Routed by …" pill (`apps/web/src/components/desk/routing-decision-pill.tsx`) which deep-links to `/admin/routing-studio?tab=audit&ticket=<id>` — the studio's own `routing.read` gate then takes over for the click-through.
+
+Keep the two endpoints in sync if `routing_decisions` columns change: the breadcrumb endpoint projects a deliberately small subset (`id`, `decided_at`, `strategy`, `chosen_by`, `rule_id`, `rule_name`, `target_kind`, `target_id`) — no `trace`, no `context` — so it can be loaded by every operator without leaking the full audit blob.
+
 ---
 
 ## 10. Vendors as first-class assignees

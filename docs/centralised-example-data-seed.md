@@ -2,6 +2,8 @@
 
 Implementation variant for the canonical local TSS demo seed.
 
+> **Status as of 2026-04-28 — shipped.** §1 SQL-owned seed lives in migrations `00100` (reset), `00102` (foundation: roles/spaces/org-nodes/teams/people/vendors/asset-types), `00104` (catalog), `00105` (catalog enrichment), plus topic-specific seeds added later: `00133` (room-booking examples), `00149` (service-rule templates), `00172` (booking-services demo). §2 generator script ships at [`apps/api/scripts/centralised-example-data-seed.mjs`](../apps/api/scripts/centralised-example-data-seed.mjs) — see [`docs/seed-migration-chain-runbook.md`](./seed-migration-chain-runbook.md) for the operational flow. The §Non-Goals "no booking/parking demo data" line is now stale: room-booking and booking-services demo data both ship; visitor and KB demo data are still deferred.
+
 ## Source Of Truth
 
 This plan implements the product brief captured in:

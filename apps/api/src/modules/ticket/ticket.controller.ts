@@ -99,6 +99,19 @@ export class TicketController {
     return this.ticketService.getById(id, actorAuthUid);
   }
 
+  /**
+   * Latest routing decision for this ticket — feeds the "Routed by …"
+   * breadcrumb pill on the ticket detail sidebar. Same visibility gate as
+   * GET /:id; we deliberately don't require routing.read here so operators
+   * can see *why* their ticket was routed without admin privileges.
+   */
+  @Get(':id/routing-decision')
+  async getRoutingDecision(@Req() request: Request, @Param('id') id: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.ticketService.getLatestRoutingDecision(id, actorAuthUid);
+  }
+
   @Post()
   async create(@Req() request: Request, @Body() dto: CreateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;

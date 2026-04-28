@@ -64,13 +64,22 @@ These are deterministic example-data migrations:
 - foundation
 - catalog
 - enrichment
+- topic-specific demo seeds (room booking, service rules, booking services, etc.) added as new modules ship
 
-For the current TSS implementation, that means:
+For the current TSS implementation, the **base chain** is:
 
 - `00100_seed_centralised_example_reset.sql`
 - `00102_seed_centralised_example_foundation.sql`
 - `00104_seed_centralised_example_catalog.sql`
 - `00105_centralised_example_catalog_enrichment.sql`
+
+**Topic-specific seeds added since the base chain** (apply in numeric order alongside any later additions — this list is not exhaustive, check `supabase/migrations/` for the full set):
+
+- `00133_seed_room_booking_examples.sql`
+- `00149_service_rule_templates_seed.sql`
+- `00172_seed_booking_services_demo.sql`
+
+When a new module ships, its demo seed is added as a new forward migration in the same chain — Rule 2 (no rewriting history) still applies.
 
 ### 3. Generator script
 

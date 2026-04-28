@@ -1,5 +1,7 @@
 # Routing Studio Improvement Plan
 
+> **Status as of 2026-04-28 — substantially shipped.** The studio ships at `apps/web/src/pages/admin/routing-studio.tsx` with the seven proposed top-level tabs (`Routing Map`, `Case Ownership`, `Child Dispatch`, `Visibility`, `Simulator`, `Advanced Overrides`, `Audit`). The `Rules → Advanced Overrides` rename landed. Open work remaining at this date: `apps/web/src/components/admin/routing-studio/visibility-tab.tsx` is still a placeholder. Operational reference for shipped behaviour: [`docs/assignments-routing-fulfillment.md`](./assignments-routing-fulfillment.md) §23. Prose below describes the *plan* state at 2026-04-21 and is preserved as a benchmark — references to "the current branch" and "feat/routing-studio" are historical.
+
 ## Goal
 
 Redesign the routing studio so it matches how service operations actually work:

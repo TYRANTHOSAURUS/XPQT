@@ -63,6 +63,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { TicketActivityFeed } from '@/components/desk/ticket-activity-feed';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
+import { RoutingDecisionPill } from '@/components/desk/routing-decision-pill';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 import { formatTicketRef } from '@/lib/format-ref';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
@@ -1028,6 +1029,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                 });
               }}
             />
+          </InlineProperty>
+
+          <InlineProperty label="Routed by">
+            <RoutingDecisionPill ticketId={displayedTicket!.id} />
           </InlineProperty>
           </SidebarGroup>
 

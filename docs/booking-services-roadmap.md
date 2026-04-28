@@ -480,6 +480,8 @@ These are decisions whose downside is invisible today but compounds. Don't rever
 
 **Sub-task split — Phase A (daily list, ~2-3 weeks):**
 
+> **Full spec:** [`docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md`](superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md). Read before implementing.
+
 - [ ] Schema: `vendors.fulfillment_mode ENUM('portal', 'paper_only', 'hybrid') DEFAULT 'paper_only'`.
 - [ ] Schema: `vendors.daglijst_email TEXT`, `daglijst_cutoff_offset_minutes INTEGER DEFAULT 180` (3h default), `daglijst_send_time TIME` (alternative: fixed time-of-day like 07:00).
 - [ ] Schema: `vendor_daily_lists` (id, vendor_id, building_id, service_type, list_date, version, generated_at, sent_at, recipient_email, pdf_url, payload jsonb).
@@ -490,6 +492,8 @@ These are decisions whose downside is invisible today but compounds. Don't rever
 - [ ] Audit events: `daglijst.generated`, `daglijst.sent`, `daglijst.regenerated`, `order.post_cutoff_change`.
 
 **Sub-task split — Phase B (vendor portal v1, ~3-4 weeks):**
+
+> **Full spec:** [`docs/superpowers/specs/2026-04-27-vendor-portal-phase-b-design.md`](superpowers/specs/2026-04-27-vendor-portal-phase-b-design.md). Read before implementing.
 
 - [ ] Schema: `vendor_users` (vendor_id, email, role, last_login_at, active). Magic-link auth (no password initially).
 - [ ] Auth flow: separate from main Supabase Auth pool; vendor JWT scoped to `vendor_user`.
@@ -524,10 +528,12 @@ These are decisions whose downside is invisible today but compounds. Don't rever
 
 #### 9.1.2 Visual rule builder for service rules
 
-**Status:** 🟥
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-visual-rule-builder-design.md`](superpowers/specs/2026-04-27-visual-rule-builder-design.md)
 **Owner:** TBD
-**Estimate:** 3-4 weeks
+**Estimate:** 6-8 weeks (compresses to ~6 with 2 engineers parallel)
 **Depends on:** existing `service_rule_templates` seed data.
+
+**Note:** spec covers the unified visual rule builder across ALL rule domains (services + room booking + future visitor + parking + asset), not just service rules. Same builder, same EntityPicker library, same template flow, same simulator/debugger/coverage/conflict-detection. This is where the "one predicate engine" wedge becomes visible to admins.
 
 **Sub-tasks:**
 - [ ] Frontend: rule editor at `/admin/booking-services/rules/:id` becomes template-driven by default.
@@ -545,10 +551,10 @@ These are decisions whose downside is invisible today but compounds. Don't rever
 
 #### 9.1.3 Vendor scorecards (data model + admin UI)
 
-**Status:** 🟥
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-vendor-scorecards-design.md`](superpowers/specs/2026-04-27-vendor-scorecards-design.md)
 **Owner:** TBD
-**Estimate:** 3-4 weeks (after vendor portal lands)
-**Depends on:** vendor portal status updates (provides delivery timestamps).
+**Estimate:** 3-4 weeks (after Phase A + Phase B land)
+**Depends on:** Phase A status inference + Phase B self-reported status events.
 
 **Sub-tasks:**
 - [ ] Schema: `vendor_scorecards_daily` (vendor_id, date, service_type, orders_received, orders_acknowledged, orders_delivered, orders_declined, on_time_count, late_count, avg_minutes_to_acknowledge, total_revenue, cost_variance).
@@ -696,12 +702,33 @@ If vendor portal is delayed, ship dispatch independently:
 - [ ] Background worker drains outbox, writes to `audit_events` + ships to external SIEM if configured.
 - [ ] All bundle / order / approval / asset / vendor events go through outbox.
 
+#### 9.1.0 Microsoft Graph integration (foundational — unlocks Outlook + Teams + calendar sync)
+
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-microsoft-graph-integration-design.md`](superpowers/specs/2026-04-27-microsoft-graph-integration-design.md)
+**Owner:** TBD
+**Estimated effort:** 16-22 weeks across Phases 1-4 (Phase 5 add-in deferred)
+**Depends on:** none (greenfield)
+
+**Why Tier 1, foundational:** without bi-directional Outlook sync, Teams notifications, and room mailbox sync, Prequest cannot win against Eptura/Condeco/Robin in NL/BE corporate HQ deals. This is the single integration that unlocks calendar sync, conflict prevention, Teams notifications, adaptive card approvals, and the Outlook add-in path. See [competitive benchmark](competitive-benchmark.md) for justification.
+
+**Phases:**
+
+- **Phase 1 (4-6 wks):** Foundation + Outlook → Prequest read-only sync. Tenant connects via 5-step wizard; room mailboxes mapped to spaces; Outlook bookings appear in Prequest within 30s with deep-link to add services.
+- **Phase 2 (3-4 wks):** Bi-directional sync + conflict resolution. Cancellations + reschedules cascade. Conflicting Outlook events auto-declined. Recurrence sync.
+- **Phase 3 (3-4 wks):** Teams notifications via Bot Framework. Adaptive cards for confirmed bundles, pending approvals, at-risk services.
+- **Phase 4 (2-3 wks):** Approve-from-Teams adaptive card actions with HMAC validation + in-place card refresh.
+- **Phase 5 (4-6 wks, deferred to Tier 2):** Office.js Outlook add-in for compose-pane services attachment. Wait until Phase 1 deep-link validates (covers 80% of value).
+
+**Acceptance:** see spec doc §11.
+
+**Open product questions** captured in spec §14.
+
 #### 9.1.13 GDPR baseline — retention, erasure, access
 
-**Status:** 🟥
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-gdpr-baseline-design.md`](superpowers/specs/2026-04-27-gdpr-baseline-design.md)
 **Owner:** TBD
-**Estimate:** 4-5 weeks (engineering only; legal/DPA work in parallel)
-**Depends on:** none.
+**Estimate:** 5-6 weeks (engineering only; legal/DPA work in parallel)
+**Depends on:** none — but every other spec depends on parts of THIS (calendar PII handling, daglijst PDF retention, ghost person erasure cascade, audit outbox).
 
 **Why Tier 1:** every EU customer (mandatory regardless of size) requires DPA + retention + per-person access/erasure. This is a deal-blocker for any tenant doing procurement diligence. Build it before scaling marketing.
 
@@ -774,7 +801,14 @@ Visitor data is personal data; legitimate-interest (security, incident response)
 
 #### 9.2.0 Optimized vendor execution UX (per service type)
 
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-vendor-execution-ux-design.md`](superpowers/specs/2026-04-27-vendor-execution-ux-design.md)
+**Owner:** TBD
+**Estimated effort:** 12-16 weeks total across 4 phases (each phase parallelizable)
+**Depends on:** Vendor portal Phase B (auth + inbox foundation).
+
 **Goal:** lower friction of digital below friction of paper. Without this, portal adoption stalls and we stay paper-default forever.
+
+**Critical principle:** these tools REPLACE existing manual workflows (paper, whiteboard, radio, phone dispatch) — voluntary adoption only, never forced. Vendor adopts because the tool is better than what they have today.
 
 **Catering — Kitchen Display System (KDS)**
 - Tablet-mounted view (iPad portrait + landscape).
@@ -840,9 +874,13 @@ Visitor data is personal data; legitimate-interest (security, incident response)
 - "Reorder this booking" on past `/portal/me-bookings` rows.
 
 #### 9.2.5 Requester rating loop
-- Post-event email at T+24h: "How was your delivery? Rate 1-5, optional comment."
-- Public-token-based form (no auth).
-- Ratings feed `vendor_scorecards_daily.avg_satisfaction`.
+
+**Status:** 🟧 in design — see [`docs/superpowers/specs/2026-04-27-requester-rating-design.md`](superpowers/specs/2026-04-27-requester-rating-design.md)
+**Owner:** TBD
+**Estimate:** 3-4 weeks (after vendor scorecards spec; can run parallel to scorecards implementation)
+**Depends on:** MS Graph integration Phase 3 (for Teams channel — email channel works without it).
+
+**Note:** despite Tier 2 placement, this is the highest-trust voluntary signal feeding scorecards. May be elevated to Tier 1 if scorecards' data quality requires it. Single prompt at T+24h; opt-out always available; component-by-component rating; hidden vendor maintained; "didn't happen" workflow as separate escalation; recurring meeting suppression; 90-day anonymization.
 
 #### 9.2.6 Approver inbox dashboard
 - `/portal/approvals` page with: filter chips, batch-approve, smart sort (urgent/at-risk first).

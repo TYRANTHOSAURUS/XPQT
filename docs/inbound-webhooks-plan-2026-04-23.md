@@ -1,9 +1,11 @@
 # Inbound Webhooks — Create Tickets + Start Workflows from External Systems
 
-**Status:** plan
-**Date:** 2026-04-23
+**Status:** shipped (as of 2026-04-28)
+**Plan date:** 2026-04-23
 **Owner:** routing / ticketing
 **Related docs:** [`docs/assignments-routing-fulfillment.md`](./assignments-routing-fulfillment.md), [`docs/visibility.md`](./visibility.md)
+
+> **Shipped state.** This plan was executed end-to-end. The implementation lives at `apps/api/src/modules/webhook/*` (admin + auth + ingest + mapping + events services) with admin pages at `apps/web/src/pages/admin/webhook{,-create,-detail,-events}.tsx`. Schema landed in `supabase/migrations/00095_inbound_webhooks.sql` (API-key auth, ticket idempotency via `external_system` + `external_id`, `webhook_events` audit log). The §2 "current state" prose below describes the *pre-implementation* world (the old `00029_workflow_webhooks.sql` table) — it is preserved as a benchmark, not as a description of today's behaviour.
 
 ---
 

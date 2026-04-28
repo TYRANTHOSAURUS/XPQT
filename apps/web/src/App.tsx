@@ -9,7 +9,6 @@ import { DeskLayout } from '@/layouts/desk-layout';
 import { PortalLayout } from '@/layouts/portal-layout';
 import { AdminLayout } from '@/layouts/admin-layout';
 import { ReportsLayout } from '@/layouts/reports-layout';
-import { features } from '@/lib/features';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
 import { RouteErrorBoundary } from '@/components/route-error-boundary';
@@ -96,10 +95,6 @@ const LocationsPage = lazyNamed(() => import('@/pages/admin/locations'), 'Locati
 const SlaPoliciesPage = lazyNamed(() => import('@/pages/admin/sla-policies'), 'SlaPoliciesPage');
 const SlaPolicyCreatePage = lazyNamed(() => import('@/pages/admin/sla-policy-create'), 'SlaPolicyCreatePage');
 const SlaPolicyDetailPage = lazyNamed(() => import('@/pages/admin/sla-policy-detail'), 'SlaPolicyDetailPage');
-const RoutingRulesPage = lazyNamed(() => import('@/pages/admin/routing-rules'), 'RoutingRulesPage');
-const LocationTeamsPage = lazyNamed(() => import('@/pages/admin/location-teams'), 'LocationTeamsPage');
-const SpaceGroupsPage = lazyNamed(() => import('@/pages/admin/space-groups'), 'SpaceGroupsPage');
-const DomainParentsPage = lazyNamed(() => import('@/pages/admin/domain-parents'), 'DomainParentsPage');
 const RoutingStudioPage = lazyNamed(() => import('@/pages/admin/routing-studio'), 'RoutingStudioPage');
 const BusinessHoursPage = lazyNamed(() => import('@/pages/admin/business-hours'), 'BusinessHoursPage');
 const NotificationsPage = lazyNamed(() => import('@/pages/admin/notifications'), 'NotificationsPage');
@@ -262,42 +257,15 @@ export function App() {
                   <Route path="sla-policies/new" element={<SlaPolicyCreatePage />} />
                   <Route path="sla-policies/:id" element={<SlaPolicyDetailPage />} />
                   {/*
-                   * Legacy routing admin paths. When the Routing Studio flag is on, we
-                   * redirect these to the unified Studio. Flag-off keeps the old pages
-                   * reachable so rollback is a single env-var flip.
+                   * Legacy routing admin paths — kept as redirects so old bookmarks
+                   * land on the right Routing Studio tab. The legacy pages and the
+                   * `features.routingStudio` flag were removed once Studio became
+                   * the canonical surface.
                    */}
-                  <Route
-                    path="routing-rules"
-                    element={
-                      features.routingStudio
-                        ? <Navigate to="/admin/routing-studio?tab=rules" replace />
-                        : <RoutingRulesPage />
-                    }
-                  />
-                  <Route
-                    path="location-teams"
-                    element={
-                      features.routingStudio
-                        ? <Navigate to="/admin/routing-studio?tab=mappings" replace />
-                        : <LocationTeamsPage />
-                    }
-                  />
-                  <Route
-                    path="space-groups"
-                    element={
-                      features.routingStudio
-                        ? <Navigate to="/admin/routing-studio?tab=groups" replace />
-                        : <SpaceGroupsPage />
-                    }
-                  />
-                  <Route
-                    path="domain-parents"
-                    element={
-                      features.routingStudio
-                        ? <Navigate to="/admin/routing-studio?tab=fallbacks" replace />
-                        : <DomainParentsPage />
-                    }
-                  />
+                  <Route path="routing-rules" element={<Navigate to="/admin/routing-studio?tab=rules" replace />} />
+                  <Route path="location-teams" element={<Navigate to="/admin/routing-studio?tab=child-dispatch" replace />} />
+                  <Route path="space-groups" element={<Navigate to="/admin/routing-studio?tab=child-dispatch" replace />} />
+                  <Route path="domain-parents" element={<Navigate to="/admin/routing-studio?tab=rules" replace />} />
                   <Route path="business-hours" element={<BusinessHoursPage />} />
                   <Route path="notifications" element={<NotificationsPage />} />
                   <Route path="catalog-hierarchy" element={<CatalogHierarchyPage />} />
@@ -332,10 +300,7 @@ export function App() {
                   <Route path="vendors/:id" element={<VendorDetailPage />} />
                   <Route path="vendor-menus" element={<VendorMenusPage />} />
                   <Route path="vendor-menus/:id" element={<VendorMenuDetailPage />} />
-                  {/* Routing Studio (feature-flagged, phase 1: additive only) */}
-                  {features.routingStudio && (
-                    <Route path="routing-studio" element={<RoutingStudioPage />} />
-                  )}
+                  <Route path="routing-studio" element={<RoutingStudioPage />} />
                   {/* Branding */}
                   <Route path="branding" element={<BrandingPage />} />
                 </Route>

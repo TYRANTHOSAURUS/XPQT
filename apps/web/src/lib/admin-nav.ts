@@ -12,16 +12,13 @@ import {
   FormInput,
   GitBranch,
   HandCoins,
-  Layers,
   ListChecks,
   ListTree,
   MapPin,
-  Network,
   Package,
   Palette,
   PersonStanding,
   Receipt,
-  Route,
   Shield,
   Sparkles,
   Store,
@@ -29,7 +26,6 @@ import {
   Users,
   Webhook,
 } from 'lucide-react';
-import { features } from '@/lib/features';
 
 export interface AdminNavItem {
   title: string;
@@ -42,33 +38,6 @@ export interface AdminNavGroup {
   label: string;
   items: AdminNavItem[];
 }
-
-const legacyRoutingNav: AdminNavItem[] = [
-  {
-    title: 'Routing Rules',
-    path: '/admin/routing-rules',
-    icon: Route,
-    description: 'Conditional rules that direct tickets to teams',
-  },
-  {
-    title: 'Location Teams',
-    path: '/admin/location-teams',
-    icon: MapPin,
-    description: 'Team coverage per location',
-  },
-  {
-    title: 'Space Groups',
-    path: '/admin/space-groups',
-    icon: Layers,
-    description: 'Reusable groups of spaces for routing',
-  },
-  {
-    title: 'Domain Hierarchy',
-    path: '/admin/domain-parents',
-    icon: Network,
-    description: 'Parent-child request type inheritance',
-  },
-];
 
 const configItems: AdminNavItem[] = [
   {
@@ -95,16 +64,12 @@ const configItems: AdminNavItem[] = [
     icon: Clock,
     description: 'Response and resolution targets',
   },
-  ...(features.routingStudio
-    ? [
-        {
-          title: 'Routing Studio',
-          path: '/admin/routing-studio',
-          icon: Compass,
-          description: 'Rules, location teams, space groups, fallbacks',
-        },
-      ]
-    : legacyRoutingNav),
+  {
+    title: 'Routing Studio',
+    path: '/admin/routing-studio',
+    icon: Compass,
+    description: 'One surface for routing rules, location teams, space groups, and fallbacks',
+  },
   {
     title: 'Business Hours',
     path: '/admin/business-hours',
