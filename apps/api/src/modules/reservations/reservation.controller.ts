@@ -87,6 +87,8 @@ export class ReservationController {
       attendee_person_ids: dto.attendee_person_ids,
       recurrence_rule: dto.recurrence_rule,
       source: (dto.source as CreateReservationInput['source']) ?? 'portal',
+      services: dto.services,
+      bundle: dto.bundle,
     };
     if (dto.override_reason) actor.override_reason = dto.override_reason;
     return this.bookingFlow.create(input, actor);
@@ -107,6 +109,8 @@ export class ReservationController {
       attendee_person_ids: dto.attendee_person_ids,
       recurrence_rule: dto.recurrence_rule,
       source: (dto.source as CreateReservationInput['source']) ?? 'portal',
+      services: dto.services,
+      bundle: dto.bundle,
     };
     return this.bookingFlow.dryRun(input, actor);
   }

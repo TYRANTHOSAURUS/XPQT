@@ -16,6 +16,29 @@ export interface CreateReservationDto {
   recurrence_rule?: RecurrenceRule;
   source?: string;
   override_reason?: string;
+  /**
+   * Service lines (catering / AV / room setup) attached at booking time.
+   * BookingFlowService.create lazy-creates the bundle + delegates to
+   * BundleService.attachServicesToReservation when this is non-empty.
+   * Must accept the full per-line shape used by the post-booking
+   * /reservations/:id/services endpoint so the composer can submit either
+   * path without divergence.
+   */
+  services?: Array<{
+    catalog_item_id: string;
+    menu_id?: string | null;
+    quantity: number;
+    service_window_start_at?: string | null;
+    service_window_end_at?: string | null;
+    repeats_with_series?: boolean;
+    linked_asset_id?: string | null;
+  }>;
+  /** Bundle-level metadata. Honored only when `services` is present. */
+  bundle?: {
+    bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
+    cost_center_id?: string | null;
+    template_id?: string | null;
+  };
 }
 
 export interface UpdateReservationDto {
