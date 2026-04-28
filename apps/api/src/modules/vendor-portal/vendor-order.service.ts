@@ -63,8 +63,14 @@ export class VendorOrderService {
       `select
          ord.id                                  as id,
          ord.id::text                            as external_ref,
-         coalesce(ord.requested_for_start_at, ord.delivery_date::timestamptz + ord.delivery_time::time)
-                                                 as delivery_at,
+         /* Codex daglijst-round-3 review: explicit Europe/Amsterdam fold so
+            this fallback resolves to vendor wall-clock regardless of the
+            session/server TZ (was server-tz dependent). Tenant-configurable
+            tz is a Sprint 4 follow-up. */
+         coalesce(
+           ord.requested_for_start_at,
+           ((ord.delivery_date + ord.delivery_time)::timestamp at time zone 'Europe/Amsterdam')
+         )                                       as delivery_at,
          /* Pre-formatted location label — vendor doesn't need raw FKs. */
          coalesce(
            s_room.name || ' · ' || s_floor.name || ' · ' || s_building.name,
@@ -152,8 +158,14 @@ export class VendorOrderService {
       `select
          ord.id                                  as id,
          ord.id::text                            as external_ref,
-         coalesce(ord.requested_for_start_at, ord.delivery_date::timestamptz + ord.delivery_time::time)
-                                                 as delivery_at,
+         /* Codex daglijst-round-3 review: explicit Europe/Amsterdam fold so
+            this fallback resolves to vendor wall-clock regardless of the
+            session/server TZ (was server-tz dependent). Tenant-configurable
+            tz is a Sprint 4 follow-up. */
+         coalesce(
+           ord.requested_for_start_at,
+           ((ord.delivery_date + ord.delivery_time)::timestamp at time zone 'Europe/Amsterdam')
+         )                                       as delivery_at,
          ord.headcount                           as headcount,
          /* Requester FIRST NAME ONLY for the response. requester_person_id
             is selected for the access-log writer ONLY (stripped before the

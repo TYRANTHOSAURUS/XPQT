@@ -101,8 +101,8 @@ function makeFakeDb(opts: FakeOptions = {}) {
       }
       // Sprint 2 codex fix #1 — CAS state machine: only succeeds when the
       // current row's email_status is in the from-list ($3 = string[]).
-      // (Uses regex for the SET email_status assignment so column-aligned
-      //  spacing in the real SQL doesn't drift the mock.)
+      // Codex round-3 fix: CAS UPDATE now also returns sending_acquired_at
+      // as a lease token; subsequent UPDATEs fence on it.
       if (
         sql.includes('update vendor_daily_lists')
         && /email_status\s*=\s*'sending'/.test(sql)
@@ -110,9 +110,20 @@ function makeFakeDb(opts: FakeOptions = {}) {
       ) {
         const fromStatuses = (params?.[2] as string[]) ?? [];
         if (fromStatuses.includes(base.email_status ?? 'never_sent')) {
-          return { id: base.id };
+          // Stable lease ts so later fenced UPDATEs can match it.
+          return { id: base.id, sending_acquired_at: '2026-04-30T20:00:00Z' };
         }
         return null;
+      }
+      // Codex round-3 — fenced failure rollback: matches when the lease
+      // ts ($4) equals our captured CAS lease. In the mock we always
+      // succeed (no concurrent worker / sweeper).
+      if (
+        sql.includes('update vendor_daily_lists')
+        && sql.includes("'failed'")
+        && sql.includes('sending_acquired_at = $4')
+      ) {
+        return { id: base.id };
       }
       return null;
     }),
@@ -343,22 +354,92 @@ describe('DaglijstService.send', () => {
     expect(casUpdate).toBeDefined();
   });
 
-  it('passes correlationId with per-attempt nonce to mailer', async () => {
+  it('passes a STABLE correlationId per (id, version) on natural sends', async () => {
+    // Codex round-3 fix: stable per (id, version) so the mail provider's
+    // Idempotency-Key dedupes accidental double-sends across the
+    // cross-worker race (worker A's lease revoked by sweeper, worker B
+    // retries — same logical email, same key, provider returns cached
+    // success). NO per-attempt nonce on natural sends.
     const { svc, mailer } = buildSvc();
     await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
     const call = mailer.calls[0] as { correlationId?: string };
-    expect(call.correlationId).toMatch(
-      /^daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1:first:[0-9a-z]+$/,
-    );
+    expect(call.correlationId).toBe('daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
   });
 
-  it('correlationId uses :retry suffix for failed-then-resent rows', async () => {
+  it('correlationId on retry of a failed row stays stable (provider dedupes)', async () => {
+    // Codex round-3 fix: retries reuse the same logical key. If the prior
+    // attempt actually delivered (provider has the receipt cached),
+    // requeueing returns the cached success WITHOUT sending again.
     const { svc, mailer } = buildSvc({
       row: makeRow({ email_status: 'failed', email_error: 'prior smtp blip', pdf_storage_path: 'tenant/.../v1.pdf' }),
     });
     await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
     const call = mailer.calls[0] as { correlationId?: string };
-    expect(call.correlationId).toMatch(/:retry:/);
+    expect(call.correlationId).toBe('daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1');
+  });
+
+  it('force=true correlationId appends a nonce so admins can override cached results', async () => {
+    const { svc, mailer } = buildSvc({
+      row: makeRow({ sent_at: '2026-04-30T19:00:00Z', email_status: 'sent', pdf_storage_path: 'tenant/.../v1.pdf' }),
+    });
+    await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST, force: true });
+    const call = mailer.calls[0] as { correlationId?: string };
+    expect(call.correlationId).toMatch(
+      /^daglijst:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:v1:force:[0-9a-z]+$/,
+    );
+  });
+
+  it('lease-revoked-after-mail-dispatch: does NOT mark sent, audits SendingReclaimed', async () => {
+    // Codex round-3 fix: simulate the cross-worker race. The success
+    // UPDATE matches 0 rows (lease was revoked while mailer was in
+    // flight). We must:
+    //   - NOT claim 'sent' status (newer worker is the authority)
+    //   - NOT lock lines
+    //   - emit a SendingReclaimed audit with outcome=lease_revoked_after_mail_dispatch
+    //   - return SendOutcome { status: 'sent', row: <unchanged> } per the
+    //     caller contract (mail DID dispatch — provider receipt is real).
+    const db = makeFakeDb();
+    // Override the txClient so the success UPDATE returns 0 rows (fence
+    // failed). The audit emit + line lock should NOT run.
+    db.txClient.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      db.captured.push({ sql, params, tx: true });
+      if (sql.includes('update vendor_daily_lists') && sql.includes("'sent'")) {
+        return { rows: [], rowCount: 0 };           // lease revoked
+      }
+      if (sql.includes('update vendor_daily_lists')) {
+        // any other UPDATE — keep generic shape
+        return { rows: [], rowCount: 0 };
+      }
+      // audit_outbox INSERT path stays open so the SendingReclaimed
+      // audit can be emitted.
+      return { rows: [], rowCount: 0 };
+    });
+    const supabase = makeFakeSupabase();
+    const pdfRenderer = makeFakePdfRenderer();
+    const mailer = makeFakeMailer();
+    const svc = new DaglijstService(
+      db as never,
+      supabase as never,
+      new AuditOutboxService(db as never),
+      pdfRenderer as never,
+      mailer as never,
+    );
+
+    const outcome = await svc.send({ tenantId: TENANT, daglijstId: DAGLIJST });
+    // Mail DID dispatch (mailer was called).
+    expect(mailer.calls).toHaveLength(1);
+    // We don't claim 'sent' state — return the unchanged row.
+    expect(outcome.status).toBe('sent');
+    expect(outcome.row.email_status).toBe('never_sent');     // base row untouched
+    // Line lock UPDATE must NOT run when the lease is revoked.
+    const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
+    expect(txSqls.some((s) => s.includes('update order_line_items'))).toBe(false);
+    // SendingReclaimed audit emitted with the lease-revoked outcome marker.
+    const reclaimAudit = db.captured.find((c) =>
+      c.sql.includes('insert into audit_outbox')
+      && c.params?.[1] === 'daglijst.sending_reclaimed',
+    );
+    expect(reclaimAudit).toBeDefined();
   });
 });
 

@@ -332,19 +332,36 @@ export class DaglijstService {
     Array<{ id: string; tenant_id: string; sending_acquired_at: string }>
   > {
     const olderThanMs = args.olderThanMs ?? 5 * 60_000;
+    // Codex round-3 fix: capture the PRIOR sending_acquired_at via CTE
+    // before nullifying it. UPDATE ... RETURNING returns post-update
+    // values, so the previous code emitted `stuck_since: null` in audit.
+    // CTE pattern: SELECT old, UPDATE by id, RETURNING from CTE.
     const reclaimed = await this.db.queryMany<{
       id: string;
       tenant_id: string;
       sending_acquired_at: string;
     }>(
-      `update vendor_daily_lists
-          set email_status         = 'failed',
-              email_error          = 'reclaimed: stuck in sending past sweep threshold',
-              sending_acquired_at  = null
-        where email_status = 'sending'
-          and sending_acquired_at is not null
-          and sending_acquired_at < now() - ($1::int || ' milliseconds')::interval
-        returning id, tenant_id, sending_acquired_at`,
+      `with stuck as (
+         select id, tenant_id, sending_acquired_at as prev_acquired_at
+           from vendor_daily_lists
+          where email_status = 'sending'
+            and sending_acquired_at is not null
+            and sending_acquired_at < now() - ($1::int || ' milliseconds')::interval
+          for update
+       ),
+       updated as (
+         update vendor_daily_lists v
+            set email_status        = 'failed',
+                email_error         = 'reclaimed: stuck in sending past sweep threshold',
+                sending_acquired_at = null
+          from stuck
+          where v.id = stuck.id
+          returning v.id
+       )
+       select stuck.id, stuck.tenant_id,
+              stuck.prev_acquired_at::text as sending_acquired_at
+         from stuck
+         join updated on updated.id = stuck.id`,
       [olderThanMs],
     );
     if (reclaimed.length > 0) {
@@ -526,13 +543,17 @@ export class DaglijstService {
     //   - already 'sending' → cas returns 0 rows → another worker has it → bail
     //   - 'sent' + force → use 'sent' as the CAS-from state on resend.
     //
-    // Codex round-2 fix: also stamp `sending_acquired_at = now()` so the
-    // sweeper (reclaimStuckSendingRows) can detect rows where the worker
-    // crashed post-CAS and reset them to 'failed' for retry.
+    // Codex round-2 fix: stamp `sending_acquired_at = now()` so the sweeper
+    // can detect rows where the worker crashed post-CAS.
+    //
+    // Codex round-3 fix: RETURN the acquired_at as a "lease token". Every
+    // post-CAS UPDATE conditions on email_status='sending' AND
+    // sending_acquired_at=$lease so a stale worker cannot overwrite state
+    // after the sweeper or another worker has moved on.
     const fromStatuses = force
       ? ['never_sent', 'failed', 'sent']
       : ['never_sent', 'failed'];
-    const cas = await this.db.queryOne<{ id: string }>(
+    const cas = await this.db.queryOne<{ id: string; sending_acquired_at: string }>(
       `update vendor_daily_lists
           set email_status        = 'sending',
               email_error         = null,
@@ -540,7 +561,7 @@ export class DaglijstService {
         where tenant_id = $1
           and id = $2
           and email_status = any($3::text[])
-        returning id`,
+        returning id, sending_acquired_at`,
       [tenantId, daglijstId, fromStatuses],
     );
     if (!cas) {
@@ -562,6 +583,11 @@ export class DaglijstService {
     // ANY thrown exception before the success commit must roll back to
     // 'failed' so the row isn't stuck. Wrap the rest in try/catch with a
     // finally-style rollback.
+    //
+    // Codex round-3 fix: capture the lease (sending_acquired_at) so every
+    // post-mailer UPDATE can fence on it and abandon the write if the
+    // sweeper or another worker has revoked our acquisition.
+    const leaseTs = cas.sending_acquired_at;
     let pdfUrl: string;
     let expiresAt: string;
     let sendResult: Awaited<ReturnType<DaglijstMailer['sendDaglijst']>> | undefined;
@@ -574,14 +600,20 @@ export class DaglijstService {
 
       const subject = buildSubjectLine(dl);
       const textBody = buildTextBody(dl, pdfUrl);
-      // Codex round-2 fix: correlation id varies per attempt. Reusing
-      // ":first" on every retry would make the mail provider's
-      // Idempotency-Key suppress legit retries. Append the
-      // sending_acquired_at clock so each CAS gets a unique key.
-      const acquiredNonce = Date.now().toString(36);
-      const correlationId = `daglijst:${dl.id}:v${dl.version}:${
-        dl.email_message_id || dl.email_status === 'failed' ? 'retry' : 'first'
-      }:${acquiredNonce}`;
+      // Codex round-3 fix: correlationId is STABLE per (id, version) for
+      // the natural retry case so the mail provider's Idempotency-Key
+      // dedupes accidental double-sends across the cross-worker race
+      // (worker A's lease revoked by sweeper, worker B retries — same
+      // logical email, same key, provider returns cached success). Force
+      // resends append a nonce so admins can override an already-cached
+      // result.
+      //
+      // (Round-2 used a per-attempt nonce, but that defeated provider
+      // dedupe across workers — codex round-3 caught this combined with
+      // the missing lease fence.)
+      const correlationId = force
+        ? `daglijst:${dl.id}:v${dl.version}:force:${Date.now().toString(36)}`
+        : `daglijst:${dl.id}:v${dl.version}`;
 
       try {
         sendResult = await this.mailer.sendDaglijst({
@@ -615,21 +647,36 @@ export class DaglijstService {
       // can retry the SAME row (codex Sprint 2 fix #2 — no version-bump-
       // forever spiral). Clear sending_acquired_at so the sweeper doesn't
       // re-process it.
-      await this.db.query(
+      //
+      // Codex round-3 fix: fence on the lease. If the sweeper or another
+      // worker already moved this row, our UPDATE matches 0 rows and we
+      // log + abandon — the newer worker owns state authority.
+      const rollback = await this.db.queryOne<{ id: string }>(
         `update vendor_daily_lists
             set email_status        = 'failed',
                 email_error         = $3,
                 sending_acquired_at = null
-          where tenant_id = $1 and id = $2`,
-        [tenantId, daglijstId, errMsg.slice(0, 500)],
+          where tenant_id = $1
+            and id = $2
+            and email_status = 'sending'
+            and sending_acquired_at = $4
+          returning id`,
+        [tenantId, daglijstId, errMsg.slice(0, 500), leaseTs],
       );
-      await this.auditOutbox.emit({
-        tenantId,
-        eventType: DaglijstEventType.SendFailed,
-        entityType: 'vendor_daily_lists',
-        entityId: daglijstId,
-        details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
-      });
+      if (!rollback) {
+        this.log.warn(
+          `daglijst ${daglijstId} failure rollback skipped — lease revoked ` +
+          `(sweeper/another worker has authority); error was: ${errMsg.slice(0, 200)}`,
+        );
+      } else {
+        await this.auditOutbox.emit({
+          tenantId,
+          eventType: DaglijstEventType.SendFailed,
+          entityType: 'vendor_daily_lists',
+          entityId: daglijstId,
+          details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
+        });
+      }
       throw new BadRequestException(`Daglijst send failed: ${errMsg}`);
     }
 
@@ -641,6 +688,12 @@ export class DaglijstService {
     // sending_acquired_at; if the tx itself rolls back the sweeper will
     // recover the row on a later tick. The mail provider's
     // Idempotency-Key (correlationId) prevents duplicate sends on retry.
+    //
+    // Codex round-3 fix: fence the success UPDATE on the lease too. If
+    // our acquisition was revoked while the mailer call was in-flight,
+    // we don't claim 'sent' state — another worker is the authority.
+    // The provider's idempotency cache already deduped the actual mail
+    // dispatch (stable correlationId).
     const finalRow = await this.db.tx(async (client) => {
       const updated = await client.query<VendorDailyListRow>(
         `update vendor_daily_lists
@@ -650,10 +703,39 @@ export class DaglijstService {
                 email_error          = null,
                 pdf_url_expires_at   = $4,
                 sending_acquired_at  = null
-          where tenant_id = $1 and id = $2
+          where tenant_id = $1
+            and id = $2
+            and email_status = 'sending'
+            and sending_acquired_at = $5
           returning *`,
-        [tenantId, daglijstId, sendResult.messageId, expiresAt],
+        [tenantId, daglijstId, sendResult.messageId, expiresAt, leaseTs],
       );
+
+      if (updated.rowCount === 0) {
+        // Lease revoked between mailer dispatch + state UPDATE. The mail
+        // already went out (or was deduped by provider Idempotency-Key);
+        // the row's authoritative state is whatever the newer worker /
+        // sweeper set it to. Don't claim 'sent', don't lock lines, don't
+        // emit Sent audit. Caller (scheduler) will re-poll and either
+        // see 'sent' (winner committed) or 'failed' (winner is retrying).
+        this.log.warn(
+          `daglijst ${daglijstId} success update skipped — lease revoked; ` +
+          `provider message_id=${sendResult.messageId} (mail already dispatched, ` +
+          `state managed by newer worker)`,
+        );
+        await this.auditOutbox.emitTx(client, {
+          tenantId,
+          eventType: DaglijstEventType.SendingReclaimed,
+          entityType: 'vendor_daily_lists',
+          entityId: daglijstId,
+          details: {
+            outcome: 'lease_revoked_after_mail_dispatch',
+            provider_message_id: sendResult.messageId,
+            recipient: dl.recipient_email,
+          },
+        });
+        return dl;
+      }
 
       // Lock-on-send (deferred from record() per codex Sprint 1 fix).
       const lineIds = dl.payload.lines.map((l) => l.line_id);
