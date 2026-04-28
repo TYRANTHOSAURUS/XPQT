@@ -1,4 +1,8 @@
-import type { BookingPayload, ServiceLinePayload } from '@/api/room-booking';
+import type {
+  BookingPayload,
+  MultiRoomBookingPayload,
+  ServiceLinePayload,
+} from '@/api/room-booking';
 import type { ComposerEntrySource, ComposerMode, ComposerState } from './state';
 
 /**
@@ -61,6 +65,63 @@ export function buildBookingPayload(args: {
     bundle: hasServices
       ? {
           bundle_type: 'meeting',
+          template_id: state.templateId ?? undefined,
+          cost_center_id: costCenterId,
+        }
+      : undefined,
+  };
+}
+
+/**
+ * Map a composer state with multi-room selections into the
+ * `POST /reservations/multi-room` payload. Services attach to the PRIMARY
+ * (first) room only — backend semantics. Recurrence is intentionally
+ * dropped (validateForSubmit blocks recurrence + multi-room upstream).
+ */
+export function buildMultiRoomBookingPayload(args: {
+  state: ComposerState;
+  mode: ComposerMode;
+  entrySource: ComposerEntrySource;
+  callerPersonId: string;
+}): MultiRoomBookingPayload | null {
+  const { state, mode, entrySource, callerPersonId } = args;
+  if (
+    !state.spaceId ||
+    state.additionalSpaceIds.length === 0 ||
+    !state.startAt ||
+    !state.endAt
+  ) {
+    return null;
+  }
+
+  const requesterPersonId =
+    mode === 'operator' ? state.requesterPersonId ?? callerPersonId : callerPersonId;
+
+  const services: ServiceLinePayload[] = state.services.map((s) => ({
+    catalog_item_id: s.catalog_item_id,
+    menu_id: s.menu_id || undefined,
+    quantity: s.quantity,
+    service_window_start_at: s.service_window_start_at ?? null,
+    service_window_end_at: s.service_window_end_at ?? null,
+  }));
+  const hasServices = services.length > 0;
+  const costCenterId =
+    state.costCenterId && state.costCenterId.length > 0 ? state.costCenterId : null;
+
+  return {
+    space_ids: [state.spaceId, ...state.additionalSpaceIds],
+    requester_person_id: requesterPersonId,
+    host_person_id: state.hostPersonId ?? null,
+    start_at: state.startAt,
+    end_at: state.endAt,
+    attendee_count: state.attendeeCount,
+    attendee_person_ids:
+      state.attendeePersonIds.length > 0 ? state.attendeePersonIds : undefined,
+    source: entrySourceToReservationSource(entrySource),
+    services: hasServices ? services : undefined,
+    bundle: hasServices
+      ? {
+          bundle_type: 'event',
           template_id: state.templateId ?? undefined,
           cost_center_id: costCenterId,
         }

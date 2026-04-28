@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AlertTriangle, CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarClock,
+  Check,
+  ChevronsUpDown,
+  Loader2,
+  MapPin,
+  Plus,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -31,7 +41,11 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { PersonPicker } from '@/components/person-picker';
-import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
+import {
+  useCreateBooking,
+  useMultiRoomBooking,
+  type RankedRoom,
+} from '@/api/room-booking';
 import { spacesListOptions, useSpaces } from '@/api/spaces';
 import type { Space } from '@/api/spaces';
 import { useQuery } from '@tanstack/react-query';
@@ -56,7 +70,7 @@ import {
   type ComposerState,
   type InitialComposerState,
 } from './state';
-import { buildBookingPayload } from './submit';
+import { buildBookingPayload, buildMultiRoomBookingPayload } from './submit';
 
 export interface BookingComposerProps {
   /** When the wrapper opens/closes the composer. */
@@ -98,10 +112,11 @@ export interface BookingComposerProps {
  *   - (Phase 2) Portal /portal/book-room
  *
  * Renders the same sections regardless of surface — the wrapper picks
- * Dialog vs Sheet vs Popover. Single-room only in v1; multi-room is
- * deliberately deferred per codex's review of δ-light (the multi-room
- * endpoint doesn't accept services / bundle / source / recurrence yet,
- * so exposing it would just paper over a broken contract).
+ * Dialog vs Sheet vs Popover. Multi-room atomic groups supported via
+ * additionalSpaceIds (handleSubmit branches on the count); recurrence +
+ * multi-room is mutually exclusive (validateForSubmit gates, backend
+ * controller rejects). Services on multi-room attach to the PRIMARY
+ * room only per backend semantics.
  */
 export function BookingComposer({
   open,
@@ -227,7 +242,8 @@ export function BookingComposer({
   const validationError = useMemo(() => validateForSubmit(state, mode), [state, mode]);
 
   const createBooking = useCreateBooking();
-  const submitting = createBooking.isPending;
+  const createMultiRoom = useMultiRoomBooking();
+  const submitting = createBooking.isPending || createMultiRoom.isPending;
   const [pickerOpen, setPickerOpen] = useState(false);
 
   // Approval-route detection: when the picked room's `rule_outcome.effect`
@@ -359,22 +375,47 @@ export function BookingComposer({
     // exist let an invalid form one-click rebook.
     const overrideValidation = validateForSubmit(effectiveState, mode);
     if (overrideValidation) return;
-    const payload = buildBookingPayload({
-      state: effectiveState,
-      mode,
-      entrySource,
-      callerPersonId,
-    });
-    if (!payload) return;
     try {
-      const result = await createBooking.mutateAsync(payload);
-      const reservationId = (result as { id?: string })?.id;
-      toastSuccess(isApprovalRoute ? 'Approval requested' : 'Booked');
+      let reservationId: string | undefined;
+      if (effectiveState.additionalSpaceIds.length > 0) {
+        const payload = buildMultiRoomBookingPayload({
+          state: effectiveState,
+          mode,
+          entrySource,
+          callerPersonId,
+        });
+        if (!payload) return;
+        const result = await createMultiRoom.mutateAsync(payload);
+        // Surface the primary's reservation id for the onBooked callback
+        // so navigation lands on a useful page.
+        reservationId = (result as { reservations?: Array<{ id: string }> })?.reservations?.[0]?.id;
+      } else {
+        const payload = buildBookingPayload({
+          state: effectiveState,
+          mode,
+          entrySource,
+          callerPersonId,
+        });
+        if (!payload) return;
+        const result = await createBooking.mutateAsync(payload);
+        reservationId = (result as { id?: string })?.id;
+      }
+      toastSuccess(
+        isApprovalRoute
+          ? 'Approval requested'
+          : effectiveState.additionalSpaceIds.length > 0
+            ? `Booked ${effectiveState.additionalSpaceIds.length + 1} rooms`
+            : 'Booked',
+      );
       onOpenChange(false);
       if (reservationId) onBooked?.(reservationId);
     } catch (e) {
       toastError(
-        isApprovalRoute ? "Couldn't request approval" : "Couldn't book the room",
+        isApprovalRoute
+          ? "Couldn't request approval"
+          : effectiveState.additionalSpaceIds.length > 0
+            ? "Couldn't book the rooms"
+            : "Couldn't book the room",
         { error: e, retry: () => handleSubmit(overrides) },
       );
     }
@@ -470,7 +511,17 @@ export function BookingComposer({
             <RoomPickerInline
               value={state.spaceId}
               attendeeCount={state.attendeeCount}
+              excludeIds={state.additionalSpaceIds}
               onChange={(spaceId) => dispatch({ type: 'SET_SPACE', spaceId })}
+            />
+            <AdditionalRoomsField
+              primaryId={state.spaceId}
+              additionalIds={state.additionalSpaceIds}
+              spacesCache={spacesCache ?? []}
+              attendeeCount={state.attendeeCount}
+              recurrence={state.recurrence}
+              onAdd={(spaceId) => dispatch({ type: 'ADD_ROOM', spaceId })}
+              onRemove={(spaceId) => dispatch({ type: 'REMOVE_ROOM', spaceId })}
             />
           </Field>
         )}
@@ -837,10 +888,15 @@ export function BookingComposer({
 function RoomPickerInline({
   value,
   attendeeCount,
+  excludeIds = [],
   onChange,
 }: {
   value: string | null;
   attendeeCount: number;
+  /** Room ids to hide from the dropdown (e.g. rooms already added as
+   *  additionals to a multi-room group). Codex prevention: stops the
+   *  user from accidentally picking the same room twice. */
+  excludeIds?: string[];
   onChange: (spaceId: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -870,9 +926,13 @@ function RoomPickerInline({
     [byId],
   );
 
+  const excludeSet = useMemo(() => new Set(excludeIds), [excludeIds]);
   const reservable = useMemo<Space[]>(
-    () => (spaces ?? []).filter((s) => s.reservable && s.active),
-    [spaces],
+    () =>
+      (spaces ?? []).filter(
+        (s) => s.reservable && s.active && !excludeSet.has(s.id),
+      ),
+    [spaces, excludeSet],
   );
 
   // Distinct buildings whose rooms are reservable. Ordered alphabetically
@@ -1013,6 +1073,150 @@ function RoomPickerInline({
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * Multi-room composer affordance — "+ Another room" button + chip list
+ * of selected additionals. Hidden when no primary room is set yet (a
+ * multi-room group needs the primary first). When recurrence is on,
+ * surfaces a soft note explaining the conflict (the validation error
+ * blocks submit; this nudges the user toward the resolution).
+ */
+function AdditionalRoomsField({
+  primaryId,
+  additionalIds,
+  spacesCache,
+  attendeeCount,
+  recurrence,
+  onAdd,
+  onRemove,
+}: {
+  primaryId: string | null;
+  additionalIds: string[];
+  spacesCache: Space[];
+  attendeeCount: number;
+  recurrence: RecurrenceRule | null;
+  onAdd: (spaceId: string) => void;
+  onRemove: (spaceId: string) => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const byId = useMemo(() => {
+    const m = new Map<string, Space>();
+    for (const s of spacesCache) m.set(s.id, s);
+    return m;
+  }, [spacesCache]);
+
+  if (!primaryId) return null;
+
+  const atCap = additionalIds.length >= 9; // backend cap = 10 total
+  const recurrenceConflict = additionalIds.length > 0 && recurrence != null;
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {additionalIds.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {additionalIds.map((id) => {
+            const s = byId.get(id);
+            return (
+              <li
+                key={id}
+                className="group/chip inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] tabular-nums duration-150 ease-[var(--ease-snap)] animate-in fade-in zoom-in-95"
+              >
+                <span className="text-foreground">{s?.name ?? 'Room'}</span>
+                {s?.capacity != null && (
+                  <span className="text-muted-foreground/70">{s.capacity}</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onRemove(id)}
+                  aria-label={`Remove ${s?.name ?? 'room'}`}
+                  className="-mr-1 rounded-full p-0.5 text-muted-foreground opacity-60 [transition:opacity_120ms_var(--ease-snap)] hover:bg-muted hover:text-foreground hover:opacity-100 group-hover/chip:opacity-100"
+                >
+                  <X className="size-3" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {/* Recurrence-conflict note placed ABOVE the add trigger so the
+          user reads it BEFORE clicking. Below the trigger = easy to
+          miss after they've already added another room. */}
+      {recurrenceConflict && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"
+        >
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          Multi-room bookings can't recur. Drop a room or turn off recurrence.
+        </p>
+      )}
+      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+        <PopoverTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 self-start px-2 text-xs active:translate-y-px"
+              disabled={atCap}
+              title={atCap ? 'Up to 10 rooms can be booked together' : undefined}
+            >
+              <Plus className="size-3.5" />
+              {atCap ? 'Room limit reached (10)' : 'Add another room'}
+            </Button>
+          }
+        />
+        <PopoverContent
+          className="p-0"
+          align="start"
+          style={{ width: 'min(360px, 90vw)' }}
+        >
+          <Command>
+            <CommandInput placeholder="Search rooms…" />
+            <CommandList className="max-h-72">
+              <CommandEmpty>No more rooms match.</CommandEmpty>
+              <CommandGroup>
+                {spacesCache
+                  .filter(
+                    (s) =>
+                      s.reservable &&
+                      s.active &&
+                      s.id !== primaryId &&
+                      !additionalIds.includes(s.id),
+                  )
+                  .map((room) => (
+                    <CommandItem
+                      key={room.id}
+                      value={`${room.name} ${room.code ?? ''} ${room.type}`}
+                      onSelect={() => {
+                        onAdd(room.id);
+                        setPickerOpen(false);
+                      }}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm">{room.name}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {room.type.replace(/_/g, ' ')}
+                          {room.code ? ` · ${room.code}` : ''}
+                        </div>
+                      </div>
+                      {room.capacity != null && (
+                        <CapacityBadge
+                          capacity={room.capacity}
+                          attendees={attendeeCount}
+                        />
+                      )}
+                    </CommandItem>
+                  ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }
 

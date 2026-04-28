@@ -33,8 +33,13 @@ export type ComposerEntrySource = 'portal' | 'desk-list' | 'desk-scheduler';
 
 export interface ComposerState {
   // ── Cart ──────────────────────────────────────────────────────────────
-  /** Single-room only in v1; multi-room intentionally deferred per codex. */
+  /** Primary room. Single-room flow → `useCreateBooking`. */
   spaceId: string | null;
+  /** Additional rooms (multi-room atomic group). When non-empty, submit
+   *  routes through `useMultiRoomBooking`; services attach to the
+   *  PRIMARY only per backend semantics. Multi-room + recurrence is an
+   *  unsupported combination — the controller rejects, the UI gates. */
+  additionalSpaceIds: string[];
   startAt: string | null;
   endAt: string | null;
   attendeeCount: number;
@@ -65,6 +70,8 @@ export interface ComposerState {
 
 export type ComposerAction =
   | { type: 'SET_SPACE'; spaceId: string | null }
+  | { type: 'ADD_ROOM'; spaceId: string }
+  | { type: 'REMOVE_ROOM'; spaceId: string }
   | { type: 'SET_TIME'; startAt: string | null; endAt: string | null }
   | { type: 'SET_ATTENDEES'; count: number; personIds?: string[] }
   | { type: 'SET_REQUESTER'; personId: string | null }
@@ -97,6 +104,7 @@ export interface InitialComposerState {
 export function initialState(seed: InitialComposerState = {}): ComposerState {
   return {
     spaceId: seed.spaceId ?? null,
+    additionalSpaceIds: [],
     startAt: seed.startAt ?? null,
     endAt: seed.endAt ?? null,
     attendeeCount: seed.attendeeCount ?? 1,
@@ -160,6 +168,28 @@ export function composerReducer(state: ComposerState, action: ComposerAction): C
   switch (action.type) {
     case 'SET_SPACE':
       return { ...state, spaceId: action.spaceId };
+    case 'ADD_ROOM':
+      // Block duplicates: primary + additional must be unique. Cap at
+      // 9 additionals (10 total per backend limit in
+      // multi-room-booking.service:60).
+      if (
+        state.spaceId === action.spaceId ||
+        state.additionalSpaceIds.includes(action.spaceId) ||
+        state.additionalSpaceIds.length >= 9
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        additionalSpaceIds: [...state.additionalSpaceIds, action.spaceId],
+      };
+    case 'REMOVE_ROOM':
+      return {
+        ...state,
+        additionalSpaceIds: state.additionalSpaceIds.filter(
+          (id) => id !== action.spaceId,
+        ),
+      };
     case 'SET_TIME':
       return { ...state, startAt: action.startAt, endAt: action.endAt };
     case 'SET_ATTENDEES':
@@ -216,6 +246,12 @@ export function validateForSubmit(
   if (state.attendeeCount < 1) return 'At least one attendee.';
   if (mode === 'operator' && !state.requesterPersonId) {
     return 'Pick who the booking is for.';
+  }
+  // Multi-room + recurrence is rejected server-side (the conflict-guard
+  // semantics for "atomic group across multiple occurrences" need their
+  // own design). Surface client-side so the user can resolve before submit.
+  if (state.additionalSpaceIds.length > 0 && state.recurrence) {
+    return 'Multi-room bookings can\'t recur. Drop a room or turn off recurrence.';
   }
   return null;
 }
