@@ -1,11 +1,19 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
+import {
+  DAGLIJST_MAILER,
+  type DaglijstMailer,
+} from './daglijst-mailer.service';
 import { DaglijstEventType } from './event-types';
+import { PdfRendererService } from './pdf-renderer.service';
 
 /**
  * Per-(vendor, building, service_type, date) daily-list assembly + record-keeping.
@@ -25,9 +33,21 @@ import { DaglijstEventType } from './event-types';
  */
 @Injectable()
 export class DaglijstService {
+  private readonly log = new Logger(DaglijstService.name);
+
+  /** Storage bucket from migration 00174. */
+  private static readonly PDF_BUCKET = 'daglijst-pdfs';
+  /** Signed URL TTL for the recipient email — 7 days per spec §6. */
+  private static readonly EMAIL_SIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60;
+  /** Signed URL TTL for admin "regenerate + preview" surface — 1 hour per spec §4. */
+  private static readonly ADMIN_SIGNED_URL_TTL_SECONDS = 60 * 60;
+
   constructor(
     private readonly db: DbService,
+    private readonly supabase: SupabaseService,
     private readonly auditOutbox: AuditOutboxService,
+    private readonly pdfRenderer: PdfRendererService,
+    @Inject(DAGLIJST_MAILER) private readonly mailer: DaglijstMailer,
   ) {}
 
   /**
@@ -284,6 +304,204 @@ export class DaglijstService {
     });
   }
 
+  /**
+   * Render → upload → record pdf_storage_path. Idempotent: if the row already
+   * has a pdf_storage_path, no re-render unless `force=true`. Returns the
+   * updated daglijst row.
+   *
+   * Spec §5: render is <3s/PDF; rendered file lands in
+   * `<tenant>/<vendor>/<list_date>/<building_or_tenant>/<service>-v<n>.pdf`.
+   */
+  async renderAndUpload(args: RenderAndUploadArgs): Promise<VendorDailyListRow> {
+    const { tenantId, daglijstId, force = false } = args;
+
+    const dl = await this.getById(tenantId, daglijstId);
+    if (!dl) throw new NotFoundException('Daglijst not found');
+    if (dl.pdf_storage_path && !force) return dl;
+
+    const rendered = await this.pdfRenderer.renderDaglijst({
+      payload: dl.payload,
+      generation: {
+        version: dl.version,
+        generated_at: dl.generated_at,
+        triggered_by: dl.generated_by_user_id ? 'admin_manual' : 'auto',
+      },
+    });
+
+    const path = pdfStoragePath(dl);
+
+    const { error: uploadErr } = await this.supabase.admin.storage
+      .from(DaglijstService.PDF_BUCKET)
+      .upload(path, rendered.buffer, {
+        contentType: rendered.mimeType,
+        upsert: true,                                    // re-render replaces in place
+      });
+    if (uploadErr) {
+      throw new BadRequestException(`PDF upload failed: ${uploadErr.message}`);
+    }
+
+    const updated = await this.db.queryOne<VendorDailyListRow>(
+      `update vendor_daily_lists
+          set pdf_storage_path = $3
+        where tenant_id = $1 and id = $2
+        returning *`,
+      [tenantId, daglijstId, path],
+    );
+    return updated ?? dl;
+  }
+
+  /**
+   * Mint a signed download URL for the daglijst PDF. Two TTLs available:
+   *   - 'admin' (default): 1 hour — used by the admin Fulfillment tab.
+   *   - 'email': 7 days — used by the email recipient link.
+   *
+   * Auto-renders + uploads the PDF if pdf_storage_path is null (typical
+   * for legacy rows pre-Sprint-2 backfill).
+   */
+  async getDownloadUrl(args: GetDownloadUrlArgs): Promise<{ url: string; expiresAt: string }> {
+    const { tenantId, daglijstId, ttl = 'admin' } = args;
+
+    let dl = await this.getById(tenantId, daglijstId);
+    if (!dl) throw new NotFoundException('Daglijst not found');
+    if (!dl.pdf_storage_path) {
+      dl = await this.renderAndUpload({ tenantId, daglijstId });
+    }
+
+    const ttlSec = ttl === 'email'
+      ? DaglijstService.EMAIL_SIGNED_URL_TTL_SECONDS
+      : DaglijstService.ADMIN_SIGNED_URL_TTL_SECONDS;
+
+    const { data, error } = await this.supabase.admin.storage
+      .from(DaglijstService.PDF_BUCKET)
+      .createSignedUrl(dl.pdf_storage_path!, ttlSec);
+    if (error || !data) {
+      throw new BadRequestException(`Signed URL mint failed: ${error?.message ?? 'unknown'}`);
+    }
+
+    const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();
+    return { url: data.signedUrl, expiresAt };
+  }
+
+  /**
+   * Render + upload (if needed) + dispatch via DaglijstMailer + record
+   * delivery state on the row. Idempotent on already-sent rows unless
+   * `force=true` (admin "resend" path).
+   *
+   * Sets:
+   *   - pdf_storage_path (if missing)
+   *   - sent_at = now()
+   *   - email_message_id, email_status='sent'
+   *   - pdf_url_expires_at = now() + 7d
+   *
+   * Locks the included order_line_items into this version when the send
+   * succeeds — that's the spec "lock on send" rule we deferred from
+   * record() per the codex Sprint 1 fix.
+   *
+   * Failure path: email_status='failed', email_error captured, no lock.
+   */
+  async send(args: SendArgs): Promise<VendorDailyListRow> {
+    const { tenantId, daglijstId, force = false } = args;
+
+    const dl = await this.renderAndUpload({ tenantId, daglijstId });
+
+    if (dl.sent_at && !force) {
+      this.log.debug(`daglijst ${daglijstId} already sent; skipping (use force=true to resend)`);
+      return dl;
+    }
+    if (!dl.recipient_email) {
+      throw new BadRequestException('Vendor has no daglijst_email configured; cannot send');
+    }
+
+    const { url: pdfUrl, expiresAt } = await this.getDownloadUrl({
+      tenantId,
+      daglijstId,
+      ttl: 'email',
+    });
+
+    const subject = buildSubjectLine(dl);
+    const textBody = buildTextBody(dl, pdfUrl);
+
+    let sendResult;
+    let sendError: string | null = null;
+    try {
+      sendResult = await this.mailer.sendDaglijst({
+        tenantId,
+        vendorId: dl.vendor_id,
+        daglijstId: dl.id,
+        recipientEmail: dl.recipient_email,
+        vendorName: dl.payload.vendor.name,
+        subject,
+        textBody,
+        pdfDownloadUrl: pdfUrl,
+        language: dl.payload.vendor.language ?? 'nl',
+      });
+    } catch (err) {
+      sendError = err instanceof Error ? err.message : String(err);
+    }
+
+    if (sendError) {
+      await this.db.query(
+        `update vendor_daily_lists
+            set email_status = 'failed',
+                email_error  = $3
+          where tenant_id = $1 and id = $2`,
+        [tenantId, daglijstId, sendError.slice(0, 500)],
+      );
+      await this.auditOutbox.emit({
+        tenantId,
+        eventType: DaglijstEventType.SendFailed,
+        entityType: 'vendor_daily_lists',
+        entityId: daglijstId,
+        details: { error: sendError.slice(0, 500), recipient: dl.recipient_email },
+      });
+      throw new BadRequestException(`Daglijst send failed: ${sendError}`);
+    }
+
+    // Successful send — lock the lines + update the row + audit.
+    return this.db.tx(async (client) => {
+      const updated = await client.query<VendorDailyListRow>(
+        `update vendor_daily_lists
+            set sent_at              = now(),
+                email_status         = 'sent',
+                email_message_id     = $3,
+                email_error          = null,
+                pdf_url_expires_at   = $4
+          where tenant_id = $1 and id = $2
+          returning *`,
+        [tenantId, daglijstId, sendResult!.messageId, expiresAt],
+      );
+
+      // Lock-on-send (deferred from record() per codex Sprint 1 fix).
+      const lineIds = dl.payload.lines.map((l) => l.line_id);
+      if (lineIds.length > 0) {
+        await client.query(
+          `update order_line_items
+              set daglijst_locked_at = now(),
+                  daglijst_id        = $2
+            where tenant_id = $1
+              and id = any($3::uuid[])
+              and daglijst_locked_at is null`,
+          [tenantId, daglijstId, lineIds],
+        );
+      }
+
+      await this.auditOutbox.emitTx(client, {
+        tenantId,
+        eventType: DaglijstEventType.Sent,
+        entityType: 'vendor_daily_lists',
+        entityId: daglijstId,
+        details: {
+          vendor_id: dl.vendor_id,
+          recipient: dl.recipient_email,
+          message_id: sendResult!.messageId,
+          line_count: lineIds.length,
+        },
+      });
+
+      return updated.rows[0] ?? dl;
+    });
+  }
+
   async getById(tenantId: string, daglijstId: string): Promise<VendorDailyListRow | null> {
     return this.db.queryOne<VendorDailyListRow>(
       `select * from vendor_daily_lists
@@ -310,9 +528,95 @@ export class DaglijstService {
   }
 }
 
+export interface RenderAndUploadArgs {
+  tenantId: string;
+  daglijstId: string;
+  force?: boolean;
+}
+
+export interface GetDownloadUrlArgs {
+  tenantId: string;
+  daglijstId: string;
+  /** 'admin' = 1h TTL (default); 'email' = 7d TTL. */
+  ttl?: 'admin' | 'email';
+}
+
+export interface SendArgs {
+  tenantId: string;
+  daglijstId: string;
+  /** Resend an already-sent daglijst (admin path). */
+  force?: boolean;
+}
+
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/**
+ * Storage path layout (per spec §5):
+ *   <tenant_id>/<vendor_id>/<list_date>/<building_or_tenant>/<service_type>-v<version>.pdf
+ *
+ * `building_or_tenant`: building's id slug when scoped, else 'all-buildings'.
+ * Version-suffixed so v2 regenerates don't overwrite v1.
+ */
+function pdfStoragePath(dl: VendorDailyListRow): string {
+  const buildingSlug = dl.building_id ?? 'all-buildings';
+  return [
+    dl.tenant_id,
+    dl.vendor_id,
+    dl.list_date,
+    buildingSlug,
+    `${dl.service_type}-v${dl.version}.pdf`,
+  ].join('/');
+}
+
+function buildSubjectLine(dl: VendorDailyListRow): string {
+  // NL only in Sprint 2; FR/EN swap-in via the language switch in Sprint 4.
+  const lang = dl.payload.vendor.language ?? 'nl';
+  const total = dl.payload.total_quantity;
+  const buildingLabel = dl.payload.building?.name ?? 'alle gebouwen';
+  if (lang === 'nl') {
+    return `Daglijst ${dl.list_date} · ${buildingLabel} · ${total} eenheden`;
+  }
+  return `Daglijst ${dl.list_date} · ${buildingLabel} · ${total} units`;
+}
+
+function buildTextBody(dl: VendorDailyListRow, pdfUrl: string): string {
+  const lang = dl.payload.vendor.language ?? 'nl';
+  const lines = dl.payload.total_lines;
+  const total = dl.payload.total_quantity;
+  const buildingLabel = dl.payload.building?.name ?? 'alle gebouwen';
+  if (lang === 'nl') {
+    return [
+      `Beste ${dl.payload.vendor.name},`,
+      ``,
+      `In de bijlage vind je de daglijst voor ${dl.list_date}.`,
+      `Locatie: ${buildingLabel}`,
+      `Bestellingen: ${lines}`,
+      `Totale hoeveelheid: ${total}`,
+      ``,
+      `Download de PDF: ${pdfUrl}`,
+      `(De link is 7 dagen geldig.)`,
+      ``,
+      `Met vriendelijke groet,`,
+      `Prequest`,
+    ].join('\n');
+  }
+  return [
+    `Hi ${dl.payload.vendor.name},`,
+    ``,
+    `Attached is the daily list for ${dl.list_date}.`,
+    `Location: ${buildingLabel}`,
+    `Orders: ${lines}`,
+    `Total quantity: ${total}`,
+    ``,
+    `Download PDF: ${pdfUrl}`,
+    `(Link valid for 7 days.)`,
+    ``,
+    `Best regards,`,
+    `Prequest`,
+  ].join('\n');
+}
 
 /** Lock-key namespace: 'DAGL' as 4 ASCII bytes. */
 const DAGLIJST_LOCK_NS = 0x4441_474c;

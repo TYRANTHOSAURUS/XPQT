@@ -1,6 +1,26 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { DaglijstService } from './daglijst.service';
+import { PdfRendererService } from './pdf-renderer.service';
+
+/**
+ * Sprint 2 added: SupabaseService + PdfRenderer + DaglijstMailer to the
+ * constructor. Sprint 1 tests only exercised assemble + record, neither
+ * of which touches Storage / PDF / mail — so we pass minimal stubs.
+ */
+const stubSupabase = { admin: { storage: { from: () => ({}) } } } as never;
+const stubPdfRenderer = { renderDaglijst: jest.fn() } as unknown as PdfRendererService;
+const stubMailer = { sendDaglijst: jest.fn() } as never;
+
+function buildSvc(db: unknown) {
+  return new DaglijstService(
+    db as never,
+    stubSupabase,
+    new AuditOutboxService(db as never),
+    stubPdfRenderer,
+    stubMailer,
+  );
+}
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
 const VENDOR = 'b2c3d4e5-f6a7-4b89-8cde-f0123456789a';
@@ -142,7 +162,7 @@ function makeFakeDb(setup: FakeSetup = {}) {
 describe('DaglijstService.assemble', () => {
   it('throws NotFoundException when vendor missing', async () => {
     const db = makeFakeDb({ vendor: null });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
     ).rejects.toBeInstanceOf(NotFoundException);
@@ -150,7 +170,7 @@ describe('DaglijstService.assemble', () => {
 
   it('rejects portal-only vendor', async () => {
     const db = makeFakeDb({ vendor: { fulfillment_mode: 'portal' } });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -160,7 +180,7 @@ describe('DaglijstService.assemble', () => {
     const db = makeFakeDb({
       lines: [{ line_id: 'L1', catalog_item_name: 'Sandwiches', quantity: 12, requester_first_name: 'Jan' }],
     });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     const payload = await svc.assemble({
       tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING,
       serviceType: 'catering', listDate: LIST_DATE,
@@ -179,7 +199,7 @@ describe('DaglijstService.assemble', () => {
         { line_id: 'L3', quantity: 7 },
       ],
     });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     const payload = await svc.assemble({
       tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING,
       serviceType: 'catering', listDate: LIST_DATE,
@@ -192,7 +212,7 @@ describe('DaglijstService.assemble', () => {
 describe('DaglijstService.record', () => {
   it('writes a v1 row when no prior version exists', async () => {
     const db = makeFakeDb({ existingVersion: 0 });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     const payload = {
       tenant_id: TENANT,
       vendor: { id: VENDOR, name: 'Acme', language: 'nl' },
@@ -229,7 +249,7 @@ describe('DaglijstService.record', () => {
 
   it('bumps to v2 when a prior version exists, and the audit event reflects regenerate', async () => {
     const db = makeFakeDb({ existingVersion: 1 });
-    const svc = new DaglijstService(db as any, new AuditOutboxService(db as any));
+    const svc = buildSvc(db);
     const payload = {
       tenant_id: TENANT,
       vendor: { id: VENDOR, name: 'Acme', language: 'nl' },
