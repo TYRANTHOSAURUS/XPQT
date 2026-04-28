@@ -31,14 +31,20 @@ export class VendorOrderStatusService {
   ) {}
 
   /**
-   * Forward-only progression from the current status. Lookup table; if a
-   * key isn't present, it's a terminal state (no vendor-driven transition
-   * leaves it).
+   * Forward-only state machine. **Immediate-next only**, plus ONE explicit
+   * carve-out for the "I accept + immediately mark complete" one-tap UX
+   * (ordered → delivered).
+   *
+   * Codex Sprint 3 fix: an earlier draft allowed arbitrary forward jumps
+   * (ordered → en_route, confirmed → delivered, etc.). That collapsed the
+   * audit timeline + let a malicious or buggy client falsify operational
+   * milestones. Tighten: only the next step. Spec §6's one-tap UX still
+   * works — the UI dispatches one transition per click.
    */
   private static readonly ALLOWED_FORWARD: Record<string, ReadonlyArray<string>> = {
-    ordered:    ['confirmed', 'preparing', 'en_route', 'delivered'],   // vendor can leap to a later state if they accept + start in one tap
-    confirmed:  ['preparing', 'en_route', 'delivered'],
-    preparing:  ['en_route', 'delivered'],
+    ordered:    ['confirmed', 'delivered'],     // confirmed = the next step; delivered = the explicit one-tap-complete carve-out
+    confirmed:  ['preparing'],
+    preparing:  ['en_route'],
     en_route:   ['delivered'],
     // delivered + cancelled are terminal for the vendor.
   };
@@ -126,10 +132,17 @@ export class VendorOrderStatusService {
         );
       }
 
-      // One audit_outbox event per transition (cross-spec event stream).
+      // Audit taxonomy distinction (codex Sprint 3 fix): acknowledgement
+      // (confirmed = spec "received") gets its own event type so "vendor
+      // accepted the order" is queryable separately from later progress
+      // states. Without this, every consumer has to inspect details.to_status.
+      const eventType = newStatus === 'confirmed'
+        ? VendorPortalEventType.OrderAcknowledged
+        : VendorPortalEventType.OrderStatusUpdated;
+
       await this.auditOutbox.emitTx(client, {
         tenantId,
-        eventType: VendorPortalEventType.OrderStatusUpdated,
+        eventType,
         entityType: 'orders',
         entityId: orderId,
         details: {

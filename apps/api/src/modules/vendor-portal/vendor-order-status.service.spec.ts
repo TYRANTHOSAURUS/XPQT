@@ -105,7 +105,7 @@ describe('VendorOrderStatusService.updateStatus', () => {
     })).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('happy path ordered → preparing transitions every line + emits one audit event', async () => {
+  it('happy path ordered → confirmed transitions every line + emits one audit event', async () => {
     const { svc, db } = buildSvc({
       lines: [
         { id: 'L1', fulfillment_status: 'ordered' },
@@ -114,19 +114,19 @@ describe('VendorOrderStatusService.updateStatus', () => {
     });
     const r = await svc.updateStatus({
       tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
-      newStatus: 'preparing', vendorUserId: VENDOR_USER,
+      newStatus: 'confirmed', vendorUserId: VENDOR_USER,
     });
     expect(r.lines_updated).toBe(2);
-    expect(r.to_status).toBe('preparing');
+    expect(r.to_status).toBe('confirmed');
 
     const txSqls = db.captured.filter((c) => c.tx).map((c) => c.sql);
     expect(txSqls.some((s) => s.includes('update order_line_items'))).toBe(true);
-    // Exactly N status_events rows + 1 audit emit
+    // Exactly N status_events rows + 1 audit emit (acknowledged event for confirmed).
     const events = db.captured.filter((c) => c.tx && c.sql.includes('insert into vendor_order_status_events'));
     expect(events).toHaveLength(2);
     const audits = db.captured.filter((c) => c.tx && c.sql.includes('insert into audit_outbox'));
     expect(audits).toHaveLength(1);
-    expect(audits[0].params?.[1]).toBe('vendor.order_status_updated');
+    expect(audits[0].params?.[1]).toBe('vendor.order_acknowledged');
   });
 
   it('rejects backward transition (delivered → preparing)', async () => {
@@ -142,7 +142,7 @@ describe('VendorOrderStatusService.updateStatus', () => {
   it('rejects when ANY line is in an incompatible state', async () => {
     const { svc } = buildSvc({
       lines: [
-        { id: 'L1', fulfillment_status: 'ordered' },
+        { id: 'L1', fulfillment_status: 'confirmed' },
         { id: 'L2', fulfillment_status: 'cancelled' },     // can't move out of cancelled
       ],
     });
@@ -152,7 +152,7 @@ describe('VendorOrderStatusService.updateStatus', () => {
     })).rejects.toThrow(/Cannot transition.*cancelled/);
   });
 
-  it('allows leap from ordered to delivered (one-tap accept-and-complete)', async () => {
+  it('allows the explicit one-tap leap (ordered → delivered)', async () => {
     const { svc } = buildSvc({
       lines: [{ id: 'L1', fulfillment_status: 'ordered' }],
     });
@@ -164,11 +164,57 @@ describe('VendorOrderStatusService.updateStatus', () => {
     expect(r.lines_updated).toBe(1);
   });
 
+  it('rejects forbidden forward jumps that skip audit milestones (codex Sprint 3 fix #1)', async () => {
+    const { svc } = buildSvc({
+      lines: [{ id: 'L1', fulfillment_status: 'ordered' }],
+    });
+    // ordered → en_route is no longer allowed (only ordered → confirmed and the
+    // explicit ordered → delivered carve-out are valid).
+    await expect(svc.updateStatus({
+      tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
+      newStatus: 'en_route', vendorUserId: VENDOR_USER,
+    })).rejects.toThrow(/Cannot transition/);
+
+    // confirmed → delivered is no longer allowed.
+    const { svc: svc2 } = buildSvc({
+      lines: [{ id: 'L1', fulfillment_status: 'confirmed' }],
+    });
+    await expect(svc2.updateStatus({
+      tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
+      newStatus: 'delivered', vendorUserId: VENDOR_USER,
+    })).rejects.toThrow(/Cannot transition/);
+  });
+
+  it('emits vendor.order_acknowledged on confirmed (distinct from order_status_updated; codex Sprint 3 fix #3)', async () => {
+    const { svc, db } = buildSvc({
+      lines: [{ id: 'L1', fulfillment_status: 'ordered' }],
+    });
+    await svc.updateStatus({
+      tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
+      newStatus: 'confirmed', vendorUserId: VENDOR_USER,
+    });
+    const audits = db.captured.filter((c) => c.tx && c.sql.includes('insert into audit_outbox'));
+    expect(audits).toHaveLength(1);
+    expect(audits[0].params?.[1]).toBe('vendor.order_acknowledged');
+  });
+
+  it('emits vendor.order_status_updated on subsequent transitions (preparing/en_route/delivered)', async () => {
+    const { svc, db } = buildSvc({
+      lines: [{ id: 'L1', fulfillment_status: 'preparing' }],
+    });
+    await svc.updateStatus({
+      tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
+      newStatus: 'en_route', vendorUserId: VENDOR_USER,
+    });
+    const audits = db.captured.filter((c) => c.tx && c.sql.includes('insert into audit_outbox'));
+    expect(audits[0].params?.[1]).toBe('vendor.order_status_updated');
+  });
+
   it('treats already-at-target as no-op for that line; updates the rest', async () => {
     const { svc, db } = buildSvc({
       lines: [
-        { id: 'L1', fulfillment_status: 'preparing' },     // already there
-        { id: 'L2', fulfillment_status: 'ordered' },        // needs to advance
+        { id: 'L1', fulfillment_status: 'preparing' },     // already there — no-op
+        { id: 'L2', fulfillment_status: 'confirmed' },     // can advance to preparing
       ],
     });
     const r = await svc.updateStatus({
