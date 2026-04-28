@@ -43,6 +43,7 @@ import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
 import { DailyListModule } from './modules/daily-list/daily-list.module';
 import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
+import { MailModule } from './common/mail/mail.module';
 
 @Module({
   imports: [
@@ -89,6 +90,7 @@ import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module
     PrivacyComplianceModule,
     DailyListModule,
     VendorPortalModule,
+    MailModule,
   ],
   controllers: [HealthController],
   providers: [
@@ -101,7 +103,12 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(TenantMiddleware)
-      .exclude('api/health', 'api/webhooks/ingest', 'api/webhooks/outlook')
+      .exclude(
+        'api/health',
+        'api/webhooks/ingest',
+        'api/webhooks/outlook',
+        'api/webhooks/mail',           // signed by provider, no tenant header
+      )
       .forRoutes('*');
   }
 }

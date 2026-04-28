@@ -616,6 +616,15 @@ export class DailyListService {
         : `daily-list:${dl.id}:v${dl.version}`;
 
       try {
+        /* Codex Sprint 4 attachment-first rework: the mailer now reads
+           the PDF buffer from Storage and sends it as a real
+           attachment. pdf_storage_path is set by the renderAndUpload
+           call earlier in send(). */
+        if (!dl.pdf_storage_path) {
+          throw new Error('pdf_storage_path missing after renderAndUpload');
+        }
+        const filename =
+          `daily-list-${dl.payload.list_date}-${dl.service_type}-v${dl.version}.pdf`;
         sendResult = await this.mailer.sendDailyList({
           tenantId,
           vendorId: dl.vendor_id,
@@ -624,9 +633,10 @@ export class DailyListService {
           vendorName: dl.payload.vendor.name,
           subject,
           textBody,
-          htmlBody: null,                                  // Sprint 4 wires this
+          htmlBody: null,                                  // Sprint 5 templates
           pdfDownloadUrl: pdfUrl,
-          attachment: null,                                // Sprint 4 wires real attachment
+          pdfStoragePath: dl.pdf_storage_path,
+          pdfFilename: filename,
           language: dl.payload.vendor.language ?? 'nl',
           correlationId,
         });

@@ -6,9 +6,10 @@ import { PrivacyComplianceModule } from '../privacy-compliance/privacy-complianc
 import { DailyListAdminController } from './daily-list-admin.controller';
 import { DailyListFollowupController } from './daily-list-followup.controller';
 import { DailyListFollowupService } from './daily-list-followup.service';
+import { MailModule } from '../../common/mail/mail.module';
 import {
   DAILY_LIST_MAILER,
-  LoggingDailyListMailer,
+  ProviderDailyListMailer,
 } from './daily-list-mailer.service';
 import { DailyListSchedulerService } from './daily-list-scheduler.service';
 import { DailyListService } from './daily-list.service';
@@ -52,7 +53,7 @@ import { DailyListStatusInferenceService } from './status-inference.service';
  * Spec: docs/superpowers/specs/2026-04-27-vendor-portal-phase-a-daglijst-design.md.
  */
 @Module({
-  imports: [DbModule, SupabaseModule, PrivacyComplianceModule],
+  imports: [DbModule, SupabaseModule, PrivacyComplianceModule, MailModule],
   controllers: [DailyListAdminController, DailyListFollowupController],
   providers: [
     PermissionGuard,
@@ -61,10 +62,10 @@ import { DailyListStatusInferenceService } from './status-inference.service';
     DailyListStatusInferenceService,
     PdfRendererService,
     DailyListSchedulerService,
-    LoggingDailyListMailer,
+    ProviderDailyListMailer,
     {
       provide: DAILY_LIST_MAILER,
-      useExisting: LoggingDailyListMailer,
+      useExisting: ProviderDailyListMailer,
     },
   ],
   exports: [DailyListService, PdfRendererService, DAILY_LIST_MAILER],

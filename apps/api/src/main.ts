@@ -1,10 +1,28 @@
 import { NestFactory } from '@nestjs/core';
+import { json } from 'express';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import compression from 'compression';
+import type { Request } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  /* Mail-webhook signature verification needs the raw request body
+     bytes (provider HMACs the bytes the client received; JSON parse
+     mutates whitespace). Capture it on the json bodyParser's verify
+     hook so MailWebhookController can read req.rawBody. Scoped to the
+     mail webhook path so we don't bloat the global request memory
+     footprint on every JSON request. */
+  app.use(
+    '/api/webhooks/mail',
+    json({
+      limit: '1mb',
+      verify: (req: Request, _res, buf: Buffer) => {
+        (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
 
   const config = app.get(ConfigService);
   const port = config.get<number>('PORT') ?? config.get<number>('API_PORT', 3001);
