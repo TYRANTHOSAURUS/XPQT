@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
-import { CalendarClock, Loader2, MapPin, Sparkles } from 'lucide-react';
+import { CalendarClock, Check, ChevronsUpDown, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -19,8 +19,20 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { NumberStepper } from '@/components/ui/number-stepper';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import { PersonPicker } from '@/components/person-picker';
 import { useCreateBooking, type RankedRoom } from '@/api/room-booking';
+import { useSpaces } from '@/api/spaces';
+import type { Space } from '@/api/spaces';
+import { cn } from '@/lib/utils';
 import { ApiError } from '@/lib/api';
 import { Sparkles as SparklesIcon } from 'lucide-react';
 import type { RecurrenceRule } from '@/api/room-booking';
@@ -277,13 +289,9 @@ export function BookingComposer({
               <MapPin className="size-3.5" />
               Room
             </FieldLabel>
-            <RoomFinderHint
-              onPickRoom={() => {
-                // For δ-light we hard-require the wrapper to pass a fixedRoom
-                // OR to use the room-picker page. The composer doesn't yet
-                // render an inline picker — Phase 2 (portal refactor) will
-                // fold the room-finder in. For now, surface a hint.
-              }}
+            <RoomPickerInline
+              value={state.spaceId}
+              onChange={(spaceId) => dispatch({ type: 'SET_SPACE', spaceId })}
             />
           </Field>
         )}
@@ -501,15 +509,108 @@ export function BookingComposer({
   );
 }
 
-function RoomFinderHint({ onPickRoom: _ }: { onPickRoom: () => void }) {
+/**
+ * Search-filterable combobox of reservable rooms in the tenant. Lazy-
+ * filters client-side once useSpaces resolves — typical tenant has
+ * dozens of rooms, not thousands, so a single fetch is cheaper than
+ * threading the picker's full ranking pipeline through the composer.
+ *
+ * The smart-rank picker (the one /portal/book-room uses) requires
+ * start/end + criteria + ranking; for the desk operator's "give me ANY
+ * conf room with capacity ≥ 6" scenario, name-based search is enough.
+ * If a tenant grows past ~200 rooms this should switch to a server-side
+ * search endpoint, but until then the simpler shape ships.
+ */
+function RoomPickerInline({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (spaceId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data: spaces, isPending } = useSpaces();
+
+  const reservable = useMemo<Space[]>(
+    () => (spaces ?? []).filter((s) => s.reservable && s.active),
+    [spaces],
+  );
+
+  const selected = useMemo(
+    () => reservable.find((r) => r.id === value) ?? null,
+    [reservable, value],
+  );
+
   return (
-    <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-      Use the room finder on{' '}
-      <a className="underline decoration-dotted" href="/portal/book-room">
-        /portal/book-room
-      </a>
-      , then come back here. Inline room search ships in the next slice.
-    </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-10 w-full justify-between font-normal"
+        >
+          <span className="truncate text-sm">
+            {selected ? selected.name : isPending ? 'Loading rooms…' : 'Pick a room…'}
+          </span>
+          {selected?.capacity != null && (
+            <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+              {selected.capacity} cap
+            </span>
+          )}
+          <ChevronsUpDown className="ml-2 size-3.5 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="p-0"
+        align="start"
+        style={{ width: 'var(--radix-popover-trigger-width)' }}
+      >
+        <Command>
+          <CommandInput placeholder="Search rooms…" />
+          <CommandList className="max-h-72">
+            <CommandEmpty>
+              {isPending ? 'Loading…' : 'No rooms match.'}
+            </CommandEmpty>
+            <CommandGroup>
+              {reservable.map((room) => {
+                const isSel = room.id === value;
+                return (
+                  <CommandItem
+                    key={room.id}
+                    value={`${room.name} ${room.code ?? ''} ${room.type}`}
+                    onSelect={() => {
+                      onChange(room.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn(
+                        'mr-2 size-4 shrink-0',
+                        isSel ? 'opacity-100' : 'opacity-0',
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm">{room.name}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {room.type.replace(/_/g, ' ')}
+                        {room.code ? ` · ${room.code}` : ''}
+                      </div>
+                    </div>
+                    {room.capacity != null && (
+                      <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                        {room.capacity}
+                      </span>
+                    )}
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
