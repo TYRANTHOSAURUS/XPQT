@@ -27,6 +27,7 @@ import { Plus, Pencil, UserPlus } from 'lucide-react';
 import { toast, toastCreated, toastError, toastUpdated } from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePersons, personKeys } from '@/api/persons';
+import { useCostCenters } from '@/api/cost-centers';
 import { apiFetch } from '@/lib/api';
 import { PersonPicker } from '@/components/person-picker';
 import { LocationCombobox } from '@/components/location-combobox';
@@ -98,6 +99,7 @@ export function PersonsPage() {
   const qc = useQueryClient();
   const [typeFilter, setTypeFilter] = useState('all');
   const { data, isPending: loading } = usePersons(typeFilter) as { data: Person[] | undefined; isPending: boolean };
+  const { data: costCenters } = useCostCenters({ active: true });
   const refetch = () => qc.invalidateQueries({ queryKey: personKeys.all });
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -300,12 +302,30 @@ export function PersonsPage() {
 
               <Field>
                 <FieldLabel htmlFor="person-cost-center">Cost Center</FieldLabel>
-                <Input
-                  id="person-cost-center"
-                  value={costCenter}
-                  onChange={(e) => setCostCenter(e.target.value)}
-                  placeholder="e.g. CC-100"
-                />
+                <Select
+                  value={costCenter || '__none__'}
+                  onValueChange={(v) => setCostCenter(!v || v === '__none__' ? '' : v)}
+                >
+                  <SelectTrigger id="person-cost-center">
+                    <SelectValue placeholder="No cost center" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No cost center</SelectItem>
+                    {(costCenters ?? []).map((cc) => (
+                      <SelectItem key={cc.id} value={cc.code}>
+                        <span className="font-mono text-xs tabular-nums">{cc.code}</span>
+                        <span className="ml-2 text-muted-foreground">{cc.name}</span>
+                      </SelectItem>
+                    ))}
+                    {costCenter &&
+                      !(costCenters ?? []).some((cc) => cc.code === costCenter) && (
+                        <SelectItem value={costCenter}>
+                          <span className="font-mono text-xs tabular-nums">{costCenter}</span>
+                          <span className="ml-2 text-muted-foreground">(not in catalog)</span>
+                        </SelectItem>
+                      )}
+                  </SelectContent>
+                </Select>
               </Field>
 
               <Field>

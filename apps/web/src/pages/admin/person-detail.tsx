@@ -26,6 +26,7 @@ import {
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
 import { usePerson, useUpdatePerson, personFullName } from '@/api/persons';
+import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 
 const PERSON_TYPES: Array<{ value: string; label: string }> = [
@@ -40,6 +41,7 @@ export function PersonDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: person, isLoading } = usePerson(id);
+  const { data: costCenters } = useCostCenters({ active: true });
   const update = useUpdatePerson(id);
 
   const [firstName, setFirstName] = useState('');
@@ -87,10 +89,6 @@ export function PersonDetailPage() {
   useDebouncedSave(phone, (v) => {
     if (!person || v === (person.phone ?? '')) return;
     update.mutate({ phone: v || null });
-  });
-  useDebouncedSave(costCenter, (v) => {
-    if (!person || v === (person.cost_center ?? '')) return;
-    update.mutate({ cost_center: v || null });
   });
 
   const headline = useMemo(() => {
@@ -203,14 +201,40 @@ export function PersonDetailPage() {
             </Select>
           </SettingsRowValue>
         </SettingsRow>
-        <SettingsRow label="Cost center" description="Internal accounting tag, optional.">
+        <SettingsRow
+          label="Cost center"
+          description="Internal accounting tag, optional. Pick from the catalog managed under Admin · Cost centers."
+        >
           <SettingsRowValue>
-            <Input
-              value={costCenter}
-              onChange={(e) => setCostCenter(e.target.value)}
-              className="h-8 w-56"
-              aria-label="Cost center"
-            />
+            <Select
+              value={costCenter || '__none__'}
+              onValueChange={(v) => {
+                const next = !v || v === '__none__' ? '' : v;
+                setCostCenter(next);
+                if (next === (person.cost_center ?? '')) return;
+                update.mutate({ cost_center: next || null });
+              }}
+            >
+              <SelectTrigger className="h-8 w-72" aria-label="Cost center">
+                <SelectValue placeholder="No cost center" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">No cost center</SelectItem>
+                {(costCenters ?? []).map((cc) => (
+                  <SelectItem key={cc.id} value={cc.code}>
+                    <span className="font-mono text-xs tabular-nums">{cc.code}</span>
+                    <span className="ml-2 text-muted-foreground">{cc.name}</span>
+                  </SelectItem>
+                ))}
+                {costCenter &&
+                  !(costCenters ?? []).some((cc) => cc.code === costCenter) && (
+                    <SelectItem value={costCenter}>
+                      <span className="font-mono text-xs tabular-nums">{costCenter}</span>
+                      <span className="ml-2 text-muted-foreground">(not in catalog)</span>
+                    </SelectItem>
+                  )}
+              </SelectContent>
+            </Select>
           </SettingsRowValue>
         </SettingsRow>
         <SettingsRow
