@@ -514,6 +514,11 @@ export function BookingComposer({
         {validationError && (
           <p className="text-xs text-amber-700 dark:text-amber-400">{validationError}</p>
         )}
+        {!validationError && leadTimeWarnings.length > 0 && (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Resolve the lead-time conflicts above before submitting.
+          </p>
+        )}
         <div className="flex items-center justify-end gap-2">
           <Button
             type="button"
@@ -526,7 +531,11 @@ export function BookingComposer({
           <Button
             type="button"
             onClick={handleSubmit}
-            disabled={Boolean(validationError) || submitting}
+            disabled={
+              Boolean(validationError) ||
+              submitting ||
+              leadTimeWarnings.length > 0
+            }
           >
             {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
             {submitting
