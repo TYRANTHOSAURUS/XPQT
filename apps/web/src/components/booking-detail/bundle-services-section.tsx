@@ -1,5 +1,5 @@
-import { useId, useState } from 'react';
-import { CheckCircle2, Clock, Truck, Pencil, Plus, Sparkles, X } from 'lucide-react';
+import { useId, useMemo, useState } from 'react';
+import { CheckCircle2, Clock, Radio, Truck, Pencil, Plus, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -18,6 +18,7 @@ import {
 import { formatCurrency, formatTimeShort } from '@/lib/format';
 import { toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { useRealtimeBundle } from './use-realtime-bundle';
 
 const FULFILLED = new Set<NonNullable<BundleLine['fulfillment_status']>>([
   'confirmed',
@@ -172,6 +173,16 @@ function BundleServicesContent({
   const cancelLine = useCancelBundleLine(bundleId);
   const editLine = useEditBundleLine(bundleId, reservation.id);
 
+  // Live status updates: keep the section's status pills + service windows
+  // fresh while the user looks at it. The picker / detail page are the
+  // surfaces most likely to be open while a vendor advances a line through
+  // ordered → confirmed → preparing → delivered.
+  const orderIds = useMemo(
+    () => (data?.orders ?? []).map((o) => o.id),
+    [data?.orders],
+  );
+  useRealtimeBundle(bundleId, orderIds, { enabled: orderIds.length > 0 });
+
   if (isLoading) {
     return <div className="border-t px-5 py-3 text-xs text-muted-foreground">Loading services…</div>;
   }
@@ -208,9 +219,20 @@ function BundleServicesContent({
   return (
     <div className="border-t">
       <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
-        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Services ({lines.length})
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Services ({lines.length})
+          </span>
+          {orderIds.length > 0 && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400"
+              title="Status updates arrive automatically while this view is open"
+            >
+              <Radio className="size-3 animate-pulse" aria-hidden />
+              Live
+            </span>
+          )}
+        </div>
         {canEdit && (
           <Button
             type="button"
