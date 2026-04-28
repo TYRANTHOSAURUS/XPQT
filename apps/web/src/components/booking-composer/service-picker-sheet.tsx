@@ -13,9 +13,13 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAvailableServiceItems } from '@/api/service-catalog';
 import type { AvailableServiceItem, ServiceType } from '@/api/service-catalog';
+import {
+  useRecentMyBundles,
+  type RecentBundleSummary,
+} from '@/api/booking-bundles';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { NumberStepper } from '@/components/ui/number-stepper';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, formatRelativeTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 export interface PickerSelection {
@@ -144,6 +148,10 @@ export function ServicePickerSheet({
           <SheetTitle>{title}</SheetTitle>
           {subtitle && <SheetDescription>{subtitle}</SheetDescription>}
         </SheetHeader>
+
+        <RecentBundlesChips
+          onApply={(bundle) => setSelections(seedSelectionsFromBundle(bundle))}
+        />
 
         <Tabs
           value={activeTab}
@@ -613,4 +621,86 @@ function prettyUnit(unit: 'per_item' | 'per_person' | 'flat_rate'): string {
     case 'flat_rate':
       return 'flat';
   }
+}
+
+/**
+ * "Your usual" chip row above the picker tabs. Shows the caller's most-recent
+ * service-bearing bundles; tapping a chip seeds the picker with that
+ * bundle's items + quantities so a regular Friday-lunch flow is one tap.
+ *
+ * The chips deliberately don't replace the per-tab catalog browser — they
+ * complement it. Tap a chip → selections seeded → user can still tweak a
+ * quantity, swap an item, or add an extra in any tab before submitting.
+ *
+ * Hidden when the user has no recent bundles or the request is in flight,
+ * so the picker doesn't show a flicker of empty chips.
+ */
+function RecentBundlesChips({
+  onApply,
+}: {
+  onApply: (bundle: RecentBundleSummary) => void;
+}) {
+  const { data, isPending } = useRecentMyBundles();
+  const bundles = data?.bundles ?? [];
+
+  if (isPending) return null;
+  if (bundles.length === 0) return null;
+
+  return (
+    <div className="border-b px-5 py-3">
+      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        Your usual
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {bundles.map((b) => (
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => onApply(b)}
+            className={cn(
+              'group/chip flex max-w-full items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs transition-colors',
+              'hover:border-primary/40 hover:bg-primary/5',
+              'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+            )}
+            title={summarizeBundle(b)}
+            style={{ transitionDuration: '120ms', transitionTimingFunction: 'var(--ease-snap)' }}
+          >
+            <span className="truncate font-medium">{chipLabel(b)}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+              {formatRelativeTime(b.start_at)}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Render a one-line label for the chip — e.g. "Coffee + sandwich · Atlas". */
+function chipLabel(b: RecentBundleSummary): string {
+  const items = b.line_summary.slice(0, 2).map((l) => l.name).join(' + ');
+  const more = b.line_summary.length > 2 ? ` +${b.line_summary.length - 2}` : '';
+  const where = b.space_name ? ` · ${b.space_name}` : '';
+  return `${items}${more}${where}`;
+}
+
+/** Hover-tooltip summary listing every line in the chip's bundle. */
+function summarizeBundle(b: RecentBundleSummary): string {
+  return b.line_summary.map((l) => `${l.quantity} × ${l.name}`).join(', ');
+}
+
+/** Materialize a chip's bundle summary back into PickerSelections. The
+ *  picker fetches current menu offers separately — historical menu_id is
+ *  preserved as a hint, but if the menu is archived the picker's resolver
+ *  silently surfaces the new active offer so prices stay current. */
+function seedSelectionsFromBundle(b: RecentBundleSummary): PickerSelection[] {
+  return b.line_summary.map((l) => ({
+    catalog_item_id: l.catalog_item_id,
+    menu_id: l.menu_id ?? '',
+    quantity: l.quantity,
+    unit_price: l.unit_price,
+    unit: l.unit,
+    name: l.name,
+    service_type: (l.service_type as ServiceType | null) ?? 'other',
+  }));
 }

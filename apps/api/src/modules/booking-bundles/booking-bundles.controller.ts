@@ -17,6 +17,18 @@ import { BundleVisibilityService } from './bundle-visibility.service';
 import { BundleCascadeService, type CancelScope } from './bundle-cascade.service';
 import { BundleService, type ServiceLineInput } from './bundle.service';
 
+/** Map catalog_items.category → ServiceType for the picker chip path.
+ *  Inverse of `SERVICE_TYPE_TO_CATEGORY` in service-catalog.controller.ts. */
+function inferServiceTypeFromCategory(category: string | null | undefined): string | null {
+  switch (category) {
+    case 'food_and_drinks': return 'catering';
+    case 'equipment': return 'av_equipment';
+    case 'supplies': return 'supplies';
+    case 'services': return 'facilities_services';
+    default: return null;
+  }
+}
+
 interface CancelBundleBody {
   keep_line_ids?: string[];
   recurrence_scope?: CancelScope;
@@ -31,6 +43,141 @@ export class BookingBundlesController {
     private readonly cascade: BundleCascadeService,
     private readonly bundle: BundleService,
   ) {}
+
+  /**
+   * `GET /booking-bundles/recent` — the caller's most-recent service-bearing
+   * bundles, returned with a slim line summary so the booking composer's
+   * "Your usual" chip row can re-seed the picker in one tap. Powers Phase
+   * B's personal templates / "rebook this" affordance without a separate
+   * templates table — recency is the template.
+   *
+   * Filters: at least one line, requester or host = current person, sorted
+   * by created_at desc, capped at 5. Private to the caller — no cross-user
+   * leak even with read_all because the where-clause restricts to their
+   * person_id.
+   */
+  @Get('recent')
+  async listRecentForMe(@Req() request: Request) {
+    const authUid = this.getAuthUid(request);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+
+    if (!ctx.person_id) return { bundles: [] };
+
+    // Pull the 10 most recent bundles touching this person, then trim to 5
+    // after filtering out empties. Ten is a safety margin against bundles
+    // that lazy-created but never had lines attached.
+    const bundlesRes = await this.supabase.admin
+      .from('booking_bundles')
+      .select('id, primary_reservation_id, start_at, end_at, location_id, created_at')
+      .eq('tenant_id', tenantId)
+      .or(`requester_person_id.eq.${ctx.person_id},host_person_id.eq.${ctx.person_id}`)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (bundlesRes.error) throw bundlesRes.error;
+    const bundleRows = (bundlesRes.data ?? []) as Array<{
+      id: string;
+      primary_reservation_id: string | null;
+      start_at: string;
+      end_at: string;
+      location_id: string;
+      created_at: string;
+    }>;
+    if (bundleRows.length === 0) return { bundles: [] };
+
+    const bundleIds = bundleRows.map((b) => b.id);
+    const spaceIds = Array.from(new Set(bundleRows.map((b) => b.location_id)));
+
+    // Fan-out the joins in parallel: orders for these bundles, line items
+    // through those orders, catalog item names, and space names.
+    const [ordersRes, spacesRes] = await Promise.all([
+      this.supabase.admin
+        .from('orders')
+        .select('id, booking_bundle_id')
+        .in('booking_bundle_id', bundleIds),
+      this.supabase.admin
+        .from('spaces')
+        .select('id, name')
+        .in('id', spaceIds),
+    ]);
+    if (ordersRes.error) throw ordersRes.error;
+    if (spacesRes.error) throw spacesRes.error;
+    const orderRows = (ordersRes.data ?? []) as Array<{ id: string; booking_bundle_id: string }>;
+    const spaceById = new Map(
+      ((spacesRes.data ?? []) as Array<{ id: string; name: string }>).map((s) => [s.id, s.name]),
+    );
+
+    if (orderRows.length === 0) return { bundles: [] };
+    const orderIds = orderRows.map((o) => o.id);
+    const orderToBundle = new Map(orderRows.map((o) => [o.id, o.booking_bundle_id]));
+
+    const linesRes = await this.supabase.admin
+      .from('order_line_items')
+      .select(
+        'order_id, catalog_item_id, quantity, unit_price, unit, fulfillment_status, catalog_item:catalog_items(name, category, image_url), menu_id, menu_items:menu_items(menu_id, service_type:catalog_menus(service_type))',
+      )
+      .in('order_id', orderIds)
+      .neq('fulfillment_status', 'cancelled');
+    if (linesRes.error) throw linesRes.error;
+
+    type LineRow = {
+      order_id: string;
+      catalog_item_id: string;
+      quantity: number;
+      unit_price: number | null;
+      unit: 'per_item' | 'per_person' | 'flat_rate' | null;
+      catalog_item: { name: string; category: string; image_url: string | null } | { name: string }[] | null;
+      menu_id: string | null;
+      menu_items: unknown;
+    };
+    const linesByBundle = new Map<string, Array<{
+      catalog_item_id: string;
+      menu_id: string | null;
+      name: string;
+      quantity: number;
+      unit_price: number | null;
+      unit: 'per_item' | 'per_person' | 'flat_rate' | null;
+      service_type: string | null;
+    }>>();
+
+    for (const row of (linesRes.data ?? []) as LineRow[]) {
+      const bundleId = orderToBundle.get(row.order_id);
+      if (!bundleId) continue;
+      const ci = Array.isArray(row.catalog_item) ? row.catalog_item[0] : row.catalog_item;
+      // service_type derives from the menu's parent (catalog_menus.service_type).
+      // The nested join's typing is finicky; fall back to category-implied
+      // service_type if the path resolves messy.
+      const serviceType = inferServiceTypeFromCategory((ci as { category?: string })?.category);
+      const list = linesByBundle.get(bundleId) ?? [];
+      list.push({
+        catalog_item_id: row.catalog_item_id,
+        menu_id: row.menu_id,
+        name: (ci as { name?: string })?.name ?? 'Service item',
+        quantity: row.quantity,
+        unit_price: row.unit_price,
+        unit: row.unit,
+        service_type: serviceType,
+      });
+      linesByBundle.set(bundleId, list);
+    }
+
+    const result = bundleRows
+      .map((b) => {
+        const lines = linesByBundle.get(b.id) ?? [];
+        if (lines.length === 0) return null;
+        return {
+          id: b.id,
+          start_at: b.start_at,
+          end_at: b.end_at,
+          space_name: spaceById.get(b.location_id) ?? null,
+          line_summary: lines,
+        };
+      })
+      .filter((b): b is NonNullable<typeof b> => b !== null)
+      .slice(0, 5);
+
+    return { bundles: result };
+  }
 
   /**
    * GET /booking-bundles/:id — full bundle detail with status_rollup from
