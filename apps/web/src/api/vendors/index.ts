@@ -1,6 +1,13 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
+/**
+ * Vendor fulfillment mode (daily-list spec §2). 'paper_only' / 'hybrid'
+ * vendors get a printed list emailed at cutoff; 'portal' vendors use
+ * the vendor portal exclusively.
+ */
+export type VendorFulfillmentMode = 'portal' | 'paper_only' | 'hybrid';
+
 export interface Vendor {
   id: string;
   name: string;
@@ -19,6 +26,21 @@ export interface Vendor {
   phone?: string | null;
   address?: string | null;
   domain?: string | null;
+
+  // -----------------------------------------------------------------
+  // Daily-list fields (vendor portal Phase A spec §3). DB column names
+  // retain the Dutch "daglijst_" prefix; see daily-list.module.ts top
+  // doc for the deferred-rename rationale.
+  // -----------------------------------------------------------------
+  fulfillment_mode?: VendorFulfillmentMode | null;
+  daglijst_email?: string | null;
+  daglijst_language?: 'nl' | 'fr' | 'en' | 'de' | null;
+  /** Offset mode: send N minutes before earliest delivery in the bucket. */
+  daglijst_cutoff_offset_minutes?: number | null;
+  /** Clock mode: send daily at this Europe/Amsterdam wall-clock time (HH:mm). */
+  daglijst_send_clock_time?: string | null;
+  /** Status-inference grace period for paper-only vendors (Sprint 4). */
+  daglijst_inferred_status_grace_minutes?: number | null;
 }
 
 export const vendorKeys = {

@@ -25,6 +25,7 @@ import { formatRef } from '@/lib/format-ref';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
 import { BookingComposer } from '@/components/booking-composer/booking-composer';
+import { LateChangesWidget } from '@/components/desk/late-changes-widget';
 import { cn } from '@/lib/utils';
 
 type Scope =
@@ -228,6 +229,9 @@ export function DeskBookingsPage() {
         className="flex-1 overflow-auto"
         data-fetching={isFetching ? 'true' : 'false'}
       >
+        <div className="px-6 pt-4">
+          <LateChangesWidget />
+        </div>
         {error ? (
           <div className="m-6 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
             <p className="font-medium text-destructive">Failed to load bookings</p>

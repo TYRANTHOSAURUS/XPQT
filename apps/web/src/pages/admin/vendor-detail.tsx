@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { VendorFulfillmentSection } from '@/components/admin/vendor-fulfillment-section';
 import {
   useVendor,
   useUpsertVendor,
@@ -222,6 +223,8 @@ export function VendorDetailPage() {
           />
         </div>
       </SettingsGroup>
+
+      <VendorFulfillmentSection vendor={vendor} />
 
       <SettingsGroup title="Danger zone">
         <SettingsRow
