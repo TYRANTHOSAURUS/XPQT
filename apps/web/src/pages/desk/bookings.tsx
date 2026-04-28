@@ -1,20 +1,30 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
-  CalendarClock, CalendarDays, CheckCircle2, Inbox, Search, Users as UsersIcon, X,
+  CalendarClock, CalendarDays, CheckCircle2, Inbox, Plus, Search, Users as UsersIcon, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import {
   ToggleGroup, ToggleGroupItem,
 } from '@/components/ui/toggle-group';
 import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
+import { useAuth } from '@/providers/auth-provider';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { formatRef } from '@/lib/format-ref';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
+import { BookingComposer } from '@/components/booking-composer/booking-composer';
 import { cn } from '@/lib/utils';
 
 type Scope =
@@ -130,6 +140,10 @@ export function DeskBookingsPage() {
   const selectedSpaceName =
     allItems.find((r) => r.id === selectedId)?.space_name ?? null;
 
+  const { person } = useAuth();
+  const isMobile = useIsMobile();
+  const [composerOpen, setComposerOpen] = useState(false);
+
   const list = (
     <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* Header */}
@@ -141,12 +155,23 @@ export function DeskBookingsPage() {
               Every room reservation in this workspace. Use the scheduler for the calendar grid.
             </p>
           </div>
-          <Link to={schedulerLinkTo}>
-            <Button variant="outline" size="sm" className="gap-1.5">
-              <CalendarDays className="size-3.5" />
-              Open scheduler
+          <div className="flex items-center gap-2">
+            <Link to={schedulerLinkTo}>
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <CalendarDays className="size-3.5" />
+                Open scheduler
+              </Button>
+            </Link>
+            <Button
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setComposerOpen(true)}
+              disabled={!person}
+            >
+              <Plus className="size-3.5" />
+              New booking
             </Button>
-          </Link>
+          </div>
         </div>
       </div>
 
@@ -254,28 +279,66 @@ export function DeskBookingsPage() {
     </div>
   );
 
+  const composerSheet = (
+    <Sheet open={composerOpen} onOpenChange={setComposerOpen}>
+      <SheetContent
+        side={isMobile ? 'bottom' : 'right'}
+        className={cn(
+          'flex flex-col gap-0 p-0 sm:max-w-xl',
+          isMobile && 'h-[90dvh] rounded-t-xl',
+        )}
+      >
+        <SheetHeader className="border-b px-5 py-4">
+          <SheetTitle>New booking</SheetTitle>
+          <SheetDescription>
+            Pick a person to book on behalf of, set the time and services,
+            then submit. Same flow you'd run on the scheduler — without the
+            calendar grid.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 overflow-y-auto px-5 py-5">
+          {person && (
+            <BookingComposer
+              open={composerOpen}
+              onOpenChange={setComposerOpen}
+              mode="operator"
+              entrySource="desk-list"
+              callerPersonId={person.id}
+              onBooked={() => {
+                setComposerOpen(false);
+              }}
+            />
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+
   return (
-    <Group orientation="horizontal" style={{ height: '100%' }}>
-      {selectedId ? (
-        <>
-          <Panel id="list" defaultSize="55%" className="relative">
+    <>
+      <Group orientation="horizontal" style={{ height: '100%' }}>
+        {selectedId ? (
+          <>
+            <Panel id="list" defaultSize="55%" className="relative">
+              {list}
+            </Panel>
+            <Separator />
+            <Panel id="detail" defaultSize="45%" className="relative">
+              <BookingDetailPanel
+                reservationId={selectedId}
+                spaceName={selectedSpaceName}
+                onClose={closeDetail}
+              />
+            </Panel>
+          </>
+        ) : (
+          <Panel id="list" className="relative">
             {list}
           </Panel>
-          <Separator />
-          <Panel id="detail" defaultSize="45%" className="relative">
-            <BookingDetailPanel
-              reservationId={selectedId}
-              spaceName={selectedSpaceName}
-              onClose={closeDetail}
-            />
-          </Panel>
-        </>
-      ) : (
-        <Panel id="list" className="relative">
-          {list}
-        </Panel>
-      )}
-    </Group>
+        )}
+      </Group>
+      {composerSheet}
+    </>
   );
 }
 
