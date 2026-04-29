@@ -1,12 +1,11 @@
-import { NavLink, Link } from 'react-router-dom';
-import { Home, FileText, CalendarDays, UserPlus, ShoppingCart, Plus } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
+import { Home, FileText, CalendarDays, UserPlus, ShoppingCart } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 /**
- * Mobile bottom nav: 5 tabs + a floating "Submit a request" FAB above
- * the bar. Active tabs get an animated dot above the icon; the dot
- * morphs between siblings via the `portal-tab-marker` view-transition
- * name when the route changes.
+ * Mobile bottom nav: 5 tabs. Active tabs get an animated dot above the
+ * icon; the dot morphs between siblings via the `portal-tab-marker`
+ * view-transition name when the route changes.
  *
  * Hidden on md+ — desktop uses the top bar.
  */
@@ -21,37 +20,17 @@ const tabs = [
 
 export function PortalBottomTabs() {
   return (
-    <>
-      {/* Floating submit FAB — sits above the tab bar, slightly off-grid */}
-      <Link
-        to="/portal/submit"
-        aria-label="Submit a request"
-        viewTransition
-        className="
-          md:hidden fixed bottom-[calc(env(safe-area-inset-bottom)+5rem)] right-4 z-50
-          inline-flex size-12 items-center justify-center rounded-full
-          bg-foreground text-background
-          shadow-[0_4px_14px_-2px_rgba(0,0,0,0.3)]
-          ring-1 ring-foreground/10
-          transition-transform active:scale-[0.94]
-        "
-        style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
-      >
-        <Plus className="size-5" strokeWidth={2.4} />
-      </Link>
-
-      <nav
-        aria-label="Portal primary"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 h-16
-                   border-t border-border/60
-                   bg-background/85 backdrop-blur
-                   supports-[backdrop-filter]:bg-background/70
-                   pb-[env(safe-area-inset-bottom)]
-                   grid grid-cols-5 items-stretch"
-      >
-        {tabs.map((t) => <BottomTab key={t.to} {...t} />)}
-      </nav>
-    </>
+    <nav
+      aria-label="Portal primary"
+      className="md:hidden fixed bottom-0 inset-x-0 z-40 h-16
+                 border-t border-border/60
+                 bg-background/85 backdrop-blur
+                 supports-[backdrop-filter]:bg-background/70
+                 pb-[env(safe-area-inset-bottom)]
+                 grid grid-cols-5 items-stretch"
+    >
+      {tabs.map((t) => <BottomTab key={t.to} {...t} />)}
+    </nav>
   );
 }
 
