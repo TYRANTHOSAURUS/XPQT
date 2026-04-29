@@ -260,6 +260,83 @@ describe('ResolverService', () => {
       expect(d.chosen_by).toBe('request_type_default');
       expect(d.target).toEqual({ kind: 'team', team_id: 'normal-team' });
     });
+
+    // The HTTP schema in routing-rule-validators.ts accepts gt/lt/gte/lte/
+    // contains/exists. The resolver used to swallow these and silently never
+    // match, so admins could save a rule that didn't fire and never knew.
+    // These cases lock down each operator end-to-end.
+    function rule(condition: { field: string; operator: string; value?: unknown }) {
+      return {
+        id: 'rop',
+        name: 'op',
+        priority: 100,
+        conditions: [condition],
+        action_assign_team_id: 'matched-team',
+        action_assign_user_id: null,
+      };
+    }
+    const rtFallback = {
+      id: 'rt',
+      domain: 'fm',
+      fulfillment_strategy: 'fixed' as const,
+      default_team_id: 'fallback-team',
+      default_vendor_id: null,
+      asset_type_filter: [],
+    };
+
+    it('gt matches numeric ticket fields', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([rule({ field: 'priority', operator: 'gt', value: 5 })]),
+        loadRequestType: jest.fn().mockResolvedValue(rtFallback),
+      });
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 7 as unknown as string }));
+      expect(d.chosen_by).toBe('rule');
+      expect(d.target).toEqual({ kind: 'team', team_id: 'matched-team' });
+    });
+
+    it('lte does not match when actual is strictly greater', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([rule({ field: 'priority', operator: 'lte', value: 5 })]),
+        loadRequestType: jest.fn().mockResolvedValue(rtFallback),
+      });
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 9 as unknown as string }));
+      expect(d.chosen_by).toBe('request_type_default');
+    });
+
+    it('contains matches substring of a string field', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([rule({ field: 'domain', operator: 'contains', value: 'sec' })]),
+        loadRequestType: jest.fn().mockResolvedValue(rtFallback),
+      });
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', domain: 'security' }));
+      expect(d.chosen_by).toBe('rule');
+    });
+
+    it('exists matches when actual is set, regardless of value', async () => {
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([rule({ field: 'asset_id', operator: 'exists' })]),
+        loadRequestType: jest.fn().mockResolvedValue(rtFallback),
+      });
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', asset_id: 'a1' }));
+      expect(d.chosen_by).toBe('rule');
+    });
+
+    it('mismatched-type ordinal compare does not falsely match', async () => {
+      // Rule says priority > 5 (number); ticket carries priority: 'urgent' (string).
+      // Old behavior with naive `>` would coerce and might match unpredictably.
+      // We require explicit type alignment, so this falls through.
+      const repo = stubRepo({
+        loadRoutingRules: jest.fn().mockResolvedValue([rule({ field: 'priority', operator: 'gt', value: 5 })]),
+        loadRequestType: jest.fn().mockResolvedValue(rtFallback),
+      });
+      const svc = new ResolverService(repo as never, { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never);
+      const d = await svc.resolve(ctx({ request_type_id: 'rt', priority: 'urgent' }));
+      expect(d.chosen_by).toBe('request_type_default');
+    });
   });
 
   describe('space group expansion', () => {

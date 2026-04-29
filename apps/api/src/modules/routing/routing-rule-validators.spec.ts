@@ -52,6 +52,50 @@ describe('RoutingRuleCreateSchema', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  // The schema previously dropped `exists` from the operator enum even though
+  // the resolver implemented it. Lock the round-trip in.
+  it('accepts "exists" operator without a value', () => {
+    const result = RoutingRuleCreateSchema.safeParse({
+      ...baseCreate,
+      conditions: [{ field: 'asset_id', operator: 'exists' as const }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts ordinal operators (gt/lt/gte/lte) and "contains"', () => {
+    for (const operator of ['gt', 'lt', 'gte', 'lte', 'contains'] as const) {
+      const result = RoutingRuleCreateSchema.safeParse({
+        ...baseCreate,
+        conditions: [{ field: 'priority', operator, value: 5 }],
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  // Regression guard: `exists` was originally rejected; making `value`
+  // unconditionally optional fixed that but let `equals`/`not_equals`/etc.
+  // save without a value (silently matching `undefined`). The per-operator
+  // refine restores the invariant.
+  it('rejects non-exists operator without a value', () => {
+    for (const operator of ['equals', 'not_equals', 'gt', 'lt', 'gte', 'lte', 'contains'] as const) {
+      const result = RoutingRuleCreateSchema.safeParse({
+        ...baseCreate,
+        conditions: [{ field: 'priority', operator }],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('rejects "in" / "not_in" with a non-array value', () => {
+    for (const operator of ['in', 'not_in'] as const) {
+      const result = RoutingRuleCreateSchema.safeParse({
+        ...baseCreate,
+        conditions: [{ field: 'priority', operator, value: 'urgent' }],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
 });
 
 describe('RoutingRuleUpdateSchema', () => {

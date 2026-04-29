@@ -21,11 +21,41 @@ const uuidString = () =>
  *   - priority is an integer (null allowed; defaults apply)
  */
 
-const RuleCondition = z.object({
-  field: z.string().min(1),
-  operator: z.enum(['equals', 'not_equals', 'in', 'not_in', 'gt', 'lt', 'gte', 'lte', 'contains']),
-  value: z.union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number()])), z.null()]),
-});
+const RuleCondition = z
+  .object({
+    field: z.string().min(1),
+    operator: z.enum([
+      'equals', 'not_equals', 'in', 'not_in',
+      'gt', 'lt', 'gte', 'lte',
+      'contains', 'exists',
+    ]),
+    // `exists` is a value-less check; every other operator requires a value
+    // or the resolver silently matches `undefined` against the saved value
+    // and we recreate the original drift. `superRefine` enforces that
+    // per-operator at write time.
+    value: z
+      .union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number()])), z.null()])
+      .optional(),
+  })
+  .superRefine((cond, ctx) => {
+    if (cond.operator === 'exists') return;
+    if (cond.value === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['value'],
+        message: `operator "${cond.operator}" requires a value`,
+      });
+    }
+    if (cond.operator === 'in' || cond.operator === 'not_in') {
+      if (!Array.isArray(cond.value)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['value'],
+          message: `operator "${cond.operator}" requires an array value`,
+        });
+      }
+    }
+  });
 
 export const RoutingRuleCreateSchema = z
   .object({

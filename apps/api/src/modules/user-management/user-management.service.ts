@@ -499,6 +499,12 @@ export class UserManagementService {
   }
 
   // ─── Audit log ────────────────────────────────────────────────────────────
+  //
+  // Migration 00188 collapsed `role_audit_events` into the generic
+  // `audit_events` table. The wire shape that consumers (web role-audit
+  // feed) depend on is preserved by reshaping rows in `listRoleAuditEvents`
+  // — `target_role_id` / `target_user_id` / `target_assignment_id` /
+  // `payload` are still top-level on the response.
 
   private async emitAudit(input: {
     actor_user_id: string | null;
@@ -519,22 +525,31 @@ export class UserManagementService {
     // mutation the caller just performed. Swallow + log.
     try {
       const tenant = TenantContext.current();
-      const { error } = await this.supabase.admin.from('role_audit_events').insert({
+      const isRoleEvent = input.event_type.startsWith('role.');
+      const entityType = isRoleEvent ? 'role' : 'user_role_assignment';
+      const entityId = isRoleEvent
+        ? input.target_role_id ?? null
+        : input.target_assignment_id ?? null;
+      const { error } = await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenant.id,
         actor_user_id: input.actor_user_id,
         event_type: input.event_type,
-        target_role_id: input.target_role_id ?? null,
-        target_user_id: input.target_user_id ?? null,
-        target_assignment_id: input.target_assignment_id ?? null,
-        payload: input.payload ?? {},
+        entity_type: entityType,
+        entity_id: entityId,
+        details: {
+          target_role_id: input.target_role_id ?? null,
+          target_user_id: input.target_user_id ?? null,
+          target_assignment_id: input.target_assignment_id ?? null,
+          ...(input.payload ?? {}),
+        },
       });
       if (error) {
         // eslint-disable-next-line no-console
-        console.warn('[role_audit_events] emit failed', error);
+        console.warn('[audit_events] role audit emit failed', error);
       }
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('[role_audit_events] emit threw', err);
+      console.warn('[audit_events] role audit emit threw', err);
     }
   }
 
@@ -544,16 +559,46 @@ export class UserManagementService {
   ) {
     const tenant = TenantContext.current();
     let q = this.supabase.admin
-      .from('role_audit_events')
+      .from('audit_events')
       .select('*, actor:users!actor_user_id(id, email, person:persons(id, first_name, last_name))')
       .eq('tenant_id', tenant.id)
+      // Only role + assignment events flow through this listing — the
+      // partial index on audit_events matches this prefix predicate.
+      .or('event_type.like.role.%,event_type.like.assignment.%')
       .order('created_at', { ascending: false })
       .limit(limit);
-    if (filter.role_id) q = q.eq('target_role_id', filter.role_id);
-    if (filter.user_id) q = q.eq('target_user_id', filter.user_id);
+    if (filter.role_id) q = q.eq('details->>target_role_id', filter.role_id);
+    if (filter.user_id) q = q.eq('details->>target_user_id', filter.user_id);
     const { data, error } = await q;
     if (error) throw error;
-    return data;
+    // Reshape `details` back into the legacy top-level columns the web
+    // RoleAuditEvent type expects. Anything in `details` beyond the three
+    // target_* keys is the original payload.
+    return (data ?? []).map((row) => {
+      const details = (row.details as Record<string, unknown> | null) ?? {};
+      const {
+        target_role_id = null,
+        target_user_id = null,
+        target_assignment_id = null,
+        ...payload
+      } = details as {
+        target_role_id?: string | null;
+        target_user_id?: string | null;
+        target_assignment_id?: string | null;
+      } & Record<string, unknown>;
+      return {
+        id: row.id,
+        tenant_id: row.tenant_id,
+        actor_user_id: row.actor_user_id,
+        event_type: row.event_type,
+        target_role_id,
+        target_user_id,
+        target_assignment_id,
+        payload,
+        created_at: row.created_at,
+        actor: (row as { actor?: unknown }).actor ?? null,
+      };
+    });
   }
 
   async resolveUserIdFromAuthUid(authUid: string): Promise<string | null> {

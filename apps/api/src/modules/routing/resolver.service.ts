@@ -158,9 +158,48 @@ export class ResolverService {
         case 'in': return Array.isArray(c.value) && (c.value as unknown[]).includes(actual);
         case 'not_in': return Array.isArray(c.value) && !(c.value as unknown[]).includes(actual);
         case 'exists': return actual !== null && actual !== undefined;
+        case 'gt': {
+          const cmp = this.compareOrdinal(actual, c.value);
+          return Number.isFinite(cmp) && cmp > 0;
+        }
+        case 'lt': {
+          const cmp = this.compareOrdinal(actual, c.value);
+          return Number.isFinite(cmp) && cmp < 0;
+        }
+        case 'gte': {
+          const cmp = this.compareOrdinal(actual, c.value);
+          return Number.isFinite(cmp) && cmp >= 0;
+        }
+        case 'lte': {
+          const cmp = this.compareOrdinal(actual, c.value);
+          return Number.isFinite(cmp) && cmp <= 0;
+        }
+        case 'contains': {
+          if (typeof actual === 'string' && typeof c.value === 'string') {
+            return actual.includes(c.value);
+          }
+          if (Array.isArray(actual)) {
+            return (actual as unknown[]).includes(c.value);
+          }
+          return false;
+        }
         default: return false;
       }
     });
+  }
+
+  // Ordered comparison for gt/lt/gte/lte. Numbers compare numerically; strings
+  // compare lexicographically (ISO timestamps and ISO dates compare correctly
+  // under that rule). Mismatched types return NaN so the operator falls
+  // through to "doesn't match" instead of accidentally matching via coercion.
+  private compareOrdinal(a: unknown, b: unknown): number {
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (typeof a === 'string' && typeof b === 'string') {
+      if (a < b) return -1;
+      if (a > b) return 1;
+      return 0;
+    }
+    return NaN;
   }
 
   private tryAsset(

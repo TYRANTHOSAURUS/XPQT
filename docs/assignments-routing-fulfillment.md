@@ -720,7 +720,7 @@ Catalog architecture reference: [`docs/service-catalog-live.md`](./service-catal
 - `request_type_audience_rules` — who can see / request it (visible_allow / visible_deny / request_allow / request_deny). Replaces `service_item_criteria`.
 - `request_type_form_variants` — per-audience form variant with partial-unique default. Replaces `service_item_form_variants`.
 - `request_type_on_behalf_rules` — actor / target criteria for `on_behalf_policy='configured_list'`. Replaces `service_item_on_behalf_rules`.
-- `request_type_scope_overrides` — **new, no legacy equivalent.** Per-scope overrides for effective handler (team | vendor | none), workflow, case SLA, child dispatch policy, executor SLA, case-owner policy entity. One active row per (request_type, scope, scope-target) via partial unique indexes. Resolver precedence per [`service-catalog-live.md §6.3`](./service-catalog-live.md#63-effective-fulfillment-resolution): exact match → inherited ancestor → space_group → tenant → request_type default → generic routing defaults.
+- `request_type_scope_overrides` — **new, no legacy equivalent.** Per-scope overrides for effective handler (team | vendor | none), workflow, case SLA, child dispatch policy, executor SLA, case-owner policy entity. Multiple active rows per (request_type, scope, scope-target) are allowed as long as their [`starts_at`, `ends_at`) windows don't overlap — that's how an admin prepares "next month's override" while the current one is still active. The 00091 partial-unique indexes that originally enforced single-active-row were dropped in migration 00101 (`drop index uniq_rt_override_active_{tenant,space,group}`) to enable those scheduled handoffs; `RequestTypeService.putScopeOverrides` (`validateNoTemporalOverlap`) is now the sole arbiter at write time, and the resolver's precedence function filters by `active AND starts_at<=now() AND ends_at>now()` so at most one row is ever in-effect at runtime. Resolver precedence per [`service-catalog-live.md §6.3`](./service-catalog-live.md#63-effective-fulfillment-resolution): exact match → inherited ancestor → space_group → tenant → request_type default → generic routing defaults.
 
 Portal predicates are now request-type-native and live alongside the legacy service-item-backed set until phase E cleanup:
 
@@ -752,7 +752,7 @@ For a given `(tenant, request_type, effective_location)` tuple:
 3. `space_group` — a `scope_kind='space_group'` override whose `space_group_id` contains the effective location.
 4. `tenant` — a `scope_kind='tenant'` override.
 
-`starts_at` / `ends_at` filter at evaluation time; `active=false` rows are invisible. Only one row wins. Two active rows at the same tier would have been rejected by the 00091 partial-unique indexes, so precedence is deterministic.
+`starts_at` / `ends_at` filter at evaluation time; `active=false` rows are invisible. Only one row wins. The 00091 partial-unique indexes were dropped in 00101 to enable scheduled handoffs (an admin queues next month's override while the current one is still active); the service-layer `validateNoTemporalOverlap` in `RequestTypeService.putScopeOverrides` enforces non-intersecting `[starts_at, ends_at)` windows on writes, the resolver's precedence function filters to rows where `active AND starts_at<=now() AND ends_at>now()` so at most one row is in-effect at runtime, and `id ASC` deterministically breaks any residual tie.
 
 ### Consumers
 

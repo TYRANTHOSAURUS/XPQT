@@ -52,10 +52,12 @@ export class ApprovalService {
   }
 
   /**
-   * Get pending approvals for the caller's own queue, including approvals
-   * delegated to them via `delegations`. Delegations are keyed by
-   * `delegate_user_id` (a `users.id`), so we must look up the caller's user
-   * row, not their person row.
+   * Get pending approvals for the caller's own queue. Surfaces:
+   *  • approvals where `approver_person_id` is the caller (or someone who
+   *    delegated to them — `delegations` is keyed by `delegate_user_id`),
+   *  • approvals where `approver_team_id` is a team the caller belongs to.
+   * Team-approvals do not carry delegation; any active team member can pick
+   * one up, so the `team_members` membership lookup is the only gate.
    */
   async getPendingForActor(actor: ApprovalActor) {
     const tenant = TenantContext.current();
@@ -89,12 +91,28 @@ export class ApprovalService {
       }
     }
 
+    const { data: memberships } = await this.supabase.admin
+      .from('team_members')
+      .select('team_id')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', actor.userId);
+    const approverTeamIds = (memberships ?? [])
+      .map((m) => m.team_id as string)
+      .filter(Boolean);
+
+    const orClauses: string[] = [
+      `approver_person_id.in.(${approverPersonIds.join(',')})`,
+    ];
+    if (approverTeamIds.length > 0) {
+      orClauses.push(`approver_team_id.in.(${approverTeamIds.join(',')})`);
+    }
+
     const { data, error } = await this.supabase.admin
       .from('approvals')
       .select('*')
       .eq('tenant_id', tenant.id)
       .eq('status', 'pending')
-      .in('approver_person_id', approverPersonIds)
+      .or(orClauses.join(','))
       .order('requested_at', { ascending: false });
     if (error) throw error;
     return data;

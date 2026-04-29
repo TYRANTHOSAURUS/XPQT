@@ -183,8 +183,30 @@ export class TicketService {
     const tenant = TenantContext.current();
     const limit = Math.min(filters.limit ?? 50, 100);
 
-    let query = this.supabase.admin
-      .from('tickets')
+    // For non-system actors, run the visibility-scoped RPC
+    // `tickets_visible_for_actor` (migration 00187) instead of materializing
+    // the visible-ticket-id set in Node and feeding it back as `.in('id',
+    // ids)`. The RPC returns SETOF tickets so PostgREST chains the same
+    // filter/sort/limit grammar as a plain `.from('tickets')` call. System
+    // actors keep the direct table read because they have no user_id to
+    // anchor the predicate against.
+    let baseBuilder;
+    if (actorAuthUid === SYSTEM_ACTOR) {
+      baseBuilder = this.supabase.admin.from('tickets');
+    } else {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      if (!ctx.user_id && !ctx.has_read_all) {
+        // Unknown user in this tenant — no visibility, return nothing.
+        return { items: [], next_cursor: null };
+      }
+      baseBuilder = this.supabase.admin.rpc('tickets_visible_for_actor', {
+        p_user_id: ctx.user_id,
+        p_tenant_id: tenant.id,
+        p_has_read_all: ctx.has_read_all,
+      });
+    }
+
+    let query = baseBuilder
       .select(`
         *,
         requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email),
@@ -195,14 +217,6 @@ export class TicketService {
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false })
       .limit(limit);
-
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      const ids = await this.visibility.getVisibleIds(ctx);
-      if (ids !== null) {
-        query = query.in('id', ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000']);
-      }
-    }
 
     // Apply filters
     if (filters.status_category) {
@@ -413,24 +427,34 @@ export class TicketService {
 
   async listDistinctTags(actorAuthUid: string): Promise<string[]> {
     const tenant = TenantContext.current();
-    // Tags are derived from visible tickets only — apply the same read filter
+    // Same predicate-pushdown story as `list()`: prefer the SQL-side
+    // visibility join (tickets_visible_for_actor) over materializing the ID
+    // set in Node. For tenants with read_all or system actors, fall back to
+    // the dedicated `tickets_distinct_tags` RPC so we can still benefit from
+    // the GIN index it uses.
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      const ids = await this.visibility.getVisibleIds(ctx);
-      if (ids !== null) {
-        // Query tags only from visible tickets
-        const visibleIds = ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'];
+      if (!ctx.user_id && !ctx.has_read_all) return [];
+      if (!ctx.has_read_all) {
         const { data, error } = await this.supabase.admin
-          .from('tickets')
+          .rpc('tickets_visible_for_actor', {
+            p_user_id: ctx.user_id,
+            p_tenant_id: tenant.id,
+            p_has_read_all: false,
+          })
           .select('tags')
           .eq('tenant_id', tenant.id)
-          .in('id', visibleIds)
           .not('tags', 'is', null);
         if (error) throw error;
         const tagSet = new Set<string>();
-        for (const row of data ?? []) {
+        // The Supabase typings for `.rpc(...).select(...)` widen `data` to
+        // `Row | Row[]`, so coerce explicitly before iterating.
+        const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{
+          tags?: string[] | null;
+        }>;
+        for (const row of rows) {
           if (Array.isArray(row.tags)) {
-            for (const t of row.tags as string[]) tagSet.add(t);
+            for (const t of row.tags) tagSet.add(t);
           }
         }
         return Array.from(tagSet).sort();
@@ -1175,29 +1199,34 @@ export class TicketService {
 
   async getChildTasks(parentTicketId: string, actorAuthUid: string) {
     const tenant = TenantContext.current();
+    const childCols =
+      'id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      // Gate on visibility of the parent
+      // Gate on parent visibility first — same contract as before.
       await this.visibility.assertVisible(parentTicketId, ctx, 'read');
-      // Also narrow the children to visible set
-      const visibleIds = await this.visibility.getVisibleIds(ctx);
-      let q = this.supabase.admin
-        .from('tickets')
-        .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
+      if (!ctx.user_id && !ctx.has_read_all) return [];
+      // Narrow the children to the visible set via the SQL-side RPC instead
+      // of materializing the full visible-ticket-id set in Node and feeding
+      // it back as `.in('id', ids)`. Same fix as `list()` / `listDistinctTags`.
+      const { data, error } = await this.supabase.admin
+        .rpc('tickets_visible_for_actor', {
+          p_user_id: ctx.user_id,
+          p_tenant_id: tenant.id,
+          p_has_read_all: ctx.has_read_all,
+        })
+        .select(childCols)
         .eq('parent_ticket_id', parentTicketId)
-        .eq('tenant_id', tenant.id);
-      if (visibleIds !== null) {
-        q = q.in('id', visibleIds.length > 0 ? visibleIds : ['00000000-0000-0000-0000-000000000000']);
-      }
-      const { data, error } = await q.order('created_at');
+        .eq('tenant_id', tenant.id)
+        .order('created_at');
       if (error) throw error;
       return data;
     }
 
     const { data, error } = await this.supabase.admin
       .from('tickets')
-      .select('id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at')
+      .select(childCols)
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)
       .order('created_at');

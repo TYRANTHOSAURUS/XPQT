@@ -32,7 +32,9 @@ A user can read a ticket if **any** tier matches. Can write if participant or (n
 
 ## 3. The SQL predicate
 
-`public.ticket_visibility_ids(p_user_id uuid, p_tenant_id uuid)` returns the set of ticket ids visible to a user. It's the single source of truth for read visibility. API handlers call it via `.in('id', rpc(...))`.
+`public.ticket_visibility_ids(p_user_id uuid, p_tenant_id uuid)` returns `SETOF uuid` — the set of ticket ids visible to a user. It's the single source of truth for read visibility.
+
+`public.tickets_visible_for_actor(p_user_id uuid, p_tenant_id uuid, p_has_read_all boolean default false)` (migration 00187) wraps the predicate in a `SETOF tickets` RPC so the API can chain PostgREST filters/sort/pagination directly on visible rows. This is the preferred path for set-based reads (`TicketService.list`, `listDistinctTags`, `getChildTasks`) — it pushes the visibility join into Postgres instead of materializing the full visible-ticket-id set in Node and feeding it back as `.in('id', ids)`. The latter pattern is pathological for tenants with large visible sets (megabytes of UUIDs over the wire + a giant IN list for the planner). When `p_has_read_all = true` the wrapper short-circuits the predicate join entirely.
 
 `public.expand_space_closure(p_roots uuid[])` — recursive CTE over `spaces.parent_id`. Used both inside `ticket_visibility_ids` (for role location matches) and by the application (to precompute `role.location_scope_closure` on load).
 
@@ -45,7 +47,7 @@ A user can read a ticket if **any** tier matches. Can write if participant or (n
 | Method | Purpose |
 |---|---|
 | `loadContext(authUid, tenantId)` | Resolves the Supabase auth uid → full `VisibilityContext` (user_id, person_id, teams, roles with expanded location closure, permissions). Call once per request. |
-| `getVisibleIds(ctx)` | Returns `string[] | null` — the list of visible ticket ids, or `null` if the user has `tickets:read_all` (meaning: no filter). Called by list/child/tags queries. |
+| `getVisibleIds(ctx)` | Returns `string[] | null` — the list of visible ticket ids, or `null` if the user has `tickets:read_all` (meaning: no filter). **Avoid for set-based reads** — prefer `tickets_visible_for_actor` (§3) so the predicate stays in SQL. Still available for paths that genuinely need the id list in TS (counts, dedup against another set). |
 | `assertVisible(ticketId, ctx, mode)` | Loads the ticket and evaluates paths. `mode = 'read'` or `'write'`. Throws `ForbiddenException` on denial. Called by every per-ticket endpoint (detail, PATCH, reassign, dispatch, addActivity, attachments). |
 | `trace(ticketId, ctx)` | Explainer for the debug endpoint. |
 
