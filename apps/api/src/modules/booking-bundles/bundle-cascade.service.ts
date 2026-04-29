@@ -114,15 +114,17 @@ export class BundleCascadeService {
     // tickets.linked_order_line_item_id (00145). Wave 2 Slice 2 enabled this:
     // the auto-creation flow (BundleService.maybeCreateSetupWorkOrder) now
     // populates linked_order_line_item_id at creation time, so the inverse
-    // cascade has real data to act on. We close them via status_category
-    // (the column that exists), NOT via a non-existent `resolution` column.
+    // cascade has real data to act on. Filter NON-terminal status with an
+    // explicit whitelist so already-closed tickets don't get their
+    // closed_at re-stamped.
+    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting'];
     const { data: linkedTickets } = await this.supabase.admin
       .from('tickets')
       .update({ status_category: 'closed', closed_at: new Date().toISOString() })
       .eq('linked_order_line_item_id', args.line_id)
       .eq('tenant_id', tenantId)
       .eq('ticket_kind', 'work_order')
-      .not('status_category', 'in', '("closed","resolved")')
+      .in('status_category', NON_TERMINAL_STATUSES)
       .select('id');
     if (linkedTickets) {
       for (const t of linkedTickets as Array<{ id: string }>) {
@@ -247,8 +249,9 @@ export class BundleCascadeService {
 
     // Cascade-cancel booking-origin work orders linked to any of the
     // cancelled lines (via tickets.linked_order_line_item_id, 00145).
-    // Wave 2 Slice 2 populates this link at auto-creation time. Bulk
-    // form mirrors the per-line cancelLine() cascade above.
+    // Whitelist non-terminal statuses so already-closed tickets don't
+    // get closed_at re-stamped. Bulk form mirrors cancelLine() above.
+    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting'];
     let cancelledTicketIds: string[] = [];
     if (cancelledLineIds.length > 0) {
       const { data: linkedTickets } = await this.supabase.admin
@@ -257,7 +260,7 @@ export class BundleCascadeService {
         .in('linked_order_line_item_id', cancelledLineIds)
         .eq('tenant_id', tenantId)
         .eq('ticket_kind', 'work_order')
-        .not('status_category', 'in', '("closed","resolved")')
+        .in('status_category', NON_TERMINAL_STATUSES)
         .select('id');
       cancelledTicketIds = (linkedTickets as Array<{ id: string }> | null)?.map((t) => t.id) ?? [];
     }

@@ -55,7 +55,9 @@ export class ServiceRuleResolverService {
 
     const allRules = await this.fetchAllRules();
     if (allRules.length === 0) {
-      for (const line of args.lines) out.set(line.lineKey, this.allowOutcome());
+      // No rules at all → all lines get an empty outcome via the
+      // pure aggregator's no-match path.
+      for (const line of args.lines) out.set(line.lineKey, aggregateMatchedRules([]));
       return out;
     }
 
@@ -146,98 +148,109 @@ export class ServiceRuleResolverService {
   }
 
   private aggregate(matched: MatchedServiceRule[]): ServiceRuleOutcome {
-    if (matched.length === 0) return this.allowOutcome();
+    return aggregateMatchedRules(matched);
+  }
+}
 
-    // Effect aggregation — deny dominates everything.
-    let effect: ServiceRuleEffect = 'allow';
-    const denials: string[] = [];
-    const warnings: string[] = [];
-    const approverTargets: ServiceRuleOutcome['approver_targets'] = [];
+// ── Pure aggregator (exported for unit-testability) ───────────────────────
 
-    // Setup-flag aggregation is independent of effect: any rule with the
-    // flag set wins (OR), and lead-time uses MAX (be conservative — if
-    // any rule asked for 60min, give it 60min).
-    let requiresInternalSetup = false;
-    let internalSetupLeadTimeMinutes: number | null = null;
+/**
+ * Combines matched rules into a single outcome:
+ *   * effect — deny > require_approval > warn > allow_override > allow
+ *   * requires_internal_setup — OR across rules
+ *   * internal_setup_lead_time_minutes — MAX across rules whose flag is set
+ *     (conservative; if any rule needs 60min, give it 60min). NULL when
+ *     no rule overrode the matrix default.
+ *
+ * Pure: no DB, no tenant context. Safe to unit-test.
+ */
+export function aggregateMatchedRules(matched: MatchedServiceRule[]): ServiceRuleOutcome {
+  if (matched.length === 0) return allowOutcome();
 
-    for (const rule of matched) {
-      switch (rule.effect) {
-        case 'deny':
-          effect = 'deny';
-          if (rule.denial_message) denials.push(rule.denial_message);
-          break;
-        case 'require_approval':
-          if (effect !== 'deny') effect = 'require_approval';
-          approverTargets.push(...this.extractApproverTargets(rule));
-          if (rule.denial_message) denials.push(rule.denial_message);
-          break;
-        case 'allow_override':
-          if (effect === 'allow') effect = 'allow_override';
-          break;
-        case 'warn':
-          if (rule.denial_message) warnings.push(rule.denial_message);
-          break;
-        case 'allow':
-          // explicit allow — no effect change
-          break;
+  let effect: ServiceRuleEffect = 'allow';
+  const denials: string[] = [];
+  const warnings: string[] = [];
+  const approverTargets: ServiceRuleOutcome['approver_targets'] = [];
+
+  let requiresInternalSetup = false;
+  let internalSetupLeadTimeMinutes: number | null = null;
+
+  for (const rule of matched) {
+    switch (rule.effect) {
+      case 'deny':
+        effect = 'deny';
+        if (rule.denial_message) denials.push(rule.denial_message);
+        break;
+      case 'require_approval':
+        if (effect !== 'deny') effect = 'require_approval';
+        approverTargets.push(...extractApproverTargets(rule));
+        if (rule.denial_message) denials.push(rule.denial_message);
+        break;
+      case 'allow_override':
+        if (effect === 'allow') effect = 'allow_override';
+        break;
+      case 'warn':
+        if (rule.denial_message) warnings.push(rule.denial_message);
+        break;
+      case 'allow':
+        break;
+    }
+
+    if (rule.requires_internal_setup) {
+      requiresInternalSetup = true;
+      if (rule.internal_setup_lead_time_minutes != null) {
+        internalSetupLeadTimeMinutes = Math.max(
+          internalSetupLeadTimeMinutes ?? 0,
+          rule.internal_setup_lead_time_minutes,
+        );
       }
-
-      if (rule.requires_internal_setup) {
-        requiresInternalSetup = true;
-        if (rule.internal_setup_lead_time_minutes != null) {
-          internalSetupLeadTimeMinutes = Math.max(
-            internalSetupLeadTimeMinutes ?? 0,
-            rule.internal_setup_lead_time_minutes,
-          );
-        }
-      }
     }
-
-    return {
-      effect,
-      matched_rule_ids: matched.map((r) => r.id),
-      denial_messages: denials,
-      warning_messages: warnings,
-      approver_targets: approverTargets,
-      requires_internal_setup: requiresInternalSetup,
-      internal_setup_lead_time_minutes: internalSetupLeadTimeMinutes,
-    };
   }
 
-  private extractApproverTargets(
-    rule: MatchedServiceRule,
-  ): Array<{ rule_id: string; target: ApproverTarget }> {
-    const cfg = rule.approval_config;
-    if (!cfg || !cfg.approver_target) return [];
-    const t = cfg.approver_target;
-    if (t === 'person' && cfg.person_id) {
-      return [{ rule_id: rule.id, target: { kind: 'person', person_id: cfg.person_id } }];
-    }
-    if (t === 'role' && cfg.role_id) {
-      return [{ rule_id: rule.id, target: { kind: 'role', role_id: cfg.role_id } }];
-    }
-    if (t === 'derived' && cfg.expr) {
-      return [{ rule_id: rule.id, target: { kind: 'derived', expr: cfg.expr } }];
-    }
-    if (t === 'cost_center.default_approver') {
-      return [
-        { rule_id: rule.id, target: { kind: 'derived', expr: 'cost_center.default_approver' } },
-      ];
-    }
-    return [];
-  }
+  return {
+    effect,
+    matched_rule_ids: matched.map((r) => r.id),
+    denial_messages: denials,
+    warning_messages: warnings,
+    approver_targets: approverTargets,
+    requires_internal_setup: requiresInternalSetup,
+    internal_setup_lead_time_minutes: internalSetupLeadTimeMinutes,
+  };
+}
 
-  private allowOutcome(): ServiceRuleOutcome {
-    return {
-      effect: 'allow',
-      matched_rule_ids: [],
-      denial_messages: [],
-      warning_messages: [],
-      approver_targets: [],
-      requires_internal_setup: false,
-      internal_setup_lead_time_minutes: null,
-    };
+function extractApproverTargets(
+  rule: MatchedServiceRule,
+): Array<{ rule_id: string; target: ApproverTarget }> {
+  const cfg = rule.approval_config;
+  if (!cfg || !cfg.approver_target) return [];
+  const t = cfg.approver_target;
+  if (t === 'person' && cfg.person_id) {
+    return [{ rule_id: rule.id, target: { kind: 'person', person_id: cfg.person_id } }];
   }
+  if (t === 'role' && cfg.role_id) {
+    return [{ rule_id: rule.id, target: { kind: 'role', role_id: cfg.role_id } }];
+  }
+  if (t === 'derived' && cfg.expr) {
+    return [{ rule_id: rule.id, target: { kind: 'derived', expr: cfg.expr } }];
+  }
+  if (t === 'cost_center.default_approver') {
+    return [
+      { rule_id: rule.id, target: { kind: 'derived', expr: 'cost_center.default_approver' } },
+    ];
+  }
+  return [];
+}
+
+function allowOutcome(): ServiceRuleOutcome {
+  return {
+    effect: 'allow',
+    matched_rule_ids: [],
+    denial_messages: [],
+    warning_messages: [],
+    approver_targets: [],
+    requires_internal_setup: false,
+    internal_setup_lead_time_minutes: null,
+  };
 }
 
 // ── Specificity helper (exported for testing) ─────────────────────────────
