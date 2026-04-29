@@ -35,11 +35,29 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg
 @Injectable()
 export class DbService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(DbService.name);
-  private pool!: Pool;
+  private pool: Pool | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit(): Promise<void> {
+    // Connection is configured lazily so the API can boot in environments
+    // that don't provision direct DB credentials (e.g. demo/preview deploys
+    // that only use the Supabase REST + service-role path). Routes that
+    // actually need pg will fail at first use with a clear error.
+    const hasUrl = !!this.config.get<string>('SUPABASE_DB_URL');
+    const hasPass = !!this.config.get<string>('SUPABASE_DB_PASS');
+    if (!hasUrl && !hasPass) {
+      this.log.warn('pg pool not initialised: SUPABASE_DB_URL/SUPABASE_DB_PASS missing');
+      return;
+    }
+    await this.initPool();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.pool?.end();
+  }
+
+  private async initPool(): Promise<void> {
     const connectionString = this.resolveConnectionString();
     const max = Number(this.config.get<string | number>('PG_POOL_MAX') ?? 20);
 
@@ -48,10 +66,6 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       max,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
-      // Supabase requires TLS. `rejectUnauthorized: false` is OK against
-      // Supabase's managed cert chain — node's bundled CA store doesn't
-      // always include the AWS RDS root, and the connection is a private
-      // DB endpoint, not a third-party host we'd MITM-protect against.
       ssl: { rejectUnauthorized: false },
     });
 
@@ -59,8 +73,6 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       this.log.error(`pg pool error: ${err.message}`);
     });
 
-    // Probe at boot so misconfiguration fails loud and fast instead of
-    // surfacing as a mysterious 500 on first request.
     const c = await this.pool.connect();
     try {
       await c.query('select 1');
@@ -70,8 +82,13 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async onModuleDestroy(): Promise<void> {
-    await this.pool?.end();
+  private requirePool(): Pool {
+    if (!this.pool) {
+      throw new Error(
+        'DbService not configured: set SUPABASE_DB_URL or SUPABASE_DB_PASS to use direct Postgres queries',
+      );
+    }
+    return this.pool;
   }
 
   /**
@@ -110,7 +127,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     sql: string,
     params?: unknown[],
   ): Promise<QueryResult<T>> {
-    return this.pool.query<T>(sql, params);
+    return this.requirePool().query<T>(sql, params);
   }
 
   /**
@@ -122,7 +139,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     sql: string,
     params?: unknown[],
   ): Promise<T | null> {
-    const res = await this.pool.query<T>(sql, params);
+    const res = await this.requirePool().query<T>(sql, params);
     return res.rows[0] ?? null;
   }
 
@@ -134,7 +151,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     sql: string,
     params?: unknown[],
   ): Promise<T[]> {
-    const res = await this.pool.query<T>(sql, params);
+    const res = await this.requirePool().query<T>(sql, params);
     return res.rows;
   }
 
@@ -159,7 +176,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       ? `select public.${name}(${argList}) as result`
       : `select public.${name}() as result`;
     type Row = { result: T };
-    const res = await this.pool.query<Row>(sql, values);
+    const res = await this.requirePool().query<Row>(sql, values);
     return res.rows[0]?.result as T;
   }
 
@@ -170,7 +187,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
    * and miss the transaction context).
    */
   async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
+    const client = await this.requirePool().connect();
     try {
       await client.query('begin');
       const result = await fn(client);
