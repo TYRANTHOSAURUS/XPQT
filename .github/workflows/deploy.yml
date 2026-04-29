@@ -12,8 +12,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build/typecheck both packages first. If this fails, no deploy fires —
+  # we'd rather see a red CI than a half-deployed broken state.
+  validate:
+    name: Validate (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shared
+        run: pnpm --filter @prequest/shared build
+
+      - name: Typecheck api
+        run: pnpm --filter @prequest/api run lint
+
+      - name: Build web
+        run: pnpm --filter @prequest/web build
+
   vercel:
     name: Deploy web (Vercel)
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +62,7 @@ jobs:
 
   render:
     name: Deploy api (Render)
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Render deploy

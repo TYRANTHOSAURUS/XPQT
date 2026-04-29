@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# pre-push — typecheck the workspace before letting the push reach origin.
+#
+# Catches the common deploy-killer: a TS error that compiles cleanly under
+# Vite (which only transpiles) but blows up the api's `tsc` build, or a spec
+# file with a type error. Runs both apps' typecheck. Skips when the push has
+# nothing to send (delete branch, etc.).
+#
+# Skips for tag pushes and during non-pushing operations. Bypass in a genuine
+# emergency with `git push --no-verify` — but follow up with a fix commit;
+# CI gates the same check.
+
+set -euo pipefail
+
+# Read the refs being pushed from stdin (git push protocol).
+# If nothing is being pushed (deletes only), exit clean.
+HAS_PUSH=0
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  if [ "$local_sha" != "0000000000000000000000000000000000000000" ]; then
+    HAS_PUSH=1
+  fi
+done
+
+if [ "$HAS_PUSH" -eq 0 ]; then
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "pre-push: typechecking workspace..."
+
+# Build shared first because both web and api consume its types from dist/.
+# `pnpm -r run lint` runs `tsc --noEmit` on each package per their lint script
+# (see CLAUDE.md and each package.json).
+if ! pnpm --filter @prequest/shared run build >/tmp/pre-push-shared.log 2>&1; then
+  echo "pre-push FAILED: @prequest/shared build" >&2
+  cat /tmp/pre-push-shared.log >&2
+  echo "(bypass in emergency with: git push --no-verify)" >&2
+  exit 1
+fi
+
+# api's lint is `tsc --noEmit`. Web's lint is eslint, so we run web's
+# `build` (tsc -b && vite build) instead — same check CI performs.
+if ! pnpm --filter @prequest/api run lint >/tmp/pre-push-api.log 2>&1; then
+  echo "pre-push FAILED: api typecheck" >&2
+  tail -40 /tmp/pre-push-api.log >&2
+  echo "(bypass in emergency with: git push --no-verify)" >&2
+  exit 1
+fi
+
+if ! pnpm --filter @prequest/web run build >/tmp/pre-push-web.log 2>&1; then
+  echo "pre-push FAILED: web build" >&2
+  tail -40 /tmp/pre-push-web.log >&2
+  echo "(bypass in emergency with: git push --no-verify)" >&2
+  exit 1
+fi
+
+echo "pre-push: typecheck + web build OK"
