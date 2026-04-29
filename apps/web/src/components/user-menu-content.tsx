@@ -14,12 +14,15 @@ import {
   ArrowRightLeftIcon,
   BadgeCheckIcon,
   BellIcon,
+  FileTextIcon,
   HeadsetIcon,
+  LifeBuoyIcon,
   LogOutIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
   SettingsIcon,
+  ShieldIcon,
   SunIcon,
   UserIcon,
 } from 'lucide-react';
@@ -141,6 +144,21 @@ export function UserMenuContent({ side = 'bottom', align = 'end', className }: P
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      <DropdownMenuSeparator />
+      <DropdownMenuGroup>
+        <DropdownMenuItem render={<a href="#" />}>
+          <LifeBuoyIcon />
+          Help center
+        </DropdownMenuItem>
+        <DropdownMenuItem render={<a href="#" />}>
+          <ShieldIcon />
+          Privacy
+        </DropdownMenuItem>
+        <DropdownMenuItem render={<a href="#" />}>
+          <FileTextIcon />
+          Terms
+        </DropdownMenuItem>
+      </DropdownMenuGroup>
       <DropdownMenuSeparator />
       {!onPortal && (
         <DropdownMenuItem onClick={() => navigate('/portal')}>
