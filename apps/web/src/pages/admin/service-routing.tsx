@@ -16,6 +16,7 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -477,12 +478,10 @@ function UpsertDialog({
           </Field>
 
           <Field orientation="horizontal">
-            <Input
+            <Checkbox
               id="sr-active"
-              type="checkbox"
-              className="size-4"
               checked={active}
-              onChange={(e) => setActive(e.target.checked)}
+              onCheckedChange={(next) => setActive(next === true)}
             />
             <FieldLabel htmlFor="sr-active" className="font-normal">
               Active
