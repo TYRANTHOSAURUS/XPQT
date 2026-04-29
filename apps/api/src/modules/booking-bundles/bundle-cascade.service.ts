@@ -235,11 +235,14 @@ export class BundleCascadeService {
         .update({ status: 'cancelled' })
         .in('id', cancelledAssetReservationIds);
     }
+    // Note (2026-04-29): bundle-cancel ticket cascade removed (same
+    // codex review as cancelLine). The earlier code wrote a non-existent
+    // tickets.resolution column. The branch never fires today because
+    // no code path populates linked_ticket_id. cancelledTicketIds stays
+    // in the response for forward-compatibility — Wave 2's link table
+    // will repopulate it with real ids and reactivate the cascade.
     if (cancelledTicketIds.length > 0) {
-      await this.supabase.admin
-        .from('tickets')
-        .update({ status_category: 'closed', resolution: 'cancelled' })
-        .in('id', cancelledTicketIds);
+      // intentionally no-op until Wave 2 — see fulfillment-fixes plan.
     }
     if (cancelledLineIds.length > 0) {
       await this.supabase.admin
