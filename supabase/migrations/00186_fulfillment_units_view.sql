@@ -81,14 +81,23 @@ where t.ticket_kind = 'work_order';
 -- adequate for now. If query latency becomes an issue, materialize and
 -- refresh on writes (out of scope for Wave 1).
 --
--- Security: the view inherits RLS from underlying tables.
---   * order_line_items: vendor-portal RLS (00171_vendor_portal_fk_hardening)
---     scopes by oli.vendor_id; vendors will see only their own service-line
---     rows. Operators see all rows in their tenant via tickets/orders RLS.
---   * tickets: standard ticket-visibility RLS gates by participant + role.
---     Vendors will NOT see ticket rows in this view today — the dormant
---     00035 vendor-on-tickets policy is intentionally inactive. That is
---     forward-compatible: when Wave 2 activates it, vendors automatically
---     see linked work-orders here without changing the view.
+-- Security caveat (codex review 2026-04-29):
+--   Plain views in Postgres run with the OWNER's privileges by default,
+--   not the caller's — RLS on the underlying tables is NOT automatically
+--   re-evaluated per caller for a plain view. Before exposing this view
+--   directly to the vendor or authenticated role (e.g. via PostgREST or
+--   a client query), recreate it with `with (security_invoker = true)`
+--   so the caller's RLS context applies. Today nothing in the API queries
+--   this view, so the risk is contained.
+--
+--   Wave 2 consumer guidance:
+--     * If the consumer is a service that uses supabase.admin (already
+--       bypasses RLS), the plain-view form is fine — the service must
+--       apply its own scoping (vendor_id filter, ticket-visibility check).
+--     * If the consumer is a direct PostgREST/RPC call from the vendor
+--       portal or any authenticated role, recreate this view with
+--       `security_invoker = true` AND confirm the dormant 00035
+--       vendor-on-tickets policy is activated — otherwise vendors get
+--       an empty bag for the tickets union (acceptable, but explicit).
 
 notify pgrst, 'reload schema';

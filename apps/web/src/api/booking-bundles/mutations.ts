@@ -153,10 +153,14 @@ export function useCancelBundleLine(bundleId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
-      // Cascading: line cancel cascades to work-order ticket + asset
-      // reservation, and may auto-close approval rows whose scope drops
-      // to empty. Refresh both so /desk/tickets, /desk/approvals, and
-      // any open ticket detail show the new state.
+      // Cascading: line cancel cancels the linked asset reservation and
+      // may auto-close approval rows whose scope drops to empty.
+      //
+      // Note (2026-04-29): the work-order ticket cascade is currently a
+      // no-op — linked_ticket_id is an inert FK until Wave 2 ships the
+      // proper link table (see fulfillment-fixes plan). The ticketKeys
+      // invalidation stays defensively in case Wave 2 lands and someone
+      // forgets to revisit this comment.
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
