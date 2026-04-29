@@ -7,13 +7,21 @@ import { DbService } from '../../common/db/db.service';
  *
  * Source of truth: tickets where ticket_kind = 'work_order' and the vendor
  * is the explicit assignee. Visibility is enforced via the SQL function
- * `tickets_visible_for_vendor(p_vendor_id, p_tenant_id)` (00188), so a
- * misuse of `vendor_id` here can't expose another tenant's tickets.
+ * `tickets_visible_for_vendor(p_vendor_id, p_tenant_id)` (00188 + 00191),
+ * which also self-defends against drifted cross-tenant assigned_vendor_id
+ * via a vendors-table join.
  *
  * What the vendor SEES (per Wave-2 plan + GDPR baseline minimization):
- *   - Ticket id, due date, location label, title, status, priority
+ *   - Ticket id, due date, location label, request-type label, status, priority
+ *
+ * Title source: we project `request_types.name` (admin-controlled label,
+ * vendor-safe by construction) NOT `tickets.title` (operator-authored free
+ * text — codex 2026-04-29 review flagged that operators can put PII into
+ * titles). A future wave can add an opt-in `tickets.vendor_safe_title`
+ * column for cases where the type label isn't specific enough.
  *
  * What the vendor NEVER sees:
+ *   - tickets.title (free text — see above)
  *   - requester_person_id, watchers, assigned_user_id (operator identity)
  *   - description / form_data — those can carry PII; not in this projection
  *   - cost / satisfaction_rating
@@ -53,11 +61,16 @@ export class VendorWorkOrderService {
            s_room.name,
            '(no location)'
          )                                        as location,
-         t.title                                  as title,
+         /* Vendor-safe label: admin-controlled request type name, not the
+            operator-authored ticket title (which can carry PII). */
+         coalesce(rt.name, 'Work order')          as label,
          t.status_category                        as status,
          t.priority                               as priority,
          t.sla_at_risk                            as sla_at_risk
        from public.tickets_visible_for_vendor($1::uuid, $2::uuid) t
+       left join public.request_types rt
+         on rt.id = t.ticket_type_id
+        and rt.tenant_id = t.tenant_id
        left join public.spaces s_room
          on s_room.id = t.location_id
         and s_room.tenant_id = t.tenant_id
@@ -89,7 +102,8 @@ export interface VendorWorkOrderListItem {
   external_ref: string;
   due_at: string;
   location: string;
-  title: string;
+  /** Admin-controlled request-type name. Vendor-safe (no free-text PII). */
+  label: string;
   status: 'new' | 'assigned' | 'in_progress' | 'waiting' | 'resolved' | 'closed';
   priority: string | null;
   sla_at_risk: boolean | null;

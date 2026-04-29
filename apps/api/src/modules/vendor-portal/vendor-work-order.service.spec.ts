@@ -31,7 +31,7 @@ function makeWorkOrder(overrides: Partial<VendorWorkOrderListItem> = {}): Vendor
     external_ref: '11111111-1111-4111-8111-111111111111',
     due_at: '2026-04-30T10:00:00.000Z',
     location: 'Boardroom · 1F · HQ',
-    title: 'AV setup',
+    label: 'AV setup',
     status: 'assigned',
     priority: 'medium',
     sla_at_risk: false,
@@ -124,7 +124,7 @@ describe('VendorWorkOrderService', () => {
       'external_ref',
       'due_at',
       'location',
-      'title',
+      'label',
       'status',
       'priority',
       'sla_at_risk',
@@ -132,8 +132,9 @@ describe('VendorWorkOrderService', () => {
     for (const col of PROJECTED_COLUMNS) {
       expect(sql).toContain(`as ${col}`);
     }
-    // PII fields that must NOT appear:
+    // PII fields and free-text columns that must NOT appear:
     for (const banned of [
+      't.title',                  // operator-authored, can carry PII
       'requester_person_id',
       'watchers',
       'assigned_user_id',
