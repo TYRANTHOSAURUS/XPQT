@@ -98,25 +98,31 @@ export class PrivacyComplianceModule implements OnApplicationBootstrap {
     for (const a of buildNoOpAdapters()) this.registry.register(a);
     for (const a of buildPendingSpecAdapters()) this.registry.register(a);
 
-    // 3. Coverage check — every seeded category must have an adapter.
-    //    Use the first active tenant's seeded category list as the source
-    //    of truth; the seed function is canonical so any tenant will do.
-    const tenants = await this.retention.listActiveTenantIds();
-    if (tenants.length === 0) {
-      this.log.warn('coverage check skipped — no active tenants yet');
-      return;
-    }
+    // 3. Coverage check — depends on direct pg. Skip silently when the
+    //    pool isn't configured (e.g. preview/demo deploys without
+    //    SUPABASE_DB_PASS / SUPABASE_DB_URL) so the API can still boot.
+    try {
+      const tenants = await this.retention.listActiveTenantIds();
+      if (tenants.length === 0) {
+        this.log.warn('coverage check skipped — no active tenants yet');
+        return;
+      }
 
-    const seeded = await this.retention.listSeededCategories(tenants[0]);
-    const unimplemented = this.registry.unimplementedCategories(seeded);
+      const seeded = await this.retention.listSeededCategories(tenants[0]);
+      const unimplemented = this.registry.unimplementedCategories(seeded);
 
-    if (unimplemented.length > 0) {
-      this.log.error(
-        `GDPR adapter coverage gap: ${unimplemented.length} seeded categories have no adapter: ` +
-        unimplemented.join(', '),
+      if (unimplemented.length > 0) {
+        this.log.error(
+          `GDPR adapter coverage gap: ${unimplemented.length} seeded categories have no adapter: ` +
+          unimplemented.join(', '),
+        );
+      } else {
+        this.log.log(`GDPR adapter coverage: ${seeded.length}/${seeded.length} categories registered`);
+      }
+    } catch (err) {
+      this.log.warn(
+        `GDPR coverage check skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
-    } else {
-      this.log.log(`GDPR adapter coverage: ${seeded.length}/${seeded.length} categories registered`);
     }
   }
 }
