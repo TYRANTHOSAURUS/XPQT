@@ -26,37 +26,13 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
-      output: {
-        // Split large, stable vendor groups into their own chunks so repeat
-        // visitors cache them across deploys — when only app code changes,
-        // these hashes don't. Order matters: more-specific matches win, so
-        // react-query / dnd-kit / reactflow are matched before the generic
-        // react bucket.
-        manualChunks: (id) => {
-          if (!id.includes('node_modules')) return undefined;
-          if (id.includes('@tanstack/react-query')) return 'vendor-query';
-          if (id.includes('reactflow') || id.includes('dagre')) return 'vendor-flow';
-          if (id.includes('@dnd-kit')) return 'vendor-dnd';
-          if (
-            id.includes('@base-ui') ||
-            id.includes('lucide-react') ||
-            id.includes('sonner') ||
-            id.includes('cmdk')
-          ) return 'vendor-ui';
-          if (id.includes('@supabase')) return 'vendor-supabase';
-          if (
-            id.includes('react-router') ||
-            id.includes('react-dom') ||
-            id.includes('/react/') ||
-            id.includes('/scheduler/')
-          ) return 'vendor-react';
-          return 'vendor';
-        },
-      },
-    },
-    // App bundle now sits below this with vendors split out; the original
-    // 500 warning was meaningless noise post-split.
-    chunkSizeWarningLimit: 800,
+    // Manual chunk splitting of React was producing a runtime TDZ:
+    //   "Cannot set properties of undefined (setting 'Activity')"
+    // because vendor chunks ended up importing back into React's own init
+    // closure (`var je=xP(), Av={...}, xe={}` — xP() triggers a cross-chunk
+    // chain that re-enters SP() before `xe={}` has run). Letting Vite/Rollup
+    // pick chunk boundaries avoids the cycle. If we want vendor-cache wins
+    // back, do it via dynamic imports / route-level splits, not manualChunks.
+    chunkSizeWarningLimit: 1500,
   },
 });
