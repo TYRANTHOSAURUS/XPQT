@@ -1,11 +1,4 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  forwardRef,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -15,7 +8,7 @@ import {
 import { ApprovalRoutingService } from './approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { TicketService } from '../ticket/ticket.service';
+import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
 
 /**
  * Per spec §5.1: at recurrence-materialisation time, each order on the
@@ -111,8 +104,7 @@ export class OrderService {
     private readonly supabase: SupabaseService,
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
-    @Inject(forwardRef(() => TicketService))
-    private readonly tickets: TicketService,
+    private readonly setupTrigger: SetupWorkOrderTriggerService,
   ) {}
 
   /**
@@ -916,16 +908,15 @@ export class OrderService {
 
       cleanup.commit();
 
-      // Auto-create internal-setup work orders for any line whose rules
-      // emitted requires_internal_setup=true. Same shape + posture as the
-      // bundled-services path in BundleService — runs after commit; failed
-      // work orders are recoverable via audit.
+      // Auto-create internal-setup work orders in parallel for any line
+      // whose rules emitted requires_internal_setup=true. Lines without a
+      // service_type (catalog item with no menu) can't route — surface
+      // separately and skip. Shared trigger handles the rest.
+      const triggerArgs: Array<Parameters<typeof this.setupTrigger.trigger>[0]> = [];
       for (const meta of lineMetas) {
         const outcome = outcomes.get(meta.oliId);
         if (!outcome?.requires_internal_setup) continue;
         if (!meta.service_type) {
-          // Catalog item without a menu has no service category we can
-          // route on. Surface so admins notice misconfigured rules.
           void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
             line_id: meta.oliId,
             reason: 'no_service_type_on_line',
@@ -934,18 +925,19 @@ export class OrderService {
           });
           continue;
         }
-        await this.maybeCreateSetupWorkOrder({
+        triggerArgs.push({
           tenantId,
           bundleId: bundle.id,
           oliId: meta.oliId,
           serviceCategory: meta.service_type,
           serviceWindowStartAt: meta.service_window_start_at,
-          deliveryLocationId: args.delivery_space_id,
-          requesterPersonId: args.requester_person_id,
+          locationId: args.delivery_space_id,
           ruleIds: outcome.matched_rule_ids,
-          ruleLeadTimeOverride: outcome.internal_setup_lead_time_minutes,
+          leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+          originSurface: 'order',
         });
       }
+      await this.setupTrigger.triggerMany(triggerArgs);
 
       void this.audit(tenantId, 'order.created', 'order', order.id, {
         order_id: order.id,
@@ -1145,91 +1137,6 @@ export class OrderService {
       .single();
     if (error) throw error;
     return (data as { id: string }).id;
-  }
-
-  /**
-   * Standalone-order analogue of BundleService.maybeCreateSetupWorkOrder.
-   * Same shape: matrix lookup → optional work-order create. Kept as a
-   * private method here (rather than extracted to a shared service) so
-   * the ownership stays with whoever owns the line creation flow; it's
-   * <40 lines of code and the duplication makes the path explicit at
-   * each call-site.
-   */
-  private async maybeCreateSetupWorkOrder(args: {
-    tenantId: string;
-    bundleId: string;
-    oliId: string;
-    serviceCategory: string;
-    serviceWindowStartAt: string;
-    deliveryLocationId: string;
-    requesterPersonId: string;
-    ruleIds: string[];
-    ruleLeadTimeOverride: number | null;
-  }): Promise<void> {
-    const { data: routing, error: routingErr } = await this.supabase.admin.rpc(
-      'resolve_setup_routing',
-      {
-        p_tenant_id: args.tenantId,
-        p_location_id: args.deliveryLocationId,
-        p_service_category: args.serviceCategory,
-      },
-    );
-    if (routingErr) {
-      this.log.warn(
-        `setup routing lookup failed for line ${args.oliId}: ${routingErr.message}`,
-      );
-      return;
-    }
-    const routingRow = (routing as Array<{
-      internal_team_id: string | null;
-      default_lead_time_minutes: number;
-      sla_policy_id: string | null;
-    }> | null)?.[0];
-
-    if (!routingRow || !routingRow.internal_team_id) {
-      void this.audit(args.tenantId, 'order.setup_routing_unconfigured', 'order_line_item', args.oliId, {
-        line_id: args.oliId,
-        service_category: args.serviceCategory,
-        location_id: args.deliveryLocationId,
-        rule_ids: args.ruleIds,
-        severity: 'medium',
-      });
-      return;
-    }
-
-    const leadTimeMinutes =
-      args.ruleLeadTimeOverride ?? routingRow.default_lead_time_minutes;
-    const targetDueAt = new Date(
-      new Date(args.serviceWindowStartAt).getTime() - leadTimeMinutes * 60_000,
-    ).toISOString();
-
-    try {
-      await this.tickets.createBookingOriginWorkOrder({
-        title: `Internal setup — ${args.serviceCategory}`,
-        booking_bundle_id: args.bundleId,
-        linked_order_line_item_id: args.oliId,
-        assigned_team_id: routingRow.internal_team_id,
-        target_due_at: targetDueAt,
-        requester_person_id: args.requesterPersonId,
-        location_id: args.deliveryLocationId,
-        audit_metadata: {
-          triggered_by_rule_ids: args.ruleIds,
-          lead_time_minutes: leadTimeMinutes,
-          service_window_start_at: args.serviceWindowStartAt,
-          service_category: args.serviceCategory,
-          origin: 'standalone_order',
-        },
-      });
-    } catch (err) {
-      this.log.warn(
-        `booking-origin work order create failed for line ${args.oliId}: ${(err as Error).message}`,
-      );
-      void this.audit(args.tenantId, 'order.setup_work_order_create_failed', 'order_line_item', args.oliId, {
-        line_id: args.oliId,
-        error: (err as Error).message,
-        severity: 'high',
-      });
-    }
   }
 
   private async audit(

@@ -112,13 +112,13 @@ describe('TicketService.createBookingOriginWorkOrder', () => {
         booking_bundle_id: 'b',
         linked_order_line_item_id: 'o',
         assigned_team_id: 'team-1',
-        requester_person_id: 'marleen-id', // explicitly passed by caller
       }),
     );
 
-    // Even when the caller passes a requester_person_id (legacy callers may),
-    // the inserted row must have requester_person_id=null. Otherwise the
-    // requester would see this internal task in their portal "My Requests".
+    // Booking-origin work orders intentionally have no requester. The
+    // bundle's requester_person_id captures originator identity; setting
+    // it on the work order would leak the internal task into the
+    // requester's portal "My Requests" view.
     expect(inserts[0].payload.requester_person_id).toBeNull();
   });
 

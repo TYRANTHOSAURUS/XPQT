@@ -1531,20 +1531,6 @@ export class TicketService {
      * semantics are needed for facilities work.
      */
     target_due_at?: string | null;
-    /**
-     * DEPRECATED — kept for API compat but ignored. Booking-origin work
-     * orders intentionally do NOT carry a requester. Reasons:
-     *   1. Visibility — the requester would otherwise see this internal
-     *      operational task in their portal's "My Requests" alongside
-     *      actual help requests they filed. They didn't file this; they
-     *      placed an order, and they see the order/bundle in their
-     *      bookings list.
-     *   2. Audit trail — bundle.requester_person_id already records who
-     *      placed the originating order. We don't need redundancy.
-     * The visibility model still works: operators see this via
-     * assigned_team_id; admins via tickets.read_all permission.
-     */
-    requester_person_id?: string | null;
     priority?: string;
     /**
      * Free-form snapshot for audit — typically the rule_ids that triggered
@@ -1568,10 +1554,9 @@ export class TicketService {
       status_category: args.assigned_team_id || args.assigned_user_id || args.assigned_vendor_id
         ? 'assigned'
         : 'new',
-      // Intentionally NOT set — see the JSDoc on requester_person_id arg.
-      // The bundle.requester_person_id already captures originator identity;
-      // setting it here would leak the work order into the requester's
-      // portal "My Requests" view.
+      // Intentionally NOT set: bundle.requester_person_id already captures
+      // originator identity, and setting it here would leak this internal
+      // operational task into the requester's portal "My Requests" view.
       requester_person_id: null,
       location_id: args.location_id ?? null,
       assigned_team_id: args.assigned_team_id ?? null,

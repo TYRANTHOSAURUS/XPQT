@@ -1,11 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
-  Inject,
   Injectable,
   Logger,
   NotFoundException,
-  forwardRef,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -16,7 +14,7 @@ import {
 import { ApprovalRoutingService } from '../orders/approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { TicketService } from '../ticket/ticket.service';
+import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
@@ -84,8 +82,7 @@ export class BundleService {
     private readonly supabase: SupabaseService,
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
-    @Inject(forwardRef(() => TicketService))
-    private readonly tickets: TicketService,
+    private readonly setupTrigger: SetupWorkOrderTriggerService,
   ) {}
 
   /**
@@ -306,25 +303,27 @@ export class BundleService {
 
       cleanup.commit();
 
-      // Auto-create internal-setup work orders for any line whose rules
-      // emitted requires_internal_setup=true. Runs AFTER commit — the
-      // bundle is the source of truth, and a missed work order is
-      // recoverable manually. A failed work order does NOT roll back
-      // the bundle. See plan §Slice 2.
-      for (const [oliId, outcome] of outcomes.entries()) {
-        if (!outcome.requires_internal_setup) continue;
-        const line = lineByOli.get(oliId);
-        if (!line) continue;
-        await this.maybeCreateSetupWorkOrder({
-          tenantId,
-          bundleId: bundle.id,
-          oliId,
-          line,
-          outcome,
-          reservationLocationId: reservation.space_id,
-          requesterPersonId: args.requester_person_id,
+      // Auto-create internal-setup work orders in parallel for any line
+      // whose rules emitted requires_internal_setup=true. Runs AFTER
+      // commit; failures are audited internally and never roll back
+      // the bundle. See plan §Slice 2 + SetupWorkOrderTriggerService.
+      const triggerArgs = Array.from(outcomes.entries())
+        .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
+        .map(([oliId, outcome]) => {
+          const line = lineByOli.get(oliId)!;
+          return {
+            tenantId,
+            bundleId: bundle.id,
+            oliId,
+            serviceCategory: line.service_type,
+            serviceWindowStartAt: line.service_window_start_at,
+            locationId: reservation.space_id,
+            ruleIds: outcome.matched_rule_ids,
+            leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+            originSurface: 'bundle' as const,
+          };
         });
-      }
+      await this.setupTrigger.triggerMany(triggerArgs);
 
       void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
         bundle_id: bundle.id,
@@ -499,14 +498,42 @@ export class BundleService {
     }
     const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null };
 
-    // Note (2026-04-29): linked_ticket_id is currently a no-op FK. The
-    // earlier cascade attempted to write tickets.requested_for_start_at /
-    // requested_for_end_at, but those columns live on `orders`, not
-    // `tickets` (codex review 2026-04-29). The cascade is intentionally
-    // removed until Wave 2 introduces (a) a proper link table between
-    // order_line_items and work-order tickets and (b) vendor visibility on
-    // tickets. See docs/superpowers/plans/2026-04-29-fulfillment-fixes.md
-    // and the deferred items section there for the Wave 2 design.
+    // Wave 2 Slice 2: when a service window moves, shift any linked
+    // booking-origin work order's sla_resolution_due_at by the same delta.
+    // Preserves the lead-time relationship that was committed at create
+    // time (incl. per-rule overrides) without re-running the matrix —
+    // re-running could change the team or lead time mid-flight if the
+    // matrix has been edited since.
+    //
+    // Only fires when start_at actually moved; quantity-only edits don't
+    // affect timing. Idempotent if the linked WO is already terminal —
+    // the whitelist filter excludes closed/resolved rows.
+    const oldStart = line.service_window_start_at;
+    const newStart = u.service_window_start_at;
+    if (oldStart && newStart && oldStart !== newStart) {
+      const deltaMs = new Date(newStart).getTime() - new Date(oldStart).getTime();
+      if (deltaMs !== 0) {
+        const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting'];
+        const { data: linkedWos } = await this.supabase.admin
+          .from('tickets')
+          .select('id, sla_resolution_due_at')
+          .eq('linked_order_line_item_id', line.id)
+          .eq('tenant_id', tenantId)
+          .eq('ticket_kind', 'work_order')
+          .in('status_category', NON_TERMINAL);
+        for (const wo of (linkedWos ?? []) as Array<{ id: string; sla_resolution_due_at: string | null }>) {
+          if (!wo.sla_resolution_due_at) continue;
+          const shifted = new Date(
+            new Date(wo.sla_resolution_due_at).getTime() + deltaMs,
+          ).toISOString();
+          await this.supabase.admin
+            .from('tickets')
+            .update({ sla_resolution_due_at: shifted })
+            .eq('id', wo.id)
+            .eq('tenant_id', tenantId);
+        }
+      }
+    }
 
     void this.audit(tenantId, 'bundle_line.updated', 'order_line_item', line.id, {
       line_id: line.id,
@@ -795,109 +822,6 @@ export class BundleService {
     };
   }
 
-  /**
-   * Look up the location_service_routing matrix for this line's location +
-   * service category, and create a booking-origin internal setup work order
-   * if the matrix configures a team. A missing matrix entry is logged via
-   * audit (`bundle.setup_routing_unconfigured`) and silently skipped — the
-   * bundle is still valid; ops can configure the matrix and rerun manually
-   * (or the next similar booking will succeed).
-   *
-   * Errors thrown by createBookingOriginWorkOrder are caught and logged.
-   * The bundle is already committed by this point — a failed work order
-   * is recoverable, so we don't propagate.
-   */
-  private async maybeCreateSetupWorkOrder(args: {
-    tenantId: string;
-    bundleId: string;
-    oliId: string;
-    line: HydratedLine;
-    outcome: { matched_rule_ids: string[]; internal_setup_lead_time_minutes: number | null };
-    reservationLocationId: string | null;
-    requesterPersonId: string;
-  }): Promise<void> {
-    const { data: routing, error: routingErr } = await this.supabase.admin.rpc(
-      'resolve_setup_routing',
-      {
-        p_tenant_id: args.tenantId,
-        p_location_id: args.reservationLocationId,
-        p_service_category: args.line.service_type,
-      },
-    );
-    if (routingErr) {
-      this.log.warn(
-        `setup routing lookup failed for line ${args.oliId}: ${routingErr.message}`,
-      );
-      return;
-    }
-    const routingRow = (routing as Array<{
-      internal_team_id: string | null;
-      default_lead_time_minutes: number;
-      sla_policy_id: string | null;
-    }> | null)?.[0];
-
-    if (!routingRow || !routingRow.internal_team_id) {
-      // No matrix entry OR matrix says "no internal team for this combo."
-      // Surface to audit so admins can spot misconfigured tenants.
-      void this.audit(
-        args.tenantId,
-        'bundle.setup_routing_unconfigured',
-        'order_line_item',
-        args.oliId,
-        {
-          line_id: args.oliId,
-          service_category: args.line.service_type,
-          location_id: args.reservationLocationId,
-          rule_ids: args.outcome.matched_rule_ids,
-          severity: 'medium',
-        },
-      );
-      return;
-    }
-
-    const leadTimeMinutes =
-      args.outcome.internal_setup_lead_time_minutes ??
-      routingRow.default_lead_time_minutes;
-    const targetDueAt = new Date(
-      new Date(args.line.service_window_start_at).getTime() -
-        leadTimeMinutes * 60_000,
-    ).toISOString();
-
-    try {
-      await this.tickets.createBookingOriginWorkOrder({
-        title: `Internal setup — ${args.line.service_type}`,
-        booking_bundle_id: args.bundleId,
-        linked_order_line_item_id: args.oliId,
-        assigned_team_id: routingRow.internal_team_id,
-        target_due_at: targetDueAt,
-        requester_person_id: args.requesterPersonId,
-        location_id: args.reservationLocationId,
-        audit_metadata: {
-          triggered_by_rule_ids: args.outcome.matched_rule_ids,
-          lead_time_minutes: leadTimeMinutes,
-          service_window_start_at: args.line.service_window_start_at,
-          service_category: args.line.service_type,
-        },
-      });
-    } catch (err) {
-      this.log.warn(
-        `booking-origin work order create failed for line ${args.oliId}: ${
-          (err as Error).message
-        }`,
-      );
-      void this.audit(
-        args.tenantId,
-        'bundle.setup_work_order_create_failed',
-        'order_line_item',
-        args.oliId,
-        {
-          line_id: args.oliId,
-          error: (err as Error).message,
-          severity: 'high',
-        },
-      );
-    }
-  }
 
   private async audit(
     tenantId: string,

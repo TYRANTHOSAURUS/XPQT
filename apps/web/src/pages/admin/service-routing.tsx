@@ -159,7 +159,12 @@ function RoutingRow({
     <TableRow>
       <TableCell className="font-medium">
         {row.location_id === null ? (
-          <Badge variant="outline" className="font-normal">Tenant default</Badge>
+          <Badge
+            variant="outline"
+            className="bg-primary/10 text-primary border-primary/20 font-normal"
+          >
+            Tenant default
+          </Badge>
         ) : (
           space?.name ?? <span className="text-muted-foreground">(deleted location)</span>
         )}
@@ -169,7 +174,9 @@ function RoutingRow({
         {team ? (
           team.name
         ) : (
-          <span className="text-muted-foreground italic">No team — handoff disabled</span>
+          <Badge variant="outline" className="font-normal text-muted-foreground">
+            Handoff disabled
+          </Badge>
         )}
       </TableCell>
       <TableCell className="text-right tabular-nums text-sm">
