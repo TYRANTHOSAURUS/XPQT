@@ -474,42 +474,14 @@ export class BundleService {
     }
     const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null };
 
-    // Cascade window change to the linked work-order ticket so SLA + dispatch
-    // see the latest commitment. Only fires if the window actually moved.
-    //
-    // This is a separate write, not in the same transaction as the line
-    // update — partial failure leaves the line correct and the ticket
-    // stale. We surface the failure as a structured `bundle_line.cascade_failed`
-    // audit event (severity=high) so ops can detect drift without grepping
-    // logs. Long-term shape: move to a Postgres trigger on order_line_items
-    // for true atomicity. Tracked alongside the broader bundle-atomicity
-    // refactor noted at the top of this file.
-    const windowChanged =
-      'service_window_start_at' in update || 'service_window_end_at' in update;
-    if (windowChanged && line.linked_ticket_id) {
-      const { error: ticketErr } = await this.supabase.admin
-        .from('tickets')
-        .update({
-          requested_for_start_at: u.service_window_start_at,
-          requested_for_end_at: u.service_window_end_at,
-        })
-        .eq('id', line.linked_ticket_id)
-        .eq('tenant_id', tenantId);
-      if (ticketErr) {
-        this.log.warn(`ticket cascade failed for line ${line.id}: ${ticketErr.message}`);
-        void this.audit(tenantId, 'bundle_line.cascade_failed', 'order_line_item', line.id, {
-          line_id: line.id,
-          linked_ticket_id: line.linked_ticket_id,
-          attempted_window: {
-            start_at: u.service_window_start_at,
-            end_at: u.service_window_end_at,
-          },
-          severity: 'high',
-          reason: 'ticket_update_failed',
-          error: ticketErr.message,
-        });
-      }
-    }
+    // Note (2026-04-29): linked_ticket_id is currently a no-op FK. The
+    // earlier cascade attempted to write tickets.requested_for_start_at /
+    // requested_for_end_at, but those columns live on `orders`, not
+    // `tickets` (codex review 2026-04-29). The cascade is intentionally
+    // removed until Wave 2 introduces (a) a proper link table between
+    // order_line_items and work-order tickets and (b) vendor visibility on
+    // tickets. See docs/superpowers/plans/2026-04-29-fulfillment-fixes.md
+    // and the deferred items section there for the Wave 2 design.
 
     void this.audit(tenantId, 'bundle_line.updated', 'order_line_item', line.id, {
       line_id: line.id,

@@ -110,13 +110,13 @@ export class BundleCascadeService {
         .eq('id', line.linked_asset_reservation_id);
       cascaded.asset_reservation_ids.push(line.linked_asset_reservation_id);
     }
-    if (line.linked_ticket_id) {
-      await this.supabase.admin
-        .from('tickets')
-        .update({ status_category: 'closed', resolution: 'cancelled' })
-        .eq('id', line.linked_ticket_id);
-      cascaded.ticket_ids.push(line.linked_ticket_id);
-    }
+    // Note (2026-04-29): ticket cancel-cascade removed. The earlier code
+    // wrote a non-existent tickets.resolution column (codex review
+    // 2026-04-29). The branch only fires when linked_ticket_id is set,
+    // which is never today. Re-introduce when Wave 2 ships the link table
+    // — see docs/superpowers/plans/2026-04-29-fulfillment-fixes.md.
+    // Until then linked_ticket_id stays null in production and this block
+    // would have been a latent crash.
 
     await this.supabase.admin
       .from('order_line_items')
