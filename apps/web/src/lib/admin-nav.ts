@@ -25,6 +25,7 @@ import {
   UserCog,
   Users,
   Webhook,
+  Workflow,
 } from 'lucide-react';
 
 export interface AdminNavItem {
@@ -201,6 +202,12 @@ const roomBookingItems: AdminNavItem[] = [
     path: '/admin/cost-centers',
     icon: Receipt,
     description: 'GL chargeback codes that drive bundle approval routing',
+  },
+  {
+    title: 'Service routing',
+    path: '/admin/service-routing',
+    icon: Workflow,
+    description: 'Where booking-origin internal setup work goes (per location, per service category)',
   },
   {
     title: 'Calendar sync',

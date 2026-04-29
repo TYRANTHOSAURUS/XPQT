@@ -40,6 +40,7 @@ import { ServiceCatalogModule } from './modules/service-catalog/service-catalog.
 import { OrdersModule } from './modules/orders/orders.module';
 import { BundleTemplatesModule } from './modules/bundle-templates/bundle-templates.module';
 import { CostCentersModule } from './modules/cost-centers/cost-centers.module';
+import { ServiceRoutingModule } from './modules/service-routing/service-routing.module';
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
 import { DailyListModule } from './modules/daily-list/daily-list.module';
 import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
@@ -87,6 +88,7 @@ import { MailModule } from './common/mail/mail.module';
     OrdersModule,
     BundleTemplatesModule,
     CostCentersModule,
+    ServiceRoutingModule,
     PrivacyComplianceModule,
     DailyListModule,
     VendorPortalModule,

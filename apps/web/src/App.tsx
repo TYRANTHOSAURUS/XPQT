@@ -58,6 +58,7 @@ const RoomBookingServicesReport    = lazyNamed(() => import('@/pages/admin/room-
 const RoomBookingDemandReport      = lazyNamed(() => import('@/pages/admin/room-booking-reports/demand'),     'RoomBookingDemandReport');
 const CostCentersPage = lazyNamed(() => import('@/pages/admin/cost-centers'), 'CostCentersPage');
 const CostCenterDetailPage = lazyNamed(() => import('@/pages/admin/cost-center-detail'), 'CostCenterDetailPage');
+const ServiceRoutingPage = lazyNamed(() => import('@/pages/admin/service-routing'), 'ServiceRoutingPage');
 const BundleTemplatesPage = lazyNamed(() => import('@/pages/admin/bundle-templates'), 'BundleTemplatesPage');
 const BundleTemplateDetailPage = lazyNamed(() => import('@/pages/admin/bundle-template-detail'), 'BundleTemplateDetailPage');
 const BookingServicesIndexPage = lazyNamed(() => import('@/pages/admin/booking-services'), 'BookingServicesIndexPage');
@@ -237,6 +238,8 @@ export function App() {
                   {/* Cost centers (sub-project 2) — GL chargeback codes */}
                   <Route path="cost-centers" element={<CostCentersPage />} />
                   <Route path="cost-centers/:id" element={<CostCenterDetailPage />} />
+                  {/* Service routing matrix (Wave 2 Slice 2) — booking-origin work-order routing */}
+                  <Route path="service-routing" element={<ServiceRoutingPage />} />
                   {/* Bundle templates (sub-project 2) — pre-filled meeting + service combos */}
                   <Route path="bundle-templates" element={<BundleTemplatesPage />} />
                   <Route path="bundle-templates/:id" element={<BundleTemplateDetailPage />} />
