@@ -6,14 +6,14 @@ import compression from 'compression';
 import type { Request } from 'express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Disable NestJS's auto bodyParser so we control parser order explicitly.
+  // The path-scoped parser for /api/webhooks/mail (rawBody capture) used to
+  // displace the framework default, leaving other POSTs with `req.body`
+  // unparsed and DTOs as undefined — every POST returned 500. Now we
+  // register both parsers ourselves: rawBody-capturing JSON for the mail
+  // webhook path, plain JSON globally for everything else.
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
 
-  /* Mail-webhook signature verification needs the raw request body
-     bytes (provider HMACs the bytes the client received; JSON parse
-     mutates whitespace). Capture it on the json bodyParser's verify
-     hook so MailWebhookController can read req.rawBody. Scoped to the
-     mail webhook path so we don't bloat the global request memory
-     footprint on every JSON request. */
   app.use(
     '/api/webhooks/mail',
     json({
@@ -23,6 +23,8 @@ async function bootstrap() {
       },
     }),
   );
+
+  app.use(json({ limit: '1mb' }));
 
   const config = app.get(ConfigService);
   const port = config.get<number>('PORT') ?? config.get<number>('API_PORT', 3001);
