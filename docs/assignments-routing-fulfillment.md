@@ -792,3 +792,54 @@ Any change to these requires a doc update:
 - `apps/api/src/modules/routing/scope-override-resolver.service.ts`
 - `public.request_type_effective_scope_override` (migration 00096 or later replacement)
 - The four loader call sites above (`ResolverService.resolve`, `TicketService.runPostCreateAutomation`, `DispatchService.resolveChildSla`, `RoutingEvaluatorService.loadCaseOwnerPolicyEntityId` / `loadChildDispatchPolicyEntityId`).
+
+---
+
+## 25. Booking-origin work orders (Wave 2 Slice 2 — 2026-04-29)
+
+A second create-path for work orders, parallel to `DispatchService.dispatch`. These work orders DO NOT have a parent case — their "parent" is a `booking_bundles` row + an `order_line_items` row, linked via `tickets.booking_bundle_id` and `tickets.linked_order_line_item_id` (00145). Used when an order line's service rule sets `requires_internal_setup=true` and the system needs to spawn an internal facilities task alongside the vendor delivery.
+
+### Trigger
+
+A `service_rules` row with `requires_internal_setup=true` matches a line during order/bundle creation. Aggregation is OR (any matched rule triggers it); lead-time override is MAX (00193). Outcome carries the flag in `ServiceRuleOutcome.requires_internal_setup` (independent of `effect`; `effect=allow` + `requires_internal_setup=true` is a valid combination).
+
+### Routing — `location_service_routing` matrix
+
+A flat-data table keyed on `(tenant_id, location_id, service_category)` with a NULL-location row meaning "tenant default" (00194). The SQL function `public.resolve_setup_routing(tenant_id, location_id, service_category)` does the hierarchical lookup (exact location → ancestor walk → tenant default) and returns `(internal_team_id, default_lead_time_minutes, sla_policy_id)` or no rows. Service-role only (00195 revokes EXECUTE from `authenticated`).
+
+This is **not** the `routing_rules` engine — it's flat config. Use the routing engine when there's branching logic; use this matrix when the routing decision is "for this category at this location, route to this team."
+
+### Create path
+
+`TicketService.createBookingOriginWorkOrder()` inserts a `tickets` row with:
+- `ticket_kind='work_order'`, `parent_ticket_id=null`
+- `booking_bundle_id` + `linked_order_line_item_id` (the canonical parents)
+- `assigned_team_id` from the matrix
+- `sla_resolution_due_at = service_window_start − lead_time` (set DIRECTLY, not via `sla_policies` — the deadline is service-window-anchored, not creation-anchored)
+- `source_channel='system'`, `interaction_mode='internal'`, `status_category='assigned'` if a team came back from the matrix.
+
+No `request_type_id` — booking-origin work orders bypass the request-type-driven SLA/workflow path. This keeps the matrix as the single config surface (no need to maintain a synthetic request type per tenant).
+
+Hooks live in `BundleService.maybeCreateSetupWorkOrder()` (bundle-attached path) and `OrderService.maybeCreateSetupWorkOrder()` (standalone-order path). Both fire AFTER the bundle/order commits — a failed work order is recoverable; we never roll back the bundle for it.
+
+### Cancel cascade
+
+When an order line cancels, any non-terminal work order linked via `tickets.linked_order_line_item_id` is closed (`status_category='closed'`, `closed_at` set). Implemented in `BundleCascadeService.cancelLine()` and `cancelBundleImpl()`. Whitelist of non-terminal states: `new | assigned | in_progress | waiting`. Already-terminal tickets are not re-stamped.
+
+### Audit events
+
+- `bundle.setup_routing_unconfigured` — service rule says setup needed but matrix has no team for `(tenant, location, service_category)`. Skipped silently with this audit so admins can spot misconfiguration.
+- `bundle.setup_work_order_create_failed` — matrix returned a team but the create call threw. Severity high.
+- `order.setup_routing_unconfigured` / `order.setup_work_order_create_failed` — standalone-order analogues.
+- `booking_origin_work_order_created` — emitted on `audit_events` from `TicketService.createBookingOriginWorkOrder` for every successful create.
+
+### Trigger additions for §15
+
+Any change to these requires updating this section:
+
+- `apps/api/src/modules/ticket/ticket.service.ts:createBookingOriginWorkOrder`
+- `apps/api/src/modules/booking-bundles/bundle.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts` (cancel cascade for `linked_order_line_item_id`)
+- `apps/api/src/modules/orders/order.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
+- Migrations changing `service_rules`, `location_service_routing`, or the `resolve_setup_routing` function
