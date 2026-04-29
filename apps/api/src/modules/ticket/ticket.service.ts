@@ -242,6 +242,13 @@ export class TicketService {
     // Parent filter: null = top-level only, specific ID = children of that ticket
     if (filters.parent_ticket_id === null) {
       query = query.is('parent_ticket_id', null);
+      // Booking-origin work orders ALSO have parent_ticket_id IS NULL but are
+      // operational tasks, not help requests. Exclude them from the default
+      // top-level queue so the desk view stays focused on cases. Callers
+      // wanting to see booking-origin work orders can filter by
+      // ticket_kind='work_order' OR by booking_bundle_id explicitly.
+      // See plan §Slice 2 + assignments-routing-fulfillment.md §25.
+      query = query.is('booking_bundle_id', null);
     } else if (filters.parent_ticket_id) {
       query = query.eq('parent_ticket_id', filters.parent_ticket_id);
     }
@@ -1524,7 +1531,19 @@ export class TicketService {
      * semantics are needed for facilities work.
      */
     target_due_at?: string | null;
-    /** Inherited from the order's requester. */
+    /**
+     * DEPRECATED — kept for API compat but ignored. Booking-origin work
+     * orders intentionally do NOT carry a requester. Reasons:
+     *   1. Visibility — the requester would otherwise see this internal
+     *      operational task in their portal's "My Requests" alongside
+     *      actual help requests they filed. They didn't file this; they
+     *      placed an order, and they see the order/bundle in their
+     *      bookings list.
+     *   2. Audit trail — bundle.requester_person_id already records who
+     *      placed the originating order. We don't need redundancy.
+     * The visibility model still works: operators see this via
+     * assigned_team_id; admins via tickets.read_all permission.
+     */
     requester_person_id?: string | null;
     priority?: string;
     /**
@@ -1549,7 +1568,11 @@ export class TicketService {
       status_category: args.assigned_team_id || args.assigned_user_id || args.assigned_vendor_id
         ? 'assigned'
         : 'new',
-      requester_person_id: args.requester_person_id ?? null,
+      // Intentionally NOT set — see the JSDoc on requester_person_id arg.
+      // The bundle.requester_person_id already captures originator identity;
+      // setting it here would leak the work order into the requester's
+      // portal "My Requests" view.
+      requester_person_id: null,
       location_id: args.location_id ?? null,
       assigned_team_id: args.assigned_team_id ?? null,
       assigned_user_id: args.assigned_user_id ?? null,
