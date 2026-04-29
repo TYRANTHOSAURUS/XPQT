@@ -40,11 +40,17 @@ jobs:
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
         run: |
           set -euo pipefail
-          DEPLOY_ID=$(curl -fsS -X POST \
+          RESP=$(curl -sS -X POST \
             "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
-            -d '{}' | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+            -d '{}')
+          echo "Render API response: $RESP"
+          DEPLOY_ID=$(echo "$RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('id',''))" || echo "")
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "Failed to parse deploy id from response — likely a concurrent deploy or API error."
+            exit 1
+          fi
           echo "Render deploy id: $DEPLOY_ID"
 
           # Poll until terminal state. Render free tier builds can take 5–10 min.
