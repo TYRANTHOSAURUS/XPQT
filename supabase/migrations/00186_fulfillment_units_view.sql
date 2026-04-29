@@ -94,10 +94,15 @@ where t.ticket_kind = 'work_order';
 --     * If the consumer is a service that uses supabase.admin (already
 --       bypasses RLS), the plain-view form is fine — the service must
 --       apply its own scoping (vendor_id filter, ticket-visibility check).
---     * If the consumer is a direct PostgREST/RPC call from the vendor
---       portal or any authenticated role, recreate this view with
---       `security_invoker = true` AND confirm the dormant 00035
---       vendor-on-tickets policy is activated — otherwise vendors get
---       an empty bag for the tickets union (acceptable, but explicit).
+--     * Vendor-portal callers should NOT query this view directly today.
+--       Use the dedicated vendor predicates instead:
+--         - tickets_visible_for_vendor(vendor_id, tenant_id)  [00188]
+--         - VendorOrderService.listForVendor(...)              [oli side]
+--       The dormant 00035 vendor-on-tickets clause stays dormant — vendor
+--       auth in this codebase is the parallel `vendor_users` table, not a
+--       tenant `users` row, so reactivating that clause would be a no-op.
+--     * If a future consumer needs this view from an authenticated tenant
+--       role, recreate with `with (security_invoker = true)` so RLS on the
+--       underlying tables re-evaluates per caller.
 
 notify pgrst, 'reload schema';

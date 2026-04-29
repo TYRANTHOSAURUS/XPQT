@@ -8,6 +8,8 @@ import { VendorOrderController } from './vendor-order.controller';
 import { VendorOrderService } from './vendor-order.service';
 import { VendorOrderStatusService } from './vendor-order-status.service';
 import { VendorPortalGuard } from './vendor-portal.guard';
+import { VendorWorkOrderController } from './vendor-work-order.controller';
+import { VendorWorkOrderService } from './vendor-work-order.service';
 
 /**
  * Vendor portal — Phase B.
@@ -24,11 +26,12 @@ import { VendorPortalGuard } from './vendor-portal.guard';
  */
 @Module({
   imports: [DbModule, PrivacyComplianceModule],
-  controllers: [VendorAuthController, VendorOrderController],
+  controllers: [VendorAuthController, VendorOrderController, VendorWorkOrderController],
   providers: [
     VendorAuthService,
     VendorOrderService,
     VendorOrderStatusService,
+    VendorWorkOrderService,
     VendorPortalGuard,
     LoggingVendorMailer,
     {
@@ -38,6 +41,6 @@ import { VendorPortalGuard } from './vendor-portal.guard';
       useExisting: LoggingVendorMailer,
     },
   ],
-  exports: [VendorAuthService, VendorOrderService, VendorOrderStatusService, VendorPortalGuard, VENDOR_MAILER],
+  exports: [VendorAuthService, VendorOrderService, VendorOrderStatusService, VendorWorkOrderService, VendorPortalGuard, VENDOR_MAILER],
 })
 export class VendorPortalModule {}
