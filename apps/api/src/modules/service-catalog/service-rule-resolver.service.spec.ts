@@ -15,6 +15,8 @@ const baseRule = (overrides: Partial<ServiceRuleRow>): ServiceRuleRow => ({
   priority: 100,
   active: true,
   template_id: null,
+  requires_internal_setup: false,
+  internal_setup_lead_time_minutes: null,
   ...overrides,
 });
 

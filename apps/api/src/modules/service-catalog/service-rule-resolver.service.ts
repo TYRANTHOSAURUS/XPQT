@@ -154,6 +154,12 @@ export class ServiceRuleResolverService {
     const warnings: string[] = [];
     const approverTargets: ServiceRuleOutcome['approver_targets'] = [];
 
+    // Setup-flag aggregation is independent of effect: any rule with the
+    // flag set wins (OR), and lead-time uses MAX (be conservative — if
+    // any rule asked for 60min, give it 60min).
+    let requiresInternalSetup = false;
+    let internalSetupLeadTimeMinutes: number | null = null;
+
     for (const rule of matched) {
       switch (rule.effect) {
         case 'deny':
@@ -175,6 +181,16 @@ export class ServiceRuleResolverService {
           // explicit allow — no effect change
           break;
       }
+
+      if (rule.requires_internal_setup) {
+        requiresInternalSetup = true;
+        if (rule.internal_setup_lead_time_minutes != null) {
+          internalSetupLeadTimeMinutes = Math.max(
+            internalSetupLeadTimeMinutes ?? 0,
+            rule.internal_setup_lead_time_minutes,
+          );
+        }
+      }
     }
 
     return {
@@ -183,6 +199,8 @@ export class ServiceRuleResolverService {
       denial_messages: denials,
       warning_messages: warnings,
       approver_targets: approverTargets,
+      requires_internal_setup: requiresInternalSetup,
+      internal_setup_lead_time_minutes: internalSetupLeadTimeMinutes,
     };
   }
 
@@ -216,6 +234,8 @@ export class ServiceRuleResolverService {
       denial_messages: [],
       warning_messages: [],
       approver_targets: [],
+      requires_internal_setup: false,
+      internal_setup_lead_time_minutes: null,
     };
   }
 }

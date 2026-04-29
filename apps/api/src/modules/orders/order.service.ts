@@ -855,6 +855,8 @@ export class OrderService {
           denial_messages: [],
           warning_messages: [],
           approver_targets: [],
+          requires_internal_setup: false,
+          internal_setup_lead_time_minutes: null,
         };
         return {
           line_key: meta.oliId,

@@ -17,6 +17,20 @@ export interface ServiceRuleRow {
   priority: number;
   active: boolean;
   template_id: string | null;
+  /**
+   * When true, an order line that matches this rule triggers auto-creation
+   * of an internal setup work order. Routing (team, lead time, SLA policy)
+   * is resolved via location_service_routing (00194) at trigger time —
+   * keeps "when" (this field) separate from "who" (matrix). See
+   * docs/superpowers/plans/2026-04-29-fulfillment-fixes-wave2.md Slice 2.
+   */
+  requires_internal_setup: boolean;
+  /**
+   * Optional override for the matrix's default_lead_time_minutes. NULL
+   * means "use the matrix default." Useful for high-touch rules that
+   * need more setup runway than the building's standard.
+   */
+  internal_setup_lead_time_minutes: number | null;
 }
 
 export type ApproverTarget =
@@ -49,6 +63,20 @@ export interface ServiceRuleOutcome {
     rule_id: string;
     target: ApproverTarget;
   }>;
+  /**
+   * Aggregated from matched rules (OR — any rule with the flag set wins).
+   * Caller looks up location_service_routing to find the team/SLA, then
+   * creates a booking-origin work order. Independent of `effect`: a line
+   * can be `allow` AND `requires_internal_setup`.
+   */
+  requires_internal_setup: boolean;
+  /**
+   * Largest lead time across matched rules whose flag is set; falls back
+   * to the matrix default when no rule overrides. NULL means "use the
+   * matrix default." Aggregation is MAX (be conservative — if any rule
+   * needs 60min, give it 60min even if another said 30).
+   */
+  internal_setup_lead_time_minutes: number | null;
 }
 
 /** Re-export the context shape so consumers don't need to deep-import. */
