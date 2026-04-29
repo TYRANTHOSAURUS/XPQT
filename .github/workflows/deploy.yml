@@ -38,17 +38,44 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          GIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          RESP=$(curl -sS -X POST \
+          # Render's POST /deploys returns 202 with an empty body, so we can't
+          # parse the deploy id directly. Trigger, then poll the deploys list
+          # for the deploy that matches this commit.
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
             "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}')
-          echo "Render API response: $RESP"
-          DEPLOY_ID=$(echo "$RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('id',''))" || echo "")
+          if [ "$STATUS" != "201" ] && [ "$STATUS" != "202" ]; then
+            echo "Render trigger failed with HTTP $STATUS"
+            exit 1
+          fi
+          echo "Render deploy triggered (HTTP $STATUS) for commit ${GIT_SHA:0:8}"
+
+          # Find the matching deploy id by commit sha. New deploy may take a
+          # second to appear in the list.
+          DEPLOY_ID=""
+          for i in 1 2 3 4 5; do
+            sleep 5
+            DEPLOY_ID=$(curl -sS \
+              "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys?limit=10" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              | python3 -c "
+import json, sys, os
+sha = os.environ['GIT_SHA']
+for x in json.load(sys.stdin):
+    d = x['deploy']
+    cid = (d.get('commit') or {}).get('id', '')
+    if cid == sha:
+        print(d['id'])
+        break")
+            if [ -n "$DEPLOY_ID" ]; then break; fi
+          done
           if [ -z "$DEPLOY_ID" ]; then
-            echo "Failed to parse deploy id from response — likely a concurrent deploy or API error."
+            echo "Could not find Render deploy for commit ${GIT_SHA:0:8} after 25s"
             exit 1
           fi
           echo "Render deploy id: $DEPLOY_ID"
