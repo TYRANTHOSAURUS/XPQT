@@ -604,23 +604,7 @@ export class ReservationController {
     const tenantId = TenantContext.current().id;
     const ctx = await this.visibility.loadContext(authUid, tenantId);
 
-    // When loadContext can't resolve the auth uid to a users row in this
-    // tenant it returns an empty stub (`user_id: ''`). Calling
-    // `user_has_permission` with an empty string makes Postgres throw on the
-    // uuid cast — which surfaced as a 500 on the portal picker for any
-    // employee whose users row hadn't been provisioned. Short-circuit here
-    // and return a no-permissions actor; the picker still resolves the
-    // requester via `person_id` and falls back to an empty room list when
-    // even that is null.
-    if (!ctx.user_id) {
-      return {
-        user_id: '',
-        person_id: ctx.person_id,
-        is_service_desk: false,
-        has_override_rules: false,
-      };
-    }
-
+    // Permission lookups
     const [overrideRes, bookOnBehalfRes] = await Promise.all([
       this.supabase.admin.rpc('user_has_permission', {
         p_user_id: ctx.user_id, p_tenant_id: tenantId, p_permission: 'rooms.override_rules',
