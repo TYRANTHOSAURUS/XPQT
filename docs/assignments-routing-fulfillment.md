@@ -833,6 +833,15 @@ When an order line cancels, any non-terminal work order linked via `tickets.link
 - `order.setup_routing_unconfigured` / `order.setup_work_order_create_failed` — standalone-order analogues.
 - `booking_origin_work_order_created` — emitted on `audit_events` from `TicketService.createBookingOriginWorkOrder` for every successful create.
 
+### Visibility — what's intentionally NOT set on booking-origin work orders
+
+Two fields are deliberately NULL even when the caller has values for them:
+
+- **`requester_person_id`** — booking-origin work orders are operational tasks, not help requests. The originating user (Marleen who placed the catering order) sees the bundle/booking in her bookings list, NOT the internal setup ticket. If we set requester_person_id, the my-requests query (which drops the parent filter for requester views) would include these in her portal — wrong surface, wrong audience. Bundle.requester_person_id already captures originator identity for audit.
+- **`parent_ticket_id`** — there is no parent case (per §25 above). To prevent these from polluting the desk's top-level case queue (which filters `parent_ticket_id IS NULL`), `TicketService.list()` ALSO filters `booking_bundle_id IS NULL` whenever the parent-null filter is applied. Booking-origin work orders are reachable via `ticket_kind='work_order'`, by drilling into a bundle, or by their assigned-team queue — they just don't appear in the default cases queue.
+
+Visibility for these tickets falls to the assignee path: `assigned_team_id` matches → team members see it; `tickets.read_all` permission → admins see it. Vendors are not assigned to booking-origin work orders today (they're internal-setup work).
+
 ### Trigger additions for §15
 
 Any change to these requires updating this section:
