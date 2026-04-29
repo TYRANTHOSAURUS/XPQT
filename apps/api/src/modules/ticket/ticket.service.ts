@@ -1480,4 +1480,112 @@ export class TicketService {
 
     return person?.id ?? explicitAuthorPersonId;
   }
+
+  /**
+   * Booking-origin work order create path. Sibling to dispatch.service —
+   * dispatch creates work orders FROM A PARENT CASE; this creates them
+   * from a booking bundle / order line, with NO parent case.
+   *
+   * Used by Slice 2 of the fulfillment-fixes Wave-2 plan: when a service
+   * rule on an order line says requires_internal_setup, the matrix
+   * (location_service_routing 00194) gives the team + lead time + SLA,
+   * and this method materialises the work order. The bundle and line
+   * linkage flow through booking_bundle_id and linked_order_line_item_id
+   * respectively (00145).
+   *
+   * Why a separate method (not dispatch.service.ts):
+   *   - dispatch refuses ticket_kind='case' parent and inherits parent
+   *     state. Booking-origin has no parent case to inherit from.
+   *   - We don't run runPostCreateAutomation (no request_type, no SLA via
+   *     request_type, no workflow). SLA is provided explicitly by the
+   *     matrix lookup; no workflow today (Wave 3 will extend the workflow
+   *     editor to fire on order events).
+   */
+  async createBookingOriginWorkOrder(args: {
+    title: string;
+    description?: string;
+    location_id?: string | null;
+    booking_bundle_id: string;
+    linked_order_line_item_id: string;
+    /** Optional, but strongly preferred — matrix should provide one. */
+    assigned_team_id?: string | null;
+    assigned_user_id?: string | null;
+    assigned_vendor_id?: string | null;
+    /**
+     * Resolution due date for the work order — typically
+     * service_window_start - lead_time_minutes (computed by caller from the
+     * matrix). Written directly to tickets.sla_resolution_due_at so the SLA
+     * queue + lateness view (00190 fulfillment_units_v.is_late) work
+     * correctly without going through sla_timers/sla_policies.
+     *
+     * We bypass the standard SLA-policy calculation because booking-origin
+     * work has a service-window-anchored deadline, not a creation-anchored
+     * one. The SLA service can be wired in a later wave if pause/resume
+     * semantics are needed for facilities work.
+     */
+    target_due_at?: string | null;
+    /** Inherited from the order's requester. */
+    requester_person_id?: string | null;
+    priority?: string;
+    /**
+     * Free-form snapshot for audit — typically the rule_ids that triggered
+     * the auto-creation, the matrix row id, and the original line metadata.
+     */
+    audit_metadata?: Record<string, unknown>;
+  }): Promise<{ id: string }> {
+    const tenant = TenantContext.current();
+
+    const insertRow: Record<string, unknown> = {
+      tenant_id: tenant.id,
+      ticket_kind: 'work_order',
+      parent_ticket_id: null, // booking-origin has no parent case
+      booking_bundle_id: args.booking_bundle_id,
+      linked_order_line_item_id: args.linked_order_line_item_id,
+      title: args.title,
+      description: args.description ?? null,
+      priority: args.priority ?? 'medium',
+      interaction_mode: 'internal',
+      status: 'new',
+      status_category: args.assigned_team_id || args.assigned_user_id || args.assigned_vendor_id
+        ? 'assigned'
+        : 'new',
+      requester_person_id: args.requester_person_id ?? null,
+      location_id: args.location_id ?? null,
+      assigned_team_id: args.assigned_team_id ?? null,
+      assigned_user_id: args.assigned_user_id ?? null,
+      assigned_vendor_id: args.assigned_vendor_id ?? null,
+      sla_resolution_due_at: args.target_due_at ?? null,
+      source_channel: 'system',
+    };
+
+    const { data, error } = await this.supabase.admin
+      .from('tickets')
+      .insert(insertRow)
+      .select('id')
+      .single();
+    if (error) throw error;
+
+    const ticketId = (data as { id: string }).id;
+
+    // System event for audit + activity feed.
+    await this.addActivity(ticketId, {
+      activity_type: 'system_event',
+      visibility: 'system',
+      metadata: {
+        event: 'booking_origin_work_order_created',
+        booking_bundle_id: args.booking_bundle_id,
+        linked_order_line_item_id: args.linked_order_line_item_id,
+        ...(args.audit_metadata ?? {}),
+      },
+    });
+
+    await this.logDomainEvent(ticketId, 'booking_origin_work_order_created', {
+      ticket_id: ticketId,
+      booking_bundle_id: args.booking_bundle_id,
+      linked_order_line_item_id: args.linked_order_line_item_id,
+      ...(args.audit_metadata ?? {}),
+    });
+
+    return { id: ticketId };
+  }
 }

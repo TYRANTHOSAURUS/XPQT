@@ -110,13 +110,25 @@ export class BundleCascadeService {
         .eq('id', line.linked_asset_reservation_id);
       cascaded.asset_reservation_ids.push(line.linked_asset_reservation_id);
     }
-    // Note (2026-04-29): ticket cancel-cascade removed. The earlier code
-    // wrote a non-existent tickets.resolution column (codex review
-    // 2026-04-29). The branch only fires when linked_ticket_id is set,
-    // which is never today. Re-introduce when Wave 2 ships the link table
-    // — see docs/superpowers/plans/2026-04-29-fulfillment-fixes.md.
-    // Until then linked_ticket_id stays null in production and this block
-    // would have been a latent crash.
+    // Cascade-cancel any booking-origin work orders linked TO this line via
+    // tickets.linked_order_line_item_id (00145). Wave 2 Slice 2 enabled this:
+    // the auto-creation flow (BundleService.maybeCreateSetupWorkOrder) now
+    // populates linked_order_line_item_id at creation time, so the inverse
+    // cascade has real data to act on. We close them via status_category
+    // (the column that exists), NOT via a non-existent `resolution` column.
+    const { data: linkedTickets } = await this.supabase.admin
+      .from('tickets')
+      .update({ status_category: 'closed', closed_at: new Date().toISOString() })
+      .eq('linked_order_line_item_id', args.line_id)
+      .eq('tenant_id', tenantId)
+      .eq('ticket_kind', 'work_order')
+      .not('status_category', 'in', '("closed","resolved")')
+      .select('id');
+    if (linkedTickets) {
+      for (const t of linkedTickets as Array<{ id: string }>) {
+        cascaded.ticket_ids.push(t.id);
+      }
+    }
 
     await this.supabase.admin
       .from('order_line_items')
@@ -222,9 +234,6 @@ export class BundleCascadeService {
     }
 
     const cancelledLineIds = cancellableLines.map((l) => l.id);
-    const cancelledTicketIds = cancellableLines
-      .map((l) => l.linked_ticket_id)
-      .filter((id): id is string => Boolean(id));
     const cancelledAssetReservationIds = cancellableLines
       .map((l) => l.linked_asset_reservation_id)
       .filter((id): id is string => Boolean(id));
@@ -235,14 +244,22 @@ export class BundleCascadeService {
         .update({ status: 'cancelled' })
         .in('id', cancelledAssetReservationIds);
     }
-    // Note (2026-04-29): bundle-cancel ticket cascade removed (same
-    // codex review as cancelLine). The earlier code wrote a non-existent
-    // tickets.resolution column. The branch never fires today because
-    // no code path populates linked_ticket_id. cancelledTicketIds stays
-    // in the response for forward-compatibility — Wave 2's link table
-    // will repopulate it with real ids and reactivate the cascade.
-    if (cancelledTicketIds.length > 0) {
-      // intentionally no-op until Wave 2 — see fulfillment-fixes plan.
+
+    // Cascade-cancel booking-origin work orders linked to any of the
+    // cancelled lines (via tickets.linked_order_line_item_id, 00145).
+    // Wave 2 Slice 2 populates this link at auto-creation time. Bulk
+    // form mirrors the per-line cancelLine() cascade above.
+    let cancelledTicketIds: string[] = [];
+    if (cancelledLineIds.length > 0) {
+      const { data: linkedTickets } = await this.supabase.admin
+        .from('tickets')
+        .update({ status_category: 'closed', closed_at: new Date().toISOString() })
+        .in('linked_order_line_item_id', cancelledLineIds)
+        .eq('tenant_id', tenantId)
+        .eq('ticket_kind', 'work_order')
+        .not('status_category', 'in', '("closed","resolved")')
+        .select('id');
+      cancelledTicketIds = (linkedTickets as Array<{ id: string }> | null)?.map((t) => t.id) ?? [];
     }
     if (cancelledLineIds.length > 0) {
       await this.supabase.admin

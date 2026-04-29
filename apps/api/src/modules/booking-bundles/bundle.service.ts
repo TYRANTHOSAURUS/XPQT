@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -14,6 +16,7 @@ import {
 import { ApprovalRoutingService } from '../orders/approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
+import { TicketService } from '../ticket/ticket.service';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
@@ -81,6 +84,8 @@ export class BundleService {
     private readonly supabase: SupabaseService,
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
+    @Inject(forwardRef(() => TicketService))
+    private readonly tickets: TicketService,
   ) {}
 
   /**
@@ -300,6 +305,26 @@ export class BundleService {
       }
 
       cleanup.commit();
+
+      // Auto-create internal-setup work orders for any line whose rules
+      // emitted requires_internal_setup=true. Runs AFTER commit — the
+      // bundle is the source of truth, and a missed work order is
+      // recoverable manually. A failed work order does NOT roll back
+      // the bundle. See plan §Slice 2.
+      for (const [oliId, outcome] of outcomes.entries()) {
+        if (!outcome.requires_internal_setup) continue;
+        const line = lineByOli.get(oliId);
+        if (!line) continue;
+        await this.maybeCreateSetupWorkOrder({
+          tenantId,
+          bundleId: bundle.id,
+          oliId,
+          line,
+          outcome,
+          reservationLocationId: reservation.space_id,
+          requesterPersonId: args.requester_person_id,
+        });
+      }
 
       void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
         bundle_id: bundle.id,
@@ -768,6 +793,110 @@ export class BundleService {
       requires_internal_setup: false,
       internal_setup_lead_time_minutes: null,
     };
+  }
+
+  /**
+   * Look up the location_service_routing matrix for this line's location +
+   * service category, and create a booking-origin internal setup work order
+   * if the matrix configures a team. A missing matrix entry is logged via
+   * audit (`bundle.setup_routing_unconfigured`) and silently skipped — the
+   * bundle is still valid; ops can configure the matrix and rerun manually
+   * (or the next similar booking will succeed).
+   *
+   * Errors thrown by createBookingOriginWorkOrder are caught and logged.
+   * The bundle is already committed by this point — a failed work order
+   * is recoverable, so we don't propagate.
+   */
+  private async maybeCreateSetupWorkOrder(args: {
+    tenantId: string;
+    bundleId: string;
+    oliId: string;
+    line: HydratedLine;
+    outcome: { matched_rule_ids: string[]; internal_setup_lead_time_minutes: number | null };
+    reservationLocationId: string | null;
+    requesterPersonId: string;
+  }): Promise<void> {
+    const { data: routing, error: routingErr } = await this.supabase.admin.rpc(
+      'resolve_setup_routing',
+      {
+        p_tenant_id: args.tenantId,
+        p_location_id: args.reservationLocationId,
+        p_service_category: args.line.service_type,
+      },
+    );
+    if (routingErr) {
+      this.log.warn(
+        `setup routing lookup failed for line ${args.oliId}: ${routingErr.message}`,
+      );
+      return;
+    }
+    const routingRow = (routing as Array<{
+      internal_team_id: string | null;
+      default_lead_time_minutes: number;
+      sla_policy_id: string | null;
+    }> | null)?.[0];
+
+    if (!routingRow || !routingRow.internal_team_id) {
+      // No matrix entry OR matrix says "no internal team for this combo."
+      // Surface to audit so admins can spot misconfigured tenants.
+      void this.audit(
+        args.tenantId,
+        'bundle.setup_routing_unconfigured',
+        'order_line_item',
+        args.oliId,
+        {
+          line_id: args.oliId,
+          service_category: args.line.service_type,
+          location_id: args.reservationLocationId,
+          rule_ids: args.outcome.matched_rule_ids,
+          severity: 'medium',
+        },
+      );
+      return;
+    }
+
+    const leadTimeMinutes =
+      args.outcome.internal_setup_lead_time_minutes ??
+      routingRow.default_lead_time_minutes;
+    const targetDueAt = new Date(
+      new Date(args.line.service_window_start_at).getTime() -
+        leadTimeMinutes * 60_000,
+    ).toISOString();
+
+    try {
+      await this.tickets.createBookingOriginWorkOrder({
+        title: `Internal setup — ${args.line.service_type}`,
+        booking_bundle_id: args.bundleId,
+        linked_order_line_item_id: args.oliId,
+        assigned_team_id: routingRow.internal_team_id,
+        target_due_at: targetDueAt,
+        requester_person_id: args.requesterPersonId,
+        location_id: args.reservationLocationId,
+        audit_metadata: {
+          triggered_by_rule_ids: args.outcome.matched_rule_ids,
+          lead_time_minutes: leadTimeMinutes,
+          service_window_start_at: args.line.service_window_start_at,
+          service_category: args.line.service_type,
+        },
+      });
+    } catch (err) {
+      this.log.warn(
+        `booking-origin work order create failed for line ${args.oliId}: ${
+          (err as Error).message
+        }`,
+      );
+      void this.audit(
+        args.tenantId,
+        'bundle.setup_work_order_create_failed',
+        'order_line_item',
+        args.oliId,
+        {
+          line_id: args.oliId,
+          error: (err as Error).message,
+          severity: 'high',
+        },
+      );
+    }
   }
 
   private async audit(
