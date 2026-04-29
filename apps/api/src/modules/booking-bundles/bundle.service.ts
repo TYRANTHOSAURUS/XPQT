@@ -724,6 +724,8 @@ export class BundleService {
         line_total: args.line.unit_price != null ? args.line.unit_price * args.line.quantity : null,
         fulfillment_status: 'ordered',
         fulfillment_team_id: args.line.fulfillment_team_id,
+        vendor_id: args.line.fulfillment_vendor_id,
+        menu_item_id: args.line.menu_item_id,
         linked_asset_id: args.line.linked_asset_id,
         linked_asset_reservation_id: args.linked_asset_reservation_id,
         service_window_start_at: args.line.service_window_start_at,

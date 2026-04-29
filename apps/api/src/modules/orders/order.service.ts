@@ -171,7 +171,7 @@ export class OrderService {
     const masterLines = await this.supabase.admin
       .from('order_line_items')
       .select(
-        'id, catalog_item_id, quantity, unit_price, line_total, fulfillment_status, fulfillment_team_id, linked_asset_id, service_window_start_at, service_window_end_at, repeats_with_series, policy_snapshot',
+        'id, catalog_item_id, quantity, unit_price, line_total, fulfillment_status, fulfillment_team_id, vendor_id, menu_item_id, linked_asset_id, service_window_start_at, service_window_end_at, repeats_with_series, policy_snapshot',
       )
       .eq('order_id', args.masterOrderId)
       .eq('tenant_id', tenantId)
@@ -212,6 +212,8 @@ export class OrderService {
       line_total: number | null;
       fulfillment_status: string | null;
       fulfillment_team_id: string | null;
+      vendor_id: string | null;
+      menu_item_id: string | null;
       linked_asset_id: string | null;
       service_window_start_at: string | null;
       service_window_end_at: string | null;
@@ -265,6 +267,8 @@ export class OrderService {
           line_total: line.line_total,
           fulfillment_status: assetConflicted ? 'cancelled' : 'ordered',
           fulfillment_team_id: line.fulfillment_team_id,
+          vendor_id: line.vendor_id,
+          menu_item_id: line.menu_item_id,
           linked_asset_id: line.linked_asset_id,
           linked_asset_reservation_id: clonedAssetReservationId,
           service_window_start_at: occurrenceStart,
@@ -1075,6 +1079,8 @@ export class OrderService {
         line_total: unitPrice != null ? unitPrice * args.input.quantity : null,
         fulfillment_status: 'ordered',
         fulfillment_team_id: args.offer?.fulfillment_team_id ?? args.item.fulfillment_team_id,
+        vendor_id: args.offer?.vendor_id ?? null,
+        menu_item_id: args.offer?.menu_item_id ?? null,
         linked_asset_id: args.input.linked_asset_id ?? null,
         linked_asset_reservation_id: args.linked_asset_reservation_id,
         service_window_start_at: args.service_window_start_at,
