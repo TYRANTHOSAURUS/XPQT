@@ -97,7 +97,7 @@ export function ApprovalsPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Approvals</h1>
         <p className="text-muted-foreground mt-1">
-          Pending approval requests assigned to you
+          Pending approval requests for you or your teams
         </p>
       </div>
 
