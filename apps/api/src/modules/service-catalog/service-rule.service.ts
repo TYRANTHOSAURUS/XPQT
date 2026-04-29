@@ -190,6 +190,19 @@ export interface ServiceRuleUpsertDto {
   priority?: number;
   active?: boolean;
   template_id?: string | null;
+  /**
+   * When true, an order line that matches this rule auto-creates an
+   * internal setup work order. Routing (team, lead time, SLA) is
+   * resolved via location_service_routing (00194). Independent of
+   * `effect`: a line can be (allow AND requires_internal_setup).
+   */
+  requires_internal_setup?: boolean;
+  /**
+   * Optional override for the matrix's default lead time. Null = use
+   * matrix default. Useful for high-touch rules ("VIP catering = 90min
+   * before service window").
+   */
+  internal_setup_lead_time_minutes?: number | null;
 }
 
 export interface ServiceRuleTemplate {
@@ -278,6 +291,8 @@ export class ServiceRuleService {
         priority: dto.priority ?? 100,
         active: dto.active ?? true,
         template_id: dto.template_id ?? null,
+        requires_internal_setup: dto.requires_internal_setup ?? false,
+        internal_setup_lead_time_minutes: dto.internal_setup_lead_time_minutes ?? null,
       })
       .select('*')
       .single();
@@ -324,6 +339,19 @@ export class ServiceRuleService {
     if (dto.priority != null) patch.priority = dto.priority;
     if (dto.active != null) patch.active = dto.active;
     if ('template_id' in dto) patch.template_id = dto.template_id ?? null;
+    if (dto.requires_internal_setup != null) {
+      patch.requires_internal_setup = dto.requires_internal_setup;
+    }
+    if ('internal_setup_lead_time_minutes' in dto) {
+      const v = dto.internal_setup_lead_time_minutes;
+      if (v != null && (!Number.isInteger(v) || v < 0 || v > 1440)) {
+        throw new BadRequestException({
+          code: 'invalid_lead_time',
+          message: 'internal_setup_lead_time_minutes must be a non-negative integer up to 1440.',
+        });
+      }
+      patch.internal_setup_lead_time_minutes = v ?? null;
+    }
 
     const { data, error } = await this.supabase.admin
       .from('service_rules')

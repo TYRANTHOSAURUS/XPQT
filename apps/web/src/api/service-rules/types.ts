@@ -15,6 +15,13 @@ export interface ServiceRule {
   priority: number;
   active: boolean;
   template_id: string | null;
+  /** Wave 2 Slice 2 — emit a booking-origin internal setup work order
+   *  when a matching line is created. Routing comes from the
+   *  location_service_routing matrix at /admin/service-routing. */
+  requires_internal_setup: boolean;
+  /** Optional override for the matrix's default lead time. Null = use
+   *  matrix default. */
+  internal_setup_lead_time_minutes: number | null;
   created_at: string;
   updated_at: string;
 }

@@ -15,6 +15,8 @@ export interface ServiceRuleUpsertPayload {
   priority?: number;
   active?: boolean;
   template_id?: string | null;
+  requires_internal_setup?: boolean;
+  internal_setup_lead_time_minutes?: number | null;
 }
 
 export function useCreateServiceRule() {

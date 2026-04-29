@@ -64,6 +64,7 @@ export function ServiceRuleDetailPage() {
   const [targetId, setTargetId] = useState('');
   const [predicateText, setPredicateText] = useState('{}');
   const [predicateError, setPredicateError] = useState<string | null>(null);
+  const [setupLeadOverride, setSetupLeadOverride] = useState('');
 
   useEffect(() => {
     if (!data) return;
@@ -74,7 +75,21 @@ export function ServiceRuleDetailPage() {
     setTargetId(data.target_id ?? '');
     setPredicateText(JSON.stringify(data.applies_when ?? {}, null, 2));
     setPredicateError(null);
-  }, [data?.id, data?.applies_when, data?.target_id, data?.priority, data?.name, data?.description, data?.denial_message]);
+    setSetupLeadOverride(
+      data.internal_setup_lead_time_minutes != null
+        ? String(data.internal_setup_lead_time_minutes)
+        : '',
+    );
+  }, [
+    data?.id,
+    data?.applies_when,
+    data?.target_id,
+    data?.priority,
+    data?.name,
+    data?.description,
+    data?.denial_message,
+    data?.internal_setup_lead_time_minutes,
+  ]);
 
   const persist = (
     patch: Parameters<typeof update.mutateAsync>[0]['patch'],
@@ -114,6 +129,25 @@ export function ServiceRuleDetailPage() {
     if (data.target_kind === 'tenant') return;
     const normalised = next.trim() || null;
     if (normalised !== (data.target_id ?? null)) persist({ target_id: normalised });
+  });
+  useDebouncedSave(setupLeadOverride, (next) => {
+    if (!data) return;
+    const trimmed = next.trim();
+    if (trimmed === '') {
+      if (data.internal_setup_lead_time_minutes != null) {
+        persist({ internal_setup_lead_time_minutes: null });
+      }
+      return;
+    }
+    const parsed = Math.floor(Number(trimmed));
+    if (
+      Number.isFinite(parsed) &&
+      parsed >= 0 &&
+      parsed <= 1440 &&
+      parsed !== data.internal_setup_lead_time_minutes
+    ) {
+      persist({ internal_setup_lead_time_minutes: parsed });
+    }
   });
 
   const handlePredicateBlur = () => {
@@ -287,6 +321,36 @@ export function ServiceRuleDetailPage() {
             value={priority}
             onChange={(e) => setPriority(e.target.value)}
             className="h-8 w-24 text-center tabular-nums"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Internal setup handoff"
+        description="When a matching line is created, also auto-create an internal setup work order. Routing (team, default lead time, SLA) lives in /admin/service-routing. Independent of the effect above — a line can be allowed AND require setup."
+      >
+        <SettingsRow
+          label="Requires internal setup"
+          description="When on, this rule firing triggers auto-creation of a setup work order routed via the service routing matrix."
+        >
+          <Switch
+            checked={data.requires_internal_setup}
+            onCheckedChange={(checked) => persist({ requires_internal_setup: checked })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Lead-time override"
+          description="Optional. Override the matrix's default lead time for this rule (e.g. 60 = work order due 60 min before service window). Leave blank to use the matrix default."
+        >
+          <Input
+            type="number"
+            min={0}
+            max={1440}
+            value={setupLeadOverride}
+            onChange={(e) => setSetupLeadOverride(e.target.value)}
+            placeholder="—"
+            disabled={!data.requires_internal_setup}
+            className="h-8 w-28 text-center tabular-nums"
           />
         </SettingsRow>
       </SettingsGroup>
