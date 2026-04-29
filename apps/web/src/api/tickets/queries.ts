@@ -38,37 +38,6 @@ export function useTicketActivities(id: string) {
   return useQuery(ticketActivitiesOptions(id));
 }
 
-/**
- * Latest routing decision for a ticket — feeds the "Routed by …" pill on
- * ticket detail. Returns null when the ticket has no recorded decision
- * (manually-created or pre-audit-log tickets).
- */
-export interface TicketRoutingDecision {
-  id: string;
-  decided_at: string;
-  strategy: string;
-  chosen_by: string;
-  rule_id: string | null;
-  rule_name: string | null;
-  target_kind: 'team' | 'user' | 'vendor' | null;
-  target_id: string | null;
-}
-
-export function ticketRoutingDecisionOptions(id: string) {
-  return queryOptions({
-    queryKey: ticketKeys.routingDecision(id),
-    queryFn: ({ signal }) =>
-      apiFetch<TicketRoutingDecision | null>(`/tickets/${id}/routing-decision`, { signal }),
-    // Mirrors ticket detail (T1) — refetched when the ticket reassigns.
-    staleTime: 10_000,
-    enabled: Boolean(id),
-  });
-}
-
-export function useTicketRoutingDecision(id: string) {
-  return useQuery(ticketRoutingDecisionOptions(id));
-}
-
 export function ticketTagSuggestionsOptions() {
   return queryOptions({
     queryKey: ticketKeys.tagSuggestions(),

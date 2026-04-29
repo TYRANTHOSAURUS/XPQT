@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -100,14 +100,7 @@ function sinceIso(preset: SincePreset): string {
   return new Date(Date.now() - map[preset] * 24 * 60 * 60 * 1000).toISOString();
 }
 
-export function RoutingAuditTab({
-  initialTicketId = null,
-}: {
-  /** Pre-fills the ticket-id filter on the Decisions sub-tab. Sent in via
-   *  the studio's `?ticket=<id>` deep-link (e.g. from the ticket detail
-   *  "Routed by" pill). */
-  initialTicketId?: string | null;
-} = {}) {
+export function RoutingAuditTab() {
   return (
     <Tabs defaultValue="decisions" className="flex flex-col gap-4">
       <TabsList>
@@ -115,7 +108,7 @@ export function RoutingAuditTab({
         <TabsTrigger value="dualrun">Dual-run diffs</TabsTrigger>
       </TabsList>
       <TabsContent value="decisions">
-        <DecisionsAudit initialTicketId={initialTicketId} />
+        <DecisionsAudit />
       </TabsContent>
       <TabsContent value="dualrun">
         <DualRunAudit />
@@ -124,27 +117,11 @@ export function RoutingAuditTab({
   );
 }
 
-function DecisionsAudit({ initialTicketId = null }: { initialTicketId?: string | null }) {
+function DecisionsAudit() {
   const [chosenByFilter, setChosenByFilter] = useState<'' | ChosenBy>('');
-  const [ticketIdFilter, setTicketIdFilter] = useState(initialTicketId ?? '');
-  // When the deep-link supplies a ticket, default the window to "all time" so
-  // a referenced ticket doesn't disappear because its decision is older than
-  // 7 days. Without this, a deep-link from an old ticket lands on an empty
-  // table even though the decision exists.
-  const [sincePreset, setSincePreset] = useState<SincePreset>(initialTicketId ? 'all' : '7d');
+  const [ticketIdFilter, setTicketIdFilter] = useState('');
+  const [sincePreset, setSincePreset] = useState<SincePreset>('7d');
   const [offset, setOffset] = useState(0);
-
-  // If the admin clicks a different "Routed by" pill while already on the
-  // audit tab, the URL updates but the component doesn't remount — sync the
-  // filter from prop changes so the table reflects the new ticket.
-  useEffect(() => {
-    if (initialTicketId && initialTicketId !== ticketIdFilter) {
-      setTicketIdFilter(initialTicketId);
-      setSincePreset('all');
-      setOffset(0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTicketId]);
 
   const since = useMemo(() => sinceIso(sincePreset), [sincePreset]);
 

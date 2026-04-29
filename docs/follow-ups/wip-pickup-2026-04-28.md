@@ -36,6 +36,12 @@ removed; Routing Studio is the canonical surface.
 
 **Bonus feature in the same slice — "Routed by …" pill on ticket detail:**
 
+> **Reverted on 2026-04-29.** The pill was removed from the ticket-detail
+> sidebar — putting admin-investigation info on every operator's screen, on
+> every ticket, was the wrong placement. The Routing Studio cutover above
+> stays. All code listed in this subsection is gone; the Studio's audit tab
+> can still be filtered by ticket id manually via its existing input.
+
 A breadcrumb pill on the ticket detail sidebar that surfaces the latest
 `routing_decisions` row for a ticket so an operator can answer "why was this
 ticket routed here?" without leaving the detail view.

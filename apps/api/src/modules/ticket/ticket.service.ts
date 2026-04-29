@@ -471,63 +471,6 @@ export class TicketService {
     return data;
   }
 
-  /**
-   * Latest routing decision for this ticket — the breadcrumb behind "why was
-   * this routed here?" on ticket detail. Mirrors the ticket's own visibility
-   * gate so any operator who can see the ticket can see the decision (no
-   * routing.read admin permission required, unlike the Studio audit list).
-   *
-   * Returns null when the ticket has no recorded decision yet — typical for
-   * very old tickets created before the routing-decision audit log existed,
-   * or for manually-assigned tickets that bypassed the resolver.
-   */
-  async getLatestRoutingDecision(id: string, actorAuthUid: string) {
-    const tenant = TenantContext.current();
-
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertVisible(id, ctx, 'read');
-    }
-
-    const { data, error } = await this.supabase.admin
-      .from('routing_decisions')
-      .select(
-        `id, decided_at, strategy, chosen_by, rule_id,
-         chosen_team_id, chosen_user_id, chosen_vendor_id,
-         rules:routing_rules!routing_decisions_rule_id_fkey(name)`,
-      )
-      .eq('tenant_id', tenant.id)
-      .eq('ticket_id', id)
-      .order('decided_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data) return null;
-
-    const rulesRaw = (data as Record<string, unknown>).rules;
-    const rule = Array.isArray(rulesRaw) ? rulesRaw[0] : rulesRaw;
-    const rule_name = (rule as { name?: string } | null)?.name ?? null;
-
-    const teamId = (data as { chosen_team_id: string | null }).chosen_team_id;
-    const userId = (data as { chosen_user_id: string | null }).chosen_user_id;
-    const vendorId = (data as { chosen_vendor_id: string | null }).chosen_vendor_id;
-    const target_kind: 'team' | 'user' | 'vendor' | null =
-      teamId ? 'team' : vendorId ? 'vendor' : userId ? 'user' : null;
-    const target_id = teamId ?? vendorId ?? userId ?? null;
-
-    return {
-      id: data.id as string,
-      decided_at: data.decided_at as string,
-      strategy: data.strategy as string,
-      chosen_by: data.chosen_by as string,
-      rule_id: (data.rule_id as string | null) ?? null,
-      rule_name,
-      target_kind,
-      target_id,
-    };
-  }
-
   async create(
     dto: CreateTicketDto,
     options: CreateTicketOptions = {},
