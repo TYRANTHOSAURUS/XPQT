@@ -7,4 +7,5 @@ export * from './types/ticket';
 export * from './types/form-bindings';
 export * from './types/routing';
 export * from './permissions';
+export * from './role-defaults';
 export * from './space-types';

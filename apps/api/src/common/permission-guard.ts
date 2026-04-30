@@ -1,4 +1,5 @@
 import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import type { PermissionKey } from '@prequest/shared';
 import type { Request } from 'express';
 import { SupabaseService } from './supabase/supabase.service';
 import { TenantContext } from './tenant-context';
@@ -7,6 +8,11 @@ import { TenantContext } from './tenant-context';
  * Resolves authUid → userId, then checks user_has_permission() for the given
  * permission key. Throws 403 if missing.
  *
+ * The `permission` parameter is typed against PERMISSION_CATALOG via
+ * @prequest/shared#PermissionKey, so unknown keys (typos, drift between
+ * controller and catalog) fail to compile. Wildcards (`tickets.*`, `*.read`,
+ * `*.*`) are allowed by the type.
+ *
  * Typical callers:
  *   await this.requirePermission(req, 'people.update');
  */
@@ -14,7 +20,7 @@ import { TenantContext } from './tenant-context';
 export class PermissionGuard {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async requirePermission(request: Request, permission: string): Promise<{ userId: string }> {
+  async requirePermission(request: Request, permission: PermissionKey): Promise<{ userId: string }> {
     const authUid = (request as { user?: { id: string } }).user?.id;
     if (!authUid) throw new UnauthorizedException('No auth user');
     const tenant = TenantContext.current();

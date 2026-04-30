@@ -312,7 +312,27 @@ export const PERMISSION_CATALOG = {
       manage_contacts: { label: 'Manage vendor contacts' },
       deactivate: { label: 'Deactivate or reactivate' },
       import: { label: 'Import vendor list' },
+      admin: {
+        label: 'Manage daily list & fulfillment',
+        description:
+          'Regenerate, resend, and operate per-vendor daily-list (daglijst) and fulfillment surfaces.',
+      },
       delete: { label: 'Delete vendors', danger: true },
+    },
+  },
+  rooms: {
+    label: 'Rooms',
+    icon: 'door-open',
+    description:
+      'Room-booking subsystem admin — booking rules, bundle templates, simulation, and related fulfillment config.',
+    actions: {
+      read: { label: 'View room-booking config' },
+      admin: {
+        label: 'Administer room-booking config',
+        description:
+          'Manage booking rules, bundle templates, simulation, scenarios, and related admin surfaces.',
+        danger: true,
+      },
     },
   },
   reports: {
@@ -364,6 +384,33 @@ export const PERMISSION_CATALOG = {
       billing: { label: 'View billing + plan', danger: true },
     },
   },
+  gdpr: {
+    label: 'Privacy & compliance (GDPR)',
+    icon: 'shield-check',
+    description:
+      'Retention settings, LIA, data-subject access/erasure/portability requests, and legal holds.',
+    actions: {
+      configure: {
+        label: 'Configure retention & LIA',
+        description: 'Edit retention windows, LIA text, and per-category settings.',
+        danger: true,
+      },
+      fulfill_request: {
+        label: 'Fulfill DSR requests',
+        description: 'Initiate and complete access, erasure, and portability requests.',
+        danger: true,
+      },
+      audit_reads: {
+        label: 'Audit personal-data reads',
+        description: 'Query the personal_data_access_logs read-side audit trail.',
+      },
+      place_legal_hold: {
+        label: 'Place or release legal holds',
+        description: 'Suspend retention for specific records under legal review.',
+        danger: true,
+      },
+    },
+  },
 } as const satisfies Record<string, ModuleMeta>;
 
 export type PermissionModule = keyof typeof PERMISSION_CATALOG;
@@ -378,9 +425,18 @@ export type ConcretePermissionKey = {
   [M in PermissionModule]: `${M & string}.${Extract<ActionKeyOf<M>, string>}`;
 }[PermissionModule];
 
+/**
+ * Union of every concrete action segment across every module — used to keep
+ * `*.<action>` wildcards honest. Without this, `*.${string}` would accept
+ * `*.banana` at compile time even though no module has a `banana` action.
+ */
+export type AnyActionKey = {
+  [M in PermissionModule]: Extract<ActionKeyOf<M>, string>;
+}[PermissionModule];
+
 export type WildcardPermissionKey =
   | `${PermissionModule & string}.*`
-  | `*.${string}`
+  | `*.${AnyActionKey}`
   | '*.*';
 
 export type PermissionKey = ConcretePermissionKey | WildcardPermissionKey;
