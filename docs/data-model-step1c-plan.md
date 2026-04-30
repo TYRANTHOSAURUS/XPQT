@@ -122,11 +122,56 @@ Now every write to `tickets` for a work_order row also writes to `work_orders_ne
 
 **Run for at least 2 release cycles** before flipping any reader. Use the time to monitor for divergence (a daily cron: `select count(*) from tickets where ticket_kind='work_order'` vs `count(*) from work_orders_new` — alert if they differ).
 
+**Index bloat caveat:** during the dual-write window, every `work_order` write goes through both tables, doubling index churn (queue_primary, queue_sla, queue_location all replicated). On busy tenants this can measurably slow desk-queue latency for the duration of the window. Mitigations: (a) keep the window short — 2 cycles, not "until comfortable"; (b) monitor desk-queue p95 latency during the soak; (c) if degradation is observable, defer the secondary indexes on `work_orders_new` until after writers cut over (1c.4).
+
 **Risk:** medium. Trigger overhead on every tickets write. Measure at scale before declaring stable.
+
+### Phase 1c.3.5 — install reverse trigger + parallel-soak
+
+**Inserted after the original plan because the dual-write reversal in 1c.4 was hand-waved.** Reversing trigger direction during the writer cutover is the single highest-risk operation in the migration. Splitting it out gives a soak window where both directions run in parallel and divergence can be caught before it bites.
+
+```sql
+-- Reverse direction shim: every write to work_orders_new shadows back into tickets.
+-- This protects callers still reading from `tickets` during the write cutover.
+create or replace function public.shadow_work_orders_new_to_tickets()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'INSERT' then
+    insert into public.tickets (id, tenant_id, ticket_kind, …) values (new.id, new.tenant_id, 'work_order', …)
+    on conflict (id) do nothing;  -- the forward shim may already have inserted
+  elsif tg_op = 'UPDATE' then
+    update public.tickets set … where id = new.id;
+  end if;
+  return new;
+end $$;
+
+create trigger trg_wo_new_to_tickets_shadow
+after insert or update on public.work_orders_new
+for each row execute function public.shadow_work_orders_new_to_tickets();
+```
+
+Run BOTH directions in parallel for one full release cycle. Daily divergence check: count + content hash on both sides. Zero divergence is the gate to 1c.4.
+
+**Risk:** medium. The forward + reverse triggers must use `on conflict do nothing` and idempotent UPDATEs to avoid trigger ping-pong (forward fires reverse fires forward …). Test the loop-prevention before any traffic hits the soak.
+
+### Phase 1c.3.6 — re-run all 1b readers against the materialized table
+
+Step 1b cut three readers (vendor portal, fulfillment_units_v, booking_bundle_status_v) to read from the `work_orders` view. Step 1c.10 swaps the underlying object from view → table by renaming `work_orders_new` over `work_orders`. **PostgREST schema cache, prepared-statement plans, and RLS policy attachment behave differently for tables vs views** — a reader that worked against the view may need re-binding to work against the table.
+
+Before 1c.4 (writer cutover):
+
+1. Materialize the table by renaming view → `work_orders_view_legacy`, table → `work_orders` (in a transaction, atomically). Note this is a temporary swap — it can be reverted if any reader breaks.
+2. Re-run every step-1b reader's full path under the new binding:
+   - Vendor portal: query a known vendor, expect identical row count + content as before.
+   - `fulfillment_units_v`: query against a known tenant, snapshot diff against pre-swap.
+   - `booking_bundle_status_v`: query against all bundles, status_rollup unchanged.
+3. If any reader breaks, swap back, debug, retry. Don't proceed to 1c.4 until all 1b readers pass.
+
+**Risk:** medium. The atomic rename requires `ALTER VIEW … RENAME` and `ALTER TABLE … RENAME` in one transaction; PostgREST schema notify must fire after.
 
 ### Phase 1c.4 — flip writers (dispatch, workflow, booking-origin, reclassify)
 
-Now writers go to `work_orders_new` directly, and the dual-write trigger flips direction (work_orders_new → tickets shadow back, for any code still reading from tickets).
+Now writers go to `work_orders` (the table, post-rename in 1c.3.6) directly. Both the forward shadow (tickets → work_orders) and the reverse shadow (work_orders → tickets) keep both tables in sync during this phase.
 
 Files to update:
 - `apps/api/src/modules/ticket/dispatch.service.ts:79–83` — `from('tickets')` → `from('work_orders')` for work_order kind.
@@ -186,9 +231,15 @@ Same pattern as 1c.6.
 
 **Risk:** medium. Frontend code may import from ticket.service.ts; breaking changes are possible.
 
-### Phase 1c.10 — drop work_order rows from tickets
+### Phase 1c.10 — drop work_order rows from tickets ⚠️ POINT OF NO RETURN
 
-Now that no readers/writers touch `tickets where ticket_kind='work_order'`:
+**This phase is destructive. There is no rollback path other than restore-from-backup.** Split into three sub-phases to maximise safe time at each step:
+
+**1c.10a — stop dual-write.** Disable the forward + reverse shadow triggers. Continue running for 7 days with both tables present. Any production issue surfaces; we revert by re-enabling triggers, no data loss.
+
+**1c.10b — wait 30 days.** Monitor production. The `tickets where ticket_kind='work_order'` rows still exist as a hot backup. If any bug surfaces in this window, point-in-time-recovery to a backup taken before 1c.10a is not needed — we just re-enable the shadow triggers and restore from `tickets`.
+
+**1c.10c — destructive drop.**
 
 ```sql
 delete from public.tickets where ticket_kind = 'work_order';
@@ -196,19 +247,23 @@ delete from public.tickets where ticket_kind = 'work_order';
 -- Drop the ticket_kind column entirely.
 alter table public.tickets drop column ticket_kind;
 
--- Drop the dual-write triggers and shadow function.
-drop trigger trg_ticket_wo_shadow on public.tickets;
-drop function shadow_ticket_work_order_to_work_orders_new();
-
--- Drop the work_orders view (it's replaced by the work_orders_new table, now renamed).
-drop view public.work_orders;
-alter table public.work_orders_new rename to work_orders;
+-- Drop the (now-disabled) dual-write triggers and shadow functions.
+drop trigger if exists trg_ticket_wo_shadow on public.tickets;
+drop trigger if exists trg_wo_new_to_tickets_shadow on public.work_orders;
+drop function if exists shadow_ticket_work_order_to_work_orders_new();
+drop function if exists shadow_work_orders_new_to_tickets();
 
 -- Drop legacy_ticket_id since the bridge is gone.
 alter table public.work_orders drop column legacy_ticket_id;
 ```
 
-**Risk:** HIGH. Point of no return. Run after 2+ stable release cycles in dual-write.
+**Required gating:**
+- NOT during a deploy freeze, holiday, or oncall handover.
+- NOT within 7 days of any other significant migration.
+- Pre-1c.10c snapshot of `tickets where ticket_kind='work_order'` archived to S3 with 90-day retention SLA.
+- Explicit DBA + product sign-off recorded.
+
+**Risk:** HIGH and irreversible. Forward-fix only after 1c.10c completes — no rollback that doesn't involve restore-from-backup.
 
 ### Phase 1c.11 — ticket_activities migration
 
@@ -216,17 +271,48 @@ The `activities` polymorphic table from step 0 already shadows ticket_activities
 
 ---
 
+## Naming conventions — the `parent_kind` enum
+
+The master doc and this plan disagreed on the enum values. Resolved here as the source of truth for step 1c:
+
+```
+parent_kind ∈ { 'case', 'booking_bundle' }
+```
+
+`booking_bundle` is the current table name (will be renamed to `bookings` at step 4). The line-level parents (`booking_service`, `booking_room_reservation`) referenced in the master doc are a STEP 1c+ design — not used during the bridge. When step 4 renames `booking_bundles` → `bookings`, this enum gains `booking` as a value and `booking_bundle` is deprecated. The line-level parent shape is a step 6+ concern.
+
+**Action required:** the master doc (`data-model-redesign-2026-04-30.md:74`) currently states the line-level parents as the target. Update to match this resolution — the line-level parents are the END state, not the step 1c state.
+
+The `parent_case_id` column name in 1c.1 schema (`work_orders_new`) was misleading because tickets won't be renamed to cases until step 6. Rename to `parent_ticket_id` to keep the bridge accurate, OR commit now to the column name and rename in step 6 with the table.
+
+## Visibility surface transition (open Q3 elevated)
+
+Per `docs/visibility.md` MANDATORY rule, doc updates ship in the same PR as the visibility change.
+
+**Required at phase 1c.9:**
+
+1. New SQL functions `cases_visible_for_actor(p_user_id, p_tenant_id, p_has_read_all)` and `work_orders_visible_for_actor(p_user_id, p_tenant_id, p_has_read_all)`. Each returns the appropriate setof rows. Drop `tickets_visible_for_actor` after the cutover (it's case-only after 1c.10c so it would just be `cases_visible_for_actor`).
+
+2. Permission split: today's `tickets:read_all` permission must be migrated to the union of `cases:read_all` + `work_orders:read_all`. Choose:
+   - **Implicit grant:** any role with `tickets:read_all` automatically gets both new permissions. Simpler migration, prevents lock-out. Risk: roles intended to read only cases (e.g. requesters' helpdesk) get unintended visibility on work_orders.
+   - **Explicit re-grant:** every role gets re-evaluated. More work, more correct. Required for least-privilege orgs.
+   - **Recommended:** start with implicit grant (no breakage), then audit + downgrade per-role over the next quarter.
+
+3. Update `docs/visibility.md` in the same PR as 1c.9. The doc is the operational contract.
+
 ## Open questions
 
-1. **Should `work_orders.id` reuse the source `tickets.id`?** Phase 1c.1 + 1c.2 use the same UUID for the work_order as the original ticket. This makes the dual-write phase trivially consistent but means `work_orders.id` is "really" a ticket id from before the split. Reasonable trade. Confirm with codex.
+1. **`work_orders.id` reuses source `tickets.id`** — RESOLVED. Reuse the UUID. FK preservation across the transition is worth more than ID-cleanliness.
 
-2. **Are there any frontends doing `supabase.from('tickets')` directly that we'd break?** Earlier codex review found none, but verify again at phase 1c.4.
+2. **Are any frontends doing `supabase.from('tickets')` directly that we'd break?** Earlier codex review found none. Verify again at phase 1c.4 with a fresh grep across `apps/web/`.
 
-3. **Do we need to update `tickets_visible_for_actor()` and `tickets_visible_for_vendor()` to handle the new world?** Both currently filter by `ticket_kind`. After 1c.10 the filter is meaningless (`tickets` only contains cases). Either drop the function or repurpose for cases. Confirm with codex.
+3. **`tickets_visible_for_vendor` already orphaned** (dropped in 00212). `tickets_visible_for_actor` transition is now specified in the "Visibility surface transition" section above.
 
-4. **What's the rollback for phase 1c.10?** The drop is destructive. If we discover a critical bug after 1c.10, the recovery path is restoring from backup. That means 1c.10 should NOT happen near a deploy freeze or holiday weekend.
+4. **Reclassify cross-table.** Reclassify (case ↔ work_order conversion) becomes a cross-table operation. Phase 1c.4 lists `reclassify.service.ts:398` as a writer to update — but the case study is needed: when a case with workflow instances is reclassified to a work_order, do the workflow instances follow? Today they're keyed by `ticket_id` so they'd point at the new work_order's row. After 1c.7's `workflow_instances` polymorphic split, a reclassify must also update `workflow_instances.entity_kind`. Add to the 1c.4 implementation as a sub-task.
 
-5. **Workflow instances and reclassify cross-table.** Reclassify (case ↔ work_order conversion) becomes a cross-table operation. Is there any case where a workflow instance attached to a ticket needs to "follow" the reclassification? Audit case study before 1c.4.
+5. **Index bloat during 1c.3 dual-write** — flagged above (Phase 1c.3 caveat). Mitigation: short window, latency monitoring, defer secondary indexes if needed.
+
+6. **Tenant_id integrity across the bridge.** `work_orders_new` rows are sourced from `tickets`. If a hypothetical bug allowed a tenant_id mismatch between `work_orders_new` and the source `tickets` row, RLS would silently break for a specific row. Add a check constraint at 1c.1 that asserts tenant_id integrity, and a daily audit query during 1c.3.
 
 ---
 

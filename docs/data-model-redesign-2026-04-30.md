@@ -71,7 +71,10 @@ Visibility: `booking_visibility_ids(user_id, tenant_id)` — descendant of today
 
 Today's `tickets` rows where `ticket_kind = 'work_order'`. Pulled out into its own table.
 
-- Polymorphic parent: `(parent_kind, parent_id)` where `parent_kind ∈ { 'case', 'booking_service', 'booking_room_reservation' }`.
+- Polymorphic parent: `(parent_kind, parent_id)`.
+  - **Step 1c bridge state:** `parent_kind ∈ { 'case', 'booking_bundle' }`. Matches the current `booking_bundles` table name and the existing `parent_ticket_id` / `booking_bundle_id` shape on tickets.
+  - **Step 4+ end state:** `parent_kind ∈ { 'case', 'booking', 'booking_service', 'booking_room_reservation' }` — once line-level parent tables exist, work_orders attach to specific lines (a service line, a room reservation) instead of the whole booking. The bridge values stay valid via additive enum.
+  - The line-level parents are the END state, not the step 1c state. See `docs/data-model-step1c-plan.md` for the bridge plan.
 - One assignee (user, team, or vendor).
 - One SLA timer.
 - One status machine (assigned → in_progress → completed | cancelled).
@@ -88,6 +91,22 @@ approval_steps  (chain_id, step_no, approver_resolution, decision, decided_at)
 ```
 
 `activities` is the most important new concept and was missed in the original recommendation. Without it, extracting `work_orders` fragments the audit timeline and every UI that shows history has to UNION across tables.
+
+**Why one polymorphic table, not per-entity activity tables:**
+
+The alternative is `case_activities`, `work_order_activities`, `booking_activities`, etc. — typed FKs, per-entity RLS, no `entity_kind` branch in queries, partition-friendly. That's a real design choice with real merits, and it was rejected for these reasons:
+
+1. **One writer abstraction.** Every code path that records an activity goes through one helper (`recordActivity(entityKind, entityId, …)`) regardless of source. With per-entity tables, every writer needs to know which table to touch, and every helper needs to switch on entity kind. The polymorphic shape collapses N writers into one.
+2. **One timeline projection.** Every UI that shows history (case detail, booking detail, daglijst, vendor portal) wants a unified chronological feed. With per-entity tables, every read path UNIONs N tables. With polymorphic, it's a single indexed query.
+3. **Entity churn doesn't churn the audit schema.** Adding a new entity kind (`reservation`, `service_order`, future `visitor_pass`) is one CHECK constraint update on `activities`. With per-entity tables, it's a new migration + new RLS + new indexes + new writer helper.
+4. **The `entity_kind` branch in queries is real but contained.** Per-kind partial indexes on `(entity_id, created_at desc)` (see migration 00202) make queries against any one entity kind as fast as a dedicated table. Cross-tenant scans by entity_kind are equally fast. The cost is conceptual, not performance.
+
+What we paid for the polymorphic shape:
+- Cannot FK `activities.entity_id` to a parent table (polymorphic by definition). Mitigation: rely on cascades from the writer side and accept that an orphan activity row is recoverable, not catastrophic.
+- Cannot have per-entity RLS predicates as table policies. Mitigation: revoke direct table access (00203), gate visibility at the API layer per entity kind. Same posture as today's `ticket_activities`.
+- A bug in `entity_kind` discriminator could route writes to the wrong logical timeline. Mitigation: the check constraint enumerates valid values; writer helper takes a typed enum, not a free string.
+
+If the trade-offs above flip in the future (e.g. activities table grows past the partial-index sweet spot, or per-entity RLS becomes a hard requirement), the polymorphic shape can be split into per-entity tables via a one-time partitioning migration. The data is recoverable; the design is not load-bearing.
 
 ---
 
@@ -210,6 +229,8 @@ Estimate: 3–6 months including dual-write + cutover + cleanup.
 Risk: high. This is the riskiest step. Codex was right that the original recommendation under-priced it.
 
 ### Step 2 — refactor `orders` into `service_orders` / `booking_services`
+
+**This step is structurally important — not "cleanup."** The full-review pressure-test (2026-04-30) flagged the orders ↔ booking-service seam as the actual muddled fourth concern of the data model, beyond the case/work_order/booking decomposition. A booking-attached service with `requires_internal_setup=true` produces three rows for one user intent: (a) a booking_service line, (b) an `orders` row (commerce envelope), (c) a `work_order` (dispatch). Steps 1a/1b cleaned up the work_order side; this step cleans up the booking_service ↔ order side.
 
 Not "collapse into work_orders." Rename + clarify + FK-link to work_orders where execution exists.
 
