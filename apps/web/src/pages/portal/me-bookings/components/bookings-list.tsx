@@ -19,7 +19,7 @@ import { BookingNextUpCard } from './booking-next-up-card';
 type TabValue = 'upcoming' | 'past' | 'cancelled';
 
 interface Props {
-  /** Maps a reservation id to its drawer href. */
+  /** Maps a reservation id to its detail-page href. */
   buildHref: (reservationId: string) => string;
   tab: TabValue;
   onTabChange: (tab: TabValue) => void;

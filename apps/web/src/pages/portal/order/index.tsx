@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PortalPage } from '@/components/portal/portal-page';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -129,7 +130,7 @@ export function PortalOrderPage() {
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
+    <PortalPage width="compact" className="space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Place an order</h1>
         <p className="text-sm text-muted-foreground">
@@ -281,7 +282,7 @@ export function PortalOrderPage() {
           {createStandalone.isPending ? 'Placing…' : 'Place order'}
         </Button>
       </div>
-    </div>
+    </PortalPage>
   );
 }
 

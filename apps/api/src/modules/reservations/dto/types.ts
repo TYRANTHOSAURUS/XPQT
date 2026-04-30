@@ -89,6 +89,10 @@ export interface Reservation {
   booking_bundle_id: string | null;
   created_at: string;
   updated_at: string;
+  /** Root-first parent trail of the space, populated by `findOne` via the
+   *  `public.space_path(uuid)` SQL function. Optional because list endpoints
+   *  don't compute it. */
+  space_path?: string[] | null;
 }
 
 // === Inputs to BookingFlowService ===

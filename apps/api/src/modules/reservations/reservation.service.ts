@@ -36,7 +36,19 @@ export class ReservationService {
     const ctx = await this.visibility.loadContext(authUid, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    return r;
+
+    // Denormalize the parent-trail of the booked space so the booking
+    // detail "Where" row can render "Building › Floor › Room" without
+    // the frontend having to fetch the full tenant tree just to walk
+    // parents. Best-effort — a missing path doesn't fail the read.
+    try {
+      const { data: pathData } = await this.supabase.admin
+        .rpc('space_path', { p_space_id: r.space_id });
+      const path = Array.isArray(pathData) ? (pathData as string[]) : null;
+      return { ...r, space_path: path && path.length > 0 ? path : null };
+    } catch {
+      return r;
+    }
   }
 
   /**

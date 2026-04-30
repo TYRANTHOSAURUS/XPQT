@@ -1,14 +1,26 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  CalendarClock, CheckCircle2, Layers, Pencil, RefreshCw, Users as UsersIcon, X,
+  ArrowLeftRight, CalendarClock, CheckCircle2, Layers, MapPin, Pencil, RefreshCw,
+  Users as UsersIcon, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { SpaceSelect } from '@/components/space-select';
 import { Link } from 'react-router-dom';
 import {
   useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
   useReservationGroupSiblings,
 } from '@/api/room-booking';
+import { useSpaces } from '@/api/spaces';
 import { useAuth } from '@/providers/auth-provider';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { NumberStepper } from '@/components/ui/number-stepper';
@@ -33,23 +45,66 @@ export interface BookingDetailContentProps {
   reservationId: string | null;
   /** Called when nested cancel/edit/check-in flows want to dismiss the surface. */
   onDismiss?: () => void;
+  /**
+   * Which surface this body is rendering inside. Drives sibling-chip link
+   * targets (portal users can't reach `/desk/*`) and any other surface-
+   * dependent affordance. Defaults to `'desk'` for back-compat with the
+   * existing operator wrappers.
+   */
+  surface?: 'portal' | 'desk';
 }
 
 /**
  * Shared body of the booking detail surface. Renders status strip, meta rows,
  * bundle services, action buttons, and audit footer. Wrapped by:
- *   - BookingDetailDrawer (Sheet, portal)
- *   - BookingDetailPanel  (split-pane right side, desk)
- *   - BookingDetailPage   (full route, desk)
+ *   - MyBookingDetailPage (portal full route, /portal/me/bookings/:id)
+ *   - BookingDetailPanel  (desk split-pane right side)
+ *   - BookingDetailPage   (desk full route, /desk/bookings/:id)
  *
  * Header chrome (title / ref / relative-time) is owned by each wrapper since
- * Sheet vs SettingsPageHeader vs inline panel header have different rules.
+ * the page header / inline panel header / portal back-link have different
+ * rules.
  */
-export function BookingDetailContent({ reservationId, onDismiss }: BookingDetailContentProps) {
+export function BookingDetailContent({
+  reservationId,
+  onDismiss,
+  surface = 'desk',
+}: BookingDetailContentProps) {
   const { data: reservation, isPending } = useReservationDetail(reservationId ?? '');
+  const { data: spaces } = useSpaces();
   const { hasRole } = useAuth();
-  const [editing, setEditing] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [changingRoom, setChangingRoom] = useState(false);
+  const [nextSpaceId, setNextSpaceId] = useState<string>('');
+
+  // Sibling chip targets must match the surface we're rendering inside —
+  // portal users can't reach /desk/* routes (and vice versa).
+  const siblingHrefBase =
+    surface === 'portal' ? '/portal/me/bookings' : '/desk/bookings';
+
+  // Build a "Building › Floor › Room" trail for the Where row. The
+  // server-computed `space_path` (via the SQL `public.space_path` fn) is
+  // authoritative — it avoids fetching the full tenant tree just to
+  // walk parents. We fall back to a client-side walk via `useSpaces()`
+  // for legacy reservation responses that pre-date the API change.
+  const wherePath = useMemo(() => {
+    if (!reservation) return null;
+    if (reservation.space_path && reservation.space_path.length > 0) {
+      return reservation.space_path;
+    }
+    if (!spaces) return null;
+    const byId = new Map(spaces.map((s) => [s.id, s] as const));
+    const trail: string[] = [];
+    let cursor = byId.get(reservation.space_id);
+    let safety = 8;
+    while (cursor && safety-- > 0) {
+      trail.unshift(cursor.name);
+      if (!cursor.parent_id) break;
+      cursor = byId.get(cursor.parent_id);
+    }
+    return trail.length > 0 ? trail : null;
+  }, [reservation, spaces]);
 
   // Multi-room siblings — fetched only when this reservation has a group
   // so solo bookings don't pay the round-trip. The component below renders
@@ -89,8 +144,19 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
     reservation.cancellation_grace_until !== null &&
     new Date(reservation.cancellation_grace_until!).getTime() > Date.now();
 
-  const showEdit =
+  // Multi-room bookings promise atomic time + cancellation across siblings
+  // (CLAUDE.md spec line). The current single-reservation PATCH/cancel
+  // endpoints only operate on `this` reservation, which would silently
+  // break that promise. Until group-scoped endpoints exist, gate the
+  // mutating actions on multi-room bookings and route the user to the
+  // desk for the change.
+  const isMultiRoom = Boolean(reservation.multi_room_group_id);
+
+  const isEditableStatus =
     !isPast && (reservation.status === 'confirmed' || reservation.status === 'pending_approval');
+  const showEdit = isEditableStatus && !isMultiRoom;
+  const showChangeRoom = showEdit; // same gate; rendered on the Where row
+  const showMultiRoomLockedNotice = isEditableStatus && isMultiRoom;
 
   const onCheckIn = async () => {
     try {
@@ -110,14 +176,6 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
     }
   };
 
-  if (editing) {
-    return (
-      <div className="px-5 py-5">
-        <BookingEditForm reservation={reservation} onClose={() => setEditing(false)} />
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between gap-2 border-b px-5 py-3">
@@ -130,6 +188,40 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
       </div>
 
       <div className="divide-y">
+        <DetailRow icon={<MapPin className="size-3.5" />} label="Where">
+          {wherePath ? (
+            <>
+              <div className="text-sm">{wherePath[wherePath.length - 1]}</div>
+              {wherePath.length > 1 && (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {wherePath.slice(0, -1).join(' › ')}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          )}
+          {showChangeRoom && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 text-xs"
+              onClick={() => {
+                setNextSpaceId(reservation.space_id);
+                setChangingRoom(true);
+              }}
+            >
+              <ArrowLeftRight className="mr-1 size-3" />
+              Change room
+            </Button>
+          )}
+          {showMultiRoomLockedNotice && (
+            <div className="mt-1.5 text-[11px] text-muted-foreground">
+              Multi-room bookings need to change rooms together — contact the desk.
+            </div>
+          )}
+        </DetailRow>
+
         <DetailRow icon={<CalendarClock className="size-3.5" />} label="When">
           <div className="text-sm tabular-nums">
             {DATE_FORMATTER.format(new Date(reservation.start_at))}
@@ -224,13 +316,14 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
                       <span
                         key={s.id}
                         className="inline-flex h-6 items-center rounded-full bg-foreground px-2.5 text-[11px] font-medium text-background"
+                        aria-current="page"
                       >
                         {s.space_name ?? 'Room'}
                       </span>
                     ) : (
                       <Link
                         key={s.id}
-                        to={`/desk/bookings/${s.id}`}
+                        to={`${siblingHrefBase}/${s.id}`}
                         className="inline-flex h-6 items-center rounded-full border bg-card px-2.5 text-[11px] [transition:background-color_120ms_var(--ease-snap)] hover:bg-accent/40"
                       >
                         {s.space_name ?? 'Room'}
@@ -243,7 +336,8 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
               <div className="text-sm">Part of a multi-room group</div>
             )}
             <div className="mt-1 text-xs text-muted-foreground">
-              All rooms share the same start/end and atomic cancellation.
+              All rooms share the same start/end. To change time or cancel,
+              contact the desk so all rooms are updated together.
             </div>
           </DetailRow>
         )}
@@ -307,8 +401,8 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
             )}
             {showEdit && (
               <>
-                <Button variant="outline" onClick={() => setEditing(true)}>
-                  <Pencil className="mr-1.5 size-3.5" /> Edit
+                <Button variant="outline" onClick={() => setEditOpen(true)}>
+                  <Pencil className="mr-1.5 size-3.5" /> Edit time
                 </Button>
                 <Button
                   variant="ghost"
@@ -339,7 +433,119 @@ export function BookingDetailContent({ reservationId, onDismiss }: BookingDetail
         isRecurring={Boolean(reservation.recurrence_series_id)}
         onCancelled={onDismiss}
       />
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit booking time</DialogTitle>
+            <DialogDescription>
+              Adjust the date, start, or duration. Attendees can be edited
+              inline on the booking page; services have their own controls
+              under "Services."
+            </DialogDescription>
+          </DialogHeader>
+          <BookingEditForm
+            reservation={reservation}
+            onClose={() => setEditOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <ChangeRoomDialog
+        open={changingRoom}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChangingRoom(false);
+            setNextSpaceId('');
+          }
+        }}
+        currentSpaceId={reservation.space_id}
+        nextSpaceId={nextSpaceId}
+        onNextSpaceIdChange={setNextSpaceId}
+        saving={editBooking.isPending}
+        onConfirm={async () => {
+          if (!nextSpaceId || nextSpaceId === reservation.space_id) {
+            setChangingRoom(false);
+            return;
+          }
+          try {
+            await editBooking.mutateAsync({
+              id: reservation.id,
+              patch: { space_id: nextSpaceId },
+            });
+            toastUpdated('Room');
+            setChangingRoom(false);
+            setNextSpaceId('');
+          } catch (e) {
+            toastError("Couldn't change room", { error: e });
+          }
+        }}
+      />
     </div>
+  );
+}
+
+function ChangeRoomDialog({
+  open,
+  onOpenChange,
+  currentSpaceId,
+  nextSpaceId,
+  onNextSpaceIdChange,
+  saving,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  currentSpaceId: string;
+  nextSpaceId: string;
+  onNextSpaceIdChange: (id: string) => void;
+  saving: boolean;
+  onConfirm: () => Promise<void>;
+}) {
+  const disabled =
+    saving || !nextSpaceId || nextSpaceId === currentSpaceId;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Change room</DialogTitle>
+          <DialogDescription>
+            The booking moves to the new room at the same time. The server
+            re-runs availability + rules and rejects the change if the new
+            room is busy.
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="change-room-select">New room</FieldLabel>
+            <SpaceSelect
+              id="change-room-select"
+              value={nextSpaceId}
+              onChange={onNextSpaceIdChange}
+              typeFilter={['room']}
+              placeholder="Pick a room"
+              emptyLabel={null}
+            />
+            <FieldDescription>
+              Services keep their relative timing. If your services were
+              scoped to the old room, you may need to adjust them.
+            </FieldDescription>
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={disabled}>
+            {saving ? 'Saving…' : 'Change room'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -352,8 +558,10 @@ function DetailRow({
   icon?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  // Stack on small screens — the 120px label column eats too much
+  // horizontal inside a max-w-2xl portal page on a 390px iPhone.
   return (
-    <div className="grid grid-cols-[120px_1fr] items-start gap-3 px-5 py-3">
+    <div className="grid grid-cols-1 items-start gap-1 px-5 py-3 sm:grid-cols-[120px_1fr] sm:gap-3">
       <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
         {icon}
         {label}

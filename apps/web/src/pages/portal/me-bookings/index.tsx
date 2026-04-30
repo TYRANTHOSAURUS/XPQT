@@ -1,42 +1,27 @@
-import { useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ArrowLeft, CalendarPlus } from 'lucide-react';
 import { PortalPage } from '@/components/portal/portal-page';
 import { buttonVariants } from '@/components/ui/button';
-import { useReservationDetail } from '@/api/room-booking';
-import { useSpaces } from '@/api/spaces';
 import { BookingsList } from './components/bookings-list';
-import { BookingDetailDrawer } from '@/components/booking-detail/booking-detail-drawer';
 
 type TabValue = 'upcoming' | 'past' | 'cancelled';
 
 /**
- * Portal "my bookings" entry point. URL drives drawer state — `:id` opens
- * the right-side detail drawer; closing it `navigate(-1)` or back to the
- * tab base. Tabs are local component state today; if we add per-tab
- * permalinking later, lift to URL.
+ * Portal "my bookings" list. Each row links to `/portal/me/bookings/:id`,
+ * which mounts `MyBookingDetailPage` as a full route — same shape as
+ * `/portal/requests/:id`. Tabs are local component state today; if we
+ * add per-tab permalinking later, lift to URL.
  *
- * The page is intentionally narrow (max-w-3xl) — bookings are a list of
+ * The page is intentionally compact (max-w-2xl) — bookings are a list of
  * decisions the user reads top-to-bottom, not a data dashboard. The wider
  * portal canvas would just space everything out unnecessarily.
  */
 export function MyBookingsPage() {
-  const { id } = useParams();
-  const navigate = useNavigate();
   const [tab, setTab] = useState<TabValue>('upcoming');
 
-  // When the drawer opens via :id we still want a useful header; pre-fetch
-  // detail + spaces so the drawer flashes nothing.
-  const reservation = useReservationDetail(id ?? '');
-  const { data: spaces } = useSpaces();
-  const spaceName = useMemo(() => {
-    const sid = reservation.data?.space_id;
-    if (!sid) return null;
-    return spaces?.find((s) => s.id === sid)?.name ?? null;
-  }, [reservation.data?.space_id, spaces]);
-
   return (
-    <PortalPage width="narrow">
+    <PortalPage width="compact">
       <Link
         to="/portal"
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -65,12 +50,6 @@ export function MyBookingsPage() {
         tab={tab}
         onTabChange={setTab}
         buildHref={(rid) => `/portal/me/bookings/${rid}`}
-      />
-
-      <BookingDetailDrawer
-        reservationId={id ?? null}
-        spaceName={spaceName}
-        onClose={() => navigate('/portal/me/bookings')}
       />
     </PortalPage>
   );

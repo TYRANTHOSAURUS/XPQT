@@ -2,7 +2,7 @@ import { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export type PortalPageBleed = 'none' | 'horizontal' | 'top' | 'both';
-export type PortalPageWidth = 'narrow' | 'default' | 'wide' | 'ultra';
+export type PortalPageWidth = 'compact' | 'narrow' | 'default' | 'wide' | 'ultra';
 
 interface Props {
   children: ReactNode;
@@ -16,12 +16,14 @@ interface Props {
   /**
    * Content column width. Most portal pages live in `'ultra'` (1600px max,
    * the canonical portal canvas). Choose `'wide'` for booking flows and
-   * `'narrow'`/`'default'` for list-of-decisions pages like My Bookings.
+   * `'compact'`/`'narrow'`/`'default'` for list-of-decisions pages like
+   * My Bookings, the standalone order flow, and individual detail pages.
    */
   width?: PortalPageWidth;
 }
 
 const WIDTH_CLASSES: Record<PortalPageWidth, string> = {
+  compact: 'max-w-2xl',
   narrow:  'max-w-3xl',
   default: 'max-w-5xl',
   wide:    'max-w-6xl',

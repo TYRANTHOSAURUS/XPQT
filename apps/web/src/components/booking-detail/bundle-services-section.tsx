@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import { CheckCircle2, Clock, Radio, Truck, Pencil, Plus, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
@@ -395,6 +396,8 @@ interface ServiceLineRowProps {
     quantity?: number;
     service_window_start_at?: string | null;
     service_window_end_at?: string | null;
+    requester_notes?: string | null;
+    expected_updated_at?: string | null;
   }) => Promise<void>;
   saving: boolean;
   onRequestCancel: () => void;
@@ -429,6 +432,12 @@ function ServiceLineRow({
     );
   }
 
+  // Affordance visibility: always-visible on touch (no hover), hover-revealed
+  // on desktop where the icon row would otherwise clutter dense lists.
+  // focus-visible:opacity-100 keeps keyboard-only users covered everywhere.
+  const buttonOpacityClasses =
+    'opacity-100 md:opacity-0 md:group-hover/line:opacity-100 focus-visible:opacity-100';
+
   return (
     <li className="group/line flex items-start gap-3 border-b py-2 last:border-b-0">
       <FulfillmentIcon status={status} />
@@ -454,6 +463,11 @@ function ServiceLineRow({
             </span>
           )}
         </div>
+        {line.requester_notes && (
+          <div className="mt-1 text-[12px] text-muted-foreground italic">
+            {line.requester_notes}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {canEditThisLine && (
@@ -462,7 +476,7 @@ function ServiceLineRow({
             variant="ghost"
             size="icon"
             aria-label="Edit this line"
-            className="size-7 opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-foreground"
+            className={cn('size-7 text-muted-foreground hover:text-foreground', buttonOpacityClasses)}
             onClick={onStartEdit}
           >
             <Pencil className="size-3.5" />
@@ -474,7 +488,7 @@ function ServiceLineRow({
             variant="ghost"
             size="icon"
             aria-label="Cancel this line"
-            className="size-7 opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive"
+            className={cn('size-7 text-muted-foreground hover:text-destructive', buttonOpacityClasses)}
             onClick={onRequestCancel}
           >
             <X className="size-4" />
@@ -504,28 +518,41 @@ function ServiceLineEditor({
     quantity?: number;
     service_window_start_at?: string | null;
     service_window_end_at?: string | null;
+    requester_notes?: string | null;
+    expected_updated_at?: string | null;
   }) => Promise<void>;
   onCancel: () => void;
 }) {
   const [qty, setQty] = useState(line.quantity);
   const [start, setStart] = useState(toLocalDateTimeInput(line.service_window_start_at));
   const [end, setEnd] = useState(toLocalDateTimeInput(line.service_window_end_at));
+  const [notes, setNotes] = useState(line.requester_notes ?? '');
 
   const submit = async () => {
     const patch: {
       quantity?: number;
       service_window_start_at?: string | null;
       service_window_end_at?: string | null;
+      requester_notes?: string | null;
+      expected_updated_at?: string | null;
     } = {};
     if (qty !== line.quantity && qty >= 1) patch.quantity = qty;
     const startIso = start ? new Date(start).toISOString() : null;
     const endIso = end ? new Date(end).toISOString() : null;
     if (startIso !== line.service_window_start_at) patch.service_window_start_at = startIso;
     if (endIso !== line.service_window_end_at) patch.service_window_end_at = endIso;
+    const trimmedNotes = notes.trim();
+    const nextNotes = trimmedNotes.length === 0 ? null : trimmedNotes;
+    if (nextNotes !== (line.requester_notes ?? null)) {
+      patch.requester_notes = nextNotes;
+    }
     if (Object.keys(patch).length === 0) {
       onCancel();
       return;
     }
+    // Thread the read-time updated_at so the server rejects stale-browser
+    // writes (someone else edited this line in another tab / surface).
+    patch.expected_updated_at = line.updated_at;
     await onSave(patch);
   };
 
@@ -533,6 +560,7 @@ function ServiceLineEditor({
   const qtyId = `${reactId}-qty`;
   const startId = `${reactId}-start`;
   const endId = `${reactId}-end`;
+  const notesId = `${reactId}-notes`;
 
   return (
     <>
@@ -616,6 +644,25 @@ function ServiceLineEditor({
             onChange={(e) => setEnd(e.target.value)}
             className="h-11 text-sm tabular-nums sm:h-9"
           />
+        </Field>
+        <Field className="col-span-full">
+          <FieldLabel
+            htmlFor={notesId}
+            className="text-[11px] uppercase tracking-wider text-muted-foreground"
+          >
+            Notes
+          </FieldLabel>
+          <Textarea
+            id={notesId}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Dietary preferences, placement, setup instructions…"
+            rows={2}
+            className="text-sm"
+          />
+          <FieldDescription className="text-[10px]">
+            Visible to the team fulfilling this line.
+          </FieldDescription>
         </Field>
       </FieldGroup>
     </>

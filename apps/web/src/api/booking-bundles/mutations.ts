@@ -83,6 +83,12 @@ export interface EditBundleLinePatch {
   quantity?: number;
   service_window_start_at?: string | null;
   service_window_end_at?: string | null;
+  requester_notes?: string | null;
+  /** If-Match-style CAS — when present, the server rejects with 409 if
+   *  the line was updated by someone else since the read. Optional for
+   *  legacy callers; bundle-services-section threads the read-time
+   *  `updated_at` here so stale browser edits don't clobber. */
+  expected_updated_at?: string | null;
 }
 
 /**
@@ -106,6 +112,8 @@ export function useEditBundleLine(bundleId: string, reservationId?: string) {
       line_total: number | null;
       service_window_start_at: string | null;
       service_window_end_at: string | null;
+      requester_notes: string | null;
+      updated_at: string;
     },
     Error,
     { lineId: string; patch: EditBundleLinePatch }

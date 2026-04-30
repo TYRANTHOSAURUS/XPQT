@@ -85,6 +85,12 @@ export interface Reservation {
   booking_bundle_id: string | null;
   created_at: string;
   updated_at: string;
+  /** Root-first parent trail of the booked space (e.g.
+   *  ["HQ", "Floor 3", "Conf Room A"]). Populated by `GET /reservations/:id`
+   *  via `public.space_path(uuid)`. Lets the booking detail "Where" row
+   *  render the trail without the frontend fetching the full tenant tree
+   *  just to walk parents. Absent on list endpoints. */
+  space_path?: string[] | null;
   // Optional denormalised display fields. Populated by `/scheduler-data`
   // and the operator list endpoint so the desk grid + lists can label
   // rows without each block firing its own `usePerson` lookup. Absent on

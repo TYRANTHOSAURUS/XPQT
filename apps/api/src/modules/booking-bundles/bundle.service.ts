@@ -477,13 +477,22 @@ export class BundleService {
       quantity?: number;
       service_window_start_at?: string | null;
       service_window_end_at?: string | null;
+      requester_notes?: string | null;
     };
-  }): Promise<{ line_id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null }> {
+    /**
+     * Optimistic-concurrency token. When provided, the UPDATE only succeeds
+     * if the row's `updated_at` matches — protecting against stale browser
+     * edits that would otherwise overwrite a concurrent change. Optional
+     * for older callers; PATCH wires it through from `If-Match`-style
+     * `expected_updated_at` request body.
+     */
+    expected_updated_at?: string | null;
+  }): Promise<{ line_id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null; requester_notes: string | null; updated_at: string }> {
     const tenantId = TenantContext.current().id;
 
     const { data: existing, error: loadErr } = await this.supabase.admin
       .from('order_line_items')
-      .select('id, tenant_id, order_id, quantity, unit_price, line_total, service_window_start_at, service_window_end_at, fulfillment_status, linked_ticket_id')
+      .select('id, tenant_id, order_id, quantity, unit_price, line_total, service_window_start_at, service_window_end_at, requester_notes, updated_at, fulfillment_status, linked_ticket_id')
       .eq('id', args.line_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
@@ -500,9 +509,18 @@ export class BundleService {
       line_total: number | null;
       service_window_start_at: string | null;
       service_window_end_at: string | null;
+      requester_notes: string | null;
+      updated_at: string;
       fulfillment_status: string;
       linked_ticket_id: string | null;
     };
+
+    if (args.expected_updated_at && args.expected_updated_at !== line.updated_at) {
+      throw new ConflictException({
+        code: 'line_state_changed',
+        message: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
+      });
+    }
 
     const FROZEN: Set<string> = new Set(['preparing', 'delivered', 'cancelled']);
     if (FROZEN.has(line.fulfillment_status)) {
@@ -528,6 +546,13 @@ export class BundleService {
     if (args.patch.service_window_end_at !== undefined && args.patch.service_window_end_at !== line.service_window_end_at) {
       update.service_window_end_at = args.patch.service_window_end_at;
     }
+    if (args.patch.requester_notes !== undefined) {
+      // Empty string normalizes to null so display logic stays binary.
+      const next = args.patch.requester_notes === null ? null : args.patch.requester_notes.trim() || null;
+      if (next !== line.requester_notes) {
+        update.requester_notes = next;
+      }
+    }
 
     if (Object.keys(update).length === 0) {
       // No-op; return current state.
@@ -537,6 +562,8 @@ export class BundleService {
         line_total: line.line_total,
         service_window_start_at: line.service_window_start_at,
         service_window_end_at: line.service_window_end_at,
+        requester_notes: line.requester_notes,
+        updated_at: line.updated_at,
       };
     }
 
@@ -544,22 +571,30 @@ export class BundleService {
     // the line into a frozen state between our SELECT and UPDATE. The
     // `.eq('fulfillment_status', line.fulfillment_status)` clause turns a
     // would-be silent override into a 0-row result we surface as 409.
-    const { data: updated, error: updateErr } = await this.supabase.admin
+    // CAS: refuse if the line moved into a frozen state OR (when the caller
+    // provided expected_updated_at) if updated_at no longer matches. The
+    // second clause closes the race between our SELECT above and this
+    // UPDATE for stale-browser writes.
+    let updateQuery = this.supabase.admin
       .from('order_line_items')
       .update(update)
       .eq('id', line.id)
       .eq('tenant_id', tenantId)
-      .eq('fulfillment_status', line.fulfillment_status)
-      .select('id, quantity, line_total, service_window_start_at, service_window_end_at')
+      .eq('fulfillment_status', line.fulfillment_status);
+    if (args.expected_updated_at) {
+      updateQuery = updateQuery.eq('updated_at', args.expected_updated_at);
+    }
+    const { data: updated, error: updateErr } = await updateQuery
+      .select('id, quantity, line_total, service_window_start_at, service_window_end_at, requester_notes, updated_at')
       .maybeSingle();
     if (updateErr) throw updateErr;
     if (!updated) {
       throw new ConflictException({
         code: 'line_state_changed',
-        message: 'This line was updated by fulfillment while you were editing. Reload to see the latest state.',
+        message: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
       });
     }
-    const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null };
+    const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null; requester_notes: string | null; updated_at: string };
 
     // Wave 2 Slice 2: when a service window moves, shift any linked
     // booking-origin work order's sla_resolution_due_at by the same delta.
@@ -611,6 +646,8 @@ export class BundleService {
       line_total: u.line_total,
       service_window_start_at: u.service_window_start_at,
       service_window_end_at: u.service_window_end_at,
+      requester_notes: u.requester_notes,
+      updated_at: u.updated_at,
     };
   }
 

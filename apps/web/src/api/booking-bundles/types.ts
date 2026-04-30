@@ -20,6 +20,15 @@ export interface BundleLine {
   line_total: number | null;
   service_window_start_at: string | null;
   service_window_end_at: string | null;
+  /** Free-text note from the requester (AV placement, setup instructions,
+   *  anything non-dietary the fulfillment team should see). Catering-specific
+   *  dietary information lives on a separate `dietary_notes` column read
+   *  by daily-list / vendor-portal / late-changes-widget — keep that
+   *  channel clean. */
+  requester_notes: string | null;
+  /** Optimistic-concurrency token. The PATCH endpoint accepts this back as
+   *  `expected_updated_at` to reject stale-browser writes. */
+  updated_at: string;
   fulfillment_status:
     | 'ordered'
     | 'confirmed'

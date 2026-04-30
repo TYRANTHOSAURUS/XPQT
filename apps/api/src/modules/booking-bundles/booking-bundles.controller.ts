@@ -250,6 +250,8 @@ export class BookingBundlesController {
       line_total: number | null;
       service_window_start_at: string | null;
       service_window_end_at: string | null;
+      requester_notes: string | null;
+      updated_at: string;
       fulfillment_status: string | null;
       linked_ticket_id: string | null;
       linked_asset_reservation_id: string | null;
@@ -258,7 +260,7 @@ export class BookingBundlesController {
       const linesRes = await this.supabase.admin
         .from('order_line_items')
         .select(
-          'id, order_id, catalog_item_id, quantity, unit_price, line_total, service_window_start_at, service_window_end_at, fulfillment_status, linked_ticket_id, linked_asset_reservation_id, catalog_item:catalog_items(name)',
+          'id, order_id, catalog_item_id, quantity, unit_price, line_total, service_window_start_at, service_window_end_at, requester_notes, updated_at, fulfillment_status, linked_ticket_id, linked_asset_reservation_id, catalog_item:catalog_items(name)',
         )
         .in('order_id', orderIds);
       if (linesRes.error) throw linesRes.error;
@@ -271,6 +273,8 @@ export class BookingBundlesController {
         line_total: number | null;
         service_window_start_at: string | null;
         service_window_end_at: string | null;
+        requester_notes: string | null;
+        updated_at: string;
         fulfillment_status: string | null;
         linked_ticket_id: string | null;
         linked_asset_reservation_id: string | null;
@@ -287,6 +291,8 @@ export class BookingBundlesController {
           line_total: row.line_total,
           service_window_start_at: row.service_window_start_at,
           service_window_end_at: row.service_window_end_at,
+          requester_notes: row.requester_notes,
+          updated_at: row.updated_at,
           fulfillment_status: row.fulfillment_status,
           linked_ticket_id: row.linked_ticket_id,
           linked_asset_reservation_id: row.linked_asset_reservation_id,
@@ -402,7 +408,15 @@ export class BookingBundlesController {
   async editLine(
     @Req() request: Request,
     @Param('lineId') lineId: string,
-    @Body() body: { quantity?: number; service_window_start_at?: string | null; service_window_end_at?: string | null },
+    @Body() body: {
+      quantity?: number;
+      service_window_start_at?: string | null;
+      service_window_end_at?: string | null;
+      requester_notes?: string | null;
+      /** If-Match-style optimistic concurrency token. When provided, the
+       *  server rejects with 409 if the line was edited since this read. */
+      expected_updated_at?: string | null;
+    },
   ) {
     const authUid = this.getAuthUid(request);
     const tenantId = TenantContext.current().id;
@@ -454,7 +468,9 @@ export class BookingBundlesController {
         quantity: body?.quantity,
         service_window_start_at: body?.service_window_start_at,
         service_window_end_at: body?.service_window_end_at,
+        requester_notes: body?.requester_notes,
       },
+      expected_updated_at: body?.expected_updated_at ?? null,
     });
   }
 

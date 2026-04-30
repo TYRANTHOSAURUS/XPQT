@@ -8,7 +8,6 @@ import {
   FieldSet,
   FieldLegend,
 } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -25,9 +24,11 @@ interface Props {
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240];
 
 /**
- * Inline edit form inside the booking detail drawer. Spec §4.3:
- * editing time or room re-runs availability + rules, so we keep this
- * narrow — just the fields that don't need a fresh picker.
+ * Booking time editor mounted inside the "Edit time" dialog on the booking
+ * detail page. Scoped to date / start / duration only. Attendees is edited
+ * inline on the page (NumberStepper); room is edited via the dedicated
+ * "Change room" dialog. Editing time re-runs availability + rules
+ * server-side per spec §4.3.
  */
 export function BookingEditForm({ reservation, onClose }: Props) {
   const [date, setDate] = useState(toLocalDate(reservation.start_at));
@@ -35,14 +36,12 @@ export function BookingEditForm({ reservation, onClose }: Props) {
   const [durationMinutes, setDurationMinutes] = useState(
     durationMin(reservation.start_at, reservation.end_at),
   );
-  const [attendeeCount, setAttendeeCount] = useState(reservation.attendee_count ?? 1);
 
   useEffect(() => {
     setDate(toLocalDate(reservation.start_at));
     setStartTime(toLocalTime(reservation.start_at));
     setDurationMinutes(durationMin(reservation.start_at, reservation.end_at));
-    setAttendeeCount(reservation.attendee_count ?? 1);
-  }, [reservation.id, reservation.start_at, reservation.end_at, reservation.attendee_count]);
+  }, [reservation.id, reservation.start_at, reservation.end_at]);
 
   const edit = useEditBooking();
 
@@ -64,7 +63,6 @@ export function BookingEditForm({ reservation, onClose }: Props) {
         patch: {
           start_at: startIso,
           end_at: endIso,
-          attendee_count: attendeeCount,
         },
       });
       toastUpdated('Booking');
@@ -109,17 +107,6 @@ export function BookingEditForm({ reservation, onClose }: Props) {
         </Field>
         <FieldDescription>Changing time re-runs the rule resolver server-side.</FieldDescription>
       </FieldSet>
-
-      <Field>
-        <FieldLabel htmlFor="edit-attendees">Attendees</FieldLabel>
-        <Input
-          id="edit-attendees"
-          type="number"
-          min={1}
-          value={attendeeCount}
-          onChange={(e) => setAttendeeCount(Math.max(1, Number(e.target.value || 1)))}
-        />
-      </Field>
 
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" onClick={onClose} disabled={edit.isPending}>

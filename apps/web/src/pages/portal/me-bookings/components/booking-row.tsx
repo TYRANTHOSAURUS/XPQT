@@ -12,7 +12,7 @@ interface Props {
   spaceName?: string | null;
   /** True when this booking is part of a recurrence series. */
   partOfSeries?: boolean;
-  /** Render the row as a Link to the drawer route. */
+  /** Render the row as a Link to the detail route. */
   href: string;
   /** Show a primary action affordance based on status. */
   onCheckIn?: () => void;
