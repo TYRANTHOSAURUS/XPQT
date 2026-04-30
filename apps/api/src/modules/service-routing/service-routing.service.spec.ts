@@ -12,13 +12,35 @@ function makeFakeDb(opts: {
   insertError?: { code?: string; message?: string };
   insertReturn?: Record<string, unknown>;
   updateReturn?: Record<string, unknown>;
+  /** When false, the FK existence check (assertTenantOwnsForeignKeys)
+   *  returns null → BadRequestException 'invalid_foreign_key'. Default true. */
+  fkExists?: boolean;
 } = {}) {
   const inserts: InsertCapture[] = [];
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const fkExists = opts.fkExists ?? true;
 
   const supabase = {
     admin: {
-      from: jest.fn(() => ({
+      from: jest.fn((table: string) => {
+        // FK existence check tables — return a matching row by default so
+        // tenant-isolation guard passes for happy-path payloads. Tests that
+        // need the FK guard to reject pass fkExists=false.
+        if (table === 'spaces' || table === 'teams' || table === 'sla_policies') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: fkExists ? { id: 'fk-row' } : null,
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          } as unknown;
+        }
+        return {
         select: () => ({
           eq: () => ({
             order: () => ({
@@ -68,7 +90,8 @@ function makeFakeDb(opts: {
             eq: async () => ({ error: null }),
           }),
         }),
-      })),
+        } as unknown;
+      }),
     },
   };
 
@@ -199,6 +222,21 @@ describe('ServiceRoutingService', () => {
           }),
         ),
       ).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects a foreign-tenant internal_team_id (tenant-isolation guard)', async () => {
+      const { supabase } = makeFakeDb({ fkExists: false });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const svc = new ServiceRoutingService(supabase as any);
+
+      await expect(
+        withTenant(() =>
+          svc.create({
+            service_category: 'catering',
+            internal_team_id: 'cross-tenant-team',
+          }),
+        ),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('treats null location_id (tenant default) the same as a per-location row in payload shape', async () => {

@@ -307,23 +307,51 @@ export class BundleService {
       // whose rules emitted requires_internal_setup=true. Runs AFTER
       // commit; failures are audited internally and never roll back
       // the bundle. See plan §Slice 2 + SetupWorkOrderTriggerService.
-      const triggerArgs = Array.from(outcomes.entries())
-        .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
-        .map(([oliId, outcome]) => {
-          const line = lineByOli.get(oliId)!;
-          return {
+      //
+      // Approval interlock (codex 2026-04-30 review): if ANY line is
+      // pending approval (anyPending), the order/bundle sits in
+      // 'submitted' state until approved. We skip auto-creation entirely
+      // here — facilities should not start internal work for orders that
+      // may still be rejected. When the bundle-approval flow lands
+      // (Wave 3), it will re-fire the trigger on grant. Until then, ops
+      // can manually flip the rule on the rejected line or create the
+      // work order by hand if needed. We surface the skip to audit so
+      // it's visible.
+      if (anyPending) {
+        for (const [oliId, outcome] of outcomes.entries()) {
+          if (!outcome.requires_internal_setup) continue;
+          void this.audit(
             tenantId,
-            bundleId: bundle.id,
+            'bundle.setup_deferred_pending_approval',
+            'order_line_item',
             oliId,
-            serviceCategory: line.service_type,
-            serviceWindowStartAt: line.service_window_start_at,
-            locationId: reservation.space_id,
-            ruleIds: outcome.matched_rule_ids,
-            leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-            originSurface: 'bundle' as const,
-          };
-        });
-      await this.setupTrigger.triggerMany(triggerArgs);
+            {
+              line_id: oliId,
+              bundle_id: bundle.id,
+              rule_ids: outcome.matched_rule_ids,
+              reason: 'approval_pending',
+            },
+          );
+        }
+      } else {
+        const triggerArgs = Array.from(outcomes.entries())
+          .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
+          .map(([oliId, outcome]) => {
+            const line = lineByOli.get(oliId)!;
+            return {
+              tenantId,
+              bundleId: bundle.id,
+              oliId,
+              serviceCategory: line.service_type,
+              serviceWindowStartAt: line.service_window_start_at,
+              locationId: reservation.space_id,
+              ruleIds: outcome.matched_rule_ids,
+              leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+              originSurface: 'bundle' as const,
+            };
+          });
+        await this.setupTrigger.triggerMany(triggerArgs);
+      }
 
       void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
         bundle_id: bundle.id,

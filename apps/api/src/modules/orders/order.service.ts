@@ -912,32 +912,50 @@ export class OrderService {
       // whose rules emitted requires_internal_setup=true. Lines without a
       // service_type (catalog item with no menu) can't route — surface
       // separately and skip. Shared trigger handles the rest.
-      const triggerArgs: Array<Parameters<typeof this.setupTrigger.trigger>[0]> = [];
-      for (const meta of lineMetas) {
-        const outcome = outcomes.get(meta.oliId);
-        if (!outcome?.requires_internal_setup) continue;
-        if (!meta.service_type) {
-          void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
+      //
+      // Approval interlock (codex 2026-04-30 review): mirrors the bundle
+      // path — if ANY line is pending approval, defer auto-creation.
+      // Facilities shouldn't start work for orders that may be rejected.
+      // Wave 3 bundle-approval handler will re-fire on grant.
+      if (anyPending) {
+        for (const meta of lineMetas) {
+          const outcome = outcomes.get(meta.oliId);
+          if (!outcome?.requires_internal_setup) continue;
+          void this.audit(tenantId, 'order.setup_deferred_pending_approval', 'order_line_item', meta.oliId, {
             line_id: meta.oliId,
-            reason: 'no_service_type_on_line',
+            order_id: order.id,
             rule_ids: outcome.matched_rule_ids,
-            severity: 'medium',
+            reason: 'approval_pending',
           });
-          continue;
         }
-        triggerArgs.push({
-          tenantId,
-          bundleId: bundle.id,
-          oliId: meta.oliId,
-          serviceCategory: meta.service_type,
-          serviceWindowStartAt: meta.service_window_start_at,
-          locationId: args.delivery_space_id,
-          ruleIds: outcome.matched_rule_ids,
-          leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-          originSurface: 'order',
-        });
+      } else {
+        const triggerArgs: Array<Parameters<typeof this.setupTrigger.trigger>[0]> = [];
+        for (const meta of lineMetas) {
+          const outcome = outcomes.get(meta.oliId);
+          if (!outcome?.requires_internal_setup) continue;
+          if (!meta.service_type) {
+            void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
+              line_id: meta.oliId,
+              reason: 'no_service_type_on_line',
+              rule_ids: outcome.matched_rule_ids,
+              severity: 'medium',
+            });
+            continue;
+          }
+          triggerArgs.push({
+            tenantId,
+            bundleId: bundle.id,
+            oliId: meta.oliId,
+            serviceCategory: meta.service_type,
+            serviceWindowStartAt: meta.service_window_start_at,
+            locationId: args.delivery_space_id,
+            ruleIds: outcome.matched_rule_ids,
+            leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+            originSurface: 'order',
+          });
+        }
+        await this.setupTrigger.triggerMany(triggerArgs);
       }
-      await this.setupTrigger.triggerMany(triggerArgs);
 
       void this.audit(tenantId, 'order.created', 'order', order.id, {
         order_id: order.id,

@@ -826,12 +826,25 @@ Hooks live in `BundleService.maybeCreateSetupWorkOrder()` (bundle-attached path)
 
 When an order line cancels, any non-terminal work order linked via `tickets.linked_order_line_item_id` is closed (`status_category='closed'`, `closed_at` set). Implemented in `BundleCascadeService.cancelLine()` and `cancelBundleImpl()`. Whitelist of non-terminal states: `new | assigned | in_progress | waiting`. Already-terminal tickets are not re-stamped.
 
-### Audit events
+### Audit events (emitted by `SetupWorkOrderTriggerService` on `audit_events`)
 
-- `bundle.setup_routing_unconfigured` — service rule says setup needed but matrix has no team for `(tenant, location, service_category)`. Skipped silently with this audit so admins can spot misconfiguration.
-- `bundle.setup_work_order_create_failed` — matrix returned a team but the create call threw. Severity high.
-- `order.setup_routing_unconfigured` / `order.setup_work_order_create_failed` — standalone-order analogues.
-- `booking_origin_work_order_created` — emitted on `audit_events` from `TicketService.createBookingOriginWorkOrder` for every successful create.
+Naming pattern: `{originSurface}.{outcome}` where originSurface is `bundle` (bundled-services path) or `order` (standalone-order path). Both surfaces emit the same outcome events so cross-source queries don't have to UNION two taxonomies.
+
+- `*.setup_work_order_created` — happy path. Payload: ticket_id, assigned_team_id, target_due_at, lead_time_minutes, sla_policy_id.
+- `*.setup_routing_unconfigured` — rule fired requires_internal_setup but matrix has no team for `(tenant, location, service_category)`. Skipped without creating; admins see this in the audit feed.
+- `*.setup_routing_lookup_failed` — `resolve_setup_routing()` RPC returned an error. Severity high.
+- `*.setup_work_order_create_failed` — matrix returned a team but the ticket insert threw. Severity high.
+- `*.setup_deferred_pending_approval` — at least one line on the bundle/order is in approval-required state, so the trigger was skipped pending the approval grant. Re-firing the trigger on grant is a Wave 3 task (see "Approval interlock" below).
+
+Plus `booking_origin_work_order_created` on the ticket-side activity feed via `TicketService.addActivity` (visibility=`system`) — the per-ticket audit row, separate from the cross-source `audit_events` event above.
+
+### Approval interlock
+
+When a service rule on a line emits `effect=require_approval` (or `allow_override`), the order/bundle commits in `submitted` state and an approval row is created. **Auto-creation of internal setup work orders is deferred in this case** — facilities should not start internal work for an order that may still be rejected.
+
+- All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
+- No work orders are created until the bundle-level approval is granted.
+- Today there is **no approval-decision handler for booking_bundle** — once the approval lands, the trigger does NOT auto-fire. Ops must either flip the rule on the line and re-save, or create the work order manually. A proper handler is Wave 3 work (universal workflow editor on bundle events).
 
 ### Visibility — what's intentionally NOT set on booking-origin work orders
 

@@ -99,6 +99,11 @@ export class ServiceRoutingService {
   async create(dto: ServiceRoutingUpsertDto): Promise<ServiceRoutingRow> {
     this.assertValid(dto);
     const tenant = TenantContext.current();
+    await this.assertTenantOwnsForeignKeys(tenant.id, {
+      location_id: dto.location_id ?? null,
+      internal_team_id: dto.internal_team_id ?? null,
+      sla_policy_id: dto.sla_policy_id ?? null,
+    });
     const { data, error } = await this.supabase.admin
       .from('location_service_routing')
       .insert({
@@ -149,6 +154,12 @@ export class ServiceRoutingService {
       // No-op patch — just return the existing row.
       return this.findOne(id);
     }
+    await this.assertTenantOwnsForeignKeys(tenant.id, {
+      // Only verify fields that are actually being patched.
+      location_id: undefined,
+      internal_team_id: 'internal_team_id' in dto ? (dto.internal_team_id ?? null) : undefined,
+      sla_policy_id: 'sla_policy_id' in dto ? (dto.sla_policy_id ?? null) : undefined,
+    });
     const { data, error } = await this.supabase.admin
       .from('location_service_routing')
       .update(patch)
@@ -175,6 +186,60 @@ export class ServiceRoutingService {
       .eq('tenant_id', tenant.id);
     if (error) throw error;
     return { id };
+  }
+
+  // ── Tenant-isolation guard ─────────────────────────────────────────────
+
+  /**
+   * Verifies that any non-null FK in the payload belongs to the current
+   * tenant. Schema-level FKs only point at the target table (no composite
+   * FK on tenant_id), and we use service-role for all writes — so an
+   * admin could otherwise persist a foreign-tenant UUID and create
+   * cross-tenant ghost references later. Codex 2026-04-30 review caught
+   * this gap.
+   *
+   * Pass `undefined` for any field NOT being changed (the helper skips it).
+   * Pass `null` to allow clearing the FK explicitly.
+   */
+  private async assertTenantOwnsForeignKeys(
+    tenantId: string,
+    refs: {
+      location_id?: string | null | undefined;
+      internal_team_id?: string | null | undefined;
+      sla_policy_id?: string | null | undefined;
+    },
+  ): Promise<void> {
+    const checks: Array<Promise<void>> = [];
+    if (refs.location_id) {
+      checks.push(this.assertExists(tenantId, 'spaces', refs.location_id, 'location_id'));
+    }
+    if (refs.internal_team_id) {
+      checks.push(this.assertExists(tenantId, 'teams', refs.internal_team_id, 'internal_team_id'));
+    }
+    if (refs.sla_policy_id) {
+      checks.push(this.assertExists(tenantId, 'sla_policies', refs.sla_policy_id, 'sla_policy_id'));
+    }
+    await Promise.all(checks);
+  }
+
+  private async assertExists(
+    tenantId: string,
+    table: 'spaces' | 'teams' | 'sla_policies',
+    id: string,
+    fieldName: string,
+  ): Promise<void> {
+    const { data } = await this.supabase.admin
+      .from(table)
+      .select('id')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (!data) {
+      throw new BadRequestException({
+        code: 'invalid_foreign_key',
+        message: `${fieldName} ${id} does not exist in this tenant.`,
+      });
+    }
   }
 
   // ── Validation ─────────────────────────────────────────────────────────
