@@ -10,6 +10,8 @@ import { PortalHomeHero } from '@/components/portal/portal-home-hero';
 import { PortalCategoryCard } from '@/components/portal/portal-category-card';
 import { PortalActivityPanel } from '@/components/portal/portal-activity-panel';
 import { PortalAnnouncementCard } from '@/components/portal/portal-announcement-card';
+import { PortalApprovalsLane } from '@/components/portal/portal-approvals-lane';
+import { PortalCalendarSyncNudge } from '@/components/portal/portal-calendar-sync-nudge';
 
 export function PortalHome() {
   const { data: portal } = usePortal();
@@ -44,6 +46,10 @@ export function PortalHome() {
             wrapper. When dismissed or absent it returns null and consumes
             no space — the grid below moves up cleanly. */}
         <PortalAnnouncementCard />
+        {/* Calendar-sync nudge — only visible when the user has no
+            connected Outlook calendar and hasn't dismissed. Same
+            collapse-on-dismiss treatment as the announcement card. */}
+        <PortalCalendarSyncNudge />
         <div className="grid gap-8 md:gap-10 md:grid-cols-[1.8fr_1fr]">
           <section>
             <h2
@@ -112,9 +118,13 @@ export function PortalHome() {
           </section>
 
           <section
-            className="order-last md:order-none portal-rise"
+            className="order-last md:order-none flex flex-col gap-4 portal-rise"
             style={{ animationDelay: '260ms' }}
           >
+            {/* Approvals lane is the highest-priority "you have something
+                to do" surface. Renders null when there's nothing pending,
+                so non-approvers never see the slot. */}
+            <PortalApprovalsLane />
             <PortalActivityPanel />
           </section>
         </div>
