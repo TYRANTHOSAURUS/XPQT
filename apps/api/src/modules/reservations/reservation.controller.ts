@@ -46,6 +46,7 @@ export class ReservationController {
     @Query('as') as?: 'mine' | 'operator',
     @Query('status') status?: string | string[],
     @Query('cursor') cursor?: string,
+    @Query('has_bundle') hasBundle?: string,
   ) {
     const authUid = this.getAuthUid(request);
     const limit = limitStr ? parseInt(limitStr, 10) : undefined;
@@ -53,8 +54,13 @@ export class ReservationController {
       const statusArr = status === undefined
         ? undefined
         : Array.isArray(status) ? status : [status];
+      // Coerce to true only on the explicit truthy strings — anything else
+      // (including 'false' and missing) is treated as "no filter". Avoids
+      // accidentally narrowing the result set when clients pass through
+      // an empty query param.
+      const has_bundle = hasBundle === 'true' || hasBundle === '1' ? true : undefined;
       return this.service.listForOperator(authUid, {
-        scope, status: statusArr, limit,
+        scope, status: statusArr, limit, has_bundle,
       });
     }
     return this.service.listMine(authUid, {

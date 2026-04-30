@@ -66,6 +66,7 @@ export function reservationListOptions(filters: ReservationListFilters) {
           to: filters.to ?? undefined,
           limit: filters.limit ?? undefined,
           as: filters.as ?? undefined,
+          has_bundle: filters.has_bundle ? 'true' : undefined,
         },
       }),
     staleTime: 10_000,

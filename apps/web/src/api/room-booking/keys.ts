@@ -31,6 +31,10 @@ export interface ReservationListFilters {
   limit?: number | null;
   /** 'operator' triggers the cross-tenant operator list (requires rooms.read_all). */
   as?: 'mine' | 'operator';
+  /** Server-side filter on `booking_bundle_id IS NOT NULL` — used by the
+   *  /desk/bookings "Bundles" chip to skip room-only reservations. Backed
+   *  by partial index 00199. */
+  has_bundle?: boolean;
 }
 
 export interface PickerCriteria {
