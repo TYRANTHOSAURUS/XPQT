@@ -971,6 +971,12 @@ export class OrderService {
             void this.audit(tenantId, 'order.setup_deferral_persist_failed', 'order_line_item', meta.oliId, {
               line_id: meta.oliId,
               order_id: order.id,
+              // Standalone orders still create a bundle row; carry bundle_id
+              // here so BundleService.onApprovalDecided's persist-failure
+              // lookup (`details->>bundle_id = bundleId`) finds it. Without
+              // this, standalone-order lost-persist cases fall through to
+              // the misleading "no_deferred_setup" marker. Codex round 4.
+              bundle_id: bundle.id,
               rule_ids: outcome.matched_rule_ids,
               error: persistErr.message,
               severity: 'high',
