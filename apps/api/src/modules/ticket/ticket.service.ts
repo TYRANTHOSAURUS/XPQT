@@ -90,6 +90,13 @@ export interface ReassignDto {
   actor_person_id?: string;
 }
 
+export interface SetPlanDto {
+  /** ISO timestamp, or null to clear the plan. */
+  planned_start_at?: string | null;
+  /** Optional duration. Cleared automatically when planned_start_at is null. */
+  planned_duration_minutes?: number | null;
+}
+
 export interface TicketListFilters {
   status_category?: string | string[];
   priority?: string | string[];
@@ -1031,6 +1038,92 @@ export class TicketService {
     return this.getById(id, SYSTEM_ACTOR);
   }
 
+  /**
+   * Set or clear the plandate on a ticket. Distinct from sla_resolution_due_at
+   * (commitment) and resolved_at (actual). Gated by TicketVisibilityService
+   * .assertCanPlan — narrower than the write gate so requesters / watchers
+   * cannot declare a plan they aren't responsible for.
+   */
+  async setPlan(
+    id: string,
+    dto: SetPlanDto,
+    actorAuthUid: string,
+  ) {
+    const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertCanPlan(id, ctx);
+    }
+
+    const current = await this.getById(id, SYSTEM_ACTOR);
+    const currentRow = current as Record<string, unknown>;
+
+    const nextStart =
+      dto.planned_start_at === undefined
+        ? (currentRow.planned_start_at as string | null) ?? null
+        : dto.planned_start_at;
+    const nextDuration =
+      dto.planned_duration_minutes === undefined
+        ? (currentRow.planned_duration_minutes as number | null) ?? null
+        : dto.planned_duration_minutes;
+
+    if (nextStart !== null) {
+      const ts = Date.parse(nextStart);
+      if (Number.isNaN(ts)) {
+        throw new BadRequestException('planned_start_at must be a valid ISO 8601 timestamp');
+      }
+    }
+    if (nextDuration !== null && (!Number.isInteger(nextDuration) || nextDuration <= 0)) {
+      throw new BadRequestException('planned_duration_minutes must be a positive integer');
+    }
+    // Duration without a start makes no sense — clear it together.
+    const finalDuration = nextStart === null ? null : nextDuration;
+
+    const previous = {
+      planned_start_at: (currentRow.planned_start_at as string | null) ?? null,
+      planned_duration_minutes: (currentRow.planned_duration_minutes as number | null) ?? null,
+    };
+    const nextValues = {
+      planned_start_at: nextStart,
+      planned_duration_minutes: finalDuration,
+    };
+
+    if (
+      previous.planned_start_at === nextValues.planned_start_at &&
+      previous.planned_duration_minutes === nextValues.planned_duration_minutes
+    ) {
+      return current;
+    }
+
+    const { data, error } = await this.supabase.admin
+      .from('tickets')
+      .update(nextValues)
+      .eq('id', id)
+      .eq('tenant_id', tenant.id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    await this.addActivity(
+      id,
+      {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: {
+          event: 'plan_changed',
+          previous,
+          next: nextValues,
+        },
+      },
+      undefined,
+      actorAuthUid,
+    );
+    await this.logDomainEvent(id, 'ticket_plan_changed', { previous, next: nextValues });
+
+    return data;
+  }
+
   private async applyWaitingStateTransition(
     ticketId: string,
     tenantId: string,
@@ -1557,9 +1650,12 @@ export class TicketService {
   }): Promise<{ id: string }> {
     const tenant = TenantContext.current();
 
+    // Step 1c.4 cutover: write to public.work_orders directly. ticket_kind
+    // is gone (work_orders is single-kind); parent_kind='booking_bundle'
+    // explicit. The reverse shadow trigger keeps tickets in sync.
     const insertRow: Record<string, unknown> = {
       tenant_id: tenant.id,
-      ticket_kind: 'work_order',
+      parent_kind: 'booking_bundle',
       parent_ticket_id: null, // booking-origin has no parent case
       booking_bundle_id: args.booking_bundle_id,
       linked_order_line_item_id: args.linked_order_line_item_id,
@@ -1585,7 +1681,7 @@ export class TicketService {
     };
 
     const { data, error } = await this.supabase.admin
-      .from('tickets')
+      .from('work_orders')
       .insert(insertRow)
       .select('id')
       .single();

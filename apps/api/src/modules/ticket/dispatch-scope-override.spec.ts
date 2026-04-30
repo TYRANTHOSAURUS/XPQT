@@ -34,7 +34,8 @@ function makeDeps(parent: ParentRow) {
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'tickets') {
+        // Step 1c.4: dispatch now writes to work_orders. Mock both for compat.
+        if (table === 'work_orders' || table === 'tickets') {
           return {
             insert: (row: Record<string, unknown>) => {
               inserted.push(row);

@@ -76,11 +76,14 @@ export class DispatchService {
       ? await this.loadRequestTypeConfig(ticketTypeId)
       : { domain: null };
 
-    // Build the row WITHOUT sla_id — resolved after routing fills in assignees.
+    // Step 1c.4 cutover (data-model-redesign-2026-04-30.md): write directly
+    // to public.work_orders. ticket_kind is gone (work_orders is single-kind);
+    // parent_kind='case' explicit (dispatch is always case→wo). The reverse
+    // shadow trigger keeps tickets in sync during the bridge.
     const row: Record<string, unknown> = {
       tenant_id: tenant.id,
+      parent_kind: 'case',
       parent_ticket_id: parentId,
-      ticket_kind: 'work_order',
       ticket_type_id: ticketTypeId,
       title: dto.title,
       description: dto.description ?? null,
@@ -130,7 +133,7 @@ export class DispatchService {
     row.sla_id = resolvedSlaId;
 
     const { data: inserted, error } = await this.supabase.admin
-      .from('tickets')
+      .from('work_orders')
       .insert(row)
       .select()
       .single();

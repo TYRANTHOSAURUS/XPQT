@@ -14,7 +14,8 @@ function makeTicketService() {
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'tickets') {
+        // Step 1c.4: booking-origin now writes to work_orders directly.
+        if (table === 'work_orders' || table === 'tickets') {
           return {
             insert: (payload: Record<string, unknown>) => {
               inserts.push({ payload });
@@ -82,7 +83,7 @@ function withTenant<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('TicketService.createBookingOriginWorkOrder', () => {
-  it('inserts a tickets row with ticket_kind=work_order and parent_ticket_id=null', async () => {
+  it('inserts a work_orders row with parent_kind=booking_bundle and parent_ticket_id=null', async () => {
     const { service, inserts } = makeTicketService();
 
     await withTenant(() =>
@@ -96,7 +97,8 @@ describe('TicketService.createBookingOriginWorkOrder', () => {
 
     expect(inserts).toHaveLength(1);
     const row = inserts[0].payload;
-    expect(row.ticket_kind).toBe('work_order');
+    // Step 1c.4: parent_kind replaces ticket_kind as the discriminator.
+    expect(row.parent_kind).toBe('booking_bundle');
     expect(row.parent_ticket_id).toBeNull();
     expect(row.booking_bundle_id).toBe('bundle-1');
     expect(row.linked_order_line_item_id).toBe('oli-1');

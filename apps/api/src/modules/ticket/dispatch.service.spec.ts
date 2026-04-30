@@ -51,7 +51,9 @@ function makeDeps(
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'tickets') {
+        // Step 1c.4 cutover: dispatch now writes to work_orders directly.
+        // 'tickets' branch retained for any UPDATE paths still hitting tickets.
+        if (table === 'work_orders' || table === 'tickets') {
           return {
             insert: (row: Record<string, unknown>) => {
               inserted.push(row);
@@ -164,7 +166,9 @@ describe('DispatchService', () => {
     const child = await svc.dispatch(parent.id, dto, '__system__');
 
     expect(child.parent_ticket_id).toBe(parent.id);
-    expect(child.ticket_kind).toBe('work_order');
+    // Step 1c.4: writes go to work_orders (single-kind), so the row no longer
+    // carries ticket_kind. parent_kind is the new discriminator.
+    expect(child.parent_kind).toBe('case');
     expect(inserted[0].location_id).toBe(parent.location_id);
     expect(inserted[0].ticket_type_id).toBe(parent.ticket_type_id);
     expect(inserted[0].priority).toBe(parent.priority);
@@ -234,7 +238,9 @@ describe('DispatchService', () => {
     expect(inserted).toHaveLength(3);
     expect(inserted.map((c) => c.assigned_vendor_id)).toEqual(['glazier', 'supplier', 'janitorial']);
     expect(inserted.every((c) => c.parent_ticket_id === parent.id)).toBe(true);
-    expect(inserted.every((c) => c.ticket_kind === 'work_order')).toBe(true);
+    // Step 1c.4: writes go to work_orders (single-kind), so ticket_kind is gone.
+    // parent_kind is the new discriminator and is always 'case' for dispatch.
+    expect(inserted.every((c) => c.parent_kind === 'case')).toBe(true);
   });
 
   it('does NOT inherit sla_id from request_type (parent-vs-child SLA separation)', async () => {
