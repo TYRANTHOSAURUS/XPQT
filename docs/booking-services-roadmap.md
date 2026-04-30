@@ -663,13 +663,11 @@ If vendor portal is delayed, ship dispatch independently:
 
 #### 9.1.9 Server-side `/desk/bookings` filters
 
-**Status:** 🟥
-**Owner:** TBD
-**Estimate:** 3 days
+**Status:** 🟩 shipped (commit `77bb4a5`, migration 00199)
 
-- [ ] `GET /reservations?has_bundle=true` query param.
-- [ ] Indexed query: partial index on `reservations(tenant_id, start_at) WHERE booking_bundle_id IS NOT NULL`.
-- [ ] Frontend: replace client-side filter with server-side.
+- [x] `GET /reservations?has_bundle=true` query param (controller + service).
+- [x] Partial index `idx_reservations_with_bundle` on `reservations(tenant_id, start_at desc) WHERE booking_bundle_id IS NOT NULL` (00199).
+- [x] Frontend: dropped client-side `filter((r) => Boolean(r.booking_bundle_id))` on /desk/bookings; threads `has_bundle: true` through `ReservationListFilters` + `useOperatorReservations` when the Bundles chip is selected.
 
 #### 9.1.10 Per-person pricing on `/portal/order`
 
