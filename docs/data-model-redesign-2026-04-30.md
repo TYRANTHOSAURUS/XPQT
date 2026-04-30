@@ -159,6 +159,23 @@ Active consistency bug to fix on the way: `routing-evaluator.service.ts:399` sti
 
 This is ordered by dependency, not by importance. Each step ships independently and leaves the system in a consistent state.
 
+### Status as of 2026-04-30 evening
+
+| Step | What | Status | Migrations / Commits |
+|---|---|---|---|
+| 0 | activities polymorphic sidecar + hardening | ✓ shipped, codex-reviewed | 00202, 00203 / 34ffe59 |
+| 1a | cases + work_orders views over tickets, activity entity_kind migration, codex fixes | ✓ shipped, codex-reviewed | 00204, 00205, 00208 / 34ffe59, 438bb8f |
+| 1b | reader cutovers to `work_orders` view: vendor portal, fulfillment_units_v, booking_bundle_status_v | ✓ shipped, self-reviewed (codex unavailable) | 865934e, a5cbbd2, 3c3b231, dc92d65, migrations 00209, 00210 |
+| 1c | writers cutover (dispatch, workflow engine, SLA, routing_decisions FK migration); materialize work_orders as a real table | ⏸ NOT STARTED — needs codex review of plan first; 8 known coupling points; 3–6 mo of work |
+| 2 | `orders` → `service_orders` rename + FK-link to work_orders | ⏸ deferred — needs step 1c done so `linked_setup_ticket_id` → `linked_work_order_id` makes sense |
+| 3 | unified `resources` catalog | ⏸ deferred |
+| 4 | `booking_bundles` → `bookings` rename | ⏸ deferred — pure cosmetic if done before line tables stabilize |
+| 5 | promote `reservation_visitors` → `booking_visitors` | ⏸ blocked — visitors backend is a parallel in-flight workstream (per `project_visitors_track_split_off` memory). Don't touch. |
+| 6 | rename `tickets` → `cases` | ⏸ blocked on step 1c |
+
+Self-review caveats on what shipped without codex:
+- Step 1b vendor portal cutover initially dropped the cross-tenant vendor JOIN from 00191; restored in `a5cbbd2`. This is the kind of subtle regression codex would have caught — self-review only caught it because I went looking. Same caution applies to all remaining work.
+
 ### Step 0 — `activities` polymorphic sidecar
 
 **Before any extraction.** Without this, step 1 fragments the timeline immediately.
