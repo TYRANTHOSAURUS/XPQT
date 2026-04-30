@@ -840,8 +840,11 @@ Emitted by `BundleService.onApprovalDecided` on the `booking_bundle` entity:
 
 - `bundle.deferred_setup_fired_on_approval` — approval granted; deferred trigger re-fired for the listed OLIs. Payload: bundle_id, oli_ids, order_ids.
 - `bundle.deferred_setup_dropped_on_rejection` — approval rejected; persisted args cleared without firing. Payload: bundle_id, oli_ids, order_ids.
-- `bundle.approval_approved_no_deferred_setup` — approval granted but no lines on the bundle had `requires_internal_setup`. Marker so the audit timeline shows the approval was observed.
+- `bundle.approval_{approved|rejected}_no_deferred_setup` — approval resolved but no lines on the bundle had `requires_internal_setup`. Marker so the audit timeline shows the approval was observed.
+- `bundle.approval_{approved|rejected}_setup_persist_was_lost` — HIGH severity. Claim returned nothing AND `*.setup_deferral_persist_failed` exists for this bundle: setup was supposed to defer but the create-time persist failed. Distinguished from the "no_deferred_setup" marker so the timeline doesn't lie.
 - `bundle.approval_{approved|rejected}_no_orders` — defensive: approval target was a `booking_bundle` but no orders linked. Should never happen in normal flow.
+- `bundle.deferred_setup_closed_after_concurrent_cancel` — MEDIUM severity. Cancel/approve race detected: after `triggerMany` fired, the OLI was already cancelled; the just-created work order was closed by the defensive close.
+- `bundle.deferred_setup_close_lookup_failed` / `bundle.deferred_setup_close_failed` — HIGH severity. The defensive close path's stale-OLI lookup or tickets-close update returned an error. Surfaces what would otherwise be a silent best-effort skip on the orphan-cleanup hot path.
 
 Plus `booking_origin_work_order_created` on the ticket-side activity feed via `TicketService.addActivity` (visibility=`system`) — the per-ticket audit row, separate from the cross-source `audit_events` event above.
 

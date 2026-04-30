@@ -267,6 +267,19 @@ export class ApprovalService {
       throw new ForbiddenException('You are not an approver for this request');
     }
 
+    // CAS — codex 2026-04-30 review found a read-then-unconditional-write
+    // race: two concurrent respond() calls can both pass the read-side
+    // `status === 'pending'` check, then write `approved` and `rejected`
+    // on top of each other. The second write would clobber the first AND
+    // the bundle/reservation handler for the second decision would run
+    // even though the first already transitioned downstream state. Net
+    // effect: a rejected row could coexist with approved+open fulfillment.
+    //
+    // Filtering on `status='pending'` makes the update atomic. If the
+    // filter doesn't match (the row was decided concurrently between our
+    // read and write), `.maybeSingle()` returns null and we bail with
+    // the same conflict shape as the read-side check — no downstream
+    // dispatch fires.
     const { data, error } = await this.supabase.admin
       .from('approvals')
       .update({
@@ -275,10 +288,12 @@ export class ApprovalService {
         comments: dto.comments,
       })
       .eq('id', approvalId)
+      .eq('status', 'pending')
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) throw new BadRequestException('Approval already responded to');
 
     await this.logDomainEvent(approval.target_entity_id, `approval_${dto.status}`, {
       approval_id: approvalId,

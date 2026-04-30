@@ -1012,17 +1012,52 @@ export class BundleService {
     }>;
 
     if (claimedRows.length === 0) {
-      // No deferred setup work to claim. Either the bundle had approval-
-      // required rules without requires_internal_setup, or another caller
-      // already claimed everything. Marker audit so the timeline shows the
-      // approval was observed; idempotent no-op on a duplicate call.
-      void this.audit(
-        tenantId,
-        `bundle.approval_${decision}_no_deferred_setup`,
-        'booking_bundle',
-        bundleId,
-        { bundle_id: bundleId, order_ids: orderIds },
-      );
+      // Three reasons we'd see zero claimed rows:
+      //   (a) the bundle had approval-required rules WITHOUT
+      //       requires_internal_setup — nothing to defer, nothing to fire.
+      //       Normal — emit the "no_deferred_setup" marker.
+      //   (b) another caller already claimed everything (idempotency on a
+      //       duplicate call). Same marker — both calls audit the
+      //       observation; downstream effects already happened on the first.
+      //   (c) the create-time persist actually FAILED for one or more
+      //       lines (`*.setup_deferral_persist_failed` was emitted) — the
+      //       work order won't fire on grant because no args ever landed.
+      //       Emitting "no_deferred_setup" here would lie about the timeline.
+      //
+      // Check (c) by looking up persist-failure audit events for this
+      // bundle. If any exist, emit a high-severity marker instead so admins
+      // can spot the lost setup at approval time. Codex 2026-04-30 review.
+      const { data: persistFailures } = await this.supabase.admin
+        .from('audit_events')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .in('event_type', ['bundle.setup_deferral_persist_failed', 'order.setup_deferral_persist_failed'])
+        .eq('details->>bundle_id', bundleId)
+        .limit(1);
+      const hadPersistFailure = (persistFailures ?? []).length > 0;
+
+      if (hadPersistFailure) {
+        void this.audit(
+          tenantId,
+          `bundle.approval_${decision}_setup_persist_was_lost`,
+          'booking_bundle',
+          bundleId,
+          {
+            bundle_id: bundleId,
+            order_ids: orderIds,
+            severity: 'high',
+            reason: 'create_time_persist_failed_no_args_to_claim',
+          },
+        );
+      } else {
+        void this.audit(
+          tenantId,
+          `bundle.approval_${decision}_no_deferred_setup`,
+          'booking_bundle',
+          bundleId,
+          { bundle_id: bundleId, order_ids: orderIds },
+        );
+      }
       return;
     }
 
@@ -1050,14 +1085,36 @@ export class BundleService {
       // cancel cascade's tickets-close clause for any of the just-fired
       // OLIs that are now in fulfillment_status='cancelled'. Idempotent
       // and scoped — no-op when the race didn't happen.
-      const { data: stale } = await this.supabase.admin
+      //
+      // Errors on either query are surfaced (log + high-severity audit)
+      // rather than swallowed. This whole block exists specifically to
+      // close a correctness hole; silent best-effort would defeat the
+      // point. Codex round 3 review.
+      const { data: stale, error: staleErr } = await this.supabase.admin
         .from('order_line_items')
         .select('id')
         .in('id', oliIds)
         .eq('fulfillment_status', 'cancelled');
+      if (staleErr) {
+        this.log.error(
+          `onApprovalDecided: cancel-race lookup failed for bundle ${bundleId}: ${staleErr.message}`,
+        );
+        void this.audit(
+          tenantId,
+          'bundle.deferred_setup_close_lookup_failed',
+          'booking_bundle',
+          bundleId,
+          {
+            bundle_id: bundleId,
+            oli_ids: oliIds,
+            error: staleErr.message,
+            severity: 'high',
+          },
+        );
+      }
       const staleOliIds = ((stale ?? []) as Array<{ id: string }>).map((r) => r.id);
       if (staleOliIds.length > 0) {
-        const { data: closedTickets } = await this.supabase.admin
+        const { data: closedTickets, error: closeErr } = await this.supabase.admin
           .from('tickets')
           .update({ status_category: 'closed', closed_at: new Date().toISOString() })
           .in('linked_order_line_item_id', staleOliIds)
@@ -1065,6 +1122,23 @@ export class BundleService {
           .eq('ticket_kind', 'work_order')
           .in('status_category', ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'])
           .select('id');
+        if (closeErr) {
+          this.log.error(
+            `onApprovalDecided: cancel-race close failed for bundle ${bundleId}: ${closeErr.message}`,
+          );
+          void this.audit(
+            tenantId,
+            'bundle.deferred_setup_close_failed',
+            'booking_bundle',
+            bundleId,
+            {
+              bundle_id: bundleId,
+              oli_ids: staleOliIds,
+              error: closeErr.message,
+              severity: 'high',
+            },
+          );
+        }
         const closedTicketIds = ((closedTickets ?? []) as Array<{ id: string }>).map((r) => r.id);
         if (closedTicketIds.length > 0) {
           void this.audit(

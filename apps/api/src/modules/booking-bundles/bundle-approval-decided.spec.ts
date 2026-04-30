@@ -37,6 +37,10 @@ function makeService(opts: {
   staleOliIds?: string[];
   /** Tickets the defensive close should claim. */
   closedTicketIds?: string[];
+  /** Whether the persist-failure audit lookup should report any rows.
+   *  Used to test the "no_deferred_setup vs setup_persist_was_lost" branch
+   *  on zero-claim approvals. */
+  hadPersistFailure?: boolean;
 }) {
   const updates: UpdateCapture[] = [];
   const auditInserts: Array<Record<string, unknown>> = [];
@@ -162,11 +166,26 @@ function makeService(opts: {
           };
         }
         if (table === 'audit_events') {
+          // Two access patterns:
+          //   - insert: standard write path (most tests use this).
+          //   - select.eq.in.eq.limit: persist-failure lookup on zero-claim.
           return {
             insert: (row: Record<string, unknown>) => {
               auditInserts.push(row);
               return Promise.resolve({ data: null, error: null });
             },
+            select: () => ({
+              eq: () => ({
+                in: () => ({
+                  eq: () => ({
+                    limit: () => Promise.resolve({
+                      data: opts.hadPersistFailure ? [{ id: 'past-failure' }] : [],
+                      error: null,
+                    }),
+                  }),
+                }),
+              }),
+            }),
           };
         }
         throw new Error(`unexpected table in mock: ${table}`);
@@ -371,6 +390,50 @@ describe('BundleService.onApprovalDecided', () => {
       expect(auditInserts.some(
         (a) => a.event_type === 'bundle.approval_approved_no_orders',
       )).toBe(true);
+    });
+  });
+
+  describe('persist-failure marker on zero-claim (codex round 3)', () => {
+    it('emits a HIGH-severity setup_persist_was_lost marker when persist failed at create time', async () => {
+      // Reproduces the lying-audit incident codex caught: at create time,
+      // the OLI persist write failed. At approval grant, the claim RPC
+      // returns nothing — the previous code emitted "no_deferred_setup"
+      // even though setup HAD been deferred and silently dropped.
+      const { service, auditInserts } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [],   // no claimable args remain
+        hadPersistFailure: true,
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
+
+      const marker = auditInserts.find(
+        (a) => a.event_type === 'bundle.approval_approved_setup_persist_was_lost',
+      );
+      expect(marker).toBeDefined();
+      expect((marker!.details as { severity: string }).severity).toBe('high');
+
+      // Must NOT also emit the misleading "no_deferred_setup" event.
+      expect(auditInserts.some(
+        (a) => a.event_type === 'bundle.approval_approved_no_deferred_setup',
+      )).toBe(false);
+    });
+
+    it('emits the normal no_deferred_setup marker when persist did NOT fail', async () => {
+      const { service, auditInserts } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [],
+        hadPersistFailure: false,
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
+
+      expect(auditInserts.some(
+        (a) => a.event_type === 'bundle.approval_approved_no_deferred_setup',
+      )).toBe(true);
+      expect(auditInserts.some(
+        (a) => a.event_type === 'bundle.approval_approved_setup_persist_was_lost',
+      )).toBe(false);
     });
   });
 
