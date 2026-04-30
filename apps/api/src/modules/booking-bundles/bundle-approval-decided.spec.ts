@@ -31,16 +31,32 @@ interface UpdateCapture {
 function makeService(opts: {
   orders: OrderRow[];
   olis: OliRow[];
+  rpcResult?: { data: Array<{ oli_id: string; args: Record<string, unknown> | null }>; error: { message: string } | null };
 }) {
   const updates: UpdateCapture[] = [];
   const auditInserts: Array<Record<string, unknown>> = [];
   const triggerCalls: Array<unknown[]> = [];
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
   const ordersResult = { data: opts.orders, error: null };
-  const olisResult = { data: opts.olis, error: null };
+  // The new RPC mock derives default behaviour from `olis`: each OLI with
+  // non-null args becomes a claimed row. Tests can override via rpcResult.
+  const defaultRpcResult = {
+    data: opts.olis
+      .filter((o) => o.pending_setup_trigger_args !== null)
+      .map((o) => ({ oli_id: o.id, args: o.pending_setup_trigger_args! })),
+    error: null,
+  };
 
   const supabase = {
     admin: {
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'claim_deferred_setup_trigger_args') {
+          return opts.rpcResult ?? defaultRpcResult;
+        }
+        return { data: null, error: null };
+      }),
       from: jest.fn((table: string) => {
         if (table === 'orders') {
           return {
@@ -61,25 +77,6 @@ function makeService(opts: {
                       return Promise.resolve({ data: null, error: null });
                     },
                   };
-                },
-              };
-            },
-          };
-        }
-        if (table === 'order_line_items') {
-          return {
-            select: () => ({
-              in: () => ({
-                not: () => Promise.resolve(olisResult),
-              }),
-            }),
-            update: (patch: Record<string, unknown>) => {
-              const filters: UpdateCapture['filters'] = [];
-              return {
-                in: (col: string, val: unknown) => {
-                  filters.push({ kind: 'in', col, val });
-                  updates.push({ table, patch, filters });
-                  return Promise.resolve({ data: null, error: null });
                 },
               };
             },
@@ -141,7 +138,7 @@ function makeService(opts: {
     setupTrigger as any,
   );
 
-  return { service, updates, auditInserts, triggerCalls, setupTrigger };
+  return { service, updates, auditInserts, triggerCalls, setupTrigger, rpcCalls };
 }
 
 function withTenant<T>(fn: () => Promise<T>): Promise<T> {
@@ -162,8 +159,8 @@ const SAMPLE_TRIGGER_ARGS = {
 
 describe('BundleService.onApprovalDecided', () => {
   describe('approved decision', () => {
-    it('flips submitted orders to approved, fires deferred trigger, clears persisted args', async () => {
-      const { service, updates, triggerCalls, auditInserts } = makeService({
+    it('flips submitted orders to approved, atomically claims deferred args, fires trigger', async () => {
+      const { service, updates, triggerCalls, auditInserts, rpcCalls } = makeService({
         orders: [
           { id: 'order-1', status: 'submitted' },
           { id: 'order-2', status: 'submitted' },
@@ -189,21 +186,21 @@ describe('BundleService.onApprovalDecided', () => {
         val: 'submitted',
       });
 
-      // Trigger fired with both args.
+      // Atomic claim via RPC, scoped to this tenant + the bundle's orders.
+      expect(rpcCalls).toContainEqual({
+        fn: 'claim_deferred_setup_trigger_args',
+        args: { p_tenant_id: TENANT, p_order_ids: ['order-1', 'order-2'] },
+      });
+
+      // Trigger fired with both claimed args.
       expect(triggerCalls).toHaveLength(1);
       expect(triggerCalls[0]).toHaveLength(2);
       expect((triggerCalls[0] as Array<{ oliId: string }>)[0].oliId).toBe('oli-1');
       expect((triggerCalls[0] as Array<{ oliId: string }>)[1].oliId).toBe('oli-2');
 
-      // OLI args cleared.
-      const oliClear = updates.find((u) => u.table === 'order_line_items');
-      expect(oliClear).toBeDefined();
-      expect(oliClear!.patch).toEqual({ pending_setup_trigger_args: null });
-      expect(oliClear!.filters[0]).toEqual({
-        kind: 'in',
-        col: 'id',
-        val: ['oli-1', 'oli-2'],
-      });
+      // No JS-side OLI clear update — the RPC does the clear atomically
+      // inside SELECT FOR UPDATE.
+      expect(updates.find((u) => u.table === 'order_line_items')).toBeUndefined();
 
       // Audit emitted.
       expect(auditInserts.some(
@@ -235,8 +232,8 @@ describe('BundleService.onApprovalDecided', () => {
   });
 
   describe('rejected decision', () => {
-    it('flips submitted orders to cancelled and clears persisted args without firing trigger', async () => {
-      const { service, updates, triggerCalls, auditInserts } = makeService({
+    it('flips submitted orders to cancelled, RPC clears args atomically, no trigger fire', async () => {
+      const { service, updates, triggerCalls, auditInserts, rpcCalls } = makeService({
         orders: [{ id: 'order-1', status: 'submitted' }],
         olis: [
           { id: 'oli-1', pending_setup_trigger_args: SAMPLE_TRIGGER_ARGS },
@@ -248,12 +245,14 @@ describe('BundleService.onApprovalDecided', () => {
       const orderUpdate = updates.find((u) => u.table === 'orders');
       expect(orderUpdate!.patch).toEqual({ status: 'cancelled' });
 
-      // Trigger NOT fired on rejection.
+      // Trigger NOT fired on rejection — even though the RPC claimed args,
+      // the rejection branch records the drop instead of firing.
       expect(triggerCalls).toHaveLength(0);
 
-      // Args cleared so a stale entry can't double-fire later.
-      const oliClear = updates.find((u) => u.table === 'order_line_items');
-      expect(oliClear!.patch).toEqual({ pending_setup_trigger_args: null });
+      // The RPC was still called — it atomically clears args so a stale
+      // entry can't double-fire later. No JS-side OLI update.
+      expect(rpcCalls.some((c) => c.fn === 'claim_deferred_setup_trigger_args')).toBe(true);
+      expect(updates.find((u) => u.table === 'order_line_items')).toBeUndefined();
 
       expect(auditInserts.some(
         (a) => a.event_type === 'bundle.deferred_setup_dropped_on_rejection',

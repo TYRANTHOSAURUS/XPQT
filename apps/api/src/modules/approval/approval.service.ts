@@ -441,12 +441,28 @@ export class ApprovalService {
   }
 
   /**
-   * True when every approval row on the given target is in 'approved'
-   * status. Used by booking_bundle resolution where multiple approvers
-   * are upserted as independent rows (no parallel_group / no chain).
+   * True when every approval row on the given target is RESOLVED
+   * affirmatively — i.e. every row is 'approved' or 'expired', and no
+   * row is still 'pending' or 'rejected'.
    *
-   * False when there are zero rows — defensive: a target with no rows
-   * shouldn't reach this path. Caller treats false as "wait, do nothing."
+   * Why 'expired' counts as resolved: BundleCascadeService expires
+   * approvals when a line cancel empties their scope_breakdown
+   * (rescopeApprovalsAfterLineCancel) — the work the approval covered
+   * no longer exists, so the approval was effectively retracted. If we
+   * treated 'expired' as blocking, a bundle with 2 approvers would
+   * never resolve once one row got auto-expired by a line cancel: even
+   * with the surviving approver granting, the helper would say "not
+   * all approved" and the trigger would never fire.
+   *
+   * 'rejected' still blocks defensively — if any row is rejected, the
+   * rejection branch in handleBookingBundleApprovalDecided should have
+   * fired first. Treating it as blocking here prevents a stale rejection
+   * row from accidentally yielding a false 'approved' result.
+   *
+   * Used by booking_bundle resolution where multiple approvers are
+   * upserted as independent rows (no parallel_group / no chain). False
+   * when there are zero rows — defensive: a target with no rows
+   * shouldn't reach this path.
    */
   private async areAllTargetApprovalsApproved(
     targetEntityId: string,
@@ -458,7 +474,12 @@ export class ApprovalService {
       .eq('tenant_id', tenant.id)
       .eq('target_entity_id', targetEntityId);
     if (!data || data.length === 0) return false;
-    return data.every((a) => a.status === 'approved');
+    const anyPending = data.some((a) => a.status === 'pending');
+    if (anyPending) return false;
+    const anyRejected = data.some((a) => a.status === 'rejected');
+    if (anyRejected) return false;
+    // Every row is 'approved' or 'expired'.
+    return true;
   }
 
   /**

@@ -231,6 +231,41 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     expect(ok).toBe(false);
   });
 
+  it('areAllTargetApprovalsApproved treats expired rows as resolved (line-cancel re-scope)', async () => {
+    // BundleCascadeService.rescopeApprovalsAfterLineCancel sets status
+    // 'expired' when an approval's scope_breakdown becomes empty after a
+    // line cancel. Treating 'expired' as blocking would deadlock
+    // multi-approver bundles whenever any line cancels.
+    const { svc } = makeBundleService({
+      rowsForTarget: [
+        { status: 'expired' },
+        { status: 'approved' },
+      ],
+    });
+
+    const ok = await (svc as unknown as {
+      areAllTargetApprovalsApproved: (id: string) => Promise<boolean>;
+    }).areAllTargetApprovalsApproved('bundle-1');
+    expect(ok).toBe(true);
+  });
+
+  it('areAllTargetApprovalsApproved blocks when any row is rejected (defensive)', async () => {
+    // The rejection branch in handleBookingBundleApprovalDecided fires
+    // before this helper is reached, but if a stale rejected row somehow
+    // survives, the helper must not yield a false 'approved'.
+    const { svc } = makeBundleService({
+      rowsForTarget: [
+        { status: 'approved' },
+        { status: 'rejected' },
+      ],
+    });
+
+    const ok = await (svc as unknown as {
+      areAllTargetApprovalsApproved: (id: string) => Promise<boolean>;
+    }).areAllTargetApprovalsApproved('bundle-1');
+    expect(ok).toBe(false);
+  });
+
   it('handleBookingBundleApprovalDecided does NOT call BundleService when peers are pending', async () => {
     const { svc, bundleSpy } = makeBundleService({
       rowsForTarget: [

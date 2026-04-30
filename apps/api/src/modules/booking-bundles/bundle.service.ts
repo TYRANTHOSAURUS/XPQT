@@ -947,30 +947,10 @@ export class BundleService {
       );
     }
 
-    const { data: deferredOlis, error: oliErr } = await this.supabase.admin
-      .from('order_line_items')
-      .select('id, pending_setup_trigger_args')
-      .in('order_id', orderIds)
-      .not('pending_setup_trigger_args', 'is', null);
-    if (oliErr) {
-      this.log.error(
-        `onApprovalDecided: failed to load deferred OLIs for bundle ${bundleId}: ${oliErr.message}`,
-      );
-      return;
-    }
-
-    const oliRows = (deferredOlis ?? []) as Array<{
-      id: string;
-      pending_setup_trigger_args: TriggerArgs | null;
-    }>;
-
     // On rejection: expire sibling approval rows that were still pending
-    // BEFORE the early-return for "no deferred OLIs". Without this, a
-    // bundle with multiple approvers but no requires_internal_setup lines
-    // would skip the expire step entirely, leaving peers stuck in their
-    // pending queues. Without it, the args-clear below still prevents a
-    // late peer-grant from re-firing the trigger, but the user-visible
-    // queue cleanup wouldn't happen.
+    // BEFORE we touch deferred OLIs. Without this, a bundle with multiple
+    // approvers but no requires_internal_setup lines would skip the expire
+    // step entirely, leaving peers stuck in their pending queues.
     if (decision === 'rejected') {
       const { error: expireErr } = await this.supabase.admin
         .from('approvals')
@@ -989,11 +969,36 @@ export class BundleService {
       }
     }
 
-    if (oliRows.length === 0) {
-      // No deferred setup work — bundle had approval-required rules without
-      // requires_internal_setup. The order status flip above (and sibling
-      // expire on rejection) are the only state changes. Still emit a
-      // marker so the audit feed shows the approval was observed.
+    // Atomic claim: SELECT FOR UPDATE inside the RPC ensures only one
+    // caller can claim a given OLI's args, even when two approvers grant
+    // truly concurrently across multiple API instances. Returns one row
+    // per claimed OLI with the OLD args value (the RPC nulls them in the
+    // same statement). The previous read-then-clear pattern allowed a
+    // double-fire window between the read and the clear — see 00198.
+    const { data: claimed, error: claimErr } = await this.supabase.admin.rpc(
+      'claim_deferred_setup_trigger_args',
+      {
+        p_tenant_id: tenantId,
+        p_order_ids: orderIds,
+      },
+    );
+    if (claimErr) {
+      this.log.error(
+        `onApprovalDecided: failed to claim deferred trigger args for bundle ${bundleId}: ${claimErr.message}`,
+      );
+      return;
+    }
+
+    const claimedRows = (claimed ?? []) as Array<{
+      oli_id: string;
+      args: TriggerArgs | null;
+    }>;
+
+    if (claimedRows.length === 0) {
+      // No deferred setup work to claim. Either the bundle had approval-
+      // required rules without requires_internal_setup, or another caller
+      // already claimed everything. Marker audit so the timeline shows the
+      // approval was observed; idempotent no-op on a duplicate call.
       void this.audit(
         tenantId,
         `bundle.approval_${decision}_no_deferred_setup`,
@@ -1004,23 +1009,13 @@ export class BundleService {
       return;
     }
 
-    const oliIds = oliRows.map((r) => r.id);
+    const oliIds = claimedRows.map((r) => r.oli_id);
 
     if (decision === 'approved') {
-      const triggerArgs = oliRows
-        .map((r) => r.pending_setup_trigger_args)
+      const triggerArgs = claimedRows
+        .map((r) => r.args)
         .filter((a): a is TriggerArgs => a !== null);
       await this.setupTrigger.triggerMany(triggerArgs);
-
-      const { error: clearErr } = await this.supabase.admin
-        .from('order_line_items')
-        .update({ pending_setup_trigger_args: null })
-        .in('id', oliIds);
-      if (clearErr) {
-        this.log.error(
-          `onApprovalDecided: failed to clear pending_setup_trigger_args after fire for bundle ${bundleId}: ${clearErr.message}`,
-        );
-      }
 
       void this.audit(
         tenantId,
@@ -1034,16 +1029,8 @@ export class BundleService {
         },
       );
     } else {
-      const { error: clearErr } = await this.supabase.admin
-        .from('order_line_items')
-        .update({ pending_setup_trigger_args: null })
-        .in('id', oliIds);
-      if (clearErr) {
-        this.log.error(
-          `onApprovalDecided: failed to clear pending_setup_trigger_args after rejection for bundle ${bundleId}: ${clearErr.message}`,
-        );
-      }
-
+      // The args were already cleared by the RPC's atomic claim. We just
+      // record that the deferral was dropped without firing.
       void this.audit(
         tenantId,
         'bundle.deferred_setup_dropped_on_rejection',
