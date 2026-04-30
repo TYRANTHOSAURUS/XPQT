@@ -954,7 +954,12 @@ export class OrderService {
       }
 
       if (anyPending) {
+        // Persist failure surfaces as a HIGH-severity event, NOT the normal
+        // deferred marker — otherwise approval-grant later claims nothing
+        // and no work order fires, with the audit trail saying the opposite.
+        // Mirror of the bundle path.
         for (const { meta, args: tArgs } of persisted) {
+          const outcome = outcomes.get(meta.oliId)!;
           const { error: persistErr } = await this.supabase.admin
             .from('order_line_items')
             .update({ pending_setup_trigger_args: tArgs })
@@ -963,8 +968,15 @@ export class OrderService {
             this.log.error(
               `failed to persist pending_setup_trigger_args for oli ${meta.oliId}: ${persistErr.message}`,
             );
+            void this.audit(tenantId, 'order.setup_deferral_persist_failed', 'order_line_item', meta.oliId, {
+              line_id: meta.oliId,
+              order_id: order.id,
+              rule_ids: outcome.matched_rule_ids,
+              error: persistErr.message,
+              severity: 'high',
+            });
+            continue;
           }
-          const outcome = outcomes.get(meta.oliId)!;
           void this.audit(tenantId, 'order.setup_deferred_pending_approval', 'order_line_item', meta.oliId, {
             line_id: meta.oliId,
             order_id: order.id,

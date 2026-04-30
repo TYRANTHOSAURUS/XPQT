@@ -341,8 +341,13 @@ export class BundleService {
 
       if (anyPending) {
         // Persist trigger args on each OLI so onApprovalDecided can re-fire
-        // exactly the snapshot that would have fired at create time.
-        for (const { oliId, args } of requiresSetup) {
+        // exactly the snapshot that would have fired at create time. If the
+        // persist fails, emit a HIGH-severity event instead of the normal
+        // deferred marker — codex 2026-04-30 review: leaving the misleading
+        // "deferred" audit AND a missing persist means approval-grant later
+        // claims nothing and no work order ever fires, with the audit trail
+        // saying the opposite.
+        for (const { oliId, outcome, args } of requiresSetup) {
           const { error: persistErr } = await this.supabase.admin
             .from('order_line_items')
             .update({ pending_setup_trigger_args: args })
@@ -351,9 +356,21 @@ export class BundleService {
             this.log.error(
               `failed to persist pending_setup_trigger_args for oli ${oliId}: ${persistErr.message}`,
             );
+            void this.audit(
+              tenantId,
+              'bundle.setup_deferral_persist_failed',
+              'order_line_item',
+              oliId,
+              {
+                line_id: oliId,
+                bundle_id: bundle.id,
+                rule_ids: outcome.matched_rule_ids,
+                error: persistErr.message,
+                severity: 'high',
+              },
+            );
+            continue;
           }
-        }
-        for (const { oliId, outcome } of requiresSetup) {
           void this.audit(
             tenantId,
             'bundle.setup_deferred_pending_approval',
@@ -1016,6 +1033,54 @@ export class BundleService {
         .map((r) => r.args)
         .filter((a): a is TriggerArgs => a !== null);
       await this.setupTrigger.triggerMany(triggerArgs);
+
+      // Cancel/approve race guard. The atomic claim above prevents two
+      // approve-side callers from racing each other. But it does NOT
+      // coordinate with the cancel cascade, which can run between the
+      // claim returning and triggerMany inserting the work order:
+      //
+      //   1. Claim RPC commits (args nulled, returned).
+      //   2. cancelLine runs: closes existing tickets WHERE linked_oli=A
+      //      (none yet — the trigger hasn't inserted), updates OLI status
+      //      to 'cancelled'.
+      //   3. triggerMany inserts a NEW ticket with linked_oli=A.
+      //
+      // Result: an open work order linked to a cancelled line. Codex
+      // 2026-04-30 review caught this. Defensive close: re-run the
+      // cancel cascade's tickets-close clause for any of the just-fired
+      // OLIs that are now in fulfillment_status='cancelled'. Idempotent
+      // and scoped — no-op when the race didn't happen.
+      const { data: stale } = await this.supabase.admin
+        .from('order_line_items')
+        .select('id')
+        .in('id', oliIds)
+        .eq('fulfillment_status', 'cancelled');
+      const staleOliIds = ((stale ?? []) as Array<{ id: string }>).map((r) => r.id);
+      if (staleOliIds.length > 0) {
+        const { data: closedTickets } = await this.supabase.admin
+          .from('tickets')
+          .update({ status_category: 'closed', closed_at: new Date().toISOString() })
+          .in('linked_order_line_item_id', staleOliIds)
+          .eq('tenant_id', tenantId)
+          .eq('ticket_kind', 'work_order')
+          .in('status_category', ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'])
+          .select('id');
+        const closedTicketIds = ((closedTickets ?? []) as Array<{ id: string }>).map((r) => r.id);
+        if (closedTicketIds.length > 0) {
+          void this.audit(
+            tenantId,
+            'bundle.deferred_setup_closed_after_concurrent_cancel',
+            'booking_bundle',
+            bundleId,
+            {
+              bundle_id: bundleId,
+              oli_ids: staleOliIds,
+              ticket_ids: closedTicketIds,
+              severity: 'medium',
+            },
+          );
+        }
+      }
 
       void this.audit(
         tenantId,

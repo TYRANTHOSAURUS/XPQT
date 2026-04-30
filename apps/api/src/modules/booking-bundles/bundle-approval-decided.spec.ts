@@ -32,6 +32,11 @@ function makeService(opts: {
   orders: OrderRow[];
   olis: OliRow[];
   rpcResult?: { data: Array<{ oli_id: string; args: Record<string, unknown> | null }>; error: { message: string } | null };
+  /** OLIs that the post-trigger defensive-close lookup should report as
+   *  cancelled (i.e. the cancel cascade ran during the approve flow). */
+  staleOliIds?: string[];
+  /** Tickets the defensive close should claim. */
+  closedTicketIds?: string[];
 }) {
   const updates: UpdateCapture[] = [];
   const auditInserts: Array<Record<string, unknown>> = [];
@@ -75,6 +80,56 @@ function makeService(opts: {
                       filters.push({ kind: 'eq', col: col2, val: val2 });
                       updates.push({ table, patch, filters });
                       return Promise.resolve({ data: null, error: null });
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === 'order_line_items') {
+          // Defensive cancel/approve race lookup: select OLIs that are now
+          // fulfillment_status='cancelled' from the just-fired set.
+          return {
+            select: () => ({
+              in: () => ({
+                eq: () => Promise.resolve({
+                  data: (opts.staleOliIds ?? []).map((id) => ({ id })),
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'tickets') {
+          // Defensive close of any work order that was just inserted for an
+          // OLI that's already cancelled. Returns the closed ticket ids.
+          return {
+            update: (patch: Record<string, unknown>) => {
+              const filters: UpdateCapture['filters'] = [];
+              return {
+                in: (col: string, val: unknown) => {
+                  filters.push({ kind: 'in', col, val });
+                  return {
+                    eq: (c2: string, v2: unknown) => {
+                      filters.push({ kind: 'eq', col: c2, val: v2 });
+                      return {
+                        eq: (c3: string, v3: unknown) => {
+                          filters.push({ kind: 'eq', col: c3, val: v3 });
+                          return {
+                            in: (c4: string, v4: unknown) => {
+                              filters.push({ kind: 'in', col: c4, val: v4 });
+                              updates.push({ table, patch, filters });
+                              return {
+                                select: () => Promise.resolve({
+                                  data: (opts.closedTicketIds ?? []).map((id) => ({ id })),
+                                  error: null,
+                                }),
+                              };
+                            },
+                          };
+                        },
+                      };
                     },
                   };
                 },
@@ -316,6 +371,55 @@ describe('BundleService.onApprovalDecided', () => {
       expect(auditInserts.some(
         (a) => a.event_type === 'bundle.approval_approved_no_orders',
       )).toBe(true);
+    });
+  });
+
+  describe('cancel/approve race (codex round 2)', () => {
+    it('closes work orders that were created for OLIs cancelled mid-approve', async () => {
+      // Race scenario:
+      //   1. Approval grants → claim RPC commits (args nulled).
+      //   2. cancelLine runs → closes existing tickets (none yet) → cancels OLI.
+      //   3. triggerMany inserts a NEW ticket linked to the now-cancelled OLI.
+      // Defensive close re-runs the close clause against fulfillment_status=
+      // 'cancelled' OLIs to catch the orphaned ticket.
+      const { service, updates, auditInserts } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [
+          { id: 'oli-1', pending_setup_trigger_args: SAMPLE_TRIGGER_ARGS },
+        ],
+        // Cancel cascade landed mid-flow; OLI is now cancelled.
+        staleOliIds: ['oli-1'],
+        closedTicketIds: ['ticket-orphaned-1'],
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
+
+      // Defensive close ran against tickets table.
+      const ticketClose = updates.find((u) => u.table === 'tickets');
+      expect(ticketClose).toBeDefined();
+      expect(ticketClose!.patch).toMatchObject({ status_category: 'closed' });
+
+      // Audit emits the race-detected event (medium severity for ops triage).
+      expect(auditInserts.some(
+        (a) => a.event_type === 'bundle.deferred_setup_closed_after_concurrent_cancel',
+      )).toBe(true);
+    });
+
+    it('does NOT close anything when no OLI is cancelled (no race happened)', async () => {
+      const { service, updates, auditInserts } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [
+          { id: 'oli-1', pending_setup_trigger_args: SAMPLE_TRIGGER_ARGS },
+        ],
+        staleOliIds: [],   // no cancellation in flight
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
+
+      expect(updates.find((u) => u.table === 'tickets')).toBeUndefined();
+      expect(auditInserts.some(
+        (a) => a.event_type === 'bundle.deferred_setup_closed_after_concurrent_cancel',
+      )).toBe(false);
     });
   });
 });

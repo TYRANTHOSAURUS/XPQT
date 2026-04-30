@@ -390,23 +390,27 @@ export class ApprovalService {
    * Resolve final decision for a booking_bundle approval and call
    * BundleService.onApprovalDecided once the bundle is fully resolved.
    *
-   * Bundles can have MORE THAN ONE approval row without a parallel_group:
-   * `ApprovalRoutingService.assemble` creates one row per unique approver
-   * (e.g. cost-center owner + threshold approver + dietary-officer for the
-   * same bundle), and each row is single-step (parallel_group=null,
-   * chain=null). Treating "no group, no chain" as "fire immediately on this
-   * grant" would re-fire the deferred trigger as soon as the FIRST approver
-   * grants, bypassing the others — a real correctness bug.
+   * Why this doesn't branch on `parallel_group` / `approval_chain_id`
+   * like the reservation handler does: bundle approvals are typically
+   * upserted by `ApprovalRoutingService.assemble` as independent
+   * single-step rows (one per unique approver — cost-center owner +
+   * threshold approver + dietary officer, etc.). They have no
+   * parallel_group and no chain. But it IS possible for the same bundle
+   * to ALSO be targeted by `createParallelGroup` / `createSequentialChain`
+   * via the generic API, mixing topologies on a single target. To handle
+   * any combination correctly — and to never under-block or over-fire —
+   * we always require EVERY approval row on the target to be resolved
+   * (`approved` or `expired`). That superset covers single-step, parallel,
+   * chained, and mixed bundles uniformly.
    *
    * Resolution rules:
-   *   - Any rejection ends the approval immediately ('rejected'). Other
-   *     pending peers are left as-is; BundleService.onApprovalDecided
-   *     clears persisted args so a later peer-grant cannot re-fire.
-   *   - Parallel group: wait for the group to be complete (existing helper).
-   *   - Sequential chain: wait for the chain to be complete (existing helper).
-   *   - Otherwise: check that ALL approval rows on this target_entity_id
-   *     are now 'approved'. If any is still 'pending', return — the next
-   *     peer's grant will re-enter this handler.
+   *   - Any rejection ends the approval immediately ('rejected'). Sibling
+   *     pending peers are expired by `BundleService.onApprovalDecided`
+   *     to keep approvers' queues clean.
+   *   - Otherwise: every approval row on the same `target_entity_id`
+   *     must be in `approved` or `expired` status. If any is still
+   *     `pending` (or defensively `rejected`), return — the next peer's
+   *     grant will re-enter this handler.
    */
   private async handleBookingBundleApprovalDecided(
     approval: { id: string; target_entity_id: string; parallel_group: string | null;
@@ -416,16 +420,6 @@ export class ApprovalService {
     let finalDecision: 'approved' | 'rejected';
     if (dto.status === 'rejected') {
       finalDecision = 'rejected';
-    } else if (approval.parallel_group) {
-      const complete = await this.isParallelGroupComplete(
-        approval.parallel_group, approval.target_entity_id,
-      );
-      if (!complete) return;
-      finalDecision = 'approved';
-    } else if (approval.approval_chain_id) {
-      const allComplete = await this.isChainComplete(approval.approval_chain_id);
-      if (!allComplete) return;
-      finalDecision = 'approved';
     } else {
       const allResolved = await this.areAllTargetApprovalsApproved(
         approval.target_entity_id,
@@ -442,27 +436,23 @@ export class ApprovalService {
 
   /**
    * True when every approval row on the given target is RESOLVED
-   * affirmatively — i.e. every row is 'approved' or 'expired', and no
-   * row is still 'pending' or 'rejected'.
+   * affirmatively — explicitly: every row is `approved` or `expired`,
+   * and no row is `pending` or `rejected` (or any other future status).
    *
-   * Why 'expired' counts as resolved: BundleCascadeService expires
-   * approvals when a line cancel empties their scope_breakdown
-   * (rescopeApprovalsAfterLineCancel) — the work the approval covered
-   * no longer exists, so the approval was effectively retracted. If we
-   * treated 'expired' as blocking, a bundle with 2 approvers would
-   * never resolve once one row got auto-expired by a line cancel: even
-   * with the surviving approver granting, the helper would say "not
-   * all approved" and the trigger would never fire.
+   * Why `expired` counts as resolved: `BundleCascadeService.
+   * rescopeApprovalsAfterLineCancel` sets approvals to `expired` when
+   * their scope_breakdown is emptied by a line cancel. Treating
+   * `expired` as blocking would deadlock multi-approver bundles
+   * whenever any line cancels — the surviving approver's grant could
+   * never resolve the bundle.
    *
-   * 'rejected' still blocks defensively — if any row is rejected, the
-   * rejection branch in handleBookingBundleApprovalDecided should have
-   * fired first. Treating it as blocking here prevents a stale rejection
-   * row from accidentally yielding a false 'approved' result.
+   * Why we explicitly enumerate (instead of "anything not-pending"):
+   * future approval-row statuses (e.g. `delegated`, `revoked`) should
+   * not silently count as resolved. If a new status is introduced, this
+   * helper should be revisited explicitly.
    *
-   * Used by booking_bundle resolution where multiple approvers are
-   * upserted as independent rows (no parallel_group / no chain). False
-   * when there are zero rows — defensive: a target with no rows
-   * shouldn't reach this path.
+   * False when there are zero rows — defensive: a target with no rows
+   * shouldn't reach this path. Used by booking_bundle resolution.
    */
   private async areAllTargetApprovalsApproved(
     targetEntityId: string,
@@ -474,12 +464,8 @@ export class ApprovalService {
       .eq('tenant_id', tenant.id)
       .eq('target_entity_id', targetEntityId);
     if (!data || data.length === 0) return false;
-    const anyPending = data.some((a) => a.status === 'pending');
-    if (anyPending) return false;
-    const anyRejected = data.some((a) => a.status === 'rejected');
-    if (anyRejected) return false;
-    // Every row is 'approved' or 'expired'.
-    return true;
+    const RESOLVED = new Set(['approved', 'expired']);
+    return data.every((a) => RESOLVED.has(a.status as string));
   }
 
   /**
