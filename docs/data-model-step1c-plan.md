@@ -120,28 +120,60 @@ for each row execute function public.shadow_ticket_work_order_to_work_orders_new
 
 Now every write to `tickets` for a work_order row also writes to `work_orders_new`. Reads still hit tickets directly. This is the dual-write window.
 
-**Run for at least 2 release cycles** before flipping any reader. Use the time to monitor for divergence (a daily cron: `select count(*) from tickets where ticket_kind='work_order'` vs `count(*) from work_orders_new` — alert if they differ).
+**Soak gate criteria (signal-based, not calendar-based):**
 
-**Index bloat caveat:** during the dual-write window, every `work_order` write goes through both tables, doubling index churn (queue_primary, queue_sla, queue_location all replicated). On busy tenants this can measurably slow desk-queue latency for the duration of the window. Mitigations: (a) keep the window short — 2 cycles, not "until comfortable"; (b) monitor desk-queue p95 latency during the soak; (c) if degradation is observable, defer the secondary indexes on `work_orders_new` until after writers cut over (1c.4).
+The original phrasing "2 release cycles" was time-based and weak. Replace with three concrete signals — ALL must hold simultaneously before phase 1c.3.5 ships:
 
-**Risk:** medium. Trigger overhead on every tickets write. Measure at scale before declaring stable.
+1. **Zero-divergence streak ≥ 14 consecutive days.** Daily cron queries `public.work_orders_dual_write_divergence_v` (00216 + 00217 — four classes: counts_mismatch, only_in_tickets, only_in_won, won_missing_legacy). All four MUST report `0` for 14 consecutive days. Any non-zero resets the counter.
+2. **No schema changes to `tickets` in the soak window.** A column add or constraint change forces re-baselining; restart the streak.
+3. **Desk-queue p95 latency within 10% of pre-1c.3 baseline.** Capture pre-baseline before applying 1c.3 (separate query: `select p95(query_duration_ms) from request_logs where path like '/tickets%' and …` — exact metric depends on observability stack). During soak, daily comparison; out-of-band drift gates the next phase.
+
+**Monitoring SLO for the divergence view:**
+- Alert wired to PagerDuty/Slack on `divergence_count > 0` within 1h of cron run.
+- On-call rotation owns the alert.
+- Runbook: (a) re-run forward trigger on the divergent row; (b) if still divergent, identify the row's source via `select * from work_orders_dual_write_divergence_v` then deep-dive; (c) escalate to data-model-rework owner if not reconciled in 4h.
+
+**Index bloat caveat:** during the dual-write window, every `work_order` write goes through both tables, doubling index churn (queue_primary, queue_sla, queue_location all replicated). On busy tenants this can measurably slow desk-queue latency for the duration of the window.
+
+**Measurement plan:**
+- Pre-1c.3 baseline: 7-day p50 + p95 + p99 latency for the three hottest desk-queue queries (queue list, SLA violations, location-filtered queue). Captured in `docs/follow-ups/step1c-baseline.md` BEFORE phase 1c.3 ships.
+- During soak: daily latency check. Allowed degradation: p95 within 10% of baseline. Anything worse blocks 1c.3.5.
+- If degradation is observable, defer the secondary indexes on `work_orders_new` until after writers cut over (1c.4).
+
+**Risk:** medium. Trigger overhead on every tickets write. The signal-based gate is the primary safety net.
 
 ### Phase 1c.3.5 — install reverse trigger + parallel-soak
 
 **Inserted after the original plan because the dual-write reversal in 1c.4 was hand-waved.** Reversing trigger direction during the writer cutover is the single highest-risk operation in the migration. Splitting it out gives a soak window where both directions run in parallel and divergence can be caught before it bites.
 
+**Loop-prevention mechanism:** the forward trigger (00217) checks the session GUC `xpqt.dual_write_reverse_active` and skips when set. The reverse trigger MUST set this GUC before writing to tickets and clear it after. This is stronger than `pg_trigger_depth() > 1` (which would block ANY nested trigger firing including legitimate workflow paths).
+
 ```sql
--- Reverse direction shim: every write to work_orders_new shadows back into tickets.
--- This protects callers still reading from `tickets` during the write cutover.
 create or replace function public.shadow_work_orders_new_to_tickets()
 returns trigger language plpgsql as $$
 begin
+  -- Set the reverse-active GUC for the duration of this trigger so the
+  -- forward shadow trigger knows to skip. Use perform set_config(...,
+  -- true) for transaction-local (auto-cleared at commit/rollback).
+  perform set_config('xpqt.dual_write_reverse_active', 'on', true);
+
   if tg_op = 'INSERT' then
-    insert into public.tickets (id, tenant_id, ticket_kind, …) values (new.id, new.tenant_id, 'work_order', …)
-    on conflict (id) do nothing;  -- the forward shim may already have inserted
+    insert into public.tickets (id, tenant_id, ticket_kind, parent_ticket_id, booking_bundle_id, …)
+    values (new.id, new.tenant_id, 'work_order', new.parent_case_id, new.booking_bundle_id, …)
+    on conflict (id) do update set …;  -- idempotent
   elsif tg_op = 'UPDATE' then
-    update public.tickets set … where id = new.id;
+    update public.tickets set …
+    where id = new.id
+      and (
+        -- Only update fields that actually changed — prevents identity-write
+        -- from triggering a no-op shadow round-trip.
+        tickets.title is distinct from new.title
+        or tickets.status_category is distinct from new.status_category
+        or …
+      );
   end if;
+
+  perform set_config('xpqt.dual_write_reverse_active', 'off', true);
   return new;
 end $$;
 
@@ -150,9 +182,15 @@ after insert or update on public.work_orders_new
 for each row execute function public.shadow_work_orders_new_to_tickets();
 ```
 
-Run BOTH directions in parallel for one full release cycle. Daily divergence check: count + content hash on both sides. Zero divergence is the gate to 1c.4.
+Run BOTH directions in parallel for one full release cycle. Daily divergence check: count + content hash on both sides. Zero divergence for 14 consecutive days is the gate to 1c.4 (matches the broader soak gate criteria above).
 
-**Risk:** medium. The forward + reverse triggers must use `on conflict do nothing` and idempotent UPDATEs to avoid trigger ping-pong (forward fires reverse fires forward …). Test the loop-prevention before any traffic hits the soak.
+**Loop-prevention test (mandatory before traffic):**
+1. Stage a row, fire forward INSERT.
+2. Verify the reverse trigger does NOT re-fire the forward trigger (confirm via depth-1 invocation count or test fixture).
+3. Verify hash-equality on both sides after each direction.
+4. Repeat for UPDATE.
+
+**Risk:** medium-high. Mismanaged GUC handling re-enables ping-pong. The IS DISTINCT FROM guard on UPDATE is the secondary defense.
 
 ### Phase 1c.3.6 — re-run all 1b readers against the materialized table
 

@@ -55,3 +55,19 @@ The bundle ↔ ticket FK is wired (00145) but no rows use it yet in dev.
 - Re-run this audit against the production database before any 1c phase ships there. Dev numbers diverge from production.
 - Check `seed/centralised-example-reset` (`00100`) impact on these counts — the reset wipes data; numbers post-reset may differ.
 - Verify cross-tenant integrity: `select count(distinct tenant_id) from tickets where ticket_kind='work_order'` to confirm WOs are tenant-distributed as expected.
+
+## Additional audit needed before phase 1c.4 (writer flip)
+
+The full-review (2026-04-30) flagged that the baseline doesn't capture rows step 1c.4 will need to keep in sync. Capture before opening the 1c.4 PR:
+
+- `select count(*) from public.orders where linked_setup_ticket_id in (select id from public.tickets where ticket_kind='work_order');` — orders that point at WOs via `linked_setup_ticket_id`. Phase 1c.4 will rename this to `linked_work_order_id` (per master doc step 2 plan).
+- Approval chain rows referencing work_order tickets — count grouped by chain state.
+- `select count(*) from public.workflow_instance_events wie join public.workflow_instances wi on wi.id = wie.workflow_instance_id join public.tickets t on t.id = wi.ticket_id where t.ticket_kind = 'work_order';` — historical events for WO workflows even when no live workflow_instance exists.
+- Ticket comments / messages / attachments scoped to work_order tickets (any modules that have such — verify via grep).
+
+## Latency baseline (pre-phase-1c.3.5 gate)
+
+Required before phase 1c.3.5 (reverse trigger + parallel soak) can ship. Capture as a separate followup doc:
+- p50 / p95 / p99 latency for the three hottest desk-queue queries (queue list, SLA-violations list, location-filtered queue) over a 7-day window.
+- The 1c.3.5 → 1c.4 gate requires p95 within 10% of this baseline during the soak.
+
