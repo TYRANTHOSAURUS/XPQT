@@ -133,6 +133,10 @@ export function dsrListOptions(filter: { subject_person_id?: string; status?: st
   if (filter.subject_person_id) params.set('subject_person_id', filter.subject_person_id);
   if (filter.status) params.set('status', filter.status);
   const qs = params.toString();
+  // `qs` is derived from `filter`, which is already in the queryKey via
+  // gdprKeys.requestsList. Adding it would duplicate the same data in a
+  // different shape and break stability.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
   return queryOptions({
     queryKey: gdprKeys.requestsList(filter),
     queryFn: ({ signal }) =>

@@ -293,6 +293,10 @@ export function schedulerDataOptions(input: SchedulerDataInput) {
     requester_id: input.requester_id ?? null,
   };
   const cacheKey = JSON.stringify(stable);
+  // `cacheKey` is a JSON serialisation of `stable`, which is already in
+  // the queryKey via roomBookingKeys.schedulerData. It's only used as the
+  // ETag map key, not as a query input.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
   return queryOptions<SchedulerDataResponse>({
     queryKey: roomBookingKeys.schedulerData(stable),
     queryFn: async ({ signal, client, queryKey }) => {

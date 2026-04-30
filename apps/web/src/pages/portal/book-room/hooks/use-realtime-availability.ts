@@ -56,7 +56,9 @@ export function useRealtimeAvailability(
     const channel = supabase
       .channel(`portal-picker:${spaceIds.slice(0, 8).join(',')}`)
       .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- supabase-js v2 has loose typing for postgres_changes
+        // supabase-js v2 has loose typing for postgres_changes; the cast is
+        // load-bearing. The eslint-disable is dead because @typescript-eslint
+        // isn't loaded in the web app's flat config (eslint.config.js).
         'postgres_changes' as any,
         { event: '*', schema: 'public', table: 'reservations' },
         (payload: { new?: Record<string, unknown>; old?: Record<string, unknown> }) => {

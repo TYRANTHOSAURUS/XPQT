@@ -39,8 +39,11 @@ export function searchOptions(q: string, types?: SearchKind[], limit = 4) {
   if (types?.length) params.set('types', types.join(','));
   if (limit && limit !== 4) params.set('limit', String(limit));
 
+  // `params` is derived from the same trimmed/types/limit triple now in
+  // the queryKey; it's only the URLSearchParams serialisation.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
   return queryOptions({
-    queryKey: searchKeys.query(trimmed, types),
+    queryKey: searchKeys.query(trimmed, types, limit),
     queryFn: ({ signal }) =>
       apiFetch<SearchResponse>(`/search?${params.toString()}`, { signal }),
     enabled,

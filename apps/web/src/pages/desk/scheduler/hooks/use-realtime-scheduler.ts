@@ -61,7 +61,9 @@ export function useRealtimeScheduler(
     const channel = supabase
       .channel(`desk-scheduler:${Math.abs(hash).toString(36)}:${spaceIds.length}`)
       .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- supabase-js v2 has loose typing for postgres_changes
+        // supabase-js v2 has loose typing for postgres_changes; the cast is
+        // load-bearing. The eslint-disable is dead because @typescript-eslint
+        // isn't loaded in the web app's flat config (eslint.config.js).
         'postgres_changes' as any,
         { event: '*', schema: 'public', table: 'reservations' },
         (payload: { new?: Record<string, unknown>; old?: Record<string, unknown> }) => {

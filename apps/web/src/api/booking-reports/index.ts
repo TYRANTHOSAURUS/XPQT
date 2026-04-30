@@ -28,6 +28,11 @@ function makeReportOptions<T>(
   path: string,
   keyMaker: (p: BookingsReportParams) => readonly unknown[],
 ) {
+  // `path` is fixed per call to `makeReportOptions` (one of five report
+  // endpoints) and the keyMaker already encodes which report it belongs to
+  // via bookingReportKeys.{overview|utilization|...}. Adding `path` to the
+  // queryKey would be redundant and break key stability.
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps
   return (params: BookingsReportParams) => queryOptions({
     queryKey: keyMaker(params),
     queryFn: ({ signal }) =>
