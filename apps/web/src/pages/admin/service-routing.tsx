@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -282,6 +282,20 @@ function UpsertDialog({
   );
   const [active, setActive] = useState(existingRow?.active ?? true);
   const [error, setError] = useState<string | null>(null);
+
+  // Re-seed when the dialog opens for a DIFFERENT row. useState's initial
+  // value only fires on mount; without this, clicking edit on row A then
+  // row B would show row A's stale values in the form.
+  useEffect(() => {
+    if (!open) return;
+    setLocationId(existingRow?.location_id ?? null);
+    setCategory(existingRow?.service_category ?? 'catering');
+    setTeamId(existingRow?.internal_team_id ?? null);
+    setLeadMinutes(String(existingRow?.default_lead_time_minutes ?? 30));
+    setSlaId(existingRow?.sla_policy_id ?? null);
+    setActive(existingRow?.active ?? true);
+    setError(null);
+  }, [open, existingRow?.id]);
 
   // Reset form on open/close.
   const handleOpen = (next: boolean) => {

@@ -117,7 +117,14 @@ export class BundleCascadeService {
     // cascade has real data to act on. Filter NON-terminal status with an
     // explicit whitelist so already-closed tickets don't get their
     // closed_at re-stamped.
-    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting'];
+    // Non-terminal status whitelist mirrors the schema check constraints:
+    //   00011 added: new, assigned, in_progress, waiting, resolved, closed
+    //   00028 added: pending_approval
+    // Booking-origin work orders bypass the approval gate today (no
+    // request_type), so pending_approval is unreachable in practice — but
+    // include defensively so a future code path that DOES land them there
+    // doesn't silently bypass the cascade.
+    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
     const { data: linkedTickets } = await this.supabase.admin
       .from('tickets')
       .update({ status_category: 'closed', closed_at: new Date().toISOString() })
@@ -251,7 +258,9 @@ export class BundleCascadeService {
     // cancelled lines (via tickets.linked_order_line_item_id, 00145).
     // Whitelist non-terminal statuses so already-closed tickets don't
     // get closed_at re-stamped. Bulk form mirrors cancelLine() above.
-    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting'];
+    // Same whitelist as cancelLine() above — kept inline since the bulk path
+    // shouldn't import a constant from the per-line block (separate scopes).
+    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
     let cancelledTicketIds: string[] = [];
     if (cancelledLineIds.length > 0) {
       const { data: linkedTickets } = await this.supabase.admin

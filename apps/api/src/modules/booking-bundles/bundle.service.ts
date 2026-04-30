@@ -513,7 +513,9 @@ export class BundleService {
     if (oldStart && newStart && oldStart !== newStart) {
       const deltaMs = new Date(newStart).getTime() - new Date(oldStart).getTime();
       if (deltaMs !== 0) {
-        const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting'];
+        // Match cancel-cascade whitelist (bundle-cascade.service.ts) — see
+        // the comment there for the schema-history reasoning.
+        const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
         const { data: linkedWos } = await this.supabase.admin
           .from('tickets')
           .select('id, sla_resolution_due_at')
