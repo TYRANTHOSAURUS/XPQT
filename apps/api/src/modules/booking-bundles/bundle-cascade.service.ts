@@ -139,9 +139,17 @@ export class BundleCascadeService {
       }
     }
 
+    // Clearing pending_setup_trigger_args (00197) alongside the cancel is
+    // important: the line might be cancelled while approval-deferred. Without
+    // this, a later approval grant on a SIBLING line on the same bundle
+    // would re-fire the trigger for the cancelled line via
+    // BundleService.onApprovalDecided.
     await this.supabase.admin
       .from('order_line_items')
-      .update({ fulfillment_status: 'cancelled' })
+      .update({
+        fulfillment_status: 'cancelled',
+        pending_setup_trigger_args: null,
+      })
       .eq('id', args.line_id);
 
     // Re-scope approvals: drop the cancelled line + its linked ticket + its
@@ -274,9 +282,15 @@ export class BundleCascadeService {
       cancelledTicketIds = (linkedTickets as Array<{ id: string }> | null)?.map((t) => t.id) ?? [];
     }
     if (cancelledLineIds.length > 0) {
+      // Also clear pending_setup_trigger_args (00197) so a later approval
+      // grant doesn't re-fire the trigger for cancelled lines. See the
+      // single-line cancel path above for rationale.
       await this.supabase.admin
         .from('order_line_items')
-        .update({ fulfillment_status: 'cancelled' })
+        .update({
+          fulfillment_status: 'cancelled',
+          pending_setup_trigger_args: null,
+        })
         .in('id', cancelledLineIds);
     }
 

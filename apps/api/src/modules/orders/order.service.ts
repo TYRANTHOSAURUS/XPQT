@@ -8,7 +8,10 @@ import {
 import { ApprovalRoutingService } from './approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
+import {
+  SetupWorkOrderTriggerService,
+  type TriggerArgs,
+} from '../service-routing/setup-work-order-trigger.service';
 
 /**
  * Per spec §5.1: at recurrence-materialisation time, each order on the
@@ -916,33 +919,27 @@ export class OrderService {
       // Approval interlock (codex 2026-04-30 review): mirrors the bundle
       // path — if ANY line is pending approval, defer auto-creation.
       // Facilities shouldn't start work for orders that may be rejected.
-      // Wave 3 bundle-approval handler will re-fire on grant.
-      if (anyPending) {
-        for (const meta of lineMetas) {
-          const outcome = outcomes.get(meta.oliId);
-          if (!outcome?.requires_internal_setup) continue;
-          void this.audit(tenantId, 'order.setup_deferred_pending_approval', 'order_line_item', meta.oliId, {
+      // The TriggerArgs are PERSISTED on the OLI so BundleService.
+      // onApprovalDecided can re-fire exactly the snapshot on grant
+      // without re-resolving rules (00197 + the approval-decided handler).
+      const persisted: Array<{ meta: (typeof lineMetas)[number]; args: TriggerArgs }> = [];
+      for (const meta of lineMetas) {
+        const outcome = outcomes.get(meta.oliId);
+        if (!outcome?.requires_internal_setup) continue;
+        if (!meta.service_type) {
+          // No service_type → matrix can't route. Surface and skip. Same on
+          // both deferred and immediate paths so the audit stream is uniform.
+          void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
             line_id: meta.oliId,
-            order_id: order.id,
+            reason: 'no_service_type_on_line',
             rule_ids: outcome.matched_rule_ids,
-            reason: 'approval_pending',
+            severity: 'medium',
           });
+          continue;
         }
-      } else {
-        const triggerArgs: Array<Parameters<typeof this.setupTrigger.trigger>[0]> = [];
-        for (const meta of lineMetas) {
-          const outcome = outcomes.get(meta.oliId);
-          if (!outcome?.requires_internal_setup) continue;
-          if (!meta.service_type) {
-            void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
-              line_id: meta.oliId,
-              reason: 'no_service_type_on_line',
-              rule_ids: outcome.matched_rule_ids,
-              severity: 'medium',
-            });
-            continue;
-          }
-          triggerArgs.push({
+        persisted.push({
+          meta,
+          args: {
             tenantId,
             bundleId: bundle.id,
             oliId: meta.oliId,
@@ -952,9 +949,31 @@ export class OrderService {
             ruleIds: outcome.matched_rule_ids,
             leadTimeOverride: outcome.internal_setup_lead_time_minutes,
             originSurface: 'order',
+          },
+        });
+      }
+
+      if (anyPending) {
+        for (const { meta, args: tArgs } of persisted) {
+          const { error: persistErr } = await this.supabase.admin
+            .from('order_line_items')
+            .update({ pending_setup_trigger_args: tArgs })
+            .eq('id', meta.oliId);
+          if (persistErr) {
+            this.log.error(
+              `failed to persist pending_setup_trigger_args for oli ${meta.oliId}: ${persistErr.message}`,
+            );
+          }
+          const outcome = outcomes.get(meta.oliId)!;
+          void this.audit(tenantId, 'order.setup_deferred_pending_approval', 'order_line_item', meta.oliId, {
+            line_id: meta.oliId,
+            order_id: order.id,
+            rule_ids: outcome.matched_rule_ids,
+            reason: 'approval_pending',
           });
         }
-        await this.setupTrigger.triggerMany(triggerArgs);
+      } else {
+        await this.setupTrigger.triggerMany(persisted.map((p) => p.args));
       }
 
       void this.audit(tenantId, 'order.created', 'order', order.id, {

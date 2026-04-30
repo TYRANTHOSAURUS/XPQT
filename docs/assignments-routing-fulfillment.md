@@ -834,7 +834,14 @@ Naming pattern: `{originSurface}.{outcome}` where originSurface is `bundle` (bun
 - `*.setup_routing_unconfigured` — rule fired requires_internal_setup but matrix has no team for `(tenant, location, service_category)`. Skipped without creating; admins see this in the audit feed.
 - `*.setup_routing_lookup_failed` — `resolve_setup_routing()` RPC returned an error. Severity high.
 - `*.setup_work_order_create_failed` — matrix returned a team but the ticket insert threw. Severity high.
-- `*.setup_deferred_pending_approval` — at least one line on the bundle/order is in approval-required state, so the trigger was skipped pending the approval grant. Re-firing the trigger on grant is a Wave 3 task (see "Approval interlock" below).
+- `*.setup_deferred_pending_approval` — at least one line on the bundle/order is in approval-required state, so the trigger was skipped pending the approval grant. The TriggerArgs are persisted on `order_line_items.pending_setup_trigger_args` (00197) and re-fired by `BundleService.onApprovalDecided` once approval lands; see "Approval interlock" below.
+
+Emitted by `BundleService.onApprovalDecided` on the `booking_bundle` entity:
+
+- `bundle.deferred_setup_fired_on_approval` — approval granted; deferred trigger re-fired for the listed OLIs. Payload: bundle_id, oli_ids, order_ids.
+- `bundle.deferred_setup_dropped_on_rejection` — approval rejected; persisted args cleared without firing. Payload: bundle_id, oli_ids, order_ids.
+- `bundle.approval_approved_no_deferred_setup` — approval granted but no lines on the bundle had `requires_internal_setup`. Marker so the audit timeline shows the approval was observed.
+- `bundle.approval_{approved|rejected}_no_orders` — defensive: approval target was a `booking_bundle` but no orders linked. Should never happen in normal flow.
 
 Plus `booking_origin_work_order_created` on the ticket-side activity feed via `TicketService.addActivity` (visibility=`system`) — the per-ticket audit row, separate from the cross-source `audit_events` event above.
 
@@ -843,8 +850,12 @@ Plus `booking_origin_work_order_created` on the ticket-side activity feed via `T
 When a service rule on a line emits `effect=require_approval` (or `allow_override`), the order/bundle commits in `submitted` state and an approval row is created. **Auto-creation of internal setup work orders is deferred in this case** — facilities should not start internal work for an order that may still be rejected.
 
 - All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
-- No work orders are created until the bundle-level approval is granted.
-- Today there is **no approval-decision handler for booking_bundle** — once the approval lands, the trigger does NOT auto-fire. Ops must either flip the rule on the line and re-save, or create the work order manually. A proper handler is Wave 3 work (universal workflow editor on bundle events).
+- The `TriggerArgs` snapshot is persisted on `order_line_items.pending_setup_trigger_args` (00197) at deferral time.
+- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved (single-step decision, parallel-group complete, or final-step of a chain — same semantics as the reservation handler):
+  - **Approved:** linked orders flip `submitted` → `approved`; the persisted args are read back and `SetupWorkOrderTriggerService.triggerMany` re-fires the work-order creation for every deferred OLI; args are cleared (one-shot); audit emits `bundle.deferred_setup_fired_on_approval`.
+  - **Rejected:** linked orders flip `submitted` → `cancelled`; persisted args are cleared; audit emits `bundle.deferred_setup_dropped_on_rejection`. No trigger fires.
+- The handler is idempotent — order updates filter on `status='submitted'` and OLI clears filter on the args being present, so re-running on an already-decided bundle is a no-op.
+- The persisted args capture the decision **at create time**. Rule edits between booking and approval do not change what fires on grant — by design, so the operator's read of the booking matches what facilities will see.
 
 ### Visibility — what's intentionally NOT set on booking-origin work orders
 
@@ -860,8 +871,9 @@ Visibility for these tickets falls to the assignee path: `assigned_team_id` matc
 Any change to these requires updating this section:
 
 - `apps/api/src/modules/ticket/ticket.service.ts:createBookingOriginWorkOrder`
-- `apps/api/src/modules/booking-bundles/bundle.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/booking-bundles/bundle.service.ts` (`attachServicesToReservation`, `onApprovalDecided`)
 - `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts` (cancel cascade for `linked_order_line_item_id`)
-- `apps/api/src/modules/orders/order.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/orders/order.service.ts:createStandaloneOrder`
 - `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
-- Migrations changing `service_rules`, `location_service_routing`, or the `resolve_setup_routing` function
+- `apps/api/src/modules/approval/approval.service.ts:handleBookingBundleApprovalDecided` (dispatch to bundle service)
+- Migrations changing `service_rules`, `location_service_routing`, `resolve_setup_routing`, or `order_line_items.pending_setup_trigger_args`

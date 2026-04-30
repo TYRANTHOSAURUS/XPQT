@@ -3,6 +3,7 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
 import { BookingNotificationsService } from '../reservations/booking-notifications.service';
+import { BundleService } from '../booking-bundles/bundle.service';
 import type { Reservation } from '../reservations/dto/types';
 
 export interface ApprovalActor {
@@ -32,6 +33,8 @@ export class ApprovalService {
     @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
     @Inject(forwardRef(() => BookingNotificationsService))
     private readonly bookingNotifications: BookingNotificationsService,
+    @Inject(forwardRef(() => BundleService))
+    private readonly bundleService: BundleService,
   ) {}
 
   /**
@@ -309,6 +312,18 @@ export class ApprovalService {
       }
     }
 
+    // For booking bundles (and standalone orders, which also use
+    // target_entity_type='booking_bundle'): transition linked orders'
+    // status and re-fire any deferred internal-setup work orders. Same
+    // parallel/chain semantics as reservations.
+    if (approval.target_entity_type === 'booking_bundle') {
+      try {
+        await this.handleBookingBundleApprovalDecided(approval, dto);
+      } catch (err) {
+        console.error('[approval] booking_bundle notification failed', err);
+      }
+    }
+
     return data;
   }
 
@@ -368,6 +383,47 @@ export class ApprovalService {
       reservation as unknown as Reservation,
       finalDecision,
       approval.comments ?? undefined,
+    );
+  }
+
+  /**
+   * Resolve final decision for a booking_bundle approval (single-step,
+   * parallel-group, or chained) and call BundleService.onApprovalDecided.
+   *
+   * Parallel/chain semantics mirror the reservation handler:
+   *   - Any single rejection ends the approval immediately ('rejected').
+   *   - Parallel group: wait for all peers to decide; only then 'approved'.
+   *   - Sequential chain: only the final step's approval signals 'approved'.
+   *
+   * Bundle handler is responsible for: flipping linked orders' status from
+   * submitted → approved/cancelled, and re-firing any deferred internal-setup
+   * work orders persisted on order_line_items at create time.
+   */
+  private async handleBookingBundleApprovalDecided(
+    approval: { id: string; target_entity_id: string; parallel_group: string | null;
+                approval_chain_id: string | null; comments?: string | null },
+    dto: RespondDto,
+  ): Promise<void> {
+    let finalDecision: 'approved' | 'rejected';
+    if (dto.status === 'rejected') {
+      finalDecision = 'rejected';
+    } else if (approval.parallel_group) {
+      const complete = await this.isParallelGroupComplete(
+        approval.parallel_group, approval.target_entity_id,
+      );
+      if (!complete) return;
+      finalDecision = 'approved';
+    } else if (approval.approval_chain_id) {
+      const allComplete = await this.isChainComplete(approval.approval_chain_id);
+      if (!allComplete) return;
+      finalDecision = 'approved';
+    } else {
+      finalDecision = 'approved';
+    }
+
+    await this.bundleService.onApprovalDecided(
+      approval.target_entity_id,
+      finalDecision,
     );
   }
 

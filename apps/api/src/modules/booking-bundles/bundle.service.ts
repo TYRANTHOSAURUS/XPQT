@@ -14,7 +14,10 @@ import {
 import { ApprovalRoutingService } from '../orders/approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
+import {
+  SetupWorkOrderTriggerService,
+  type TriggerArgs,
+} from '../service-routing/setup-work-order-trigger.service';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
@@ -312,14 +315,45 @@ export class BundleService {
       // pending approval (anyPending), the order/bundle sits in
       // 'submitted' state until approved. We skip auto-creation entirely
       // here — facilities should not start internal work for orders that
-      // may still be rejected. When the bundle-approval flow lands
-      // (Wave 3), it will re-fire the trigger on grant. Until then, ops
-      // can manually flip the rule on the rejected line or create the
-      // work order by hand if needed. We surface the skip to audit so
-      // it's visible.
+      // may still be rejected. The args are PERSISTED on the OLI so
+      // BundleService.onApprovalDecided can re-fire the trigger on grant
+      // without re-resolving rules (00197 + handleBookingBundleApprovalDecided).
+      const requiresSetup = Array.from(outcomes.entries())
+        .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
+        .map(([oliId, outcome]) => {
+          const line = lineByOli.get(oliId)!;
+          return {
+            oliId,
+            outcome,
+            args: {
+              tenantId,
+              bundleId: bundle.id,
+              oliId,
+              serviceCategory: line.service_type,
+              serviceWindowStartAt: line.service_window_start_at,
+              locationId: reservation.space_id,
+              ruleIds: outcome.matched_rule_ids,
+              leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+              originSurface: 'bundle' as const,
+            },
+          };
+        });
+
       if (anyPending) {
-        for (const [oliId, outcome] of outcomes.entries()) {
-          if (!outcome.requires_internal_setup) continue;
+        // Persist trigger args on each OLI so onApprovalDecided can re-fire
+        // exactly the snapshot that would have fired at create time.
+        for (const { oliId, args } of requiresSetup) {
+          const { error: persistErr } = await this.supabase.admin
+            .from('order_line_items')
+            .update({ pending_setup_trigger_args: args })
+            .eq('id', oliId);
+          if (persistErr) {
+            this.log.error(
+              `failed to persist pending_setup_trigger_args for oli ${oliId}: ${persistErr.message}`,
+            );
+          }
+        }
+        for (const { oliId, outcome } of requiresSetup) {
           void this.audit(
             tenantId,
             'bundle.setup_deferred_pending_approval',
@@ -334,23 +368,7 @@ export class BundleService {
           );
         }
       } else {
-        const triggerArgs = Array.from(outcomes.entries())
-          .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
-          .map(([oliId, outcome]) => {
-            const line = lineByOli.get(oliId)!;
-            return {
-              tenantId,
-              bundleId: bundle.id,
-              oliId,
-              serviceCategory: line.service_type,
-              serviceWindowStartAt: line.service_window_start_at,
-              locationId: reservation.space_id,
-              ruleIds: outcome.matched_rule_ids,
-              leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-              originSurface: 'bundle' as const,
-            };
-          });
-        await this.setupTrigger.triggerMany(triggerArgs);
+        await this.setupTrigger.triggerMany(requiresSetup.map((r) => r.args));
       }
 
       void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
@@ -852,6 +870,168 @@ export class BundleService {
     };
   }
 
+
+  /**
+   * Approval-decided handler. Called by ApprovalService.respondToApproval
+   * once a `target_entity_type='booking_bundle'` approval row has resolved
+   * (single-step decision OR final-step / parallel-group completion). Both
+   * the bundle and standalone-order paths use `'booking_bundle'` as the
+   * target type, so this handles them uniformly.
+   *
+   * On approve:
+   *   - Flip every linked order from 'submitted' → 'approved' (idempotent —
+   *     orders that already moved on don't get re-stamped).
+   *   - Re-fire the deferred setup-work-order trigger for any OLI whose
+   *     `pending_setup_trigger_args` was persisted at create time. The args
+   *     are a snapshot from creation, so we don't re-resolve rules here.
+   *   - Clear `pending_setup_trigger_args` once fired (one-shot).
+   *   - Audit `bundle.deferred_setup_fired_on_approval` with the OLI list.
+   *
+   * On reject:
+   *   - Flip linked orders 'submitted' → 'cancelled'.
+   *   - Clear `pending_setup_trigger_args` (no longer relevant — line is dead).
+   *   - Audit `bundle.deferred_setup_dropped_on_rejection`.
+   *
+   * Idempotency: safe to call multiple times. Order status updates filter on
+   * `status='submitted'`, OLI updates filter on the persisted args being
+   * present. A second invocation is a no-op.
+   *
+   * Failure posture: never throws. Approval-side audit + state already
+   * landed before this is called; partial failures here are logged + audited
+   * separately so admins can re-fire manually if needed. Same posture as
+   * the create-time trigger.
+   */
+  async onApprovalDecided(
+    bundleId: string,
+    decision: 'approved' | 'rejected',
+  ): Promise<void> {
+    const tenantId = TenantContext.current().id;
+
+    const { data: orders, error: ordersErr } = await this.supabase.admin
+      .from('orders')
+      .select('id, status')
+      .eq('tenant_id', tenantId)
+      .eq('booking_bundle_id', bundleId);
+
+    if (ordersErr) {
+      this.log.error(
+        `onApprovalDecided: failed to load orders for bundle ${bundleId}: ${ordersErr.message}`,
+      );
+      return;
+    }
+    if (!orders || orders.length === 0) {
+      // Standalone-order path uses target_entity_id=bundle.id and creates a
+      // bundle even though there's no reservation, so this should not
+      // happen. Defensive: audit + return.
+      void this.audit(
+        tenantId,
+        `bundle.approval_${decision}_no_orders`,
+        'booking_bundle',
+        bundleId,
+        { bundle_id: bundleId },
+      );
+      return;
+    }
+
+    const orderIds = orders.map((o) => o.id);
+    const newOrderStatus = decision === 'approved' ? 'approved' : 'cancelled';
+
+    const { error: orderUpdateErr } = await this.supabase.admin
+      .from('orders')
+      .update({ status: newOrderStatus })
+      .in('id', orderIds)
+      .eq('status', 'submitted');
+    if (orderUpdateErr) {
+      this.log.error(
+        `onApprovalDecided: failed to update orders status for bundle ${bundleId}: ${orderUpdateErr.message}`,
+      );
+    }
+
+    const { data: deferredOlis, error: oliErr } = await this.supabase.admin
+      .from('order_line_items')
+      .select('id, pending_setup_trigger_args')
+      .in('order_id', orderIds)
+      .not('pending_setup_trigger_args', 'is', null);
+    if (oliErr) {
+      this.log.error(
+        `onApprovalDecided: failed to load deferred OLIs for bundle ${bundleId}: ${oliErr.message}`,
+      );
+      return;
+    }
+
+    const oliRows = (deferredOlis ?? []) as Array<{
+      id: string;
+      pending_setup_trigger_args: TriggerArgs | null;
+    }>;
+
+    if (oliRows.length === 0) {
+      // No deferred setup work — bundle had approval-required rules without
+      // requires_internal_setup. The order status flip above is the only
+      // state change. Still emit a marker so the audit feed shows the
+      // approval was observed.
+      void this.audit(
+        tenantId,
+        `bundle.approval_${decision}_no_deferred_setup`,
+        'booking_bundle',
+        bundleId,
+        { bundle_id: bundleId, order_ids: orderIds },
+      );
+      return;
+    }
+
+    const oliIds = oliRows.map((r) => r.id);
+
+    if (decision === 'approved') {
+      const triggerArgs = oliRows
+        .map((r) => r.pending_setup_trigger_args)
+        .filter((a): a is TriggerArgs => a !== null);
+      await this.setupTrigger.triggerMany(triggerArgs);
+
+      const { error: clearErr } = await this.supabase.admin
+        .from('order_line_items')
+        .update({ pending_setup_trigger_args: null })
+        .in('id', oliIds);
+      if (clearErr) {
+        this.log.error(
+          `onApprovalDecided: failed to clear pending_setup_trigger_args after fire for bundle ${bundleId}: ${clearErr.message}`,
+        );
+      }
+
+      void this.audit(
+        tenantId,
+        'bundle.deferred_setup_fired_on_approval',
+        'booking_bundle',
+        bundleId,
+        {
+          bundle_id: bundleId,
+          oli_ids: oliIds,
+          order_ids: orderIds,
+        },
+      );
+    } else {
+      const { error: clearErr } = await this.supabase.admin
+        .from('order_line_items')
+        .update({ pending_setup_trigger_args: null })
+        .in('id', oliIds);
+      if (clearErr) {
+        this.log.error(
+          `onApprovalDecided: failed to clear pending_setup_trigger_args after rejection for bundle ${bundleId}: ${clearErr.message}`,
+        );
+      }
+
+      void this.audit(
+        tenantId,
+        'bundle.deferred_setup_dropped_on_rejection',
+        'booking_bundle',
+        bundleId,
+        {
+          bundle_id: bundleId,
+          oli_ids: oliIds,
+          order_ids: orderIds,
+        },
+      );
+    }
+  }
 
   private async audit(
     tenantId: string,
