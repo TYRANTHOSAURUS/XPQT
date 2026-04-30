@@ -40,7 +40,7 @@ function makeWorkOrder(overrides: Partial<VendorWorkOrderListItem> = {}): Vendor
 }
 
 describe('VendorWorkOrderService', () => {
-  it('scopes results to (tenant, vendor) via tickets_visible_for_vendor', async () => {
+  it('scopes results to (tenant, vendor) via the work_orders view', async () => {
     const myRow = makeWorkOrder({ id: 'mine' });
     const otherRow = makeWorkOrder({ id: 'other' });
     const { db, captured } = makeFakeDb({
@@ -58,7 +58,12 @@ describe('VendorWorkOrderService', () => {
 
     expect(result).toEqual([myRow]);
     expect(captured).toHaveLength(1);
-    expect(captured[0].sql).toContain('public.tickets_visible_for_vendor($1::uuid, $2::uuid)');
+    // Step 1b cutover: source is public.work_orders, vendor predicate inline.
+    expect(captured[0].sql).toContain('from public.work_orders t');
+    expect(captured[0].sql).toContain('t.tenant_id = $2::uuid');
+    expect(captured[0].sql).toContain('t.assigned_vendor_id = $1::uuid');
+    // Make sure we didn't accidentally leave the old function call behind.
+    expect(captured[0].sql).not.toContain('tickets_visible_for_vendor');
     expect(captured[0].params).toEqual([
       VENDOR_A,
       TENANT,

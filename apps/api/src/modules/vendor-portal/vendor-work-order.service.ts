@@ -48,6 +48,11 @@ export class VendorWorkOrderService {
       ? statusFilter
       : null;
 
+    // Step 1b cutover (data-model-redesign-2026-04-30.md): read from the
+    // public.work_orders view instead of public.tickets_visible_for_vendor.
+    // The vendor visibility predicate (assigned_vendor_id match) is inlined
+    // since it's a single equality. PII protection lives in this projection,
+    // not in the source — same posture as before, no behaviour change.
     return this.db.queryMany<VendorWorkOrderListItem>(
       `select
          t.id                                     as id,
@@ -67,7 +72,7 @@ export class VendorWorkOrderService {
          t.status_category                        as status,
          t.priority                               as priority,
          t.sla_at_risk                            as sla_at_risk
-       from public.tickets_visible_for_vendor($1::uuid, $2::uuid) t
+       from public.work_orders t
        left join public.request_types rt
          on rt.id = t.ticket_type_id
         and rt.tenant_id = t.tenant_id
@@ -80,7 +85,9 @@ export class VendorWorkOrderService {
        left join public.spaces s_building
          on s_building.id = s_floor.parent_id
         and s_building.tenant_id = t.tenant_id
-       where coalesce(t.sla_resolution_due_at, t.created_at)::date between $3::date and $4::date
+       where t.tenant_id = $2::uuid
+         and t.assigned_vendor_id = $1::uuid
+         and coalesce(t.sla_resolution_due_at, t.created_at)::date between $3::date and $4::date
          and ($5::text is null or t.status_category = $5)
        order by coalesce(t.sla_resolution_due_at, t.created_at) asc
        limit 500`,
