@@ -62,6 +62,12 @@ describe('VendorWorkOrderService', () => {
     expect(captured[0].sql).toContain('from public.work_orders t');
     expect(captured[0].sql).toContain('t.tenant_id = $2::uuid');
     expect(captured[0].sql).toContain('t.assigned_vendor_id = $1::uuid');
+    // Cross-tenant self-defence (preserved from the 00191 hardening): vendors
+    // JOIN ensures the assigned vendor demonstrably belongs to the tenant.
+    expect(captured[0].sql).toContain('join public.vendors v');
+    expect(captured[0].sql).toContain('v.id = t.assigned_vendor_id');
+    expect(captured[0].sql).toContain('v.tenant_id = t.tenant_id');
+    expect(captured[0].sql).toContain('v.tenant_id = $2::uuid');
     // Make sure we didn't accidentally leave the old function call behind.
     expect(captured[0].sql).not.toContain('tickets_visible_for_vendor');
     expect(captured[0].params).toEqual([

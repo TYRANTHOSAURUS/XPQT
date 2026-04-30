@@ -50,9 +50,16 @@ export class VendorWorkOrderService {
 
     // Step 1b cutover (data-model-redesign-2026-04-30.md): read from the
     // public.work_orders view instead of public.tickets_visible_for_vendor.
-    // The vendor visibility predicate (assigned_vendor_id match) is inlined
-    // since it's a single equality. PII protection lives in this projection,
-    // not in the source — same posture as before, no behaviour change.
+    // The vendor visibility predicate is inlined here:
+    //   - t.tenant_id = $2 AND t.assigned_vendor_id = $1
+    //   - JOIN vendors v ON v.id = t.assigned_vendor_id
+    //                   AND v.tenant_id = t.tenant_id
+    //                   AND v.tenant_id = $2
+    // The vendors join is the cross-tenant self-defence from 00191: tickets
+    // FK assigned_vendor_id → vendors(id) only, not the (id, tenant_id)
+    // pair, so a drifted row pointing at a cross-tenant vendor would be
+    // visible without this join. Behavior is identical to the old function.
+    // PII protection lives in this SELECT projection, not in the source.
     return this.db.queryMany<VendorWorkOrderListItem>(
       `select
          t.id                                     as id,
@@ -73,6 +80,10 @@ export class VendorWorkOrderService {
          t.priority                               as priority,
          t.sla_at_risk                            as sla_at_risk
        from public.work_orders t
+       join public.vendors v
+         on v.id = t.assigned_vendor_id
+        and v.tenant_id = t.tenant_id
+        and v.tenant_id = $2::uuid
        left join public.request_types rt
          on rt.id = t.ticket_type_id
         and rt.tenant_id = t.tenant_id
