@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AlertTriangle, CalendarClock, Check, ChevronLeft, Loader2, MapPin, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { AlertTriangle, CalendarClock, Check, ChevronLeft, ChevronRight, Loader2, MapPin, Sparkles } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
@@ -28,7 +28,7 @@ import { useCostCenters } from '@/api/cost-centers';
 import { usePerson } from '@/api/persons';
 import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toast, toastError, toastSuccess } from '@/lib/toast';
 import { InlineBanner } from '@/components/ui/inline-banner';
 import { ServicePickerBody } from './service-picker-sheet';
 import {
@@ -42,11 +42,14 @@ import {
 } from './state';
 import { buildBookingPayload, buildMultiRoomBookingPayload } from './submit';
 import {
+  combineLocalDateTime,
   estimateOccurrences,
   extractAlternatives,
-  isoToLocalInput,
+  isoToLocalDate,
+  isoToLocalTime,
   nextQuarterHour,
 } from './helpers';
+import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { RoomPickerInline } from './sections/room-picker-inline';
 import { AdditionalRoomsField } from './sections/additional-rooms-field';
 import { RecurrenceField } from './sections/recurrence-field';
@@ -359,35 +362,68 @@ export function BookingComposer({
     [state.services],
   );
 
-  // Lead-time pre-flight: surface a warning when a selected service's
-  // lead_time_hours exceeds the gap between now and booking start. The
-  // bundle service still enforces this on submit (rule resolver's
-  // `lead_time_remaining_hours` gate); surfacing client-side gives the
-  // user a chance to adjust the booking time or drop the line BEFORE
-  // they hit "Book" and see a 422.
+  // Time-change wrapper. Whenever the booking moves to a new start time,
+  // any selected service whose lead_time_hours no longer fits is silently
+  // dropped and the user is told what was removed. This pairs with the
+  // picker's lead-time gate (service-picker-sheet.tsx) so a user can't
+  // arrive at the Book button with a stale invalid selection. The picker
+  // prevents NEW invalid picks; this handles EXISTING valid picks that
+  // become invalid because the meeting was moved closer to "now".
+  const dispatchTimeChange = useCallback(
+    (startAt: string | null, endAt: string | null) => {
+      if (startAt && state.services.length > 0) {
+        const startMs = new Date(startAt).getTime();
+        if (Number.isFinite(startMs)) {
+          const hoursUntilStart = (startMs - Date.now()) / 3_600_000;
+          const dropped: typeof state.services = [];
+          const kept: typeof state.services = [];
+          for (const s of state.services) {
+            if (
+              typeof s.lead_time_hours === 'number' &&
+              s.lead_time_hours > hoursUntilStart
+            ) {
+              dropped.push(s);
+            } else {
+              kept.push(s);
+            }
+          }
+          if (dropped.length > 0) {
+            dispatch({ type: 'SET_SERVICES', services: kept });
+            const names = dropped.map((s) => s.name).join(', ');
+            toast.message(
+              dropped.length === 1
+                ? `Removed ${dropped[0].name}`
+                : `Removed ${dropped.length} services`,
+              {
+                description: `Insufficient lead time for the new meeting time · ${names}`,
+              },
+            );
+          }
+        }
+      }
+      dispatch({ type: 'SET_TIME', startAt, endAt });
+    },
+    [state.services],
+  );
+
+  // Lead-time defense in depth. The picker gate prevents new invalid picks,
+  // and `dispatchTimeChange` drops invalid picks when the time moves. This
+  // memo only fires if both fail — surfaces a banner pointing the user to
+  // the inconsistency.
   const leadTimeWarnings = useMemo(() => {
     if (!state.startAt || state.services.length === 0) return [] as Array<{ name: string; needHours: number }>;
     const startMs = new Date(state.startAt).getTime();
     if (Number.isNaN(startMs)) return [];
     const hoursUntilStart = (startMs - Date.now()) / 3_600_000;
-    // Only warn when start is in the future — past bookings are validation
-    // errors handled elsewhere.
     if (hoursUntilStart <= 0) return [];
     return state.services
       .filter((s) => {
-        // ServicePickerSheet's PickerSelection doesn't carry lead_time_hours
-        // today — the picker tracks it on AvailableServiceItem. To avoid
-        // re-fetching the catalog inside the composer, leverage the fact
-        // that the picker has already applied lead-time visibility (lead-
-        // time-violating items shouldn't appear). Until we plumb lead_time
-        // onto PickerSelection, this warning fires only when lead_time
-        // metadata exists on the selection (future expansion).
-        const lead = (s as { lead_time_hours?: number | null }).lead_time_hours;
+        const lead = s.lead_time_hours;
         return typeof lead === 'number' && lead > hoursUntilStart;
       })
       .map((s) => ({
         name: s.name,
-        needHours: (s as { lead_time_hours?: number }).lead_time_hours ?? 0,
+        needHours: s.lead_time_hours ?? 0,
       }));
   }, [state.startAt, state.services]);
 
@@ -489,13 +525,16 @@ export function BookingComposer({
     <FieldGroup>
       {view === 'services' && (
         <div
-          // Drill-down pane. Single primary CTA at the bottom (the
-          // composer footer's Book button) — no second "Add to booking"
-          // CTA inside this pane. The user picks/edits services and
-          // either taps Back to return or taps Book to commit the
-          // whole reservation. animate-in: subtle fade + 4px slide
-          // from the right so the pane reads as "we drilled in" without
-          // a heavy modal-on-modal feel.
+          // Drill-down pane. Has its OWN footer ("Add to booking" /
+          // "Cancel") so the user has a clear "I'm done picking, take
+          // me back to confirm the booking" affordance. The composer's
+          // main footer (Book + Cancel) is hidden in this view — that
+          // earlier design read as "Book is committing my services
+          // mid-pick" and confused users.
+          //
+          // animate-in: subtle fade + 4px slide from the right so the
+          // pane reads as "we drilled in" without a heavy modal-on-modal
+          // feel.
           key="services-view"
           ref={servicesPaneRef}
           className="flex flex-col gap-5 animate-in fade-in slide-in-from-right-1 duration-200 ease-[var(--ease-smooth)]"
@@ -514,7 +553,7 @@ export function BookingComposer({
               {state.services.length > 0 ? 'Edit services' : 'Add services'}
             </h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Catering, AV, room setup. Each spawns a work order.
+              Catering, AV, and room setup we'll arrange for your meeting.
             </p>
           </div>
           <ServicePickerBody
@@ -528,6 +567,30 @@ export function BookingComposer({
               dispatch({ type: 'SET_SERVICES', services })
             }
           />
+          {/* Drilldown-specific footer. Single primary "Add to booking"
+              CTA that just navigates back — selections are already in
+              state via ServicePickerBody's controlled onSelectionsChange,
+              so this button confirms intent ("I'm done picking") rather
+              than committing data. The actual booking commit lives on
+              the main view's Book button, by design. */}
+          <div className="sticky bottom-0 -mx-1 flex items-center justify-end gap-2 border-t bg-background/85 px-1 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-md sm:static sm:border-t-0 sm:bg-transparent sm:pb-0 sm:backdrop-blur-none">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => setView('main')}
+              className="min-w-[10rem]"
+            >
+              {state.services.length === 0
+                ? 'Done'
+                : `Add ${state.services.length} to booking`}
+            </Button>
+          </div>
         </div>
       )}
 
@@ -550,53 +613,80 @@ export function BookingComposer({
         </Field>
       )}
 
-      {/* Time + room recap */}
+      {/* Time + room recap. Date + start use one combined picker; end is a
+          time-only input on the same date. This sidesteps the historical
+          `<input type="datetime-local">` minimum-width bug that pushed the
+          modal into horizontal scroll on locales whose long format eats more
+          than `1fr` of a 2xl Dialog (the previous shape was 2 datetime-local
+          inputs in a `grid-cols-[1fr_1fr]`). It also matches /portal/order. */}
       <FieldSet>
         <FieldLegend variant="label">When + where</FieldLegend>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr]">
-          <Field>
-            <FieldLabel htmlFor="composer-start">
-              <CalendarClock className="size-3.5" />
-              Start
-            </FieldLabel>
-            <Input
-              id="composer-start"
-              type="datetime-local"
-              value={isoToLocalInput(state.startAt)}
-              onChange={(e) => {
-                const startIso = e.target.value
-                  ? new Date(e.target.value).toISOString()
-                  : null;
-                if (!startIso || !state.endAt) {
-                  dispatch({ type: 'SET_TIME', startAt: startIso, endAt: state.endAt });
-                  return;
-                }
-                // Preserve duration when start moves.
-                const oldStart = state.startAt ? new Date(state.startAt).getTime() : 0;
-                const oldEnd = new Date(state.endAt).getTime();
-                const dur = oldStart > 0 ? oldEnd - oldStart : 60 * 60_000;
-                const endIso = new Date(new Date(startIso).getTime() + dur).toISOString();
-                dispatch({ type: 'SET_TIME', startAt: startIso, endAt: endIso });
-              }}
-              className="h-10 tabular-nums"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="composer-end">End</FieldLabel>
-            <Input
-              id="composer-end"
-              type="datetime-local"
-              value={isoToLocalInput(state.endAt)}
-              onChange={(e) => {
-                const endIso = e.target.value
-                  ? new Date(e.target.value).toISOString()
-                  : null;
-                dispatch({ type: 'SET_TIME', startAt: state.startAt, endAt: endIso });
-              }}
-              className="h-10 tabular-nums"
-            />
-          </Field>
-        </div>
+        <Field>
+          <FieldLabel htmlFor="composer-start-date">
+            <CalendarClock className="size-3.5" />
+            Date &amp; start
+          </FieldLabel>
+          <DateTimePicker
+            id="composer-start-date"
+            date={isoToLocalDate(state.startAt)}
+            time={isoToLocalTime(state.startAt)}
+            onDateChange={(nextDate) => {
+              // Date change: preserve current start-time and duration; the
+              // booking shifts to the same time-of-day on the new date.
+              const startIso = combineLocalDateTime(
+                nextDate,
+                isoToLocalTime(state.startAt) || '09:00',
+              );
+              if (!startIso) return;
+              const dur =
+                state.startAt && state.endAt
+                  ? new Date(state.endAt).getTime() -
+                    new Date(state.startAt).getTime()
+                  : 60 * 60_000;
+              const endIso = new Date(
+                new Date(startIso).getTime() + Math.max(15 * 60_000, dur),
+              ).toISOString();
+              dispatchTimeChange(startIso, endIso);
+            }}
+            onTimeChange={(nextTime) => {
+              const startIso = combineLocalDateTime(
+                isoToLocalDate(state.startAt) || isoToLocalDate(new Date().toISOString()),
+                nextTime,
+              );
+              if (!startIso) return;
+              const dur =
+                state.startAt && state.endAt
+                  ? new Date(state.endAt).getTime() -
+                    new Date(state.startAt).getTime()
+                  : 60 * 60_000;
+              const endIso = new Date(
+                new Date(startIso).getTime() + Math.max(15 * 60_000, dur),
+              ).toISOString();
+              dispatchTimeChange(startIso, endIso);
+            }}
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="composer-end">End</FieldLabel>
+          <Input
+            id="composer-end"
+            type="time"
+            step={900}
+            value={isoToLocalTime(state.endAt)}
+            onChange={(e) => {
+              const endIso = combineLocalDateTime(
+                isoToLocalDate(state.endAt) || isoToLocalDate(state.startAt),
+                e.target.value,
+              );
+              // End-time changes don't affect lead time (start unchanged)
+              // but route through dispatchTimeChange anyway to keep one
+              // entry point for time mutations — the filter is a no-op
+              // when start hasn't moved.
+              dispatchTimeChange(state.startAt, endIso);
+            }}
+            className="h-10 w-32 tabular-nums"
+          />
+        </Field>
         {fixedRoom ? (
           <Field>
             <FieldLabel>
@@ -653,94 +743,88 @@ export function BookingComposer({
         />
       </Field>
 
-      {/* Services */}
+      {/* Services — collapsed summary row that drills into the picker
+          (`view='services'`). Empty state shows a neutral "Add services"
+          tile so requesters who don't need any can ignore it; filled state
+          shows a one-line summary with names + total. The full editor
+          lives in the drill-down pane, not inline — keeps the modal short
+          for the 80% case (booking with no services). */}
       <FieldSet>
-        <FieldLegend variant="label">Add to this booking</FieldLegend>
+        <FieldLegend variant="label">Services</FieldLegend>
         <FieldDescription>
-          Catering, AV, room setup. Optional. Each spawns a work order.
+          Optional. Catering, AV, and room setup for your meeting.
         </FieldDescription>
         {state.services.length === 0 ? (
-          <Button
+          <button
             type="button"
-            variant="outline"
-            className="h-10"
             onClick={() => setView('services')}
             disabled={!state.spaceId || !onDate}
+            className="group/svc flex w-full items-center justify-between gap-3 rounded-md border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-60 [transition-duration:120ms] [transition-timing-function:var(--ease-snap)]"
           >
-            <Sparkles className="size-3.5" />
-            Browse services
-          </Button>
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Add services</div>
+                <div className="text-xs text-muted-foreground">
+                  Browse catering, AV, room setup
+                </div>
+              </div>
+            </div>
+            <ChevronRight
+              className="size-4 shrink-0 text-muted-foreground/60 [transition:transform_120ms_var(--ease-snap)] group-hover/svc:translate-x-0.5"
+              aria-hidden
+            />
+          </button>
         ) : (
-          <div className="rounded-md border bg-card divide-y">
-            {state.services.map((s) => {
-              // Template seeds carry a placeholder name + null unit_price
-              // until the picker fetches the current menu offer. Render
-              // those as a single "from template" chip rather than a
-              // misleading "Template item × N · —".
-              const isTemplateSeed = s.name === 'Template item' && s.unit_price == null;
-              return (
-                <div
-                  key={s.catalog_item_id}
-                  className="flex items-center justify-between gap-3 px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    {isTemplateSeed ? (
-                      <div className="text-sm italic text-muted-foreground">
-                        From template — open picker to confirm
-                      </div>
-                    ) : (
-                      <>
-                        <div className="truncate text-sm font-medium">{s.name}</div>
-                        <div className="text-[11px] text-muted-foreground">
-                          × {s.quantity}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  {!isTemplateSeed && (
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {formatCurrency(s.unit_price)}
+          <button
+            type="button"
+            onClick={() => setView('services')}
+            className="group/svc flex w-full items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-left transition-colors hover:bg-primary/10 [transition-duration:120ms] [transition-timing-function:var(--ease-snap)]"
+            aria-label={`Edit ${state.services.length} services`}
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <Sparkles className="size-4 shrink-0 text-primary" aria-hidden />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">
+                  {state.services.length} service{state.services.length !== 1 ? 's' : ''}
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {state.services
+                    .map((s) =>
+                      s.name === 'Template item' && s.unit_price == null
+                        ? 'From template'
+                        : s.name,
+                    )
+                    .slice(0, 3)
+                    .join(' · ')}
+                  {state.services.length > 3 ? ` +${state.services.length - 3} more` : ''}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {hasResolvedPricing ? (
+                <div className="flex flex-col items-end leading-tight">
+                  <span className="text-sm font-semibold tabular-nums">
+                    {formatCurrency(servicesTotal)}
+                  </span>
+                  {annualisedOccurrences > 0 && annualisedTotal > 0 && (
+                    <span
+                      className="text-[10px] text-muted-foreground tabular-nums"
+                      title={`${annualisedOccurrences} occurrences over the next year`}
+                    >
+                      ~{formatCurrency(annualisedTotal)}/yr
                     </span>
                   )}
                 </div>
-              );
-            })}
-            <div className="flex items-center justify-between px-3 py-2">
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setView('services')}
-                >
-                  Edit
-                </Button>
-                <span className="text-[11px] text-muted-foreground tabular-nums">
-                  {state.services.length} item{state.services.length !== 1 ? 's' : ''}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-2">
-                {hasResolvedPricing ? (
-                  <>
-                    {annualisedOccurrences > 0 && annualisedTotal > 0 && (
-                      <span
-                        className="text-[11px] text-muted-foreground tabular-nums"
-                        title={`${annualisedOccurrences} occurrences over the next year`}
-                      >
-                        est. {formatCurrency(annualisedTotal)}/yr
-                      </span>
-                    )}
-                    <span className="text-sm font-semibold tabular-nums">
-                      {formatCurrency(servicesTotal)}
-                    </span>
-                  </>
-                ) : (
-                  <Skeleton className="h-4 w-20" />
-                )}
-              </div>
+              ) : (
+                <Skeleton className="h-4 w-16" />
+              )}
+              <ChevronRight
+                className="size-4 text-muted-foreground/60 [transition:transform_120ms_var(--ease-snap)] group-hover/svc:translate-x-0.5"
+                aria-hidden
+              />
             </div>
-          </div>
+          </button>
         )}
       </FieldSet>
 
@@ -817,16 +901,23 @@ export function BookingComposer({
         </InlineBanner>
       )}
 
-      {/* Lead-time warnings — pre-empts a submit-time 422. Polite live
-          region — these recompute on every attendee/service change and
-          assertive role would re-announce noisily. */}
+      {/* Lead-time warnings — pre-empts a submit-time 422. With the picker
+          gate + dispatchTimeChange auto-deselect, this is defense in depth:
+          it should rarely fire. Polite live region — assertive role would
+          re-announce noisily across the recomputes that happen on every
+          attendee/service change. Fade-in so it doesn't pop into view. */}
       {leadTimeWarnings.length > 0 && (
-        <InlineBanner tone="warning" icon={AlertTriangle} role="status">
+        <InlineBanner
+          tone="warning"
+          icon={AlertTriangle}
+          role="status"
+          className="duration-150 ease-[var(--ease-smooth)] animate-in fade-in"
+        >
           <p className="font-medium">Some services need more notice</p>
           <ul className="mt-1 space-y-0.5">
             {leadTimeWarnings.slice(0, 3).map((w) => (
               <li key={w.name}>
-                {w.name} requires {w.needHours}h lead time. Move the meeting later or drop the line.
+                {w.name} needs {w.needHours}h advance notice. Move the meeting later or remove this service.
               </li>
             ))}
           </ul>
@@ -893,20 +984,24 @@ export function BookingComposer({
         </>
       )}
 
-      {/* Footer: error + submit. Sticky on mobile so it's always
-          reachable without scrolling through a long form (services +
-          recurrence + warnings can push it well below the fold). The
-          calling sheet/dialog wraps the composer in an overflow-y-auto
-          container, so we pin to the bottom of THAT scroll context with
-          `sticky bottom-0` and a bg/border so the form content scrolls
-          underneath cleanly. We deliberately do NOT use a negative
-          margin to bleed the bg to the wrapper's full width — the
-          three mount points (Sheet px-5, portal Dialog p-6, scheduler
-          Dialog p-6) all have different paddings, and any single
-          -mx value triggered a horizontal scroll on at least one of
-          them. Content-width is good enough; the bg still covers the
-          scrolling content underneath because that content lives in
-          the same padded box. pb honors iOS home-indicator safe area. */}
+      {/* Footer: error + submit. Only rendered on the main view —
+          the services drilldown has its own footer ("Add to booking" /
+          Cancel) so the user has a clear non-committing affordance to
+          return. Sticky on mobile so it's always reachable without
+          scrolling through a long form (services + recurrence + warnings
+          can push it well below the fold). The calling sheet/dialog wraps
+          the composer in an overflow-y-auto container, so we pin to the
+          bottom of THAT scroll context with `sticky bottom-0` and a
+          bg/border so the form content scrolls underneath cleanly. We
+          deliberately do NOT use a negative margin to bleed the bg to
+          the wrapper's full width — the three mount points (Sheet px-5,
+          portal Dialog p-6, scheduler Dialog p-6) all have different
+          paddings, and any single -mx value triggered a horizontal scroll
+          on at least one of them. Content-width is good enough; the bg
+          still covers the scrolling content underneath because that
+          content lives in the same padded box. pb honors iOS
+          home-indicator safe area. */}
+      {view === 'main' && (
       <div className="flex flex-col gap-2 border-t bg-background/85 backdrop-blur-md pt-3 sm:border-t-0 sm:bg-transparent sm:backdrop-blur-none sm:pt-2
                       pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-0
                       sticky bottom-0 sm:static">
@@ -916,14 +1011,12 @@ export function BookingComposer({
             (emil pass). */}
         <div className="relative min-h-[1.25rem]" aria-live="polite">
           {(() => {
-            // In services view the lead-time warnings (rendered in the
-            // main view) are off-screen, so "above" is wrong — point the
-            // user back to where the offending field actually is.
+            // This footer only renders on the main view, so the
+            // lead-time conflicts banner (rendered above in the same
+            // view) is always reachable by scrolling.
             const leadTimeMsg =
               leadTimeWarnings.length > 0
-                ? view === 'services'
-                  ? 'Lead-time conflicts in the booking details — go back to fix.'
-                  : 'Resolve the lead-time conflicts above before submitting.'
+                ? 'Resolve the lead-time conflicts above before submitting.'
                 : null;
             const msg = validationError ?? leadTimeMsg;
             return msg ? (
@@ -990,14 +1083,15 @@ export function BookingComposer({
                 ? isApprovalRoute
                   ? 'Submitting…'
                   : 'Booking…'
-                : isApprovalRoute
-                  ? 'Submit for approval'
-                  : state.services.length > 0
-                    ? `Book + ${state.services.length} service${state.services.length === 1 ? '' : 's'}`
+                : leadTimeWarnings.length > 0
+                  ? 'Resolve conflicts above'
+                  : isApprovalRoute
+                    ? 'Submit for approval'
                     : 'Book'}
           </Button>
         </div>
       </div>
+      )}
 
     </FieldGroup>
   );

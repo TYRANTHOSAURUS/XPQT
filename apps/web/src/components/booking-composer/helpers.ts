@@ -22,6 +22,37 @@ export function isoToLocalInput(iso: string | null): string {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 
+/** ISO → `yyyy-mm-dd` (local). Empty string for null/invalid. */
+export function isoToLocalDate(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/** ISO → `HH:mm` (local). Empty string for null/invalid. */
+export function isoToLocalTime(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mi}`;
+}
+
+/** `yyyy-mm-dd` + `HH:mm` (local) → ISO string. Returns null when either
+ *  half is missing or invalid so callers can distinguish "not enough
+ *  info to commit" from "valid time". */
+export function combineLocalDateTime(date: string, time: string): string | null {
+  if (!date || !time) return null;
+  const local = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(local.getTime())) return null;
+  return local.toISOString();
+}
+
 /** Round-up the current time to the next quarter hour. Used when the
  *  composer opens with no pre-seeded time so the date inputs show a
  *  sensible default instead of empty. */

@@ -59,9 +59,11 @@ export function AdditionalRoomsField({
             return (
               <li
                 key={id}
-                className="group/chip inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] tabular-nums duration-150 ease-[var(--ease-snap)] animate-in fade-in zoom-in-95"
+                className="group/chip inline-flex max-w-[12rem] items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5 text-[11px] tabular-nums duration-150 ease-[var(--ease-snap)] animate-in fade-in zoom-in-95"
               >
-                <span className="text-foreground">{s?.name ?? 'Room'}</span>
+                <span className="truncate text-foreground" title={s?.name ?? undefined}>
+                  {s?.name ?? 'Room'}
+                </span>
                 {s?.capacity != null && (
                   <span className="text-muted-foreground/70">{s.capacity}</span>
                 )}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Coffee, Speaker, LayoutPanelLeft, ShoppingBag, Loader2 } from 'lucide-react';
+import { Clock as ClockIcon, Coffee, Speaker, LayoutPanelLeft, ShoppingBag, Loader2 } from 'lucide-react';
+import { useNow } from '@/lib/use-now';
 import {
   Sheet,
   SheetContent,
@@ -344,7 +345,29 @@ function CatalogPanel({
     return m;
   }, [selections]);
 
+  // Lead-time gate. Items whose `lead_time_hours` exceeds the time between
+  // now and the booking start are not selectable — the row renders disabled
+  // with a "Needs Xh notice" pill instead of a stepper. This replaces the
+  // old behaviour where the user could pick a stale item, see a yellow
+  // warning afterward, and then be forced to either move the meeting or
+  // drop the line. Selection is now correct at the source.
+  const now = useNow(60_000);
+  const hoursUntilStart = useMemo(() => {
+    if (!bookingStartAt) return Number.POSITIVE_INFINITY;
+    const startMs = new Date(bookingStartAt).getTime();
+    if (Number.isNaN(startMs)) return Number.POSITIVE_INFINITY;
+    return (startMs - now) / 3_600_000;
+  }, [bookingStartAt, now]);
+
+  const isLeadTimeBlocked = (item: AvailableServiceItem): boolean =>
+    typeof item.lead_time_hours === 'number' &&
+    item.lead_time_hours > hoursUntilStart;
+
   const setQuantity = (item: AvailableServiceItem, next: number) => {
+    // Defense in depth — UI hides the stepper for blocked items, but if a
+    // blocked item ever reaches this handler (e.g. via a stale +button
+    // click during the same tick the time changes), refuse silently.
+    if (isLeadTimeBlocked(item) && next > 0) return;
     const clamped = Math.max(0, Math.floor(next));
     const exists = byId.get(item.catalog_item_id);
     if (clamped === 0) {
@@ -450,13 +473,21 @@ function CatalogPanel({
               attendeeCount,
             )
           : null;
+        const blocked = isLeadTimeBlocked(item);
+        const blockedReason =
+          blocked && item.lead_time_hours != null
+            ? `Needs ${item.lead_time_hours}h notice. Move the meeting later to add this.`
+            : null;
         return (
           <li
             key={item.catalog_item_id}
             className={cn(
-              'flex flex-col gap-2 rounded-lg border bg-card p-3',
+              'flex flex-col gap-2 rounded-lg border bg-card p-3 [transition:opacity_120ms_var(--ease-snap)]',
               sel && 'border-primary/30 bg-primary/5',
+              blocked && 'opacity-55 grayscale-[20%]',
             )}
+            aria-disabled={blocked || undefined}
+            title={blockedReason ?? undefined}
           >
             <div className="flex items-stretch gap-3">
               {item.image_url && (
@@ -477,7 +508,14 @@ function CatalogPanel({
                   <span className="tabular-nums">{formatCurrency(item.price)}</span>
                   {item.unit && <span className="normal-case">/ {prettyUnit(item.unit)}</span>}
                   {item.lead_time_hours != null && (
-                    <span className="normal-case">· {item.lead_time_hours}h lead</span>
+                    <span
+                      className={cn(
+                        'normal-case',
+                        blocked && 'text-amber-700 dark:text-amber-400',
+                      )}
+                    >
+                      · {item.lead_time_hours}h lead
+                    </span>
                   )}
                   {item.dietary_tags.length > 0 && (
                     <span className="normal-case">
@@ -487,11 +525,22 @@ function CatalogPanel({
                 </div>
               </div>
               <div className="flex shrink-0 flex-col items-end justify-between gap-2">
-                <QuantityStepper
-                  value={sel?.quantity ?? 0}
-                  addInitial={initialQuantityFor(item)}
-                  onChange={(n) => setQuantity(item, n)}
-                />
+                {blocked ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+                    role="note"
+                    aria-label={blockedReason ?? 'Not available — insufficient lead time'}
+                  >
+                    <ClockIcon className="size-3" aria-hidden />
+                    {item.lead_time_hours}h notice
+                  </span>
+                ) : (
+                  <QuantityStepper
+                    value={sel?.quantity ?? 0}
+                    addInitial={initialQuantityFor(item)}
+                    onChange={(n) => setQuantity(item, n)}
+                  />
+                )}
                 {linePreview != null && linePreview > 0 && (
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {formatCurrency(linePreview)}
@@ -499,7 +548,7 @@ function CatalogPanel({
                 )}
               </div>
             </div>
-            {sel && (
+            {sel && !blocked && (
               <ItemWindowOverride
                 sel={sel}
                 bookingStartAt={bookingStartAt}
