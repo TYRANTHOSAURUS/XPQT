@@ -387,17 +387,26 @@ export class ApprovalService {
   }
 
   /**
-   * Resolve final decision for a booking_bundle approval (single-step,
-   * parallel-group, or chained) and call BundleService.onApprovalDecided.
+   * Resolve final decision for a booking_bundle approval and call
+   * BundleService.onApprovalDecided once the bundle is fully resolved.
    *
-   * Parallel/chain semantics mirror the reservation handler:
-   *   - Any single rejection ends the approval immediately ('rejected').
-   *   - Parallel group: wait for all peers to decide; only then 'approved'.
-   *   - Sequential chain: only the final step's approval signals 'approved'.
+   * Bundles can have MORE THAN ONE approval row without a parallel_group:
+   * `ApprovalRoutingService.assemble` creates one row per unique approver
+   * (e.g. cost-center owner + threshold approver + dietary-officer for the
+   * same bundle), and each row is single-step (parallel_group=null,
+   * chain=null). Treating "no group, no chain" as "fire immediately on this
+   * grant" would re-fire the deferred trigger as soon as the FIRST approver
+   * grants, bypassing the others — a real correctness bug.
    *
-   * Bundle handler is responsible for: flipping linked orders' status from
-   * submitted → approved/cancelled, and re-firing any deferred internal-setup
-   * work orders persisted on order_line_items at create time.
+   * Resolution rules:
+   *   - Any rejection ends the approval immediately ('rejected'). Other
+   *     pending peers are left as-is; BundleService.onApprovalDecided
+   *     clears persisted args so a later peer-grant cannot re-fire.
+   *   - Parallel group: wait for the group to be complete (existing helper).
+   *   - Sequential chain: wait for the chain to be complete (existing helper).
+   *   - Otherwise: check that ALL approval rows on this target_entity_id
+   *     are now 'approved'. If any is still 'pending', return — the next
+   *     peer's grant will re-enter this handler.
    */
   private async handleBookingBundleApprovalDecided(
     approval: { id: string; target_entity_id: string; parallel_group: string | null;
@@ -418,6 +427,10 @@ export class ApprovalService {
       if (!allComplete) return;
       finalDecision = 'approved';
     } else {
+      const allResolved = await this.areAllTargetApprovalsApproved(
+        approval.target_entity_id,
+      );
+      if (!allResolved) return;
       finalDecision = 'approved';
     }
 
@@ -425,6 +438,27 @@ export class ApprovalService {
       approval.target_entity_id,
       finalDecision,
     );
+  }
+
+  /**
+   * True when every approval row on the given target is in 'approved'
+   * status. Used by booking_bundle resolution where multiple approvers
+   * are upserted as independent rows (no parallel_group / no chain).
+   *
+   * False when there are zero rows — defensive: a target with no rows
+   * shouldn't reach this path. Caller treats false as "wait, do nothing."
+   */
+  private async areAllTargetApprovalsApproved(
+    targetEntityId: string,
+  ): Promise<boolean> {
+    const tenant = TenantContext.current();
+    const { data } = await this.supabase.admin
+      .from('approvals')
+      .select('status')
+      .eq('tenant_id', tenant.id)
+      .eq('target_entity_id', targetEntityId);
+    if (!data || data.length === 0) return false;
+    return data.every((a) => a.status === 'approved');
   }
 
   /**

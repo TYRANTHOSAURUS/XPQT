@@ -1,4 +1,5 @@
 import { ApprovalService, type ApprovalActor } from './approval.service';
+import { TenantContext } from '../../common/tenant-context';
 
 /**
  * `getPendingForActor` previously filtered only on `approver_person_id`,
@@ -136,5 +137,178 @@ describe('ApprovalService.getPendingForActor', () => {
     // Both the caller's own person id AND the delegator's must be in the
     // approver_person_id IN list, and order doesn't matter.
     expect(approvalsCall?.orClause).toMatch(/approver_person_id\.in\.\((P-1,P-DELEGATOR|P-DELEGATOR,P-1)\)/);
+  });
+});
+
+/**
+ * Multi-approver gate for `target_entity_type='booking_bundle'`.
+ *
+ * Bug context: ApprovalRoutingService creates one row per unique approver
+ * with no parallel_group / no chain. Treating "no group, no chain" as
+ * "fire on first grant" would re-fire the deferred setup-work-order trigger
+ * before the other approvers have responded — leaking facilities work for
+ * orders that may still get rejected.
+ *
+ * The fix gates the single-step path behind `areAllTargetApprovalsApproved`,
+ * which checks every row on the target. Tests below verify both the helper
+ * and the wired-in handler.
+ */
+describe('ApprovalService — booking_bundle multi-approver resolution', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  function makeBundleService(opts: {
+    rowsForTarget: Array<{ status: string }>;
+  }): {
+    svc: ApprovalService;
+    bundleSpy: jest.Mock;
+  } {
+    const supabase = {
+      admin: {
+        from(table: string) {
+          if (table !== 'approvals') {
+            return {
+              select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }),
+            };
+          }
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: opts.rowsForTarget, error: null }),
+              }),
+            }),
+          };
+        },
+      },
+    };
+
+    jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 'T' } as never);
+
+    const bundleSpy = jest.fn().mockResolvedValue(undefined);
+    const svc = new ApprovalService(
+      supabase as never,
+      { onApprovalDecision: jest.fn() } as never,
+      { onApprovalDecided: jest.fn() } as never,
+      { onApprovalDecided: bundleSpy } as never,
+    );
+    return { svc, bundleSpy };
+  }
+
+  it('areAllTargetApprovalsApproved returns false when any peer is still pending', async () => {
+    const { svc } = makeBundleService({
+      rowsForTarget: [
+        { status: 'approved' },
+        { status: 'pending' },
+      ],
+    });
+
+    // Test the private helper directly — it's the load-bearing piece.
+    const ok = await (svc as unknown as {
+      areAllTargetApprovalsApproved: (id: string) => Promise<boolean>;
+    }).areAllTargetApprovalsApproved('bundle-1');
+    expect(ok).toBe(false);
+  });
+
+  it('areAllTargetApprovalsApproved returns true when every row is approved', async () => {
+    const { svc } = makeBundleService({
+      rowsForTarget: [
+        { status: 'approved' },
+        { status: 'approved' },
+      ],
+    });
+
+    const ok = await (svc as unknown as {
+      areAllTargetApprovalsApproved: (id: string) => Promise<boolean>;
+    }).areAllTargetApprovalsApproved('bundle-1');
+    expect(ok).toBe(true);
+  });
+
+  it('areAllTargetApprovalsApproved returns false when there are no rows (defensive)', async () => {
+    const { svc } = makeBundleService({ rowsForTarget: [] });
+
+    const ok = await (svc as unknown as {
+      areAllTargetApprovalsApproved: (id: string) => Promise<boolean>;
+    }).areAllTargetApprovalsApproved('bundle-1');
+    expect(ok).toBe(false);
+  });
+
+  it('handleBookingBundleApprovalDecided does NOT call BundleService when peers are pending', async () => {
+    const { svc, bundleSpy } = makeBundleService({
+      rowsForTarget: [
+        { status: 'approved' },
+        { status: 'pending' },
+      ],
+    });
+
+    await (svc as unknown as {
+      handleBookingBundleApprovalDecided: (
+        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+        dto: { status: 'approved' | 'rejected' },
+      ) => Promise<void>;
+    }).handleBookingBundleApprovalDecided(
+      {
+        id: 'apr-1',
+        target_entity_id: 'bundle-1',
+        parallel_group: null,
+        approval_chain_id: null,
+      },
+      { status: 'approved' },
+    );
+
+    expect(bundleSpy).not.toHaveBeenCalled();
+  });
+
+  it('handleBookingBundleApprovalDecided calls BundleService once all peers are approved', async () => {
+    const { svc, bundleSpy } = makeBundleService({
+      rowsForTarget: [
+        { status: 'approved' },
+        { status: 'approved' },
+      ],
+    });
+
+    await (svc as unknown as {
+      handleBookingBundleApprovalDecided: (
+        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+        dto: { status: 'approved' | 'rejected' },
+      ) => Promise<void>;
+    }).handleBookingBundleApprovalDecided(
+      {
+        id: 'apr-1',
+        target_entity_id: 'bundle-1',
+        parallel_group: null,
+        approval_chain_id: null,
+      },
+      { status: 'approved' },
+    );
+
+    expect(bundleSpy).toHaveBeenCalledWith('bundle-1', 'approved');
+  });
+
+  it('handleBookingBundleApprovalDecided fires immediately on rejection — no peer wait', async () => {
+    // Even with peers still pending, a rejection ends the bundle approval
+    // immediately. Persisted args are cleared by BundleService so a later
+    // peer-grant cannot accidentally re-fire.
+    const { svc, bundleSpy } = makeBundleService({
+      rowsForTarget: [
+        { status: 'rejected' },
+        { status: 'pending' },
+      ],
+    });
+
+    await (svc as unknown as {
+      handleBookingBundleApprovalDecided: (
+        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+        dto: { status: 'approved' | 'rejected' },
+      ) => Promise<void>;
+    }).handleBookingBundleApprovalDecided(
+      {
+        id: 'apr-1',
+        target_entity_id: 'bundle-1',
+        parallel_group: null,
+        approval_chain_id: null,
+      },
+      { status: 'rejected' },
+    );
+
+    expect(bundleSpy).toHaveBeenCalledWith('bundle-1', 'rejected');
   });
 });

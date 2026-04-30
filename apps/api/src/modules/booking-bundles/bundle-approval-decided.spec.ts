@@ -85,6 +85,30 @@ function makeService(opts: {
             },
           };
         }
+        if (table === 'approvals') {
+          return {
+            update: (patch: Record<string, unknown>) => {
+              const filters: UpdateCapture['filters'] = [];
+              return {
+                eq: (c1: string, v1: unknown) => {
+                  filters.push({ kind: 'eq', col: c1, val: v1 });
+                  return {
+                    eq: (c2: string, v2: unknown) => {
+                      filters.push({ kind: 'eq', col: c2, val: v2 });
+                      return {
+                        eq: (c3: string, v3: unknown) => {
+                          filters.push({ kind: 'eq', col: c3, val: v3 });
+                          updates.push({ table, patch, filters });
+                          return Promise.resolve({ data: null, error: null });
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
         if (table === 'audit_events') {
           return {
             insert: (row: Record<string, unknown>) => {
@@ -234,6 +258,45 @@ describe('BundleService.onApprovalDecided', () => {
       expect(auditInserts.some(
         (a) => a.event_type === 'bundle.deferred_setup_dropped_on_rejection',
       )).toBe(true);
+    });
+
+    it('expires sibling pending approval rows on rejection', async () => {
+      // Multi-approver bundle: when one approver rejects, the other peers'
+      // pending rows should auto-expire so they don't sit in the approver's
+      // queue forever.
+      const { service, updates } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [],
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'rejected'));
+
+      const expireUpdate = updates.find((u) => u.table === 'approvals');
+      expect(expireUpdate).toBeDefined();
+      expect(expireUpdate!.patch).toMatchObject({ status: 'expired' });
+      // Filter is scoped to (tenant, target=bundle, status='pending').
+      expect(expireUpdate!.filters).toContainEqual({
+        kind: 'eq',
+        col: 'target_entity_id',
+        val: BUNDLE,
+      });
+      expect(expireUpdate!.filters).toContainEqual({
+        kind: 'eq',
+        col: 'status',
+        val: 'pending',
+      });
+    });
+
+    it('does NOT expire sibling approvals on approval (peers were already approved by definition)', async () => {
+      const { service, updates } = makeService({
+        orders: [{ id: 'order-1', status: 'submitted' }],
+        olis: [],
+      });
+
+      await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
+
+      const expireUpdate = updates.find((u) => u.table === 'approvals');
+      expect(expireUpdate).toBeUndefined();
     });
   });
 

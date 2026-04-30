@@ -851,7 +851,11 @@ When a service rule on a line emits `effect=require_approval` (or `allow_overrid
 
 - All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
 - The `TriggerArgs` snapshot is persisted on `order_line_items.pending_setup_trigger_args` (00197) at deferral time.
-- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved (single-step decision, parallel-group complete, or final-step of a chain — same semantics as the reservation handler):
+- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved. Resolution rules:
+  - Any rejection ends the approval immediately.
+  - `parallel_group` set: wait for the group to be complete.
+  - `approval_chain_id` set: wait for the chain to be complete.
+  - Otherwise (the common bundle case — `ApprovalRoutingService` upserts one row per unique approver with `parallel_group=null`/`chain=null`): wait for **every** approval row on the same `target_entity_id` to be in `approved` status. Treating "no group, no chain" as "fire on this grant" would re-fire for the first approver while peers are still pending — `areAllTargetApprovalsApproved` is the gate that prevents that.
   - **Approved:** linked orders flip `submitted` → `approved`; the persisted args are read back and `SetupWorkOrderTriggerService.triggerMany` re-fires the work-order creation for every deferred OLI; args are cleared (one-shot); audit emits `bundle.deferred_setup_fired_on_approval`.
   - **Rejected:** linked orders flip `submitted` → `cancelled`; persisted args are cleared; audit emits `bundle.deferred_setup_dropped_on_rejection`. No trigger fires.
 - The handler is idempotent — order updates filter on `status='submitted'` and OLI clears filter on the args being present, so re-running on an already-decided bundle is a no-op.

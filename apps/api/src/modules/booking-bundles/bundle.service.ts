@@ -964,11 +964,36 @@ export class BundleService {
       pending_setup_trigger_args: TriggerArgs | null;
     }>;
 
+    // On rejection: expire sibling approval rows that were still pending
+    // BEFORE the early-return for "no deferred OLIs". Without this, a
+    // bundle with multiple approvers but no requires_internal_setup lines
+    // would skip the expire step entirely, leaving peers stuck in their
+    // pending queues. Without it, the args-clear below still prevents a
+    // late peer-grant from re-firing the trigger, but the user-visible
+    // queue cleanup wouldn't happen.
+    if (decision === 'rejected') {
+      const { error: expireErr } = await this.supabase.admin
+        .from('approvals')
+        .update({
+          status: 'expired',
+          responded_at: new Date().toISOString(),
+          comments: 'Sibling approval rejected; bundle no longer needs approval.',
+        })
+        .eq('tenant_id', tenantId)
+        .eq('target_entity_id', bundleId)
+        .eq('status', 'pending');
+      if (expireErr) {
+        this.log.error(
+          `onApprovalDecided: failed to expire sibling approvals for bundle ${bundleId}: ${expireErr.message}`,
+        );
+      }
+    }
+
     if (oliRows.length === 0) {
       // No deferred setup work — bundle had approval-required rules without
-      // requires_internal_setup. The order status flip above is the only
-      // state change. Still emit a marker so the audit feed shows the
-      // approval was observed.
+      // requires_internal_setup. The order status flip above (and sibling
+      // expire on rejection) are the only state changes. Still emit a
+      // marker so the audit feed shows the approval was observed.
       void this.audit(
         tenantId,
         `bundle.approval_${decision}_no_deferred_setup`,
