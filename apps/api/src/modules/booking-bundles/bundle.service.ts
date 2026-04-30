@@ -14,7 +14,10 @@ import {
 import { ApprovalRoutingService } from '../orders/approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
+import {
+  SetupWorkOrderTriggerService,
+  type TriggerArgs,
+} from '../service-routing/setup-work-order-trigger.service';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
@@ -307,23 +310,83 @@ export class BundleService {
       // whose rules emitted requires_internal_setup=true. Runs AFTER
       // commit; failures are audited internally and never roll back
       // the bundle. See plan §Slice 2 + SetupWorkOrderTriggerService.
-      const triggerArgs = Array.from(outcomes.entries())
+      //
+      // Approval interlock (codex 2026-04-30 review): if ANY line is
+      // pending approval (anyPending), the order/bundle sits in
+      // 'submitted' state until approved. We skip auto-creation entirely
+      // here — facilities should not start internal work for orders that
+      // may still be rejected. The args are PERSISTED on the OLI so
+      // BundleService.onApprovalDecided can re-fire the trigger on grant
+      // without re-resolving rules (00197 + handleBookingBundleApprovalDecided).
+      const requiresSetup = Array.from(outcomes.entries())
         .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
         .map(([oliId, outcome]) => {
           const line = lineByOli.get(oliId)!;
           return {
-            tenantId,
-            bundleId: bundle.id,
             oliId,
-            serviceCategory: line.service_type,
-            serviceWindowStartAt: line.service_window_start_at,
-            locationId: reservation.space_id,
-            ruleIds: outcome.matched_rule_ids,
-            leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-            originSurface: 'bundle' as const,
+            outcome,
+            args: {
+              tenantId,
+              bundleId: bundle.id,
+              oliId,
+              serviceCategory: line.service_type,
+              serviceWindowStartAt: line.service_window_start_at,
+              locationId: reservation.space_id,
+              ruleIds: outcome.matched_rule_ids,
+              leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+              originSurface: 'bundle' as const,
+            },
           };
         });
-      await this.setupTrigger.triggerMany(triggerArgs);
+
+      if (anyPending) {
+        // Persist trigger args on each OLI so onApprovalDecided can re-fire
+        // exactly the snapshot that would have fired at create time. If the
+        // persist fails, emit a HIGH-severity event instead of the normal
+        // deferred marker — codex 2026-04-30 review: leaving the misleading
+        // "deferred" audit AND a missing persist means approval-grant later
+        // claims nothing and no work order ever fires, with the audit trail
+        // saying the opposite.
+        for (const { oliId, outcome, args } of requiresSetup) {
+          const { error: persistErr } = await this.supabase.admin
+            .from('order_line_items')
+            .update({ pending_setup_trigger_args: args })
+            .eq('id', oliId);
+          if (persistErr) {
+            this.log.error(
+              `failed to persist pending_setup_trigger_args for oli ${oliId}: ${persistErr.message}`,
+            );
+            void this.audit(
+              tenantId,
+              'bundle.setup_deferral_persist_failed',
+              'order_line_item',
+              oliId,
+              {
+                line_id: oliId,
+                bundle_id: bundle.id,
+                rule_ids: outcome.matched_rule_ids,
+                error: persistErr.message,
+                severity: 'high',
+              },
+            );
+            continue;
+          }
+          void this.audit(
+            tenantId,
+            'bundle.setup_deferred_pending_approval',
+            'order_line_item',
+            oliId,
+            {
+              line_id: oliId,
+              bundle_id: bundle.id,
+              rule_ids: outcome.matched_rule_ids,
+              reason: 'approval_pending',
+            },
+          );
+        }
+      } else {
+        await this.setupTrigger.triggerMany(requiresSetup.map((r) => r.args));
+      }
 
       void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
         bundle_id: bundle.id,
@@ -513,7 +576,9 @@ export class BundleService {
     if (oldStart && newStart && oldStart !== newStart) {
       const deltaMs = new Date(newStart).getTime() - new Date(oldStart).getTime();
       if (deltaMs !== 0) {
-        const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting'];
+        // Match cancel-cascade whitelist (bundle-cascade.service.ts) — see
+        // the comment there for the schema-history reasoning.
+        const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
         const { data: linkedWos } = await this.supabase.admin
           .from('tickets')
           .select('id, sla_resolution_due_at')
@@ -822,6 +887,302 @@ export class BundleService {
     };
   }
 
+
+  /**
+   * Approval-decided handler. Called by ApprovalService.respondToApproval
+   * once a `target_entity_type='booking_bundle'` approval row has resolved
+   * (single-step decision OR final-step / parallel-group completion). Both
+   * the bundle and standalone-order paths use `'booking_bundle'` as the
+   * target type, so this handles them uniformly.
+   *
+   * On approve:
+   *   - Flip every linked order from 'submitted' → 'approved' (idempotent —
+   *     orders that already moved on don't get re-stamped).
+   *   - Re-fire the deferred setup-work-order trigger for any OLI whose
+   *     `pending_setup_trigger_args` was persisted at create time. The args
+   *     are a snapshot from creation, so we don't re-resolve rules here.
+   *   - Clear `pending_setup_trigger_args` once fired (one-shot).
+   *   - Audit `bundle.deferred_setup_fired_on_approval` with the OLI list.
+   *
+   * On reject:
+   *   - Flip linked orders 'submitted' → 'cancelled'.
+   *   - Clear `pending_setup_trigger_args` (no longer relevant — line is dead).
+   *   - Audit `bundle.deferred_setup_dropped_on_rejection`.
+   *
+   * Idempotency: safe to call multiple times. Order status updates filter on
+   * `status='submitted'`, OLI updates filter on the persisted args being
+   * present. A second invocation is a no-op.
+   *
+   * Failure posture: never throws. Approval-side audit + state already
+   * landed before this is called; partial failures here are logged + audited
+   * separately so admins can re-fire manually if needed. Same posture as
+   * the create-time trigger.
+   */
+  async onApprovalDecided(
+    bundleId: string,
+    decision: 'approved' | 'rejected',
+  ): Promise<void> {
+    const tenantId = TenantContext.current().id;
+
+    const { data: orders, error: ordersErr } = await this.supabase.admin
+      .from('orders')
+      .select('id, status')
+      .eq('tenant_id', tenantId)
+      .eq('booking_bundle_id', bundleId);
+
+    if (ordersErr) {
+      this.log.error(
+        `onApprovalDecided: failed to load orders for bundle ${bundleId}: ${ordersErr.message}`,
+      );
+      return;
+    }
+    if (!orders || orders.length === 0) {
+      // Standalone-order path uses target_entity_id=bundle.id and creates a
+      // bundle even though there's no reservation, so this should not
+      // happen. Defensive: audit + return.
+      void this.audit(
+        tenantId,
+        `bundle.approval_${decision}_no_orders`,
+        'booking_bundle',
+        bundleId,
+        { bundle_id: bundleId },
+      );
+      return;
+    }
+
+    const orderIds = orders.map((o) => o.id);
+    const newOrderStatus = decision === 'approved' ? 'approved' : 'cancelled';
+
+    const { error: orderUpdateErr } = await this.supabase.admin
+      .from('orders')
+      .update({ status: newOrderStatus })
+      .in('id', orderIds)
+      .eq('status', 'submitted');
+    if (orderUpdateErr) {
+      this.log.error(
+        `onApprovalDecided: failed to update orders status for bundle ${bundleId}: ${orderUpdateErr.message}`,
+      );
+    }
+
+    // On rejection: expire sibling approval rows that were still pending
+    // BEFORE we touch deferred OLIs. Without this, a bundle with multiple
+    // approvers but no requires_internal_setup lines would skip the expire
+    // step entirely, leaving peers stuck in their pending queues.
+    if (decision === 'rejected') {
+      const { error: expireErr } = await this.supabase.admin
+        .from('approvals')
+        .update({
+          status: 'expired',
+          responded_at: new Date().toISOString(),
+          comments: 'Sibling approval rejected; bundle no longer needs approval.',
+        })
+        .eq('tenant_id', tenantId)
+        .eq('target_entity_id', bundleId)
+        .eq('status', 'pending');
+      if (expireErr) {
+        this.log.error(
+          `onApprovalDecided: failed to expire sibling approvals for bundle ${bundleId}: ${expireErr.message}`,
+        );
+      }
+    }
+
+    // Atomic claim: SELECT FOR UPDATE inside the RPC ensures only one
+    // caller can claim a given OLI's args, even when two approvers grant
+    // truly concurrently across multiple API instances. Returns one row
+    // per claimed OLI with the OLD args value (the RPC nulls them in the
+    // same statement). The previous read-then-clear pattern allowed a
+    // double-fire window between the read and the clear — see 00198.
+    const { data: claimed, error: claimErr } = await this.supabase.admin.rpc(
+      'claim_deferred_setup_trigger_args',
+      {
+        p_tenant_id: tenantId,
+        p_order_ids: orderIds,
+      },
+    );
+    if (claimErr) {
+      this.log.error(
+        `onApprovalDecided: failed to claim deferred trigger args for bundle ${bundleId}: ${claimErr.message}`,
+      );
+      return;
+    }
+
+    const claimedRows = (claimed ?? []) as Array<{
+      oli_id: string;
+      args: TriggerArgs | null;
+    }>;
+
+    if (claimedRows.length === 0) {
+      // Three reasons we'd see zero claimed rows:
+      //   (a) the bundle had approval-required rules WITHOUT
+      //       requires_internal_setup — nothing to defer, nothing to fire.
+      //       Normal — emit the "no_deferred_setup" marker.
+      //   (b) another caller already claimed everything (idempotency on a
+      //       duplicate call). Same marker — both calls audit the
+      //       observation; downstream effects already happened on the first.
+      //   (c) the create-time persist actually FAILED for one or more
+      //       lines (`*.setup_deferral_persist_failed` was emitted) — the
+      //       work order won't fire on grant because no args ever landed.
+      //       Emitting "no_deferred_setup" here would lie about the timeline.
+      //
+      // Check (c) by looking up persist-failure audit events for this
+      // bundle. If any exist, emit a high-severity marker instead so admins
+      // can spot the lost setup at approval time. Codex 2026-04-30 review.
+      const { data: persistFailures } = await this.supabase.admin
+        .from('audit_events')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .in('event_type', ['bundle.setup_deferral_persist_failed', 'order.setup_deferral_persist_failed'])
+        .eq('details->>bundle_id', bundleId)
+        .limit(1);
+      const hadPersistFailure = (persistFailures ?? []).length > 0;
+
+      if (hadPersistFailure) {
+        void this.audit(
+          tenantId,
+          `bundle.approval_${decision}_setup_persist_was_lost`,
+          'booking_bundle',
+          bundleId,
+          {
+            bundle_id: bundleId,
+            order_ids: orderIds,
+            severity: 'high',
+            reason: 'create_time_persist_failed_no_args_to_claim',
+          },
+        );
+      } else {
+        void this.audit(
+          tenantId,
+          `bundle.approval_${decision}_no_deferred_setup`,
+          'booking_bundle',
+          bundleId,
+          { bundle_id: bundleId, order_ids: orderIds },
+        );
+      }
+      return;
+    }
+
+    const oliIds = claimedRows.map((r) => r.oli_id);
+
+    if (decision === 'approved') {
+      const triggerArgs = claimedRows
+        .map((r) => r.args)
+        .filter((a): a is TriggerArgs => a !== null);
+      await this.setupTrigger.triggerMany(triggerArgs);
+
+      // Cancel/approve race guard. The atomic claim above prevents two
+      // approve-side callers from racing each other. But it does NOT
+      // coordinate with the cancel cascade, which can run between the
+      // claim returning and triggerMany inserting the work order:
+      //
+      //   1. Claim RPC commits (args nulled, returned).
+      //   2. cancelLine runs: closes existing tickets WHERE linked_oli=A
+      //      (none yet — the trigger hasn't inserted), updates OLI status
+      //      to 'cancelled'.
+      //   3. triggerMany inserts a NEW ticket with linked_oli=A.
+      //
+      // Result: an open work order linked to a cancelled line. Codex
+      // 2026-04-30 review caught this. Defensive close: re-run the
+      // cancel cascade's tickets-close clause for any of the just-fired
+      // OLIs that are now in fulfillment_status='cancelled'. Idempotent
+      // and scoped — no-op when the race didn't happen.
+      //
+      // Errors on either query are surfaced (log + high-severity audit)
+      // rather than swallowed. This whole block exists specifically to
+      // close a correctness hole; silent best-effort would defeat the
+      // point. Codex round 3 review.
+      const { data: stale, error: staleErr } = await this.supabase.admin
+        .from('order_line_items')
+        .select('id')
+        .in('id', oliIds)
+        .eq('fulfillment_status', 'cancelled');
+      if (staleErr) {
+        this.log.error(
+          `onApprovalDecided: cancel-race lookup failed for bundle ${bundleId}: ${staleErr.message}`,
+        );
+        void this.audit(
+          tenantId,
+          'bundle.deferred_setup_close_lookup_failed',
+          'booking_bundle',
+          bundleId,
+          {
+            bundle_id: bundleId,
+            oli_ids: oliIds,
+            error: staleErr.message,
+            severity: 'high',
+          },
+        );
+      }
+      const staleOliIds = ((stale ?? []) as Array<{ id: string }>).map((r) => r.id);
+      if (staleOliIds.length > 0) {
+        const { data: closedTickets, error: closeErr } = await this.supabase.admin
+          .from('tickets')
+          .update({ status_category: 'closed', closed_at: new Date().toISOString() })
+          .in('linked_order_line_item_id', staleOliIds)
+          .eq('tenant_id', tenantId)
+          .eq('ticket_kind', 'work_order')
+          .in('status_category', ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'])
+          .select('id');
+        if (closeErr) {
+          this.log.error(
+            `onApprovalDecided: cancel-race close failed for bundle ${bundleId}: ${closeErr.message}`,
+          );
+          void this.audit(
+            tenantId,
+            'bundle.deferred_setup_close_failed',
+            'booking_bundle',
+            bundleId,
+            {
+              bundle_id: bundleId,
+              oli_ids: staleOliIds,
+              error: closeErr.message,
+              severity: 'high',
+            },
+          );
+        }
+        const closedTicketIds = ((closedTickets ?? []) as Array<{ id: string }>).map((r) => r.id);
+        if (closedTicketIds.length > 0) {
+          void this.audit(
+            tenantId,
+            'bundle.deferred_setup_closed_after_concurrent_cancel',
+            'booking_bundle',
+            bundleId,
+            {
+              bundle_id: bundleId,
+              oli_ids: staleOliIds,
+              ticket_ids: closedTicketIds,
+              severity: 'medium',
+            },
+          );
+        }
+      }
+
+      void this.audit(
+        tenantId,
+        'bundle.deferred_setup_fired_on_approval',
+        'booking_bundle',
+        bundleId,
+        {
+          bundle_id: bundleId,
+          oli_ids: oliIds,
+          order_ids: orderIds,
+        },
+      );
+    } else {
+      // The args were already cleared by the RPC's atomic claim. We just
+      // record that the deferral was dropped without firing.
+      void this.audit(
+        tenantId,
+        'bundle.deferred_setup_dropped_on_rejection',
+        'booking_bundle',
+        bundleId,
+        {
+          bundle_id: bundleId,
+          oli_ids: oliIds,
+          order_ids: orderIds,
+        },
+      );
+    }
+  }
 
   private async audit(
     tenantId: string,

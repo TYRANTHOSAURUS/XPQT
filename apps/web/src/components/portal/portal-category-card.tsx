@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
-import * as Icons from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { resolvePortalIcon } from '@/lib/portal-icons';
 
 interface Props {
   id: string;
@@ -20,8 +20,11 @@ const PLATFORM_COVERS: Record<string, string> = {
   'platform:cover-4': 'bg-gradient-to-br from-orange-500/70 to-amber-700',
 };
 
+const COVER_WIDTH = 400;
+const COVER_HEIGHT = 190;
+
 export function PortalCategoryCard({ id, name, description, icon, cover_source, cover_image_url, className }: Props) {
-  const IconCmp = icon && (Icons as Record<string, unknown>)[icon] as React.ComponentType<{ className?: string }> | undefined;
+  const IconCmp = resolvePortalIcon(icon);
   const platformClass = cover_image_url ? PLATFORM_COVERS[cover_image_url] : null;
 
   return (
@@ -32,7 +35,7 @@ export function PortalCategoryCard({ id, name, description, icon, cover_source, 
         'group block overflow-hidden rounded-xl border border-border/70 bg-card',
         'transition-[transform,border-color,background-color,box-shadow]',
         'hover:-translate-y-0.5 hover:border-border hover:bg-card hover:shadow-sm',
-        'active:translate-y-0 active:scale-[0.99] active:shadow-none',
+        'active:translate-y-px active:shadow-none',
         'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
         className,
       )}
@@ -44,21 +47,23 @@ export function PortalCategoryCard({ id, name, description, icon, cover_source, 
     >
       <div className="relative aspect-[2.1/1] bg-muted overflow-hidden">
         {cover_source === 'image' && cover_image_url && platformClass ? (
-          <div className={cn(platformClass, 'h-full w-full')} />
+          <div className={cn(platformClass, 'h-full w-full')} aria-hidden />
         ) : cover_source === 'image' && cover_image_url ? (
           <img
             src={cover_image_url}
             alt=""
             loading="lazy"
+            width={COVER_WIDTH}
+            height={COVER_HEIGHT}
             data-portal-fade
             data-loaded="false"
             onLoad={(e) => e.currentTarget.setAttribute('data-loaded', 'true')}
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.05]"
             style={{ transitionTimingFunction: 'var(--ease-portal)' }}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-primary/20 to-primary/5 text-primary">
-            {IconCmp ? <IconCmp className="size-7" /> : <Icons.HelpCircle className="size-7" />}
+            <IconCmp className="size-7" aria-hidden />
           </div>
         )}
         {/* Bottom scrim — keeps title readable when an image is present */}

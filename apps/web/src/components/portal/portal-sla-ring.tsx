@@ -12,6 +12,10 @@ interface Props {
 /**
  * Compact conic-gradient progress ring for SLA visibility.
  * Green → amber when >0.66 → red when >0.85 or breached.
+ *
+ * Progress is rendered as a fractional CSS variable so the parent can
+ * tick `useNow()` and the ring sweeps continuously rather than stepping
+ * 1% at a time.
  */
 export function PortalSlaRing({
   progress,
@@ -20,25 +24,27 @@ export function PortalSlaRing({
   className,
 }: Props) {
   const clamped = Math.max(0, Math.min(1, progress));
-  const pct = Math.round(clamped * 100);
   const color =
     breached || clamped > 0.85
       ? 'rgb(239 68 68)'
       : clamped > 0.66
         ? 'rgb(234 179 8)'
         : 'rgb(34 197 94)';
+  const pct = clamped * 100;
+  const ariaPct = Math.round(pct);
 
   return (
     <div
-      className={cn('relative shrink-0 rounded-full', className)}
+      className={cn('relative shrink-0 rounded-full transition-[background] duration-500', className)}
       style={{
         width: size,
         height: size,
         background: `conic-gradient(${color} ${pct}%, rgb(229 231 235 / 0.3) 0)`,
+        transitionTimingFunction: 'var(--ease-portal)',
       }}
-      aria-label={`SLA ${pct}% used`}
+      aria-label={`SLA ${ariaPct}% used`}
       role="progressbar"
-      aria-valuenow={pct}
+      aria-valuenow={ariaPct}
       aria-valuemin={0}
       aria-valuemax={100}
     >

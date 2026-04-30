@@ -212,7 +212,7 @@ export class TicketService {
         requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email),
         location:spaces!tickets_location_id_fkey(id, name, type),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
-        assigned_agent:users!tickets_assigned_user_id_fkey(id, email)
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email, person:persons!users_person_id_fkey(first_name, last_name))
       `)
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false })
@@ -242,13 +242,21 @@ export class TicketService {
     // Parent filter: null = top-level only, specific ID = children of that ticket
     if (filters.parent_ticket_id === null) {
       query = query.is('parent_ticket_id', null);
-      // Booking-origin work orders ALSO have parent_ticket_id IS NULL but are
-      // operational tasks, not help requests. Exclude them from the default
-      // top-level queue so the desk view stays focused on cases. Callers
-      // wanting to see booking-origin work orders can filter by
-      // ticket_kind='work_order' OR by booking_bundle_id explicitly.
-      // See plan §Slice 2 + assignments-routing-fulfillment.md §25.
-      query = query.is('booking_bundle_id', null);
+      // Booking-origin work orders ALSO have parent_ticket_id IS NULL but
+      // are operational tasks, not help requests. ONLY hide them from the
+      // default top-level cases queue (no kind, no assignee filter).
+      // When the caller explicitly asked for work_order kind, OR is filtering
+      // by an assignee (their team queue, "assigned to me", etc), they want
+      // to see all matching work — including booking-origin. Codex review
+      // 2026-04-30 caught the over-broad version of this filter.
+      const explicitWorkOrderKind = filters.ticket_kind === 'work_order';
+      const assigneeFiltered =
+        filters.assigned_team_id != null ||
+        filters.assigned_user_id != null ||
+        filters.assigned_vendor_id != null;
+      if (!explicitWorkOrderKind && !assigneeFiltered) {
+        query = query.is('booking_bundle_id', null);
+      }
     } else if (filters.parent_ticket_id) {
       query = query.eq('parent_ticket_id', filters.parent_ticket_id);
     }
@@ -490,7 +498,7 @@ export class TicketService {
         location:spaces!tickets_location_id_fkey(id, name, type, parent_id),
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
-        assigned_agent:users!tickets_assigned_user_id_fkey(id, email),
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email, person:persons!users_person_id_fkey(first_name, last_name)),
         assigned_vendor:vendors!tickets_assigned_vendor_id_fkey(id, name),
         request_type:request_types!tickets_ticket_type_id_fkey(id, name, domain)
       `)
@@ -1533,6 +1541,15 @@ export class TicketService {
     target_due_at?: string | null;
     priority?: string;
     /**
+     * Optional SLA policy from the matrix. We DON'T start sla_timers
+     * (creation-anchored math doesn't fit our service-window-anchored
+     * deadline). We DO record sla_id on the ticket so the policy is
+     * visible in the SLA admin's "where is this policy used" view and
+     * isn't silently discarded. Codex 2026-04-30 review caught this
+     * dead-config gap.
+     */
+    sla_policy_id?: string | null;
+    /**
      * Free-form snapshot for audit — typically the rule_ids that triggered
      * the auto-creation, the matrix row id, and the original line metadata.
      */
@@ -1562,6 +1579,7 @@ export class TicketService {
       assigned_team_id: args.assigned_team_id ?? null,
       assigned_user_id: args.assigned_user_id ?? null,
       assigned_vendor_id: args.assigned_vendor_id ?? null,
+      sla_id: args.sla_policy_id ?? null,
       sla_resolution_due_at: args.target_due_at ?? null,
       source_channel: 'system',
     };

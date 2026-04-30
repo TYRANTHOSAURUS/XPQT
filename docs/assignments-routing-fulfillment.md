@@ -826,12 +826,43 @@ Hooks live in `BundleService.maybeCreateSetupWorkOrder()` (bundle-attached path)
 
 When an order line cancels, any non-terminal work order linked via `tickets.linked_order_line_item_id` is closed (`status_category='closed'`, `closed_at` set). Implemented in `BundleCascadeService.cancelLine()` and `cancelBundleImpl()`. Whitelist of non-terminal states: `new | assigned | in_progress | waiting`. Already-terminal tickets are not re-stamped.
 
-### Audit events
+### Audit events (emitted by `SetupWorkOrderTriggerService` on `audit_events`)
 
-- `bundle.setup_routing_unconfigured` — service rule says setup needed but matrix has no team for `(tenant, location, service_category)`. Skipped silently with this audit so admins can spot misconfiguration.
-- `bundle.setup_work_order_create_failed` — matrix returned a team but the create call threw. Severity high.
-- `order.setup_routing_unconfigured` / `order.setup_work_order_create_failed` — standalone-order analogues.
-- `booking_origin_work_order_created` — emitted on `audit_events` from `TicketService.createBookingOriginWorkOrder` for every successful create.
+Naming pattern: `{originSurface}.{outcome}` where originSurface is `bundle` (bundled-services path) or `order` (standalone-order path). Both surfaces emit the same outcome events so cross-source queries don't have to UNION two taxonomies.
+
+- `*.setup_work_order_created` — happy path. Payload: ticket_id, assigned_team_id, target_due_at, lead_time_minutes, sla_policy_id.
+- `*.setup_routing_unconfigured` — rule fired requires_internal_setup but matrix has no team for `(tenant, location, service_category)`. Skipped without creating; admins see this in the audit feed.
+- `*.setup_routing_lookup_failed` — `resolve_setup_routing()` RPC returned an error. Severity high.
+- `*.setup_work_order_create_failed` — matrix returned a team but the ticket insert threw. Severity high.
+- `*.setup_deferred_pending_approval` — at least one line on the bundle/order is in approval-required state, so the trigger was skipped pending the approval grant. The TriggerArgs are persisted on `order_line_items.pending_setup_trigger_args` (00197) and re-fired by `BundleService.onApprovalDecided` once approval lands; see "Approval interlock" below.
+
+Emitted by `BundleService.onApprovalDecided` on the `booking_bundle` entity:
+
+- `bundle.deferred_setup_fired_on_approval` — approval granted; deferred trigger re-fired for the listed OLIs. Payload: bundle_id, oli_ids, order_ids.
+- `bundle.deferred_setup_dropped_on_rejection` — approval rejected; persisted args cleared without firing. Payload: bundle_id, oli_ids, order_ids.
+- `bundle.approval_{approved|rejected}_no_deferred_setup` — approval resolved but no lines on the bundle had `requires_internal_setup`. Marker so the audit timeline shows the approval was observed.
+- `bundle.approval_{approved|rejected}_setup_persist_was_lost` — HIGH severity. Claim returned nothing AND `*.setup_deferral_persist_failed` exists for this bundle: setup was supposed to defer but the create-time persist failed. Distinguished from the "no_deferred_setup" marker so the timeline doesn't lie.
+- `bundle.approval_{approved|rejected}_no_orders` — defensive: approval target was a `booking_bundle` but no orders linked. Should never happen in normal flow.
+- `bundle.deferred_setup_closed_after_concurrent_cancel` — MEDIUM severity. Cancel/approve race detected: after `triggerMany` fired, the OLI was already cancelled; the just-created work order was closed by the defensive close.
+- `bundle.deferred_setup_close_lookup_failed` / `bundle.deferred_setup_close_failed` — HIGH severity. The defensive close path's stale-OLI lookup or tickets-close update returned an error. Surfaces what would otherwise be a silent best-effort skip on the orphan-cleanup hot path.
+
+Plus `booking_origin_work_order_created` on the ticket-side activity feed via `TicketService.addActivity` (visibility=`system`) — the per-ticket audit row, separate from the cross-source `audit_events` event above.
+
+### Approval interlock
+
+When a service rule on a line emits `effect=require_approval` (or `allow_override`), the order/bundle commits in `submitted` state and an approval row is created. **Auto-creation of internal setup work orders is deferred in this case** — facilities should not start internal work for an order that may still be rejected.
+
+- All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
+- The `TriggerArgs` snapshot is persisted on `order_line_items.pending_setup_trigger_args` (00197) at deferral time. If the persist write fails, both creators emit a HIGH-severity `*.setup_deferral_persist_failed` event INSTEAD of the normal `*.setup_deferred_pending_approval` marker — otherwise the audit trail would show "deferred" while approval-grant later silently does nothing.
+- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved. Resolution rules (`booking_bundle` target type):
+  - Any rejection ends the approval immediately.
+  - Otherwise: every approval row on the same `target_entity_id` must be `approved` or `expired` (explicitly enumerated; `pending`/`rejected`/any future status block). Bundle approvals are typically upserted by `ApprovalRoutingService.assemble` as independent single-step rows (one per unique approver) with `parallel_group=null` / `chain=null`, but the same target can also receive parallel/chain approvals via the generic API. Always requiring "every row resolved" handles all topologies — single-step, parallel, chain, and mixed — uniformly. `expired` rows count as resolved because `BundleCascadeService.rescopeApprovalsAfterLineCancel` expires approvals whose scope is emptied by a line cancel; treating `expired` as blocking would deadlock the bundle.
+- Args are claimed atomically via `claim_deferred_setup_trigger_args(p_tenant_id, p_order_ids)` (00198). The RPC uses `SELECT FOR UPDATE` so two callers cannot both fire the trigger for the same OLI even when granting truly concurrently across multiple API instances. Returns one row per claimed OLI with the OLD args value.
+- Cancel/approve race guard: after `triggerMany` fires on the approve branch, `BundleService.onApprovalDecided` re-runs the cancel-cascade's tickets-close clause for any of the just-fired OLIs that are now in `fulfillment_status='cancelled'`. Without this, a `cancelLine` running between the claim RPC commit and the trigger insert could leave an open work order linked to a cancelled line. The race window emits `bundle.deferred_setup_closed_after_concurrent_cancel` (medium severity).
+  - **Approved:** linked orders flip `submitted` → `approved`; the persisted args are read back and `SetupWorkOrderTriggerService.triggerMany` re-fires the work-order creation for every deferred OLI; args are cleared (one-shot); audit emits `bundle.deferred_setup_fired_on_approval`.
+  - **Rejected:** linked orders flip `submitted` → `cancelled`; persisted args are cleared; audit emits `bundle.deferred_setup_dropped_on_rejection`. No trigger fires.
+- The handler is idempotent — order updates filter on `status='submitted'` and OLI clears filter on the args being present, so re-running on an already-decided bundle is a no-op.
+- The persisted args capture the decision **at create time**. Rule edits between booking and approval do not change what fires on grant — by design, so the operator's read of the booking matches what facilities will see.
 
 ### Visibility — what's intentionally NOT set on booking-origin work orders
 
@@ -847,8 +878,9 @@ Visibility for these tickets falls to the assignee path: `assigned_team_id` matc
 Any change to these requires updating this section:
 
 - `apps/api/src/modules/ticket/ticket.service.ts:createBookingOriginWorkOrder`
-- `apps/api/src/modules/booking-bundles/bundle.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/booking-bundles/bundle.service.ts` (`attachServicesToReservation`, `onApprovalDecided`)
 - `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts` (cancel cascade for `linked_order_line_item_id`)
-- `apps/api/src/modules/orders/order.service.ts:maybeCreateSetupWorkOrder`
+- `apps/api/src/modules/orders/order.service.ts:createStandaloneOrder`
 - `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
-- Migrations changing `service_rules`, `location_service_routing`, or the `resolve_setup_routing` function
+- `apps/api/src/modules/approval/approval.service.ts:handleBookingBundleApprovalDecided` (dispatch to bundle service)
+- Migrations changing `service_rules`, `location_service_routing`, `resolve_setup_routing`, or `order_line_items.pending_setup_trigger_args`

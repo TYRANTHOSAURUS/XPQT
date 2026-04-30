@@ -3,6 +3,7 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
 import { BookingNotificationsService } from '../reservations/booking-notifications.service';
+import { BundleService } from '../booking-bundles/bundle.service';
 import type { Reservation } from '../reservations/dto/types';
 
 export interface ApprovalActor {
@@ -32,6 +33,8 @@ export class ApprovalService {
     @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
     @Inject(forwardRef(() => BookingNotificationsService))
     private readonly bookingNotifications: BookingNotificationsService,
+    @Inject(forwardRef(() => BundleService))
+    private readonly bundleService: BundleService,
   ) {}
 
   /**
@@ -264,6 +267,19 @@ export class ApprovalService {
       throw new ForbiddenException('You are not an approver for this request');
     }
 
+    // CAS — codex 2026-04-30 review found a read-then-unconditional-write
+    // race: two concurrent respond() calls can both pass the read-side
+    // `status === 'pending'` check, then write `approved` and `rejected`
+    // on top of each other. The second write would clobber the first AND
+    // the bundle/reservation handler for the second decision would run
+    // even though the first already transitioned downstream state. Net
+    // effect: a rejected row could coexist with approved+open fulfillment.
+    //
+    // Filtering on `status='pending'` makes the update atomic. If the
+    // filter doesn't match (the row was decided concurrently between our
+    // read and write), `.maybeSingle()` returns null and we bail with
+    // the same conflict shape as the read-side check — no downstream
+    // dispatch fires.
     const { data, error } = await this.supabase.admin
       .from('approvals')
       .update({
@@ -272,10 +288,12 @@ export class ApprovalService {
         comments: dto.comments,
       })
       .eq('id', approvalId)
+      .eq('status', 'pending')
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) throw new BadRequestException('Approval already responded to');
 
     await this.logDomainEvent(approval.target_entity_id, `approval_${dto.status}`, {
       approval_id: approvalId,
@@ -306,6 +324,18 @@ export class ApprovalService {
         await this.handleReservationApprovalDecided(approval, dto);
       } catch (err) {
         console.error('[approval] reservation notification failed', err);
+      }
+    }
+
+    // For booking bundles (and standalone orders, which also use
+    // target_entity_type='booking_bundle'): transition linked orders'
+    // status and re-fire any deferred internal-setup work orders. Same
+    // parallel/chain semantics as reservations.
+    if (approval.target_entity_type === 'booking_bundle') {
+      try {
+        await this.handleBookingBundleApprovalDecided(approval, dto);
+      } catch (err) {
+        console.error('[approval] booking_bundle notification failed', err);
       }
     }
 
@@ -369,6 +399,88 @@ export class ApprovalService {
       finalDecision,
       approval.comments ?? undefined,
     );
+  }
+
+  /**
+   * Resolve final decision for a booking_bundle approval and call
+   * BundleService.onApprovalDecided once the bundle is fully resolved.
+   *
+   * Why this doesn't branch on `parallel_group` / `approval_chain_id`
+   * like the reservation handler does: bundle approvals are typically
+   * upserted by `ApprovalRoutingService.assemble` as independent
+   * single-step rows (one per unique approver — cost-center owner +
+   * threshold approver + dietary officer, etc.). They have no
+   * parallel_group and no chain. But it IS possible for the same bundle
+   * to ALSO be targeted by `createParallelGroup` / `createSequentialChain`
+   * via the generic API, mixing topologies on a single target. To handle
+   * any combination correctly — and to never under-block or over-fire —
+   * we always require EVERY approval row on the target to be resolved
+   * (`approved` or `expired`). That superset covers single-step, parallel,
+   * chained, and mixed bundles uniformly.
+   *
+   * Resolution rules:
+   *   - Any rejection ends the approval immediately ('rejected'). Sibling
+   *     pending peers are expired by `BundleService.onApprovalDecided`
+   *     to keep approvers' queues clean.
+   *   - Otherwise: every approval row on the same `target_entity_id`
+   *     must be in `approved` or `expired` status. If any is still
+   *     `pending` (or defensively `rejected`), return — the next peer's
+   *     grant will re-enter this handler.
+   */
+  private async handleBookingBundleApprovalDecided(
+    approval: { id: string; target_entity_id: string; parallel_group: string | null;
+                approval_chain_id: string | null; comments?: string | null },
+    dto: RespondDto,
+  ): Promise<void> {
+    let finalDecision: 'approved' | 'rejected';
+    if (dto.status === 'rejected') {
+      finalDecision = 'rejected';
+    } else {
+      const allResolved = await this.areAllTargetApprovalsApproved(
+        approval.target_entity_id,
+      );
+      if (!allResolved) return;
+      finalDecision = 'approved';
+    }
+
+    await this.bundleService.onApprovalDecided(
+      approval.target_entity_id,
+      finalDecision,
+    );
+  }
+
+  /**
+   * True when every approval row on the given target is RESOLVED
+   * affirmatively — explicitly: every row is `approved` or `expired`,
+   * and no row is `pending` or `rejected` (or any other future status).
+   *
+   * Why `expired` counts as resolved: `BundleCascadeService.
+   * rescopeApprovalsAfterLineCancel` sets approvals to `expired` when
+   * their scope_breakdown is emptied by a line cancel. Treating
+   * `expired` as blocking would deadlock multi-approver bundles
+   * whenever any line cancels — the surviving approver's grant could
+   * never resolve the bundle.
+   *
+   * Why we explicitly enumerate (instead of "anything not-pending"):
+   * future approval-row statuses (e.g. `delegated`, `revoked`) should
+   * not silently count as resolved. If a new status is introduced, this
+   * helper should be revisited explicitly.
+   *
+   * False when there are zero rows — defensive: a target with no rows
+   * shouldn't reach this path. Used by booking_bundle resolution.
+   */
+  private async areAllTargetApprovalsApproved(
+    targetEntityId: string,
+  ): Promise<boolean> {
+    const tenant = TenantContext.current();
+    const { data } = await this.supabase.admin
+      .from('approvals')
+      .select('status')
+      .eq('tenant_id', tenant.id)
+      .eq('target_entity_id', targetEntityId);
+    if (!data || data.length === 0) return false;
+    const RESOLVED = new Set(['approved', 'expired']);
+    return data.every((a) => RESOLVED.has(a.status as string));
   }
 
   /**

@@ -1,135 +1,38 @@
 // apps/web/src/pages/portal/request-detail.tsx
 import { useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
+import { useNow } from '@/lib/use-now';
 import { PortalPage } from '@/components/portal/portal-page';
 import { PortalFormHeader } from '@/components/portal/portal-form-header';
-import { PortalRequestThread, type ThreadEvent } from '@/components/portal/portal-request-thread';
+import {
+  PortalRequestThread,
+  PortalRequestReplyComposer,
+  type ThreadEvent,
+} from '@/components/portal/portal-request-thread';
 import { PortalRequestSidebar } from '@/components/portal/portal-request-sidebar';
 import { derivePortalStatus } from '@/lib/portal-status';
-import { ArrowLeft } from 'lucide-react';
 import { toastError, toastSuccess } from '@/lib/toast';
-
-// GET /tickets/:id — joined shape from ticket.service.ts getById
-interface TicketDetail {
-  id: string;
-  title: string;
-  description: string | null;
-  status: string;
-  status_category: string;
-  created_at: string;
-  sla_resolution_due_at: string | null;
-  sla_resolution_breached_at: string | null;
-  requester_person_id: string | null;
-  // joined as "request_type" — only id, name, domain are selected by getById
-  request_type?: { id: string; name: string; domain: string | null } | null;
-  // joined as "assigned_team"
-  assigned_team?: { id: string; name: string } | null;
-  // joined as "assigned_agent" (not assigned_user)
-  assigned_agent?: { id: string; email: string } | null;
-  // joined as "location"
-  location?: { id: string; name: string; type: string } | null;
-}
-
-// GET /tickets/:id/activities — activity rows with joined author person
-interface Activity {
-  id: string;
-  activity_type: string;
-  content?: string | null;
-  metadata?: Record<string, unknown> | null;
-  author?: { id: string; first_name: string | null; last_name: string | null } | null;
-  created_at: string;
-  visibility: string;
-}
-
-const ticketOptions = (id: string | undefined) =>
-  queryOptions({
-    queryKey: ['ticket', 'detail', id],
-    queryFn: ({ signal }) => apiFetch<TicketDetail>(`/tickets/${id}`, { signal }),
-    enabled: Boolean(id),
-    staleTime: 10_000,
-  });
-
-const activitiesOptions = (id: string | undefined) =>
-  queryOptions({
-    queryKey: ['ticket', 'activities', id],
-    queryFn: ({ signal }) =>
-      apiFetch<Activity[]>(`/tickets/${id}/activities?visibility=external`, { signal }),
-    enabled: Boolean(id),
-    staleTime: 5_000,
-  });
-
-function deriveSla(
-  ticket: TicketDetail,
-): { progress: number; remainingLabel: string; breached: boolean } | null {
-  if (!ticket.sla_resolution_due_at) return null;
-  const due = new Date(ticket.sla_resolution_due_at).getTime();
-  const created = new Date(ticket.created_at).getTime();
-  const now = Date.now();
-  const total = Math.max(1, due - created);
-  const used = Math.max(0, now - created);
-  const progress = Math.min(1, used / total);
-  if (ticket.sla_resolution_breached_at || now > due) {
-    return { progress: 1, remainingLabel: 'Past due', breached: true };
-  }
-  const remaining = due - now;
-  const hours = Math.floor(remaining / 3_600_000);
-  const minutes = Math.floor((remaining % 3_600_000) / 60_000);
-  const remainingLabel = hours > 0 ? `${hours}h ${minutes}m left` : `${minutes}m left`;
-  return { progress, remainingLabel, breached: false };
-}
-
-function activitiesToEvents(
-  acts: Activity[] | undefined,
-  requesterPersonId: string | null | undefined,
-): ThreadEvent[] {
-  if (!acts) return [];
-  return acts
-    .filter((a) => a.activity_type !== 'system_event' || a.content)
-    .map((a) => {
-      // External comments and internal notes become messages
-      if (
-        a.activity_type === 'external_comment' ||
-        a.activity_type === 'internal_note' ||
-        (a.activity_type !== 'system_event' && a.content)
-      ) {
-        const authorName =
-          [a.author?.first_name, a.author?.last_name].filter(Boolean).join(' ') || 'Support';
-        const role =
-          a.author?.id === requesterPersonId
-            ? ('requester' as const)
-            : ('assignee' as const);
-        return {
-          id: a.id,
-          kind: 'message' as const,
-          authorName,
-          authorRole: role,
-          body: a.content ?? '',
-          createdAt: a.created_at,
-        };
-      }
-      // System events become timeline markers
-      const systemBody =
-        a.content ??
-        String(
-          (a.metadata as { event?: string } | null)?.event ?? a.activity_type,
-        ).replaceAll('_', ' ');
-      return {
-        id: a.id,
-        kind: 'system' as const,
-        body: systemBody,
-        createdAt: a.created_at,
-      };
-    });
-}
+import {
+  activitiesToThreadEvents,
+  deriveTicketSla,
+  formatAssignee,
+  portalTicketActivitiesOptions,
+  portalTicketKeys,
+  portalTicketOptions,
+} from '@/api/portal-tickets';
 
 export function RequestDetailPage() {
   const { id } = useParams();
   const qc = useQueryClient();
+  const now = useNow(30_000);
 
-  const { data: ticket, isPending: ticketPending } = useQuery(ticketOptions(id));
-  const { data: activities, isPending: actsPending } = useQuery(activitiesOptions(id));
+  const { data: ticket, isPending: ticketPending } = useQuery(portalTicketOptions(id));
+  const { data: activities, isPending: actsPending } = useQuery(
+    portalTicketActivitiesOptions(id),
+  );
 
   const reply = useMutation<unknown, Error, string>({
     mutationFn: (body) =>
@@ -142,22 +45,36 @@ export function RequestDetailPage() {
         }),
       }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['ticket', 'activities', id] });
+      void qc.invalidateQueries({ queryKey: portalTicketKeys.activities(id) });
+      toastSuccess('Reply sent');
+    },
+    onError: (e, body) => {
+      toastError("Couldn't send reply", {
+        error: e,
+        retry: () => void reply.mutate(body),
+      });
     },
   });
 
   const events = useMemo(
-    () => activitiesToEvents(activities, ticket?.requester_person_id),
+    () => activitiesToThreadEvents(activities, ticket?.requester_person_id),
     [activities, ticket?.requester_person_id],
   );
 
-  const sla = ticket ? deriveSla(ticket) : null;
-  const isPending = ticketPending || actsPending;
+  const sla = ticket ? deriveTicketSla(ticket, now) : null;
 
-  if (isPending) {
+  if (ticketPending) {
     return (
       <PortalPage>
-        <div className="text-sm text-muted-foreground">Loading…</div>
+        <Link
+          to="/portal/requests"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-3"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden /> All requests
+        </Link>
+        <div className="text-sm text-muted-foreground" role="status" aria-live="polite">
+          Loading…
+        </div>
       </PortalPage>
     );
   }
@@ -165,6 +82,12 @@ export function RequestDetailPage() {
   if (!ticket) {
     return (
       <PortalPage>
+        <Link
+          to="/portal/requests"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-3"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden /> All requests
+        </Link>
         <div className="text-sm text-muted-foreground">Request not found.</div>
       </PortalPage>
     );
@@ -186,13 +109,15 @@ export function RequestDetailPage() {
     ...events,
   ];
 
+  const assignee = formatAssignee(ticket);
+
   return (
     <PortalPage>
       <Link
         to="/portal/requests"
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-3"
       >
-        <ArrowLeft className="size-3.5" /> All requests
+        <ArrowLeft className="size-3.5" aria-hidden /> All requests
       </Link>
 
       <div className="grid gap-8 md:grid-cols-[1fr_280px]">
@@ -203,20 +128,22 @@ export function RequestDetailPage() {
             whatHappensNext={ticket.request_type?.name ?? null}
           />
           <div className="mt-6">
-            <PortalRequestThread
-              events={threadEvents}
-              onReply={async (body) => {
-                try {
-                  await reply.mutateAsync(body);
-                  toastSuccess('Reply sent');
-                } catch (e) {
-                  toastError("Couldn't send reply", {
-                    error: e,
-                    retry: () => reply.mutateAsync(body),
-                  });
-                }
-              }}
-            />
+            {actsPending ? (
+              <div className="space-y-3" aria-busy="true" aria-live="polite">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <div className="portal-skeleton size-8 shrink-0 rounded-full" />
+                    <div className="flex-1 space-y-2">
+                      <div className="portal-skeleton h-3 w-1/3 rounded" />
+                      <div className="portal-skeleton h-12 w-full rounded-lg" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <PortalRequestThread events={threadEvents} />
+            )}
+            <PortalRequestReplyComposer onSubmit={(body) => reply.mutateAsync(body).then(() => undefined)} />
           </div>
         </div>
 
@@ -228,12 +155,8 @@ export function RequestDetailPage() {
           blocks={[
             {
               label: 'Assignee',
-              value: ticket.assigned_agent ? (
-                ticket.assigned_agent.email
-              ) : (
-                <span className="text-muted-foreground">Unassigned</span>
-              ),
-              description: ticket.assigned_team?.name,
+              value: assignee.primary ?? <span className="text-muted-foreground">Unassigned</span>,
+              description: assignee.description ?? undefined,
             },
             {
               label: 'Location',

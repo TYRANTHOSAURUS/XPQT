@@ -73,20 +73,21 @@ export function DeskBookingsPage() {
   const selectedId = params.get('id');
   const [search, setSearch] = useState('');
 
-  // The 'bundles' chip is a client-side filter on top of 'all' — every
-  // reservation that has a `booking_bundle_id`. The backend's existing scope
-  // enum doesn't model "has services" because that's a sub-project 2
-  // concept; doing it client-side keeps `useOperatorReservations` unchanged.
+  // The 'bundles' chip is a server-side filter (`has_bundle=true`,
+  // booking-services-roadmap §9.1.9). Backend uses partial index 00199 so
+  // even a tenant with thousands of room-only reservations stays cheap.
+  // Previously this filtered client-side on top of scope='all', which
+  // forced the API to ship up to 200 reservations only to drop most of them.
   const fetchScope: Exclude<Scope, 'bundles'> = scope === 'bundles' ? 'all' : scope;
   const { data, isLoading, error, isFetching } = useOperatorReservations({
     scope: fetchScope,
     limit: 200,
+    has_bundle: scope === 'bundles' ? true : undefined,
   });
 
   const allItems = useMemo<OperatorReservationItem[]>(() => {
-    const items = (data?.items ?? []) as OperatorReservationItem[];
-    return scope === 'bundles' ? items.filter((r) => Boolean(r.booking_bundle_id)) : items;
-  }, [data, scope]);
+    return (data?.items ?? []) as OperatorReservationItem[];
+  }, [data]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

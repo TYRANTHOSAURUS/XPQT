@@ -44,64 +44,100 @@ export class SetupWorkOrderTriggerService {
    * branch on the response).
    */
   async trigger(args: TriggerArgs): Promise<{ ticket_id: string } | null> {
-    const { data: routing, error: routingErr } = await this.supabase.admin.rpc(
-      'resolve_setup_routing',
-      {
-        p_tenant_id: args.tenantId,
-        p_location_id: args.locationId,
-        p_service_category: args.serviceCategory,
-      },
-    );
-    if (routingErr) {
-      this.log.warn(
-        `setup routing lookup failed for line ${args.oliId}: ${routingErr.message}`,
-      );
-      return null;
-    }
-    const routingRow = (routing as Array<{
-      internal_team_id: string | null;
-      default_lead_time_minutes: number;
-      sla_policy_id: string | null;
-    }> | null)?.[0];
-
-    if (!routingRow || !routingRow.internal_team_id) {
-      void this.audit(args, 'setup_routing_unconfigured', { reason: 'no_matrix_match' });
-      return null;
-    }
-
-    const leadTimeMinutes =
-      args.leadTimeOverride ?? routingRow.default_lead_time_minutes;
-    const targetDueAt = new Date(
-      new Date(args.serviceWindowStartAt).getTime() - leadTimeMinutes * 60_000,
-    ).toISOString();
-
+    // Outer try/catch: caller fires this AFTER bundle/order commit. Any
+    // unexpected throw (RPC, date math, audit insert) must NOT propagate
+    // and turn a successful 201 into a 500 — codex 2026-04-30 review.
     try {
-      const { id } = await this.tickets.createBookingOriginWorkOrder({
-        title: `Internal setup — ${args.serviceCategory}`,
-        booking_bundle_id: args.bundleId,
-        linked_order_line_item_id: args.oliId,
-        assigned_team_id: routingRow.internal_team_id,
-        target_due_at: targetDueAt,
-        location_id: args.locationId,
-        audit_metadata: {
-          triggered_by_rule_ids: args.ruleIds,
-          lead_time_minutes: leadTimeMinutes,
-          service_window_start_at: args.serviceWindowStartAt,
-          service_category: args.serviceCategory,
-          origin: args.originSurface,
+      const { data: routing, error: routingErr } = await this.supabase.admin.rpc(
+        'resolve_setup_routing',
+        {
+          p_tenant_id: args.tenantId,
+          p_location_id: args.locationId,
+          p_service_category: args.serviceCategory,
         },
-      });
-      return { ticket_id: id };
-    } catch (err) {
-      this.log.warn(
-        `booking-origin work order create failed for line ${args.oliId}: ${
-          (err as Error).message
-        }`,
       );
-      void this.audit(args, 'setup_work_order_create_failed', {
-        error: (err as Error).message,
-        severity: 'high',
-      });
+      if (routingErr) {
+        this.log.warn(
+          `setup routing lookup failed for line ${args.oliId}: ${routingErr.message}`,
+        );
+        void this.audit(args, 'setup_routing_lookup_failed', {
+          error: routingErr.message,
+          severity: 'high',
+        });
+        return null;
+      }
+      const routingRow = (routing as Array<{
+        internal_team_id: string | null;
+        default_lead_time_minutes: number;
+        sla_policy_id: string | null;
+      }> | null)?.[0];
+
+      if (!routingRow || !routingRow.internal_team_id) {
+        void this.audit(args, 'setup_routing_unconfigured', { reason: 'no_matrix_match' });
+        return null;
+      }
+
+      const leadTimeMinutes =
+        args.leadTimeOverride ?? routingRow.default_lead_time_minutes;
+      const startMs = new Date(args.serviceWindowStartAt).getTime();
+      if (!Number.isFinite(startMs)) {
+        void this.audit(args, 'setup_work_order_create_failed', {
+          error: `invalid service_window_start_at: ${args.serviceWindowStartAt}`,
+          severity: 'high',
+        });
+        return null;
+      }
+      const targetDueAt = new Date(startMs - leadTimeMinutes * 60_000).toISOString();
+
+      try {
+        const { id } = await this.tickets.createBookingOriginWorkOrder({
+          title: `Internal setup — ${args.serviceCategory}`,
+          booking_bundle_id: args.bundleId,
+          linked_order_line_item_id: args.oliId,
+          assigned_team_id: routingRow.internal_team_id,
+          target_due_at: targetDueAt,
+          sla_policy_id: routingRow.sla_policy_id,
+          location_id: args.locationId,
+          audit_metadata: {
+            triggered_by_rule_ids: args.ruleIds,
+            lead_time_minutes: leadTimeMinutes,
+            service_window_start_at: args.serviceWindowStartAt,
+            service_category: args.serviceCategory,
+            sla_policy_id: routingRow.sla_policy_id,
+            origin: args.originSurface,
+          },
+        });
+        // Success audit at the trigger layer — the doc (§25) calls this
+        // out as the unified success signal across both originSurfaces.
+        // The ticket-side `addActivity` event already covers the
+        // ticket-detail audit feed; this row goes in audit_events for
+        // the cross-source operational view.
+        void this.audit(args, 'setup_work_order_created', {
+          ticket_id: id,
+          assigned_team_id: routingRow.internal_team_id,
+          target_due_at: targetDueAt,
+          lead_time_minutes: leadTimeMinutes,
+          sla_policy_id: routingRow.sla_policy_id,
+        });
+        return { ticket_id: id };
+      } catch (err) {
+        this.log.warn(
+          `booking-origin work order create failed for line ${args.oliId}: ${
+            (err as Error).message
+          }`,
+        );
+        void this.audit(args, 'setup_work_order_create_failed', {
+          error: (err as Error).message,
+          severity: 'high',
+        });
+        return null;
+      }
+    } catch (err) {
+      // Outer-catch: anything else (audit insert throws, RPC connection
+      // dies, etc). Log and swallow — bundle is already committed.
+      this.log.warn(
+        `setup-trigger unexpected failure for line ${args.oliId}: ${(err as Error).message}`,
+      );
       return null;
     }
   }
@@ -118,7 +154,11 @@ export class SetupWorkOrderTriggerService {
 
   private async audit(
     args: TriggerArgs,
-    suffix: 'setup_routing_unconfigured' | 'setup_work_order_create_failed',
+    suffix:
+      | 'setup_routing_unconfigured'
+      | 'setup_routing_lookup_failed'
+      | 'setup_work_order_create_failed'
+      | 'setup_work_order_created',
     extras: Record<string, unknown>,
   ): Promise<void> {
     const eventType = `${args.originSurface}.${suffix}`;

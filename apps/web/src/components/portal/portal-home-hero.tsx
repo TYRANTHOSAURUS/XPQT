@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom';
 import { Search, ChevronDown, FileText, CalendarDays, UserPlus } from 'lucide-react';
 import { usePortal } from '@/providers/portal-provider';
 import { useAuth } from '@/providers/auth-provider';
@@ -6,6 +5,21 @@ import { useBranding } from '@/hooks/use-branding';
 import { timeOfDayGreeting } from '@/lib/portal-greeting';
 import { useCommandPalette } from '@/components/command-palette/command-palette';
 import { PortalLocationSwitcher } from './portal-location-picker';
+import { GlassButtonPill, GlassLinkPill } from './portal-glass';
+
+const HERO_IMAGE_WIDTH = 1600;
+const HERO_IMAGE_HEIGHT = 480;
+
+/**
+ * Detect Mac-class platforms via UA. `navigator.platform` is deprecated
+ * and lies on iPad Safari (claims macOS) — use the UA string and treat
+ * iOS as a Mac-class device for the keyboard hint, then hide the hint
+ * on coarse pointers via CSS.
+ */
+function isMacLike(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
 
 /**
  * Top-of-home hero. Three responsibilities:
@@ -38,8 +52,7 @@ export function PortalHomeHero() {
   const primary = branding?.primary_color ?? '#6366f1';
   const accent = branding?.accent_color ?? '#ec4899';
 
-  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform);
-  const kbdLabel = isMac ? '⌘K' : 'Ctrl+K';
+  const kbdLabel = isMacLike() ? '⌘ K' : 'Ctrl K';
 
   const hasImage = Boolean(heroUrl);
 
@@ -47,24 +60,15 @@ export function PortalHomeHero() {
     <PortalLocationSwitcher
       align="start"
       trigger={
-        <button
-          type="button"
+        <GlassButtonPill
+          tone={hasImage ? 'glass' : 'solid'}
           disabled={!canSwitchLocation}
-          className={
-            (hasImage
-              ? 'border-white/20 bg-white/10 text-white hover:bg-white/15'
-              : 'border-border/70 bg-background/60 text-foreground hover:bg-background/90') +
-            ' inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium' +
-            ' backdrop-blur transition-[background-color,border-color]' +
-            ' focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50' +
-            ' disabled:opacity-90 disabled:cursor-default'
-          }
-          style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
+          className="h-7 px-2.5 text-[12px]"
         >
           <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
           <span className="truncate max-w-[18ch]">{locationName}</span>
           {canSwitchLocation && <ChevronDown className="size-3 opacity-70" aria-hidden />}
-        </button>
+        </GlassButtonPill>
       }
     />
   ) : null;
@@ -79,6 +83,9 @@ export function PortalHomeHero() {
             <img
               src={heroUrl!}
               alt=""
+              width={HERO_IMAGE_WIDTH}
+              height={HERO_IMAGE_HEIGHT}
+              fetchPriority="high"
               data-portal-fade
               data-loaded="false"
               onLoad={(e) => e.currentTarget.setAttribute('data-loaded', 'true')}
@@ -98,7 +105,13 @@ export function PortalHomeHero() {
       </div>
 
       <div className="relative px-6 md:px-10 lg:px-12 py-12 md:py-16 lg:py-20">
-        <div className={hasImage ? 'max-w-2xl text-white' : 'max-w-2xl text-foreground'}>
+        <div
+          className={
+            hasImage
+              ? 'portal-stagger max-w-2xl text-white'
+              : 'portal-stagger max-w-2xl text-foreground'
+          }
+        >
           <div className="flex items-center gap-2.5 flex-wrap">
             {eyebrow && (
               <div className={'text-[12px] font-medium ' + (hasImage ? 'text-white/75' : 'text-muted-foreground')}>
@@ -108,12 +121,12 @@ export function PortalHomeHero() {
             {locationChip}
           </div>
 
-          <h1 className="mt-3 text-[clamp(1.875rem,4.2vw,2.875rem)] font-semibold leading-[1.05] tracking-[-0.02em]">
+          <h1 className="mt-3 text-[clamp(1.875rem,4.2vw,2.875rem)] font-semibold leading-[1.05] tracking-[-0.02em] text-balance">
             {headline}
           </h1>
 
           {customSupporting && (
-            <p className={'mt-3 max-w-xl text-[15px] leading-relaxed ' + (hasImage ? 'text-white/85' : 'text-muted-foreground')}>
+            <p className={'mt-3 max-w-xl text-[15px] leading-relaxed text-pretty ' + (hasImage ? 'text-white/85' : 'text-muted-foreground')}>
               {customSupporting}
             </p>
           )}
@@ -122,11 +135,11 @@ export function PortalHomeHero() {
           <button
             type="button"
             onClick={() => setOpen(true)}
-            aria-label={`Open search (${kbdLabel})`}
+            aria-label={`Open search (${kbdLabel.replace(' ', ' ')})`}
             className={
               hasImage
-                ? 'mt-7 max-w-xl group relative flex h-11 w-full items-center rounded-xl border border-white/15 bg-white/10 pl-10 pr-14 text-left text-[14px] text-white/85 outline-none backdrop-blur-md transition-colors hover:bg-white/15 focus-visible:ring-3 focus-visible:ring-white/30'
-                : 'mt-7 max-w-xl group relative flex h-11 w-full items-center rounded-xl border border-border bg-background/80 pl-10 pr-14 text-left text-[14px] text-muted-foreground outline-none backdrop-blur-sm transition-colors hover:bg-background hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40'
+                ? 'mt-7 max-w-xl group relative flex h-11 w-full items-center rounded-xl border border-white/15 bg-white/10 pl-10 pr-14 text-left text-[14px] text-white/85 outline-none backdrop-blur-md transition-colors hover:bg-white/15 active:translate-y-px focus-visible:ring-3 focus-visible:ring-white/30'
+                : 'mt-7 max-w-xl group relative flex h-11 w-full items-center rounded-xl border border-border bg-background/80 pl-10 pr-14 text-left text-[14px] text-muted-foreground outline-none backdrop-blur-sm transition-colors hover:bg-background hover:text-foreground active:translate-y-px focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40'
             }
             style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-hover)' }}
           >
@@ -138,7 +151,7 @@ export function PortalHomeHero() {
             <kbd
               aria-hidden
               className={
-                'pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex h-5 items-center rounded border px-1.5 text-[10px] font-medium ' +
+                'pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 hidden lg:inline-flex h-5 items-center rounded border px-1.5 text-[10px] font-medium ' +
                 (hasImage ? 'border-white/20 text-white/65' : 'border-border bg-muted/40 text-muted-foreground')
               }
             >
@@ -146,48 +159,23 @@ export function PortalHomeHero() {
             </kbd>
           </button>
 
-          {/* Quick actions — three pill links to the most-used flows.
-              Stagger offset waits for the hero's own portal-rise to clear
-              its first ~250ms so the pills feel like a follow-on, not a
-              competing layer. */}
-          <div
-            className="portal-stagger mt-5 flex flex-wrap gap-2"
-            style={{ ['--portal-stagger-offset' as string]: '260ms' } as React.CSSProperties}
-          >
-            <HeroAction to="/portal/submit" icon={FileText} label="Submit a request" hasImage={hasImage} />
-            <HeroAction to="/portal/rooms"  icon={CalendarDays} label="Book a room" hasImage={hasImage} />
-            <HeroAction to="/portal/visitors" icon={UserPlus} label="Invite a visitor" hasImage={hasImage} />
+          {/* Quick actions — three pill links to the most-used flows. */}
+          <div className="mt-5 flex flex-wrap gap-2">
+            <GlassLinkPill tone={hasImage ? 'glass' : 'solid'} to="/portal/submit">
+              <FileText className="size-3.5" aria-hidden />
+              <span>Submit a request</span>
+            </GlassLinkPill>
+            <GlassLinkPill tone={hasImage ? 'glass' : 'solid'} to="/portal/rooms">
+              <CalendarDays className="size-3.5" aria-hidden />
+              <span>Book a room</span>
+            </GlassLinkPill>
+            <GlassLinkPill tone={hasImage ? 'glass' : 'solid'} to="/portal/visitors">
+              <UserPlus className="size-3.5" aria-hidden />
+              <span>Invite a visitor</span>
+            </GlassLinkPill>
           </div>
         </div>
       </div>
     </section>
-  );
-}
-
-interface HeroActionProps {
-  to: string;
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  hasImage: boolean;
-}
-
-function HeroAction({ to, icon: Icon, label, hasImage }: HeroActionProps) {
-  return (
-    <Link
-      to={to}
-      viewTransition
-      className={
-        (hasImage
-          ? 'border-white/20 bg-white/10 text-white hover:bg-white/15'
-          : 'border-border/70 bg-background/60 text-foreground hover:bg-background/90 hover:border-border') +
-        ' inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[13px] font-medium' +
-        ' backdrop-blur transition-[background-color,border-color,transform] active:translate-y-px' +
-        ' focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
-      }
-      style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
-    >
-      <Icon className="size-3.5" />
-      <span>{label}</span>
-    </Link>
   );
 }

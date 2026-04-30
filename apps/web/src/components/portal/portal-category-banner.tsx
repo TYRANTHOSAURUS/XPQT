@@ -1,9 +1,9 @@
 // apps/web/src/components/portal/portal-category-banner.tsx
 import { Link } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
-import * as Icons from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranding } from '@/hooks/use-branding';
+import { resolvePortalIcon } from '@/lib/portal-icons';
 
 const PLATFORM_COVERS: Record<string, string> = {
   'platform:cover-1': 'bg-gradient-to-br from-blue-500/70 to-indigo-700',
@@ -35,7 +35,7 @@ export function PortalCategoryBanner({ id, name, description, parentName, parent
   const { branding } = useBranding();
   const platformClass = cover_image_url ? PLATFORM_COVERS[cover_image_url] : null;
   const useImage = cover_source === 'image' && cover_image_url;
-  const Icon = iconName && (Icons as Record<string, unknown>)[iconName] as React.ComponentType<{ className?: string }> | undefined;
+  const Icon = iconName ? resolvePortalIcon(iconName) : null;
   const hasArt = Boolean(useImage || platformClass);
 
   const primary = branding?.primary_color ?? '#6366f1';

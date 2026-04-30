@@ -36,38 +36,36 @@ export function MyBookingsPage() {
   }, [reservation.data?.space_id, spaces]);
 
   return (
-    <PortalPage>
-      <div className="mx-auto w-full max-w-3xl">
-        <Link
-          to="/portal"
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-3.5" /> Portal home
-        </Link>
+    <PortalPage width="narrow">
+      <Link
+        to="/portal"
+        className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-3.5" aria-hidden /> Portal home
+      </Link>
 
-        <div className="mt-3 mb-6 flex items-end justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">My bookings</h1>
-            <p className="mt-1 text-sm text-muted-foreground text-pretty">
-              Upcoming, past, and cancelled. Check in near the start; restore
-              inside the cancellation grace window.
-            </p>
-          </div>
-          <Link
-            to="/portal/rooms"
-            className={buttonVariants({ size: 'sm', className: 'gap-1.5 shrink-0' })}
-          >
-            <CalendarPlus className="size-3.5" />
-            Book a room
-          </Link>
+      <div className="mt-3 mb-6 flex items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-balance">My bookings</h1>
+          <p className="mt-1 text-sm text-muted-foreground text-pretty">
+            Upcoming, past, and cancelled. Check in near the start; restore
+            inside the cancellation grace window.
+          </p>
         </div>
-
-        <BookingsList
-          tab={tab}
-          onTabChange={setTab}
-          buildHref={(rid) => `/portal/me/bookings/${rid}`}
-        />
+        <Link
+          to="/portal/rooms"
+          className={buttonVariants({ size: 'sm', className: 'gap-1.5 shrink-0' })}
+        >
+          <CalendarPlus className="size-3.5" aria-hidden />
+          Book a room
+        </Link>
       </div>
+
+      <BookingsList
+        tab={tab}
+        onTabChange={setTab}
+        buildHref={(rid) => `/portal/me/bookings/${rid}`}
+      />
 
       <BookingDetailDrawer
         reservationId={id ?? null}

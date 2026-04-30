@@ -19,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { SpaceSelect } from '@/components/space-select';
 import { useCreateStandaloneOrder } from '@/api/orders';
@@ -272,21 +271,6 @@ export function PortalOrderPage() {
           </>
         )}
 
-        <FieldSeparator />
-
-        <FieldSet>
-          <FieldLegend variant="label">Recurrence</FieldLegend>
-          <FieldDescription>
-            Recurring standalone orders are coming soon. For repeating orders, attach them to a
-            recurring room booking instead.
-          </FieldDescription>
-          <Field orientation="horizontal">
-            <Switch id="order-recurring" checked={false} disabled />
-            <FieldLabel htmlFor="order-recurring" className="font-normal text-muted-foreground">
-              Repeat this order
-            </FieldLabel>
-          </Field>
-        </FieldSet>
       </FieldGroup>
 
       <div className="flex justify-end gap-2 border-t pt-4">

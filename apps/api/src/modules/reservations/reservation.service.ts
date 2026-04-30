@@ -194,6 +194,10 @@ export class ReservationService {
     scope?: 'upcoming' | 'past' | 'cancelled' | 'all' | 'pending_approval';
     status?: string[];
     limit?: number;
+    /** Only return reservations that have services attached (a non-null
+     *  `booking_bundle_id`). Backed by the partial index in 00199 so the
+     *  query stays fast on tenants where most reservations are room-only. */
+    has_bundle?: boolean;
   }): Promise<{ items: Array<Reservation & {
     space_name?: string | null;
     requester_first_name?: string | null;
@@ -222,6 +226,7 @@ export class ReservationService {
       q = q.eq('status', 'pending_approval');
     }
     if (opts.status?.length) q = q.in('status', opts.status);
+    if (opts.has_bundle) q = q.not('booking_bundle_id', 'is', null);
 
     const { data, error } = await q;
     if (error) throw new BadRequestException(`list_for_operator_failed:${error.message}`);

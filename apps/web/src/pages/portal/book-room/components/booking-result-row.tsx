@@ -55,7 +55,15 @@ export function BookingResultRow({
         isBestMatch && !isDenied && 'border-primary/45 shadow-[0_1px_0_0_rgba(0,0,0,0.02),0_8px_24px_-12px_rgba(59,130,246,0.18)]',
         isDenied && 'opacity-55',
       )}
-      style={{ transitionDuration: '160ms', transitionTimingFunction: 'var(--ease-smooth)' }}
+      style={{
+        transitionDuration: '160ms',
+        transitionTimingFunction: 'var(--ease-smooth)',
+        // Per-row view-transition name so realtime polling reorders
+        // crossfade in supporting browsers instead of jumping. The
+        // browser pairs old + new positions of the same name and
+        // animates between them.
+        viewTransitionName: `booking-row-${room.space_id}`,
+      }}
     >
       {/* Edge-to-edge leading visual — image when set, type-icon tile when not.
           Width grows on larger viewports because the row's content can breathe. */}

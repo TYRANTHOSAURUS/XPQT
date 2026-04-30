@@ -39,11 +39,12 @@ import { DailyListStatusInferenceService } from './status-inference.service';
  * migration + code sweep — don't fix in passing.
  *
  * Sprint 1: schema + assemble/record skeleton + audit event taxonomy.
- * Sprint 2: @react-pdf/renderer NL template + Supabase Storage upload +
- *   DailyListMailer abstraction (LoggingDailyListMailer for dev;
- *   Sprint 4 swaps real EU email) + DailyListSchedulerService cron.
- *   Plus 3 codex-driven hardening rounds: CAS state machine, sweeper,
- *   lease fencing, stable correlationId for provider idempotency.
+ * Sprint 2: NL PDF template + Supabase Storage upload + DailyListMailer
+ *   abstraction (LoggingDailyListMailer for dev; Sprint 4 swaps real EU
+ *   email) + DailyListSchedulerService cron. Plus 3 codex-driven hardening
+ *   rounds: CAS state machine, sweeper, lease fencing, stable
+ *   correlationId for provider idempotency. (PDF rendering itself is
+ *   currently disabled — see pdf-renderer.service.ts for the TODO.)
  * Sprint 3 (this commit): admin Fulfillment endpoints (preview,
  *   regenerate, history, download), post-cutoff lock-workflow trigger
  *   (migration 00178), and desk follow-up controller backing the

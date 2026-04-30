@@ -8,7 +8,10 @@ import {
 import { ApprovalRoutingService } from './approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
+import {
+  SetupWorkOrderTriggerService,
+  type TriggerArgs,
+} from '../service-routing/setup-work-order-trigger.service';
 
 /**
  * Per spec §5.1: at recurrence-materialisation time, each order on the
@@ -912,11 +915,20 @@ export class OrderService {
       // whose rules emitted requires_internal_setup=true. Lines without a
       // service_type (catalog item with no menu) can't route — surface
       // separately and skip. Shared trigger handles the rest.
-      const triggerArgs: Array<Parameters<typeof this.setupTrigger.trigger>[0]> = [];
+      //
+      // Approval interlock (codex 2026-04-30 review): mirrors the bundle
+      // path — if ANY line is pending approval, defer auto-creation.
+      // Facilities shouldn't start work for orders that may be rejected.
+      // The TriggerArgs are PERSISTED on the OLI so BundleService.
+      // onApprovalDecided can re-fire exactly the snapshot on grant
+      // without re-resolving rules (00197 + the approval-decided handler).
+      const persisted: Array<{ meta: (typeof lineMetas)[number]; args: TriggerArgs }> = [];
       for (const meta of lineMetas) {
         const outcome = outcomes.get(meta.oliId);
         if (!outcome?.requires_internal_setup) continue;
         if (!meta.service_type) {
+          // No service_type → matrix can't route. Surface and skip. Same on
+          // both deferred and immediate paths so the audit stream is uniform.
           void this.audit(tenantId, 'order.setup_routing_unconfigured', 'order_line_item', meta.oliId, {
             line_id: meta.oliId,
             reason: 'no_service_type_on_line',
@@ -925,19 +937,62 @@ export class OrderService {
           });
           continue;
         }
-        triggerArgs.push({
-          tenantId,
-          bundleId: bundle.id,
-          oliId: meta.oliId,
-          serviceCategory: meta.service_type,
-          serviceWindowStartAt: meta.service_window_start_at,
-          locationId: args.delivery_space_id,
-          ruleIds: outcome.matched_rule_ids,
-          leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-          originSurface: 'order',
+        persisted.push({
+          meta,
+          args: {
+            tenantId,
+            bundleId: bundle.id,
+            oliId: meta.oliId,
+            serviceCategory: meta.service_type,
+            serviceWindowStartAt: meta.service_window_start_at,
+            locationId: args.delivery_space_id,
+            ruleIds: outcome.matched_rule_ids,
+            leadTimeOverride: outcome.internal_setup_lead_time_minutes,
+            originSurface: 'order',
+          },
         });
       }
-      await this.setupTrigger.triggerMany(triggerArgs);
+
+      if (anyPending) {
+        // Persist failure surfaces as a HIGH-severity event, NOT the normal
+        // deferred marker — otherwise approval-grant later claims nothing
+        // and no work order fires, with the audit trail saying the opposite.
+        // Mirror of the bundle path.
+        for (const { meta, args: tArgs } of persisted) {
+          const outcome = outcomes.get(meta.oliId)!;
+          const { error: persistErr } = await this.supabase.admin
+            .from('order_line_items')
+            .update({ pending_setup_trigger_args: tArgs })
+            .eq('id', meta.oliId);
+          if (persistErr) {
+            this.log.error(
+              `failed to persist pending_setup_trigger_args for oli ${meta.oliId}: ${persistErr.message}`,
+            );
+            void this.audit(tenantId, 'order.setup_deferral_persist_failed', 'order_line_item', meta.oliId, {
+              line_id: meta.oliId,
+              order_id: order.id,
+              // Standalone orders still create a bundle row; carry bundle_id
+              // here so BundleService.onApprovalDecided's persist-failure
+              // lookup (`details->>bundle_id = bundleId`) finds it. Without
+              // this, standalone-order lost-persist cases fall through to
+              // the misleading "no_deferred_setup" marker. Codex round 4.
+              bundle_id: bundle.id,
+              rule_ids: outcome.matched_rule_ids,
+              error: persistErr.message,
+              severity: 'high',
+            });
+            continue;
+          }
+          void this.audit(tenantId, 'order.setup_deferred_pending_approval', 'order_line_item', meta.oliId, {
+            line_id: meta.oliId,
+            order_id: order.id,
+            rule_ids: outcome.matched_rule_ids,
+            reason: 'approval_pending',
+          });
+        }
+      } else {
+        await this.setupTrigger.triggerMany(persisted.map((p) => p.args));
+      }
 
       void this.audit(tenantId, 'order.created', 'order', order.id, {
         order_id: order.id,
