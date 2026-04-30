@@ -21,6 +21,8 @@ import {
 } from '@/components/ui/popover';
 import { Toggle } from '@/components/ui/toggle';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
+import { QuickPickChips } from '@/components/ui/quick-pick-chips';
+import { formatDuration } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { PickerState } from '../hooks/use-picker-state';
 
@@ -49,20 +51,13 @@ const AMENITY_CHIPS = [
 const QUICK_DURATIONS = [30, 60, 90, 120] as const;
 const MORE_DURATIONS = [15, 45, 180, 240, 480] as const;
 
-function formatDuration(mins: number): string {
-  if (mins < 60) return `${mins}m`;
-  if (mins === 60) return '1h';
-  if (mins % 60 === 0) return `${mins / 60}h`;
-  return `${(mins / 60).toFixed(1).replace(/\.0$/, '')}h`;
-}
+const DURATION_QUICK_OPTS = QUICK_DURATIONS.map((m) => ({ value: m, label: formatDuration(m) }));
+const DURATION_MORE_OPTS = MORE_DURATIONS.map((m) => ({ value: m, label: formatDuration(m) }));
 
 /**
  * Booking criteria card. Single white surface — `When` (date + time) and
  * `Duration` (segmented chips with overflow popover) live as a tight pair on
- * the left, attendees + site sit on the right. Replaces the old 12-column
- * grid (which left attendees occupying a too-wide column with a chunky
- * spinner-decorated number input) and the duration `<Select>` (which is
- * three clicks for the most common value in the list).
+ * the left, attendees + site sit on the right.
  */
 export function BookingCriteriaBar({ state, onChange, sites }: Props) {
   const toggleAmenity = (id: string) => {
@@ -97,9 +92,12 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
         {/* Duration — quick chips with overflow popover */}
         <Field className="md:flex-[3_1_300px]">
           <FieldLabel htmlFor="picker-duration">Duration</FieldLabel>
-          <DurationChips
+          <QuickPickChips
             id="picker-duration"
+            ariaLabel="Duration"
             value={state.durationMinutes}
+            options={DURATION_QUICK_OPTS}
+            more={DURATION_MORE_OPTS}
             onChange={(v) => onChange('durationMinutes', v)}
           />
         </Field>
@@ -148,8 +146,9 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
       </FieldGroup>
 
       {/* Must-have row + view toggle */}
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
-        <span className="text-[12px] font-medium text-muted-foreground">
+      <fieldset className="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
+        <legend className="sr-only">Required amenities</legend>
+        <span aria-hidden className="text-[12px] font-medium text-muted-foreground">
           Must have
         </span>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -158,14 +157,16 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
               key={a.id}
               type="button"
               onClick={() => toggleAmenity(a.id)}
+              aria-label={`Remove ${a.label} requirement`}
               className={cn(
                 'group/chip inline-flex h-7 items-center gap-1 rounded-full border bg-foreground/5 px-2.5 text-xs',
                 'transition-colors hover:bg-foreground/10',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               )}
               style={{ transitionDuration: '120ms', transitionTimingFunction: 'var(--ease-snap)' }}
             >
               {a.label}
-              <X className="size-3 opacity-50 group-hover/chip:opacity-90" />
+              <X className="size-3 opacity-50 group-hover/chip:opacity-90" aria-hidden />
             </button>
           ))}
           <AmenityAddPopover selected={state.mustHaveAmenities} onToggle={toggleAmenity} />
@@ -179,7 +180,7 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
             aria-label="List view"
             className="h-7 gap-1 px-2.5"
           >
-            <LayoutList className="size-3.5" />
+            <LayoutList className="size-3.5" aria-hidden />
             <span className="text-xs">List</span>
           </Toggle>
           <Toggle
@@ -189,123 +190,12 @@ export function BookingCriteriaBar({ state, onChange, sites }: Props) {
             aria-label="Floor plan view"
             className="h-7 gap-1 px-2.5"
           >
-            <MapIcon className="size-3.5" />
+            <MapIcon className="size-3.5" aria-hidden />
             <span className="text-xs">Plan</span>
           </Toggle>
         </div>
-      </div>
+      </fieldset>
     </section>
-  );
-}
-
-function DurationChips({
-  id,
-  value,
-  onChange,
-}: {
-  id: string;
-  value: number;
-  onChange: (mins: number) => void;
-}) {
-  const [moreOpen, setMoreOpen] = useState(false);
-  const isCustom = !QUICK_DURATIONS.includes(value as (typeof QUICK_DURATIONS)[number]);
-
-  return (
-    <div
-      id={id}
-      role="radiogroup"
-      aria-label="Duration"
-      className="inline-flex h-9 items-center rounded-md border bg-background p-0.5 w-fit"
-    >
-      {QUICK_DURATIONS.map((mins) => {
-        const selected = value === mins;
-        return (
-          <button
-            key={mins}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            onClick={() => onChange(mins)}
-            className={cn(
-              'inline-flex h-8 min-w-[44px] items-center justify-center rounded-[5px] px-2.5 text-xs font-medium tabular-nums',
-              'transition-colors',
-              'active:translate-y-px',
-              'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-              selected
-                ? 'bg-foreground text-background'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-            style={{
-              transitionDuration: '120ms',
-              transitionTimingFunction: 'var(--ease-snap)',
-            }}
-          >
-            {formatDuration(mins)}
-          </button>
-        );
-      })}
-      {isCustom && (
-        <button
-          key={`custom-${value}`}
-          type="button"
-          role="radio"
-          aria-checked
-          onClick={() => setMoreOpen(true)}
-          className={cn(
-            'inline-flex h-8 min-w-[44px] items-center justify-center rounded-[5px] px-2.5 text-xs font-medium tabular-nums',
-            'bg-foreground text-background',
-          )}
-        >
-          {formatDuration(value)}
-        </button>
-      )}
-      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-        <PopoverTrigger
-          render={
-            <button
-              type="button"
-              aria-label="More durations"
-              className={cn(
-                'ml-0.5 inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-xs text-muted-foreground',
-                'transition-colors hover:bg-muted hover:text-foreground',
-                'active:translate-y-px',
-                'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-              )}
-              style={{
-                transitionDuration: '120ms',
-                transitionTimingFunction: 'var(--ease-snap)',
-              }}
-            >
-              <span aria-hidden className="text-[15px] leading-none">…</span>
-            </button>
-          }
-        />
-        <PopoverContent align="end" className="w-44 p-1.5">
-          <div className="grid gap-0.5">
-            {MORE_DURATIONS.map((mins) => (
-              <button
-                key={mins}
-                type="button"
-                onClick={() => {
-                  onChange(mins);
-                  setMoreOpen(false);
-                }}
-                className={cn(
-                  'flex h-8 items-center justify-between rounded-md px-2 text-xs',
-                  'hover:bg-accent',
-                  value === mins && 'bg-accent font-medium',
-                )}
-              >
-                <span>{formatDuration(mins)}</span>
-                {value === mins && (
-                  <span className="text-[10px] text-muted-foreground">selected</span>
-                )}
-              </button>
-            ))}
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
   );
 }
 
@@ -328,7 +218,7 @@ function AmenityAddPopover({
             size="sm"
             className="h-7 gap-1 rounded-full border-dashed px-2.5 text-xs"
           >
-            <Plus className="size-3" /> Add
+            <Plus className="size-3" aria-hidden /> Add
           </Button>
         }
       />

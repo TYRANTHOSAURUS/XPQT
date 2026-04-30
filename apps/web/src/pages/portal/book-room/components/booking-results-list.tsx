@@ -27,7 +27,7 @@ export function BookingResultsList({
 }: Props) {
   if (isPending) {
     return (
-      <div className="mt-4 space-y-2">
+      <div className="mt-4 space-y-2" aria-busy="true" aria-live="polite">
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
@@ -35,15 +35,15 @@ export function BookingResultsList({
             aria-hidden
           >
             {/* Skeleton tile mirrors the real row's edge-to-edge image area. */}
-            <div className="w-20 sm:w-24 shrink-0 self-stretch animate-pulse bg-muted/40" />
+            <div className="portal-skeleton w-20 sm:w-24 shrink-0 self-stretch" />
             <div className="flex-1 px-4 py-3.5">
-              <div className="animate-pulse space-y-3">
+              <div className="space-y-3">
                 <div className="flex items-center gap-3">
-                  <div className="h-4 w-32 rounded bg-muted/70" />
-                  <div className="h-4 w-24 rounded bg-muted/40" />
-                  <div className="ml-auto h-7 w-20 rounded-md bg-muted/60" />
+                  <div className="portal-skeleton h-4 w-32 rounded" />
+                  <div className="portal-skeleton h-4 w-24 rounded" />
+                  <div className="portal-skeleton ml-auto h-7 w-20 rounded-md" />
                 </div>
-                <div className="h-3 rounded bg-muted/30" />
+                <div className="portal-skeleton h-3 rounded" />
               </div>
             </div>
           </div>

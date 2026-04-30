@@ -176,3 +176,16 @@ export function formatCurrency(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—';
   return currencyFormatter.format(value);
 }
+
+/**
+ * Humanize minutes for booking durations: 30m / 1h / 1.5h / 2h. Used by
+ * the picker chip group, booking detail drawers, and analytics tick
+ * labels.
+ */
+export function formatDuration(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '—';
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes === 60) return '1h';
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${(minutes / 60).toFixed(1).replace(/\.0$/, '')}h`;
+}

@@ -1,47 +1,22 @@
 import { Link } from 'react-router-dom';
-import { useQuery, queryOptions } from '@tanstack/react-query';
-import { CheckCircle2, FileText } from 'lucide-react';
-import { apiFetch } from '@/lib/api';
+import { useQuery } from '@tanstack/react-query';
+import { CheckCircle2, FileText, Plus } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/format';
 import { useAuth } from '@/providers/auth-provider';
-import {
-  derivePortalStatus,
-  REQUEST_KIND_TILE,
-  STATUS_TONE_CLASSES,
-} from '@/lib/portal-status';
+import { derivePortalStatus, REQUEST_KIND_TILE } from '@/lib/portal-status';
 import { cn } from '@/lib/utils';
-
-interface MineTicket {
-  id: string;
-  title: string;
-  status: string;
-  status_category: string;
-  created_at: string;
-  request_type_name: string | null;
-  sla_resolution_breached_at?: string | null;
-}
-
-interface TicketListResponse {
-  items: MineTicket[];
-}
-
-const mineTicketsOptions = (personId: string) =>
-  queryOptions({
-    queryKey: ['portal', 'my-open-tickets', personId],
-    queryFn: ({ signal }) =>
-      apiFetch<TicketListResponse>(
-        `/tickets?requester_person_id=${encodeURIComponent(personId)}&status_category=open,in_progress&limit=4`,
-        { signal },
-      ).then((res) => res.items ?? []),
-    staleTime: 30_000,
-    enabled: !!personId,
-  });
+import { portalMyOpenTicketsOptions } from '@/api/portal-tickets';
+import { PortalStatusPill } from './portal-status-pill';
 
 export function PortalActivityPanel() {
   const { person } = useAuth();
   const personId = person?.id ?? '';
-  const { data: tickets = [], isPending } = useQuery(mineTicketsOptions(personId));
+  const { data: tickets = [], isPending } = useQuery(portalMyOpenTicketsOptions(personId));
 
+  // Distinguish "all closed for now" from "no requests ever". The first
+  // visit to the portal should nudge toward a first action; otherwise the
+  // panel reads "All caught up" which is wrong for a brand-new user.
+  const hasNeverSubmitted = !isPending && tickets.length === 0;
   const anyActivity = tickets.length > 0;
 
   return (
@@ -59,7 +34,7 @@ export function PortalActivityPanel() {
       </div>
 
       {isPending && (
-        <div className="divide-y divide-border/60">
+        <div className="divide-y divide-border/60" aria-busy="true" aria-live="polite">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="flex items-center gap-3 px-4 py-3">
               <div className="portal-skeleton size-6 shrink-0 rounded-md" />
@@ -73,10 +48,24 @@ export function PortalActivityPanel() {
         </div>
       )}
 
-      {!isPending && !anyActivity && (
-        <div className="px-4 py-10 flex flex-col items-center gap-2 text-center">
+      {hasNeverSubmitted && (
+        <div className="px-4 py-10 flex flex-col items-center gap-3 text-center">
           <CheckCircle2 className="size-5 text-muted-foreground/60" aria-hidden />
-          <p className="text-xs text-muted-foreground">All caught up.</p>
+          <div>
+            <p className="text-xs font-medium">All caught up.</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Nothing waiting on you right now.
+            </p>
+          </div>
+          <Link
+            to="/portal/submit"
+            viewTransition
+            className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-accent/40"
+            style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
+          >
+            <Plus className="size-3" aria-hidden />
+            Submit a request
+          </Link>
         </div>
       )}
 
@@ -93,7 +82,7 @@ export function PortalActivityPanel() {
                 style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
               >
                 <div className={cn('mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md', REQUEST_KIND_TILE.ticket)}>
-                  <FileText className="size-3.5" />
+                  <FileText className="size-3.5" aria-hidden />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-medium">{t.title}</div>
@@ -101,16 +90,7 @@ export function PortalActivityPanel() {
                     {t.request_type_name ?? 'Request'} · {formatRelativeTime(t.created_at)}
                   </div>
                 </div>
-                <span
-                  className={cn(
-                    'shrink-0 rounded px-2 py-0.5 text-[10px] font-medium tabular-nums',
-                    'transition-colors duration-200',
-                    STATUS_TONE_CLASSES[status.tone],
-                  )}
-                  style={{ transitionTimingFunction: 'var(--ease-portal)' }}
-                >
-                  {status.label}
-                </span>
+                <PortalStatusPill status={status} size="xs" />
               </Link>
             );
           })}

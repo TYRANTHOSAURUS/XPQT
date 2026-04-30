@@ -1,23 +1,14 @@
 import { NavLink } from 'react-router-dom';
-import { Home, FileText, CalendarDays, UserPlus, ShoppingCart } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PORTAL_NAV } from './portal-nav';
 
 /**
- * Mobile bottom nav: 5 tabs. Active tabs get an animated dot above the
- * icon; the dot morphs between siblings via the `portal-tab-marker`
+ * Mobile bottom nav. Active tabs get an animated dot above the icon;
+ * the dot morphs between siblings via the `portal-tab-marker`
  * view-transition name when the route changes.
  *
  * Hidden on md+ — desktop uses the top bar.
  */
-
-const tabs = [
-  { to: '/portal',          label: 'Home',     icon: Home,         matchExact: true },
-  { to: '/portal/requests', label: 'Requests', icon: FileText,     matchExact: false },
-  { to: '/portal/rooms',    label: 'Rooms',    icon: CalendarDays, matchExact: false },
-  { to: '/portal/visitors', label: 'Visitors', icon: UserPlus,     matchExact: false },
-  { to: '/portal/order',    label: 'Order',    icon: ShoppingCart, matchExact: false },
-] as const;
-
 export function PortalBottomTabs() {
   return (
     <nav
@@ -27,9 +18,19 @@ export function PortalBottomTabs() {
                  bg-background/85 backdrop-blur
                  supports-[backdrop-filter]:bg-background/70
                  pb-[env(safe-area-inset-bottom)]
-                 grid grid-cols-5 items-stretch"
+                 grid grid-cols-5 items-stretch
+                 [touch-action:manipulation]
+                 [-webkit-tap-highlight-color:transparent]"
     >
-      {tabs.map((t) => <BottomTab key={t.to} {...t} />)}
+      {PORTAL_NAV.map((t) => (
+        <BottomTab
+          key={t.to}
+          to={t.to}
+          label={t.label}
+          icon={t.icon}
+          matchExact={t.matchExact}
+        />
+      ))}
     </nav>
   );
 }
@@ -46,11 +47,10 @@ function BottomTab({ to, label, icon: Icon, matchExact }: BottomTabProps) {
     <NavLink
       to={to}
       end={matchExact}
-      aria-label={label}
       viewTransition
       className={({ isActive }) =>
         cn(
-          'relative flex flex-col items-center justify-center gap-1 text-[11px]',
+          'relative flex min-h-12 flex-col items-center justify-center gap-1 text-[11px]',
           'transition-[color,transform] active:translate-y-px',
           'text-muted-foreground',
           isActive && 'text-foreground font-medium',
@@ -67,7 +67,7 @@ function BottomTab({ to, label, icon: Icon, matchExact }: BottomTabProps) {
               style={{ viewTransitionName: 'portal-tab-marker' }}
             />
           )}
-          <Icon className="size-5" />
+          <Icon className="size-5" aria-hidden />
           <span>{label}</span>
         </>
       )}

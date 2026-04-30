@@ -7,6 +7,22 @@ const DISMISS_KEY_PREFIX = 'portal.announcement.dismissed:';
 
 type Phase = 'idle' | 'exiting' | 'gone';
 
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Safari Private Mode, quota exceeded — silently degrade.
+  }
+}
+
 /**
  * Dismissable announcement banner. On dismiss the card collapses
  * (height → 0, opacity → 0) instead of vanishing — masks the page jump
@@ -21,18 +37,22 @@ export function PortalAnnouncementCard() {
   const [phase, setPhase] = useState<Phase>('idle');
   const dismissedFromStorageRef = useRef(false);
 
-  // Restore dismissed state from localStorage when the announcement id
-  // changes. We treat that as "already gone" — no exit animation.
+  // Restore dismissed state when the announcement identity changes.
+  // Treat a same-id+different-published_at as a fresh announcement.
+  // The dep array intentionally tracks identity fields rather than `ann`
+  // itself so a refetch with the same announcement doesn't reset the
+  // dismissal state.
   useEffect(() => {
     if (!ann) {
       dismissedFromStorageRef.current = false;
       return;
     }
-    const stored = localStorage.getItem(DISMISS_KEY_PREFIX + ann.id) === '1';
+    const stored = safeStorageGet(DISMISS_KEY_PREFIX + ann.id) === '1';
     dismissedFromStorageRef.current = stored;
     setDismissedNow(false);
     setPhase('idle');
-  }, [ann?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ann?.id, ann?.published_at]);
 
   if (!ann) return null;
   if (dismissedFromStorageRef.current && !dismissedNow) return null;
@@ -40,14 +60,19 @@ export function PortalAnnouncementCard() {
 
   const onDismiss = () => {
     if (phase !== 'idle') return;
-    localStorage.setItem(DISMISS_KEY_PREFIX + ann.id, '1');
+    // Persist immediately on click so a fast unmount (route change before
+    // the exit animation finishes, browser skipping the transition under
+    // reduced-motion, transitionend never firing) still durably records
+    // the dismissal. The transitionend below is for visual finalisation
+    // only.
+    safeStorageSet(DISMISS_KEY_PREFIX + ann.id, '1');
     setDismissedNow(true);
     setPhase('exiting');
   };
 
-  // The transition runs on grid-template-rows + opacity + margin; we
-  // only finalise removal when the rows transition completes (it's the
-  // longest of the three).
+  // Finalise removal when the rows transition completes (it's the longest
+  // of the three properties on the collapse). Storage is already persisted
+  // at click time — this is purely visual.
   const onTransitionEnd = (e: React.TransitionEvent<HTMLDivElement>) => {
     if (phase === 'exiting' && e.propertyName === 'grid-template-rows') {
       setPhase('gone');
@@ -72,10 +97,10 @@ export function PortalAnnouncementCard() {
             type="button"
             aria-label="Dismiss"
             onClick={onDismiss}
-            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
           >
-            <X className="size-4" />
+            <X className="size-4" aria-hidden />
           </button>
         </div>
       </div>

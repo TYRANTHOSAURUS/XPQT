@@ -7,6 +7,13 @@ import { usePortal } from '@/providers/portal-provider';
 import { useAuth } from '@/providers/auth-provider';
 import { usePicker } from '@/api/room-booking';
 import type { RankedRoom } from '@/api/room-booking';
+
+/**
+ * Module-scope empty array so `picker.data?.rooms ?? EMPTY_ROOMS` returns
+ * the same reference every render — needed for the realtime-availability
+ * memo to be stable when there are zero results.
+ */
+const EMPTY_ROOMS: RankedRoom[] = [];
 import { BookingCriteriaBar } from './components/booking-criteria-bar';
 import { BookingResultsList } from './components/booking-results-list';
 import { BundleTemplatePicker } from './components/bundle-template-picker';
@@ -54,7 +61,7 @@ export function BookRoomPage() {
   });
 
   const picker = usePicker(input);
-  const rooms = picker.data?.rooms ?? [];
+  const rooms = picker.data?.rooms ?? EMPTY_ROOMS;
 
   const visibleSpaceIds = useMemo(() => rooms.map((r) => r.space_id), [rooms]);
   useRealtimeAvailability(visibleSpaceIds, input, picker.isSuccess);
@@ -69,7 +76,11 @@ export function BookRoomPage() {
   };
 
   const showRestricted = hasRole('agent');
-  const requesterPersonId = person?.id ?? '';
+  // Gate the page on a real person id — submitting with an empty string
+  // would 422 server-side. While auth is still resolving, render the
+  // skeleton-equivalent (the picker stays disabled until a person is
+  // available).
+  const requesterPersonId = person?.id ?? null;
 
   const widenSearch = () => {
     update('mustHaveAmenities', []);
@@ -190,7 +201,7 @@ export function BookRoomPage() {
           The legacy BookingConfirmDialog has been retired — composer
           now covers every case it did (services, recurrence, multi-
           room, approval-route, conflict-alternatives, template seed). */}
-      {pendingPrimary && (
+      {pendingPrimary && requesterPersonId && (
         <Dialog
           open={Boolean(pendingPrimary)}
           onOpenChange={(o) => {

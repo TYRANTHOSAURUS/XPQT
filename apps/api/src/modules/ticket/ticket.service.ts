@@ -212,7 +212,7 @@ export class TicketService {
         requester:persons!tickets_requester_person_id_fkey(id, first_name, last_name, email),
         location:spaces!tickets_location_id_fkey(id, name, type),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
-        assigned_agent:users!tickets_assigned_user_id_fkey(id, email)
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email, person:persons!users_person_id_fkey(first_name, last_name))
       `)
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false })
@@ -498,7 +498,7 @@ export class TicketService {
         location:spaces!tickets_location_id_fkey(id, name, type, parent_id),
         asset:assets!tickets_asset_id_fkey(id, name, asset_role, serial_number),
         assigned_team:teams!tickets_assigned_team_id_fkey(id, name),
-        assigned_agent:users!tickets_assigned_user_id_fkey(id, email),
+        assigned_agent:users!tickets_assigned_user_id_fkey(id, email, person:persons!users_person_id_fkey(first_name, last_name)),
         assigned_vendor:vendors!tickets_assigned_vendor_id_fkey(id, name),
         request_type:request_types!tickets_ticket_type_id_fkey(id, name, domain)
       `)

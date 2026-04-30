@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useAuth } from '@/providers/auth-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -6,11 +7,13 @@ import { UserMenuContent } from '@/components/user-menu-content';
 export function PortalAccountMenu() {
   const { user, person } = useAuth();
 
-  const initials = person?.first_name
-    ? `${person.first_name[0] ?? ''}${person.last_name?.[0] ?? ''}`.toUpperCase()
-    : (user?.email?.[0] ?? 'U').toUpperCase();
-  const displayName = person ? `${person.first_name} ${person.last_name}` : user?.email ?? 'User';
-  const avatarUrl = person?.avatar_url ?? null;
+  const { initials, displayName, avatarUrl } = useMemo(() => {
+    const ini = person?.first_name
+      ? `${person.first_name[0] ?? ''}${person.last_name?.[0] ?? ''}`.toUpperCase()
+      : (user?.email?.[0] ?? 'U').toUpperCase();
+    const name = person ? `${person.first_name} ${person.last_name}` : user?.email ?? 'User';
+    return { initials: ini, displayName: name, avatarUrl: person?.avatar_url ?? null };
+  }, [person, user?.email]);
 
   return (
     <DropdownMenu>
@@ -24,8 +27,8 @@ export function PortalAccountMenu() {
         }
       >
         <Avatar className="size-8">
-          {avatarUrl && <AvatarImage src={avatarUrl} alt={displayName} loading="lazy" />}
-          <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-pink-500 text-white text-xs font-semibold">
+          {avatarUrl && <AvatarImage src={avatarUrl} alt="" loading="lazy" />}
+          <AvatarFallback className="bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-pink-500 text-white text-xs font-semibold">
             {initials}
           </AvatarFallback>
         </Avatar>

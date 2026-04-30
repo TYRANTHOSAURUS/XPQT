@@ -1,14 +1,14 @@
 // apps/web/src/components/portal/portal-request-row.tsx
 import { Link } from 'react-router-dom';
-import * as Icons from 'lucide-react';
+import { CalendarDays, FileText, ShoppingCart, UserPlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import {
   REQUEST_KIND_TILE,
-  STATUS_TONE_CLASSES,
   type PortalStatus,
   type RequestKind,
 } from '@/lib/portal-status';
+import { PortalStatusPill } from './portal-status-pill';
 
 export type { RequestKind } from '@/lib/portal-status';
 
@@ -25,10 +25,10 @@ interface Props {
 }
 
 const KIND_ICON: Record<RequestKind, React.ComponentType<{ className?: string }>> = {
-  ticket:  Icons.FileText,
-  booking: Icons.CalendarDays,
-  visitor: Icons.UserPlus,
-  order:   Icons.ShoppingCart,
+  ticket:  FileText,
+  booking: CalendarDays,
+  visitor: UserPlus,
+  order:   ShoppingCart,
 };
 
 export function PortalRequestRow({ href, kind, ref, title, subtitle, timestamp, assigneeName, status }: Props) {
@@ -37,11 +37,13 @@ export function PortalRequestRow({ href, kind, ref, title, subtitle, timestamp, 
     <Link
       to={href}
       viewTransition
-      className="group flex items-center gap-4 px-4 py-3.5 transition-colors hover:bg-accent/30 active:bg-accent/40"
+      // content-visibility skips off-screen rows on long lists. Cheap perf
+      // win for /portal/requests when the user has a year of activity.
+      className="group flex items-center gap-4 px-4 py-3.5 transition-colors hover:bg-accent/30 active:bg-accent/40 [content-visibility:auto] [contain-intrinsic-size:auto_56px]"
       style={{ transitionTimingFunction: 'var(--ease-portal)', transitionDuration: 'var(--dur-portal-press)' }}
     >
       <span className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg', REQUEST_KIND_TILE[kind])}>
-        <Icon className="size-4" />
+        <Icon className="size-4" aria-hidden />
       </span>
       <span className="flex-1 min-w-0">
         <span className="block truncate text-sm font-medium">{title}</span>
@@ -56,18 +58,7 @@ export function PortalRequestRow({ href, kind, ref, title, subtitle, timestamp, 
       {assigneeName && (
         <span className="hidden md:inline shrink-0 text-xs text-muted-foreground truncate max-w-[140px]">{assigneeName}</span>
       )}
-      <span
-        className={cn(
-          'shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium tabular-nums',
-          // Crossfade tone changes — when polling flips a ticket from
-          // "Submitted" → "Assigned" the pill glides instead of snapping.
-          'transition-colors duration-200',
-          STATUS_TONE_CLASSES[status.tone],
-        )}
-        style={{ transitionTimingFunction: 'var(--ease-portal)' }}
-      >
-        {status.label}
-      </span>
+      <PortalStatusPill status={status} size="sm" />
     </Link>
   );
 }

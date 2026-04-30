@@ -109,20 +109,18 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [authLoading, refresh]);
 
-  // Lightweight reactivity: re-fetch /portal/me when the tab regains focus.
-  // Covers the case where an admin grants/revokes scope in another session
-  // and the employee switches back — they'll see fresh picker options
-  // without a full refresh. Not real-time but cheap.
+  // Lightweight reactivity: re-fetch /portal/me when the tab regains
+  // visibility. `visibilitychange` is the spec-correct event — `focus`
+  // fires immediately before it on most browsers and was duplicating
+  // the call.
   useEffect(() => {
     if (authLoading) return;
-    const handleFocus = () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [authLoading, refresh]);
 

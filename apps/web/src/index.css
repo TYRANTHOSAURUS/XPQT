@@ -287,26 +287,31 @@
   animation: portal-rise var(--dur-portal-enter) var(--ease-portal) both;
 }
 
-/* Stagger helpers — child indices 1..n get an extra delay. We cap at 12
-   because anything larger should re-virtualise rather than animate.
+/* Stagger helpers — child indices 1..n get an extra delay. Cadence is
+   30ms per sibling so a 12-card grid lands in ≤330ms additional, well
+   below the 700ms perceived-waiting threshold even when combined with
+   a 240ms parent offset.
    Set --portal-stagger-offset on the container to shift the whole
    cascade later — useful for page-level section sequencing where one
-   group should rise after another finishes. */
+   group should rise after another finishes.
+   Children past the 12th share the final delay so a long grid still
+   animates cleanly (vs. silently failing past nth-child(12)). */
 .portal-stagger > * {
   animation: portal-rise var(--dur-portal-enter) var(--ease-portal) both;
+  animation-delay: calc(var(--portal-stagger-offset, 0ms) + 360ms);
 }
 .portal-stagger > *:nth-child(1)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 0ms);   }
-.portal-stagger > *:nth-child(2)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 40ms);  }
-.portal-stagger > *:nth-child(3)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 80ms);  }
-.portal-stagger > *:nth-child(4)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 120ms); }
-.portal-stagger > *:nth-child(5)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 160ms); }
-.portal-stagger > *:nth-child(6)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 200ms); }
-.portal-stagger > *:nth-child(7)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 240ms); }
-.portal-stagger > *:nth-child(8)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 280ms); }
-.portal-stagger > *:nth-child(9)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 320ms); }
-.portal-stagger > *:nth-child(10) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 360ms); }
-.portal-stagger > *:nth-child(11) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 400ms); }
-.portal-stagger > *:nth-child(12) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 440ms); }
+.portal-stagger > *:nth-child(2)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 30ms);  }
+.portal-stagger > *:nth-child(3)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 60ms);  }
+.portal-stagger > *:nth-child(4)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 90ms);  }
+.portal-stagger > *:nth-child(5)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 120ms); }
+.portal-stagger > *:nth-child(6)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 150ms); }
+.portal-stagger > *:nth-child(7)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 180ms); }
+.portal-stagger > *:nth-child(8)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 210ms); }
+.portal-stagger > *:nth-child(9)  { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 240ms); }
+.portal-stagger > *:nth-child(10) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 270ms); }
+.portal-stagger > *:nth-child(11) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 300ms); }
+.portal-stagger > *:nth-child(12) { animation-delay: calc(var(--portal-stagger-offset, 0ms) + 330ms); }
 
 .portal-skeleton {
   background-image: linear-gradient(
@@ -349,10 +354,20 @@
    SSR / cached / data-URI images don't flash invisible. */
 img[data-portal-fade] {
   opacity: 0;
-  transition: opacity 250ms var(--ease-portal);
+  /* Slight blur during the fade reads as a reveal rather than a flat
+     materialize — bridges the perceptual gap between "image absent"
+     and "image present" without leaning on heavy filter work. */
+  filter: blur(4px);
+  transition:
+    opacity 250ms var(--ease-portal),
+    filter  250ms var(--ease-portal);
 }
 img[data-portal-fade][data-loaded="true"] {
   opacity: 1;
+  filter: blur(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  img[data-portal-fade] { filter: none; }
 }
 
 /* ─── Desk surfaces ────────────────────────────────────────────────────

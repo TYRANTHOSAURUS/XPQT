@@ -10,6 +10,7 @@ import { PortalPage } from '@/components/portal/portal-page';
 import { PortalRequestRow } from '@/components/portal/portal-request-row';
 import { derivePortalStatus } from '@/lib/portal-status';
 import { formatTicketRef } from '@/lib/format-ref';
+import { startViewTransition } from '@/lib/view-transitions';
 import { cn } from '@/lib/utils';
 
 interface Ticket {
@@ -52,12 +53,7 @@ export function MyRequestsPage() {
    */
   const setTab = (next: TabValue) => {
     if (next === tab) return;
-    const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
-    if (typeof start === 'function') {
-      start.call(document, () => flushSync(() => setTabRaw(next)));
-    } else {
-      setTabRaw(next);
-    }
+    startViewTransition(() => flushSync(() => setTabRaw(next)));
   };
 
   const { data, isPending: loading } = useTicketList<Ticket>({
