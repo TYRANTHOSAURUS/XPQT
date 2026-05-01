@@ -502,16 +502,19 @@ The plan-reviewer correctly identified that "until product readiness" is not a p
 
 The work-order command surface is complete when ALL of:
 
-1. ✅ The desk-detail sidebar can mutate every WO field without touching `TicketService`,
-   **verified end-to-end in the actual remote dev environment** (not just mocked-supabase
-   unit tests).
-   - status / priority / team / user / vendor / plan / SLA: code shipped (Slices 0–2 +
+1. 🟡 PARTIAL — The desk-detail sidebar can mutate every WO field without touching
+   `TicketService`, **verified end-to-end in the actual remote dev environment**
+   (not just mocked-supabase unit tests).
+   - status / priority / team / user / vendor / plan / SLA: ✅ shipped (Slices 0–2 +
      Slice 3.0 single PATCH orchestrator). 2026-05-01 P0 (service_role DML grants
      missing on `public.work_orders`) closed by migration 00248. Smoke test against
      the live API with a real Admin JWT: 9/9 pass.
-   - cost / tags / watchers / title / description: pending (Slice 3.1). The single
+   - cost / tags / watchers / title / description: ⏳ pending (Slice 3.1). The single
      PATCH orchestrator already exists; this slice is just adding the fields to the
-     union DTO + dispatcher. ~half day.
+     union DTO + dispatcher. ~half day. Until shipped, those fields silently no-op
+     when edited from the desk-detail sidebar on a work_order — `patchWorkOrder` in
+     `apps/web/src/components/desk/ticket-detail.tsx` filters them out before the
+     mutation fires.
 
 2. ✅ The plandate workstream has merged. (Session 12 commits `849aaee` + `09e28f6`.)
 

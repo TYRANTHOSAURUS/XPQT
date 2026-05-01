@@ -20,7 +20,15 @@
 -- 00213_step1c1_work_orders_new_table.sql line 148 originally established
 -- for the underlying base table (work_orders_new, before the rename).
 --
--- Idempotent. Safe to re-apply.
+-- See `00222_step1c36_atomic_rename.sql:354` — that comment ("during 1c.3.6
+-- pre-1c.4 writer flip") was honest at write time but the reversal slipped
+-- across ~26 migrations and one P0. THIS migration IS the reversal.
+--
+-- Idempotent. Safe to re-apply. Rollback path: `revoke insert, update,
+-- delete on public.work_orders from service_role` returns the system to
+-- the pre-00248 state — which was the broken state that triggered the
+-- P0. There is no "safe rollback" in the conventional sense; the only
+-- path back is roll-forward.
 
 -- Reset all role grants to a known posture, then grant precisely what
 -- service_role needs. Mirrors the pattern in 00213.

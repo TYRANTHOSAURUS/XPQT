@@ -336,37 +336,77 @@ begin
   end;
 
   -- ===========================================================
-  -- A12. service_role has full DML on public.work_orders.
+  -- A12. service_role has full DML on every tenant-scoped writable BASE TABLE.
   -- ===========================================================
-  -- Defends the bug class that surfaced in the 2026-05-01 P0:
-  -- migration 00222 (step 1c.3.6 atomic rename) applied a deliberately
-  -- temporary "SELECT only for service_role" posture, intended to be
-  -- reversed at step 1c.4 (writer flip). The reversal never shipped.
-  -- Sessions 7-12 layered the entire work-order command surface on top,
-  -- mocking Supabase in every test, so the 42501 "permission denied for
-  -- table work_orders" error only surfaced when the user clicked PATCH
-  -- against the live DB. Migration 00248 restores INSERT/UPDATE/DELETE;
-  -- this assertion prevents the same shape of regression on any future
-  -- "temporary grant clamp during a multi-step rework" pattern.
+  -- Defends the bug class that surfaced in the 2026-05-01 P0: migration
+  -- 00222 (step 1c.3.6 atomic rename) applied a deliberately-temporary
+  -- "SELECT only for service_role" posture on public.work_orders,
+  -- intended to be reversed at step 1c.4 (writer flip). The reversal
+  -- never shipped. Sessions 7-12 layered the entire work-order command
+  -- surface on top, mocking Supabase in every test, so the 42501
+  -- "permission denied for table work_orders" error only surfaced when
+  -- the user clicked PATCH against the live DB. Migration 00248 restored
+  -- INSERT/UPDATE/DELETE; this assertion prevents the same shape of
+  -- regression on any other tenant-scoped writable table.
   --
   -- The whole NestJS API authenticates as service_role for DML. Any
   -- writable tenant table that loses one of those four privileges
   -- breaks an entire surface silently — every test passes, every UI
   -- click 500s.
-  for v_missing in
-    select p
-      from unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']) as t(p)
-     where not exists (
-       select 1 from information_schema.role_table_grants
-        where table_schema = 'public'
-          and table_name   = 'work_orders'
-          and grantee      = 'service_role'
-          and privilege_type = t.p
-     )
-  loop
-    raise exception 'A12: service_role is missing % on public.work_orders. The API uses service_role for all writes; without this, every WO mutation 42501s. See 00248 for the fix and the 2026-05-01 P0 postmortem in docs/follow-ups/data-model-rework-full-handoff.md.', v_missing;
-  end loop;
-  raise notice 'A12 OK: service_role has full DML on public.work_orders';
+  --
+  -- The first version of A12 (Session 13) hard-coded `public.work_orders`
+  -- only. Full-review pointed out that the bug class is broader: any
+  -- tenant-scoped writable BASE TABLE that lost service_role DML during
+  -- a multi-step rework's intermediate state. This list mirrors A6
+  -- (the tenant_id list), minus views — `cases` is a view today and is
+  -- correctly SELECT-only on service_role; views never need DML grants
+  -- because writes go through the underlying table. Adding a new
+  -- tenant-scoped writable table forces an explicit update here, same
+  -- discipline as A6.
+  declare
+    v_table text;
+    v_priv text;
+    v_privs text[] := array['SELECT','INSERT','UPDATE','DELETE'];
+    v_writable_tables text[] := array[
+      'tickets', 'work_orders', 'activities', 'ticket_activities',
+      'persons', 'users', 'teams', 'team_members', 'vendors',
+      'spaces', 'space_groups', 'space_group_members',
+      'request_types', 'routing_rules', 'routing_decisions',
+      'reservations', 'booking_bundles', 'orders', 'order_line_items',
+      'sla_timers', 'sla_policies',
+      'workflow_definitions', 'workflow_instances',
+      'org_nodes', 'person_org_memberships'
+    ];
+    v_checked int := 0;
+  begin
+    foreach v_table in array v_writable_tables loop
+      -- Skip tables that don't exist (yet). Same convention as A6 — don't
+      -- false-fail on a fresh DB where a future migration is expected to
+      -- create the table. Only fail when the table EXISTS but is
+      -- under-granted.
+      if not exists (
+        select 1 from information_schema.tables
+         where table_schema = 'public'
+           and table_name = v_table
+           and table_type = 'BASE TABLE'
+      ) then
+        continue;
+      end if;
+      foreach v_priv in array v_privs loop
+        if not exists (
+          select 1 from information_schema.role_table_grants
+           where table_schema = 'public'
+             and table_name   = v_table
+             and grantee      = 'service_role'
+             and privilege_type = v_priv
+        ) then
+          raise exception 'A12: service_role is missing % on public.%. The API uses service_role for all writes; without this, every mutation against this surface 42501s. See migration 00248 + the 2026-05-01 P0 postmortem in docs/follow-ups/data-model-rework-full-handoff.md for the canonical fix pattern.', v_priv, v_table;
+        end if;
+      end loop;
+      v_checked := v_checked + 1;
+    end loop;
+    raise notice 'A12 OK: service_role has full DML on % tenant-scoped writable tables', v_checked;
+  end;
 
   raise notice '';
   raise notice 'OK: all assertions passed (A1..A12)';

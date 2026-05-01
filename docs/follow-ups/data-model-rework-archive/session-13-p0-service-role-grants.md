@@ -225,15 +225,36 @@ Per the codex-fragility policy in the handoff (option **c+d**):
 DDL grant changes count as destructive. The user was AFK, so escalation
 wasn't possible synchronously — but the user had pre-authorized this
 push and explicitly accepted "full-review only" for the autonomous
-session. The pre-push transactional audit covered the same ground codex
-would have (and more — it actually executed the privileges, where
-codex would have only static-reviewed the SQL).
+session. The pre-push transactional audit ran instead.
 
-**Worth noting for future:** for grant-only migrations, the
-transactional audit pattern is genuinely the strongest gate — codex
-can spot subtle semantics, but only execution against the real schema
-catches a runtime grant mismatch. Don't auto-defer grant work waiting
-for codex availability when an in-tx audit is feasible.
+**The audit is NOT equivalent to codex.** It verified the four DML
+privileges work for service_role on work_orders — i.e. the regression
+class we knew to test for. Codex would have flagged things the audit
+cannot:
+
+- Whether `revoke all from anon, authenticated, public` silently nukes
+  Supabase platform grants (e.g. Realtime row-payload visibility on
+  hosted) that local Postgres doesn't model.
+- Whether platform-managed roles like `pgsodium_keyholder`,
+  `supabase_storage_admin`, `supabase_realtime_admin`, `dashboard_user`
+  hold grants the audit's read of `information_schema.role_table_grants`
+  reports correctly but doesn't exercise behaviorally.
+- Whether RLS posture stays intact (the migration shouldn't disable RLS,
+  but a future copy-paste might; codex would catch the change in diff).
+- View-on-view planning issues if the migration ever renames or
+  re-creates the table.
+
+What the audit DID cover well: whether the four privileges, post-
+migration, actually allow the writes the API layer makes. For grant
+changes that's the load-bearing question, but it's not the only one
+codex would cover. The honest framing is "the audit is the strongest
+single gate available when codex is unavailable; it's not a full
+substitute."
+
+Full-review (this skill, run after the migration shipped) caught the
+real gap in scope: A12 only asserted on `work_orders` while the bug
+class is broader. That finding has since been applied — A12 now covers
+all 25 tenant-scoped writable BASE TABLEs from A6's list.
 
 ---
 
@@ -245,16 +266,31 @@ for codex availability when an in-tx audit is feasible.
   day. Tracked in the open-work list of the index doc.
 - **Probe-script → vitest integration test conversion.** The probe
   script lived as a one-off `node --input-type=module -e "…"` this
-  session. It needs to graduate to a checked-in vitest spec under
-  `apps/api/test/integration/` (or similar) so the smoke gate runs
-  on every commit, not just when Claude remembers. Tracked under
-  [`ci-assertion-strategy.md`](../ci-assertion-strategy.md).
+  session. It needs two things to graduate from a one-off into a
+  durable gate: (a) check it into `scripts/` (or `apps/api/test/integration/`)
+  with a current-row-XOR-sentinel rule for every mutation — never a
+  hardcoded value, because every WO/case service method has a no-op
+  fast path that returns 200 when the new value matches the current
+  one (six known instances, see review notes); (b) wire it into CI so
+  the smoke gate runs on every commit, not just when Claude remembers.
+  Tracked under [`ci-assertion-strategy.md`](../ci-assertion-strategy.md).
 - **Why the 1c.4 writer-flip migration was missing** — bigger lesson:
   any future "temporary clamp" pattern in a multi-step rework should
   ship its reversal in the SAME migration set with a deferred-apply
-  guard, not as a future migration that's easy to forget. Add to the
-  destructive-migration playbook in the handoff once we hit a fourth
-  example of this pattern.
+  guard, not as a future migration that's easy to forget. Currently
+  this is a wish without a control — there's no CI gate that detects
+  "migration N introduces a temporary state, migration N+k doesn't
+  reverse it." Two possible designs: (a) annotate temporary-state
+  migrations with a sentinel comment (`-- TEMPORARY-CLAMP: reversal-
+  required-by-step-1c.X`) and have CI fail if the annotation persists
+  past a target step number, OR (b) require multi-step reworks to
+  ship the forward + reverse migration in a single atomic file. Add
+  to [`ci-assertion-strategy.md`](../ci-assertion-strategy.md) as an
+  unimplemented gate before the next destructive cutover.
+- **A12 generalization shipped after full-review (Session 13b).** First
+  version of A12 only checked `work_orders`. Adversarial review pointed
+  out the bug class is broader; A12 now loops over all 25 tenant-scoped
+  writable BASE TABLEs (mirrors A6). All pass on remote.
 
 ---
 
