@@ -49,7 +49,8 @@ import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
-import { ApiError } from '@/lib/api';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { mapBackendError } from '@/api/visitors/kiosk-errors';
 import {
   useKioskExpectedSearch,
   useKioskNameCheckin,
@@ -63,20 +64,11 @@ type Step =
   | { kind: 'confirm'; visitor: KioskExpectedRow }
   | { kind: 'error'; title: string; message: string };
 
-function useDebounced<T>(value: T, delayMs = 200): T {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = window.setTimeout(() => setV(value), delayMs);
-    return () => window.clearTimeout(t);
-  }, [value, delayMs]);
-  return v;
-}
-
 export function KioskNameFallbackPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>({ kind: 'search' });
   const [query, setQuery] = useState('');
-  const debounced = useDebounced(query, 200);
+  const debounced = useDebouncedValue(query, 200);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const checkin = useKioskNameCheckin();
 
@@ -162,7 +154,7 @@ export function KioskNameFallbackPage() {
                   },
                 });
               } catch (err) {
-                const mapped = mapBackendError(err);
+                const mapped = mapBackendError(err, 'name');
                 setStep({
                   kind: 'error',
                   title: mapped.title,
@@ -367,24 +359,3 @@ function ErrorStep({
   );
 }
 
-function mapBackendError(err: unknown): { title: string; message: string } {
-  if (err instanceof ApiError) {
-    if (err.status === 403 && /host first name/i.test(err.message)) {
-      return {
-        title: "That doesn't match",
-        message:
-          "The host's first name we have doesn't match. Please ask reception or try again.",
-      };
-    }
-    if (err.status === 400 && /different building/i.test(err.message)) {
-      return {
-        title: 'This visit is for a different building',
-        message: 'Please see reception — they can help redirect you.',
-      };
-    }
-  }
-  return {
-    title: "Couldn't check you in",
-    message: 'Please see reception so they can help.',
-  };
-}

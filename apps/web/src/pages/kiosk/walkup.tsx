@@ -26,7 +26,8 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
-import { ApiError } from '@/lib/api';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { mapBackendError } from '@/api/visitors/kiosk-errors';
 import {
   useKioskHostSearch,
   useKioskVisitorTypes,
@@ -43,15 +44,6 @@ type Step =
   | { kind: 'form'; type: KioskVisitorType }
   | { kind: 'deny' }
   | { kind: 'error'; title: string; message: string };
-
-function useDebounced<T>(value: T, delayMs = 200): T {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = window.setTimeout(() => setV(value), delayMs);
-    return () => window.clearTimeout(t);
-  }, [value, delayMs]);
-  return v;
-}
 
 export function KioskWalkupPage() {
   const navigate = useNavigate();
@@ -138,7 +130,7 @@ export function KioskWalkupPage() {
                   },
                 });
               } catch (err) {
-                const mapped = mapBackendError(err);
+                const mapped = mapBackendError(err, 'walkup');
                 setStep({
                   kind: 'error',
                   title: mapped.title,
@@ -221,7 +213,7 @@ function FormStep({
   const [hostQuery, setHostQuery] = useState('');
   const [host, setHost] = useState<KioskHostRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const debouncedHostQuery = useDebounced(hostQuery, 200);
+  const debouncedHostQuery = useDebouncedValue(hostQuery, 200);
   const hostSearch = useKioskHostSearch(host ? '' : debouncedHostQuery);
   const hostResults = useMemo(() => hostSearch.data ?? [], [hostSearch.data]);
   const firstNameRef = useRef<HTMLInputElement | null>(null);
@@ -459,23 +451,3 @@ function ErrorStep({
   );
 }
 
-function mapBackendError(err: unknown): { title: string; message: string } {
-  if (err instanceof ApiError) {
-    if (err.status === 400 && /walk_up_disabled|approval_required/i.test(err.message)) {
-      return {
-        title: 'Self check-in is not available for this type',
-        message: 'Please see reception so they can help you check in.',
-      };
-    }
-    if (err.status === 404 && /host/i.test(err.message)) {
-      return {
-        title: 'Host not found',
-        message: 'Please double-check the host you picked, or see reception.',
-      };
-    }
-  }
-  return {
-    title: "Couldn't check you in",
-    message: 'Please see reception so they can help.',
-  };
-}

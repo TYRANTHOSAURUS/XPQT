@@ -37,7 +37,7 @@ import { useNavigate } from 'react-router-dom';
 import jsQR from 'jsqr';
 import { ArrowLeft, Camera, CameraOff, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ApiError } from '@/lib/api';
+import { mapBackendError } from '@/api/visitors/kiosk-errors';
 import { checkInQrOrQueue } from '@/api/visitors/kiosk';
 
 type ScanState =
@@ -104,7 +104,7 @@ export function KioskQrScanPage() {
         });
       } catch (err) {
         decodedRef.current = false;
-        const mapped = mapBackendError(err);
+        const mapped = mapBackendError(err, 'qr');
         setState({ kind: 'error', title: mapped.title, message: mapped.message });
       }
     },
@@ -390,41 +390,3 @@ function ErrorView({
   );
 }
 
-interface MappedError {
-  title: string;
-  message: string;
-}
-
-function mapBackendError(err: unknown): MappedError {
-  if (err instanceof ApiError) {
-    if (err.status === 401) {
-      return {
-        title: "We don't recognize that QR code",
-        message:
-          "Please ask reception, or type your name to continue.",
-      };
-    }
-    if (err.status === 403 && /already/i.test(err.message)) {
-      return {
-        title: 'This QR has already been used',
-        message: 'Please see reception so they can help you check in.',
-      };
-    }
-    if (err.status === 403 && /expired/i.test(err.message)) {
-      return {
-        title: 'This invitation has expired',
-        message: 'Ask your host to send you a fresh invitation.',
-      };
-    }
-    if (err.status === 400 && /different building/i.test(err.message)) {
-      return {
-        title: 'This invitation is for a different building',
-        message: 'Please see reception — they can help redirect you.',
-      };
-    }
-  }
-  return {
-    title: "Something didn't go through",
-    message: 'Please see reception, or type your name to continue.',
-  };
-}

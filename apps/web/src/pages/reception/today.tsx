@@ -17,6 +17,7 @@
  *     well enough; SSE is a v2 upgrade.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import {
   ChevronDown,
   ChevronRight,
@@ -45,17 +46,6 @@ import { AssignPassDialog } from '@/components/reception/assign-pass-dialog';
 import { CheckoutDialog } from '@/components/reception/checkout-dialog';
 import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
 import { Link } from 'react-router-dom';
-
-/** Local hook: a debounced version of `value`. Avoids pulling a dep just
- *  for this one search input. */
-function useDebouncedValue<T>(value: T, delayMs = 200): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(t);
-  }, [value, delayMs]);
-  return debounced;
-}
 
 export function ReceptionTodayPage() {
   const { buildingId, buildings, loading: buildingsLoading } = useReceptionBuilding();

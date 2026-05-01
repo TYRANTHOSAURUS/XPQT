@@ -28,22 +28,8 @@ import {
   formatReceptionRowName,
   type ReceptionVisitorRow as RowT,
 } from '@/api/visitors/reception';
-import { visitorStatusLabel, type VisitorStatus } from '@/api/visitors';
+import { VisitorStatusBadge } from '@/components/visitors/visitor-status-badge';
 import { formatTimeShort, formatFullTimestamp } from '@/lib/format';
-import { cn } from '@/lib/utils';
-
-const STATUS_TONE: Record<VisitorStatus, string> = {
-  pending_approval:
-    'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200',
-  expected: 'bg-blue-100 text-blue-900 dark:bg-blue-950/40 dark:text-blue-200',
-  arrived:
-    'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200',
-  in_meeting:
-    'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200',
-  checked_out: 'bg-muted text-muted-foreground',
-  no_show: 'bg-muted text-muted-foreground',
-  cancelled: 'bg-muted text-muted-foreground',
-};
 
 /** Convert HH:mm + today's date → ISO string. Returns undefined if invalid. */
 function localTimeToIso(hhmm: string): string | undefined {
@@ -104,14 +90,7 @@ function ReceptionVisitorRowImpl({
           )}
         </div>
       </div>
-      <span
-        className={cn(
-          'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
-          STATUS_TONE[row.status],
-        )}
-      >
-        {visitorStatusLabel(row.status)}
-      </span>
+      <VisitorStatusBadge status={row.status} />
       <RowActions
         row={row}
         busy={busy}
