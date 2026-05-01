@@ -80,6 +80,8 @@ function makeService(opts: {
     supabase as never,
     { onApprovalDecision: jest.fn() } as never,
     { onApprovalDecided: jest.fn() } as never,
+    { onApprovalDecided: jest.fn() } as never,
+    { onApprovalDecided: jest.fn() } as never,
   );
   return { svc, calls };
 }
@@ -189,6 +191,7 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
       { onApprovalDecision: jest.fn() } as never,
       { onApprovalDecided: jest.fn() } as never,
       { onApprovalDecided: bundleSpy } as never,
+      { onApprovalDecided: jest.fn() } as never,
     );
     return { svc, bundleSpy };
   }

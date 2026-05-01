@@ -1,8 +1,8 @@
 # Visitor Management — Design Spec
 
 **Date:** 2026-04-27
-**Status:** Design — pending implementation; coordinates with parallel visitors backend workstream (see `project_visitors_track_split_off.md`)
-**Owner:** TBD
+**Status:** **SUPERSEDED** — replaced by [`2026-05-01-visitor-management-v1-design.md`](2026-05-01-visitor-management-v1-design.md). Identity model in this doc (flat PII on `visitors`) contradicts what's already shipped (persons-as-truth via migration 00015 + GDPR adapter). v1 scope decisions also revised: kiosk-lite restored to v1, watchlist + NDA + photo + ID scan deferred. Read the v1 spec for the current truth.
+**Owner:** N/A
 **Estimated effort:** 8-10 weeks total across 5 phases (parallelizable per surface)
 **Roadmap location:** `docs/booking-platform-roadmap.md` §E (E1–E13).
 

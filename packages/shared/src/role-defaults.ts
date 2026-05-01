@@ -80,7 +80,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
   {
     name: 'Service Desk Lead',
     description:
-      'Agent permissions plus team admin, reporting, and workplace config (rooms + vendor fulfillment).',
+      'Agent permissions plus team admin, reporting, and workplace config (rooms + vendor fulfillment + visitor reception).',
     permissions: [
       'tickets.*',
       'request_types.read',
@@ -93,17 +93,20 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
       'routing.read',
       'rooms.admin',
       'vendors.admin',
+      'visitors.reception',
+      'visitors.invite',
     ],
     type: 'agent',
   },
   {
     name: 'Requester',
-    description: 'Portal-only access. Creates and views their own tickets.',
+    description: 'Portal-only access. Creates and views their own tickets and visitor invitations.',
     permissions: [
       'tickets.create',
       'tickets.read',
       'service_catalog.read',
       'people.read',
+      'visitors.invite',
     ],
     type: 'employee',
   },
@@ -161,6 +164,11 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     key: 'users.impersonate',
     reason:
       'Always-audited destructive op for support/debugging. Tenant Admin only; manually granted to platform support staff.',
+  },
+  {
+    key: 'visitors.read_all',
+    reason:
+      'Tenant-wide visitor visibility override. Bypasses building-scope and host visibility (the 3-tier visibility model). Tenant Admin holds this via *.*; other roles must be granted explicitly per security posture (per spec §13.1).',
   },
 ];
 

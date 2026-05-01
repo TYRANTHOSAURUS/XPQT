@@ -8,6 +8,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { DeskLayout } from '@/layouts/desk-layout';
 import { PortalLayout } from '@/layouts/portal-layout';
 import { AdminLayout } from '@/layouts/admin-layout';
+import { ReceptionLayout } from '@/layouts/reception-layout';
 import { ReportsLayout } from '@/layouts/reports-layout';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
@@ -49,6 +50,8 @@ const MyBookingDetailPage = lazyNamed(() => import('@/pages/portal/me-bookings/d
 const PortalOrderPage = lazyNamed(() => import('@/pages/portal/order'), 'PortalOrderPage');
 const PortalCalendarSyncPage = lazyNamed(() => import('@/pages/portal/me/calendar-sync'), 'PortalCalendarSyncPage');
 const PortalCalendarSyncCallbackPage = lazyNamed(() => import('@/pages/portal/calendar-sync-callback'), 'PortalCalendarSyncCallbackPage');
+const PortalVisitorInvitePage = lazyNamed(() => import('@/pages/portal/visitors/invite'), 'PortalVisitorInvitePage');
+const PortalVisitorsExpectedPage = lazyNamed(() => import('@/pages/portal/visitors/expected'), 'PortalVisitorsExpectedPage');
 const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-sync'), 'AdminCalendarSyncPage');
 const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/index'), 'RoomBookingRulesPage');
 const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
@@ -65,6 +68,25 @@ const BundleTemplateDetailPage = lazyNamed(() => import('@/pages/admin/bundle-te
 const BookingServicesIndexPage = lazyNamed(() => import('@/pages/admin/booking-services'), 'BookingServicesIndexPage');
 const ServiceRulesPage = lazyNamed(() => import('@/pages/admin/service-rules'), 'ServiceRulesPage');
 const ServiceRuleDetailPage = lazyNamed(() => import('@/pages/admin/service-rule-detail'), 'ServiceRuleDetailPage');
+
+// Reception
+const ReceptionTodayPage = lazyNamed(() => import('@/pages/reception/today'), 'ReceptionTodayPage');
+const ReceptionPassesPage = lazyNamed(() => import('@/pages/reception/passes'), 'ReceptionPassesPage');
+const ReceptionYesterdayPage = lazyNamed(() => import('@/pages/reception/yesterday'), 'ReceptionYesterdayPage');
+const ReceptionDaglijstPage = lazyNamed(() => import('@/pages/reception/daglijst'), 'ReceptionDaglijstPage');
+
+// Public visitor cancel landing — anonymous; token IS the auth.
+// NOT wrapped in ProtectedRoute. Routes outside any layout shell.
+const VisitCancelPage = lazyNamed(() => import('@/pages/public/visit-cancel'), 'VisitCancelPage');
+
+// Kiosk-lite — anonymous, building-bound. NOT wrapped in ProtectedRoute.
+const KioskLayout = lazyNamed(() => import('@/pages/kiosk/_layout'), 'KioskLayout');
+const KioskIdlePage = lazyNamed(() => import('@/pages/kiosk/index'), 'KioskIdlePage');
+const KioskSetupPage = lazyNamed(() => import('@/pages/kiosk/setup'), 'KioskSetupPage');
+const KioskQrScanPage = lazyNamed(() => import('@/pages/kiosk/qr-scan'), 'KioskQrScanPage');
+const KioskNameFallbackPage = lazyNamed(() => import('@/pages/kiosk/name-fallback'), 'KioskNameFallbackPage');
+const KioskWalkupPage = lazyNamed(() => import('@/pages/kiosk/walkup'), 'KioskWalkupPage');
+const KioskConfirmationPage = lazyNamed(() => import('@/pages/kiosk/confirmation'), 'KioskConfirmationPage');
 
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
@@ -129,6 +151,11 @@ const VendorDetailPage = lazyNamed(() => import('@/pages/admin/vendor-detail'), 
 const VendorMenusPage = lazyNamed(() => import('@/pages/admin/vendor-menus'), 'VendorMenusPage');
 const VendorMenuDetailPage = lazyNamed(() => import('@/pages/admin/vendor-menu-detail'), 'VendorMenuDetailPage');
 const BrandingPage = lazyNamed(() => import('@/pages/admin/branding'), 'BrandingPage');
+const AdminVisitorTypesPage = lazyNamed(() => import('@/pages/admin/visitors/types'), 'AdminVisitorTypesPage');
+const AdminVisitorTypeDetailPage = lazyNamed(() => import('@/pages/admin/visitors/types/detail'), 'AdminVisitorTypeDetailPage');
+const AdminVisitorPoolsPage = lazyNamed(() => import('@/pages/admin/visitors/pools'), 'AdminVisitorPoolsPage');
+const AdminVisitorPoolDetailPage = lazyNamed(() => import('@/pages/admin/visitors/pools/detail'), 'AdminVisitorPoolDetailPage');
+const DeskVisitorsPage = lazyNamed(() => import('@/pages/desk/visitors'), 'DeskVisitorsPage');
 
 function RouteFallback() {
   return (
@@ -155,6 +182,23 @@ export function App() {
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/signup" element={<SignUpPage />} />
 
+                {/* Public visitor cancel landing — anonymous, token in path.
+                    NO ProtectedRoute: visitor isn't logged in. The backend
+                    GET /visitors/cancel/:token/preview + POST /visitors/cancel/:token
+                    are @Public() and validate via SECURITY DEFINER fns. */}
+                <Route path="/visit/cancel/:token" element={<VisitCancelPage />} />
+
+                {/* Kiosk-lite — public, building-bound (anonymous Bearer-token auth
+                    on /api/kiosk/*). NO ProtectedRoute: the kiosk has no user. */}
+                <Route path="/kiosk" element={<KioskLayout />}>
+                  <Route index element={<KioskIdlePage />} />
+                  <Route path="setup" element={<KioskSetupPage />} />
+                  <Route path="qr-scan" element={<KioskQrScanPage />} />
+                  <Route path="name-fallback" element={<KioskNameFallbackPage />} />
+                  <Route path="walkup" element={<KioskWalkupPage />} />
+                  <Route path="confirmation" element={<KioskConfirmationPage />} />
+                </Route>
+
                 {/* Employee Portal — requires auth */}
                 <Route
                   path="/portal"
@@ -173,7 +217,12 @@ export function App() {
                   <Route path="profile"  element={<PortalProfilePage />} />
                   {/* Phase 2 placeholders — top nav + bottom tabs link here; redirect home until built */}
                   <Route path="rooms"    element={<BookRoomPage />} />
-                  <Route path="visitors" element={<Navigate to="/portal" replace />} />
+                  {/* Visitors — host invite + upcoming list. The bare /portal/visitors
+                      redirects to the host's "expected" list (the meaningful default
+                      surface for someone clicking the nav tab). */}
+                  <Route path="visitors" element={<Navigate to="/portal/visitors/expected" replace />} />
+                  <Route path="visitors/invite" element={<PortalVisitorInvitePage />} />
+                  <Route path="visitors/expected" element={<PortalVisitorsExpectedPage />} />
                   <Route path="order"    element={<PortalOrderPage />} />
                   <Route path="account"  element={<Navigate to="/portal/profile" replace />} />
                   <Route path="book" element={<Navigate to="/portal/rooms" replace />} />
@@ -183,6 +232,28 @@ export function App() {
                   {/* Calendar sync (Outlook) */}
                   <Route path="me/calendar-sync" element={<PortalCalendarSyncPage />} />
                   <Route path="calendar-sync/callback" element={<PortalCalendarSyncCallbackPage />} />
+                </Route>
+
+                {/* Reception workspace — requires auth + agent role.
+                    Backend gates every endpoint on the `visitors.reception`
+                    permission, so a user with the agent role but without
+                    that permission key will see a populated workspace shell
+                    that 403s on data calls. Acceptable for v1 — once
+                    /users/me exposes effective_permissions we'll switch the
+                    client gate to be permission-aware too. */}
+                <Route
+                  path="/reception"
+                  element={
+                    <ProtectedRoute requiredRole="agent">
+                      <ReceptionLayout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route index element={<Navigate to="/reception/today" replace />} />
+                  <Route path="today" element={<ReceptionTodayPage />} />
+                  <Route path="passes" element={<ReceptionPassesPage />} />
+                  <Route path="yesterday" element={<ReceptionYesterdayPage />} />
+                  <Route path="daglijst" element={<ReceptionDaglijstPage />} />
                 </Route>
 
                 {/* Service Desk — requires auth + agent role */}
@@ -202,6 +273,7 @@ export function App() {
                   <Route path="tickets" element={<TicketsPage />} />
                   <Route path="tickets/:id" element={<TicketDetailPage />} />
                   <Route path="approvals" element={<ApprovalsPage />} />
+                  <Route path="visitors" element={<DeskVisitorsPage />} />
                   <Route path="reports" element={<ReportsLayout />}>
                     <Route index element={<Navigate to="/desk/reports/overview" replace />} />
                     <Route path="overview" element={<OverviewReport />} />
@@ -307,6 +379,11 @@ export function App() {
                   <Route path="routing-studio" element={<RoutingStudioPage />} />
                   {/* Branding */}
                   <Route path="branding" element={<BrandingPage />} />
+                  {/* Visitors (slice 9) — types config + pass pools + kiosks */}
+                  <Route path="visitors/types" element={<AdminVisitorTypesPage />} />
+                  <Route path="visitors/types/:id" element={<AdminVisitorTypeDetailPage />} />
+                  <Route path="visitors/pools" element={<AdminVisitorPoolsPage />} />
+                  <Route path="visitors/pools/:spaceId" element={<AdminVisitorPoolDetailPage />} />
                 </Route>
                 </Routes>
               </Suspense>

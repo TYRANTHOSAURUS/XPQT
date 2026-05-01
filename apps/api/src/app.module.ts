@@ -44,6 +44,7 @@ import { ServiceRoutingModule } from './modules/service-routing/service-routing.
 import { PrivacyComplianceModule } from './modules/privacy-compliance/privacy-compliance.module';
 import { DailyListModule } from './modules/daily-list/daily-list.module';
 import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
+import { VisitorsModule } from './modules/visitors/visitors.module';
 import { MailModule } from './common/mail/mail.module';
 
 @Module({
@@ -92,6 +93,7 @@ import { MailModule } from './common/mail/mail.module';
     PrivacyComplianceModule,
     DailyListModule,
     VendorPortalModule,
+    VisitorsModule,
     MailModule,
   ],
   controllers: [HealthController],
