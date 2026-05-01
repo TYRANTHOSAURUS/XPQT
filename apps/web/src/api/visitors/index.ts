@@ -329,6 +329,11 @@ export function formatVisitorName(v: Pick<ExpectedVisitor, 'first_name' | 'last_
   return name;
 }
 
+// Reception workspace surface — extracted into its own file to keep this
+// host-facing module focused. Re-exported here so callers can do
+// `import { useReceptionToday } from '@/api/visitors'`.
+export * from './reception';
+
 /** Status → human-friendly chip label. */
 export function visitorStatusLabel(s: VisitorStatus): string {
   switch (s) {
