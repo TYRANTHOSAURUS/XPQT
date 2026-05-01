@@ -63,6 +63,8 @@ interface FakeOpts {
   } | null;
   /** Auto-check-out aggregate for yesterdayLooseEnds. */
   autoCount?: number;
+  /** Bounced invites returned by VisitorMailDeliveryAdapter mock. */
+  bouncedInvites?: Array<Record<string, unknown>>;
 }
 
 function makeHarness(opts: FakeOpts = {}) {
@@ -155,6 +157,14 @@ function makeHarness(opts: FakeOpts = {}) {
     }),
   };
 
+  const mailDeliveryCalls: Array<{ method: string; args: unknown[] }> = [];
+  const mailDelivery = {
+    bouncedInvitesForBuildingSince: jest.fn(async (...args: unknown[]) => {
+      mailDeliveryCalls.push({ method: 'bouncedInvitesForBuildingSince', args });
+      return opts.bouncedInvites ?? [];
+    }),
+  };
+
   jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
 
   const svc = new ReceptionService(
@@ -163,6 +173,7 @@ function makeHarness(opts: FakeOpts = {}) {
     invitations as never,
     passPool as never,
     hostNotifications as never,
+    mailDelivery as never,
   );
 
   return {
@@ -172,11 +183,13 @@ function makeHarness(opts: FakeOpts = {}) {
     inviteCalls,
     passPoolCalls,
     hostNotifyCalls,
+    mailDeliveryCalls,
     db,
     visitors,
     invitations,
     passPool,
     hostNotifications,
+    mailDelivery,
   };
 }
 
@@ -633,7 +646,50 @@ describe('ReceptionService', () => {
       const result = await ctx.svc.yesterdayLooseEnds(TENANT_ID, BUILDING_ID, USER_ID);
       expect(result.auto_checked_out_count).toBe(12);
       expect(result.unreturned_passes).toHaveLength(1);
-      expect(result.bounced_emails).toEqual([]); // TODO until slice 2c
+      expect(result.bounced_emails).toEqual([]);
+    });
+
+    it('populates bounced_emails from VisitorMailDeliveryAdapter (slice 2c)', async () => {
+      const bounced = [
+        {
+          visitor_id: VISITOR_ID,
+          first_name: 'Anna',
+          last_name: 'Visser',
+          company: 'ABC',
+          primary_host_first_name: 'Marleen',
+          primary_host_last_name: null,
+          recipient_email: 'gone@acme.com',
+          bounce_type: 'hard',
+          reason: 'mailbox unknown',
+          occurred_at: '2026-04-30T08:30:00Z',
+          event_type: 'bounced' as const,
+          expected_at: '2026-05-01T09:00:00Z',
+          arrived_at: null,
+          status: 'expected',
+          visitor_pass_id: null,
+          pass_number: null,
+          visitor_type_id: null,
+        },
+      ];
+      const ctx = makeHarness({ autoCount: 0, bouncedInvites: bounced });
+      const result = await ctx.svc.yesterdayLooseEnds(TENANT_ID, BUILDING_ID, USER_ID);
+      expect(result.bounced_emails).toEqual(bounced);
+      expect(ctx.mailDeliveryCalls).toHaveLength(1);
+      expect(ctx.mailDeliveryCalls[0]!.method).toBe('bouncedInvitesForBuildingSince');
+      // Args: buildingId, tenantId, since
+      const args = ctx.mailDeliveryCalls[0]!.args;
+      expect(args[0]).toBe(BUILDING_ID);
+      expect(args[1]).toBe(TENANT_ID);
+      expect(args[2]).toBeInstanceOf(Date);
+    });
+
+    it('returns [] for bounced_emails when adapter throws (defensive)', async () => {
+      const ctx = makeHarness({ autoCount: 0 });
+      ctx.mailDelivery.bouncedInvitesForBuildingSince.mockRejectedValueOnce(
+        new Error('database down'),
+      );
+      const result = await ctx.svc.yesterdayLooseEnds(TENANT_ID, BUILDING_ID, USER_ID);
+      expect(result.bounced_emails).toEqual([]);
     });
   });
 

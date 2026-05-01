@@ -6,11 +6,16 @@ import { NotificationModule } from '../notification/notification.module';
 import { PersonModule } from '../person/person.module';
 import { PrivacyComplianceModule } from '../privacy-compliance/privacy-compliance.module';
 import { SpaceModule } from '../space/space.module';
+import { BundleCascadeAdapter } from './bundle-cascade.adapter';
+import { EodSweepWorker } from './eod-sweep.worker';
 import { HostNotificationService } from './host-notification.service';
 import { InvitationService } from './invitation.service';
+import { KioskAuthGuard } from './kiosk-auth.guard';
+import { KioskService } from './kiosk.service';
 import { VisitorPassPoolService } from './pass-pool.service';
 import { ReceptionService } from './reception.service';
 import { VisitorEventBus } from './visitor-event-bus';
+import { VisitorMailDeliveryAdapter } from './visitor-mail-delivery.adapter';
 import { VisitorService } from './visitor.service';
 
 /**
@@ -24,10 +29,12 @@ import { VisitorService } from './visitor.service';
  *   - 2b: VisitorPassPoolService + HostNotificationService + ReceptionService
  *         + VisitorEventBus (in-process SSE bus for the browser
  *         Notification API channel).
+ *   - 2c: KioskService + KioskAuthGuard + EodSweepWorker (cron + lease)
+ *         + BundleCascadeAdapter (event subscriber stub) +
+ *         VisitorMailDeliveryAdapter (wraps email_delivery_events).
  *
  * Subsequent slices:
- *   - 2c: KioskService + EodSweepWorker
- *   - 2d: BundleCascadeAdapter + VisitorMailDeliveryAdapter + controllers
+ *   - 2d: controllers (REST endpoints for portal / reception / kiosk / admin).
  *
  * forwardRef on BookingBundlesModule + ApprovalModule:
  *   - BookingBundlesModule: slice 4 wires the bundle cascade adapter as an
@@ -57,6 +64,11 @@ import { VisitorService } from './visitor.service';
     VisitorEventBus,
     HostNotificationService,
     ReceptionService,
+    VisitorMailDeliveryAdapter,
+    BundleCascadeAdapter,
+    KioskAuthGuard,
+    KioskService,
+    EodSweepWorker,
   ],
   exports: [
     VisitorService,
@@ -65,6 +77,10 @@ import { VisitorService } from './visitor.service';
     HostNotificationService,
     ReceptionService,
     VisitorEventBus,
+    VisitorMailDeliveryAdapter,
+    KioskAuthGuard,
+    KioskService,
+    EodSweepWorker,
   ],
 })
 export class VisitorsModule {}

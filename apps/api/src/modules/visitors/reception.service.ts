@@ -11,6 +11,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { HostNotificationService } from './host-notification.service';
 import { InvitationService } from './invitation.service';
 import { VisitorPassPoolService, type VisitorPassPool } from './pass-pool.service';
+import { VisitorMailDeliveryAdapter, type BouncedInviteRow } from './visitor-mail-delivery.adapter';
 import { VisitorService } from './visitor.service';
 import type {
   DailyListEntry,
@@ -105,6 +106,7 @@ export class ReceptionService {
     private readonly invitations: InvitationService,
     private readonly passPool: VisitorPassPoolService,
     private readonly hostNotifications: HostNotificationService,
+    private readonly mailDelivery: VisitorMailDeliveryAdapter,
   ) {}
 
   /**
@@ -535,12 +537,25 @@ export class ReceptionService {
       );
     }
 
+    let bouncedEmails: BouncedInviteRow[] = [];
+    try {
+      bouncedEmails = await this.mailDelivery.bouncedInvitesForBuildingSince(
+        buildingId,
+        tenantId,
+        yesterdayStart,
+      );
+    } catch (err) {
+      // Same containment as the pass query — a delivery event lookup
+      // failure should not nuke the whole tile.
+      this.log.warn(
+        `bouncedInvitesForBuildingSince failed: ${(err as Error).message}`,
+      );
+    }
+
     return {
       auto_checked_out_count: counts?.auto_checked_out_count ?? 0,
       unreturned_passes: unreturnedPasses,
-      // TODO(slice-2c): when VisitorMailDeliveryAdapter joins
-      // mail_delivery_events to visitors, populate this list.
-      bounced_emails: [],
+      bounced_emails: bouncedEmails,
     };
   }
 

@@ -7,6 +7,7 @@
  * controller wraps the JSON body with zod and forwards to the service.
  */
 
+import type { BouncedInviteRow } from '../visitor-mail-delivery.adapter';
 import type { VisitorPassPool } from '../pass-pool.service';
 import type { VisitorStatus } from './transition-status.dto';
 
@@ -58,8 +59,13 @@ export interface ReceptionActor {
 export interface YesterdayLooseEnds {
   auto_checked_out_count: number;
   unreturned_passes: VisitorPassPool[];
-  // Surface populated when slice 2c VisitorMailDeliveryAdapter lands.
-  bounced_emails: ReceptionVisitorRow[];
+  /**
+   * Visitors at this building whose most-recent invite-delivery event is
+   * `bounced` since the cutoff. Joined via VisitorMailDeliveryAdapter
+   * (slice 2c) — `email_delivery_events` keyed by
+   * `(correlated_entity_type='visitor_invite', correlated_entity_id=visitor.id)`.
+   */
+  bounced_emails: BouncedInviteRow[];
 }
 
 export type DailyListEntry = ReceptionVisitorRow;
