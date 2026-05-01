@@ -95,6 +95,7 @@ function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
     updateStatus: jest.spyOn(svc, 'updateStatus').mockResolvedValue(makeRow({ status: 'in_progress', status_category: 'in_progress' })),
     updatePriority: jest.spyOn(svc, 'updatePriority').mockResolvedValue(makeRow({ priority: 'high' })),
     updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow({ assigned_user_id: 'u9' })),
+    updateMetadata: jest.spyOn(svc, 'updateMetadata').mockResolvedValue(makeRow({ title: 'updated' })),
   };
 
   return { svc, spies, supabase, refetchCalls };
@@ -251,6 +252,62 @@ describe('WorkOrderService.update (orchestrator)', () => {
     expect(spies.updateStatus).not.toHaveBeenCalled();
     expect(spies.updatePriority).not.toHaveBeenCalled();
     expect(spies.updateAssignment).not.toHaveBeenCalled();
+    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('dispatches metadata-only call to updateMetadata with all 5 metadata fields', async () => {
+    // Slice 3.1: title / description / cost / tags / watchers go to a single
+    // updateMetadata branch. Verifies dispatcher detection + correct DTO
+    // narrowing. The non-metadata branches must NOT fire.
+    const { svc, spies } = makeSvc();
+    await svc.update(
+      'wo1',
+      {
+        title: 'new title',
+        description: 'new desc',
+        cost: 250,
+        tags: ['a', 'b'],
+        watchers: ['p1'],
+      },
+      SYSTEM_ACTOR,
+    );
+
+    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
+    expect(spies.updateMetadata).toHaveBeenCalledWith(
+      'wo1',
+      {
+        title: 'new title',
+        description: 'new desc',
+        cost: 250,
+        tags: ['a', 'b'],
+        watchers: ['p1'],
+      },
+      SYSTEM_ACTOR,
+    );
+    expect(spies.updateSla).not.toHaveBeenCalled();
+    expect(spies.setPlan).not.toHaveBeenCalled();
+    expect(spies.updateStatus).not.toHaveBeenCalled();
+    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(spies.updateAssignment).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a metadata + status mix (multi-field)', async () => {
+    // Status before metadata in the dispatch order so status side effects
+    // (resolved_at synthesis, timer pause/resume) settle before the
+    // metadata bulk write.
+    const { svc, spies } = makeSvc();
+    await svc.update(
+      'wo1',
+      { status: 'in_progress', status_category: 'in_progress', title: 'updated' },
+      SYSTEM_ACTOR,
+    );
+
+    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
+    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
+    // Order assertion: status fires before metadata.
+    const statusOrder = spies.updateStatus.mock.invocationCallOrder[0];
+    const metadataOrder = spies.updateMetadata.mock.invocationCallOrder[0];
+    expect(statusOrder).toBeLessThan(metadataOrder);
   });
 
   it('rejects a null DTO', async () => {

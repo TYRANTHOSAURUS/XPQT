@@ -107,6 +107,43 @@ export class WorkOrderController {
         throw new BadRequestException(`${k} must be a string or null`);
       }
     }
+    // Slice 3.1 fields
+    if (dto.title !== undefined && typeof dto.title !== 'string') {
+      throw new BadRequestException('title must be a string');
+    }
+    if (dto.title !== undefined && dto.title.trim() === '') {
+      throw new BadRequestException('title must be a non-empty string');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'description') &&
+      dto.description !== null &&
+      typeof dto.description !== 'string'
+    ) {
+      throw new BadRequestException('description must be a string or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'cost') &&
+      dto.cost !== null &&
+      (typeof dto.cost !== 'number' || !Number.isFinite(dto.cost))
+    ) {
+      throw new BadRequestException('cost must be a finite number or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'tags') &&
+      dto.tags !== null &&
+      (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
+    ) {
+      throw new BadRequestException('tags must be an array of strings or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
+      dto.watchers !== null &&
+      (!Array.isArray(dto.watchers) || !dto.watchers.every((w) => typeof w === 'string'))
+    ) {
+      throw new BadRequestException(
+        'watchers must be an array of strings (person UUIDs) or null',
+      );
+    }
 
     return this.workOrderService.update(id, dto, actorAuthUid);
   }

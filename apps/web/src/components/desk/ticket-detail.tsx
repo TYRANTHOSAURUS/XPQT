@@ -366,9 +366,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   };
 
   // Work-order PATCH — narrow the case-shaped payload to the fields the
-  // work-order endpoint accepts. Slice 3 deferred fields (cost / tags /
-  // watchers / title / description) silently no-op for work_orders here
-  // because the orchestrator does not accept them.
+  // work-order endpoint accepts. Slice 3.1 added the metadata fields
+  // (title / description / cost / tags / watchers); the case-side fields
+  // not accepted on work_orders (e.g. interaction_mode, impact, urgency,
+  // request type changes) silently no-op because the orchestrator does
+  // not accept them.
   const patchWorkOrder = (updates: Partial<UpdateTicketPayload>) => {
     const woUpdates: UpdateWorkOrderPayload = {};
     if (updates.sla_id !== undefined) woUpdates.sla_id = updates.sla_id;
@@ -381,6 +383,12 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     if (updates.assigned_team_id !== undefined) woUpdates.assigned_team_id = updates.assigned_team_id;
     if (updates.assigned_user_id !== undefined) woUpdates.assigned_user_id = updates.assigned_user_id;
     if (updates.assigned_vendor_id !== undefined) woUpdates.assigned_vendor_id = updates.assigned_vendor_id;
+    // Slice 3.1: metadata fields.
+    if (updates.title !== undefined) woUpdates.title = updates.title;
+    if (updates.description !== undefined) woUpdates.description = updates.description;
+    if (updates.cost !== undefined) woUpdates.cost = updates.cost;
+    if (updates.tags !== undefined) woUpdates.tags = updates.tags;
+    if (updates.watchers !== undefined) woUpdates.watchers = updates.watchers;
 
     if (Object.keys(woUpdates).length === 0) return;
 

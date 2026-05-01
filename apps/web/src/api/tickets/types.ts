@@ -131,4 +131,11 @@ export interface UpdateWorkOrderPayload {
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
   assigned_vendor_id?: string | null;
+  // Slice 3.1 metadata fields. Match the case-side UpdateTicketPayload
+  // shape: bulk metadata writes with no per-field side effects.
+  title?: string;
+  description?: string | null;
+  cost?: number | null;
+  tags?: string[] | null;
+  watchers?: string[] | null;
 }

@@ -49,11 +49,21 @@ export interface UpdateWorkOrderDto {
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
   assigned_vendor_id?: string | null;
+  // Slice 3.1 metadata fields. Match the case-side
+  // (TicketService.update) shape: bulk-write, no permission gate beyond
+  // the visibility floor, no per-field activity emission. Adding finer
+  // gates / activity rows is deferred — case side has the same gap.
+  title?: string;
+  description?: string | null;
+  cost?: number | null;
+  tags?: string[] | null;
+  watchers?: string[] | null;
 }
 
 const PLAN_FIELDS = ['planned_start_at', 'planned_duration_minutes'] as const;
 const STATUS_FIELDS = ['status', 'status_category', 'waiting_reason'] as const;
 const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
+const METADATA_FIELDS = ['title', 'description', 'cost', 'tags', 'watchers'] as const;
 
 /**
  * WorkOrderService — the work-order command surface.
@@ -131,15 +141,18 @@ export class WorkOrderService {
     const hasAssignment = ASSIGNMENT_FIELDS.some((f) =>
       Object.prototype.hasOwnProperty.call(dto, f),
     );
+    const hasMetadata = METADATA_FIELDS.some((f) =>
+      Object.prototype.hasOwnProperty.call(dto, f),
+    );
 
-    if (!hasSla && !hasPlan && !hasStatus && !hasPriority && !hasAssignment) {
+    if (!hasSla && !hasPlan && !hasStatus && !hasPriority && !hasAssignment && !hasMetadata) {
       throw new BadRequestException(
-        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id',
+        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
       );
     }
 
     let last: WorkOrderRow | null = null;
-    const dispatched: Array<'sla' | 'plan' | 'status' | 'priority' | 'assignment'> = [];
+    const dispatched: Array<'sla' | 'plan' | 'status' | 'priority' | 'assignment' | 'metadata'> = [];
 
     // SLA first — its restartTimers side effect changes columns that
     // downstream status transitions read (sla_id is loaded before the
@@ -200,6 +213,37 @@ export class WorkOrderService {
       }
       last = await this.updateAssignment(workOrderId, assignmentDto, actorAuthUid);
       dispatched.push('assignment');
+    }
+
+    if (hasMetadata) {
+      // Slice 3.1 fields are last in the dispatch order — they're plain
+      // metadata writes with no side-effects on timers, status promotion,
+      // or assignment cascade. Order doesn't matter relative to them but
+      // running them last keeps the side-effect-bearing branches first.
+      const metadataDto: {
+        title?: string;
+        description?: string | null;
+        cost?: number | null;
+        tags?: string[] | null;
+        watchers?: string[] | null;
+      } = {};
+      if (Object.prototype.hasOwnProperty.call(dto, 'title')) {
+        metadataDto.title = dto.title;
+      }
+      if (Object.prototype.hasOwnProperty.call(dto, 'description')) {
+        metadataDto.description = dto.description ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(dto, 'cost')) {
+        metadataDto.cost = dto.cost ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(dto, 'tags')) {
+        metadataDto.tags = dto.tags ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(dto, 'watchers')) {
+        metadataDto.watchers = dto.watchers ?? null;
+      }
+      last = await this.updateMetadata(workOrderId, metadataDto, actorAuthUid);
+      dispatched.push('metadata');
     }
 
     // Multi-field calls: refetch once so the final row reflects every side
@@ -1042,6 +1086,141 @@ export class WorkOrderService {
     } catch (err) {
       console.error('[work-order] ticket_assigned domain event failed', err);
     }
+
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw new ForbiddenException('Work order no longer accessible');
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Update metadata fields on a work_order — `title`, `description`,
+   * `cost`, `tags`, `watchers`. Slice 3.1 of the WO command surface.
+   *
+   * Mirrors the case-side TicketService.update behaviour for these fields:
+   *  - Visibility: `assertCanPlan` (operator floor; no danger-permission).
+   *  - Validation: type-narrowed by the controller; this method enforces
+   *    the no-empty-DTO and no-op fast-path semantics consistent with
+   *    sibling methods.
+   *  - Side effects: bulk `.update()` of whichever fields differ, plus an
+   *    explicit `updated_at`. No timer churn, no status promotion, no
+   *    activity emission.
+   *
+   * The case side does not emit per-field activity rows for these fields
+   * (verified at ticket.service.ts:990+ — only status/assignment/sla
+   * write activities). To keep parity, neither does this method. If/when
+   * the audit trail is improved, both sides should grow the rows in the
+   * same slice.
+   */
+  async updateMetadata(
+    workOrderId: string,
+    dto: {
+      title?: string;
+      description?: string | null;
+      cost?: number | null;
+      tags?: string[] | null;
+      watchers?: string[] | null;
+    },
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    const tenant = TenantContext.current();
+
+    if (Object.keys(dto).length === 0) {
+      throw new BadRequestException(
+        'updateMetadata requires at least one of: title, description, cost, tags, watchers',
+      );
+    }
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertCanPlan(workOrderId, ctx);
+    }
+
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id, tenant_id, title, description, cost, tags, watchers')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+    const currentRow = current as {
+      id: string;
+      tenant_id: string;
+      title: string | null;
+      description: string | null;
+      cost: number | null;
+      tags: string[] | null;
+      watchers: string[] | null;
+    };
+
+    // Build the diff: only fields whose new value differs from current.
+    // Array equality uses JSON.stringify — these arrays are always small
+    // (tags ≤ ~20, watchers ≤ ~20) and typed as string[], so JSON
+    // comparison is correct and cheap.
+    const diff: Record<string, unknown> = {};
+    if (dto.title !== undefined && dto.title !== currentRow.title) {
+      diff.title = dto.title;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'description') &&
+      (dto.description ?? null) !== currentRow.description
+    ) {
+      diff.description = dto.description ?? null;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'cost') &&
+      (dto.cost ?? null) !== currentRow.cost
+    ) {
+      diff.cost = dto.cost ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(dto, 'tags')) {
+      const next = dto.tags ?? null;
+      const prev = currentRow.tags ?? null;
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        diff.tags = next;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(dto, 'watchers')) {
+      const next = dto.watchers ?? null;
+      const prev = currentRow.watchers ?? null;
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        diff.watchers = next;
+      }
+    }
+
+    // No-op fast path: every supplied field already equals the current value.
+    // Return the full row without writing — matches updateStatus / updatePriority
+    // / updateAssignment behaviour and avoids spurious updated_at bumps that
+    // would invalidate downstream caches and Realtime subscribers.
+    if (Object.keys(diff).length === 0) {
+      const { data: full, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .single();
+      if (refetchErr) throw refetchErr;
+      return full as WorkOrderRow;
+    }
+
+    diff.updated_at = new Date().toISOString();
+
+    const { error: updateErr } = await this.supabase.admin
+      .from('work_orders')
+      .update(diff)
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id);
+    if (updateErr) throw updateErr;
 
     const { data: refreshed, error: refetchErr } = await this.supabase.admin
       .from('work_orders')
