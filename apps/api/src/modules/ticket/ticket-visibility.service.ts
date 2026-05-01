@@ -28,6 +28,8 @@ interface TicketForVisibility {
   watchers: string[] | null;
   location_id: string | null;
   domain: string | null;
+  parent_ticket_id: string | null;
+  parent_assigned_team_id: string | null;
 }
 
 @Injectable()
@@ -180,6 +182,48 @@ export class TicketVisibilityService {
   }
 
   /**
+   * Plandate gate. Narrower than write: only the people actually doing
+   * (or owning) the work can declare when it'll happen. Allowed paths:
+   *   • WO assignee (assigned_user_id)
+   *   • Assigned vendor
+   *   • Member of the WO's assigned team
+   *   • Member of the parent case's assigned team (case-level "ownership")
+   *   • Role operator with non-readonly write scope matching domain+location
+   *   • tickets.write_all override
+   *
+   * Excluded: requester, watcher, readonly cross-domain roles.
+   */
+  async assertCanPlan(ticketId: string, ctx: VisibilityContext): Promise<void> {
+    if (ctx.has_write_all) return;
+
+    const row = await this.loadTicketRow(ticketId, ctx.tenant_id);
+    if (!row) throw new ForbiddenException('Ticket not accessible');
+
+    if (row.assigned_user_id === ctx.user_id) return;
+    if (ctx.vendor_id && row.assigned_vendor_id === ctx.vendor_id) return;
+
+    const teamCandidates = [row.assigned_team_id, row.parent_assigned_team_id].filter(
+      (t): t is string => !!t,
+    );
+    if (teamCandidates.some((t) => ctx.team_ids.includes(t))) return;
+
+    const writableRoleMatch = ctx.role_assignments.some((role) => {
+      if (role.read_only_cross_domain) return false;
+      const domainOk =
+        role.domain_scope.length === 0 ||
+        (row.domain != null && role.domain_scope.includes(row.domain));
+      const locationOk =
+        role.location_scope_closure.length === 0 ||
+        row.location_id == null ||
+        role.location_scope_closure.includes(row.location_id);
+      return domainOk && locationOk;
+    });
+    if (writableRoleMatch) return;
+
+    throw new ForbiddenException('Not authorized to plan this ticket');
+  }
+
+  /**
    * Explains why a user can (or cannot) see a specific ticket.
    * Used by the /visibility-trace endpoint for support debugging.
    */
@@ -238,19 +282,66 @@ export class TicketVisibilityService {
   }
 
   private async loadTicketRow(ticketId: string, tenantId: string): Promise<TicketForVisibility | null> {
-    const { data } = await (this.supabase.admin
-      .from('tickets')
-      .select(`
-        id, tenant_id, requester_person_id, assigned_user_id, assigned_team_id,
-        assigned_vendor_id, watchers, location_id,
-        ticket_type:request_types!tickets_ticket_type_id_fkey(domain)
-      `)
-      .eq('id', ticketId)
-      .eq('tenant_id', tenantId) as unknown as { maybeSingle: () => Promise<{ data: Record<string, unknown> | null }> })
-      .maybeSingle();
+    // Step 1c.10c: id may be in tickets (case) or work_orders. Try both.
+    // Visibility checks must work for both kinds — without this, getById's
+    // visibility precheck on a work_order id always fails before the
+    // fallback in getById can run (codex round 3 finding).
+    const tryLoad = async (table: 'tickets' | 'work_orders') => {
+      const { data } = await (this.supabase.admin
+        .from(table)
+        .select(`
+          id, tenant_id, requester_person_id, assigned_user_id, assigned_team_id,
+          assigned_vendor_id, watchers, location_id, parent_ticket_id,
+          ticket_type:request_types!${table}_ticket_type_id_fkey(domain)
+        `)
+        .eq('id', ticketId)
+        .eq('tenant_id', tenantId) as unknown as { maybeSingle: () => Promise<{ data: Record<string, unknown> | null }> })
+        .maybeSingle();
+      return data;
+    };
+    let data = await tryLoad('tickets');
+    if (!data) {
+      // FK alias for work_orders may not exist (created via migrations 00213+).
+      // Fall back to a manual select without the request_types join.
+      const { data: woData } = await (this.supabase.admin
+        .from('work_orders')
+        .select(`
+          id, tenant_id, requester_person_id, assigned_user_id, assigned_team_id,
+          assigned_vendor_id, watchers, location_id, parent_ticket_id, ticket_type_id
+        `)
+        .eq('id', ticketId)
+        .eq('tenant_id', tenantId) as unknown as { maybeSingle: () => Promise<{ data: Record<string, unknown> | null }> })
+        .maybeSingle();
+      if (woData) {
+        // Fetch domain separately for work_orders.
+        if (woData.ticket_type_id) {
+          const { data: typeRow } = await this.supabase.admin
+            .from('request_types')
+            .select('domain')
+            .eq('id', woData.ticket_type_id as string)
+            .maybeSingle();
+          (woData as Record<string, unknown>).ticket_type = typeRow ? { domain: (typeRow as { domain: string | null }).domain } : null;
+        }
+      }
+      data = woData;
+    }
     if (!data) return null;
     const raw = data as Record<string, unknown>;
     const type = Array.isArray(raw.ticket_type) ? (raw.ticket_type as unknown[])[0] : raw.ticket_type;
+
+    let parentAssignedTeamId: string | null = null;
+    const parentId = (raw.parent_ticket_id as string | null) ?? null;
+    if (parentId) {
+      const { data: parent } = await (this.supabase.admin
+        .from('tickets')
+        .select('assigned_team_id')
+        .eq('id', parentId)
+        .eq('tenant_id', tenantId) as unknown as {
+          maybeSingle: () => Promise<{ data: { assigned_team_id: string | null } | null }>;
+        }).maybeSingle();
+      parentAssignedTeamId = parent?.assigned_team_id ?? null;
+    }
+
     return {
       id: raw.id as string,
       tenant_id: raw.tenant_id as string,
@@ -261,6 +352,8 @@ export class TicketVisibilityService {
       watchers: (raw.watchers as string[] | null) ?? [],
       location_id: (raw.location_id as string | null) ?? null,
       domain: (type as { domain?: string | null } | null)?.domain ?? (raw.domain as string | null) ?? null,
+      parent_ticket_id: parentId,
+      parent_assigned_team_id: parentAssignedTeamId,
     };
   }
 }

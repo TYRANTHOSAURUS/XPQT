@@ -38,7 +38,9 @@ export class SlaService {
   ): Promise<void> {
     let q1 = this.supabase.admin.from('tickets').update(patch).eq('id', id);
     if (tenantId) q1 = q1.eq('tenant_id', tenantId);
-    const { data: caseHit } = await q1.select('id').maybeSingle();
+    // Codex round 3: don't ignore real DB errors on the first attempt.
+    const { data: caseHit, error: caseErr } = await q1.select('id').maybeSingle();
+    if (caseErr) throw caseErr;
     if (caseHit) return;
 
     let q2 = this.supabase.admin.from('work_orders').update(patch).eq('id', id);
@@ -426,8 +428,11 @@ export class SlaService {
       .from('work_orders')
       .select(cols)
       .eq('id', ticketId)
-      .single();
+      .maybeSingle();
     if (woRes.error) throw woRes.error;
+    if (!woRes.data) {
+      throw new Error(`SLA target ${ticketId} not found in tickets or work_orders`);
+    }
     return woRes.data as {
       id: string;
       tenant_id: string;

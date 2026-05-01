@@ -284,8 +284,11 @@ export class TicketService {
     const { data, error } = await query;
     if (error) throw error;
 
+    // Step 1c.10c: list reads from tickets (case-only). Synthesize
+    // ticket_kind='case' for every item so frontend type contracts hold.
+    const items = (data ?? []).map((row) => ({ ...row, ticket_kind: 'case' as const }));
     return {
-      items: data ?? [],
+      items,
       next_cursor:
         data && data.length === limit ? data[data.length - 1].created_at : null,
     };
@@ -490,6 +493,10 @@ export class TicketService {
       await this.visibility.assertVisible(id, ctx, 'read');
     }
 
+    // Step 1c.10c: id may live in tickets (case) or work_orders. Try
+    // tickets first; only fall back to work_orders on the specific
+    // "row not found" case. Other DB errors propagate (codex round 3
+    // caught a 404-on-DB-error masking bug here).
     const { data, error } = await this.supabase.admin
       .from('tickets')
       .select(`
@@ -506,21 +513,27 @@ export class TicketService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !data) {
-      // Step 1c.10c: id might be a work_order — try work_orders before 404.
-      const woResult = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', id)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (woResult.data) {
-        return { ...woResult.data, ticket_kind: 'work_order' as const };
-      }
-      throw new NotFoundException('Ticket not found');
+    // PostgREST .single() returns error.code='PGRST116' when no row matches.
+    // Other errors are real DB problems and must propagate.
+    if (error && (error as { code?: string }).code !== 'PGRST116') {
+      throw error;
     }
-    // Step 1c.10c: synthesize ticket_kind for frontend contract continuity.
-    return { ...data, ticket_kind: 'case' as const };
+    if (data) {
+      return { ...data, ticket_kind: 'case' as const };
+    }
+
+    // No tickets row — try work_orders.
+    const woResult = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', id)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (woResult.error) throw woResult.error;
+    if (woResult.data) {
+      return { ...woResult.data, ticket_kind: 'work_order' as const };
+    }
+    throw new NotFoundException('Ticket not found');
   }
 
   async create(
