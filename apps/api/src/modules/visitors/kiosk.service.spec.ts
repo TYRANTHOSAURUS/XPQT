@@ -816,17 +816,31 @@ describe('KioskService', () => {
 });
 
 // ─── KioskAuthGuard tests ──────────────────────────────────────────────
+//
+// Post full-review I4: the guard no longer queries `kiosk_tokens` directly;
+// it calls the SECURITY DEFINER function `validate_kiosk_token($1)` which
+// does the hash + active + expires_at check inside the function. The
+// guard's job is to translate the function's SQLSTATEs (45011 invalid /
+// 45012 inactive / 45013 expired) and the row shape into either an
+// attached `req.kioskContext` or a 401.
 
 describe('KioskAuthGuard', () => {
-  function makeGuard(tokenRow: {
-    id: string;
-    tenant_id: string;
-    building_id: string;
-    active: boolean;
-    expires_at: string;
-  } | null) {
+  type TokenResult =
+    | { tenant_id: string; building_id: string; kiosk_token_id: string }
+    | null;
+  function makeGuard(behavior:
+    | { kind: 'ok'; row: TokenResult }
+    | { kind: 'err'; code: string }
+  ) {
     const db = {
-      queryOne: jest.fn(async () => tokenRow),
+      queryOne: jest.fn(async () => {
+        if (behavior.kind === 'err') {
+          const e = new Error('validate_kiosk_token raised');
+          (e as { code?: string }).code = behavior.code;
+          throw e;
+        }
+        return behavior.row;
+      }),
     };
     const guard = new KioskAuthGuard(db as never);
     return { guard, db };
@@ -844,11 +858,12 @@ describe('KioskAuthGuard', () => {
 
   it('attaches kioskContext on a valid token', async () => {
     const { guard, db } = makeGuard({
-      id: KIOSK_TOKEN_ID,
-      tenant_id: TENANT_ID,
-      building_id: BUILDING_ID,
-      active: true,
-      expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+      kind: 'ok',
+      row: {
+        tenant_id: TENANT_ID,
+        building_id: BUILDING_ID,
+        kiosk_token_id: KIOSK_TOKEN_ID,
+      },
     });
     const { ctx, req } = makeContext('Bearer abc');
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
@@ -858,27 +873,53 @@ describe('KioskAuthGuard', () => {
       buildingId: BUILDING_ID,
       kioskTokenId: KIOSK_TOKEN_ID,
     });
-    // Ensure the SQL filtered on active + not-expired.
+    // The guard must hit the SECURITY DEFINER function, not the table.
     const sql = (db.queryOne as jest.Mock).mock.calls[0]![0] as string;
-    expect(sql.toLowerCase()).toContain('active = true');
-    expect(sql.toLowerCase()).toContain('expires_at > now()');
+    expect(sql.toLowerCase()).toContain('public.validate_kiosk_token');
+    expect(sql.toLowerCase()).not.toContain('from public.kiosk_tokens');
   });
 
   it('rejects missing Authorization header', async () => {
-    const { guard } = makeGuard(null);
+    const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext(undefined);
     await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects malformed Authorization header', async () => {
-    const { guard } = makeGuard(null);
+    const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext('Basic foo');
     await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('rejects when DB returns no row (inactive / expired / wrong hash)', async () => {
-    const { guard } = makeGuard(null);
+  it('rejects on SQLSTATE 45011 (invalid_token)', async () => {
+    const { guard } = makeGuard({ kind: 'err', code: '45011' });
+    const { ctx } = makeContext('Bearer wrong-token');
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects on SQLSTATE 45012 (token_inactive / revoked)', async () => {
+    const { guard } = makeGuard({ kind: 'err', code: '45012' });
+    const { ctx } = makeContext('Bearer revoked-token');
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects on SQLSTATE 45013 (token_expired)', async () => {
+    const { guard } = makeGuard({ kind: 'err', code: '45013' });
     const { ctx } = makeContext('Bearer expired-token');
     await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects on empty result (defensive)', async () => {
+    const { guard } = makeGuard({ kind: 'ok', row: null });
+    const { ctx } = makeContext('Bearer something');
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('does not swallow non-token-error exceptions', async () => {
+    const { guard } = makeGuard({ kind: 'err', code: '42P01' /* undefined_table */ });
+    const { ctx } = makeContext('Bearer something');
+    // 401 only for the three token-shaped SQLSTATEs; anything else is a real
+    // server fault and should bubble.
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: '42P01' });
   });
 });

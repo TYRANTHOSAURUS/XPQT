@@ -22,13 +22,17 @@ import type { KioskContext } from './dto/kiosk.dto';
  *
  * What it does:
  *   - Reads `Authorization: Bearer <token>` from the request.
- *   - Hashes the token (sha256, hex) — that's how `kiosk_tokens.token_hash`
- *     is stored.
- *   - Looks up `kiosk_tokens` by hash. Requires `active=true` AND
- *     `expires_at > now()`.
+ *   - Calls the SECURITY DEFINER function `validate_kiosk_token(token)`
+ *     (migration 00271). The function hashes + looks up + checks active/
+ *     expires_at; the guard never reads `kiosk_tokens` directly. This
+ *     keeps the table strictly service_role-only (00258) — anonymous
+ *     callers reach the data only via the function, exactly as 00258's
+ *     comment promised.
  *   - On match, attaches `req.kioskContext = { tenantId, buildingId,
  *     kioskTokenId }`. NO `req.user` — kiosk is truly anonymous.
- *   - On mismatch / expired / inactive: 401.
+ *   - On miss / expired / inactive: 401. Distinct SQLSTATEs (45011/45012/
+ *     45013) are mapped to the same generic 401 so we don't leak which
+ *     branch fired.
  *
  * Cross-tenant safety: KioskService methods take `KioskContext` as their
  * first arg. Every read filters on `kioskContext.tenantId` (and where
@@ -47,30 +51,37 @@ export class KioskAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing kiosk token');
     }
 
-    const tokenHash = hashToken(token);
-    const row = await this.db.queryOne<{
-      id: string;
+    let row: {
       tenant_id: string;
       building_id: string;
-      active: boolean;
-      expires_at: string;
-    }>(
-      `select id, tenant_id, building_id, active, expires_at
-         from public.kiosk_tokens
-        where token_hash = $1
-          and active = true
-          and expires_at > now()`,
-      [tokenHash],
-    );
+      kiosk_token_id: string;
+    } | null = null;
+    try {
+      row = await this.db.queryOne(
+        `select tenant_id, building_id, kiosk_token_id
+           from public.validate_kiosk_token($1)`,
+        [token],
+      );
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      // 45011 invalid / 45012 inactive / 45013 expired — all surface as 401.
+      if (code === '45011' || code === '45012' || code === '45013') {
+        throw new UnauthorizedException('Kiosk token invalid or expired');
+      }
+      throw err;
+    }
 
     if (!row) {
+      // Belt-and-braces: the function raises rather than returning empty,
+      // but if a future change makes it return-empty we still 401 instead
+      // of crashing on undefined.
       throw new UnauthorizedException('Kiosk token invalid or expired');
     }
 
     req.kioskContext = {
       tenantId: row.tenant_id,
       buildingId: row.building_id,
-      kioskTokenId: row.id,
+      kioskTokenId: row.kiosk_token_id,
     };
     return true;
   }
