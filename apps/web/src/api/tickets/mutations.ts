@@ -231,3 +231,66 @@ export function useUpdateWorkOrderSla(id: string) {
       ]),
   });
 }
+
+interface SetWorkOrderPlanContext {
+  previous: TicketDetail | undefined;
+}
+
+/**
+ * PATCH /work-orders/:id/plan — declare when a work_order is planned to
+ * start (and optionally for how long). Mirrors the legacy plandate hook
+ * but routes to the work-order surface; Step 1c.10c made the case-side
+ * `PATCH /tickets/:id/plan` case-only-by-data, so anything that's a
+ * work_order has to go through the WorkOrder controller.
+ *
+ * Cache shape is shared with TicketDetail (work_orders are loaded through
+ * the same ticket detail endpoint).
+ */
+type SetWorkOrderPlanResponse = Pick<TicketDetail, 'id'>;
+
+interface SetWorkOrderPlanPayload {
+  planned_start_at: string | null;
+  planned_duration_minutes?: number | null;
+}
+
+export function useSetWorkOrderPlan(id: string) {
+  const qc = useQueryClient();
+
+  return useMutation<SetWorkOrderPlanResponse, Error, SetWorkOrderPlanPayload, SetWorkOrderPlanContext>({
+    mutationFn: (payload) =>
+      apiFetch<SetWorkOrderPlanResponse>(`/work-orders/${id}/plan`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+
+    onMutate: async (payload) => {
+      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
+      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
+      if (previous) {
+        // Optimistically merge into the cached detail. Mirror the backend
+        // rule: clearing the start clears the duration too.
+        const nextDuration =
+          payload.planned_start_at === null
+            ? null
+            : (payload.planned_duration_minutes ?? null);
+        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
+          ...previous,
+          planned_start_at: payload.planned_start_at,
+          planned_duration_minutes: nextDuration,
+        } as TicketDetail);
+      }
+      return { previous };
+    },
+
+    onError: (_err, _payload, ctx) => {
+      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+    },
+
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
+        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
+        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
+      ]),
+  });
+}

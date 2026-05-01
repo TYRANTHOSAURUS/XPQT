@@ -113,3 +113,25 @@ export function usePrefetchTicket() {
     qc.prefetchQuery({ ...ticketActivitiesOptions(id), staleTime: 30_000 });
   };
 }
+
+/**
+ * GET /work-orders/:id/can-plan — small query the FE uses to hide or
+ * disable the plandate affordance without waiting for a 403. Returns
+ * `{ canPlan: boolean }`. Companion to useSetWorkOrderPlan.
+ *
+ * Cache key is anchored on the ticket detail so a detail invalidation
+ * also drops the canPlan answer (assignment changes can flip it).
+ */
+export function workOrderCanPlanOptions(id: string) {
+  return queryOptions({
+    queryKey: [...ticketKeys.detail(id), 'work-order-can-plan'] as const,
+    queryFn: ({ signal }) =>
+      apiFetch<{ canPlan: boolean }>(`/work-orders/${id}/can-plan`, { signal }),
+    staleTime: 60_000,
+    enabled: Boolean(id),
+  });
+}
+
+export function useCanPlanWorkOrder(id: string) {
+  return useQuery(workOrderCanPlanOptions(id));
+}
