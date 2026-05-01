@@ -129,3 +129,46 @@ SQL/TS code blocks, run a fresh-context adversarial review of the
 plan before kicking off implementation. The cost (one subagent
 turn) is much smaller than the cost of finding the drift after
 shipping.
+
+### Runtime ESM cycles slip past TypeScript + lint + build
+
+**What happened:** the design-review fix subagent extracted shared
+primitives during the polish pass. It moved `visitorKeys` (and a
+couple of small types) into a position where `index.ts` declared
+the factory AND `export *`'d submodules (`reception.ts`, `admin.ts`)
+that imported the factory back from `./index`. At runtime, the
+re-export evaluation order put the submodule load *before* the
+factory's declaration line, hitting `Cannot access 'visitorKeys'
+before initialization` at portal mount.
+
+**Why every gate missed it:**
+- `tsc` resolves the re-export at the type level — happy.
+- `vite build` produces a chunk where the cycle is statically
+  resolvable — happy.
+- ESLint has no rule for this without import/no-cycle and the
+  project doesn't run that rule.
+- The unit-test surface mocks the API layer, so the import graph
+  isn't exercised in tests.
+- The fix subagent's self-review checked semantics, not the
+  evaluation order of `export *` re-exports.
+
+**Lesson:** any time a refactor moves a `const`/`let`/`function`
+declaration out of a module that does `export * from './sibling'`
+AND the sibling imports that name from the parent, you have a
+runtime-only cycle. Build won't catch it; only loading the page
+will. Two defenses going forward:
+
+1. **Pattern rule:** when a module re-exports submodules with
+   `export * from './x'`, those submodules MUST NOT import any
+   named value from the parent. Submodules can either: (a) import
+   from a shared `keys.ts` / `types.ts` / `constants.ts` sibling
+   that the parent also imports from; or (b) only import types
+   (which are erased at runtime, so cycles don't matter).
+2. **Detection:** add `import/no-cycle` to ESLint config when
+   the next opportunity arises. It catches this pre-merge.
+
+**Reference fix:** commit `a6a9e95` extracted `visitorKeys` +
+`VisitorStatus` + `VisitorType` to
+`apps/web/src/api/visitors/keys.ts`. `index.ts` re-exports for
+back-compat; `reception.ts` and `admin.ts` now import directly
+from `./keys`. No more cycle.
