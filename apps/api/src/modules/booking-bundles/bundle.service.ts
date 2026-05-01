@@ -18,6 +18,7 @@ import {
   SetupWorkOrderTriggerService,
   type TriggerArgs,
 } from '../service-routing/setup-work-order-trigger.service';
+import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
@@ -86,6 +87,7 @@ export class BundleService {
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
     private readonly setupTrigger: SetupWorkOrderTriggerService,
+    private readonly eventBus: BundleEventBus,
   ) {}
 
   /**
@@ -687,6 +689,34 @@ export class BundleService {
       line_id: line.id,
       patch: update,
     });
+
+    // Slice 4: emit bundle.line.moved when the service window's start time
+    // shifted. v1 doesn't expose room changes through this path (the line's
+    // room is on the parent reservation; ReservationService.editOne handles
+    // that), so we only emit `bundle.line.moved` here.
+    //
+    // Visitor lines aren't order_line_items in v1 — the visitor adapter
+    // skips line_kind != 'visitor', so this emit is a no-op for visitors
+    // by design. We still resolve the catering/AV kind so downstream
+    // subscribers (future workstreams) can filter accurately.
+    //
+    // Resolve bundle_id by walking line → order → bundle. Skipped (no emit)
+    // if the line isn't bundle-attached.
+    if (oldStart && newStart && oldStart !== newStart) {
+      const bundleId = await this.bundleIdForOrder(line.order_id, tenantId);
+      if (bundleId) {
+        this.emitEvent({
+          kind: 'bundle.line.moved',
+          tenant_id: tenantId,
+          bundle_id: bundleId,
+          line_id: line.id,
+          line_kind: await this.lineKindForOli(line.id, tenantId),
+          old_expected_at: oldStart,
+          new_expected_at: newStart,
+          occurred_at: new Date().toISOString(),
+        });
+      }
+    }
 
     return {
       line_id: u.id,
@@ -1306,6 +1336,69 @@ export class BundleService {
     }
   }
 
+  /**
+   * Slice 4: best-effort emit. Subscribers run async; their failures are
+   * isolated by the bus subscription. We still wrap the synchronous
+   * `emit` in try/catch so a misbehaving sync subscriber can't bubble
+   * back into editLine after the DB write already landed.
+   */
+  private emitEvent(event: BundleEvent): void {
+    try {
+      this.eventBus.emit(event);
+    } catch (err) {
+      this.log.warn(
+        `bundle event emit failed for ${event.kind}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Resolve bundle_id from an order id with tenant defence. Returns null
+   * when the order isn't bundle-attached or doesn't exist; callers skip
+   * the emit in that case (no-op for non-bundle orders).
+   */
+  private async bundleIdForOrder(orderId: string, tenantId: string): Promise<string | null> {
+    try {
+      const { data } = await this.supabase.admin
+        .from('orders')
+        .select('booking_bundle_id')
+        .eq('id', orderId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      return ((data as { booking_bundle_id: string | null } | null)?.booking_bundle_id) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Map order_line_items.policy_snapshot.service_type to a BundleLineKind.
+   * Mirrors BundleCascadeService.lineKindForOli — kept in sync there.
+   * Visitors are not order_line_items in v1, so 'visitor' is never returned.
+   */
+  private async lineKindForOli(
+    oliId: string,
+    tenantId: string,
+  ): Promise<'visitor' | 'room' | 'catering' | 'av' | 'other'> {
+    try {
+      const { data } = await this.supabase.admin
+        .from('order_line_items')
+        .select('policy_snapshot')
+        .eq('id', oliId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      const snapshot = (data as { policy_snapshot: Record<string, unknown> | null } | null)
+        ?.policy_snapshot ?? null;
+      const serviceType = (snapshot && typeof snapshot === 'object'
+        ? (snapshot as { service_type?: string }).service_type
+        : null) ?? null;
+      if (serviceType === 'catering') return 'catering';
+      if (serviceType === 'av' || serviceType === 'audiovisual') return 'av';
+      return 'other';
+    } catch {
+      return 'other';
+    }
+  }
 }
 
 // ── Local types ───────────────────────────────────────────────────────────

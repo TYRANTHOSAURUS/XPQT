@@ -4,6 +4,7 @@ import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
 import { BookingNotificationsService } from '../reservations/booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
+import { VisitorService } from '../visitors/visitor.service';
 import type { Reservation } from '../reservations/dto/types';
 
 export interface ApprovalActor {
@@ -35,6 +36,12 @@ export class ApprovalService {
     private readonly bookingNotifications: BookingNotificationsService,
     @Inject(forwardRef(() => BundleService))
     private readonly bundleService: BundleService,
+    // VisitorService — slice 3 wiring for `target_entity_type='visitor_invite'`.
+    // forwardRef both at the module-import side and here at the constructor
+    // side because VisitorsModule already imports ApprovalModule (the
+    // InvitationService writes the approvals row at invite time).
+    @Inject(forwardRef(() => VisitorService))
+    private readonly visitorService: VisitorService,
   ) {}
 
   /**
@@ -336,6 +343,45 @@ export class ApprovalService {
         await this.handleBookingBundleApprovalDecided(approval, dto);
       } catch (err) {
         console.error('[approval] booking_bundle notification failed', err);
+      }
+    }
+
+    // For visitor invites (slice 3 — visitor management v1 §11.3):
+    // dispatch to VisitorService.onApprovalDecided which:
+    //   - on 'approved': transitions visitor pending_approval → expected
+    //     and emits visitor.invitation.expected so the slice 5 email worker
+    //     sends the invitation.
+    //   - on 'rejected': transitions visitor pending_approval → denied
+    //     and notifies the host(s) via HostNotificationService.
+    // v1 routes visitor approvals as single-step rows only (no parallel
+    // groups, no chains) — InvitationService.create writes one row per
+    // invite. If a future tenant configures multi-step or parallel
+    // visitor approvals, this branch will need the same all-resolved
+    // gate the booking_bundle branch uses.
+    if (approval.target_entity_type === 'visitor_invite') {
+      try {
+        // I13 (full review): require respondingUserId. The legacy fallback
+        // `respondingUserId ?? respondingPersonId` smuggled a person_id
+        // value into a user_id field — VisitorService.onApprovalDecided
+        // stores the value in `audit_events.details.actor_user_id`, so
+        // the fallback wrote a person uuid where the schema expects a
+        // user uuid. Better to fail fast: the controller always passes
+        // `actor.userId`; a missing value here is a real bug.
+        if (!respondingUserId) {
+          throw new BadRequestException(
+            'respondingUserId is required for visitor_invite approval dispatch',
+          );
+        }
+        await this.visitorService.onApprovalDecided(
+          approval.target_entity_id,
+          dto.status,
+          respondingUserId,
+          approval.tenant_id,
+        );
+      } catch (err) {
+        // Mirror the other dispatch branches — a downstream failure
+        // shouldn't roll back the approval grant. Logged for ops.
+        console.error('[approval] visitor_invite notification failed', err);
       }
     }
 

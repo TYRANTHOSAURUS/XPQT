@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import { BundleVisibilityService, type BundleVisibilityContext } from './bundle-visibility.service';
 
 /**
@@ -58,6 +59,7 @@ export class BundleCascadeService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly visibility: BundleVisibilityService,
+    private readonly eventBus: BundleEventBus,
   ) {}
 
   /**
@@ -100,6 +102,11 @@ export class BundleCascadeService {
         message: 'This line has been fulfilled and cannot be cancelled. Contact the fulfillment team.',
       });
     }
+
+    // Capture policy snapshot before mutating — needed for the bundle-event
+    // emission below. Looked up here (not via loadLine) to keep that helper
+    // narrow; Supabase round-trip cost is negligible vs. the cancel cascade.
+    const lineKind = await this.lineKindForOli(args.line_id, tenantId);
 
     // Cancel asset reservation, work-order ticket, then the line.
     const cascaded = { ticket_ids: [] as string[], asset_reservation_ids: [] as string[] };
@@ -172,6 +179,19 @@ export class BundleCascadeService {
       asset_reservation_ids: cascaded.asset_reservation_ids,
       closed_approval_ids: closedApprovalIds,
       reason: args.reason ?? null,
+    });
+
+    // Slice 4: notify cross-module subscribers (today: visitor cascade adapter
+    // in VisitorsModule). Emit AFTER all DB writes succeed; subscriber failures
+    // are absorbed inside BundleEventBus listeners — see bundle-cascade.adapter
+    // for the rationale.
+    this.emitEvent({
+      kind: 'bundle.line.cancelled',
+      tenant_id: tenantId,
+      bundle_id: line.bundle_id,
+      line_id: args.line_id,
+      line_kind: lineKind,
+      occurred_at: new Date().toISOString(),
     });
 
     return { line_id: args.line_id, cascaded, closed_approval_ids: closedApprovalIds };
@@ -341,6 +361,26 @@ export class BundleCascadeService {
       reason: args.reason ?? null,
       recurrence_scope: args.recurrence_scope ?? 'this',
     });
+
+    // Slice 4: emit cross-module event for the visitor cascade adapter.
+    // Skip when the cancel was scoped to a single recurrence occurrence
+    // (`reservation_id` set) AND nothing was actually cancelled — the cascade
+    // walked but everything was fulfilled/kept; nothing for downstream
+    // subscribers to react to. Otherwise emit so the visitors module can
+    // cancel/alert the linked visitor invites per spec §10.2.
+    const somethingCancelled =
+      cancelledLineIds.length > 0 ||
+      cancelledReservationIds.length > 0 ||
+      cancelledTicketIds.length > 0 ||
+      cancelledAssetReservationIds.length > 0;
+    if (somethingCancelled) {
+      this.emitEvent({
+        kind: 'bundle.cancelled',
+        tenant_id: tenantId,
+        bundle_id: args.bundle_id,
+        occurred_at: new Date().toISOString(),
+      });
+    }
 
     return {
       bundle_id: args.bundle_id,
@@ -537,6 +577,53 @@ export class BundleCascadeService {
       .update({ status: 'expired', responded_at: new Date().toISOString(), comments: 'Bundle cancelled; voiding approval' })
       .in('id', ids);
     return ids;
+  }
+
+  /**
+   * Best-effort emit. Subscriber failures are isolated by the bus; an
+   * unexpected throw (e.g. someone subscribed synchronously and threw)
+   * is logged but never propagated — cancelLine/cancelBundle have already
+   * mutated state, and re-throwing would mislead the caller into thinking
+   * the cancel itself failed.
+   */
+  private emitEvent(event: BundleEvent): void {
+    try {
+      this.eventBus.emit(event);
+    } catch (err) {
+      this.log.warn(
+        `bundle event emit failed for ${event.kind}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Map an order_line_items row to its bundle-event line_kind. Falls back to
+   * 'other' on lookup failure — emit shape is fixed, so an unknown kind is
+   * safer than dropping the event.
+   */
+  private async lineKindForOli(
+    oliId: string,
+    tenantId: string,
+  ): Promise<'visitor' | 'room' | 'catering' | 'av' | 'other'> {
+    try {
+      const { data } = await this.supabase.admin
+        .from('order_line_items')
+        .select('policy_snapshot')
+        .eq('id', oliId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      const snapshot = (data as { policy_snapshot: Record<string, unknown> | null } | null)
+        ?.policy_snapshot ?? null;
+      const serviceType = (snapshot && typeof snapshot === 'object'
+        ? (snapshot as { service_type?: string }).service_type
+        : null) ?? null;
+      if (serviceType === 'catering') return 'catering';
+      if (serviceType === 'av' || serviceType === 'audiovisual') return 'av';
+      // visitors aren't order_line_items in v1, so we never expect 'visitor' here.
+      return 'other';
+    } catch {
+      return 'other';
+    }
   }
 
   private async audit(

@@ -2,6 +2,30 @@ import type { RecurrenceRule } from '@/api/room-booking';
 import type { PickerSelection } from './service-picker-sheet';
 
 /**
+ * One pending visitor in the composer's "Visitors" section. These rows
+ * are NOT yet POSTed — the composer holds them in local state and only
+ * fires `POST /visitors/invitations` after the booking succeeds (so the
+ * invitation can carry the booking_bundle_id / reservation_id back).
+ *
+ * Unlike services, visitors don't merge into the reservation payload —
+ * they're a separate API surface. The composer's submit step iterates
+ * after the booking lands.
+ */
+export interface PendingVisitor {
+  /** Local-only key — used as React key + dedupe target. */
+  local_id: string;
+  first_name: string;
+  last_name?: string;
+  email: string;
+  phone?: string;
+  company?: string;
+  visitor_type_id: string;
+  co_host_person_ids?: string[];
+  notes_for_visitor?: string;
+  notes_for_reception?: string;
+}
+
+/**
  * Surfaces the composer can render in. The wrapper component picks the
  * variant; the composer itself renders the same sections regardless.
  *
@@ -60,6 +84,11 @@ export interface ComposerState {
   recurrence: RecurrenceRule | null;
   /** Service selections — same shape the ServicePickerSheet returns. */
   services: PickerSelection[];
+  /** Pending visitor invitations — created AFTER the booking lands so
+   *  each invitation can carry the booking_bundle_id / reservation_id
+   *  for cascade. The composer never POSTs these directly; the wrapper
+   *  iterates them in handleSubmit's post-success block. */
+  visitors: PendingVisitor[];
   /** Optional bundle metadata (template id, etc). */
   templateId: string | null;
   notes: string;
@@ -79,6 +108,9 @@ export type ComposerAction =
   | { type: 'SET_COST_CENTER'; costCenterId: string | null }
   | { type: 'SET_RECURRENCE'; rule: RecurrenceRule | null }
   | { type: 'SET_SERVICES'; services: PickerSelection[] }
+  | { type: 'ADD_VISITOR'; visitor: PendingVisitor }
+  | { type: 'UPDATE_VISITOR'; visitor: PendingVisitor }
+  | { type: 'REMOVE_VISITOR'; localId: string }
   | { type: 'SET_TEMPLATE_ID'; templateId: string | null }
   | { type: 'SET_NOTES'; notes: string }
   | { type: 'SET_ERROR'; key: string; message: string | null }
@@ -103,6 +135,7 @@ export interface InitialComposerState {
   costCenterId?: string | null;
   templateId?: string | null;
   services?: PickerSelection[];
+  visitors?: PendingVisitor[];
   recurrence?: import('@/api/room-booking').RecurrenceRule | null;
 }
 
@@ -119,6 +152,7 @@ export function initialState(seed: InitialComposerState = {}): ComposerState {
     costCenterId: seed.costCenterId ?? null,
     recurrence: seed.recurrence ?? null,
     services: seed.services ?? [],
+    visitors: seed.visitors ?? [],
     templateId: seed.templateId ?? null,
     notes: '',
     errors: {},
@@ -222,6 +256,30 @@ export function composerReducer(state: ComposerState, action: ComposerAction): C
     }
     case 'SET_SERVICES':
       return { ...state, services: action.services };
+    case 'ADD_VISITOR':
+      // Idempotent — if a visitor with the same local_id already exists,
+      // treat as an update (the form's edit path takes the existing local_id).
+      if (state.visitors.some((v) => v.local_id === action.visitor.local_id)) {
+        return {
+          ...state,
+          visitors: state.visitors.map((v) =>
+            v.local_id === action.visitor.local_id ? action.visitor : v,
+          ),
+        };
+      }
+      return { ...state, visitors: [...state.visitors, action.visitor] };
+    case 'UPDATE_VISITOR':
+      return {
+        ...state,
+        visitors: state.visitors.map((v) =>
+          v.local_id === action.visitor.local_id ? action.visitor : v,
+        ),
+      };
+    case 'REMOVE_VISITOR':
+      return {
+        ...state,
+        visitors: state.visitors.filter((v) => v.local_id !== action.localId),
+      };
     case 'SET_TEMPLATE_ID':
       return { ...state, templateId: action.templateId };
     case 'SET_NOTES':

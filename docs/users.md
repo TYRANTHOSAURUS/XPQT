@@ -334,10 +334,66 @@ Each persona uses this structure:
 
 ---
 
+## 9. Receptionist (Lobby Staff)
+
+**Role.** A reception or front-desk worker at a corporate HQ or office building. Their primary job during their shift is greeting visitors, checking them in, handing out passes/badges, notifying hosts, and managing the physical/digital flow at the lobby. May be a dedicated reception specialist, a security officer with reception duties, or a service-desk operator wearing the reception hat at smaller tenants. Often shares a single front-desk terminal across shifts.
+
+**Goals.**
+- Process every arriving visitor in the time it takes them to walk from the door to the desk.
+- Never miss a notification to a host. The host's first sign that their visitor arrived should not be the visitor calling them in frustration.
+- Keep accurate records — who's in the building right now, by name, with a host attached.
+- Handle peak-hour rushes (9am, 1pm post-lunch, all-staff event mornings) without losing composure.
+
+**Desires.**
+- A search field that finds Marleen by first letters of her name in under a second, without needing to type her last name or company.
+- A "quick add" for walk-ups that doesn't make them open a 12-field form. First name + host + go.
+- One place that shows: who's expected today, who's currently here, who left without checking out.
+- Permission to **backdate arrivals** when they're catching up on entries written down on a notepad during a rush. Their reality is messier than the digital model assumes.
+- A printable list at 7:30am of today's expected visitors (paper checklist alongside the digital screen — they trust paper for the rush).
+
+**Pain Points.**
+- Systems that demand they type a full name + email + company before they can mark a visitor "arrived". The visitor is standing in front of them.
+- Notifications to hosts that quietly fail. Reception finds out 20 minutes later when the visitor is still seated.
+- Having to switch between visitor management, ticketing, and security badge systems for one arrival.
+- Software that assumes reception staff have user accounts; in reality the front desk often has a shared terminal that no one personally logs into. (We're choosing real auth in v1 anyway, but we know this is a friction point.)
+- Bouncing between digital screens and paper sign-in books because the digital tool doesn't survive a 8-simultaneous-arrival rush.
+- Lost visitor passes that drain the pool over time with no reconciliation workflow.
+
+**Jobs to Be Done.**
+- "When 8 people arrive at the same time at 09:00, I want to mark them all arrived in the same minute it would take to greet each one verbally."
+- "When a courier walks in unannounced for 'someone in marketing', I want to find the right host without making the courier wait."
+- "When the reception is too busy to enter visitors live, I want to write them on paper and batch-enter at 11am with the actual arrival times preserved."
+- "When a visitor leaves without returning their pass, I want it flagged for tomorrow's shift so we don't bleed passes from the pool."
+- "When the host hasn't acknowledged their visitor in 5 minutes, I want to know so I can call them and reroute the visitor."
+- "When I print today's list, I want a real paper layout with names, hosts, and a sign-off column — not a screenshot of the screen."
+
+**Key Behaviors.**
+- **Under bandwidth pressure, batches entries.** This is the most-important observed pattern. When the lobby is crowded, reception writes visitor names on a notepad or scratch sheet, processes them into the digital system 30-60 minutes later when the rush passes. The system MUST support backdated arrival times (`arrived_at` settable, distinct from `logged_at`) and a fast quick-add form with form-clear-on-submit batch-entry mode. Treating this as a "system failure" is wrong; it's the resilient workflow that keeps reception from collapsing during peaks.
+- Will not navigate through nested menus during a rush. Reception's primary tool is a single-screen today-view with a search input that always has focus.
+- Greatly prefers keyboard-driven UX (arrow keys + Enter) over mouse-driven during peaks. Multi-tap-modal flows are a no.
+- Mentally tracks visitors by first name and rough arrival window — "Marleen, around 9:00, here for Jan." Search must match this fuzzy mental model.
+- Often the first to spot a no-show (host says "wasn't she supposed to come?"); needs a quick "mark no-show" action.
+- Treats unreturned passes seriously; the pool is finite physical inventory.
+- Often handles emergencies (medical event, fire alarm, lost child); needs the system to be ignorable in those moments — no modal that demands attention while reception is on a phone call to security.
+
+**Industry Context.**
+- Benelux corporate HQs: typical staffed reception 08:00-18:00; smaller offices have unstaffed reception with kiosk only.
+- Reception roles increasingly bundled with security or service-desk duties at smaller tenants.
+- Receptionists are often the unsung enforcer of GDPR at the lobby (they decide what visitor info goes on the lobby panel display, what gets shared with non-host employees).
+- Dutch BHV regulations make reception staff responsible for fire roll-call coordination — they need to know who's in the building when alarms go off.
+- Cultural norm in NL/BE: walk-ins are common in informal corporate culture, less common in security-conscious sectors (banking, pharma, defense).
+
+**Trends.**
+- Self-service kiosks reducing routine check-in load but increasing exception handling (visitor's QR doesn't scan, walk-ups, VIPs, disabled visitors).
+- Hybrid receptionist roles (reception + facilities + security + concierge) becoming common at mid-sized tenants.
+- Receptionist UX research consistently shows that "speed at the desk" beats every other UX metric. A 5-second delay during a rush is a 1-minute backup.
+- Increasing demand for reception-tool features that survive offline (network drop at 9am rush is unforgiving).
+
+---
+
 ## Connected roles (not full personas)
 
 - **Host** — the employee receiving a Visitor. Mostly experiences the product as a notification + a "your visitor arrived" moment. Important *touchpoint* but few unique JTBD beyond what's covered by *Requester*.
-- **Reception / Lobby Staff** — see the live lobby panel. Covered by *Service Desk Operator* in small tenants; may deserve their own persona once kiosk + lobby panel ship widely.
 - **Desk Scheduler Power User** — books rooms for execs, runs logistics for events. Subset of *Requester* with *Facilities Admin* tendencies. Promote to its own persona if/when its workflows diverge.
 
 ---
@@ -345,3 +401,4 @@ Each persona uses this structure:
 ## Changelog
 
 - 2026-04-30: Initial seed. 8 personas drafted from project memory and the existing spec docs (`competitive-benchmark.md`, `booking-platform-roadmap.md`, the 9 specs under `docs/superpowers/specs/`). No web research yet — all sourced from internal knowledge. First reviews should sanity-check personas 6–7 (vendor / internal team) since those drive the largest design decisions.
+- 2026-05-01: Promoted **Receptionist (Lobby Staff)** to its own full persona (was a connected-roles stub). Driven by `2026-05-01-visitor-management-v1-design.md` decision to ship a dedicated `/reception/*` workspace and the UX research finding that receptionists batch-process entries during peak rushes — a workflow pattern the design must accommodate (backdated arrivals, fast quick-add, clear-on-submit batch entry).

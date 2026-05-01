@@ -8,6 +8,7 @@ import { ReservationVisibilityService } from './reservation-visibility.service';
 import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
+import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
 import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
 
 /**
@@ -29,6 +30,7 @@ export class ReservationService {
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
     @Optional() private readonly bundleCascade?: BundleCascadeService,
+    @Optional() private readonly bundleEventBus?: BundleEventBus,
   ) {}
 
   // === Reads ===
@@ -540,6 +542,103 @@ export class ReservationService {
         details: { reservation_id: id, patch: next },
       });
     } catch { /* best-effort */ }
+
+    // Slice 4: emit bundle-cascade events for any visitors linked to the
+    // bundle that owns this reservation. The visitor adapter (in
+    // VisitorsModule) translates each per-visitor event into the right
+    // status/email/host-alert action per spec §10.2.
+    //
+    // Fired AFTER the DB update succeeds + audit landed. Visitors are
+    // resolved via `visitors.booking_bundle_id`, the canonical link added in
+    // 00252. We emit one event per visitor with line_id=visitor.id +
+    // line_kind='visitor' so the adapter can handle each row individually
+    // (status-aware cascade matrix).
+    //
+    // Visibility: ReservationService.editOne already passed assertVisible +
+    // canEdit checks above. Tenant-id is on the BundleEvent payload so the
+    // adapter defends explicitly.
+    const movedTime = patch.start_at && patch.start_at !== r.start_at;
+    const changedRoom = patch.space_id && patch.space_id !== r.space_id;
+    if ((movedTime || changedRoom) && r.booking_bundle_id && this.bundleEventBus) {
+      await this.emitVisitorCascadeForBundle({
+        tenantId,
+        bundleId: r.booking_bundle_id,
+        oldStartAt: movedTime ? r.start_at : null,
+        newStartAt: movedTime ? (updated.start_at ?? patch.start_at!) : null,
+        oldSpaceId: changedRoom ? r.space_id : null,
+        newSpaceId: changedRoom ? (updated.space_id ?? patch.space_id!) : null,
+      });
+    }
+
     return updated;
+  }
+
+  /**
+   * Slice 4 helper — fan out bundle-cascade events to visitor adapter for a
+   * bundle whose primary reservation just changed.
+   *
+   * Walks `visitors.booking_bundle_id`, emits one event per visitor with
+   * line_kind='visitor' so the adapter's status-aware matrix can decide
+   * cancel/email/alert per row.
+   *
+   * Best-effort: a query failure logs + returns; the reservation edit has
+   * already succeeded and we don't want a downstream event hiccup to
+   * masquerade as an edit failure.
+   */
+  private async emitVisitorCascadeForBundle(args: {
+    tenantId: string;
+    bundleId: string;
+    oldStartAt: string | null;
+    newStartAt: string | null;
+    oldSpaceId: string | null;
+    newSpaceId: string | null;
+  }): Promise<void> {
+    if (!this.bundleEventBus) return;
+    try {
+      const { data, error } = await this.supabase.admin
+        .from('visitors')
+        .select('id')
+        .eq('tenant_id', args.tenantId)
+        .eq('booking_bundle_id', args.bundleId);
+      if (error) {
+        this.log.warn(
+          `visitor cascade lookup failed for bundle ${args.bundleId}: ${error.message}`,
+        );
+        return;
+      }
+      const visitorIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
+      const now = new Date().toISOString();
+
+      for (const vid of visitorIds) {
+        if (args.newStartAt && args.newStartAt !== args.oldStartAt) {
+          this.bundleEventBus.emit({
+            kind: 'bundle.line.moved',
+            tenant_id: args.tenantId,
+            bundle_id: args.bundleId,
+            line_id: vid,
+            line_kind: 'visitor',
+            old_expected_at: args.oldStartAt,
+            new_expected_at: args.newStartAt,
+            occurred_at: now,
+          });
+        }
+        if (args.newSpaceId && args.newSpaceId !== args.oldSpaceId) {
+          this.bundleEventBus.emit({
+            kind: 'bundle.line.room_changed',
+            tenant_id: args.tenantId,
+            bundle_id: args.bundleId,
+            line_id: vid,
+            line_kind: 'visitor',
+            old_room_id: args.oldSpaceId,
+            new_room_id: args.newSpaceId,
+            occurred_at: now,
+          });
+        }
+      }
+    } catch (err) {
+      this.log.warn(
+        `visitor cascade emit failed for bundle ${args.bundleId}: ${(err as Error).message}`,
+      );
+    }
   }
 }
