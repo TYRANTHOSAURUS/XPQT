@@ -826,6 +826,17 @@ Hooks live in `BundleService.maybeCreateSetupWorkOrder()` (bundle-attached path)
 
 When an order line cancels, any non-terminal work order linked via `tickets.linked_order_line_item_id` is closed (`status_category='closed'`, `closed_at` set). Implemented in `BundleCascadeService.cancelLine()` and `cancelBundleImpl()`. Whitelist of non-terminal states: `new | assigned | in_progress | waiting`. Already-terminal tickets are not re-stamped.
 
+### Cross-module cascade events (BundleEventBus)
+
+`BundleCascadeService` and `BundleService` also emit domain events on the in-process `BundleEventBus` (`apps/api/src/modules/booking-bundles/bundle-event-bus.ts`) for cross-module subscribers — today only `VisitorsModule.BundleCascadeAdapter`, but extensible. Emit points fire AFTER the DB mutations return successfully:
+
+- `BundleCascadeService.cancelLine()` → `bundle.line.cancelled` (line_id, line_kind from policy_snapshot.service_type, bundle_id, tenant_id, occurred_at).
+- `BundleCascadeService.cancelBundle()` → `bundle.cancelled` (bundle_id, tenant_id) — emitted only when the cascade actually cancelled something (skipped when every line was fulfilled/kept).
+- `BundleService.editLine()` → `bundle.line.moved` (line_id, line_kind, old/new expected_at) when `service_window_start_at` changes on a bundle-attached line.
+- `ReservationService.editOne()` → `bundle.line.moved` and/or `bundle.line.room_changed` per visitor on the bundle (line_kind='visitor', line_id=visitors.id) when a bundle-linked reservation moves time or changes room. Spec §10.2 cascade matrix lives in `VisitorsModule.BundleCascadeAdapter`; the emitter doesn't know about visitor status.
+
+Subscribers wrap their handlers in `.catch()` (canonical pattern: `bundle-cascade.adapter.ts` line 71-82); the bus is single-process for v1 and will swap to Postgres LISTEN/NOTIFY when we go multi-instance.
+
 ### Audit events (emitted by `SetupWorkOrderTriggerService` on `audit_events`)
 
 Naming pattern: `{originSurface}.{outcome}` where originSurface is `bundle` (bundled-services path) or `order` (standalone-order path). Both surfaces emit the same outcome events so cross-source queries don't have to UNION two taxonomies.
