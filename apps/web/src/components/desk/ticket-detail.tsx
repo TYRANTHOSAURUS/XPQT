@@ -44,6 +44,8 @@ import {
   useReassignTicket,
   useReassignWorkOrder,
   useAddActivity,
+  useSetWorkOrderPlan,
+  useCanPlanWorkOrder,
   type UpdateTicketPayload,
 } from '@/api/tickets';
 import { useTeams } from '@/api/teams';
@@ -68,6 +70,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { TicketActivityFeed } from '@/components/desk/ticket-activity-feed';
 import { TicketSlaEscalations } from '@/components/desk/ticket-sla-escalations';
+import { PlanField } from '@/components/desk/plan-field';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 import { formatTicketRef } from '@/lib/format-ref';
 import { MultiSelectPicker } from '@/components/desk/editors/multi-select-picker';
@@ -315,23 +318,41 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
   const updateTicket = useUpdateTicket(ticketId);
   const updateWorkOrderSla = useUpdateWorkOrderSla(ticketId);
-  // Slice 2: TicketService.update / reassign are case-only post-1c.10c. The
-  // four hooks below are the work-order-side counterparts of useUpdateTicket
-  // / useReassignTicket. Dispatch happens inside `patch()` and
+  // Slice 2: TicketService.update is case-only post-1c.10c. The four hooks
+  // below are the work-order-side counterparts of useUpdateTicket /
+  // useReassignTicket. The dispatch happens inside `patch()` and
   // `updateAssignment()` based on `displayedTicket.ticket_kind`.
   const updateWorkOrderStatus = useUpdateWorkOrderStatus(ticketId);
   const updateWorkOrderPriority = useUpdateWorkOrderPriority(ticketId);
   const updateWorkOrderAssignment = useUpdateWorkOrderAssignment(ticketId);
   const reassignTicket = useReassignTicket(ticketId);
   const reassignWorkOrder = useReassignWorkOrder(ticketId);
+  const setPlan = useSetWorkOrderPlan(ticketId);
+  const { data: canPlanResp } = useCanPlanWorkOrder(ticketId);
+  const canPlan = !!canPlanResp?.canPlan;
+
+  const handlePlanChange = (next: { startsAt: string | null; durationMinutes: number | null }) => {
+    setPlan.mutate(
+      {
+        planned_start_at: next.startsAt,
+        planned_duration_minutes: next.durationMinutes,
+      },
+      {
+        onError: (err) =>
+          toastError("Couldn't update plan", {
+            error: err,
+            retry: () => handlePlanChange(next),
+          }),
+      },
+    );
+  };
 
   // Slice 2 dispatch.
   // Cases → PATCH /tickets/:id (single endpoint, all fields).
-  // Work orders → split per category to the `/work-orders/:id/*` endpoints.
+  // Work orders → split per category to the new `/work-orders/:id/*` endpoints.
   // Fields not yet covered by a work-order endpoint (cost / tags / watchers
-  // / title / description) silently no-op for work_orders today — those are
-  // Slice 3 deferred items. sla_id has its own dedicated hook
-  // (useUpdateWorkOrderSla) wired separately in the SLA SidebarGroup.
+  // / title / description) still go through `updateTicket.mutate` for cases
+  // and silently no-op for work_orders — those are Slice 3 deferred items.
   const patch = (updates: Partial<UpdateTicketPayload>) => {
     if (displayedTicket?.ticket_kind === 'work_order') {
       patchWorkOrder(updates);
@@ -391,8 +412,9 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
           }),
       });
     }
-    // Slice 3 deferred: cost, tags, watchers, title, description on
-    // work_orders. They silently no-op here today.
+    // Slice 3 deferred: cost, tags, watchers, title, description, sla_id
+    // on work_orders. sla_id has its own dedicated hook (useUpdateWorkOrderSla)
+    // already wired below; the rest still silently no-op for work_orders here.
   };
 
   type AssignmentTarget = {
@@ -1117,6 +1139,22 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
             />
           </InlineProperty>
           </SidebarGroup>
+
+          {displayedTicket!.ticket_kind === 'work_order' && (
+            <SidebarGroup title="Plan">
+              <InlineProperty label="Planned start">
+                <PlanField
+                  value={{
+                    startsAt: displayedTicket!.planned_start_at ?? null,
+                    durationMinutes: displayedTicket!.planned_duration_minutes ?? null,
+                  }}
+                  onChange={handlePlanChange}
+                  disabled={!canPlan}
+                  dueAt={displayedTicket!.sla_resolution_due_at}
+                />
+              </InlineProperty>
+            </SidebarGroup>
+          )}
 
           <SidebarGroup title="SLA">
             {displayedTicket!.ticket_kind === 'work_order' && (

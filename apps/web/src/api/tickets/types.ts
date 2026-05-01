@@ -43,6 +43,8 @@ export interface TicketDetail {
   sla_resolution_due_at: string | null;
   sla_response_breached_at: string | null;
   sla_resolution_breached_at: string | null;
+  planned_start_at: string | null;
+  planned_duration_minutes: number | null;
   created_at: string;
   requester?: TicketRequester;
   location?: TicketLocation;
@@ -108,4 +110,11 @@ export interface ReassignVariables {
   previousLabel: string | null;
   reason?: string;
   actorPersonId?: string;
+}
+
+export interface SetPlanPayload {
+  /** ISO timestamp, or null to clear the plan. */
+  planned_start_at: string | null;
+  /** Optional duration. Cleared automatically when planned_start_at is null. */
+  planned_duration_minutes?: number | null;
 }

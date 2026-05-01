@@ -49,6 +49,7 @@ A user can read a ticket if **any** tier matches. Can write if participant or (n
 | `loadContext(authUid, tenantId)` | Resolves the Supabase auth uid → full `VisibilityContext` (user_id, person_id, teams, roles with expanded location closure, permissions). Call once per request. |
 | `getVisibleIds(ctx)` | Returns `string[] | null` — the list of visible ticket ids, or `null` if the user has `tickets:read_all` (meaning: no filter). **Avoid for set-based reads** — prefer `tickets_visible_for_actor` (§3) so the predicate stays in SQL. Still available for paths that genuinely need the id list in TS (counts, dedup against another set). |
 | `assertVisible(ticketId, ctx, mode)` | Loads the ticket and evaluates paths. `mode = 'read'` or `'write'`. Throws `ForbiddenException` on denial. Called by every per-ticket endpoint (detail, PATCH, reassign, dispatch, addActivity, attachments). |
+| `assertCanPlan(ticketId, ctx)` | Narrower than write. Allows: WO assignee, assigned vendor, member of the WO's or parent case's `assigned_team_id`, role operator with non-readonly write scope, or `tickets.write_all`. **Excludes** requester, watcher, and readonly cross-domain roles. Used by `PATCH /tickets/:id/plan` (plandate) and exposed read-only via `GET /tickets/:id/can-plan` so the UI can gate the affordance. |
 | `trace(ticketId, ctx)` | Explainer for the debug endpoint. |
 
 ## 5. Debug recipe

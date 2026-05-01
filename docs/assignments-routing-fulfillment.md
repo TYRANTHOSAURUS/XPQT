@@ -431,6 +431,67 @@ Until a scope-rerouting flow is built, these fields remain read-only in the UI. 
 
 ---
 
+## 8c. Plandate — assignee-side scheduling
+
+The plandate is **when the assignee plans to do the work**. It is deliberately distinct from the SLA fields and the actual completion timestamp:
+
+| Field | Owns | Set by | Meaning |
+|---|---|---|---|
+| `sla_resolution_due_at` | SLA engine | `SlaService.startTimers` (creation/dispatch) | Customer commitment / deadline. |
+| `planned_start_at` | Assignee / case team | `PATCH /tickets/:id/plan` | When work is planned to start. |
+| `planned_duration_minutes` | Assignee / case team | `PATCH /tickets/:id/plan` | Optional duration. Used by the planning board to draw spans rather than points. |
+| `resolved_at` | Workflow / status | `update` when `status_category → 'resolved'` | When the work actually finished. |
+
+Three things are true at once and they should not be conflated: the deadline (SLA), the plan (intent), and the actual outcome (resolved). A plan **after** the deadline is a red flag the planning board surfaces; it does not break SLA on its own.
+
+### Schema (migration `00206`)
+
+```sql
+alter table public.tickets
+  add column planned_start_at timestamptz,
+  add column planned_duration_minutes integer
+  check (planned_duration_minutes is null or planned_duration_minutes > 0);
+
+create index idx_tickets_planned
+  on public.tickets (tenant_id, planned_start_at)
+  where planned_start_at is not null;
+-- + per-assignee/vendor/team partial indexes for resource-calendar lanes
+```
+
+### Endpoint — `PATCH /tickets/:id/plan`
+
+Body:
+```json
+{
+  "planned_start_at": "2026-05-04T13:00:00.000Z",   // or null to clear
+  "planned_duration_minutes": 90                     // optional
+}
+```
+
+Behavior:
+- Validates that `planned_start_at` is a valid ISO timestamp and `planned_duration_minutes` (when present) is a positive integer.
+- Clearing the start clears the duration too — duration without a start is meaningless.
+- Always emits a `system_event` activity with `metadata.event = 'plan_changed'` and `previous` / `next` payload, so the timeline carries the audit trail. Reasons / context for a plan change live in regular ticket comments — there is no separate `note` field; the existing activity feed is the audit channel.
+- Logs a `ticket_plan_changed` domain event for downstream consumers (workflow, future planning-board cache).
+
+### Permission gate — `TicketVisibilityService.assertCanPlan`
+
+Narrower than the write gate. Allowed paths:
+
+1. WO `assigned_user_id` matches the actor.
+2. WO `assigned_vendor_id` matches the actor's vendor membership.
+3. Actor is a team member of either the WO's `assigned_team_id` **or** the parent case's `assigned_team_id` (case-level "ownership").
+4. Actor has a non-readonly role assignment whose `domain_scope` and `location_scope_closure` match the ticket.
+5. Actor has the `tickets.write_all` override.
+
+Explicitly **excluded**: requesters, watchers, and readonly cross-domain roles. The assistant who makes the request shouldn't declare when it's done; the watcher who's just monitoring shouldn't either. A small `GET /tickets/:id/can-plan` returns `{ canPlan: boolean }` so the UI can hide the affordance without a 403.
+
+### Today: manual entry only
+
+There is no generator for plandate yet. Setting it is always a deliberate edit by a service-desk operator, the assignee, or the assigned vendor on the WO detail. A future preventive-maintenance feature will populate `planned_start_at` automatically when a maintenance plan spawns a WO; the field, endpoint, and gate above are designed to compose with that without modification.
+
+---
+
 ## 9. Audit — `routing_decisions`
 
 Every resolver run that goes through `RoutingService.recordDecision` writes one row:

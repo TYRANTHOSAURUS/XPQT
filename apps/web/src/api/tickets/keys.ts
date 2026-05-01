@@ -47,6 +47,7 @@ export const ticketKeys = {
   activities: (id: string) => [...ticketKeys.detail(id), 'activities'] as const,
   children: (id: string) => [...ticketKeys.detail(id), 'children'] as const,
   approvals: (id: string) => [...ticketKeys.detail(id), 'approvals'] as const,
+  canPlan: (id: string) => [...ticketKeys.detail(id), 'can-plan'] as const,
 
   reclassifyPreview: (id: string, nextRequestTypeId: string) =>
     [...ticketKeys.detail(id), 'reclassify-preview', nextRequestTypeId] as const,

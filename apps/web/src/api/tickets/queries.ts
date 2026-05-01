@@ -38,6 +38,19 @@ export function useTicketActivities(id: string) {
   return useQuery(ticketActivitiesOptions(id));
 }
 
+export function ticketCanPlanOptions(id: string) {
+  return queryOptions({
+    queryKey: ticketKeys.canPlan(id),
+    queryFn: ({ signal }) => apiFetch<{ canPlan: boolean }>(`/tickets/${id}/can-plan`, { signal }),
+    staleTime: 60_000,
+    enabled: Boolean(id),
+  });
+}
+
+export function useCanPlanTicket(id: string) {
+  return useQuery(ticketCanPlanOptions(id));
+}
+
 export function ticketTagSuggestionsOptions() {
   return queryOptions({
     queryKey: ticketKeys.tagSuggestions(),
@@ -115,16 +128,19 @@ export function usePrefetchTicket() {
 }
 
 /**
- * GET /work-orders/:id/can-plan — small query the FE uses to hide or
- * disable the plandate affordance without waiting for a 403. Returns
- * `{ canPlan: boolean }`. Companion to useSetWorkOrderPlan.
+ * Probe `/work-orders/:id/can-plan` so the desk can disable the plandate
+ * affordance instead of waiting for a 403 round-trip. Mirrors
+ * `useCanPlanTicket` but routes to the work-order command surface — the Plan
+ * SidebarGroup only renders for `ticket_kind === 'work_order'`, so this is
+ * the live path for plandate gating.
  *
- * Cache key is anchored on the ticket detail so a detail invalidation
- * also drops the canPlan answer (assignment changes can flip it).
+ * Reuses the same `ticketKeys.canPlan(id)` cache key as the legacy hook
+ * (the row id is unique across cases + work_orders, and the response shape
+ * `{ canPlan }` is identical).
  */
 export function workOrderCanPlanOptions(id: string) {
   return queryOptions({
-    queryKey: [...ticketKeys.detail(id), 'work-order-can-plan'] as const,
+    queryKey: ticketKeys.canPlan(id),
     queryFn: ({ signal }) =>
       apiFetch<{ canPlan: boolean }>(`/work-orders/${id}/can-plan`, { signal }),
     staleTime: 60_000,
