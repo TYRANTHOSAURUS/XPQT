@@ -89,8 +89,12 @@ export function ReceptionDaglijstPage() {
         </div>
       </div>
 
-      {/* The printable sheet itself. Stays on screen as a preview. */}
-      <div className="mx-auto max-w-3xl bg-white px-6 pb-12 print:max-w-none print:px-0 print:pb-0">
+      {/* The printable sheet itself. Stays on screen as a preview.
+           [color-scheme:light] forces a light-mode rendering inside the
+           sheet even when the rest of the app is in dark mode — without
+           it dark-mode users see white-on-near-black text in the preview,
+           which doesn't match the printed page. */}
+      <div className="mx-auto max-w-3xl bg-white px-6 pb-12 print:max-w-none print:px-0 print:pb-0 [color-scheme:light]">
         <div className="rounded-lg border bg-white p-8 print:rounded-none print:border-0 print:p-0">
           <header className="mb-6 border-b border-black pb-3 print:mb-4">
             <div className="flex items-end justify-between">
