@@ -47,7 +47,7 @@ import {
   type VisitorType,
 } from '@/api/visitors';
 import { useSpaces } from '@/api/spaces';
-import { PersonPicker } from '@/components/person-picker';
+import { PersonPicker, type Person } from '@/components/person-picker';
 import { toastError } from '@/lib/toast';
 
 // ─── Props ─────────────────────────────────────────────────────────────────
@@ -176,9 +176,19 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
   const [expectedAt, setExpectedAt] = useState<string>(defaults?.expected_at ?? defaultExpectedAt());
   const [expectedUntil, setExpectedUntil] = useState<string>('');
   const [buildingId, setBuildingId] = useState<string>(defaults?.building_id ?? '');
-  const [meetingRoomId, setMeetingRoomId] = useState<string>(defaults?.meeting_room_id ?? '');
-  const [coHostIds, setCoHostIds] = useState<string[]>(initial?.co_host_person_ids ?? []);
+  // v1: meeting room is auto-inherited from the parent booking in composer
+  // mode and not asked for in standalone mode (the freeform UUID input was
+  // user-hostile). v2 will reintroduce a proper room picker bound to the
+  // selected building.
+  const meetingRoomId = defaults?.meeting_room_id ?? '';
+  // Co-hosts are kept locally as {id, label} so the chips can render the
+  // person's name without re-querying. We project to ids on submit because
+  // the API contract is `co_host_person_ids: string[]`.
+  const [coHosts, setCoHosts] = useState<Array<{ id: string; label: string }>>(
+    initial?.co_host_person_ids?.map((id) => ({ id, label: id })) ?? [],
+  );
   const [coHostDraft, setCoHostDraft] = useState<string>('');
+  const [coHostDraftPerson, setCoHostDraftPerson] = useState<Person | null>(null);
   const [notesForVisitor, setNotesForVisitor] = useState(initial?.notes_for_visitor ?? '');
   const [notesForReception, setNotesForReception] = useState(initial?.notes_for_reception ?? '');
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -240,6 +250,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
     });
     if (!canSubmit) return;
 
+    const coHostIds = coHosts.map((c) => c.id);
     const captured: CapturedVisitorValues = {
       first_name: firstName.trim(),
       last_name: lastName.trim() || undefined,
@@ -299,13 +310,19 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
   };
 
   const handleAddCoHost = () => {
-    if (!coHostDraft || coHostIds.includes(coHostDraft)) return;
-    setCoHostIds((prev) => [...prev, coHostDraft]);
+    if (!coHostDraft || coHosts.some((c) => c.id === coHostDraft)) return;
+    const label = coHostDraftPerson
+      ? `${coHostDraftPerson.first_name ?? ''} ${coHostDraftPerson.last_name ?? ''}`.trim() ||
+        coHostDraftPerson.email ||
+        coHostDraft
+      : coHostDraft;
+    setCoHosts((prev) => [...prev, { id: coHostDraft, label }]);
     setCoHostDraft('');
+    setCoHostDraftPerson(null);
   };
 
   const handleRemoveCoHost = (id: string) => {
-    setCoHostIds((prev) => prev.filter((p) => p !== id));
+    setCoHosts((prev) => prev.filter((p) => p.id !== id));
   };
 
   // ─── Render ─────────────────────────────────────────────────────────────
@@ -358,6 +375,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             <Input
               id="visitor-email"
               type="email"
+              inputMode="email"
               autoComplete="off"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -375,6 +393,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             <Input
               id="visitor-phone"
               type="tel"
+              inputMode="tel"
               autoComplete="off"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -494,18 +513,11 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
                 )}
               </Field>
 
-              <Field>
-                <FieldLabel htmlFor="visitor-meeting-room">Meeting room</FieldLabel>
-                <Input
-                  id="visitor-meeting-room"
-                  placeholder="Optional — paste a room id if relevant"
-                  value={meetingRoomId}
-                  onChange={(e) => setMeetingRoomId(e.target.value)}
-                />
-                <FieldDescription>
-                  Optional — leave empty if reception will direct the visitor.
-                </FieldDescription>
-              </Field>
+              {/* v1: meeting room is intentionally not a freeform input here.
+                   In composer mode the room is auto-inherited from the
+                   parent booking via `defaults.meeting_room_id`. v2 will
+                   bring a proper room picker for standalone invites; until
+                   then reception directs the visitor on arrival. */}
             </FieldSet>
           </>
         )}
@@ -518,18 +530,18 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             Add coworkers who should also be notified when the visitor arrives.
           </FieldDescription>
 
-          {coHostIds.length > 0 && (
+          {coHosts.length > 0 && (
             <ul className="flex flex-wrap gap-2" aria-label="Selected co-hosts">
-              {coHostIds.map((id) => (
+              {coHosts.map((c) => (
                 <li
-                  key={id}
+                  key={c.id}
                   className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs"
                 >
-                  <span className="tabular-nums text-muted-foreground">{id.slice(0, 8)}…</span>
+                  <span>{c.label}</span>
                   <button
                     type="button"
-                    onClick={() => handleRemoveCoHost(id)}
-                    aria-label={`Remove co-host ${id}`}
+                    onClick={() => handleRemoveCoHost(c.id)}
+                    aria-label={`Remove co-host ${c.label}`}
                     className="-mr-0.5 text-muted-foreground hover:text-foreground"
                   >
                     <X className="size-3" aria-hidden />
@@ -546,6 +558,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
                 <PersonPicker
                   value={coHostDraft}
                   onChange={setCoHostDraft}
+                  onSelect={(p) => setCoHostDraftPerson(p)}
                   placeholder="Search by name or email…"
                 />
               </div>
@@ -554,7 +567,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
                 variant="outline"
                 size="sm"
                 onClick={handleAddCoHost}
-                disabled={!coHostDraft || coHostIds.includes(coHostDraft)}
+                disabled={!coHostDraft || coHosts.some((c) => c.id === coHostDraft)}
               >
                 Add
               </Button>

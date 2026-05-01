@@ -52,10 +52,17 @@ export interface VisitorsSectionProps {
   onRemove: (localId: string) => void;
 }
 
-let LOCAL_VISITOR_SEQ = 0;
+/** Local-only id for a pending visitor before the composer flushes it to
+ *  the backend (which then assigns the real UUID). Using crypto.randomUUID
+ *  avoids collisions when two composers are open in the same tab —
+ *  important because React keys + local-state lookups depend on these. */
 function nextLocalId(): string {
-  LOCAL_VISITOR_SEQ += 1;
-  return `pv_${Date.now()}_${LOCAL_VISITOR_SEQ}`;
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `pv_${crypto.randomUUID()}`;
+  }
+  // Fallback for very old browsers — composer usage requires modern UAs
+  // anyway; this only protects against test/SSR paths without crypto.
+  return `pv_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function capturedFromPending(p: PendingVisitor): CapturedVisitorValues {
