@@ -23,28 +23,12 @@
  */
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { visitorKeys, type VisitorStatus, type VisitorType } from './keys';
 
-// ─── Types ─────────────────────────────────────────────────────────────────
-
-export type VisitorStatus =
-  | 'pending_approval'
-  | 'expected'
-  | 'arrived'
-  | 'in_meeting'
-  | 'checked_out'
-  | 'no_show'
-  | 'cancelled';
-
-export interface VisitorType {
-  id: string;
-  type_key: string;
-  display_name: string;
-  description?: string | null;
-  requires_approval?: boolean;
-  allow_walk_up?: boolean;
-  default_expected_until_offset_minutes?: number;
-  active?: boolean;
-}
+// Re-export the shared keys + types so existing `import { visitorKeys } from
+// '@/api/visitors'` callers keep working. The factory itself lives in
+// `./keys` to avoid the index↔reception/admin runtime cycle.
+export { visitorKeys, type VisitorStatus, type VisitorType };
 
 /** Default tenant types seeded by migration 00257.
  *
@@ -175,20 +159,10 @@ export interface VisitorDetail {
   visitor_pass_id: string | null;
 }
 
-// ─── Key factory ───────────────────────────────────────────────────────────
-
-export const visitorKeys = {
-  all: ['visitors'] as const,
-  lists: () => [...visitorKeys.all, 'list'] as const,
-  list: (filters: Record<string, unknown>) => [...visitorKeys.lists(), filters] as const,
-  details: () => [...visitorKeys.all, 'detail'] as const,
-  detail: (id: string) => [...visitorKeys.details(), id] as const,
-  /** Host's "my upcoming visitors" — distinct from a generic list because
-   *  the server filters by visitor_hosts membership, not by query params. */
-  expected: () => [...visitorKeys.all, 'expected'] as const,
-  /** Visitor types lookup — admin-gated for now; cache aggressively. */
-  types: () => [...visitorKeys.all, 'types'] as const,
-} as const;
+// Key factory + shared types live in `./keys` (re-exported above).
+// Putting them there breaks the runtime cycle between this module's
+// `export * from './reception' | './admin'` and those modules' value
+// imports of `visitorKeys`.
 
 // ─── Query options ─────────────────────────────────────────────────────────
 

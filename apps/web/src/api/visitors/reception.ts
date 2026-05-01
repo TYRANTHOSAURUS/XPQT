@@ -24,7 +24,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { visitorKeys, type VisitorStatus } from './index';
+import { visitorKeys, type VisitorStatus } from './keys';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 

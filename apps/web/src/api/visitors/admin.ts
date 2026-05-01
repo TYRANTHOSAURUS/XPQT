@@ -20,7 +20,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { visitorKeys, type VisitorType } from './index';
+import { visitorKeys, type VisitorType } from './keys';
 import type { ReceptionPass } from './reception';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
