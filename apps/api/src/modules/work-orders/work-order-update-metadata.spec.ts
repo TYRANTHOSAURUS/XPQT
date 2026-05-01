@@ -404,6 +404,82 @@ describe('WorkOrderService.updateMetadata', () => {
     expect(deps.visibility.assertCanPlan).not.toHaveBeenCalled();
   });
 
+  // ── service-layer guards (full-review hardening) ──────────────────
+
+  it('rejects empty title (whitespace only) at the service layer', async () => {
+    // Controller catches this too, but internal callers (workflow engine,
+    // cron, SYSTEM_ACTOR) bypass the controller — service must enforce.
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 'real', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { title: '   ' }, SYSTEM_ACTOR),
+    ).rejects.toThrow(BadRequestException);
+    expect(deps.updates).toHaveLength(0);
+  });
+
+  it('rejects non-finite cost (Infinity, NaN) at the service layer', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { cost: Number.POSITIVE_INFINITY }, SYSTEM_ACTOR),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      svc.updateMetadata('wo1', { cost: Number.NaN }, SYSTEM_ACTOR),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('rejects tags with non-string elements at the service layer', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { tags: ['ok', 123 as unknown as string] }, SYSTEM_ACTOR),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  // ── cost float normalization (full-review #5: NUMERIC round-trip) ─
+
+  it('normalizes cost to 2 dp before comparison so 0.1+0.2 no-ops against 0.3', async () => {
+    // 0.1 + 0.2 in IEEE-754 is 0.30000000000000004. Postgres NUMERIC(12,2)
+    // stores as 0.30 → refetches as 0.3. Without normalization the no-op
+    // fast-path would never fire for fractional cost values and every
+    // PATCH would re-write + bump updated_at. Normalize so dto.cost and
+    // currentRow.cost can compare cleanly.
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: 0.3, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { cost: 0.1 + 0.2 }, SYSTEM_ACTOR);
+
+    expect(deps.updates).toHaveLength(0); // no-op fast path fires.
+  });
+
+  it('normalizes a fractional cost write to the persisted 2-dp value', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { cost: 12.345 }, SYSTEM_ACTOR);
+
+    expect(deps.updates).toHaveLength(1);
+    expect(deps.updates[0].cost).toBe(12.35);
+  });
+
   // ── orchestrator integration: WorkOrderService.update routes
   // metadata fields to updateMetadata ────────────────────────────────
 

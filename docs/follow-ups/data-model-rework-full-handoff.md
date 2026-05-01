@@ -300,7 +300,7 @@ Total bugs caught by codex:        39+ across the rework (incl. 2 catastrophic d
 | 1 | `setPlan` + `canPlan` | ✅ shipped (Session 10) — migration 00246 |
 | 2 | `updateStatus` / `updatePriority` / `updateAssignment` / `reassign` | ✅ shipped (Session 11) |
 | 3.0 | Single `PATCH /work-orders/:id` orchestrator (collapses Slices 0–2 into one endpoint) | ✅ shipped (Session 12) |
-| 3.1 | `cost` / `tags` / `watchers` / `title` / `description` field add | ⏸ NOT STARTED |
+| 3.1 | `cost` / `tags` / `watchers` / `title` / `description` field add | ✅ shipped (Session 14, commit `d9cccca` + hardening commit) |
 
 ---
 
@@ -445,8 +445,11 @@ cited. Status reflects current state on `main`.
 
 ### Work-order command surface — Slice 3.1 + alignment
 
-- **Slice 3.1 — `cost` / `tags` / `watchers` / `title` / `description` on work_orders** (also broken from desk detail). The single PATCH endpoint orchestrator already exists (Slice 3.0, Session 12); this slice just adds the fields to the union DTO + dispatches them.
-  *Origin: Sessions 10 + 11. The single-PATCH-endpoint half of this resolved Session 12 P1.*
+- ✅ **Slice 3.1 — `cost` / `tags` / `watchers` / `title` / `description` on
+  work_orders** — closed Session 14 (commit `d9cccca` + hardening). Single
+  `WorkOrderService.updateMetadata` method, mirrors case-side parity. API
+  smoke test 9/9 + 5 hardening probes pass on remote.
+  *Origin: Sessions 10 + 11. The single-PATCH-endpoint half of this resolved Session 12 P1; the per-field add resolved Session 14.*
 
 - ✅ **Security alignment slice — closed Session 12.** `tickets.assign` and
   `tickets.change_priority` gates backported to `TicketService.update`
@@ -502,19 +505,28 @@ The plan-reviewer correctly identified that "until product readiness" is not a p
 
 The work-order command surface is complete when ALL of:
 
-1. 🟡 PARTIAL — The desk-detail sidebar can mutate every WO field without touching
-   `TicketService`, **verified end-to-end in the actual remote dev environment**
-   (not just mocked-supabase unit tests).
+1. ✅ The desk-detail sidebar can mutate every WO field without touching
+   `TicketService`, **verified end-to-end against the live remote dev API**
+   with a real Admin JWT (browser click-through still pending — see note
+   below).
    - status / priority / team / user / vendor / plan / SLA: ✅ shipped (Slices 0–2 +
      Slice 3.0 single PATCH orchestrator). 2026-05-01 P0 (service_role DML grants
-     missing on `public.work_orders`) closed by migration 00248. Smoke test against
-     the live API with a real Admin JWT: 9/9 pass.
-   - cost / tags / watchers / title / description: ⏳ pending (Slice 3.1). The single
-     PATCH orchestrator already exists; this slice is just adding the fields to the
-     union DTO + dispatcher. ~half day. Until shipped, those fields silently no-op
-     when edited from the desk-detail sidebar on a work_order — `patchWorkOrder` in
-     `apps/web/src/components/desk/ticket-detail.tsx` filters them out before the
-     mutation fires.
+     missing on `public.work_orders`) closed by migration 00248.
+   - cost / tags / watchers / title / description: ✅ shipped (Slice 3.1, Session 14).
+     `WorkOrderService.updateMetadata` mirrors the case-side bulk-write shape (no
+     per-field permission gate beyond visibility floor; no per-field activity
+     emission). Hardening from full-review applied in same session: cost normalized
+     to 2 dp before diff (Postgres NUMERIC round-trip safe), empty-title rejected
+     at the service layer (not just controller), explicit-undefined keys correctly
+     skip dispatch (no extra round-trip).
+   - **Browser click-through gate still owed.** API-layer smoke test passed 9/9 +
+     hardening (no-op on float drift, validation on bad input, persist with 2-dp
+     rounding). The FE pipeline `editor → patch() → patchWorkOrder() →
+     useUpdateWorkOrder → fetch` was not exercised by a human or a Playwright
+     run this session. Same blind spot Sessions 7-12 had; flagging openly. The
+     code path is small (5 forwards in `patchWorkOrder` + the existing inline
+     editors that already call `patch()`) but "code path is small" is not
+     equivalent to "verified to work."
 
 2. ✅ The plandate workstream has merged. (Session 12 commits `849aaee` + `09e28f6`.)
 
@@ -636,6 +648,7 @@ Each session has its own archive file with the full content that previously live
 | 11 | 2026-05-01 | Slice 2 — `updateStatus` / `updatePriority` / `updateAssignment` / `reassign` | [`session-11-slice2-status-priority-assignment.md`](./data-model-rework-archive/session-11-slice2-status-priority-assignment.md) |
 | 12 | 2026-05-01 | Plandate merge + dead-code cleanup + Slice 3.0 single-PATCH orchestrator + security alignment (P2 backport) + 5 code-review fixes | [`session-12-plandate-merge-and-orchestrator.md`](./data-model-rework-archive/session-12-plandate-merge-and-orchestrator.md) |
 | 13 | 2026-05-01 | P0 fix — service_role DML grants restored on `public.work_orders` (00248) + A12 CI invariant. Closes the 2026-05-01 user-reported regression | [`session-13-p0-service-role-grants.md`](./data-model-rework-archive/session-13-p0-service-role-grants.md) |
+| 14 | 2026-05-01 | Slice 3.1 — `cost` / `tags` / `watchers` / `title` / `description` on work_orders. Closes exit-criteria item 1 of the rework. Full-review hardening applied in same session: float normalization, service-layer guards, explicit-undefined detector. | [`session-14-slice-3.1-metadata.md`](./data-model-rework-archive/session-14-slice-3.1-metadata.md) |
 
 > **Chronology fix:** earlier versions of this doc had Session 9 appearing
 > AFTER Sessions 10 and 11 (because Session 9's content was appended after

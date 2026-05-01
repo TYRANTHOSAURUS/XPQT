@@ -134,16 +134,23 @@ export class WorkOrderService {
       throw new BadRequestException('body required');
     }
 
-    const hasSla = Object.prototype.hasOwnProperty.call(dto, 'sla_id');
-    const hasPlan = PLAN_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(dto, f));
-    const hasStatus = STATUS_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(dto, f));
-    const hasPriority = Object.prototype.hasOwnProperty.call(dto, 'priority');
-    const hasAssignment = ASSIGNMENT_FIELDS.some((f) =>
-      Object.prototype.hasOwnProperty.call(dto, f),
-    );
-    const hasMetadata = METADATA_FIELDS.some((f) =>
-      Object.prototype.hasOwnProperty.call(dto, f),
-    );
+    // A key is "present" when set to any value other than undefined. We
+    // intentionally treat `null` as present (means "clear this field");
+    // explicit `undefined` is treated as absent so callers passing
+    // `{ ...maybeStatus, title: undefined }` don't accidentally trigger
+    // the metadata branch with an empty inner DTO. Code-review (Slice 3.1
+    // full-review #2): without the `!== undefined` guard, an extra DB
+    // round-trip + visibility load would fire for an absent-by-shape key.
+    const present = (k: string) =>
+      Object.prototype.hasOwnProperty.call(dto, k) &&
+      (dto as Record<string, unknown>)[k] !== undefined;
+
+    const hasSla = present('sla_id');
+    const hasPlan = PLAN_FIELDS.some((f) => present(f));
+    const hasStatus = STATUS_FIELDS.some((f) => present(f));
+    const hasPriority = present('priority');
+    const hasAssignment = ASSIGNMENT_FIELDS.some((f) => present(f));
+    const hasMetadata = METADATA_FIELDS.some((f) => present(f));
 
     if (!hasSla && !hasPlan && !hasStatus && !hasPriority && !hasAssignment && !hasMetadata) {
       throw new BadRequestException(
@@ -163,19 +170,19 @@ export class WorkOrderService {
     }
 
     if (hasPlan) {
-      const plannedStartAt = hasPlan && Object.prototype.hasOwnProperty.call(dto, 'planned_start_at')
+      const plannedStartAt = present('planned_start_at')
         ? (dto.planned_start_at ?? null)
         : null;
       // Mirror the per-field controller: when only duration is supplied
       // without start, we still need a current-row read. Pull from `last`
       // (refreshed if SLA branch ran) or load fresh.
-      const plannedDuration = Object.prototype.hasOwnProperty.call(dto, 'planned_duration_minutes')
+      const plannedDuration = present('planned_duration_minutes')
         ? (dto.planned_duration_minutes ?? null)
         : null;
       // If start wasn't explicitly provided but duration was, preserve the
       // current start. Otherwise the server would clear the plan when the
       // caller only meant to bump duration.
-      const startToWrite = Object.prototype.hasOwnProperty.call(dto, 'planned_start_at')
+      const startToWrite = present('planned_start_at')
         ? plannedStartAt
         : (last?.planned_start_at ?? null);
       last = await this.setPlan(workOrderId, startToWrite, plannedDuration, actorAuthUid);
@@ -184,11 +191,9 @@ export class WorkOrderService {
 
     if (hasStatus) {
       const statusDto: { status?: string; status_category?: string; waiting_reason?: string | null } = {};
-      if (dto.status !== undefined) statusDto.status = dto.status;
-      if (dto.status_category !== undefined) statusDto.status_category = dto.status_category;
-      if (Object.prototype.hasOwnProperty.call(dto, 'waiting_reason')) {
-        statusDto.waiting_reason = dto.waiting_reason ?? null;
-      }
+      if (present('status')) statusDto.status = dto.status;
+      if (present('status_category')) statusDto.status_category = dto.status_category;
+      if (present('waiting_reason')) statusDto.waiting_reason = dto.waiting_reason ?? null;
       last = await this.updateStatus(workOrderId, statusDto, actorAuthUid);
       dispatched.push('status');
     }
@@ -207,7 +212,7 @@ export class WorkOrderService {
         assigned_vendor_id?: string | null;
       } = {};
       for (const f of ASSIGNMENT_FIELDS) {
-        if (Object.prototype.hasOwnProperty.call(dto, f)) {
+        if (present(f)) {
           assignmentDto[f] = dto[f] ?? null;
         }
       }
@@ -227,21 +232,11 @@ export class WorkOrderService {
         tags?: string[] | null;
         watchers?: string[] | null;
       } = {};
-      if (Object.prototype.hasOwnProperty.call(dto, 'title')) {
-        metadataDto.title = dto.title;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'description')) {
-        metadataDto.description = dto.description ?? null;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'cost')) {
-        metadataDto.cost = dto.cost ?? null;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'tags')) {
-        metadataDto.tags = dto.tags ?? null;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'watchers')) {
-        metadataDto.watchers = dto.watchers ?? null;
-      }
+      if (present('title')) metadataDto.title = dto.title;
+      if (present('description')) metadataDto.description = dto.description ?? null;
+      if (present('cost')) metadataDto.cost = dto.cost ?? null;
+      if (present('tags')) metadataDto.tags = dto.tags ?? null;
+      if (present('watchers')) metadataDto.watchers = dto.watchers ?? null;
       last = await this.updateMetadata(workOrderId, metadataDto, actorAuthUid);
       dispatched.push('metadata');
     }
@@ -269,7 +264,7 @@ export class WorkOrderService {
     // explicitly for clarity instead.
     if (!last) {
       throw new BadRequestException(
-        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id',
+        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
       );
     }
     return last;
@@ -1132,10 +1127,39 @@ export class WorkOrderService {
   ): Promise<WorkOrderRow> {
     const tenant = TenantContext.current();
 
+    // Validation lives at the service layer too — the controller catches
+    // the same conditions, but internal callers (workflow engine, cron,
+    // SYSTEM_ACTOR paths) bypass the controller. Service layer is the
+    // trust boundary.
     if (Object.keys(dto).length === 0) {
       throw new BadRequestException(
         'updateMetadata requires at least one of: title, description, cost, tags, watchers',
       );
+    }
+    if (dto.title !== undefined && dto.title.trim() === '') {
+      throw new BadRequestException('title must be a non-empty string');
+    }
+    if (
+      dto.cost !== undefined &&
+      dto.cost !== null &&
+      !Number.isFinite(dto.cost)
+    ) {
+      throw new BadRequestException('cost must be a finite number or null');
+    }
+    if (dto.tags !== undefined && dto.tags !== null) {
+      if (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string')) {
+        throw new BadRequestException('tags must be an array of strings or null');
+      }
+    }
+    if (dto.watchers !== undefined && dto.watchers !== null) {
+      if (
+        !Array.isArray(dto.watchers) ||
+        !dto.watchers.every((w) => typeof w === 'string')
+      ) {
+        throw new BadRequestException(
+          'watchers must be an array of strings (person UUIDs) or null',
+        );
+      }
     }
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
@@ -1163,10 +1187,22 @@ export class WorkOrderService {
       watchers: string[] | null;
     };
 
+    // Cost is `numeric(12,2)` in Postgres — exact 2-dp decimal. JS sends
+    // IEEE-754 floats, so a UI-derived 0.1+0.2=0.30000000000000004 PATCH
+    // would round to 0.30 on write but compare against 0.3 on the next
+    // refetch — the no-op fast-path below would never fire and every
+    // PATCH with a fractional cost would re-write the row. Round to 2 dp
+    // up front so the diff and the persisted value agree.
+    const costNormalized =
+      dto.cost === null || dto.cost === undefined
+        ? dto.cost
+        : Math.round(dto.cost * 100) / 100;
+
     // Build the diff: only fields whose new value differs from current.
     // Array equality uses JSON.stringify — these arrays are always small
     // (tags ≤ ~20, watchers ≤ ~20) and typed as string[], so JSON
-    // comparison is correct and cheap.
+    // comparison is correct and cheap. If tags ever becomes object[], swap
+    // for a structural deep-equal helper.
     const diff: Record<string, unknown> = {};
     if (dto.title !== undefined && dto.title !== currentRow.title) {
       diff.title = dto.title;
@@ -1179,9 +1215,9 @@ export class WorkOrderService {
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'cost') &&
-      (dto.cost ?? null) !== currentRow.cost
+      (costNormalized ?? null) !== currentRow.cost
     ) {
-      diff.cost = dto.cost ?? null;
+      diff.cost = costNormalized ?? null;
     }
     if (Object.prototype.hasOwnProperty.call(dto, 'tags')) {
       const next = dto.tags ?? null;

@@ -291,6 +291,51 @@ describe('WorkOrderService.update (orchestrator)', () => {
     expect(spies.updateAssignment).not.toHaveBeenCalled();
   });
 
+  it('does NOT dispatch metadata branch for explicit-undefined keys', async () => {
+    // Full-review #2: `{ status: 'new', title: undefined }` previously
+    // tripped hasOwnProperty('title') = true → hasMetadata = true →
+    // updateMetadata fired with empty inner DTO, doing an extra DB
+    // round-trip + visibility load for nothing. The detector now uses
+    // the `present()` helper which guards against explicit undefined.
+    const { svc, spies } = makeSvc();
+    await svc.update(
+      'wo1',
+      {
+        status: 'in_progress',
+        status_category: 'in_progress',
+        title: undefined,
+        description: undefined,
+        cost: undefined,
+        tags: undefined,
+        watchers: undefined,
+      },
+      SYSTEM_ACTOR,
+    );
+
+    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
+    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('still dispatches metadata branch when only SOME keys are explicit-undefined', async () => {
+    // `{ title: 'real', cost: undefined }` should fire the metadata
+    // branch with `{ title: 'real' }` only — NOT with `{ title: 'real',
+    // cost: null }` (which would clear the cost the caller did not
+    // intend to touch).
+    const { svc, spies } = makeSvc();
+    await svc.update(
+      'wo1',
+      { title: 'real', cost: undefined },
+      SYSTEM_ACTOR,
+    );
+
+    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
+    expect(spies.updateMetadata).toHaveBeenCalledWith(
+      'wo1',
+      { title: 'real' },
+      SYSTEM_ACTOR,
+    );
+  });
+
   it('dispatches a metadata + status mix (multi-field)', async () => {
     // Status before metadata in the dispatch order so status side effects
     // (resolved_at synthesis, timer pause/resume) settle before the
