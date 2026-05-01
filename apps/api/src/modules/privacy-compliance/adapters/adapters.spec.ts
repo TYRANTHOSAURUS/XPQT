@@ -177,6 +177,27 @@ describe('VisitorRecordsAdapter', () => {
     expect(sql).toContain('checked_out');
   });
 
+  it('scanForExpired includes denied as a terminal status (visitor management v1)', async () => {
+    // Regression for post-shipping review C3: visitor management v1 added
+    // 'denied' as a terminal state for type=interview rejections; without it
+    // those rows never expire and PII leaks past retention.
+    const { db, adapter } = build();
+    db.queryMany = jest.fn(async () => []);
+    await adapter.scanForExpired(TENANT, 180);
+    const sql = db.queryMany.mock.calls[0][0];
+    expect(sql).toContain("'denied'");
+  });
+
+  it("scanForExpired uses coalesce(expected_at::date, visit_date) for v1 rows", async () => {
+    // Regression for C3: v1 rows write expected_at; legacy rows write visit_date.
+    // Adapter must honour whichever is non-null — coalesce(expected_at::date, visit_date).
+    const { db, adapter } = build();
+    db.queryMany = jest.fn(async () => []);
+    await adapter.scanForExpired(TENANT, 180);
+    const sql = db.queryMany.mock.calls[0][0];
+    expect(sql).toContain('coalesce(expected_at::date, visit_date)');
+  });
+
   it('anonymize is a no-op for empty refs', async () => {
     const { db, adapter } = build();
     await adapter.anonymize([]);
@@ -193,6 +214,41 @@ describe('VisitorRecordsAdapter', () => {
     expect(txSqls.some((s) => s.includes('select id, badge_id'))).toBe(true);
     expect(txSqls.some((s) => s.includes('insert into anonymization_audit'))).toBe(true);
     expect(txSqls.some((s) => s.includes('update visitors'))).toBe(true);
+  });
+
+  it('anonymize blanks every v1 PII column (first_name/last_name/email/phone/company/meeting_room_id/notes_*)', async () => {
+    // Regression for C3: v1 added denorm columns + meeting room + notes;
+    // adapter must blank all of them. Without this, GDPR erasure escapes
+    // through the visitor row even though the linked persons row is anonymized.
+    const { db, adapter } = build();
+    const refs: EntityRef[] = [{
+      category: 'visitor_records',
+      resourceType: 'visitors',
+      resourceId: 'v1',
+      tenantId: TENANT,
+    }];
+    await adapter.anonymize(refs);
+    const updateSql = db.captured
+      .filter((c) => c.sql.startsWith('[tx]') && c.sql.includes('update visitors'))
+      .map((c) => c.sql)[0];
+    expect(updateSql).toBeDefined();
+    for (const col of [
+      'badge_id',
+      'person_id',
+      'first_name',
+      'last_name',
+      'email',
+      'phone',
+      'company',
+      'meeting_room_id',
+      'notes_for_visitor',
+      'notes_for_reception',
+    ]) {
+      expect(updateSql).toContain(`${col}`);
+    }
+    // host_person_id is intentionally kept (hosts are employees, anonymized
+    // separately by PersonsAdapter at their own retention schedule).
+    expect(updateSql).not.toMatch(/host_person_id\s*=\s*null/);
   });
 });
 
