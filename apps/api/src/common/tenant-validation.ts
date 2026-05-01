@@ -83,3 +83,63 @@ export async function validateWatcherIdsInTenant(
     );
   }
 }
+
+/**
+ * Validate that any non-null assignee uuid in a partial update references
+ * a real row in the calling tenant. Defends against cross-tenant id
+ * smuggling and ghost uuids on the three assignment columns:
+ * `assigned_team_id` (teams), `assigned_user_id` (users),
+ * `assigned_vendor_id` (vendors). The FK + RLS layers don't carry a
+ * tenant composite check on these columns; this is the API-layer trust
+ * boundary.
+ *
+ * Pre-filters malformed uuids (clean 400, no PG 22P02 leak). `null`
+ * means "clear the assignment" — valid; skip. `undefined` means "field
+ * not in this update" — valid; skip.
+ *
+ * Mirrors `validateWatcherIdsInTenant` shape; different because
+ * assignees are scalar (one uuid per field) rather than an array, and
+ * each field maps to a different table.
+ */
+export async function validateAssigneesInTenant(
+  supabase: SupabaseService,
+  diff: {
+    assigned_team_id?: unknown;
+    assigned_user_id?: unknown;
+    assigned_vendor_id?: unknown;
+  },
+  tenantId: string,
+  options: { skipForSystemActor?: boolean } = {},
+): Promise<void> {
+  if (options.skipForSystemActor) return;
+
+  const checks: Array<{ field: string; table: string; id: unknown; singular: string }> = [
+    { field: 'assigned_team_id', table: 'teams', id: diff.assigned_team_id, singular: 'team' },
+    { field: 'assigned_user_id', table: 'users', id: diff.assigned_user_id, singular: 'user' },
+    { field: 'assigned_vendor_id', table: 'vendors', id: diff.assigned_vendor_id, singular: 'vendor' },
+  ];
+
+  for (const c of checks) {
+    if (c.id === null || c.id === undefined) continue;
+    if (typeof c.id !== 'string') {
+      throw new BadRequestException(`${c.field} must be a string or null`);
+    }
+    if (!UUID_RE.test(c.id)) {
+      throw new BadRequestException(
+        `${c.field} is not a valid uuid: ${c.id}`,
+      );
+    }
+    const { data, error } = await supabase.admin
+      .from(c.table)
+      .select('id')
+      .eq('id', c.id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      throw new BadRequestException(
+        `${c.field} ${c.id} does not reference a known ${c.singular} in this tenant`,
+      );
+    }
+  }
+}

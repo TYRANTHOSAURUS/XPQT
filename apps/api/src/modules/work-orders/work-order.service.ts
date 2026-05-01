@@ -9,7 +9,10 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { validateWatcherIdsInTenant } from '../../common/tenant-validation';
+import {
+  validateAssigneesInTenant,
+  validateWatcherIdsInTenant,
+} from '../../common/tenant-validation';
 import { SlaService } from '../sla/sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
 
@@ -1042,7 +1045,9 @@ export class WorkOrderService {
     // foreign team / user / vendor id and the FK / RLS layers would NOT catch
     // it (assigned_vendor_id has no FK; teams + users have FKs but no tenant
     // composite check).
-    await this.validateAssigneesInTenant(diff, tenant.id);
+    await validateAssigneesInTenant(this.supabase, diff, tenant.id, {
+      skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
+    });
 
     diff.updated_at = new Date().toISOString();
 
@@ -1366,13 +1371,15 @@ export class WorkOrderService {
 
     // Validate the new assignee belongs to this tenant before we reassign.
     if (nextTarget) {
-      await this.validateAssigneesInTenant(
+      await validateAssigneesInTenant(
+        this.supabase,
         nextTarget.kind === 'team'
           ? { assigned_team_id: nextTarget.id }
           : nextTarget.kind === 'user'
             ? { assigned_user_id: nextTarget.id }
             : { assigned_vendor_id: nextTarget.id },
         tenant.id,
+        { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
       );
     }
 
@@ -1503,62 +1510,6 @@ export class WorkOrderService {
       throw new ForbiddenException(
         'tickets.assign permission required to change a work order assignment',
       );
-    }
-  }
-
-  /**
-   * Validate that any non-null assignee id in a partial update belongs to
-   * the calling tenant. Defense against cross-tenant id smuggling — the FK
-   * + RLS layers don't enforce a tenant composite check on these columns.
-   */
-  private async validateAssigneesInTenant(
-    diff: { assigned_team_id?: unknown; assigned_user_id?: unknown; assigned_vendor_id?: unknown },
-    tenantId: string,
-  ): Promise<void> {
-    const teamId = diff.assigned_team_id;
-    if (typeof teamId === 'string') {
-      const { data, error } = await this.supabase.admin
-        .from('teams')
-        .select('id')
-        .eq('id', teamId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
-        throw new BadRequestException(
-          `assigned_team_id ${teamId} does not reference a known team in this tenant`,
-        );
-      }
-    }
-    const userId = diff.assigned_user_id;
-    if (typeof userId === 'string') {
-      const { data, error } = await this.supabase.admin
-        .from('users')
-        .select('id')
-        .eq('id', userId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
-        throw new BadRequestException(
-          `assigned_user_id ${userId} does not reference a known user in this tenant`,
-        );
-      }
-    }
-    const vendorId = diff.assigned_vendor_id;
-    if (typeof vendorId === 'string') {
-      const { data, error } = await this.supabase.admin
-        .from('vendors')
-        .select('id')
-        .eq('id', vendorId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
-        throw new BadRequestException(
-          `assigned_vendor_id ${vendorId} does not reference a known vendor in this tenant`,
-        );
-      }
     }
   }
 

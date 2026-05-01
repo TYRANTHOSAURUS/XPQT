@@ -298,6 +298,11 @@ describe('WorkOrderService.updateAssignment', () => {
   });
 
   it('rejects an unknown team id (cross-tenant smuggling defense)', async () => {
+    // SYSTEM_ACTOR bypasses tenant validation by convention (matches the
+    // assertCanPlan / per-action permission gate bypass). Use a real
+    // auth uid so the validation runs. The test exercises the
+    // "well-formed uuid not in tenant" branch — id is a valid uuid but
+    // does not belong to the seeded teams set.
     const deps = makeDeps(
       {
         id: 'wo1',
@@ -308,12 +313,16 @@ describe('WorkOrderService.updateAssignment', () => {
         assigned_user_id: null,
         assigned_vendor_id: null,
       },
-      { teams: [{ id: 'team-a', tenant_id: TENANT }] },
+      { teams: [{ id: '11111111-1111-1111-1111-111111111111', tenant_id: TENANT }] },
     );
     const svc = makeSvc(deps);
 
     await expect(
-      svc.updateAssignment('wo1', { assigned_team_id: 'team-other-tenant' }, SYSTEM_ACTOR),
+      svc.updateAssignment(
+        'wo1',
+        { assigned_team_id: '99999999-9999-9999-9999-999999999999' },
+        'real-uid',
+      ),
     ).rejects.toThrow(BadRequestException);
 
     expect(deps.updates).toHaveLength(0);

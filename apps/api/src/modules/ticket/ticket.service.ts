@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { validateWatcherIdsInTenant } from '../../common/tenant-validation';
+import {
+  validateAssigneesInTenant,
+  validateWatcherIdsInTenant,
+} from '../../common/tenant-validation';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
 import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
@@ -880,15 +883,39 @@ export class TicketService {
       }
     }
 
-    // Tenant-validate watcher uuids early so a malformed-uuid 400 doesn't
-    // pay the cost of the getById round-trip + close-guard SELECT below.
-    // Mirrors the WO side ordering (validation before current-row load).
-    // Closes the GHOST-uuid vector. Does NOT close the within-tenant
-    // unauthorized-share vector — see helper for reasoning.
+    // Tenant-validate watcher + assignee uuids early so malformed/ghost
+    // uuids reject with a clean 400 before paying the cost of the getById
+    // round-trip + close-guard SELECT. Mirrors the WO side ordering.
+    //
+    // Watchers — closes ghost-uuid vector; does NOT close within-tenant
+    // unauthorized share (subscriber semantics).
+    //
+    // Assignees — closes ghost-uuid + cross-tenant id smuggling on
+    // `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`.
+    // Pre-fix, the case side accepted any uuid (FK + RLS don't carry a
+    // tenant composite check on these columns); WorkOrderService.
+    // updateAssignment validated, TicketService.update did not — same
+    // shape of gap, larger blast radius (assignment grants ownership).
     if (dto.watchers !== undefined) {
       await validateWatcherIdsInTenant(this.supabase, dto.watchers, tenant.id, {
         skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
       });
+    }
+    if (
+      dto.assigned_team_id !== undefined ||
+      dto.assigned_user_id !== undefined ||
+      dto.assigned_vendor_id !== undefined
+    ) {
+      await validateAssigneesInTenant(
+        this.supabase,
+        {
+          assigned_team_id: dto.assigned_team_id,
+          assigned_user_id: dto.assigned_user_id,
+          assigned_vendor_id: dto.assigned_vendor_id,
+        },
+        tenant.id,
+        { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
+      );
     }
 
     // Get current state for change tracking

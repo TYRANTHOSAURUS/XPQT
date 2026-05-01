@@ -79,15 +79,26 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
             insert: jest.fn().mockResolvedValue({ data: null, error: null }),
           } as unknown;
         }
-        if (table === 'users') {
-          // addActivity → resolveAuthorPersonId queries users by auth_uid +
-          // tenant. Return null (system attribution) so we don't have to
-          // wire a fake person row.
+        if (table === 'users' || table === 'teams' || table === 'vendors') {
+          // Two query shapes hit these tables in TicketService.update:
+          //   1. `validateAssigneesInTenant` does
+          //      `.select('id').eq('id', X).eq('tenant_id', Y).maybeSingle()` —
+          //      should return `{ data: { id: X } }` to clear the validation.
+          //   2. `resolveAuthorPersonId` does
+          //      `.select(...).eq('auth_uid', X).eq('tenant_id', Y).maybeSingle()` —
+          //      should return null (system attribution).
+          // The mock can't distinguish by chained .eq column name, so it
+          // returns a found-shape row whenever the .eq().eq() chain ends
+          // in maybeSingle. The id passed back doesn't have to match —
+          // the validator only checks that *something* came back.
           return {
             select: () => ({
               eq: () => ({
                 eq: () => ({
-                  maybeSingle: async () => ({ data: null, error: null }),
+                  maybeSingle: async () => ({
+                    data: table === 'users' ? null : { id: 'mocked' },
+                    error: null,
+                  }),
                 }),
               }),
             }),
@@ -206,7 +217,7 @@ describe('TicketService — per-action permission gates', () => {
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_team_id: 'team-x' }, 'auth-uid-non-admin'),
+        svc.update('c1', { assigned_team_id: '33333333-3333-3333-3333-333333333333' }, 'auth-uid-non-admin'),
       ).rejects.toThrow(/tickets\.assign permission required/);
 
       expect(deps.permissionChecks[0]).toEqual({
@@ -221,7 +232,7 @@ describe('TicketService — per-action permission gates', () => {
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_user_id: 'user-x' }, 'auth-uid-non-admin'),
+        svc.update('c1', { assigned_user_id: '44444444-4444-4444-4444-444444444444' }, 'auth-uid-non-admin'),
       ).rejects.toThrow(/tickets\.assign permission required/);
       expect(deps.updates).toHaveLength(0);
     });
@@ -231,7 +242,7 @@ describe('TicketService — per-action permission gates', () => {
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_vendor_id: 'vendor-x' }, 'auth-uid-non-admin'),
+        svc.update('c1', { assigned_vendor_id: '55555555-5555-5555-5555-555555555555' }, 'auth-uid-non-admin'),
       ).rejects.toThrow(/tickets\.assign permission required/);
       expect(deps.updates).toHaveLength(0);
     });
@@ -255,7 +266,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: 'team-x' },
+        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
         'auth-uid-admin',
       );
 
@@ -270,7 +281,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: 'team-x' },
+        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
         SYSTEM_ACTOR,
       );
 
@@ -298,13 +309,13 @@ describe('TicketService — per-action permission gates', () => {
       const deps = makeDeps(baseRow(), { hasPermission: true, has_write_all: false });
       const svc = makeSvc(deps);
 
-      await svc.update('c1', { assigned_team_id: 'team-x' }, 'auth-uid-agent');
+      await svc.update('c1', { assigned_team_id: '33333333-3333-3333-3333-333333333333' }, 'auth-uid-agent');
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
       expect(deps.updates).toHaveLength(1);
-      expect(deps.updates[0]).toMatchObject({ assigned_team_id: 'team-x' });
+      expect(deps.updates[0]).toMatchObject({ assigned_team_id: '33333333-3333-3333-3333-333333333333' });
     });
 
     it('runs both permission checks when DTO carries both priority + assignment changes', async () => {
@@ -313,7 +324,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: 'team-x' },
+        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
         'auth-uid-agent',
       );
 
@@ -331,7 +342,7 @@ describe('TicketService — per-action permission gates', () => {
       await expect(
         svc.reassign(
           'c1',
-          { assigned_team_id: 'team-x', reason: 'team handover' },
+          { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
           'auth-uid-non-admin',
         ),
       ).rejects.toThrow(/tickets\.assign permission required/);
@@ -349,7 +360,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: 'team-x', reason: 'team handover' },
+        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
         'auth-uid-admin',
       );
 
@@ -364,7 +375,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: 'team-x', reason: 'workflow auto-route' },
+        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'workflow auto-route' },
         SYSTEM_ACTOR,
       );
 
@@ -379,7 +390,7 @@ describe('TicketService — per-action permission gates', () => {
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: 'team-x', reason: 'team handover' },
+        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
         'auth-uid-agent',
       );
 
