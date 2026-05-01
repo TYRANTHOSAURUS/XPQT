@@ -258,10 +258,16 @@ export class SlaService {
     const slaPolicyId = after.sla_id ?? before.sla_id;
     if (!slaPolicyId) return;
 
+    // Tenant-scoped lookup. supabase.admin bypasses RLS so a foreign-tenant
+    // sla_id (somehow planted on a row) would otherwise resolve to the
+    // wrong-tenant pause_on_waiting_reasons array. Pre-existing gap from the
+    // case-side helper; widened to work_orders by the Slice 2 extraction.
+    // Code-review finding C1.
     const { data: policy } = await this.supabase.admin
       .from('sla_policies')
       .select('pause_on_waiting_reasons')
       .eq('id', slaPolicyId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
 
     const pauseReasons =

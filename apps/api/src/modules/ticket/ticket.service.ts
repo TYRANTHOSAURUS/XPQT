@@ -834,6 +834,56 @@ export class TicketService {
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
       await this.visibility.assertVisible(id, ctx, 'write');
+
+      // Per-action permission gates layered on top of the visibility floor.
+      // Mirrors WorkOrderService.{updatePriority, assertAssignPermission}; the
+      // catalog has dedicated `tickets.change_priority` + `tickets.assign`
+      // keys for a reason. Pre-1c.10c the case-side update path relied solely
+      // on `assertVisible('write')`, leaving these per-action gates enforced
+      // only on work_orders — a real divergence flagged by full-review. Roles
+      // that previously held only `tickets.update` are grandfathered into
+      // both keys by migration 00247 to avoid a permission regression for
+      // existing tenants.
+      const wantsPriorityChange = dto.priority !== undefined;
+      const wantsAssignChange =
+        dto.assigned_team_id !== undefined ||
+        dto.assigned_user_id !== undefined ||
+        dto.assigned_vendor_id !== undefined;
+
+      if ((wantsPriorityChange || wantsAssignChange) && !ctx.has_write_all) {
+        if (wantsPriorityChange) {
+          const { data: hasChange, error: permErr } = await this.supabase.admin.rpc(
+            'user_has_permission',
+            {
+              p_user_id: ctx.user_id,
+              p_tenant_id: tenant.id,
+              p_permission: 'tickets.change_priority',
+            },
+          );
+          if (permErr) throw permErr;
+          if (!hasChange) {
+            throw new ForbiddenException(
+              'tickets.change_priority permission required to change a ticket priority',
+            );
+          }
+        }
+        if (wantsAssignChange) {
+          const { data: hasAssign, error: permErr } = await this.supabase.admin.rpc(
+            'user_has_permission',
+            {
+              p_user_id: ctx.user_id,
+              p_tenant_id: tenant.id,
+              p_permission: 'tickets.assign',
+            },
+          );
+          if (permErr) throw permErr;
+          if (!hasAssign) {
+            throw new ForbiddenException(
+              'tickets.assign permission required to change a ticket assignment',
+            );
+          }
+        }
+      }
     }
 
     // Get current state for change tracking
@@ -977,6 +1027,26 @@ export class TicketService {
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
       await this.visibility.assertVisible(id, ctx, 'write');
+
+      // Reassign is by definition an assignment change — always require the
+      // per-action `tickets.assign` permission (or `tickets.write_all`
+      // override). Mirrors WorkOrderService.assertAssignPermission.
+      if (!ctx.has_write_all) {
+        const { data: hasAssign, error: permErr } = await this.supabase.admin.rpc(
+          'user_has_permission',
+          {
+            p_user_id: ctx.user_id,
+            p_tenant_id: tenant.id,
+            p_permission: 'tickets.assign',
+          },
+        );
+        if (permErr) throw permErr;
+        if (!hasAssign) {
+          throw new ForbiddenException(
+            'tickets.assign permission required to reassign a ticket',
+          );
+        }
+      }
     }
 
     const current = await this.getById(id, SYSTEM_ACTOR);
