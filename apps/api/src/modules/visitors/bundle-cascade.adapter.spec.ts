@@ -66,6 +66,22 @@ function makeHarness(opts: FakeOpts = {}) {
     ),
   };
 
+  // Fake pg client used by `db.tx` for the FOR SHARE read inside the
+  // adapter (full-review I6). Returns the visitor row scoped by tenant.
+  const fakeClient = {
+    query: jest.fn(async (sql: string, params?: unknown[]) => {
+      sqlCalls.push({ sql, params });
+      const trimmed = sql.trim().toLowerCase();
+      if (trimmed.includes('select id, tenant_id, status') && trimmed.includes('for share')) {
+        const id = params?.[0] as string;
+        const tenant = params?.[1] as string;
+        const row = opts.visitorByIdAndTenant?.[`${id}|${tenant}`] ?? null;
+        return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }),
+  };
+
   const db = {
     query: jest.fn(async (sql: string, params?: unknown[]) => {
       sqlCalls.push({ sql, params });
@@ -81,16 +97,7 @@ function makeHarness(opts: FakeOpts = {}) {
       }
       return { rows: [], rowCount: 0 };
     }),
-    queryOne: jest.fn(async (sql: string, params?: unknown[]) => {
-      sqlCalls.push({ sql, params });
-      const trimmed = sql.trim().toLowerCase();
-      if (trimmed.includes('select id, tenant_id, status')) {
-        const id = params?.[0] as string;
-        const tenant = params?.[1] as string;
-        return opts.visitorByIdAndTenant?.[`${id}|${tenant}`] ?? null;
-      }
-      return null;
-    }),
+    queryOne: jest.fn(async (_sql: string, _params?: unknown[]) => null),
     queryMany: jest.fn(async (sql: string, params?: unknown[]) => {
       sqlCalls.push({ sql, params });
       const trimmed = sql.trim().toLowerCase();
@@ -100,6 +107,7 @@ function makeHarness(opts: FakeOpts = {}) {
       }
       return [];
     }),
+    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)),
   };
 
   const bus = new BundleEventBus();

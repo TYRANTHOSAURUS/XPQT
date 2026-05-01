@@ -126,12 +126,14 @@ export class BundleCascadeAdapter implements OnModuleInit {
 
   private async handleLineMoved(event: BundleLineMovedEvent): Promise<void> {
     if (event.line_kind !== 'visitor') return;
-    const visitor = await this.loadVisitor(event.line_id, event.tenant_id);
-    if (!visitor) return;
+    await this.loadVisitorForCascade(event.line_id, event.tenant_id, async (visitor) => {
+      if (!visitor) return;
 
-    if (visitor.status === 'expected' || visitor.status === 'pending_approval') {
-      await this.runInTenant(event.tenant_id, async () => {
-        // Update expected_at directly (no status change).
+      if (visitor.status === 'expected' || visitor.status === 'pending_approval') {
+        // Update expected_at directly (no status change). Held under the
+        // FOR SHARE lock, so a concurrent transitionStatus can't sneak
+        // a status mutation between our status check and the intent
+        // emit; it queues until our tx commits.
         await this.db.query(
           `update public.visitors
               set expected_at = $1
@@ -150,13 +152,11 @@ export class BundleCascadeAdapter implements OnModuleInit {
             email_target: 'visitor',
           },
         );
-      });
-      return;
-    }
+        return;
+      }
 
-    if (visitor.status === 'arrived' || visitor.status === 'in_meeting') {
-      // Visitor already in the building — alert host instead.
-      await this.runInTenant(event.tenant_id, async () => {
+      if (visitor.status === 'arrived' || visitor.status === 'in_meeting') {
+        // Visitor already in the building — alert host instead.
         await this.emitIntent(
           event.tenant_id,
           visitor.id,
@@ -170,11 +170,11 @@ export class BundleCascadeAdapter implements OnModuleInit {
             email_target: 'host',
           },
         );
-      });
-      return;
-    }
+        return;
+      }
 
-    // terminal states (checked_out / cancelled / no_show / denied) → no-op
+      // terminal states (checked_out / cancelled / no_show / denied) → no-op
+    });
   }
 
   // ─── line.room_changed ──────────────────────────────────────────────────
@@ -183,11 +183,10 @@ export class BundleCascadeAdapter implements OnModuleInit {
     event: BundleLineRoomChangedEvent,
   ): Promise<void> {
     if (event.line_kind !== 'visitor') return;
-    const visitor = await this.loadVisitor(event.line_id, event.tenant_id);
-    if (!visitor) return;
+    await this.loadVisitorForCascade(event.line_id, event.tenant_id, async (visitor) => {
+      if (!visitor) return;
 
-    if (visitor.status === 'expected' || visitor.status === 'pending_approval') {
-      await this.runInTenant(event.tenant_id, async () => {
+      if (visitor.status === 'expected' || visitor.status === 'pending_approval') {
         await this.db.query(
           `update public.visitors
               set meeting_room_id = $1
@@ -206,12 +205,10 @@ export class BundleCascadeAdapter implements OnModuleInit {
             email_target: 'visitor',
           },
         );
-      });
-      return;
-    }
+        return;
+      }
 
-    if (visitor.status === 'arrived' || visitor.status === 'in_meeting') {
-      await this.runInTenant(event.tenant_id, async () => {
+      if (visitor.status === 'arrived' || visitor.status === 'in_meeting') {
         await this.emitIntent(
           event.tenant_id,
           visitor.id,
@@ -225,9 +222,9 @@ export class BundleCascadeAdapter implements OnModuleInit {
             email_target: 'host',
           },
         );
-      });
-      return;
-    }
+        return;
+      }
+    });
   }
 
   // ─── line.cancelled ─────────────────────────────────────────────────────
@@ -236,16 +233,46 @@ export class BundleCascadeAdapter implements OnModuleInit {
     event: BundleLineCancelledEvent,
   ): Promise<void> {
     if (event.line_kind !== 'visitor') return;
-    const visitor = await this.loadVisitor(event.line_id, event.tenant_id);
+
+    // Two-step: read with FOR SHARE to learn the branch, then commit and
+    // act. We deliberately DO NOT hold the share lock across the
+    // transitionStatus call below — transitionStatus acquires its own
+    // FOR UPDATE on the same row in a separate tx, and FOR SHARE held
+    // by us would deadlock. transitionStatus itself re-checks the
+    // status inside its FOR UPDATE; if the visitor's branch shifted
+    // between our read and the action, transitionStatus raises
+    // 'invalid_transition' and we log + skip the cascade intent rather
+    // than emit a stale email order. That's the post-commit safety net
+    // the FOR SHARE read alone can't provide for the cancellation
+    // path.
+    const visitor = await this.loadVisitorForCascade(
+      event.line_id,
+      event.tenant_id,
+      async (v) => v,
+    );
     if (!visitor) return;
 
     if (visitor.status === 'expected' || visitor.status === 'pending_approval') {
       await this.runInTenant(event.tenant_id, async () => {
-        await this.visitors.transitionStatus(
-          visitor.id,
-          'cancelled',
-          { user_id: 'system', person_id: null },
-        );
+        try {
+          await this.visitors.transitionStatus(
+            visitor.id,
+            'cancelled',
+            { user_id: 'system', person_id: null },
+          );
+        } catch (err) {
+          // Concurrent path beat us to a different terminal state. The
+          // cascade for THIS event is moot — log and bail without
+          // emitting the email intent. The other path's transition will
+          // have already emitted its own cascade-cancelled intent if
+          // appropriate (e.g. user clicked the cancel link).
+          this.log.warn(
+            `cascade cancellation skipped — visitor ${visitor.id} status changed under us: ${
+              (err as Error).message
+            }`,
+          );
+          return;
+        }
         await this.emitIntent(
           event.tenant_id,
           visitor.id,
@@ -311,26 +338,64 @@ export class BundleCascadeAdapter implements OnModuleInit {
 
   // ─── helpers ────────────────────────────────────────────────────────────
 
-  private async loadVisitor(
+  /**
+   * Read the visitor under a `FOR SHARE` row lock inside a transaction.
+   *
+   * I6 (full review) — race fix:
+   *   The cascade emitter writes its DB changes and emits the bus event
+   *   POST-COMMIT (BundleCascadeService). Between the bus emit and this
+   *   adapter handling the event, the visitor's status can drift —
+   *   another path might cancel/check-out the visitor concurrently.
+   *   The adapter then sees a stale status and dispatches the wrong
+   *   cascade branch (e.g. emails the visitor about a moved meeting
+   *   when they've already cancelled and gone home).
+   *
+   *   FOR SHARE blocks until any in-flight UPDATE on the row (e.g. the
+   *   FOR UPDATE lock inside VisitorService.transitionStatus) commits.
+   *   Once we have the share lock, the status we read is consistent
+   *   with the post-commit state of every concurrent writer. No
+   *   ABORT-mode lock is needed because we never WRITE the visitor row
+   *   here — we only branch on its status; the actual mutation (when
+   *   needed) is delegated to VisitorService.transitionStatus, which
+   *   acquires its own FOR UPDATE lock under a separate tx.
+   *
+   *   We hold the FOR SHARE lock until the caller emits its intent
+   *   (domain_event insert + optional non-status UPDATE for
+   *   expected_at / meeting_room_id). That keeps the read+act atomic
+   *   with respect to status writers.
+   *
+   *   The lock duration is a single tx and the work inside it is
+   *   bounded (one INSERT into domain_events; optionally one UPDATE
+   *   that touches non-status columns). A status-writer tx behind us
+   *   queues briefly but does not deadlock because it acquires
+   *   FOR UPDATE on the same row in a different tx — Postgres orders
+   *   FOR SHARE before FOR UPDATE within tx semantics, and we always
+   *   exit the tx before the writer's lock is needed.
+   */
+  private async loadVisitorForCascade<T>(
     visitorId: string,
     tenantId: string,
-  ): Promise<{ id: string; tenant_id: string; status: VisitorStatus } | null> {
-    return this.runInTenant(tenantId, async () => {
-      const row = await this.db.queryOne<{
-        id: string;
-        tenant_id: string;
-        status: VisitorStatus;
-      }>(
-        `select id, tenant_id, status
-           from public.visitors
-          where id = $1 and tenant_id = $2`,
-        [visitorId, tenantId],
-      );
-      // The tenant filter is already in the WHERE, but defend explicitly:
-      // a stray visitor.id that happens to exist in another tenant cannot
-      // sneak through because of `where tenant_id = $2`.
-      return row;
-    });
+    fn: (
+      visitor: { id: string; tenant_id: string; status: VisitorStatus } | null,
+    ) => Promise<T>,
+  ): Promise<T> {
+    return this.runInTenant(tenantId, async () =>
+      this.db.tx(async (client) => {
+        const result = await client.query<{
+          id: string;
+          tenant_id: string;
+          status: VisitorStatus;
+        }>(
+          `select id, tenant_id, status
+             from public.visitors
+            where id = $1 and tenant_id = $2
+            for share`,
+          [visitorId, tenantId],
+        );
+        const row = result.rows[0] ?? null;
+        return fn(row);
+      }),
+    );
   }
 
   /**

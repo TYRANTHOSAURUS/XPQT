@@ -58,6 +58,24 @@ function buildHarness(opts: {
   const intentInserts: Array<{ event_type: string; payload: Record<string, unknown> }> = [];
 
   // === DbService mock for the visitor adapter ===
+  // Adapter now reads visitor under FOR SHARE inside `db.tx` (full-review
+  // I6); the fake client honours that path. The queryOne path is preserved
+  // for legacy callers that haven't migrated; it's no longer hit by the
+  // adapter.
+  const fakeClient = {
+    query: jest.fn(async (sql: string, params: unknown[] = []) => {
+      const t = sql.trim().toLowerCase();
+      if (t.includes('select id, tenant_id, status') && t.includes('for share')) {
+        const id = params[0] as string;
+        const tenant = params[1] as string;
+        if (id === opts.visitor.id && tenant === opts.visitor.tenant_id) {
+          return { rows: [{ ...opts.visitor }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: 0 };
+    }),
+  };
   const db = {
     query: jest.fn(async (sql: string, params: unknown[] = []) => {
       const t = sql.trim().toLowerCase();
@@ -75,17 +93,7 @@ function buildHarness(opts: {
       }
       return { rows: [], rowCount: 0 };
     }),
-    queryOne: jest.fn(async (sql: string, params: unknown[] = []) => {
-      const t = sql.trim().toLowerCase();
-      if (t.includes('select id, tenant_id, status')) {
-        const id = params[0] as string;
-        const tenant = params[1] as string;
-        if (id === opts.visitor.id && tenant === opts.visitor.tenant_id) {
-          return { ...opts.visitor };
-        }
-      }
-      return null;
-    }),
+    queryOne: jest.fn(async (_sql: string, _params: unknown[] = []) => null),
     queryMany: jest.fn(async (sql: string, params: unknown[] = []) => {
       const t = sql.trim().toLowerCase();
       if (t.includes('booking_bundle_id = $2')) {
@@ -93,6 +101,7 @@ function buildHarness(opts: {
       }
       return [];
     }),
+    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)),
   };
 
   // === VisitorService mock — only transitionStatus is consumed by adapter ===
