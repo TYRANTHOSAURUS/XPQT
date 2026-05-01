@@ -49,6 +49,8 @@ const MyBookingDetailPage = lazyNamed(() => import('@/pages/portal/me-bookings/d
 const PortalOrderPage = lazyNamed(() => import('@/pages/portal/order'), 'PortalOrderPage');
 const PortalCalendarSyncPage = lazyNamed(() => import('@/pages/portal/me/calendar-sync'), 'PortalCalendarSyncPage');
 const PortalCalendarSyncCallbackPage = lazyNamed(() => import('@/pages/portal/calendar-sync-callback'), 'PortalCalendarSyncCallbackPage');
+const PortalVisitorInvitePage = lazyNamed(() => import('@/pages/portal/visitors/invite'), 'PortalVisitorInvitePage');
+const PortalVisitorsExpectedPage = lazyNamed(() => import('@/pages/portal/visitors/expected'), 'PortalVisitorsExpectedPage');
 const AdminCalendarSyncPage = lazyNamed(() => import('@/pages/admin/calendar-sync'), 'AdminCalendarSyncPage');
 const RoomBookingRulesPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/index'), 'RoomBookingRulesPage');
 const RoomBookingRuleDetailPage = lazyNamed(() => import('@/pages/admin/room-booking-rules/detail'), 'RoomBookingRuleDetailPage');
@@ -173,7 +175,12 @@ export function App() {
                   <Route path="profile"  element={<PortalProfilePage />} />
                   {/* Phase 2 placeholders — top nav + bottom tabs link here; redirect home until built */}
                   <Route path="rooms"    element={<BookRoomPage />} />
-                  <Route path="visitors" element={<Navigate to="/portal" replace />} />
+                  {/* Visitors — host invite + upcoming list. The bare /portal/visitors
+                      redirects to the host's "expected" list (the meaningful default
+                      surface for someone clicking the nav tab). */}
+                  <Route path="visitors" element={<Navigate to="/portal/visitors/expected" replace />} />
+                  <Route path="visitors/invite" element={<PortalVisitorInvitePage />} />
+                  <Route path="visitors/expected" element={<PortalVisitorsExpectedPage />} />
                   <Route path="order"    element={<PortalOrderPage />} />
                   <Route path="account"  element={<Navigate to="/portal/profile" replace />} />
                   <Route path="book" element={<Navigate to="/portal/rooms" replace />} />

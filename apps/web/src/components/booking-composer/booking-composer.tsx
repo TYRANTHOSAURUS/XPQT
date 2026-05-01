@@ -24,8 +24,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { PersonPicker } from '@/components/person-picker';
 import { useCreateBooking, useMultiRoomBooking } from '@/api/room-booking';
 import { spacesListOptions } from '@/api/spaces';
+import type { Space } from '@/api/spaces';
 import { useCostCenters } from '@/api/cost-centers';
 import { usePerson } from '@/api/persons';
+import { useCreateInvitation } from '@/api/visitors';
+import { VisitorsSection } from './sections/visitors-section';
 import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { toast, toastError, toastSuccess } from '@/lib/toast';
@@ -225,7 +228,30 @@ export function BookingComposer({
 
   const createBooking = useCreateBooking();
   const createMultiRoom = useMultiRoomBooking();
+  const createInvitation = useCreateInvitation();
   const submitting = createBooking.isPending || createMultiRoom.isPending;
+
+  // Walk the spaces tree from a child up to its enclosing site/building.
+  // Used by the visitors flush after a booking lands — visitor invitations
+  // need a building_id, but the composer only knows the room. The cache
+  // is the same one rendering the picker, so this is a synchronous lookup.
+  const resolveBuildingId = useCallback(
+    (spaceId: string | null): string | null => {
+      if (!spaceId || !spacesCache) return null;
+      const byId = new Map<string, Space>();
+      for (const s of spacesCache) byId.set(s.id, s);
+      let cursor: Space | undefined = byId.get(spaceId);
+      let depth = 0;
+      while (cursor && depth < 10) {
+        if (cursor.type === 'building' || cursor.type === 'site') return cursor.id;
+        if (!cursor.parent_id) return null;
+        cursor = byId.get(cursor.parent_id);
+        depth += 1;
+      }
+      return null;
+    },
+    [spacesCache],
+  );
   // Drill-down view inside the composer — services live here as a
   // sub-pane, NOT a stacked Sheet. Single primary CTA (the composer
   // footer's Book button) regardless of which pane the user is on.
@@ -455,6 +481,7 @@ export function BookingComposer({
     if (overrideValidation) return;
     try {
       let reservationId: string | undefined;
+      let bookingBundleId: string | null | undefined;
       if (effectiveState.additionalSpaceIds.length > 0) {
         const payload = buildMultiRoomBookingPayload({
           state: effectiveState,
@@ -466,7 +493,9 @@ export function BookingComposer({
         const result = await createMultiRoom.mutateAsync(payload);
         // Surface the primary's reservation id for the onBooked callback
         // so navigation lands on a useful page.
-        reservationId = (result as { reservations?: Array<{ id: string }> })?.reservations?.[0]?.id;
+        const primary = (result as { reservations?: Array<{ id: string; booking_bundle_id?: string | null }> })?.reservations?.[0];
+        reservationId = primary?.id;
+        bookingBundleId = primary?.booking_bundle_id ?? null;
       } else {
         const payload = buildBookingPayload({
           state: effectiveState,
@@ -477,7 +506,53 @@ export function BookingComposer({
         if (!payload) return;
         const result = await createBooking.mutateAsync(payload);
         reservationId = (result as { id?: string })?.id;
+        bookingBundleId = (result as { booking_bundle_id?: string | null })?.booking_bundle_id ?? null;
       }
+
+      // Visitors flush — POST each pending invitation now that the
+      // reservation exists. We carry booking_bundle_id (when the
+      // reservation has one) and reservation_id back so the invite is
+      // cascaded if the booking is later cancelled. Failures don't roll
+      // back the booking — surface a per-row toast and leave the
+      // successful invites in place. The host's expected list is
+      // invalidated on each success via the mutation's onSuccess.
+      if (effectiveState.visitors.length > 0 && reservationId) {
+        const buildingId = resolveBuildingId(effectiveState.spaceId);
+        if (buildingId && effectiveState.startAt) {
+          for (const v of effectiveState.visitors) {
+            try {
+              await createInvitation.mutateAsync({
+                first_name: v.first_name,
+                last_name: v.last_name,
+                email: v.email,
+                phone: v.phone,
+                company: v.company,
+                visitor_type_id: v.visitor_type_id,
+                expected_at: effectiveState.startAt,
+                expected_until: effectiveState.endAt ?? undefined,
+                building_id: buildingId,
+                meeting_room_id: effectiveState.spaceId ?? undefined,
+                booking_bundle_id: bookingBundleId ?? undefined,
+                reservation_id: reservationId,
+                co_host_person_ids: v.co_host_person_ids,
+                notes_for_visitor: v.notes_for_visitor,
+                notes_for_reception: v.notes_for_reception,
+              });
+            } catch (err) {
+              toastError(
+                `Couldn't invite ${v.first_name}`,
+                { error: err },
+              );
+            }
+          }
+        } else {
+          toastError("Couldn't invite visitors", {
+            description:
+              "We couldn't resolve the room's building. Re-invite from /portal/visitors/invite.",
+          });
+        }
+      }
+
       toastSuccess(
         isApprovalRoute
           ? 'Approval requested'
@@ -827,6 +902,33 @@ export function BookingComposer({
           </button>
         )}
       </FieldSet>
+
+      {/* Visitors — pre-register people coming to this meeting. Hidden
+          until the booking has a building anchor (which is implicit from
+          the picked room). The section enqueues PendingVisitor rows in
+          composer state; the flush in `handleSubmit` POSTs them after the
+          reservation lands so each invite carries booking_bundle_id +
+          reservation_id for cascade. */}
+      <VisitorsSection
+        visitors={state.visitors}
+        bookingDefaults={{
+          expected_at: state.startAt ?? undefined,
+          expected_until: state.endAt ?? undefined,
+          building_id: resolveBuildingId(state.spaceId) ?? undefined,
+          meeting_room_id: state.spaceId ?? undefined,
+        }}
+        disabled={!state.spaceId || !state.startAt}
+        disabledReason={
+          !state.spaceId
+            ? 'Pick a room first — visitors are anchored to a building.'
+            : !state.startAt
+              ? 'Pick a start time first.'
+              : undefined
+        }
+        onAdd={(visitor) => dispatch({ type: 'ADD_VISITOR', visitor })}
+        onUpdate={(visitor) => dispatch({ type: 'UPDATE_VISITOR', visitor })}
+        onRemove={(localId) => dispatch({ type: 'REMOVE_VISITOR', localId })}
+      />
 
       {/* Cost center — operator mode + has services */}
       {mode === 'operator' && state.services.length > 0 && (
