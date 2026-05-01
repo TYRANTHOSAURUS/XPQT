@@ -335,6 +335,39 @@ begin
     end if;
   end;
 
+  -- ===========================================================
+  -- A12. service_role has full DML on public.work_orders.
+  -- ===========================================================
+  -- Defends the bug class that surfaced in the 2026-05-01 P0:
+  -- migration 00222 (step 1c.3.6 atomic rename) applied a deliberately
+  -- temporary "SELECT only for service_role" posture, intended to be
+  -- reversed at step 1c.4 (writer flip). The reversal never shipped.
+  -- Sessions 7-12 layered the entire work-order command surface on top,
+  -- mocking Supabase in every test, so the 42501 "permission denied for
+  -- table work_orders" error only surfaced when the user clicked PATCH
+  -- against the live DB. Migration 00248 restores INSERT/UPDATE/DELETE;
+  -- this assertion prevents the same shape of regression on any future
+  -- "temporary grant clamp during a multi-step rework" pattern.
+  --
+  -- The whole NestJS API authenticates as service_role for DML. Any
+  -- writable tenant table that loses one of those four privileges
+  -- breaks an entire surface silently — every test passes, every UI
+  -- click 500s.
+  for v_missing in
+    select p
+      from unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']) as t(p)
+     where not exists (
+       select 1 from information_schema.role_table_grants
+        where table_schema = 'public'
+          and table_name   = 'work_orders'
+          and grantee      = 'service_role'
+          and privilege_type = t.p
+     )
+  loop
+    raise exception 'A12: service_role is missing % on public.work_orders. The API uses service_role for all writes; without this, every WO mutation 42501s. See 00248 for the fix and the 2026-05-01 P0 postmortem in docs/follow-ups/data-model-rework-full-handoff.md.', v_missing;
+  end loop;
+  raise notice 'A12 OK: service_role has full DML on public.work_orders';
+
   raise notice '';
-  raise notice 'OK: all assertions passed (A1..A11)';
+  raise notice 'OK: all assertions passed (A1..A12)';
 end $$;
