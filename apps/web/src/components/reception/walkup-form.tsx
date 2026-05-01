@@ -162,74 +162,76 @@ export function WalkupForm({ buildingId, onClose }: WalkupFormProps) {
         </Button>
       </div>
 
-      <FieldGroup>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="walkup-first-name">First name</FieldLabel>
-            <Input
-              id="walkup-first-name"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              onBlur={() => setTouched((t) => ({ ...t, first_name: true }))}
-              autoComplete="off"
-              aria-invalid={!!errors.first_name && touched.first_name}
-            />
-            {touched.first_name && errors.first_name && (
-              <FieldError>{errors.first_name}</FieldError>
-            )}
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="walkup-last-name">Last name</FieldLabel>
-            <Input
-              id="walkup-last-name"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-              autoComplete="off"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="walkup-host">Host</FieldLabel>
-            <PersonPicker
-              value={hostId}
-              onChange={(id) => {
-                setHostId(id);
-                setTouched((t) => ({ ...t, host: true }));
-              }}
-              placeholder="Search by name or email…"
-            />
-            {touched.host && errors.host && <FieldError>{errors.host}</FieldError>}
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="walkup-type">Visitor type</FieldLabel>
-            <Select
-              value={visitorTypeId}
-              onValueChange={(v) => {
-                setVisitorTypeId(v ?? '');
-                setTouched((t) => ({ ...t, visitor_type_id: true }));
-              }}
-              disabled={typesLoading}
-            >
-              <SelectTrigger id="walkup-type">
-                <SelectValue
-                  placeholder={typesLoading ? 'Loading…' : 'Pick a visitor type'}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {walkupTypes.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.display_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {touched.visitor_type_id && errors.visitor_type_id && (
-              <FieldError>{errors.visitor_type_id}</FieldError>
-            )}
-          </Field>
-        </div>
+      {/* Override FieldGroup's default vertical flex with a 2-up grid on
+           wider viewports — the walk-up rush UX wants a tight pair of
+           columns rather than a tall stack. FieldGroup accepts className
+           for exactly this case (per the shadcn Field primitive). */}
+      <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field>
+          <FieldLabel htmlFor="walkup-first-name">First name</FieldLabel>
+          <Input
+            id="walkup-first-name"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, first_name: true }))}
+            autoComplete="off"
+            aria-invalid={!!errors.first_name && touched.first_name}
+          />
+          {touched.first_name && errors.first_name && (
+            <FieldError>{errors.first_name}</FieldError>
+          )}
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="walkup-last-name">Last name</FieldLabel>
+          <Input
+            id="walkup-last-name"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="walkup-host">Host</FieldLabel>
+          <PersonPicker
+            value={hostId}
+            onChange={(id) => {
+              setHostId(id);
+              setTouched((t) => ({ ...t, host: true }));
+            }}
+            placeholder="Search by name or email…"
+          />
+          {touched.host && errors.host && <FieldError>{errors.host}</FieldError>}
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="walkup-type">Visitor type</FieldLabel>
+          <Select
+            value={visitorTypeId}
+            onValueChange={(v) => {
+              setVisitorTypeId(v ?? '');
+              setTouched((t) => ({ ...t, visitor_type_id: true }));
+            }}
+            disabled={typesLoading}
+          >
+            <SelectTrigger id="walkup-type">
+              <SelectValue
+                placeholder={typesLoading ? 'Loading…' : 'Pick a visitor type'}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {walkupTypes.map((t) => (
+                <SelectItem key={t.id} value={t.id}>
+                  {t.display_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {touched.visitor_type_id && errors.visitor_type_id && (
+            <FieldError>{errors.visitor_type_id}</FieldError>
+          )}
+        </Field>
 
         {showMore && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <>
             <Field>
               <FieldLabel htmlFor="walkup-company">Company</FieldLabel>
               <Input
@@ -252,7 +254,7 @@ export function WalkupForm({ buildingId, onClose }: WalkupFormProps) {
                 Defaults to now. Backdate if they walked in earlier.
               </FieldDescription>
             </Field>
-          </div>
+          </>
         )}
       </FieldGroup>
 

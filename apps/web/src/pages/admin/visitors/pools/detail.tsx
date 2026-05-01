@@ -27,13 +27,12 @@ import {
   Copy,
   Plus,
   RotateCw,
-  Trash2,
   X,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { toastCreated, toastError, toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
-import { Button, buttonVariants } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
   Dialog,
@@ -73,7 +72,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import {
   useAddPass,
@@ -935,52 +933,74 @@ function KioskSetupDialog({
 
 function DangerGroup({
   anchorName,
-  canDelete,
-  onDeleted,
 }: {
   anchorName: string;
-  canDelete: boolean;
-  onDeleted: () => void;
+  /** Reserved for a future "block decommission while passes in use"
+   *  affordance. The current dialog is informational and never blocked. */
+  canDelete?: boolean;
+  /** Reserved for the future delete path. Today decommission is manual. */
+  onDeleted?: () => void;
 }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [howToOpen, setHowToOpen] = useState(false);
   // Hard delete of a pool anchor is intentionally not exposed by the
   // backend — pool rows are individual passes, and retiring + opting the
-  // anchor out is the supported teardown path. The button below is a
-  // placeholder pointing the admin at the right path.
+  // anchor out is the supported teardown path. The "decommission" affordance
+  // here is purely informational; clicking opens a docs-style dialog that
+  // walks the admin through the manual teardown steps. We deliberately do
+  // not style this as destructive — there's no destructive backend call.
 
   return (
     <SettingsGroup title="Danger zone">
       <SettingsRow
         label="Decommission this pool"
-        description="Pool deletion isn't supported when passes are in use or reserved. Retire each pass, then opt the anchor space out via Locations."
+        description="Pool deletion isn't supported. To wind a pool down, retire each pass and opt the anchor space out via Locations."
       >
         <Button
           variant="outline"
           size="sm"
-          className={cn(
-            buttonVariants({ variant: 'destructive' }),
-            'h-8 px-3 gap-1.5',
-            !canDelete && 'pointer-events-none opacity-50',
-          )}
-          disabled={!canDelete}
-          onClick={() => setConfirmOpen(true)}
+          className="h-8 px-3 gap-1.5"
+          onClick={() => setHowToOpen(true)}
         >
-          <Trash2 className="size-3.5" />
-          Plan decommission
+          How to decommission this pool
         </Button>
       </SettingsRow>
 
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title={`Decommission ${anchorName} pool`}
-        description="Decommissioning is a manual process. Retire each pass first, then visit the anchor space in Locations and clear its uses_visitor_passes flag. Future visits at descendant spaces will resolve to the next-most-specific pool."
-        confirmLabel="Got it"
-        onConfirm={async () => {
-          // No backend call — this is informational.
-          onDeleted();
-        }}
-      />
+      <Dialog open={howToOpen} onOpenChange={setHowToOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Decommission {anchorName} pool</DialogTitle>
+            <DialogDescription>
+              Decommissioning is a manual process — there's no single
+              destructive action. Follow these steps in order.
+            </DialogDescription>
+          </DialogHeader>
+          <ol className="flex flex-col gap-2 px-1 text-sm">
+            <li>
+              <span className="font-medium">1. Retire every pass</span> —
+              from the Pass list above, retire each pass one by one. Lost
+              and in-use passes need to be returned or recovered first.
+            </li>
+            <li>
+              <span className="font-medium">2. Opt the anchor space out</span>
+              {' '}— open the anchor space (this pool's anchor: {anchorName})
+              under Locations and clear its{' '}
+              <code className="chip rounded-sm bg-muted px-1 py-0.5 text-[12px]">
+                uses_visitor_passes
+              </code>{' '}
+              flag.
+            </li>
+            <li>
+              <span className="font-medium">3. Verify resolution</span> —
+              future visits at descendant spaces will resolve to the
+              next-most-specific pool (or none, if this was the only
+              pool above them).
+            </li>
+          </ol>
+          <DialogFooter>
+            <Button onClick={() => setHowToOpen(false)}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </SettingsGroup>
   );
 }

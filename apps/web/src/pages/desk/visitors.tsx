@@ -14,10 +14,14 @@
  * only sees their authorized set.
  */
 import { Link } from 'react-router-dom';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import {
+  SettingsPageHeader,
+  SettingsPageShell,
+  SettingsSection,
+} from '@/components/ui/settings-page';
 import {
   Table,
   TableBody,
@@ -39,58 +43,52 @@ export function DeskVisitorsPage() {
   const { data, isLoading, isError } = useDeskLens();
 
   return (
-    <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Visitors</h1>
-        <p className="text-muted-foreground mt-1">
-          Service-desk lens — contractor visits with tickets, approvals to
-          chase, and today's escalations. Reception's full workspace lives
-          at <Link to="/reception/today" className="underline">/reception</Link>.
-        </p>
-      </div>
+    <SettingsPageShell width="xwide">
+      <SettingsPageHeader
+        title="Visitors"
+        description="Visitors tied to active service tickets, pending approvals, and today's escalations."
+      />
+      <p className="-mt-2 text-sm text-muted-foreground">
+        Reception's full workspace lives at{' '}
+        <Link to="/reception/today" className="underline">
+          /reception
+        </Link>
+        .
+      </p>
 
       {isLoading && (
         <div className="text-sm text-muted-foreground">Loading…</div>
       )}
 
       {isError && (
-        <Card>
-          <CardContent className="py-8 text-sm text-muted-foreground text-center">
-            Couldn't load the desk lens. Refresh to retry.
-          </CardContent>
-        </Card>
+        <SettingsSection title="Couldn't load" description="Refresh to retry.">
+          <div className="py-2 text-sm text-muted-foreground">
+            The desk lens didn't load. Refresh the page to retry.
+          </div>
+        </SettingsSection>
       )}
 
       {data && (
         <>
-          <ContractorsCard rows={data.contractors} />
-          <PendingApprovalCard rows={data.pending_approval} />
-          <EscalationsCard
+          <ContractorsSection rows={data.contractors} />
+          <PendingApprovalSection rows={data.pending_approval} />
+          <EscalationsSection
             ackDelayed={data.escalations.host_not_acknowledged}
             unreturnedPasses={data.escalations.unreturned_passes}
           />
         </>
       )}
-    </div>
+    </SettingsPageShell>
   );
 }
 
-function ContractorsCard({ rows }: { rows: DeskLensRow[] }) {
+function ContractorsSection({ rows }: { rows: DeskLensRow[] }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          Contractor visitors
-          <Badge variant="secondary" className="tabular-nums">
-            {rows.length}
-          </Badge>
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Contractors arriving today. If a service ticket exists for the same
-          bundle, the link is shown so the desk can prep the work.
-        </p>
-      </CardHeader>
-      <CardContent>
+    <SettingsSection
+      title={`Contractor visitors (${rows.length})`}
+      description="Contractors arriving today. If a service ticket exists for the same bundle, the link is shown so the desk can prep the work."
+    >
+      <>
         {rows.length === 0 ? (
           <EmptyRow icon={Inbox} text="No contractor visits today." />
         ) : (
@@ -157,27 +155,18 @@ function ContractorsCard({ rows }: { rows: DeskLensRow[] }) {
             </TableBody>
           </Table>
         )}
-      </CardContent>
-    </Card>
+      </>
+    </SettingsSection>
   );
 }
 
-function PendingApprovalCard({ rows }: { rows: DeskLensRow[] }) {
+function PendingApprovalSection({ rows }: { rows: DeskLensRow[] }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          Pending approval
-          <Badge variant="secondary" className="tabular-nums">
-            {rows.length}
-          </Badge>
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Visitors waiting on an approver. Chase the approver or escalate
-          via <Link to="/desk/approvals" className="underline">Approvals</Link>.
-        </p>
-      </CardHeader>
-      <CardContent>
+    <SettingsSection
+      title={`Pending approval (${rows.length})`}
+      description="Visitors waiting on an approver. Chase the approver or escalate via Approvals."
+    >
+      <>
         {rows.length === 0 ? (
           <EmptyRow icon={Inbox} text="No pending approvals." />
         ) : (
@@ -235,12 +224,12 @@ function PendingApprovalCard({ rows }: { rows: DeskLensRow[] }) {
             </TableBody>
           </Table>
         )}
-      </CardContent>
-    </Card>
+      </>
+    </SettingsSection>
   );
 }
 
-function EscalationsCard({
+function EscalationsSection({
   ackDelayed,
   unreturnedPasses,
 }: {
@@ -248,24 +237,14 @@ function EscalationsCard({
   unreturnedPasses: UnreturnedPassRow[];
 }) {
   const hasAny = ackDelayed.length > 0 || unreturnedPasses.length > 0;
+  const total = ackDelayed.length + unreturnedPasses.length;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <AlertTriangle className="size-4 text-amber-600" />
-          Today's escalations
-          <Badge variant="secondary" className="tabular-nums">
-            {ackDelayed.length + unreturnedPasses.length}
-          </Badge>
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Visitors arrived without their host acknowledging, and passes that
-          haven't been returned. Reception handles these inline; the desk's
-          view is read-only.
-        </p>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+    <SettingsSection
+      title={`Today's escalations (${total})`}
+      description="Visitors arrived without their host acknowledging, and passes that haven't been returned. Reception handles these inline; the desk's view is read-only."
+    >
+      <div className="flex flex-col gap-6">
         {!hasAny && (
           <EmptyRow
             icon={AlertTriangle}
@@ -367,8 +346,8 @@ function EscalationsCard({
             </Table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsSection>
   );
 }
 
