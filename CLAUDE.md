@@ -28,6 +28,29 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
+- `pnpm smoke:work-orders` — live-API smoke test for the work-order + case command surface (see "Smoke gate" below)
+
+## Smoke gate (mandatory before claiming WO/case-surface work shipped)
+
+**Run `pnpm smoke:work-orders` (with the dev server running) before
+claiming any work touching `WorkOrderService` / `TicketService.update`
+/ the desk-detail sidebar is complete.** This script lives at
+`apps/api/scripts/smoke-work-orders.mjs`. It mints a real Admin JWT
+and runs the full mutation matrix against the live API (status,
+priority, assignment, plan, sla, title, tags, cost-fractional,
+dispatch — plus 7 validation probes for ghost uuids, malformed uuids,
+oversized arrays, ghost assignees, empty title). Uses the
+current-row-XOR-sentinel pattern so every mutation actually exercises
+the write path (no phantom-success on a no-op fast path).
+
+This gate is the structural defense against the recurring failure
+mode that produced the 2026-05-01 P0 (mocked-Supabase tests pass +
+real DB writes 42501) and the Slice 3.1 cost-float bug (no-op fast
+path silently broken on NUMERIC round-trip). Code review + jest
+specs are necessary but **not sufficient** — they don't talk to a
+real database.
+
+Exit 0 = all probes pass. Exit 1 = at least one regression.
 
 ## Supabase: remote vs local — READ BEFORE WRITING MIGRATIONS
 

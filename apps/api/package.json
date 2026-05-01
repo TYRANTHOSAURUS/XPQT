@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "smoke:work-orders": "node scripts/smoke-work-orders.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",
