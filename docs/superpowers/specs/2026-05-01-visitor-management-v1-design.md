@@ -69,7 +69,9 @@
 
 ### Languages
 
-**English-only on every surface in v1, by user direction.** Reasoning: translating before the surface stabilizes throws work away when iterations happen. Visitor-facing strings flow through proper i18n primitives (key-based, not hardcoded) so the eventual platform-wide translation pass is mechanical. Documented risk: wave-1 NL/BE customers may push back on English-only visitor emails; mitigation is customer-expectation management at sales/migration time.
+**English-only on every surface in v1, by user direction.** Reasoning: translating before the surface stabilizes throws work away when iterations happen. Visitor-facing strings flow through proper i18n primitives (key-based, not hardcoded) so the eventual platform-wide translation pass is mechanical.
+
+**Documented risk (acknowledged):** Visitor-facing surfaces — the invitation email, the cancel landing page, the kiosk welcome flow — ship in English only. Wave-1 NL/BE customers may push back at sales/migration time. **Mitigation:** customer expectation is set explicitly during the sales conversation. Full NL + FR ships in a single platform-wide translation pass once feature surfaces stabilize. Visitor-email translation is the highest-priority post-v1 polish item and is tracked in `docs/follow-ups/visitors-v1-polish.md`.
 
 ---
 
@@ -103,12 +105,12 @@ Exports: `VisitorService` (read), `InvitationService.create()`, `VisitorPassPool
 | `/portal/visitors/invite` | Hosts (employees) | Real user | Visitor-first invite form |
 | `/portal/visitors/expected` | Hosts | Real user | Host's "my upcoming visitors" list |
 | Booking composer · "Visitor" line | Hosts | Real user | Booking-first invite (existing composer extended) |
-| `/reception/*` | Reception staff | Real user + `visitors:reception` permission | Reception workspace shell |
+| `/reception/*` | Reception staff | Real user + `visitors.reception` permission | Reception workspace shell |
 | `/reception/today` | Reception staff | Same | Today's visitors today-view (the 9am rush surface) |
 | `/reception/passes` | Reception staff | Same | Pass pool management at reception's location |
 | `/reception/yesterday` | Reception staff | Same | "Yesterday's loose ends" reconciliation |
 | `/reception/daglijst` | Reception staff | Same | Printable daily list |
-| `/desk/visitors` | Service desk | Real user + `visitors:reception` | Focused lens — visitors tied to active tickets, plus today's escalations. Reception is full view; desk lens is the subset relevant to ticket workflows |
+| `/desk/visitors` | Service desk | Real user + `visitors.reception` | Focused lens — visitors tied to active tickets, plus today's escalations. Reception is full view; desk lens is the subset relevant to ticket workflows |
 | `/admin/visitors/types` | Admin | Real user + tenant admin role | Visitor type config (per-type approval / walk-up / requirements) |
 | `/admin/visitors/passes` | Admin | Real user + tenant admin role | Pool management (CRUD across all locations) |
 | `/kiosk/:buildingId` | Public (visitor) | Anonymous building-bound token | Kiosk-lite |
@@ -523,10 +525,10 @@ as $$
                  and vh.person_id = (select person_id from public.users where id = p_user_id)
            ))
   union
-  -- Tier 2: Operators with visitors:reception in their location scope
+  -- Tier 2: Operators with visitors.reception in their location scope
   select v.id from public.visitors v
     where v.tenant_id = p_tenant_id
-      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors:reception')
+      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.reception')
       and v.building_id in (
         select space_id from public.org_node_location_grants ognlg
           join public.user_role_assignments ura on ura.user_id = p_user_id
@@ -534,10 +536,10 @@ as $$
         where ognlg.org_node_id = ura.org_node_id  -- existing scope plumbing
       )
   union
-  -- Tier 3: Override — visitors:read_all
+  -- Tier 3: Override — visitors.read_all
   select v.id from public.visitors v
     where v.tenant_id = p_tenant_id
-      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors:read_all');
+      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.read_all');
 $$;
 ```
 
@@ -676,7 +678,7 @@ The existing booking composer adds a "Visitors" section alongside Catering/AV/Cl
 - One bundle can have N visitors.
 - Cancellation cascade behavior per §8.
 
-The "Visitor" composer section is hidden in tenants where the inviter lacks `visitors:invite`.
+The "Visitor" composer section is hidden in tenants where the inviter lacks `visitors.invite`.
 
 ### 6.3 Cross-building invite scope check
 
@@ -692,7 +694,7 @@ Walk-ups don't go through this form — they go through reception or the kiosk's
 
 ### 7.1 Why a new workspace
 
-Service desk is at `/desk/*`; portal at `/portal/*`; admin at `/admin/*`. Reception has its own job — reception-shift workflows differ from desk/admin. Putting reception inside admin compromises both. The workspace is a new top-level peer, accessed by `visitors:reception`-permission users.
+Service desk is at `/desk/*`; portal at `/portal/*`; admin at `/admin/*`. Reception has its own job — reception-shift workflows differ from desk/admin. Putting reception inside admin compromises both. The workspace is a new top-level peer, accessed by `visitors.reception`-permission users.
 
 ### 7.2 The 9am rush UX (reviewer A5)
 
@@ -928,6 +930,8 @@ case 'visitor_invite':
 
 `VisitorsModule` provides `VisitorService` to `ApprovalModule` via `forwardRef` (existing pattern at approval.module.ts:33-38). Reviewer B6 resolved.
 
+**Vocabulary seam — `rejected` ↔ `denied`.** The approval module's outcome enum is `'approved' | 'rejected'` (approver-domain words). The visitor module's terminal status for refused invites is `'denied'` (visitor-domain word). The translation happens at the visitor module boundary inside `VisitorService.onApprovalDecided` — the approval dispatcher branch stays a one-line passthrough that matches every other target type's branch shape. This is intentional v1 debt: future work may unify the vocabulary across domains. If the approval enum is ever refactored, the translation in `visitor.service.ts` needs updating in lockstep (look for the `SEAM:` comment).
+
 ### 11.2 Routing rules
 
 The existing approval routing rule engine decides who approves. For `visitor_invite`:
@@ -964,6 +968,16 @@ Walk-ups for approval-required visitor types are denied (per Q3 lock D). The wal
 ### 11.5 Multi-host + approval (orthogonal — Q4 reopened)
 
 The approvals module decides who approves. Multi-host status doesn't change that. If a tenant configures "primary host approves contractor invites", the rule resolves to `primary_host_person_id`. If they configure "any host approves", the rule resolves to "OR over visitor_hosts". If they configure "facilities lead approves", neither matters. Reviewer concern resolved by routing through existing rules.
+
+### 11.6 Mid-flight flag changes are forward-only
+
+If a tenant flips `visitor_types.requires_approval` from `false` to `true` after some invites for that type are already in `expected`, those invites are **NOT** retroactively gated — they remain `expected` and proceed normally through arrival/check-in. Only invites *created after* the flag flip are subject to the new rule.
+
+The reverse case is symmetric: flipping `requires_approval` from `true` to `false` does not retroactively un-gate invites already in `pending_approval`. Those invites still need an explicit approver decision (or admin cancellation) to leave `pending_approval`.
+
+This is the natural behavior of the existing implementation — `InvitationService.create` reads the flag at create time, persists the resulting status, and the state machine takes over from there. **No code change is needed; this section documents the contract** so future contributors don't try to "fix" what isn't broken. If a tenant genuinely needs to retroactively gate or ungate in-flight invites, that's an admin operation (manually cancel + re-invite), not a flag-flip side effect.
+
+The same forward-only rule applies to `visitor_types.allow_walk_up` — flipping it doesn't retroactively change the status of invites already created.
 
 ---
 
@@ -1009,19 +1023,19 @@ Marked passes appear in reception's "Yesterday's loose ends" tile. Reception can
 
 | Key | Default | Purpose |
 |---|---|---|
-| `visitors:invite` | true (employee role) | Create invitations + use composer line |
-| `visitors:reception` | **false** (opt-in via role admin) | Access `/reception/*` workspace + `/desk/visitors` lens + check-in actions |
-| `visitors:read_all` | false (admin role only) | Override: see every visitor in tenant regardless of building scope |
+| `visitors.invite` | true (employee role) | Create invitations + use composer line |
+| `visitors.reception` | **false** (opt-in via role admin) | Access `/reception/*` workspace + `/desk/visitors` lens + check-in actions |
+| `visitors.read_all` | false (admin role only) | Override: see every visitor in tenant regardless of building scope |
 
-Reviewer C10 resolved: `visitors:reception` defaults OFF, requires explicit grant via tenant role admin. Tenants opt in by granting to a role they already have ("Service Desk", "Reception", whatever they call it).
+Reviewer C10 resolved: `visitors.reception` defaults OFF, requires explicit grant via tenant role admin. Tenants opt in by granting to a role they already have ("Service Desk", "Reception", whatever they call it).
 
 ### 13.2 Visibility rules (3-tier model)
 
 `visitor_visibility_ids(user_id, tenant_id)` SQL function:
 
 - **Tier 1 — Hosts** (always): see visits where they're primary or in `visitor_hosts`.
-- **Tier 2 — Operators**: with `visitors:reception` permission AND building in their location scope (existing `org_node_location_grants`).
-- **Tier 3 — Override**: with `visitors:read_all`, see everything.
+- **Tier 2 — Operators**: with `visitors.reception` permission AND building in their location scope (existing `org_node_location_grants`).
+- **Tier 3 — Override**: with `visitors.read_all`, see everything.
 
 `VisitorService.list()` JOINs against this function. The function is used as the authoritative predicate; no hand-rolled visibility queries.
 
@@ -1056,6 +1070,23 @@ Per GDPR baseline §3:
 ### 14.4 Right of erasure
 
 A visitor (or their employer) can request erasure via `privacy@tenant.com`. Admin invokes per-person erasure flow → cascade clears their persons row → all linked visitors records' PII is anonymized via the existing pipeline. Aggregate stats preserved.
+
+### 14.5 Lifecycle for `denied` and `cancelled` visitors
+
+The retention pipeline treats every terminal status the same — `checked_out`, `no_show`, `denied`, and `cancelled` are all subject to the same anonymization clock. The status itself is not PII; it's an aggregate-grade signal kept for reporting.
+
+| Terminal status | Retention | What anonymizes | What stays |
+|---|---|---|---|
+| `checked_out` | 180d default (max 365d w/ LIA) | `persons` PII (name, email, phone, company, etc.) | `visitor` row, `visitor_type_id`, `building_id`, `arrived_at`, `checked_out_at`, `auto_checked_out`, `status` |
+| `no_show` | 180d | same | `visitor` row, status, expected window |
+| `denied` | 180d (same clock as `cancelled`) | same | `visitor` row, `status='denied'`, the linked `approvals` row stays untouched |
+| `cancelled` | 180d | same | `visitor` row, `status='cancelled'`, `cancelled_at`, `cancelled_via` |
+
+**Approval rows survive anonymization.** When a `denied` visitor is anonymized, the corresponding `approvals` row is **not** cascaded. The approval is an audit-grade artifact for the *approver*, not the visitor — the approver's decision needs to remain accountable even after the visitor PII is gone. The approval row's `target_id` still points at the visitor row, but the visitor row's PII has been replaced. Downstream readers of `approvals` (audit log, approval reports) must tolerate a visitor `target_id` whose `persons` reference is anonymized — same pattern as ticket anonymization.
+
+**Aggregate stats preserved.** Counts of denials per visitor type, no-show rates per building, cancellation rates per requester role — all of these survive anonymization because they read from `visitors.status` + `visitor_type_id` + `building_id` + `created_at`, none of which is PII.
+
+**Why the `denied`/`cancelled` distinction matters post-anonymization.** Reporting consumers (`docs/superpowers/specs/2026-04-27-visitor-management-design.md` §10 reports) sometimes need to distinguish the two — denials reflect security policy effectiveness, cancellations reflect calendar churn. The distinction is preserved because `status` is not anonymized.
 
 ---
 

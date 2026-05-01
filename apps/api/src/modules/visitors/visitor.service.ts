@@ -108,6 +108,15 @@ export class VisitorService {
     }
 
     return this.db.tx(async (client: PoolClient) => {
+      // Mark this transaction as a sanctioned status-write path. The DB
+      // trigger `assert_visitor_status_transition` (migration 00270) reads
+      // this session-local setting on UPDATE OF status and raises if it's
+      // missing — that's how we keep transitionStatus the only path that
+      // can mutate visitors.status. The setting is per-tx; COMMIT clears
+      // it. SELECT FOR UPDATE itself does not trigger the trigger (only
+      // UPDATE OF status does), but we set the marker first so any
+      // future write inside this tx also runs under it.
+      await client.query(`select set_config('visitors.transition_marker', 'true', true)`);
       const lockResult = await client.query<VisitorRow>(
         `select id, tenant_id, status, arrived_at, logged_at, checked_out_at,
                 checkout_source, auto_checked_out, visitor_pass_id
@@ -325,6 +334,10 @@ export class VisitorService {
       throw new NotFoundException(`visitor ${visitorId} not found`);
     }
 
+    // SEAM: approval module uses 'rejected'; visitor module uses 'denied'.
+    // This translation is permanent v1 debt — if the approval domain ever
+    // refactors its outcome enum, this map needs updating in lockstep.
+    // See docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §11.
     const targetStatus: VisitorStatus = outcome === 'approved' ? 'expected' : 'denied';
 
     // Idempotent: already in the target post-state — no-op.
