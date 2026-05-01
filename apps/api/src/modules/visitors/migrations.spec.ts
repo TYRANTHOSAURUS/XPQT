@@ -228,6 +228,50 @@ describe('visitors v1 schema — cross-tenant isolation', () => {
       await expectOpaqueAcrossTenants(`select id from public.visit_invitation_tokens where token_hash = 'spec-test-hash'`);
     });
   });
+
+  test('kiosk_tokens is opaque across tenants (service_role only)', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+      // Insert as service_role — the only role with INSERT grant. Authenticated
+      // and anon roles have no grants on this table; anonymous lookups go
+      // through a SECURITY DEFINER function (added in slice 2). RLS is on with
+      // no tenant_isolation policy because access is gated at the grant level.
+      await client.query(`set local role service_role`);
+      await client.query(
+        `insert into public.kiosk_tokens (tenant_id, building_id, token_hash)
+         values ($1, '99000000-0000-0000-0000-000000000a01', 'spec-test-kiosk-hash')`,
+        [TENANT_A],
+      );
+
+      // Tenant B claim — must NOT see tenant A's row. expectOpaqueAcrossTenants
+      // accepts either zero rows (RLS predicate) or 42501 (revoked grants);
+      // for kiosk_tokens this hits the 42501 path because authenticated has no
+      // SELECT grant at all. Wrap in a savepoint so the 42501 error doesn't
+      // poison the outer transaction (we run a second select after this).
+      await setTenantClaim(TENANT_B);
+      await client.query('savepoint sp_kiosk_b');
+      try {
+        await expectOpaqueAcrossTenants(`select id from public.kiosk_tokens where token_hash = 'spec-test-kiosk-hash'`);
+      } finally {
+        await client.query('rollback to savepoint sp_kiosk_b');
+      }
+
+      // Tenant A claim — also must NOT see the row, because the table is
+      // service_role-only by design (no authenticated grant). This is the
+      // critical assertion for the access model: even the owning tenant's
+      // authenticated role cannot read kiosk_tokens directly; only the
+      // SECURITY DEFINER lookup function (slice 2) can.
+      await setTenantClaim(TENANT_A);
+      await client.query('savepoint sp_kiosk_a');
+      try {
+        await expectOpaqueAcrossTenants(`select id from public.kiosk_tokens where token_hash = 'spec-test-kiosk-hash'`);
+      } finally {
+        await client.query('rollback to savepoint sp_kiosk_a');
+      }
+    });
+  });
 });
 
 // --------------------------------------------------------------------------
