@@ -1,7 +1,178 @@
 # Data-model rework — handoff index for fresh-context agent
 
-**Session window:** 2026-04-30 → 2026-05-01 (11 sessions, 33 commits, 39 migrations on remote, 661 tests pass)
+**Session window:** 2026-04-30 → 2026-05-01 (12 sessions, 47 commits, 41 migrations on remote, 167+ work-order/ticket/sla tests pass)
 **Branch:** `main`
+
+---
+
+## ⚠️ P0 — USER-REPORTED REGRESSION (handoff to fresh agent at end of Session 12)
+
+**Reporter:** the user, while testing the desk UI on remote dev environment.
+
+**Symptoms (verbatim):**
+
+> "many updates in the current ticket and workorder page dont work. i cant
+> make workorders, i cant assign, or update any property of a workorder."
+
+This is a regression. Sessions 7–12 shipped the work-order command surface
+specifically to make those mutations work. Either the deployment is stale,
+or one of the recent commits introduced a bug, or the original 1c.10c
+brokenness was never end-to-end tested in the actual UI by the previous
+agents (likely answer — see "Honest meta-note" below).
+
+### What you (the fresh agent) need to do, in order
+
+**Step 1 — REPRODUCE BEFORE FIXING.** Don't trust the symptom description
+verbatim. Open the desk UI, log in as the test user, and confirm:
+
+1. Click into a work_order (from the desk tickets list with kind filter
+   removed, or from a booking detail's work_orders section, or via direct
+   URL `/desk/tickets/<work-order-id>`). Does the detail page load at all?
+   Does it show `ticket_kind = 'work_order'`?
+2. Try to change status from the sidebar Select. Does the network request
+   fire? What's the URL? What's the response?
+3. Try to dispatch (create a work_order from a parent case). Does
+   `POST /tickets/:id/dispatch` fire? What's the response?
+4. Try to assign a work_order team/user/vendor.
+
+Capture the actual HTTP requests + responses (browser devtools). Without
+this, you're debugging blind.
+
+### Plausible root causes — investigate in order of likelihood
+
+**Most likely — work_order detail READ path is broken on remote.** Sessions
+9–12 only fixed WRITE paths. The READ path (`GET /tickets/:id` returning a
+work_order's data with `ticket_kind = 'work_order'` synthesized) was
+assumed to work but was never tested by the recent sessions. If
+`displayedTicket` is undefined/null/wrong on the FE, every fix in this
+session arc silently degrades:
+
+- C4's defensive `if (!displayedTicket) return;` in `patch()` fires →
+  user sees no error, click does nothing.
+- The `ticket_kind === 'work_order'` dispatch in `patchWorkOrder` falls
+  through to `updateTicket.mutate` which calls `PATCH /tickets/:id`
+  which silently no-ops for work_order ids.
+
+Investigate first:
+
+```sql
+-- On remote: pick a real work_order id and confirm what the read endpoint returns
+select id, tenant_id from public.work_orders limit 1;
+-- Then in browser: GET /tickets/<that-id> — does it return the row, 404,
+-- or something else? Does it have ticket_kind set?
+```
+
+The handoff has been claiming `ticket_kind` is "synthesized post-1c.10c"
+but **no recent session verified this claim against a real endpoint
+response.** The claim originates in the original handoff (Session 6/7
+era) and has never been re-tested. **This is the first thing to verify.**
+
+Look at `apps/api/src/modules/ticket/ticket.controller.ts` `GET /:id`
+and `TicketService.getById`. Trace what they do with a work_order id.
+Per the rework's Step 1c.9 plan, work_order reads should go through a
+separate `/work-orders/:id` endpoint — but that was deferred. The
+current implementation either (a) reads from `tickets` (returns 404 for
+WO ids), (b) reads from a polymorphic helper, or (c) reads from
+work_orders directly. Whichever it is, the FE may be hitting the wrong
+table.
+
+**Second most likely — dispatch path broken by P2 gate backport.** Session
+12's `f376e12` added `tickets.assign` permission gate to
+`TicketService.reassign`. If `dispatch.service.ts` calls `reassign`
+internally (it shouldn't, but verify), the dispatch flow now requires
+`tickets.assign`. The grandfathering migration 00247 only covers roles
+with explicit `tickets.update` permission — roles with `tickets.dispatch`
+or other paths weren't grandfathered.
+
+```sql
+-- On remote: list all roles + their permissions
+select id, name, permissions from public.roles;
+-- Look for any role that has tickets.dispatch but NOT tickets.assign
+-- AND NOT tickets.write_all AND NOT tickets.* wildcard.
+```
+
+If the test user's role is one of those, that explains "can't make work_orders."
+
+**Third — single PATCH /work-orders/:id orchestrator has a bug.** Slice
+3.0 collapsed 5 endpoints into 1. The new `WorkOrderService.update()`
+dispatches by field-group, runs `assertCanPlan` N times. If the field-
+group detection has a bug (e.g., empty DTO field set throws BadRequest
+when it shouldn't, or a field is detected in the wrong group), the
+update silently no-ops or 400s.
+
+Check `apps/api/src/modules/work-orders/work-order.service.ts`'s
+`update()` method (added in commit `0d77367`). Specifically the
+`provided` set construction and the dispatch logic.
+
+**Fourth — FE dispatch in `patch()` has a bug.** The `patchWorkOrder`
+helper in `ticket-detail.tsx` was rewritten in `0d77367` to call a
+single mutation. Maybe the union DTO shape doesn't match what the
+backend expects, or `useUpdateWorkOrder`'s body is wrong. Check
+`apps/web/src/api/tickets/mutations.ts` `useUpdateWorkOrder` against
+the backend `UpdateWorkOrderDto`.
+
+**Fifth — the "synthesize ticket_kind" claim was never true.** If the
+backend never actually synthesized `ticket_kind` for work_order responses,
+the FE has been receiving `ticket_kind = undefined` for work_orders
+forever, and the `patchWorkOrder` dispatch never fired. All my work
+on the WO command surface has been correct in isolation but the FE
+dispatch never reached it.
+
+### Diagnostic commands the next agent should run
+
+```bash
+# 1. Confirm work_orders exist on remote
+PGPASSWORD="$(grep -E '^SUPABASE_DB_PASS=' .env | cut -d= -f2-)" \
+  psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+  -At -c "select count(*), array_agg(distinct status_category) from public.work_orders;"
+
+# 2. Run the auditing queries above (work_order count, role permissions)
+
+# 3. Start the dev server and hit the actual endpoints with curl
+pnpm dev
+# Then:
+# - GET /tickets/<work-order-id> — what does it return?
+# - GET /work-orders/<work-order-id>/can-plan — does it 200 or 404?
+# - PATCH /work-orders/<work-order-id> with a small body — does it work?
+
+# 4. Check the FE network tab for what URLs the desk-detail sidebar fires
+#    when the user clicks status / priority / assignee.
+```
+
+### What NOT to do
+
+- **Don't** rip out the security gates (P2). They're correct; the
+  grandfathering migration's coverage is the issue.
+- **Don't** revert the single PATCH orchestrator. The collapse is
+  architecturally right.
+- **Don't** assume `ticket_kind` synthesis works without verifying it
+  in a real response.
+- **Don't** push more migrations to remote until you understand the
+  shape of the regression. The first instinct of "add a column or fix
+  a permission" is wrong if the bug is in the read path.
+
+### Honest meta-note
+
+Sessions 7–12 added a LOT of code and tests but **none of them verified
+the actual UI flow end-to-end on remote.** I built tests against mocked
+Supabase, ran `db:reset` locally, ran assertions — but never opened the
+desk UI and clicked through. This is the recurring blind spot: tests
+that pass + lint that's clean + handoff that claims "shipped" without a
+single browser session.
+
+The fresh agent should:
+1. **Reproduce first.** Open the UI. Click. Watch network.
+2. **Diagnose with the queries above.** Don't speculate.
+3. **Fix the root cause** (likely the read path or the grandfathering
+   coverage), not the symptom.
+4. **Then** run a real UI smoke test before claiming the fix works.
+
+The work shipped in Sessions 7–12 is correct in code. What was missing
+was **the integration smoke test against the actual remote dev
+environment.** Add that to the exit criteria once this regression is
+resolved (item 1 below already implies it but didn't enforce it).
+
+---
 
 ## Reading order for fresh agent
 
@@ -299,10 +470,16 @@ The plan-reviewer correctly identified that "until product readiness" is not a p
 
 The work-order command surface is complete when ALL of:
 
-1. ⏳ The desk-detail sidebar can mutate every WO field without touching `TicketService`.
-   Specifically: status / priority / team / user / vendor / plan / SLA / cost / tags / watchers / title / description.
-   - status / priority / team / user / vendor / plan / SLA: ✅ done (Slices 0–2 + Slice 3.0 single PATCH orchestrator)
-   - cost / tags / watchers / title / description: ❌ pending (Slice 3.1)
+1. ❌ The desk-detail sidebar can mutate every WO field without touching `TicketService`,
+   **verified end-to-end in the actual remote dev environment** (not just mocked-supabase
+   unit tests).
+   - status / priority / team / user / vendor / plan / SLA: code shipped (Slices 0–2 + Slice 3.0
+     single PATCH orchestrator) BUT user-reported broken on remote at end of Session 12. See P0
+     section at the top of this doc.
+   - cost / tags / watchers / title / description: pending (Slice 3.1).
+   - **Smoke-test gate added to exit criteria:** before claiming this complete, open the desk UI
+     against the remote dev environment, click through every WO sidebar field, watch the network
+     tab, confirm the right PATCH fires and returns 200 with the expected change persisted.
 
 2. ✅ The plandate workstream has merged. (Session 12 commits `849aaee` + `09e28f6`.)
 
