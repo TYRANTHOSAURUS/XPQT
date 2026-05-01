@@ -6,7 +6,11 @@ import { NotificationModule } from '../notification/notification.module';
 import { PersonModule } from '../person/person.module';
 import { PrivacyComplianceModule } from '../privacy-compliance/privacy-compliance.module';
 import { SpaceModule } from '../space/space.module';
+import { HostNotificationService } from './host-notification.service';
 import { InvitationService } from './invitation.service';
+import { VisitorPassPoolService } from './pass-pool.service';
+import { ReceptionService } from './reception.service';
+import { VisitorEventBus } from './visitor-event-bus';
 import { VisitorService } from './visitor.service';
 
 /**
@@ -15,9 +19,13 @@ import { VisitorService } from './visitor.service';
  * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §2
  * Plan: docs/superpowers/plans/2026-05-01-visitor-management-v1.md §Slice 2
  *
- * **Scope of this slice (2a)**: scaffold + state machine + invitation flow.
- * Subsequent slices add:
- *   - 2b: HostNotificationService + VisitorPassPoolService + ReceptionService
+ * Slices shipped:
+ *   - 2a: scaffold + state machine (VisitorService) + invitation flow.
+ *   - 2b: VisitorPassPoolService + HostNotificationService + ReceptionService
+ *         + VisitorEventBus (in-process SSE bus for the browser
+ *         Notification API channel).
+ *
+ * Subsequent slices:
  *   - 2c: KioskService + EodSweepWorker
  *   - 2d: BundleCascadeAdapter + VisitorMailDeliveryAdapter + controllers
  *
@@ -27,6 +35,10 @@ import { VisitorService } from './visitor.service';
  *     the other; the forwardRef pre-empts a future cycle.
  *   - ApprovalModule: slice 3 edits the approval dispatcher to call
  *     VisitorService.transitionStatus on grant/deny. Same pre-emption.
+ *
+ * VisitorPassPoolService is exported so the bundle cascade adapter
+ * (slice 4) and any other module that needs to manipulate passes can
+ * inject it.
  */
 @Module({
   imports: [
@@ -38,7 +50,21 @@ import { VisitorService } from './visitor.service';
     forwardRef(() => BookingBundlesModule),
     forwardRef(() => ApprovalModule),
   ],
-  providers: [VisitorService, InvitationService],
-  exports: [VisitorService, InvitationService],
+  providers: [
+    VisitorService,
+    InvitationService,
+    VisitorPassPoolService,
+    VisitorEventBus,
+    HostNotificationService,
+    ReceptionService,
+  ],
+  exports: [
+    VisitorService,
+    InvitationService,
+    VisitorPassPoolService,
+    HostNotificationService,
+    ReceptionService,
+    VisitorEventBus,
+  ],
 })
 export class VisitorsModule {}
