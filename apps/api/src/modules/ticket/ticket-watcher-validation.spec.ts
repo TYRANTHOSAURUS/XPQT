@@ -137,23 +137,24 @@ function makeDeps(
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>) {
-  // TicketService takes more dependencies than WorkOrderService; the
-  // gates we care about (assertVisible + the watchers select) only
-  // touch supabase + visibility, so the rest can be no-op stubs.
+  // TicketService takes seven deps; for the watcher-validation gate we
+  // only exercise supabase + visibility + slaService, so the rest are
+  // no-op stubs. Constructor order must match — see ticket.service.ts.
   return new TicketService(
-    deps.supabase as never,
-    deps.slaService as never,
-    deps.visibility as never,
-    {} as never, // notifications
-    {} as never, // mail
-    {} as never, // attachments
-    {} as never, // search
-    {} as never, // privacy
-    {} as never, // routing
-    {} as never, // approval
-    {} as never, // workflow
+    deps.supabase as never,         // 1. supabase
+    {} as never,                     // 2. routingService
+    deps.slaService as never,        // 3. slaService
+    {} as never,                     // 4. workflowEngine
+    {} as never,                     // 5. approvalService
+    deps.visibility as never,        // 6. visibility
+    {} as never,                     // 7. scopeOverrides
   );
 }
+
+// Real auth uid — validation runs (SYSTEM_ACTOR bypasses by design).
+const REAL_PERSON = '11111111-1111-1111-1111-111111111111';
+const OTHER_REAL_PERSON = '22222222-2222-2222-2222-222222222222';
+const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 describe('TicketService.update — watcher uuid tenant validation', () => {
   beforeEach(() => {
@@ -164,20 +165,37 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('rejects watchers that include a uuid not in the tenant', async () => {
+  it('rejects watchers that include a ghost uuid (well-formed but unknown)', async () => {
     const deps = makeDeps(
       {
         id: TICKET_ID, tenant_id: TENANT,
         status_category: 'new', watchers: null,
         title: 't', description: null,
       },
-      { persons_in_tenant: ['p1', 'p2'] }, // 'pX' missing.
+      { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
     await expect(
-      svc.update(TICKET_ID, { watchers: ['p1', 'pX'] }, SYSTEM_ACTOR),
+      svc.update(TICKET_ID, { watchers: [REAL_PERSON, GHOST_UUID] }, 'real-uid'),
     ).rejects.toThrow(/unknown person id\(s\)/);
+    expect(deps.updates).toHaveLength(0);
+  });
+
+  it('rejects watchers with malformed uuid (clean 400 with offending value)', async () => {
+    const deps = makeDeps(
+      {
+        id: TICKET_ID, tenant_id: TENANT,
+        status_category: 'new', watchers: null,
+        title: 't', description: null,
+      },
+      { persons_in_tenant: [REAL_PERSON] },
+    );
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.update(TICKET_ID, { watchers: [REAL_PERSON, 'not-a-uuid'] }, 'real-uid'),
+    ).rejects.toThrow(/malformed uuid/);
     expect(deps.updates).toHaveLength(0);
   });
 
@@ -188,11 +206,15 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
         status_category: 'new', watchers: null,
         title: 't', description: null,
       },
-      { persons_in_tenant: ['p1', 'p2'] },
+      { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.update(TICKET_ID, { watchers: ['p1', 'p2'] }, SYSTEM_ACTOR);
+    await svc.update(
+      TICKET_ID,
+      { watchers: [REAL_PERSON, OTHER_REAL_PERSON] },
+      'real-uid',
+    );
 
     expect(deps.updates.find((u) => Array.isArray(u.watchers))).toBeDefined();
   });
@@ -202,34 +224,55 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
     const deps = makeDeps(
       {
         id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: ['p1'],
+        status_category: 'new', watchers: [REAL_PERSON],
         title: 't', description: null,
       },
-      { persons_in_tenant: ['p1'] },
+      { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.update(TICKET_ID, { title: 'updated' }, SYSTEM_ACTOR);
+    await svc.update(TICKET_ID, { title: 'updated' }, 'real-uid');
 
     // No throw. Title write present.
     expect(deps.updates.find((u) => u.title === 'updated')).toBeDefined();
   });
 
   it('skips validation when watchers is set to empty array', async () => {
-    // Empty watchers array = "no watchers" — nothing to validate.
     const deps = makeDeps(
       {
         id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: ['p1'],
+        status_category: 'new', watchers: [REAL_PERSON],
         title: 't', description: null,
       },
-      { persons_in_tenant: ['p1'] },
+      { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.update(TICKET_ID, { watchers: [] }, SYSTEM_ACTOR);
+    await svc.update(TICKET_ID, { watchers: [] }, 'real-uid');
 
-    // Update fires with watchers=[]; no rejection.
-    expect(deps.updates.find((u) => Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0)).toBeDefined();
+    expect(
+      deps.updates.find(
+        (u) => Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0,
+      ),
+    ).toBeDefined();
+  });
+
+  it('SYSTEM_ACTOR bypasses watcher validation (gate convention)', async () => {
+    const deps = makeDeps(
+      {
+        id: TICKET_ID, tenant_id: TENANT,
+        status_category: 'new', watchers: null,
+        title: 't', description: null,
+      },
+      { persons_in_tenant: [] }, // intentionally empty.
+    );
+    const svc = makeSvc(deps);
+
+    // GHOST_UUID would reject for real-uid; SYSTEM_ACTOR bypasses entirely.
+    await svc.update(TICKET_ID, { watchers: [GHOST_UUID] }, SYSTEM_ACTOR);
+
+    expect(
+      deps.updates.find((u) => Array.isArray(u.watchers)),
+    ).toBeDefined();
   });
 });

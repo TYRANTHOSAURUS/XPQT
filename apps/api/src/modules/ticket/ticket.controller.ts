@@ -110,6 +110,29 @@ export class TicketController {
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: UpdateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    // Type-narrow array fields at the controller boundary (mirrors the WO
+    // controller). The service helper does its own pre-flight validation,
+    // but rejecting here means a malformed body never reaches the visibility
+    // load + diff loop. tags + watchers are the array fields on the case
+    // surface today.
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'tags') &&
+      dto.tags !== null &&
+      dto.tags !== undefined &&
+      (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
+    ) {
+      throw new BadRequestException('tags must be an array of strings or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
+      dto.watchers !== null &&
+      dto.watchers !== undefined &&
+      (!Array.isArray(dto.watchers) || !dto.watchers.every((w) => typeof w === 'string'))
+    ) {
+      throw new BadRequestException(
+        'watchers must be an array of strings (person UUIDs) or null',
+      );
+    }
     return this.ticketService.update(id, dto, actorAuthUid);
   }
 

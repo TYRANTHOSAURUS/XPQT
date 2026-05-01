@@ -513,24 +513,65 @@ describe('WorkOrderService.updateMetadata', () => {
     expect(deps.updates[0].cost).toBe(12.35);
   });
 
-  // ── watcher uuid tenant validation (full-review #2: critical) ─────
+  // ── watcher uuid tenant validation (full-review hardening) ────────
+  // These tests use a real auth uid instead of SYSTEM_ACTOR because the
+  // helper bypasses validation for SYSTEM_ACTOR by design (matches the
+  // visibility-gate convention).
 
-  it('rejects watchers that include a uuid not in the tenant', async () => {
-    // Within-tenant unauthorized share + ghost-uuid hazard. Caller writes
-    // a uuid that doesn't belong to the tenant — service must 400.
+  const REAL_PERSON = '11111111-1111-1111-1111-111111111111';
+  const OTHER_REAL_PERSON = '22222222-2222-2222-2222-222222222222';
+  const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const GHOST_UUID_2 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+  it('rejects watchers that include a ghost (well-formed but unknown) uuid', async () => {
     const deps = makeDeps(
       {
         id: 'wo1', tenant_id: TENANT,
         title: 't', description: null, cost: null, tags: null, watchers: null,
       },
-      { persons_in_tenant: ['p1', 'p2'] }, // foreign-tenant uuid 'pX' missing.
+      { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
     await expect(
-      svc.updateMetadata('wo1', { watchers: ['p1', 'pX'] }, SYSTEM_ACTOR),
+      svc.updateMetadata('wo1', { watchers: [REAL_PERSON, GHOST_UUID] }, 'real-uid'),
     ).rejects.toThrow(/unknown person id\(s\)/);
     expect(deps.updates).toHaveLength(0);
+  });
+
+  it('rejects watchers with malformed uuid (not a uuid format)', async () => {
+    // Without the regex pre-filter this would hit Postgres 22P02 cast error
+    // and surface as a 500 with PG detail leakage. Pre-filter must produce
+    // a clean 400 with the malformed value.
+    const deps = makeDeps(
+      {
+        id: 'wo1', tenant_id: TENANT,
+        title: 't', description: null, cost: null, tags: null, watchers: null,
+      },
+      { persons_in_tenant: [REAL_PERSON] },
+    );
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { watchers: [REAL_PERSON, 'not-a-uuid'] }, 'real-uid'),
+    ).rejects.toThrow(/malformed uuid/);
+    expect(deps.updates).toHaveLength(0);
+  });
+
+  it('rejects watchers array exceeding the per-request cap', async () => {
+    // 201 unique well-formed uuids — over the 200 cap.
+    const tooMany = Array.from({ length: 201 }, (_, i) =>
+      `cccccccc-cccc-cccc-cccc-${String(i).padStart(12, '0')}`,
+    );
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { watchers: tooMany }, 'real-uid'),
+    ).rejects.toThrow(/array too large/);
   });
 
   it('accepts watchers that all reference real persons in the tenant', async () => {
@@ -539,29 +580,39 @@ describe('WorkOrderService.updateMetadata', () => {
         id: 'wo1', tenant_id: TENANT,
         title: 't', description: null, cost: null, tags: null, watchers: null,
       },
-      { persons_in_tenant: ['p1', 'p2'] },
+      { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.updateMetadata('wo1', { watchers: ['p1', 'p2'] }, SYSTEM_ACTOR);
+    await svc.updateMetadata(
+      'wo1',
+      { watchers: [REAL_PERSON, OTHER_REAL_PERSON] },
+      'real-uid',
+    );
 
     expect(deps.updates).toHaveLength(1);
-    expect(deps.updates[0]).toMatchObject({ watchers: ['p1', 'p2'] });
+    expect(deps.updates[0]).toMatchObject({
+      watchers: [REAL_PERSON, OTHER_REAL_PERSON],
+    });
   });
 
   it('handles duplicate watcher uuids — dedup before validation', async () => {
-    // ['p1', 'p1'] should not be rejected as "1 unknown of 2"; the dedup
+    // [p1, p1] should not be rejected as "1 unknown of 2"; the dedup
     // before SELECT means the count comparison is exact.
     const deps = makeDeps(
       {
         id: 'wo1', tenant_id: TENANT,
         title: 't', description: null, cost: null, tags: null, watchers: null,
       },
-      { persons_in_tenant: ['p1'] },
+      { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.updateMetadata('wo1', { watchers: ['p1', 'p1'] }, SYSTEM_ACTOR);
+    await svc.updateMetadata(
+      'wo1',
+      { watchers: [REAL_PERSON, REAL_PERSON] },
+      'real-uid',
+    );
 
     expect(deps.updates).toHaveLength(1);
   });
@@ -569,19 +620,39 @@ describe('WorkOrderService.updateMetadata', () => {
   it('skips validation when watchers is null (clear) or empty array', async () => {
     const deps = makeDeps({
       id: 'wo1', tenant_id: TENANT,
-      title: 't', description: null, cost: null, tags: null, watchers: ['p1'],
+      title: 't', description: null, cost: null, tags: null, watchers: [REAL_PERSON],
     });
     const svc = makeSvc(deps);
 
-    await svc.updateMetadata('wo1', { watchers: null }, SYSTEM_ACTOR);
-    await svc.updateMetadata('wo1', { watchers: [] }, SYSTEM_ACTOR);
+    await svc.updateMetadata('wo1', { watchers: null }, 'real-uid');
+    await svc.updateMetadata('wo1', { watchers: [] }, 'real-uid');
 
-    // Both writes go through (transition from ['p1'] → null on first call,
-    // then null → [] no-ops because both are "no watchers"). Either way
-    // no rejection.
     expect(
-      deps.updates.every((u) => u.watchers === null || (Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0)),
+      deps.updates.every(
+        (u) =>
+          u.watchers === null ||
+          (Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0),
+      ),
     ).toBe(true);
+  });
+
+  it('SYSTEM_ACTOR bypasses watcher validation (gate convention)', async () => {
+    // Defensive vs. trust: workflow engine + cron run as SYSTEM_ACTOR with
+    // uuids they generated programmatically; running the SELECT for them
+    // is wasted work. Matches the assertCanPlan / assertVisible bypass.
+    const deps = makeDeps(
+      {
+        id: 'wo1', tenant_id: TENANT,
+        title: 't', description: null, cost: null, tags: null, watchers: null,
+      },
+      { persons_in_tenant: [] }, // intentionally empty — no persons.
+    );
+    const svc = makeSvc(deps);
+
+    // GHOST_UUID would normally reject for a real-uid actor; SYSTEM_ACTOR
+    // bypasses validation entirely.
+    await svc.updateMetadata('wo1', { watchers: [GHOST_UUID] }, SYSTEM_ACTOR);
+    expect(deps.updates).toHaveLength(1);
   });
 
   // ── orchestrator integration: WorkOrderService.update routes
