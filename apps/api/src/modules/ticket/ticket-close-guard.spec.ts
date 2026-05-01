@@ -73,8 +73,8 @@ function makeDeps(parent: Row, openChildren: string[]) {
     pauseTimers: jest.fn(), resumeTimers: jest.fn(), completeTimers: jest.fn(), restartTimers: jest.fn(),
     // applyWaitingStateTransition was extracted from TicketService into
     // SlaService — TicketService.update now calls slaService.applyWaitingStateTransition
-    // on every status_category / waiting_reason change. No-op mock here; the
-    // ticket-sla-edit test exercises the actual pause/resume routing.
+    // on every status_category / waiting_reason change. No-op stub here
+    // (code-review C3 pattern); behavior is covered in sla.service.spec.ts.
     applyWaitingStateTransition: jest.fn().mockResolvedValue(undefined),
   };
   const svc = new TicketService(

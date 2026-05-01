@@ -982,11 +982,12 @@ export class WorkOrderService {
       .eq('tenant_id', tenant.id);
     if (updateErr) throw updateErr;
 
-    // Routing decision audit row. Set entity_kind/work_order_id explicitly.
-    // The 00232 derive trigger would also fill these via existence-check
-    // across tickets + work_orders (00232 supersedes 00230, which only saw
-    // public.tickets), but writing them directly skips a per-row trigger
-    // lookup and makes the audit row deterministic on the application side.
+    // Routing decision audit row. Convention (code-review C5): set the
+    // polymorphic columns (entity_kind + work_order_id) explicitly on both
+    // case + WO sides — the 00232 derive trigger remains as a defensive
+    // fallback, but writing them here makes the audit row deterministic at
+    // write time and removes the "depends on the trigger" coupling. Mirror
+    // of ticket.service.ts:1133 (case-side reassign).
     const trace = [
       {
         step: 'manual_reassign',

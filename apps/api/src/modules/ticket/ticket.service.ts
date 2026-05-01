@@ -986,30 +986,62 @@ export class TicketService {
       }
     }
 
-    // Log changes as system events
+    // Log changes as system events.
+    //
+    // Activity metadata shape: `{ event, previous, next }` with per-field
+    // snapshots in `previous`/`next`. Mirrors the WorkOrderService surface
+    // (work-order.service.ts:589/845/1039) — code-review C2 alignment.
+    // The activity feed renderer (ticket-activity-feed.tsx) reads only
+    // `metadata.event` for the system-row label, so the inner shape is free
+    // to be whatever serves audit consumers best.
     if (changes.status_category) {
+      const previous: Record<string, unknown> = { status_category: changes.status_category.from };
+      const next: Record<string, unknown> = { status_category: changes.status_category.to };
+      // status (the granular sub-status) frequently changes alongside
+      // status_category — include the snapshot if it was in the dto so the
+      // audit row captures both axes.
+      if (changes.status) {
+        previous.status = changes.status.from;
+        next.status = changes.status.to;
+      }
+      // Same for waiting_reason, which is meaningful for waiting-state diffs.
+      if (changes.waiting_reason) {
+        previous.waiting_reason = changes.waiting_reason.from;
+        next.waiting_reason = changes.waiting_reason.to;
+      }
       await this.addActivity(id, {
         activity_type: 'system_event',
         visibility: 'system',
-        metadata: { event: 'status_changed', ...changes.status_category },
+        metadata: { event: 'status_changed', previous, next },
       }, undefined, actorAuthUid);
-      await this.logDomainEvent(id, 'ticket_status_changed', changes.status_category);
+      await this.logDomainEvent(id, 'ticket_status_changed', { previous, next });
     }
 
-    if (changes.assigned_team_id || changes.assigned_user_id) {
+    if (changes.assigned_team_id || changes.assigned_user_id || changes.assigned_vendor_id) {
+      const previous: Record<string, string | null> = {};
+      const next: Record<string, string | null> = {};
+      if (changes.assigned_team_id) {
+        previous.assigned_team_id = changes.assigned_team_id.from as string | null;
+        next.assigned_team_id = changes.assigned_team_id.to as string | null;
+      }
+      if (changes.assigned_user_id) {
+        previous.assigned_user_id = changes.assigned_user_id.from as string | null;
+        next.assigned_user_id = changes.assigned_user_id.to as string | null;
+      }
+      if (changes.assigned_vendor_id) {
+        previous.assigned_vendor_id = changes.assigned_vendor_id.from as string | null;
+        next.assigned_vendor_id = changes.assigned_vendor_id.to as string | null;
+      }
       await this.addActivity(id, {
         activity_type: 'system_event',
         visibility: 'system',
         metadata: {
           event: 'assignment_changed',
-          team: changes.assigned_team_id,
-          user: changes.assigned_user_id,
+          previous,
+          next,
         },
       }, undefined, actorAuthUid);
-      await this.logDomainEvent(id, 'ticket_assigned', {
-        team: changes.assigned_team_id,
-        user: changes.assigned_user_id,
-      });
+      await this.logDomainEvent(id, 'ticket_assigned', { previous, next });
     }
 
     // Step 1c.10c: synthesize ticket_kind for frontend contract.
@@ -1130,9 +1162,16 @@ export class TicketService {
 
     await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
 
+    // Routing decision audit row. Convention (code-review C5): set the
+    // polymorphic columns explicitly on both case + WO sides — the 00232
+    // derive trigger remains as a defensive fallback, but writing them
+    // here makes the audit row deterministic at write time and removes the
+    // "depends on the trigger" coupling. Mirror of work-order.service.ts:1000.
     await this.supabase.admin.from('routing_decisions').insert({
       tenant_id: tenant.id,
-      ticket_id: id,
+      ticket_id: id, // legacy soft pointer; FK to tickets dropped in 00233
+      entity_kind: 'case',
+      case_id: id,
       strategy,
       chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
       chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
@@ -1142,6 +1181,9 @@ export class TicketService {
       context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
     });
 
+    // Activity row. Mirrors the WO-side `reassigned` shape
+    // (work-order.service.ts:1039) — `reason` included in metadata for
+    // parity with WO surface. Code-review C2 alignment.
     await this.addActivity(id, {
       activity_type: 'system_event',
       author_person_id: dto.actor_person_id,
@@ -1152,6 +1194,7 @@ export class TicketService {
         previous: prev,
         next: nextTarget,
         mode: chosenBy,
+        reason: dto.reason,
       },
     });
 

@@ -20,10 +20,7 @@ type WorkOrderRow = {
 
 const TENANT = 't1';
 
-function makeDeps(
-  initial: WorkOrderRow,
-  options: { pauseOnReasons?: string[] } = {},
-) {
+function makeDeps(initial: WorkOrderRow) {
   let row: WorkOrderRow = { ...initial };
   const updates: Array<Record<string, unknown>> = [];
   const activities: Array<Record<string, unknown>> = [];
@@ -53,20 +50,6 @@ function makeDeps(
               };
               return { eq: () => ({ eq: () => second }) };
             },
-          } as unknown;
-        }
-        if (table === 'sla_policies') {
-          return {
-            select: () => ({
-              eq: () => ({
-                maybeSingle: async () => ({
-                  data: {
-                    pause_on_waiting_reasons: options.pauseOnReasons ?? [],
-                  },
-                  error: null,
-                }),
-              }),
-            }),
           } as unknown;
         }
         if (table === 'users') {
@@ -104,11 +87,13 @@ function makeDeps(
     },
   };
 
-  // applyWaitingStateTransition mirrors the real SlaService implementation
-  // against the mocked supabase: it reads pause_on_waiting_reasons from the
-  // sla_policies mock above, then conditionally invokes pauseTimers/resumeTimers.
-  // This keeps the test's assertions on pause/resume meaningful after the
-  // helper was extracted out of WorkOrderService into SlaService.
+  // Code-review C3: stub `applyWaitingStateTransition` rather than reimplement
+  // the SlaService body inside the test. The previous mock duplicated the
+  // real method's logic, which meant changes to the real SlaService (e.g.
+  // C1's tenant-scoped sla_policies lookup) could leave these tests green
+  // while production diverged. Behavior tests for the helper now live in
+  // sla.service.spec.ts; here we only verify that WorkOrderService.updateStatus
+  // forwards the right args to the helper.
   const slaService: {
     restartTimers: jest.Mock;
     pauseTimers: jest.Mock;
@@ -122,26 +107,8 @@ function makeDeps(
     resumeTimers: jest.fn().mockResolvedValue(undefined),
     completeTimers: jest.fn().mockResolvedValue(undefined),
     startTimers: jest.fn().mockResolvedValue(undefined),
-    applyWaitingStateTransition: jest.fn(),
+    applyWaitingStateTransition: jest.fn().mockResolvedValue(undefined),
   };
-  slaService.applyWaitingStateTransition.mockImplementation(
-    async (
-      entityId: string,
-      tenantId: string,
-      before: { status_category: string; waiting_reason: string | null; sla_id: string | null },
-      after: { status_category: string; waiting_reason: string | null; sla_id: string | null },
-    ) => {
-      const slaPolicyId = after.sla_id ?? before.sla_id;
-      if (!slaPolicyId) return;
-      const pauseReasons = options.pauseOnReasons ?? [];
-      const shouldPause = (s: { status_category: string; waiting_reason: string | null }) =>
-        s.status_category === 'waiting' && !!s.waiting_reason && pauseReasons.includes(s.waiting_reason);
-      const wasPaused = shouldPause(before);
-      const isPaused = shouldPause(after);
-      if (!wasPaused && isPaused) await slaService.pauseTimers(entityId, tenantId);
-      else if (wasPaused && !isPaused) await slaService.resumeTimers(entityId, tenantId);
-    },
-  );
 
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({
@@ -259,20 +226,22 @@ describe('WorkOrderService.updateStatus', () => {
     expect(typeof (deps.updates[0] as { closed_at: unknown }).closed_at).toBe('string');
   });
 
-  it('calls slaService.pauseTimers when entering waiting state with a reason in pause_on_waiting_reasons', async () => {
-    const deps = makeDeps(
-      {
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: 'sla-x',
-        status: 'in_progress',
-        status_category: 'in_progress',
-        waiting_reason: null,
-        resolved_at: null,
-        closed_at: null,
-      },
-      { pauseOnReasons: ['vendor', 'requester'] },
-    );
+  // Code-review C3: this is the WO surface's contract for the SLA helper —
+  // "when status_category or waiting_reason changes on a WO with an SLA,
+  // forward (entityId, tenantId, before, after) to slaService.applyWaitingStateTransition".
+  // The pause/resume/policy-lookup behavior itself is owned by SlaService and
+  // covered by sla.service.spec.ts.
+  it('forwards before/after snapshots to slaService.applyWaitingStateTransition on a waiting transition', async () => {
+    const deps = makeDeps({
+      id: 'wo1',
+      tenant_id: TENANT,
+      sla_id: 'sla-x',
+      status: 'in_progress',
+      status_category: 'in_progress',
+      waiting_reason: null,
+      resolved_at: null,
+      closed_at: null,
+    });
     const svc = makeSvc(deps);
 
     await svc.updateStatus(
@@ -281,62 +250,32 @@ describe('WorkOrderService.updateStatus', () => {
       SYSTEM_ACTOR,
     );
 
-    expect(deps.slaService.pauseTimers).toHaveBeenCalledTimes(1);
-    expect(deps.slaService.pauseTimers).toHaveBeenCalledWith('wo1', TENANT);
-    expect(deps.slaService.resumeTimers).not.toHaveBeenCalled();
+    expect(deps.slaService.applyWaitingStateTransition).toHaveBeenCalledTimes(1);
+    expect(deps.slaService.applyWaitingStateTransition).toHaveBeenCalledWith(
+      'wo1',
+      TENANT,
+      { status_category: 'in_progress', waiting_reason: null, sla_id: 'sla-x' },
+      { status_category: 'waiting', waiting_reason: 'vendor', sla_id: 'sla-x' },
+    );
   });
 
-  it('does NOT pause when waiting_reason is not in pause_on_waiting_reasons', async () => {
-    const deps = makeDeps(
-      {
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: 'sla-x',
-        status: 'in_progress',
-        status_category: 'in_progress',
-        waiting_reason: null,
-        resolved_at: null,
-        closed_at: null,
-      },
-      { pauseOnReasons: ['vendor'] },
-    );
+  it('does NOT call applyWaitingStateTransition when neither status_category nor waiting_reason changes', async () => {
+    const deps = makeDeps({
+      id: 'wo1',
+      tenant_id: TENANT,
+      sla_id: 'sla-x',
+      status: 'in_progress',
+      status_category: 'in_progress',
+      waiting_reason: null,
+      resolved_at: null,
+      closed_at: null,
+    });
     const svc = makeSvc(deps);
 
-    await svc.updateStatus(
-      'wo1',
-      { status_category: 'waiting', waiting_reason: 'other' },
-      SYSTEM_ACTOR,
-    );
+    // status changes but status_category + waiting_reason do not.
+    await svc.updateStatus('wo1', { status: 'in_progress_b' }, SYSTEM_ACTOR);
 
-    expect(deps.slaService.pauseTimers).not.toHaveBeenCalled();
-    expect(deps.slaService.resumeTimers).not.toHaveBeenCalled();
-  });
-
-  it('calls slaService.resumeTimers when exiting waiting state that was paused', async () => {
-    const deps = makeDeps(
-      {
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: 'sla-x',
-        status: 'waiting',
-        status_category: 'waiting',
-        waiting_reason: 'vendor',
-        resolved_at: null,
-        closed_at: null,
-      },
-      { pauseOnReasons: ['vendor'] },
-    );
-    const svc = makeSvc(deps);
-
-    await svc.updateStatus(
-      'wo1',
-      { status_category: 'in_progress' },
-      SYSTEM_ACTOR,
-    );
-
-    expect(deps.slaService.resumeTimers).toHaveBeenCalledTimes(1);
-    expect(deps.slaService.resumeTimers).toHaveBeenCalledWith('wo1', TENANT);
-    expect(deps.slaService.pauseTimers).not.toHaveBeenCalled();
+    expect(deps.slaService.applyWaitingStateTransition).not.toHaveBeenCalled();
   });
 
   it('no-ops when all provided fields equal current values', async () => {
