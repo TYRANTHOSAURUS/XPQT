@@ -15,7 +15,34 @@
 - GDPR baseline (already-shipped): `docs/superpowers/specs/2026-04-27-gdpr-baseline-design.md`
 - Existing migrations cited as patterns: `00160` (RLS-per-verb), `00177` (lease pattern), `00183` (mail_delivery_events), `00187` (visibility function pattern)
 
-**Migration number block reserved:** `00211`–`00220` (the visitor v1 ships in one release; numbers fill in this block).
+**Migration number block (actuals):** `00248`–`00272`. The original
+plan reserved `00211`–`00220`, but `main` shipped `00211`–`00247` in
+parallel while this worktree was in flight, so the visitor migrations
+were renumbered at apply time. The shipped breakdown:
+
+- `00248`–`00257` — Slice 1 schema (visitor_types, pass pool, tokens,
+  multi-host, visitors extensions, status state machine, helper
+  functions, default-types seed). Shipped in commits `2026-04-29` →
+  `2026-04-30`.
+- `00258` — kiosk_tokens (added during Slice 4 when kiosk auth was wired).
+- `00259`–`00261` — Slice 1/2 fixes (visibility empty-scope leak, token
+  errcodes, pass pool null safety).
+- `00262`–`00264` — Slice 2 follow-ups (task leases, mail delivery
+  events, search trigram indexes + denorm columns).
+- `00265` — peek invitation token function (Slice 5 email worker).
+- `00266`–`00269` — **Post-shipping fixes** (this round): missing PII
+  columns, visibility null-leak, persons→visitors PII sync trigger,
+  domain_events authz lockdown.
+- `00270`–`00272` — Subagent B's reserved range for status-INSERT
+  validation + bundle cascade hardening.
+
+**Rework rate:** 4 of 18 originally-shipped migrations (00266–00269)
+required follow-up fixes for missing columns, two visibility leaks, a
+denorm sync invariant, and a PostgreSQL grant. Worth surfacing in
+post-mortem — a third of the visitor migrations needed a second pass.
+
+The reservation pattern (`00211`–`00220`) is retained below for
+historical reference; ignore the literal numbers and read by intent.
 
 **Branch state:** working in worktree `worktree-visitors`. The spec is already committed (commit `07b3cc0`). Each slice produces commits; pushes to remote happen at the end of slices that include migrations (per memory `feedback_db_push_authorized` — standing permission for this workstream).
 
@@ -204,18 +231,30 @@ update visitors set status='pending_approval' where id=<v>; -- must raise (no ba
 - [ ] **Step 1: Show migrations to be pushed**
 
 ```bash
-ls supabase/migrations/0021* | sort
-# Expected: 00211 through 00220 in order
+# Generic glob — matches whatever range the visitor work actually shipped
+# in (the reservation block was 00211-00220 but main shipped concurrently
+# and we ended up at 00248-00272). Don't hardcode the prefix.
+ls supabase/migrations/ | sort | sed -n '/visitor\|kiosk/Ip'
 ```
 
 - [ ] **Step 2: Push via psql fallback** (per `CLAUDE.md` and memory `supabase_remote_push`):
 
 ```bash
-for f in supabase/migrations/00211_*.sql supabase/migrations/00212_*.sql supabase/migrations/00213_*.sql supabase/migrations/00214_*.sql supabase/migrations/00215_*.sql supabase/migrations/00216_*.sql supabase/migrations/00217_*.sql supabase/migrations/00218_*.sql supabase/migrations/00219_*.sql supabase/migrations/00220_*.sql; do
+# Apply each unpushed visitor migration in numeric order. The list lives
+# in the working tree under supabase/migrations/; sort is by filename so
+# the numeric prefix preserves order.
+for f in $(ls supabase/migrations/ | sort | grep -E '^002(48|49|5[0-9]|6[0-9]|7[0-2])_.*\.sql$'); do
   echo "=== applying $f ==="
-  PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f "$f" || break
+  PGPASSWORD="$SUPABASE_DB_PASS" psql \
+    "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+    -v ON_ERROR_STOP=1 -f "supabase/migrations/$f" || break
 done
 ```
+
+If a future fix lands at `00273+`, extend the regex (`^002(4[8-9]|...)$`)
+or replace it with a list. The lesson from the original plan: do NOT
+hardcode the numeric range in places that must agree with whatever
+`ls supabase/migrations/` reports.
 
 - [ ] **Step 3: Notify PostgREST**
 
@@ -230,7 +269,11 @@ PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatrat
 - [ ] **Step 1: Commit migrations**
 
 ```bash
-git add supabase/migrations/00211_*.sql supabase/migrations/00212_*.sql supabase/migrations/00213_*.sql supabase/migrations/00214_*.sql supabase/migrations/00215_*.sql supabase/migrations/00216_*.sql supabase/migrations/00217_*.sql supabase/migrations/00218_*.sql supabase/migrations/00219_*.sql supabase/migrations/00220_*.sql apps/api/test/migrations/visitors-v1.spec.ts
+# Stage every visitor migration that isn't already committed. The exact
+# numeric range depends on what main shipped in the meantime (we ended up
+# at 00248-00272). git status filters out main-only files.
+git add $(git ls-files -o --exclude-standard supabase/migrations/ | grep -E 'visitor|kiosk')
+git add apps/api/test/migrations/visitors-v1.spec.ts
 git commit -m "feat(visitors): v1 schema — extensions + multi-host + pass pool + tokens + functions"
 ```
 

@@ -198,11 +198,42 @@ persons row created at InvitationService.create():
 
 If the visitor's email matches an existing employee or contractor in the tenant: **do not merge**. Visitor invites always create a fresh visitor-typed persons row. Cross-type dedup is out of scope (the email match is rare and a same-email-different-type collision is an edge case better resolved by an admin manually).
 
+### PII denorm on `visitors` — pragmatic exception
+
+`persons-as-truth` is the architectural rule, but the `visitors` row carries
+denormalized copies of `(first_name, last_name, email, phone, company)` for
+two reasons that survived design:
+
+1. **Search performance.** Reception + kiosk use pg_trgm fuzzy search.
+   GIN trigram indexes only work on the column you query against; joining
+   to `persons` for every fuzzy match would cost an extra hash join per
+   query. Materializing the four fields on `visitors` lets the search hit
+   `idx_visitors_first_name_trgm` / `idx_visitors_last_name_trgm` /
+   `idx_visitors_company_trgm` directly.
+2. **Email rendering.** The invitation email worker uses the visitor row
+   without joining persons. Keeps the rendering path simple.
+
+**Sync invariant** (migration `00268_persons_to_visitors_pii_sync.sql`): an
+`AFTER UPDATE OF first_name, last_name, email, phone` trigger on `persons`
+fans changes out to every linked `visitors` row in the same tenant. This
+is critical for GDPR erasure — when `PersonsAdapter` blanks
+`persons.first_name = 'Former employee'`, the trigger propagates to all
+`visitors` rows in the same transaction, so the denorm cannot leak PII
+past anonymization.
+
+`company` is NOT synced — it's the visitor's organisation, not the
+employer of the persons row. Visitor inserts populate it directly.
+
 ---
 
 ## 4. Data model
 
 ### 4.1 `visitors` table — extend, not rebuild
+
+The shipped column set is below. Note: §3 "PII denorm on visitors" explains
+why `first_name / last_name / email / phone / company` exist on the
+visitors row even though `persons` is the canonical PII surface, and how
+`00268_persons_to_visitors_pii_sync.sql` enforces the invariant on UPDATE.
 
 ```sql
 alter table public.visitors
@@ -218,7 +249,17 @@ alter table public.visitors
   add column booking_bundle_id uuid references public.booking_bundles(id),
   add column reservation_id   uuid references public.reservations(id),
   add column checkout_source  text check (checkout_source in ('reception','host','eod_sweep')),
-  add column logged_at        timestamptz;  -- when reception entered the record (vs arrived_at = actual arrival)
+  add column logged_at        timestamptz,  -- when reception entered the record (vs arrived_at = actual arrival)
+  -- denormalized PII (canonical on persons; trigger-synced via 00268)
+  add column first_name        text,
+  add column last_name         text,
+  add column email             text,
+  add column phone             text,
+  add column company           text,
+  -- meeting context + free-text notes (PII; treated as visitor-visit data)
+  add column meeting_room_id   uuid references public.spaces(id),
+  add column notes_for_visitor text,        -- rendered in the invitation email
+  add column notes_for_reception text;      -- reception-only; never shown to the visitor
 
 -- backdated arrival audit constraint
 alter table public.visitors
@@ -508,40 +549,90 @@ Defaults to `Europe/Amsterdam` (Benelux primary market). Admin can override per 
 
 ### 4.9 `visitor_visibility_ids()` — visibility predicate function
 
-Per the platform's 3-tier visibility pattern (`docs/visibility.md`, exemplified by `00187_tickets_visible_for_actor.sql`):
+Per the platform's 3-tier visibility pattern (`docs/visibility.md`, exemplified by `00187_tickets_visible_for_actor.sql`). The canonical shape lives in migration `00267_fix_visitor_visibility_null_building.sql` (after fixes for the empty-scope leak in 00259 and the NULL-building leak in 00267):
 
 ```sql
 create or replace function public.visitor_visibility_ids(p_user_id uuid, p_tenant_id uuid)
-  returns table (visitor_id uuid)
+  returns setof uuid
   language sql stable security invoker
 as $$
-  -- Tier 1: Hosts see their own visits (primary or co-host)
-  select v.id from public.visitors v
-    where v.tenant_id = p_tenant_id
-      and (v.primary_host_person_id = (select person_id from public.users where id = p_user_id)
-           or exists (
-             select 1 from public.visitor_hosts vh
-               where vh.visitor_id = v.id
-                 and vh.person_id = (select person_id from public.users where id = p_user_id)
-           ))
+  with
+    actor as (
+      select u.id as user_id, u.person_id
+        from public.users u
+       where u.id = p_user_id
+         and u.tenant_id = p_tenant_id
+    ),
+    role_paths as (
+      select coalesce(ura.location_scope, '{}'::uuid[]) as location_scope
+        from public.user_role_assignments ura
+       where ura.user_id = p_user_id
+         and ura.tenant_id = p_tenant_id
+         and ura.active = true
+    ),
+    role_location_closures as (
+      select case
+               when array_length(r.location_scope, 1) is null then '{}'::uuid[]
+               else (select array_agg(x) from public.expand_space_closure(r.location_scope) x)
+             end as location_closure
+        from role_paths r
+    )
+  -- Tier 1: hosts (primary + co-hosts) — always visible regardless of building.
+  select v.id
+    from public.visitors v
+    cross join actor a
+   where v.tenant_id = p_tenant_id
+     and (
+       v.primary_host_person_id = a.person_id
+       or v.host_person_id = a.person_id
+       or exists (
+         select 1
+           from public.visitor_hosts vh
+          where vh.visitor_id = v.id
+            and vh.person_id = a.person_id
+       )
+     )
   union
-  -- Tier 2: Operators with visitors.reception in their location scope
-  select v.id from public.visitors v
-    where v.tenant_id = p_tenant_id
-      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.reception')
-      and v.building_id in (
-        select space_id from public.org_node_location_grants ognlg
-          join public.user_role_assignments ura on ura.user_id = p_user_id
-          join public.roles r on r.id = ura.role_id
-        where ognlg.org_node_id = ura.org_node_id  -- existing scope plumbing
-      )
+  -- Tier 2: operators with visitors.reception + non-empty location_scope.
+  -- Empty/null location_closure = NO ACCESS (cardinality > 0 guard).
+  -- NULL building_id = NO ACCESS (no admit-all branch).
+  select v.id
+    from public.visitors v
+   where v.tenant_id = p_tenant_id
+     and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.reception')
+     and exists (
+       select 1
+         from role_location_closures rc
+        where cardinality(rc.location_closure) > 0
+          and v.building_id = any(rc.location_closure)
+     )
   union
-  -- Tier 3: Override — visitors.read_all
-  select v.id from public.visitors v
-    where v.tenant_id = p_tenant_id
-      and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.read_all');
+  -- Tier 3: read-all override (visitors.read_all). Sees every row.
+  select v.id
+    from public.visitors v
+   where v.tenant_id = p_tenant_id
+     and public.user_has_permission(p_user_id, p_tenant_id, 'visitors.read_all');
 $$;
 ```
+
+**Scope plumbing — what the previous draft got wrong.** The earlier spec
+joined `org_node_location_grants` with `user_role_assignments.org_node_id`,
+but `user_role_assignments` has no `org_node_id` column. Scope on the
+platform is carried as `user_role_assignments.location_scope uuid[]`,
+expanded to a closure via `public.expand_space_closure(...)`. That's the
+pattern in `00187_tickets_visible_for_actor.sql` and what the migration
+above implements.
+
+**Empty-scope guard** (`cardinality(rc.location_closure) > 0`): a Tier 2
+user with no real location scope must NOT see every row. `array_length`
+returns NULL on an empty array, so the original predicate matched
+everything (a Tier 3 escalation without the permission); `cardinality`
+returns 0 unambiguously. Fixed in 00259.
+
+**NULL building_id is visible only to Tier 1 + Tier 3.** Tier 2
+location-scoped operators do NOT see them. This matches how tickets
+handle null location and prevents location-less rows from leaking
+across operators with otherwise-narrow scopes. Fixed in 00267.
 
 Used by `VisitorService.list()` and the reception today-view endpoint as a JOIN filter.
 
