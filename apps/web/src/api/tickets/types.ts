@@ -112,9 +112,23 @@ export interface ReassignVariables {
   actorPersonId?: string;
 }
 
-export interface SetPlanPayload {
-  /** ISO timestamp, or null to clear the plan. */
-  planned_start_at: string | null;
-  /** Optional duration. Cleared automatically when planned_start_at is null. */
+/**
+ * Fields writable via `PATCH /work-orders/:id`. Single-endpoint shape after
+ * plan-reviewer P1 collapsed the per-field endpoints — see
+ * `WorkOrderService.update` for the server-side dispatch. Every field is
+ * optional; the server requires at least one to be present.
+ */
+export interface UpdateWorkOrderPayload {
+  sla_id?: string | null;
+  /** ISO timestamp, or null to clear the plan. Server clears
+   *  `planned_duration_minutes` automatically when this is null. */
+  planned_start_at?: string | null;
   planned_duration_minutes?: number | null;
+  status?: string;
+  status_category?: string;
+  waiting_reason?: string | null;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
 }

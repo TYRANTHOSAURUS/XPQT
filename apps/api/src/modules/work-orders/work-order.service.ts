@@ -29,6 +29,33 @@ export type WorkOrderRow = Record<string, unknown> & {
 };
 
 /**
+ * Union DTO accepted by the orchestrator `WorkOrderService.update`. Every
+ * field is optional; the orchestrator dispatches per-field-group to the
+ * existing per-field service methods (`updateSla` / `setPlan` / `updateStatus`
+ * / `updatePriority` / `updateAssignment`). At least one field must be
+ * present — an empty DTO is rejected as `BadRequest`.
+ *
+ * See `docs/assignments-routing-fulfillment.md` §7 for the per-field gates
+ * that fire inside the orchestrator.
+ */
+export interface UpdateWorkOrderDto {
+  sla_id?: string | null;
+  planned_start_at?: string | null;
+  planned_duration_minutes?: number | null;
+  status?: string;
+  status_category?: string;
+  waiting_reason?: string | null;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+}
+
+const PLAN_FIELDS = ['planned_start_at', 'planned_duration_minutes'] as const;
+const STATUS_FIELDS = ['status', 'status_category', 'waiting_reason'] as const;
+const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
+
+/**
  * WorkOrderService — the work-order command surface.
  *
  * Step 1c.10c made `TicketService.update` case-only. Any command that
@@ -48,6 +75,161 @@ export class WorkOrderService {
     private readonly slaService: SlaService,
     private readonly visibility: TicketVisibilityService,
   ) {}
+
+  /**
+   * Single-endpoint command surface for `PATCH /work-orders/:id`.
+   *
+   * Plan-reviewer P1 (post-1c.10c): per-field PATCH endpoints (`/sla`,
+   * `/plan`, `/status`, `/priority`, `/assignment`) accreted as Slice 2 grew
+   * — each new field adds another route, hook, gate. The right shape is one
+   * endpoint that accepts a union DTO and dispatches per-field-group
+   * server-side. This method is that orchestrator.
+   *
+   * Behavior:
+   * - Accepts any subset of `UpdateWorkOrderDto`. At least one field must be
+   *   present — empty DTO rejects as `BadRequest`.
+   * - Dispatches to the existing per-field service methods (`updateSla`,
+   *   `setPlan`, `updateStatus`, `updatePriority`, `updateAssignment`) so
+   *   side effects (timer pause/resume, activity emission, no-op fast-path,
+   *   refetch) are reused unchanged. The per-field methods remain callable
+   *   directly from internal callers (cron, workflow engine, SYSTEM_ACTOR).
+   * - Each per-field method enforces its own gate (visibility floor +
+   *   permission ceiling). Calling `update()` with multiple field-groups
+   *   evaluates each gate independently — there is no "common floor" that
+   *   short-circuits subsequent checks. SLA's danger gate (`sla.override`)
+   *   only fires inside the SLA branch; priority's `tickets.change_priority`
+   *   only fires inside the priority branch; etc.
+   * - Order of application is fixed: SLA → plan → status → priority →
+   *   assignment. This matches the side-effect dependency order
+   *   (status changes can pause/resume timers, which depend on the SLA
+   *   policy being already set). Multiple fields in one call are applied
+   *   sequentially, NOT atomically — a failure mid-sequence leaves earlier
+   *   updates committed. This matches the per-field endpoint behavior the
+   *   FE was already coded against; a transactional wrapper is class-wide
+   *   debt tracked alongside the activity-row swallow pattern.
+   * - Returns the final row state after all dispatched updates apply.
+   *   Single-field calls return the per-field method's row directly; multi-
+   *   field calls refetch once at the end so the response reflects every
+   *   side effect (e.g. resolved_at synthesized by status, sla_id-derived
+   *   columns from SLA edits).
+   * - SYSTEM_ACTOR bypasses every gate (the per-field methods already do
+   *   this individually).
+   */
+  async update(
+    workOrderId: string,
+    dto: UpdateWorkOrderDto,
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('body required');
+    }
+
+    const hasSla = Object.prototype.hasOwnProperty.call(dto, 'sla_id');
+    const hasPlan = PLAN_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(dto, f));
+    const hasStatus = STATUS_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(dto, f));
+    const hasPriority = Object.prototype.hasOwnProperty.call(dto, 'priority');
+    const hasAssignment = ASSIGNMENT_FIELDS.some((f) =>
+      Object.prototype.hasOwnProperty.call(dto, f),
+    );
+
+    if (!hasSla && !hasPlan && !hasStatus && !hasPriority && !hasAssignment) {
+      throw new BadRequestException(
+        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id',
+      );
+    }
+
+    let last: WorkOrderRow | null = null;
+    const dispatched: Array<'sla' | 'plan' | 'status' | 'priority' | 'assignment'> = [];
+
+    // SLA first — its restartTimers side effect changes columns that
+    // downstream status transitions read (sla_id is loaded before the
+    // pause/resume helper runs).
+    if (hasSla) {
+      last = await this.updateSla(workOrderId, dto.sla_id ?? null, actorAuthUid);
+      dispatched.push('sla');
+    }
+
+    if (hasPlan) {
+      const plannedStartAt = hasPlan && Object.prototype.hasOwnProperty.call(dto, 'planned_start_at')
+        ? (dto.planned_start_at ?? null)
+        : null;
+      // Mirror the per-field controller: when only duration is supplied
+      // without start, we still need a current-row read. Pull from `last`
+      // (refreshed if SLA branch ran) or load fresh.
+      const plannedDuration = Object.prototype.hasOwnProperty.call(dto, 'planned_duration_minutes')
+        ? (dto.planned_duration_minutes ?? null)
+        : null;
+      // If start wasn't explicitly provided but duration was, preserve the
+      // current start. Otherwise the server would clear the plan when the
+      // caller only meant to bump duration.
+      const startToWrite = Object.prototype.hasOwnProperty.call(dto, 'planned_start_at')
+        ? plannedStartAt
+        : (last?.planned_start_at ?? null);
+      last = await this.setPlan(workOrderId, startToWrite, plannedDuration, actorAuthUid);
+      dispatched.push('plan');
+    }
+
+    if (hasStatus) {
+      const statusDto: { status?: string; status_category?: string; waiting_reason?: string | null } = {};
+      if (dto.status !== undefined) statusDto.status = dto.status;
+      if (dto.status_category !== undefined) statusDto.status_category = dto.status_category;
+      if (Object.prototype.hasOwnProperty.call(dto, 'waiting_reason')) {
+        statusDto.waiting_reason = dto.waiting_reason ?? null;
+      }
+      last = await this.updateStatus(workOrderId, statusDto, actorAuthUid);
+      dispatched.push('status');
+    }
+
+    if (hasPriority) {
+      // Priority is required-when-present; the type-narrowing already
+      // forbids undefined here.
+      last = await this.updatePriority(workOrderId, dto.priority as 'low' | 'medium' | 'high' | 'critical', actorAuthUid);
+      dispatched.push('priority');
+    }
+
+    if (hasAssignment) {
+      const assignmentDto: {
+        assigned_team_id?: string | null;
+        assigned_user_id?: string | null;
+        assigned_vendor_id?: string | null;
+      } = {};
+      for (const f of ASSIGNMENT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(dto, f)) {
+          assignmentDto[f] = dto[f] ?? null;
+        }
+      }
+      last = await this.updateAssignment(workOrderId, assignmentDto, actorAuthUid);
+      dispatched.push('assignment');
+    }
+
+    // Multi-field calls: refetch once so the final row reflects every side
+    // effect. Single-field calls already returned a fresh row from the
+    // per-field method.
+    if (dispatched.length > 1) {
+      const tenant = TenantContext.current();
+      const { data: refreshed, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (refetchErr) throw refetchErr;
+      if (!refreshed) {
+        throw new ForbiddenException('Work order no longer accessible');
+      }
+      return refreshed as WorkOrderRow;
+    }
+
+    // Defensive: dispatched is non-empty (we threw on empty DTO above), so
+    // `last` is always set here. The `!` would be unsafe-looking; throw
+    // explicitly for clarity instead.
+    if (!last) {
+      throw new BadRequestException(
+        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id',
+      );
+    }
+    return last;
+  }
 
   /**
    * Reassign the executor SLA on a work_order. Mirrors the pre-1c.10c

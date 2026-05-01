@@ -10,26 +10,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { WorkOrderService } from './work-order.service';
-
-interface UpdateWorkOrderSlaDto {
-  sla_id: string | null;
-}
-
-interface SetWorkOrderPlanDto {
-  planned_start_at: string | null;
-  planned_duration_minutes?: number | null;
-}
-
-interface UpdateWorkOrderStatusDto {
-  status?: string;
-  status_category?: string;
-  waiting_reason?: string | null;
-}
-
-interface UpdateWorkOrderPriorityDto {
-  priority: 'low' | 'medium' | 'high' | 'critical';
-}
+import { WorkOrderService, type UpdateWorkOrderDto } from './work-order.service';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -43,98 +24,62 @@ interface ReassignWorkOrderDto extends UpdateWorkOrderAssignmentDto {
   rerun_resolver?: boolean;
 }
 
+const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
+const PRIORITY_VALUES = ['low', 'medium', 'high', 'critical'] as const;
+
 /**
  * Work-order command surface. Lives at `/work-orders/*` and is intentionally
  * separate from `/tickets/*` (which is case-only post-1c.10c).
  *
- * Today this controller exposes the SLA + plandate routes; further work-order
- * commands (status, priority, assignment) accumulate here. DO NOT add new
- * commands to TicketService — they belong on this controller.
+ * Plan-reviewer P1: the previous Slice 2 shape — five per-field PATCH
+ * endpoints (`/sla`, `/plan`, `/status`, `/priority`, `/assignment`) — has
+ * been collapsed into a single `PATCH /work-orders/:id` accepting a union
+ * DTO. Per-field gates dispatch server-side inside `WorkOrderService.update`
+ * (which delegates to the existing per-field service methods so the side
+ * effects are reused). The non-PATCH routes (`GET /:id/can-plan`,
+ * `POST /:id/reassign`) stay separate because they are not field-level
+ * mutations.
  */
 @Controller('work-orders')
 export class WorkOrderController {
   constructor(private readonly workOrderService: WorkOrderService) {}
 
-  @Patch(':id/sla')
-  async updateSla(
+  @Patch(':id')
+  async update(
     @Req() request: Request,
     @Param('id') id: string,
-    @Body() dto: UpdateWorkOrderSlaDto,
-  ) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-
-    // The body must spell out `sla_id`. `undefined` is not "no change" here;
-    // PATCH /sla is the dedicated endpoint for changing SLA, so leaving it
-    // off is a malformed request, not an implicit no-op.
-    if (!Object.prototype.hasOwnProperty.call(dto ?? {}, 'sla_id')) {
-      throw new BadRequestException('sla_id is required (string or null)');
-    }
-    const slaId = dto.sla_id;
-    if (slaId !== null && typeof slaId !== 'string') {
-      throw new BadRequestException('sla_id must be a string or null');
-    }
-
-    return this.workOrderService.updateSla(id, slaId, actorAuthUid);
-  }
-
-  @Patch(':id/plan')
-  async setPlan(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() dto: SetWorkOrderPlanDto,
-  ) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-
-    // The body must spell out planned_start_at. Like SLA, undefined is not
-    // an implicit no-op here — this endpoint exists to set the plan, so a
-    // missing field is malformed input. Duration is optional (omitted means
-    // "no duration" / clear duration).
-    if (!Object.prototype.hasOwnProperty.call(dto ?? {}, 'planned_start_at')) {
-      throw new BadRequestException(
-        'planned_start_at is required (ISO 8601 string or null)',
-      );
-    }
-    const start = dto.planned_start_at;
-    if (start !== null && typeof start !== 'string') {
-      throw new BadRequestException('planned_start_at must be a string or null');
-    }
-    const rawDuration = dto.planned_duration_minutes;
-    if (
-      rawDuration !== undefined &&
-      rawDuration !== null &&
-      typeof rawDuration !== 'number'
-    ) {
-      throw new BadRequestException(
-        'planned_duration_minutes must be a number or null',
-      );
-    }
-    const duration = rawDuration === undefined ? null : rawDuration;
-
-    return this.workOrderService.setPlan(id, start, duration, actorAuthUid);
-  }
-
-  @Get(':id/can-plan')
-  async getCanPlan(@Req() request: Request, @Param('id') id: string) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    return this.workOrderService.canPlan(id, actorAuthUid);
-  }
-
-  @Patch(':id/status')
-  async updateStatus(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() dto: UpdateWorkOrderStatusDto,
+    @Body() dto: UpdateWorkOrderDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     if (!dto || typeof dto !== 'object') {
       throw new BadRequestException('body required');
     }
-    // Type-narrow each provided field. undefined is "no change"; null is
-    // only valid for waiting_reason (clear it).
+
+    // Type-narrowing per-field — the orchestrator delegates the empty-DTO
+    // check, but the controller stays the type-correctness gate so bad
+    // input never makes it to the service layer.
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'sla_id') &&
+      dto.sla_id !== null &&
+      typeof dto.sla_id !== 'string'
+    ) {
+      throw new BadRequestException('sla_id must be a string or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'planned_start_at') &&
+      dto.planned_start_at !== null &&
+      typeof dto.planned_start_at !== 'string'
+    ) {
+      throw new BadRequestException('planned_start_at must be a string or null');
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'planned_duration_minutes') &&
+      dto.planned_duration_minutes !== null &&
+      typeof dto.planned_duration_minutes !== 'number'
+    ) {
+      throw new BadRequestException('planned_duration_minutes must be a number or null');
+    }
     if (dto.status !== undefined && typeof dto.status !== 'string') {
       throw new BadRequestException('status must be a string');
     }
@@ -142,47 +87,35 @@ export class WorkOrderController {
       throw new BadRequestException('status_category must be a string');
     }
     if (
-      dto.waiting_reason !== undefined &&
+      Object.prototype.hasOwnProperty.call(dto, 'waiting_reason') &&
       dto.waiting_reason !== null &&
       typeof dto.waiting_reason !== 'string'
     ) {
       throw new BadRequestException('waiting_reason must be a string or null');
     }
-    return this.workOrderService.updateStatus(id, dto, actorAuthUid);
-  }
-
-  @Patch(':id/priority')
-  async updatePriority(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() dto: UpdateWorkOrderPriorityDto,
-  ) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    if (!dto || typeof dto.priority !== 'string') {
-      throw new BadRequestException('priority is required (string)');
+    if (dto.priority !== undefined && !PRIORITY_VALUES.includes(dto.priority)) {
+      throw new BadRequestException(
+        `priority must be one of: ${PRIORITY_VALUES.join(', ')}`,
+      );
     }
-    return this.workOrderService.updatePriority(id, dto.priority as 'low' | 'medium' | 'high' | 'critical', actorAuthUid);
-  }
-
-  @Patch(':id/assignment')
-  async updateAssignment(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() dto: UpdateWorkOrderAssignmentDto,
-  ) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException('body required');
-    }
-    for (const k of ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const) {
-      const v = dto[k];
-      if (v !== undefined && v !== null && typeof v !== 'string') {
+    for (const k of ASSIGNMENT_FIELDS) {
+      if (
+        Object.prototype.hasOwnProperty.call(dto, k) &&
+        dto[k] !== null &&
+        typeof dto[k] !== 'string'
+      ) {
         throw new BadRequestException(`${k} must be a string or null`);
       }
     }
-    return this.workOrderService.updateAssignment(id, dto, actorAuthUid);
+
+    return this.workOrderService.update(id, dto, actorAuthUid);
+  }
+
+  @Get(':id/can-plan')
+  async getCanPlan(@Req() request: Request, @Param('id') id: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    return this.workOrderService.canPlan(id, actorAuthUid);
   }
 
   @Post(':id/reassign')
@@ -199,7 +132,7 @@ export class WorkOrderController {
     if (typeof dto.reason !== 'string' || !dto.reason.trim()) {
       throw new BadRequestException('reason is required (non-empty string)');
     }
-    for (const k of ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const) {
+    for (const k of ASSIGNMENT_FIELDS) {
       const v = dto[k];
       if (v !== undefined && v !== null && typeof v !== 'string') {
         throw new BadRequestException(`${k} must be a string or null`);

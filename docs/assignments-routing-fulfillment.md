@@ -295,35 +295,69 @@ Resolution runs after routing fills in assignees, so routing-derived assignees p
 
 This is intentional and matches standard ITSM behavior: SLA is a promise to the requester (for cases) or to the service desk (for children), not to the specific assignee. Shuffling ownership does not reset the clock.
 
-### Changing a child's SLA policy
+### WorkOrderService surface — single PATCH endpoint
 
-Post-1c.10c, this command lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
+Post-1c.10c, every mutating command on a work_order lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
 
-- **Endpoint:** `PATCH /work-orders/:id/sla` with body `{ sla_id: '<new-policy-id>' | null }`.
-- **Service:** `WorkOrderService.updateSla(workOrderId, slaId, actorAuthUid)` (`apps/api/src/modules/work-orders/work-order.service.ts`).
-- **Visibility gate:** `TicketVisibilityService.assertCanPlan` — wider than `assertVisible('write')` because parent-case team owners must be able to act on child WOs (assignee, vendor, WO team, parent-case team, writable role operator, `tickets.write_all`).
+Plan-reviewer P1 (post-Slice 2): the per-field PATCH endpoints (`/sla`, `/plan`, `/status`, `/priority`, `/assignment`) were collapsed into one `PATCH /work-orders/:id` accepting a union DTO. The orchestrator dispatches per-field gates server-side and delegates to the existing per-field service methods so side effects (timer pause/resume, activity emission, no-op fast-path, refetch) are reused unchanged.
+
+| Endpoint | Service entry point | Notes |
+|---|---|---|
+| `PATCH /work-orders/:id` | `WorkOrderService.update(id, dto, actor)` | **Canonical command surface.** Union DTO; per-field gates dispatch internally. |
+| `GET /work-orders/:id/can-plan` | `WorkOrderService.canPlan(id, actor)` | Probe for the plandate gate. Used by the desk to disable affordances instead of waiting for a 403. |
+| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign(id, dto, actor)` | Audited reassignment with required `reason`. Distinct from PATCH because it writes a `routing_decisions` row. |
+
+`UpdateWorkOrderDto` accepts any subset of:
+
+```ts
+interface UpdateWorkOrderDto {
+  sla_id?: string | null;
+  planned_start_at?: string | null;
+  planned_duration_minutes?: number | null;
+  status?: string;
+  status_category?: string;
+  waiting_reason?: string | null;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+}
+```
+
+Empty DTO rejects as `BadRequest`. Per-field gates dispatched inside the orchestrator:
+
+| Field group | Visibility gate | Permission gate (beyond visibility) | Service method delegated to |
+|---|---|---|---|
+| `sla_id` | `assertCanPlan` | `sla.override` OR `tickets.write_all` (danger:true) | `updateSla` |
+| `planned_start_at` / `planned_duration_minutes` | `assertCanPlan` | none | `setPlan` |
+| `status` / `status_category` / `waiting_reason` | `assertCanPlan` | none | `updateStatus` |
+| `priority` | `assertCanPlan` | `tickets.change_priority` OR `tickets.write_all` | `updatePriority` |
+| `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` | `updateAssignment` |
+
+Apply order is fixed: SLA → plan → status → priority → assignment. This matches the side-effect dependency order (status changes can pause/resume timers, which depend on the SLA policy being already set). Multiple fields in one call are applied **sequentially, not atomically** — a failure mid-sequence leaves earlier updates committed. Multi-field calls refetch once at the end so the response reflects every side effect.
+
+**Visibility gate ordering note.** `assertCanPlan` runs inside *each* per-field method and is therefore evaluated multiple times per multi-field call. This is intentional — it keeps the per-field methods callable directly from internal callers (cron, workflow engine, SYSTEM_ACTOR contexts) without duplicating the gate at the orchestrator. SLA's danger gate (`sla.override`), priority's `tickets.change_priority`, and assignment's `tickets.assign` only fire inside their respective branches.
+
+**SYSTEM_ACTOR shortcut** bypasses every gate (per-field methods each handle this individually).
+
+The per-field service methods (`updateSla`, `setPlan`, `updateStatus`, `updatePriority`, `updateAssignment`, `reassign`) remain callable directly. Internal callers (cron, workflow engine) can target a single command without going through the orchestrator. The dispatch contract is what's tested by `work-order-update.spec.ts`; per-field behavior is tested by the corresponding per-field specs (`work-order-sla-edit.spec.ts`, `work-order-set-plan.spec.ts`, etc.).
+
+> **Where future work-order commands go.** Add new fields to `UpdateWorkOrderDto` + dispatch them to a new (or existing) per-field service method. **Do not add new PATCH endpoints to `WorkOrderController`.** The single-endpoint shape is the intentional end-state. Cost / tags / watchers / title / description on work_orders is the next slice — the path is to grow the union DTO, not the route table. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
+
+### Per-field method specifics
+
+`updateSla` specifics:
+
 - **Validation:** `slaId` must reference a real `sla_policies` row in the calling tenant (or be `null`).
 - **Side effects:** persists `sla_id` on `work_orders`, calls `SlaService.restartTimers(workOrderId, tenantId, slaId)` (stops old `sla_timers`, clears computed breach/due fields, starts fresh timers if non-null), writes a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
 - **No-op fast path:** if `slaId === current.sla_id`, returns the row without writing or restarting timers.
+- **Visibility:** `assertCanPlan` — wider than `assertVisible('write')` because parent-case team owners must be able to act on child WOs (assignee, vendor, WO team, parent-case team, writable role operator, `tickets.write_all`).
 
-> **Where future work-order commands go.** `WorkOrderService` is the surface for *every* mutating command on a work_order — status, plan (`planned_start_at` / `planned_duration_minutes`), priority, assignment, watchers, cost, etc. **Do not add work-order commands to `TicketService`.** TicketService is permanently case-only after step 1c.10c. New commands accumulate on `WorkOrderService` / `WorkOrderController` (`/work-orders/*`); the SLA edit above was the first such command and the template to copy. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
+Shared invariants for all per-field methods:
 
-### Status / priority / assignment / reassign on a work_order
-
-Slice 2 of the work-order command surface (post-1c.10c) — these mirror the case-side `TicketService.update` and `TicketService.reassign` paths but write to `work_orders` directly. The desk detail sidebar dispatches by `displayedTicket.ticket_kind`: cases keep the existing `PATCH /tickets/:id` + `POST /tickets/:id/reassign` paths; work_orders go through the four endpoints below.
-
-| Endpoint | Service method | Visibility gate | Permission gate |
-|---|---|---|---|
-| `PATCH /work-orders/:id/status` | `WorkOrderService.updateStatus` | `assertCanPlan` | none beyond visibility |
-| `PATCH /work-orders/:id/priority` | `WorkOrderService.updatePriority` | `assertCanPlan` | `tickets.change_priority` OR `tickets.write_all` |
-| `PATCH /work-orders/:id/assignment` | `WorkOrderService.updateAssignment` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` |
-| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` |
-
-Shared invariants for all four:
-
-- **No-op fast path** — every command refetches and returns without writing if all provided fields equal the current values (mirrors `updateSla` / `setPlan`).
+- **No-op fast path** — every command refetches and returns without writing if all provided fields equal the current values.
 - **Explicit `updated_at`** — the work_orders table has no auto-trigger for `updated_at` post-1c.10c (the bridge-era trigger was dropped in 00217 and never restored). Each UPDATE includes `updated_at = new Date().toISOString()`.
-- **Activity row swallow + log** — same pattern as `updateSla` / `setPlan`. Class-wide debt; the real fix is a transactional command pattern in `SlaService` + `addActivity`.
+- **Activity row swallow + log** — class-wide debt; the real fix is a transactional command pattern in `SlaService` + `addActivity`.
 - **Cross-tenant id validation** — `updateAssignment` and `reassign` validate that any non-null `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` belongs to the calling tenant. Defense against id smuggling — `assigned_vendor_id` has no FK and the team/user FKs don't enforce a tenant composite check.
 
 `updateStatus` specifics:

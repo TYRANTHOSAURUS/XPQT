@@ -4,24 +4,27 @@ import { ticketKeys } from './keys';
 import {
   ASSIGNMENT_FIELD,
   type ReassignVariables,
-  type SetPlanPayload,
   type TicketDetail,
   type UpdateTicketPayload,
+  type UpdateWorkOrderPayload,
 } from './types';
 
 /**
- * Slice 2 (work-order command surface): the four work-order command hooks
- * below — `useUpdateWorkOrderStatus`, `useUpdateWorkOrderPriority`,
- * `useUpdateWorkOrderAssignment`, `useReassignWorkOrder` — exist because
- * Step 1c.10c made `PATCH /tickets/:id` and `POST /tickets/:id/reassign`
- * case-only. The desk detail sidebar dispatches by `ticket_kind` to either
- * the case mutations (above) or these (below). Cache shape is shared via
- * `ticketKeys.detail(id)` because work_orders are loaded through the same
- * detail endpoint.
+ * Slice 2 (work-order command surface) collapsed to a single hook
+ * (plan-reviewer P1):
  *
- * Each hook narrows its response type with `Pick<TicketDetail, …>` to avoid
- * field-coupling drift with the plandate workstream — see Session 9 / 10
- * handoff notes for the rationale.
+ *   useUpdateWorkOrder — `PATCH /work-orders/:id` accepting a union DTO.
+ *
+ * The five per-field hooks (`useUpdateWorkOrderSla`, `useSetWorkOrderPlan`,
+ * `useUpdateWorkOrderStatus`, `useUpdateWorkOrderPriority`,
+ * `useUpdateWorkOrderAssignment`) were deleted. The orchestrator on the
+ * server (`WorkOrderService.update`) dispatches per-field gates internally
+ * and delegates to the same per-field service methods, so behavior is
+ * unchanged from the FE's POV — fewer hooks, fewer endpoints, same
+ * semantics.
+ *
+ * `useReassignWorkOrder` (POST endpoint) and `useCanPlanWorkOrder` (GET
+ * endpoint) stay separate — they are not field-level mutations.
  */
 
 interface UpdateMutationContext {
@@ -194,301 +197,104 @@ export function useAddActivity(id: string) {
   });
 }
 
-interface UpdateWorkOrderSlaContext {
+// ─────────────────────────────────────────────────────────────────────
+// Work-order command surface — single endpoint (plan-reviewer P1)
+// ─────────────────────────────────────────────────────────────────────
+
+interface UpdateWorkOrderContext {
   previous: TicketDetail | undefined;
 }
 
-/**
- * PATCH /work-orders/:id/sla — change the executor SLA on a child work
- * order. Step 1c.10c made `PATCH /tickets/:id` case-only; the SLA edit
- * affordance for work_orders has to route here instead.
- *
- * Cache shape is shared with TicketDetail (work_orders are loaded through
- * the same ticket detail endpoint), so we invalidate the same ticket keys
- * the regular `useUpdateTicket` mutation does.
+/** Fields on `PATCH /work-orders/:id` whose server handler appends a row to
+ *  the activity feed. Mirrors `ACTIVITY_GENERATING_FIELDS` for cases — we
+ *  only invalidate the activities cache when the change actually emits one.
  */
-// Narrow command response — codex round 1 nit: typing as TicketDetail was
-// misleading because the backend returns a raw WorkOrderRow. The hook never
-// reads the response (just invalidates the ticket detail cache), so a Pick
-// of the columns the SLA edit actually changes is the honest contract.
-type WorkOrderSlaResponse = Pick<TicketDetail, 'id' | 'sla_id'>;
+const WO_ACTIVITY_GENERATING_FIELDS = new Set<keyof UpdateWorkOrderPayload>([
+  'sla_id',
+  'planned_start_at',
+  'planned_duration_minutes',
+  'status',
+  'status_category',
+  'waiting_reason',
+  'priority',
+  'assigned_team_id',
+  'assigned_user_id',
+  'assigned_vendor_id',
+]);
 
-export function useUpdateWorkOrderSla(id: string) {
-  const qc = useQueryClient();
-
-  return useMutation<WorkOrderSlaResponse, Error, string | null, UpdateWorkOrderSlaContext>({
-    mutationFn: (slaId) =>
-      apiFetch<WorkOrderSlaResponse>(`/work-orders/${id}/sla`, {
-        method: 'PATCH',
-        body: JSON.stringify({ sla_id: slaId }),
-      }),
-
-    onMutate: async (slaId) => {
-      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
-      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
-      if (previous) {
-        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
-          ...previous,
-          sla_id: slaId,
-        });
-      }
-      return { previous };
-    },
-
-    onError: (_err, _slaId, ctx) => {
-      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
-    },
-
-    onSettled: () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
-        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
-  });
+function touchesWorkOrderActivityFeed(updates: UpdateWorkOrderPayload): boolean {
+  return Object.keys(updates).some(
+    (k) => WO_ACTIVITY_GENERATING_FIELDS.has(k as keyof UpdateWorkOrderPayload),
+  );
 }
 
-interface SetWorkOrderPlanContext {
-  previous: TicketDetail | undefined;
-}
+// Narrow command response — the backend returns a raw WorkOrderRow; the hook
+// only invalidates ticket caches and never reads response fields, so a Pick
+// of `id` is the honest contract.
+type WorkOrderUpdateResponse = Pick<TicketDetail, 'id'>;
 
 /**
- * PATCH /work-orders/:id/plan — set the assignee-declared plandate on a
- * child work_order. Step 1c.10c made `PATCH /tickets/:id` case-only, so
- * the legacy `useSetTicketPlan` hook now writes to a no-op endpoint for
- * work_orders (and the Plan SidebarGroup is gated to work_orders only).
- * This hook is the rewire onto the working `/work-orders/:id/plan` route.
+ * Single-endpoint work-order update. Replaces the five per-field hooks
+ * (`useUpdateWorkOrderSla`, `useSetWorkOrderPlan`, `useUpdateWorkOrderStatus`,
+ * `useUpdateWorkOrderPriority`, `useUpdateWorkOrderAssignment`) — see the
+ * server orchestrator at `WorkOrderService.update`.
  *
- * Cache shape is shared with TicketDetail (work_orders are loaded through
- * the same ticket detail endpoint), so we invalidate the same ticket keys
- * the regular mutations do. Plan changes always emit a `plan_changed`
- * activity, so the activities cache is invalidated unconditionally.
+ * Optimistic update merges the supplied fields into the cached detail. For
+ * assignment fields, only the id columns are written optimistically; the
+ * nested expansion (`assigned_team`, `assigned_agent`, `assigned_vendor`)
+ * is left stale and refreshed by `onSettled` — same pessimistic stance the
+ * old `useUpdateWorkOrderAssignment` hook used.
  */
-// Narrow command response — same rationale as `WorkOrderSlaResponse`. The
-// backend returns a raw WorkOrderRow; the Pick captures only the columns the
-// FE actually relies on after this mutation. `updated_at` is intentionally
-// NOT included in the Pick because that field's presence on TicketDetail is
-// owned by the plandate workstream and out of this slice's scope (see
-// session 9 handoff).
-type WorkOrderPlanResponse = Pick<
-  TicketDetail,
-  'id' | 'planned_start_at' | 'planned_duration_minutes'
->;
-
-export function useSetWorkOrderPlan(id: string) {
+export function useUpdateWorkOrder(id: string) {
   const qc = useQueryClient();
 
   return useMutation<
-    WorkOrderPlanResponse,
+    WorkOrderUpdateResponse,
     Error,
-    SetPlanPayload,
-    SetWorkOrderPlanContext
+    UpdateWorkOrderPayload,
+    UpdateWorkOrderContext
   >({
-    mutationFn: (payload) =>
-      apiFetch<WorkOrderPlanResponse>(`/work-orders/${id}/plan`, {
+    mutationFn: (updates) =>
+      apiFetch<WorkOrderUpdateResponse>(`/work-orders/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(updates),
       }),
 
-    onMutate: async (payload) => {
+    onMutate: async (updates) => {
       await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
       const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
       if (previous) {
+        // Mirror server behavior: clearing planned_start_at clears
+        // planned_duration_minutes too.
+        const optimistic: Partial<TicketDetail> = { ...updates } as Partial<TicketDetail>;
+        if (
+          Object.prototype.hasOwnProperty.call(updates, 'planned_start_at') &&
+          updates.planned_start_at === null
+        ) {
+          optimistic.planned_duration_minutes = null;
+        }
         qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
           ...previous,
-          planned_start_at: payload.planned_start_at,
-          // Mirror server behavior: clearing start clears duration too.
-          planned_duration_minutes:
-            payload.planned_start_at === null
-              ? null
-              : payload.planned_duration_minutes ?? previous.planned_duration_minutes,
-        });
-      }
-      return { previous };
-    },
-
-    onError: (_err, _payload, ctx) => {
-      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
-    },
-
-    onSettled: () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
-        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        // Plan changes emit a `plan_changed` row in the activity feed, so
-        // the cached feed needs to refetch.
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Slice 2 — work-order command surface (status / priority / assignment / reassign)
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Subset of writable fields on `PATCH /work-orders/:id/status`. Mirrors the
- * status-related fields of `UpdateTicketPayload`. Server requires at least
- * one field to be present.
- */
-export interface UpdateWorkOrderStatusPayload {
-  status?: string;
-  status_category?: string;
-  waiting_reason?: string | null;
-}
-
-interface UpdateWorkOrderStatusContext {
-  previous: TicketDetail | undefined;
-}
-
-// Narrow command response — the backend returns a raw WorkOrderRow; only
-// the columns the FE relies on after the mutation are listed here.
-type WorkOrderStatusResponse = Pick<
-  TicketDetail,
-  'id' | 'status' | 'status_category' | 'waiting_reason'
->;
-
-export function useUpdateWorkOrderStatus(id: string) {
-  const qc = useQueryClient();
-
-  return useMutation<
-    WorkOrderStatusResponse,
-    Error,
-    UpdateWorkOrderStatusPayload,
-    UpdateWorkOrderStatusContext
-  >({
-    mutationFn: (payload) =>
-      apiFetch<WorkOrderStatusResponse>(`/work-orders/${id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
-      }),
-
-    onMutate: async (payload) => {
-      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
-      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
-      if (previous) {
-        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
-          ...previous,
-          ...payload,
+          ...optimistic,
         } as TicketDetail);
       }
       return { previous };
     },
 
-    onError: (_err, _payload, ctx) => {
+    onError: (_err, _updates, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
     },
 
-    // Status changes always emit a `status_changed` activity, so the
-    // activity feed cache always needs invalidation.
-    onSettled: () =>
-      Promise.all([
+    onSettled: (_data, _err, variables) => {
+      const tasks: Promise<unknown>[] = [
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
-  });
-}
-
-interface UpdateWorkOrderPriorityContext {
-  previous: TicketDetail | undefined;
-}
-
-type WorkOrderPriorityResponse = Pick<TicketDetail, 'id' | 'priority'>;
-
-export function useUpdateWorkOrderPriority(id: string) {
-  const qc = useQueryClient();
-
-  return useMutation<
-    WorkOrderPriorityResponse,
-    Error,
-    'low' | 'medium' | 'high' | 'critical',
-    UpdateWorkOrderPriorityContext
-  >({
-    mutationFn: (priority) =>
-      apiFetch<WorkOrderPriorityResponse>(`/work-orders/${id}/priority`, {
-        method: 'PATCH',
-        body: JSON.stringify({ priority }),
-      }),
-
-    onMutate: async (priority) => {
-      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
-      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
-      if (previous) {
-        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
-          ...previous,
-          priority,
-        });
+      ];
+      if (variables && touchesWorkOrderActivityFeed(variables)) {
+        tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
       }
-      return { previous };
+      return Promise.all(tasks);
     },
-
-    onError: (_err, _priority, ctx) => {
-      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
-    },
-
-    // Priority changes emit a `priority_changed` activity row.
-    onSettled: () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
-        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
-  });
-}
-
-export interface UpdateWorkOrderAssignmentPayload {
-  assigned_team_id?: string | null;
-  assigned_user_id?: string | null;
-  assigned_vendor_id?: string | null;
-}
-
-interface UpdateWorkOrderAssignmentContext {
-  previous: TicketDetail | undefined;
-}
-
-type WorkOrderAssignmentResponse = Pick<
-  TicketDetail,
-  'id' | 'assigned_team' | 'assigned_agent' | 'assigned_vendor'
->;
-
-export function useUpdateWorkOrderAssignment(id: string) {
-  const qc = useQueryClient();
-
-  return useMutation<
-    WorkOrderAssignmentResponse,
-    Error,
-    UpdateWorkOrderAssignmentPayload,
-    UpdateWorkOrderAssignmentContext
-  >({
-    mutationFn: (payload) =>
-      apiFetch<WorkOrderAssignmentResponse>(`/work-orders/${id}/assignment`, {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
-      }),
-
-    // Optimistic update: we only have the id we're setting; the detail row
-    // expands assignee ids into nested `assigned_team` / `assigned_agent` /
-    // `assigned_vendor` objects (server does the join). We deliberately do
-    // NOT touch those nested objects here — leaving them stale for one tick
-    // is the honest representation of "we know the id changed but not its
-    // expansion yet". The invalidation in onSettled refetches the truth.
-    onMutate: async () => {
-      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
-      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
-      return { previous };
-    },
-
-    onError: (_err, _payload, ctx) => {
-      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
-    },
-
-    onSettled: () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
-        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
   });
 }
 
@@ -529,8 +335,8 @@ export function useReassignWorkOrder(id: string) {
       });
     },
 
-    // Same pessimistic stance as updateAssignment — don't fake the nested
-    // expansion; let the refetch land the truth.
+    // Same pessimistic stance as the old updateAssignment — don't fake the
+    // nested expansion; let the refetch land the truth.
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
       const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));

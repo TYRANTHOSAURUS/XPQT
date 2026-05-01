@@ -37,16 +37,13 @@ import {
   useTicketActivities,
   useTicketTagSuggestions,
   useUpdateTicket,
-  useUpdateWorkOrderSla,
-  useUpdateWorkOrderStatus,
-  useUpdateWorkOrderPriority,
-  useUpdateWorkOrderAssignment,
+  useUpdateWorkOrder,
   useReassignTicket,
   useReassignWorkOrder,
   useAddActivity,
-  useSetWorkOrderPlan,
   useCanPlanWorkOrder,
   type UpdateTicketPayload,
+  type UpdateWorkOrderPayload,
 } from '@/api/tickets';
 import { useTeams } from '@/api/teams';
 import { useUsers } from '@/api/users';
@@ -317,22 +314,19 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   }, []);
 
   const updateTicket = useUpdateTicket(ticketId);
-  const updateWorkOrderSla = useUpdateWorkOrderSla(ticketId);
-  // Slice 2: TicketService.update is case-only post-1c.10c. The four hooks
-  // below are the work-order-side counterparts of useUpdateTicket /
-  // useReassignTicket. The dispatch happens inside `patch()` and
-  // `updateAssignment()` based on `displayedTicket.ticket_kind`.
-  const updateWorkOrderStatus = useUpdateWorkOrderStatus(ticketId);
-  const updateWorkOrderPriority = useUpdateWorkOrderPriority(ticketId);
-  const updateWorkOrderAssignment = useUpdateWorkOrderAssignment(ticketId);
+  // Plan-reviewer P1: the five Slice 2 per-field hooks (sla / plan / status /
+  // priority / assignment) collapsed into a single `useUpdateWorkOrder` —
+  // server orchestrator dispatches per-field gates internally. `patch()`
+  // dispatches by `ticket_kind` to `useUpdateTicket` (cases) or
+  // `useUpdateWorkOrder` (work_orders).
+  const updateWorkOrder = useUpdateWorkOrder(ticketId);
   const reassignTicket = useReassignTicket(ticketId);
   const reassignWorkOrder = useReassignWorkOrder(ticketId);
-  const setPlan = useSetWorkOrderPlan(ticketId);
   const { data: canPlanResp } = useCanPlanWorkOrder(ticketId);
   const canPlan = !!canPlanResp?.canPlan;
 
   const handlePlanChange = (next: { startsAt: string | null; durationMinutes: number | null }) => {
-    setPlan.mutate(
+    updateWorkOrder.mutate(
       {
         planned_start_at: next.startsAt,
         planned_duration_minutes: next.durationMinutes,
@@ -347,14 +341,16 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     );
   };
 
-  // Slice 2 dispatch.
   // Cases → PATCH /tickets/:id (single endpoint, all fields).
-  // Work orders → split per category to the new `/work-orders/:id/*` endpoints.
-  // Fields not yet covered by a work-order endpoint (cost / tags / watchers
-  // / title / description) still go through `updateTicket.mutate` for cases
-  // and silently no-op for work_orders — those are Slice 3 deferred items.
+  // Work orders → PATCH /work-orders/:id (single endpoint, union DTO).
+  // Plan-reviewer C4: defensive early-return so this function's contract is
+  // local to itself, not implicit in JSX render order. The JSX paths only
+  // call `patch` once `displayedTicket` exists, but a future refactor that
+  // wires `patch` into a portal / hook / effect would otherwise silently
+  // no-op-or-worse without `displayedTicket` set.
   const patch = (updates: Partial<UpdateTicketPayload>) => {
-    if (displayedTicket?.ticket_kind === 'work_order') {
+    if (!displayedTicket) return;
+    if (displayedTicket.ticket_kind === 'work_order') {
       patchWorkOrder(updates);
       return;
     }
@@ -369,52 +365,34 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     });
   };
 
+  // Work-order PATCH — narrow the case-shaped payload to the fields the
+  // work-order endpoint accepts. Slice 3 deferred fields (cost / tags /
+  // watchers / title / description) silently no-op for work_orders here
+  // because the orchestrator does not accept them.
   const patchWorkOrder = (updates: Partial<UpdateTicketPayload>) => {
-    const statusFields: { status?: string; status_category?: string; waiting_reason?: string | null } = {};
-    if (updates.status !== undefined) statusFields.status = updates.status;
-    if (updates.status_category !== undefined) statusFields.status_category = updates.status_category;
-    if (updates.waiting_reason !== undefined) statusFields.waiting_reason = updates.waiting_reason;
-
-    const assignmentFields: {
-      assigned_team_id?: string | null;
-      assigned_user_id?: string | null;
-      assigned_vendor_id?: string | null;
-    } = {};
-    if (updates.assigned_team_id !== undefined) assignmentFields.assigned_team_id = updates.assigned_team_id;
-    if (updates.assigned_user_id !== undefined) assignmentFields.assigned_user_id = updates.assigned_user_id;
-    if (updates.assigned_vendor_id !== undefined) assignmentFields.assigned_vendor_id = updates.assigned_vendor_id;
-
-    if (Object.keys(statusFields).length > 0) {
-      updateWorkOrderStatus.mutate(statusFields, {
-        onError: (err) =>
-          toastError("Couldn't update status", {
-            error: err,
-            retry: () => updateWorkOrderStatus.mutate(statusFields),
-          }),
-      });
-    }
+    const woUpdates: UpdateWorkOrderPayload = {};
+    if (updates.sla_id !== undefined) woUpdates.sla_id = updates.sla_id;
+    if (updates.status !== undefined) woUpdates.status = updates.status;
+    if (updates.status_category !== undefined) woUpdates.status_category = updates.status_category;
+    if (updates.waiting_reason !== undefined) woUpdates.waiting_reason = updates.waiting_reason;
     if (updates.priority !== undefined) {
-      const next = updates.priority as 'low' | 'medium' | 'high' | 'critical';
-      updateWorkOrderPriority.mutate(next, {
-        onError: (err) =>
-          toastError("Couldn't update priority", {
-            error: err,
-            retry: () => updateWorkOrderPriority.mutate(next),
-          }),
-      });
+      woUpdates.priority = updates.priority as 'low' | 'medium' | 'high' | 'critical';
     }
-    if (Object.keys(assignmentFields).length > 0) {
-      updateWorkOrderAssignment.mutate(assignmentFields, {
-        onError: (err) =>
-          toastError("Couldn't update assignment", {
-            error: err,
-            retry: () => updateWorkOrderAssignment.mutate(assignmentFields),
-          }),
-      });
-    }
-    // Slice 3 deferred: cost, tags, watchers, title, description, sla_id
-    // on work_orders. sla_id has its own dedicated hook (useUpdateWorkOrderSla)
-    // already wired below; the rest still silently no-op for work_orders here.
+    if (updates.assigned_team_id !== undefined) woUpdates.assigned_team_id = updates.assigned_team_id;
+    if (updates.assigned_user_id !== undefined) woUpdates.assigned_user_id = updates.assigned_user_id;
+    if (updates.assigned_vendor_id !== undefined) woUpdates.assigned_vendor_id = updates.assigned_vendor_id;
+
+    if (Object.keys(woUpdates).length === 0) return;
+
+    updateWorkOrder.mutate(woUpdates, {
+      onError: (err) => {
+        const field = Object.keys(woUpdates)[0] ?? 'field';
+        toastError(`Couldn't update ${field}`, {
+          error: err,
+          retry: () => updateWorkOrder.mutate(woUpdates),
+        });
+      },
+    });
   };
 
   type AssignmentTarget = {
@@ -425,18 +403,20 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   };
 
   const updateAssignment = (target: AssignmentTarget) => {
+    if (!displayedTicket) return;
+
     const field = target.kind === 'team'
       ? 'assigned_team_id'
       : target.kind === 'user'
         ? 'assigned_user_id'
         : 'assigned_vendor_id';
 
-    const isWorkOrder = displayedTicket?.ticket_kind === 'work_order';
+    const isWorkOrder = displayedTicket.ticket_kind === 'work_order';
 
     // First-time assignment — silent PATCH, no routing_decisions audit needed.
     if (target.previousLabel === null) {
       if (isWorkOrder) {
-        updateWorkOrderAssignment.mutate({ [field]: target.id }, {
+        updateWorkOrder.mutate({ [field]: target.id } as UpdateWorkOrderPayload, {
           onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
             error: err,
             retry: () => updateAssignment(target),
@@ -1164,14 +1144,16 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                   onValueChange={(v) => {
                     const next = v === '__none__' ? null : v;
                     if (next === displayedTicket!.sla_id) return;
-                    // Step 1c.10c: SLA edits on work_orders go through
-                    // PATCH /work-orders/:id/sla (TicketService.update is
-                    // case-only). Cases keep the existing patch path.
-                    updateWorkOrderSla.mutate(next, {
+                    // Plan-reviewer P1: SLA edits on work_orders go through
+                    // the unified PATCH /work-orders/:id endpoint. The
+                    // server orchestrator dispatches the SLA branch (which
+                    // still enforces the sla.override danger gate inside
+                    // updateSla).
+                    updateWorkOrder.mutate({ sla_id: next }, {
                       onError: (err) =>
                         toastError("Couldn't update SLA", {
                           error: err,
-                          retry: () => updateWorkOrderSla.mutate(next),
+                          retry: () => updateWorkOrder.mutate({ sla_id: next }),
                         }),
                     });
                   }}
