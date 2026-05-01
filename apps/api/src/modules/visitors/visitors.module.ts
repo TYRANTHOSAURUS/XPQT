@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
+import { MailModule } from '../../common/mail/mail.module';
 import { PermissionGuard } from '../../common/permission-guard';
 import { ApprovalModule } from '../approval/approval.module';
 import { AuthModule } from '../auth/auth.module';
@@ -19,8 +20,10 @@ import { KioskService } from './kiosk.service';
 import { VisitorPassPoolService } from './pass-pool.service';
 import { ReceptionController } from './reception.controller';
 import { ReceptionService } from './reception.service';
+import { VisitorEmailWorker } from './visitor-email.worker';
 import { VisitorEventBus } from './visitor-event-bus';
 import { VisitorMailDeliveryAdapter } from './visitor-mail-delivery.adapter';
+import { VisitorReminderWorker } from './visitor-reminder.worker';
 import { VisitorService } from './visitor.service';
 import { VisitorsController } from './visitors.controller';
 
@@ -56,6 +59,7 @@ import { VisitorsController } from './visitors.controller';
 @Module({
   imports: [
     DbModule,
+    MailModule,
     PersonModule,
     NotificationModule,
     PrivacyComplianceModule,
@@ -82,6 +86,8 @@ import { VisitorsController } from './visitors.controller';
     KioskAuthGuard,
     KioskService,
     EodSweepWorker,
+    VisitorEmailWorker,
+    VisitorReminderWorker,
     PermissionGuard,
   ],
   exports: [
@@ -95,6 +101,8 @@ import { VisitorsController } from './visitors.controller';
     KioskAuthGuard,
     KioskService,
     EodSweepWorker,
+    VisitorEmailWorker,
+    VisitorReminderWorker,
   ],
 })
 export class VisitorsModule {}

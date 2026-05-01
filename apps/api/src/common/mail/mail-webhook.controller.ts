@@ -151,15 +151,18 @@ export class MailWebhookController {
    * Postgres on local benchmarks), correlation lost the row and the
    * email_status state machine stayed at 'sent'.
    *
-   * Two-layer correlation:
-   *   1. Tags-first: every send tags `daily_list_id` (we own the value),
-   *      so the row id is in the webhook payload regardless of
-   *      message_id timing.
-   *   2. Message-id fallback: for legacy events from before tagging
-   *      was added, AND for vendor magic-link sends (Sprint 5).
+   * Three-source correlation (priority order):
+   *   1. Vendor daily list — tag `daily_list_id`, fallback to email_message_id.
+   *   2. Visitor invite — tag `entity_type='visitor_invite' + visitor_id`
+   *      (slice 5). The row already exists in `visitors`; we surface the
+   *      ingest as `correlated_entity_type='visitor_invite'` so
+   *      VisitorMailDeliveryAdapter can pick up the bounce / delivery
+   *      event for its bouncedInvitesForBuildingSince query.
    */
   private async correlate(event: MailWebhookEvent): Promise<CorrelatedEntity | null> {
     const tags = extractTags(event.raw);
+
+    // Vendor daily list — tags-first
     const tagDailyListId = tags?.daily_list_id;
     if (tagDailyListId) {
       const dl = await this.db.queryOne<{ id: string; tenant_id: string }>(
@@ -172,6 +175,22 @@ export class MailWebhookController {
         return { tenantId: dl.tenant_id, entityType: 'vendor_daily_list', entityId: dl.id };
       }
     }
+
+    // Visitor invite — slice 5. Tag-first; the worker stamps
+    // entity_type='visitor_invite' + visitor_id on every send.
+    if (tags?.entity_type === 'visitor_invite') {
+      const visitorId = tags.visitor_id;
+      if (visitorId) {
+        const v = await this.db.queryOne<{ id: string; tenant_id: string }>(
+          `select id, tenant_id from public.visitors where id = $1 limit 1`,
+          [visitorId],
+        );
+        if (v) {
+          return { tenantId: v.tenant_id, entityType: 'visitor_invite', entityId: v.id };
+        }
+      }
+    }
+
     /* Fallback: provider message id. Used when tags are missing or
        when the row id is yet to flow into the email tag pipeline. */
     const dl = await this.db.queryOne<{ id: string; tenant_id: string }>(
@@ -224,7 +243,7 @@ export class MailWebhookController {
 
 interface CorrelatedEntity {
   tenantId: string;
-  entityType: 'vendor_daily_list';
+  entityType: 'vendor_daily_list' | 'visitor_invite';
   entityId: string;
 }
 

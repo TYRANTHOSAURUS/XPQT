@@ -208,13 +208,29 @@ export class VisitorsController {
 
     /* Best-effort host notification. We don't roll back the cancel if
        the notify fails; reception can see the cancelled status from
-       the desk. */
+       the desk.
+
+       transitionStatus has already emitted a `visitor.cancelled` domain
+       event inside its tx — slice 5's email worker subscribes to that
+       and dispatches the cancellation email to the visitor. The host
+       gets an IN-APP notification only via notifyVisitorCancelled (the
+       spec doesn't require a duplicate host email when the visitor
+       self-cancels; reception's today-view already surfaces this). */
     try {
-      // Synthesize a "cancelled by visitor" event by reusing the host
-      // notify path. Real templates are slice 5; for now we just
-      // record the audit + emit on the SSE bus via the visitor.cancelled
-      // domain event already emitted by transitionStatus.
-      await this.notifyHostsOfCancellation(visitorId, resolvedTenantId);
+      // Run inside the resolved tenant's context so the
+      // HostNotificationService tenant-guard accepts the call. The
+      // subdomain context already matches resolvedTenantId (we
+      // verified above), but defending explicitly here keeps the
+      // notification path tenant-pinned.
+      await TenantContext.run(
+        { id: resolvedTenantId, slug: 'visitor_cancel', tier: 'standard' },
+        async () => {
+          await this.hostNotifications.notifyVisitorCancelled(
+            visitorId,
+            resolvedTenantId,
+          );
+        },
+      );
     } catch {
       // swallow — best-effort.
     }
@@ -321,34 +337,6 @@ export class VisitorsController {
     return { user_id: row.id, person_id: row.person_id };
   }
 
-  /**
-   * Insert per-host notifications when a visitor cancels via the public
-   * cancel link. Same shape as HostNotificationService.notifyArrival but
-   * for the "visitor cancelled" event — we don't have a templated message
-   * yet (slice 5 owns email templates), so we emit a placeholder and let
-   * the audit feed be the durable record.
-   */
-  private async notifyHostsOfCancellation(
-    visitorId: string,
-    tenantId: string,
-  ): Promise<void> {
-    /* The transitionStatus call already inserted a `visitor.cancelled`
-       domain_event. Slice 5's worker will subscribe and fan out emails.
-       For now, we touch visitor_hosts.notified_at so reception's UI can
-       distinguish "host notified about cancel" from "still pending". */
-    const { data, error } = await this.supabase.admin
-      .from('visitor_hosts')
-      .select('id, person_id')
-      .eq('visitor_id', visitorId)
-      .eq('tenant_id', tenantId);
-    if (error || !data) return;
-
-    /* No-op for now — the domain_event is the contract. Slice 5
-       expands this. We return silently so the cancel endpoint
-       doesn't surface internal-side notification plumbing as a
-       public failure mode. */
-    void data;
-  }
 }
 
 /**

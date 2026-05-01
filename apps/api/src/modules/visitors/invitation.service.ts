@@ -224,10 +224,24 @@ export class InvitationService {
           event_type: 'visitor.invitation.expected',
           entity_type: 'visitor',
           entity_id: visitorId,
+          /* The cancel_token plaintext is embedded in the domain_event
+             payload so slice 5's email worker can build the cancel-link
+             URL without ever re-issuing or re-hashing the token. The
+             token sha256 is the only thing on disk in
+             visit_invitation_tokens; the plaintext exists transiently
+             in this row until the worker consumes it.
+
+             Privacy note: domain_events is tenant-scoped + RLS-protected.
+             The plaintext is high-entropy bearer token but the row is
+             only readable by service_role + the tenant's authed users.
+             A future cleanup pass could redact `cancel_token` after the
+             worker has dispatched (Sprint X) but for v1 the row's
+             rate-limited audience makes this acceptable. */
           payload: {
             visitor_id: visitorId,
             primary_host_person_id: actor.person_id,
             building_id: dto.building_id,
+            cancel_token: plaintext,
           },
         });
       } catch (err) {

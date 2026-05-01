@@ -270,6 +270,80 @@ export class HostNotificationService {
         );
       }
     }
+
+    // Slice 5: emit a domain_event so VisitorEmailWorker dispatches the
+    // branded `visitor.invitation.declined` template via MAIL_PROVIDER —
+    // the host gets a real email (the NotificationService path above
+    // writes the in-app inbox row + a notifications-table email record
+    // but doesn't actually hit a mail provider in v1).
+    try {
+      await this.supabase.admin.from('domain_events').insert({
+        tenant_id: tenantId,
+        event_type: 'visitor.invitation_declined',
+        entity_type: 'visitor',
+        entity_id: visitorId,
+        payload: {
+          visitor_id: visitorId,
+          host_count: hosts.length,
+          // The worker resolves the host email from the visitor's
+          // primary_host_person_id — payload only carries identifiers.
+        },
+      });
+    } catch (err) {
+      this.log.warn(
+        `domain_events emit visitor.invitation_declined failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Notify hosts that a visitor self-cancelled via the `/visit/cancel/:token`
+   * link (or that the visit was cascade-cancelled). Each host gets an in-app
+   * notification (channel='in_app' only — the visitor's own cancellation
+   * email is dispatched by VisitorEmailWorker; the host doesn't need a
+   * duplicate "your guest cancelled" email today, just an in-app heads-up).
+   *
+   * Spec §6.1, §17 — host receives an in-app notification when their guest
+   * cancels through the public link so they aren't surprised.
+   *
+   * Cross-tenant: tenant context must match the supplied tenantId.
+   */
+  async notifyVisitorCancelled(visitorId: string, tenantId: string): Promise<void> {
+    const ctxTenant = TenantContext.current();
+    if (ctxTenant.id !== tenantId) {
+      throw new BadRequestException('tenant context mismatch');
+    }
+
+    const visitor = await this.loadVisitor(visitorId, tenantId);
+    const hosts = await this.loadHosts(visitorId, tenantId);
+
+    const subject = this.cancelledByVisitorSubject(visitor);
+    const body = this.cancelledByVisitorBody(visitor);
+
+    for (const host of hosts) {
+      try {
+        await this.notifications.send({
+          notification_type: 'visitor.cancelled_by_visitor',
+          recipient_person_id: host.person_id,
+          related_entity_type: 'visitor',
+          related_entity_id: visitor.id,
+          subject,
+          body,
+          channels: ['in_app'],
+        });
+
+        await this.emitAudit('visitor.cancelled_by_visitor_notified', visitor.id, {
+          visitor_id: visitor.id,
+          host_person_id: host.person_id,
+        });
+      } catch (err) {
+        this.log.warn(
+          `cancel notify failed for visitor ${visitor.id} host ${host.person_id}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
   }
 
   /**
@@ -366,6 +440,19 @@ export class HostNotificationService {
   private deniedBody(visitor: VisitorRow): string {
     const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'your visitor';
     return `The invitation for ${name} was declined by the approval gatekeeper. Contact your facilities lead if you have questions.`;
+  }
+
+  private cancelledByVisitorSubject(visitor: VisitorRow): string {
+    const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'Your visitor';
+    return `${name} has cancelled their visit`;
+  }
+
+  private cancelledByVisitorBody(visitor: VisitorRow): string {
+    const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'Your visitor';
+    const expected = visitor.expected_at
+      ? ` scheduled for ${visitor.expected_at}`
+      : '';
+    return `${name} cancelled their visit${expected} through the email link.`;
   }
 
   private async emitAudit(

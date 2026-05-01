@@ -431,4 +431,58 @@ describe('HostNotificationService', () => {
       }
     });
   });
+
+  describe('notifyVisitorCancelled (slice 5 — visitor self-cancel)', () => {
+    it('sends an in-app-only notification to every host', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyVisitorCancelled(VISITOR_ID, TENANT_ID);
+        expect(ctx.notifications.send).toHaveBeenCalledTimes(3);
+        for (const send of ctx.sentNotifications) {
+          expect(send.notification_type).toBe('visitor.cancelled_by_visitor');
+          // In-app only — no email, the cancellation email goes to the
+          // visitor themselves via the email worker.
+          expect(send.channels).toEqual(['in_app']);
+          expect(send.related_entity_type).toBe('visitor');
+          expect(send.related_entity_id).toBe(VISITOR_ID);
+        }
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('does NOT update notified_at (cancel is not arrival)', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyVisitorCancelled(VISITOR_ID, TENANT_ID);
+        expect(ctx.visitorHostUpdates).toHaveLength(0);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('emits per-host audit events with visitor.cancelled_by_visitor_notified', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyVisitorCancelled(VISITOR_ID, TENANT_ID);
+        const audited = ctx.auditInserts.filter(
+          (a) => a.event_type === 'visitor.cancelled_by_visitor_notified',
+        );
+        expect(audited).toHaveLength(3);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('rejects mismatched tenant context', async () => {
+      const ctx = makeHarness();
+      try {
+        await expect(
+          ctx.svc.notifyVisitorCancelled(VISITOR_ID, OTHER_TENANT_ID),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+  });
 });
