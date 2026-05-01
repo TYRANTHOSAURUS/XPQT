@@ -12,6 +12,7 @@ import {
   FormInput,
   GitBranch,
   HandCoins,
+  KeySquare,
   ListChecks,
   ListTree,
   MapPin,
@@ -23,6 +24,7 @@ import {
   Sparkles,
   Store,
   UserCog,
+  UserPlus,
   Users,
   Webhook,
   Workflow,
@@ -217,10 +219,26 @@ const roomBookingItems: AdminNavItem[] = [
   },
 ];
 
+const visitorItems: AdminNavItem[] = [
+  {
+    title: 'Visitor types',
+    path: '/admin/visitors/types',
+    icon: UserPlus,
+    description: 'Templates and per-type rules for invites and walk-ups',
+  },
+  {
+    title: 'Visitor passes',
+    path: '/admin/visitors/pools',
+    icon: KeySquare,
+    description: 'Physical pass pools and lobby kiosk provisioning',
+  },
+];
+
 export const adminNavGroups: AdminNavGroup[] = [
   { label: 'Configuration', items: configItems },
   { label: 'People', items: peopleItems },
   { label: 'Authorisation & Permissions', items: authorizationItems },
   { label: 'Operations', items: operationsItems },
   { label: 'Room booking', items: roomBookingItems },
+  { label: 'Visitors', items: visitorItems },
 ];

@@ -233,36 +233,19 @@ export function useReceptionDaglijst(buildingId: string | null | undefined) {
 
 /** Pass pool inventory for a building.
  *
- *  Backend gap: there is no dedicated `GET /reception/passes` endpoint
- *  today (the reception controller only exposes pass *actions*). The
- *  `/admin/visitors/pools` endpoint lists all passes tenant-wide; we
- *  filter client-side by the resolved building's pool space.
- *
- *  A receptionist with the `visitors.reception` permission but without
- *  the admin role won't be able to call /admin/visitors/pools — slice 8
- *  (admin pages) should expose `GET /reception/passes?building_id=…`
- *  for parity. Until then this hook returns the admin payload when it
- *  succeeds and an empty array on 401/403 so the page renders an empty
- *  state instead of a hard error.
- *
- *  TODO: replace with `/reception/passes` once the backend exposes one. */
+ *  Slice 9 added the dedicated `GET /reception/passes?building_id=…`
+ *  endpoint — it resolves the most-specific anchor pool via
+ *  `pass_pool_for_space()` server-side and returns the full pass list
+ *  at that anchor. Non-admin receptionists can call this without 403.
+ */
 export function passPoolOptions(buildingId: string | null | undefined) {
   return queryOptions({
     queryKey: receptionKeys.passes(buildingId ?? '__none__'),
-    queryFn: async ({ signal }) => {
-      try {
-        const all = await apiFetch<ReceptionPass[]>('/admin/visitors/pools', { signal });
-        // Anchor pool by building. A pass whose space_id IS this building OR
-        // whose space_id is a parent the building inherits from would both
-        // apply. We only have flat pool rows here, so we filter by direct
-        // space_id; admins can still see the full list at /admin.
-        return all.filter((p) => p.space_id === buildingId);
-      } catch (err) {
-        const status = (err as { status?: number })?.status;
-        if (status === 401 || status === 403) return [] as ReceptionPass[];
-        throw err;
-      }
-    },
+    queryFn: ({ signal }) =>
+      apiFetch<ReceptionPass[]>('/reception/passes', {
+        signal,
+        query: { building_id: buildingId ?? undefined },
+      }),
     enabled: Boolean(buildingId),
     staleTime: 30_000,
   });

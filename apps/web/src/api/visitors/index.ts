@@ -218,24 +218,30 @@ export function useMyExpectedVisitors() {
 }
 
 /**
- * Visitor types lookup. Tries the admin endpoint first (works for tenant
- * admins); falls back to the seeded defaults so non-admin hosts can still
- * pick a type without a 403 in the network panel.
- *
- * The endpoint is admin-only today (slice 2d). This returns an empty
- * array on 403 so the caller can switch to DEFAULT_VISITOR_TYPES without
- * surfacing the error to the user.
+ * Visitor types lookup. Slice 9 added a host-accessible `GET /visitors/types`
+ * endpoint gated only on `visitors.invite` so the invite form stays
+ * populated for non-admins. We hit that endpoint first; falling back to
+ * `/admin/visitors/types` for legacy callers, and finally to the seeded
+ * defaults if both 403.
  */
 export function visitorTypesOptions() {
   return queryOptions({
     queryKey: visitorKeys.types(),
     queryFn: async ({ signal }) => {
+      // 1. Host-accessible endpoint (slice 9 — preferred).
+      try {
+        return await apiFetch<VisitorType[]>('/visitors/types', { signal });
+      } catch (err) {
+        const status = (err as { status?: number })?.status;
+        if (status !== 401 && status !== 403) throw err;
+      }
+      // 2. Admin endpoint (works for tenant admins).
       try {
         return await apiFetch<VisitorType[]>('/admin/visitors/types', { signal });
       } catch (err) {
         const status = (err as { status?: number })?.status;
         if (status === 401 || status === 403) {
-          // Host without admin role — fall back to the seeded defaults.
+          // 3. Last-resort seeded defaults so the picker can still render.
           return DEFAULT_VISITOR_TYPES;
         }
         throw err;
@@ -333,6 +339,11 @@ export function formatVisitorName(v: Pick<ExpectedVisitor, 'first_name' | 'last_
 // host-facing module focused. Re-exported here so callers can do
 // `import { useReceptionToday } from '@/api/visitors'`.
 export * from './reception';
+
+// Admin surface (slice 9) — visitor-types CRUD, pool anchors, kiosk
+// provisioning, desk lens. Lives in its own file so the host-facing
+// bundle stays slim.
+export * from './admin';
 
 /** Status → human-friendly chip label. */
 export function visitorStatusLabel(s: VisitorStatus): string {

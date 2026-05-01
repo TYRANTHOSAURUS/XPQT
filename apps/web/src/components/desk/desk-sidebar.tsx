@@ -50,6 +50,7 @@ import {
   GlobeIcon,
   SearchIcon,
   ChefHatIcon,
+  UserPlusIcon,
 } from "lucide-react"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { useQuery, queryOptions } from "@tanstack/react-query"
@@ -67,6 +68,7 @@ const navItems = [
   { title: "Approvals", icon: CheckSquareIcon, path: "/desk/approvals" },
   { title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings" },
   { title: "Scheduler", icon: CalendarRangeIcon, path: "/desk/scheduler" },
+  { title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors" },
   { title: "Reports", icon: BarChart3Icon, path: "/desk/reports" },
 ]
 

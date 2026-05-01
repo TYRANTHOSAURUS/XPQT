@@ -85,6 +85,34 @@ export class VisitorsController {
   }
 
   /**
+   * GET /visitors/types — host-accessible visitor type lookup.
+   *
+   * Spec §6.1 — the invite form needs the active visitor types to
+   * populate its dropdown. The admin surface (`/admin/visitors/types`)
+   * is gated behind `AdminGuard` so a non-admin host can't read it.
+   * This endpoint requires only `visitors.invite` (the same permission
+   * the host uses to actually create the invitation), which keeps the
+   * picker populated without granting admin access.
+   *
+   * Returns active types only — disabled types are admin-internal.
+   */
+  @Get('types')
+  async listTypesForHosts(@Req() req: Request) {
+    await this.permissions.requirePermission(req, 'visitors.invite');
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('visitor_types')
+      .select(
+        'id, type_key, display_name, description, requires_approval, allow_walk_up, default_expected_until_offset_minutes, active',
+      )
+      .eq('tenant_id', tenant.id)
+      .eq('active', true)
+      .order('display_name', { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  }
+
+  /**
    * GET /visitors/expected — host's upcoming visitors.
    *
    * Filters: `visitor_hosts.person_id = actor.person_id`, status in

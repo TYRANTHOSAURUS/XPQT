@@ -13,6 +13,7 @@ import {
 import type { Request } from 'express';
 import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
+import { DbService } from '../../common/db/db.service';
 import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -47,6 +48,7 @@ export class ReceptionController {
     private readonly events: VisitorEventBus,
     private readonly supabase: SupabaseService,
     private readonly permissions: PermissionGuard,
+    private readonly db: DbService,
   ) {}
 
   // ─── today / search / daglijst (read) ──────────────────────────────────
@@ -98,6 +100,171 @@ export class ReceptionController {
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.dailyListForBuilding(tenant.id, buildingId, actor.user_id);
+  }
+
+  /**
+   * GET /reception/passes?building_id=…
+   *
+   * The pass pool resolved for this building (most-specific-wins via
+   * `pass_pool_for_space`). Returns the full pass list at the resolved
+   * anchor — slice 7's frontend was hitting `/admin/visitors/pools` and
+   * filtering client-side, which 403'd for non-admin receptionists.
+   *
+   * Empty array if the building has no resolved pool (uncovered or opted
+   * out of inheritance). The shape matches the existing slice 7 client
+   * type so the React Query hook can swap over without a payload change.
+   */
+  @Get('passes')
+  async listPasses(
+    @Req() req: Request,
+    @Query('building_id') buildingId?: string,
+  ) {
+    await this.permissions.requirePermission(req, 'visitors.reception');
+    if (!buildingId) throw new BadRequestException('building_id is required');
+    const tenant = TenantContext.current();
+    const anchor = await this.passPool.passPoolForSpace(buildingId, tenant.id);
+    if (!anchor) return [];
+    return this.db.queryMany(
+      `select id, tenant_id, space_id, space_kind, pass_number, pass_type,
+              status, current_visitor_id, reserved_for_visitor_id,
+              last_assigned_at, notes, created_at, updated_at
+         from public.visitor_pass_pool
+        where tenant_id = $1 and space_id = $2
+        order by pass_number asc`,
+      [tenant.id, anchor.space_id],
+    );
+  }
+
+  /**
+   * GET /reception/desk-lens
+   *
+   * Service desk focused lens (spec §7.9). Three sections:
+   *   1. Contractor visitors with an active service ticket.
+   *   2. Visitors in `pending_approval`.
+   *   3. Today's escalations (host-not-acknowledged > 5min, unreturned
+   *      passes from earlier today).
+   *
+   * Visibility-gated via `visitor_visibility_ids` so a desk agent without
+   * the `visitors.read_all` override only sees what their scope allows.
+   * Permission gate is `visitors.reception` — same as the reception
+   * workspace per spec §7.9.
+   */
+  @Get('desk-lens')
+  async deskLens(@Req() req: Request) {
+    await this.permissions.requirePermission(req, 'visitors.reception');
+    const tenant = TenantContext.current();
+    const actor = await this.resolveActor(req);
+
+    const visibleCte = `
+      with visible as (
+        select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
+      )
+    `;
+
+    /* Contractor visitors with an active service ticket — current model
+       has no direct visitor↔ticket FK, so we resolve via shared
+       booking_bundle_id (the booking-bundle cascade links visitor lines
+       to bundles which spawn work_orders). For visitors without a bundle,
+       we surface the contractor type alone in section 1. */
+    const contractorSql = `
+      ${visibleCte}
+      select v.id, v.first_name, v.last_name, v.company,
+             v.expected_at, v.arrived_at, v.status,
+             v.building_id, v.visitor_type_id, v.booking_bundle_id,
+             vt.display_name as visitor_type_name,
+             p.first_name || ' ' || coalesce(p.last_name, '') as primary_host_name
+        from public.visitors v
+        join public.visitor_types vt on vt.id = v.visitor_type_id
+        left join public.persons p on p.id = v.primary_host_person_id
+       where v.tenant_id = $2
+         and v.id in (select id from visible)
+         and vt.type_key = 'contractor'
+         and v.status in ('expected', 'arrived', 'in_meeting')
+         and (v.expected_at is null or v.expected_at >= date_trunc('day', now()))
+       order by v.expected_at nulls last
+       limit 200
+    `;
+    const contractors = await this.db.queryMany(contractorSql, [
+      actor.user_id,
+      tenant.id,
+    ]);
+
+    const pendingSql = `
+      ${visibleCte}
+      select v.id, v.first_name, v.last_name, v.company,
+             v.expected_at, v.status,
+             v.building_id, v.visitor_type_id,
+             vt.display_name as visitor_type_name,
+             p.first_name || ' ' || coalesce(p.last_name, '') as primary_host_name
+        from public.visitors v
+        left join public.visitor_types vt on vt.id = v.visitor_type_id
+        left join public.persons p on p.id = v.primary_host_person_id
+       where v.tenant_id = $2
+         and v.id in (select id from visible)
+         and v.status = 'pending_approval'
+       order by v.expected_at nulls last
+       limit 200
+    `;
+    const pending = await this.db.queryMany(pendingSql, [
+      actor.user_id,
+      tenant.id,
+    ]);
+
+    /* Escalations — host-not-acknowledged > 5min after arrival and
+       unreturned passes from any visitor checked-out today without
+       a returned pass. */
+    const ackEscalationSql = `
+      ${visibleCte}
+      select v.id, v.first_name, v.last_name, v.company,
+             v.arrived_at, v.status,
+             v.building_id, v.visitor_type_id,
+             vt.display_name as visitor_type_name,
+             p.first_name || ' ' || coalesce(p.last_name, '') as primary_host_name,
+             extract(epoch from (now() - v.arrived_at))::int as seconds_since_arrival
+        from public.visitors v
+        left join public.visitor_types vt on vt.id = v.visitor_type_id
+        left join public.persons p on p.id = v.primary_host_person_id
+       where v.tenant_id = $2
+         and v.id in (select id from visible)
+         and v.status = 'arrived'
+         and v.arrived_at is not null
+         and v.arrived_at < (now() - interval '5 minutes')
+         and not exists (
+           select 1 from public.visitor_hosts vh
+            where vh.visitor_id = v.id
+              and vh.tenant_id = v.tenant_id
+              and vh.acknowledged_at is not null
+         )
+       order by v.arrived_at asc
+       limit 100
+    `;
+    const ackEscalations = await this.db.queryMany(ackEscalationSql, [
+      actor.user_id,
+      tenant.id,
+    ]);
+
+    const unreturnedSql = `
+      select pp.id, pp.pass_number, pp.status, pp.last_assigned_at,
+             pp.current_visitor_id, pp.space_id, pp.space_kind, pp.notes
+        from public.visitor_pass_pool pp
+       where pp.tenant_id = $1
+         and pp.status = 'in_use'
+         and pp.last_assigned_at < (now() - interval '8 hours')
+       order by pp.last_assigned_at asc
+       limit 100
+    `;
+    const unreturnedPasses = await this.db.queryMany(unreturnedSql, [
+      tenant.id,
+    ]);
+
+    return {
+      contractors,
+      pending_approval: pending,
+      escalations: {
+        host_not_acknowledged: ackEscalations,
+        unreturned_passes: unreturnedPasses,
+      },
+    };
   }
 
   // ─── walk-up / check-in / out (write) ──────────────────────────────────

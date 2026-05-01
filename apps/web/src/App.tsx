@@ -147,6 +147,11 @@ const VendorDetailPage = lazyNamed(() => import('@/pages/admin/vendor-detail'), 
 const VendorMenusPage = lazyNamed(() => import('@/pages/admin/vendor-menus'), 'VendorMenusPage');
 const VendorMenuDetailPage = lazyNamed(() => import('@/pages/admin/vendor-menu-detail'), 'VendorMenuDetailPage');
 const BrandingPage = lazyNamed(() => import('@/pages/admin/branding'), 'BrandingPage');
+const AdminVisitorTypesPage = lazyNamed(() => import('@/pages/admin/visitors/types'), 'AdminVisitorTypesPage');
+const AdminVisitorTypeDetailPage = lazyNamed(() => import('@/pages/admin/visitors/types/detail'), 'AdminVisitorTypeDetailPage');
+const AdminVisitorPoolsPage = lazyNamed(() => import('@/pages/admin/visitors/pools'), 'AdminVisitorPoolsPage');
+const AdminVisitorPoolDetailPage = lazyNamed(() => import('@/pages/admin/visitors/pools/detail'), 'AdminVisitorPoolDetailPage');
+const DeskVisitorsPage = lazyNamed(() => import('@/pages/desk/visitors'), 'DeskVisitorsPage');
 
 function RouteFallback() {
   return (
@@ -258,6 +263,7 @@ export function App() {
                   <Route path="tickets" element={<TicketsPage />} />
                   <Route path="tickets/:id" element={<TicketDetailPage />} />
                   <Route path="approvals" element={<ApprovalsPage />} />
+                  <Route path="visitors" element={<DeskVisitorsPage />} />
                   <Route path="reports" element={<ReportsLayout />}>
                     <Route index element={<Navigate to="/desk/reports/overview" replace />} />
                     <Route path="overview" element={<OverviewReport />} />
@@ -363,6 +369,11 @@ export function App() {
                   <Route path="routing-studio" element={<RoutingStudioPage />} />
                   {/* Branding */}
                   <Route path="branding" element={<BrandingPage />} />
+                  {/* Visitors (slice 9) — types config + pass pools + kiosks */}
+                  <Route path="visitors/types" element={<AdminVisitorTypesPage />} />
+                  <Route path="visitors/types/:id" element={<AdminVisitorTypeDetailPage />} />
+                  <Route path="visitors/pools" element={<AdminVisitorPoolsPage />} />
+                  <Route path="visitors/pools/:spaceId" element={<AdminVisitorPoolDetailPage />} />
                 </Route>
                 </Routes>
               </Suspense>

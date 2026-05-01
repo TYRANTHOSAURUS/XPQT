@@ -139,6 +139,153 @@ export class VisitorsAdminController {
     );
   }
 
+  /**
+   * GET /admin/visitors/pool-anchors
+   *
+   * Returns one row per anchor space (`space_id`) with aggregated pass
+   * counts per status. The admin pools index page renders this directly
+   * — without it the page has to fetch every pass and group client-side.
+   */
+  @Get('pool-anchors')
+  async listPoolAnchors() {
+    const tenant = TenantContext.current();
+    return this.db.queryMany(
+      `select
+         pool.space_id            as space_id,
+         pool.space_kind          as space_kind,
+         s.name                   as space_name,
+         count(*)                 as pass_count,
+         count(*) filter (where pool.status = 'available') as available_count,
+         count(*) filter (where pool.status = 'in_use')    as in_use_count,
+         count(*) filter (where pool.status = 'reserved')  as reserved_count,
+         count(*) filter (where pool.status = 'lost')      as lost_count,
+         count(*) filter (where pool.status = 'retired')   as retired_count,
+         coalesce(s.uses_visitor_passes, true) as uses_visitor_passes
+       from public.visitor_pass_pool pool
+       join public.spaces s
+         on s.id = pool.space_id and s.tenant_id = pool.tenant_id
+       where pool.tenant_id = $1
+       group by pool.space_id, pool.space_kind, s.name, s.uses_visitor_passes
+       order by s.name asc`,
+      [tenant.id],
+    );
+  }
+
+  /**
+   * GET /admin/visitors/pools/by-anchor/:space_id
+   *
+   * All passes anchored at this space. The detail page shows one anchor
+   * (resolved by space_id, not pool row id) with its passes underneath.
+   */
+  @Get('pools/by-anchor/:space_id')
+  async listPassesByAnchor(@Param('space_id') spaceId: string) {
+    const tenant = TenantContext.current();
+    const anchor = await this.db.queryOne<{
+      id: string;
+      type: string;
+      name: string;
+      uses_visitor_passes: boolean | null;
+    }>(
+      `select id, type, name, uses_visitor_passes
+         from public.spaces
+        where id = $1 and tenant_id = $2`,
+      [spaceId, tenant.id],
+    );
+    if (!anchor) throw new NotFoundException(`space ${spaceId} not found`);
+    if (anchor.type !== 'site' && anchor.type !== 'building') {
+      throw new BadRequestException('Pool anchor must be a site or building');
+    }
+    const passes = await this.db.queryMany(
+      `select id, tenant_id, space_id, space_kind, pass_number, pass_type,
+              status, current_visitor_id, reserved_for_visitor_id,
+              last_assigned_at, notes, created_at, updated_at
+         from public.visitor_pass_pool
+        where tenant_id = $1 and space_id = $2
+        order by pass_number asc`,
+      [tenant.id, spaceId],
+    );
+    return {
+      anchor: {
+        id: anchor.id,
+        space_kind: anchor.type,
+        name: anchor.name,
+        uses_visitor_passes: anchor.uses_visitor_passes ?? true,
+      },
+      passes,
+    };
+  }
+
+  /**
+   * GET /admin/visitors/pools/by-anchor/:space_id/inheritance
+   *
+   * Preview which descendant spaces inherit this pool. Walks the spaces
+   * tree from the anchor and for each leaf calls pass_pool_for_space()
+   * to confirm whether this anchor is the resolved pool. Used by the
+   * pool detail page to show "covers Building A, Building B" + opt-outs.
+   *
+   * Returns descendant building/site rows with a `covered` boolean +
+   * `opted_out` boolean.
+   */
+  @Get('pools/by-anchor/:space_id/inheritance')
+  async poolInheritance(@Param('space_id') spaceId: string) {
+    const tenant = TenantContext.current();
+    const anchor = await this.db.queryOne<{ id: string; type: string }>(
+      `select id, type from public.spaces
+        where id = $1 and tenant_id = $2`,
+      [spaceId, tenant.id],
+    );
+    if (!anchor) throw new NotFoundException(`space ${spaceId} not found`);
+
+    // Descendants — buildings/sites under the anchor (or anchor itself).
+    const descendants = await this.db.queryMany<{
+      id: string;
+      name: string;
+      type: string;
+      uses_visitor_passes: boolean | null;
+    }>(
+      `with recursive descendants as (
+         select id, name, type, parent_id, uses_visitor_passes
+           from public.spaces where id = $1 and tenant_id = $2
+         union all
+         select s.id, s.name, s.type, s.parent_id, s.uses_visitor_passes
+           from public.spaces s
+           join descendants d on s.parent_id = d.id
+          where s.tenant_id = $2
+       )
+       select id, name, type, uses_visitor_passes from descendants
+        where type in ('site', 'building')
+        order by name asc`,
+      [spaceId, tenant.id],
+    );
+
+    const rows: Array<{
+      id: string;
+      name: string;
+      type: string;
+      covered: boolean;
+      opted_out: boolean;
+    }> = [];
+    for (const d of descendants) {
+      // For each descendant, resolve its pool. If the anchor is the
+      // returned pool, this descendant inherits us. If `uses_visitor_passes
+      // = false` anywhere up the chain, it's opted out.
+      const resolved = await this.db.queryOne<{ space_id: string | null }>(
+        `select space_id from public.pass_pool_for_space($1) limit 1`,
+        [d.id],
+      );
+      const optedOut = d.uses_visitor_passes === false;
+      const covered = !optedOut && resolved?.space_id === spaceId;
+      rows.push({
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        covered,
+        opted_out: optedOut,
+      });
+    }
+    return rows;
+  }
+
   @Post('pools')
   async createPool(@Body() body: unknown) {
     /* "Pool" is a misnomer in the data model — visitor_pass_pool rows
@@ -297,6 +444,53 @@ export class VisitorsAdminController {
   }
 
   // ─── kiosk tokens ──────────────────────────────────────────────────────
+
+  /**
+   * GET /admin/visitors/kiosks?space_id=…
+   *
+   * List kiosk tokens. When `space_id` is supplied, filter to buildings
+   * that resolve to that anchor pool (so the pool detail page shows
+   * only the relevant kiosks). Without `space_id`, returns all tokens.
+   */
+  @Get('kiosks')
+  async listKioskTokens(@Query('space_id') spaceId?: string) {
+    const tenant = TenantContext.current();
+    if (!spaceId) {
+      return this.db.queryMany(
+        `select kt.id, kt.tenant_id, kt.building_id, kt.active,
+                kt.rotated_at, kt.expires_at, kt.created_at,
+                s.name as building_name
+           from public.kiosk_tokens kt
+           join public.spaces s
+             on s.id = kt.building_id and s.tenant_id = kt.tenant_id
+          where kt.tenant_id = $1
+          order by s.name asc, kt.created_at desc`,
+        [tenant.id],
+      );
+    }
+    // Walk the descendants of the anchor and find buildings; then list
+    // their kiosk tokens.
+    return this.db.queryMany(
+      `with recursive descendants as (
+         select id, type, parent_id from public.spaces
+           where id = $1 and tenant_id = $2
+         union all
+         select s.id, s.type, s.parent_id from public.spaces s
+           join descendants d on s.parent_id = d.id
+          where s.tenant_id = $2
+       )
+       select kt.id, kt.tenant_id, kt.building_id, kt.active,
+              kt.rotated_at, kt.expires_at, kt.created_at,
+              sp.name as building_name
+         from public.kiosk_tokens kt
+         join descendants d on d.id = kt.building_id
+         join public.spaces sp on sp.id = kt.building_id
+        where kt.tenant_id = $2
+          and d.type = 'building'
+        order by sp.name asc, kt.created_at desc`,
+      [spaceId, tenant.id],
+    );
+  }
 
   @Post('kiosks/:building_id/provision')
   async provisionKiosk(
