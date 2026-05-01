@@ -384,6 +384,31 @@ export const PERMISSION_CATALOG = {
       billing: { label: 'View billing + plan', danger: true },
     },
   },
+  visitors: {
+    label: 'Visitors',
+    icon: 'user-check',
+    description:
+      'Visitor invitations, reception workspace, and pass pool. Visitors are persons (type=visitor); visit events live on visitors.',
+    actions: {
+      invite: {
+        label: 'Invite visitors',
+        description:
+          'Create visitor invitations from the portal or booking composer. Inviter must have location-grant scope to the target building.',
+      },
+      reception: {
+        label: 'Operate reception workspace',
+        description:
+          'Access /reception/* and /desk/visitors. Check visitors in/out, manage walk-ups, run the pass pool. Off by default — granted explicitly to reception/service-desk roles.',
+      },
+    },
+    overrides: {
+      read_all: {
+        label: 'See all visitors',
+        description: 'Bypass scope — view every visitor in the tenant regardless of building scope.',
+        danger: true,
+      },
+    },
+  },
   gdpr: {
     label: 'Privacy & compliance (GDPR)',
     icon: 'shield-check',
