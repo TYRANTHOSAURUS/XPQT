@@ -330,10 +330,23 @@ describe('visitors v1 schema — status FSM trigger', () => {
     return v.rows[0].id;
   }
 
+  /**
+   * Set the visitors.transition_marker session-local setting that
+   * VisitorService.transitionStatus normally sets. Required after
+   * migration 00270 (full-review I1): direct status UPDATEs without
+   * the marker raise, even if they satisfy the FSM matrix. We set it
+   * here so the matrix tests below can still exercise the matrix
+   * branch — the marker test below covers the bypass-rejection branch.
+   */
+  async function setTransitionMarker(): Promise<void> {
+    await client.query(`select set_config('visitors.transition_marker', 'true', true)`);
+  }
+
   test('expected → checked_out (skip arrived) raises', async () => {
     if (!dbAvailable) return;
     await withTxn(async () => {
       const id = await freshVisitor();
+      await setTransitionMarker();
       await expect(
         client.query(
           `update public.visitors set status='checked_out', checkout_source='reception' where id=$1`,
@@ -347,6 +360,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
     if (!dbAvailable) return;
     await withTxn(async () => {
       const id = await freshVisitor();
+      await setTransitionMarker();
       const r = await client.query(
         `update public.visitors set status='arrived' where id=$1 returning status`,
         [id],
@@ -359,6 +373,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
     if (!dbAvailable) return;
     await withTxn(async () => {
       const id = await freshVisitor();
+      await setTransitionMarker();
       await expect(
         client.query(
           `update public.visitors set status='pending_approval' where id=$1`,
@@ -372,6 +387,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
     if (!dbAvailable) return;
     await withTxn(async () => {
       const id = await freshVisitor();
+      await setTransitionMarker();
       await client.query(`update public.visitors set status='arrived' where id=$1`, [id]);
       await client.query(
         `update public.visitors set status='checked_out', checkout_source='reception' where id=$1`,
@@ -380,6 +396,123 @@ describe('visitors v1 schema — status FSM trigger', () => {
       await expect(
         client.query(`update public.visitors set status='arrived' where id=$1`, [id]),
       ).rejects.toMatchObject({ message: expect.stringContaining('invalid visitor status transition') });
+    });
+  });
+
+  // ─── I1 (full review) — bypass rejection ─────────────────────────────────
+  // Without the visitors.transition_marker session var set, ANY status
+  // UPDATE raises. This is the gate that keeps VisitorService.transitionStatus
+  // the only sanctioned write path.
+
+  test('I1 — direct UPDATE without transition_marker raises', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      const id = await freshVisitor();
+      // Deliberately NOT calling setTransitionMarker() — this is the
+      // bypass path the trigger should reject.
+      await expect(
+        client.query(`update public.visitors set status='arrived' where id=$1`, [id]),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('VisitorService.transitionStatus'),
+      });
+    });
+  });
+
+  test('I1 — same-status no-op UPDATE passes without marker', async () => {
+    // Touching status with the same value is the no-op branch — we don't
+    // want to break unrelated UPDATEs that happen to include status in
+    // their column list.
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      const id = await freshVisitor();
+      // No marker, but new value === old value → trigger short-circuits.
+      const r = await client.query(
+        `update public.visitors set status='expected' where id=$1 returning status`,
+        [id],
+      );
+      expect(r.rows[0].status).toBe('expected');
+    });
+  });
+
+  test('I1 — UPDATE that does not touch status is unaffected', async () => {
+    // The trigger fires `before update of status`; an UPDATE that omits
+    // status from the column list never invokes it. Verify by setting an
+    // unrelated column.
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      const id = await freshVisitor();
+      await client.query(`set local role postgres`); // bypass RLS for the
+      const r = await client.query(
+        `update public.visitors set notes_for_reception='hello' where id=$1 returning id`,
+        [id],
+      );
+      expect(r.rows[0].id).toBe(id);
+    });
+  });
+
+  // ─── I2 (full review) — INSERT validation ────────────────────────────────
+  // The matrix has no incoming edge to terminal/intermediate states from
+  // outside, so an INSERT with status='checked_out' (etc.) should raise.
+
+  test('I2 — INSERT with status=checked_out raises', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+      await expect(
+        client.query(
+          `insert into public.visitors (tenant_id, person_id, host_person_id, visit_date, status, primary_host_person_id, checkout_source, checked_out_at)
+           values ($1, $2, $2, current_date, 'checked_out', $2, 'reception', now())`,
+          [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('invalid initial visitor status on insert'),
+      });
+    });
+  });
+
+  test('I2 — INSERT with status=arrived raises', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+      await expect(
+        client.query(
+          `insert into public.visitors (tenant_id, person_id, host_person_id, visit_date, status, primary_host_person_id, arrived_at, logged_at)
+           values ($1, $2, $2, current_date, 'arrived', $2, now(), now())`,
+          [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('invalid initial visitor status on insert'),
+      });
+    });
+  });
+
+  test('I2 — INSERT with status=expected succeeds (allowed initial)', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+      const r = await client.query(
+        `insert into public.visitors (tenant_id, person_id, host_person_id, visit_date, status, primary_host_person_id)
+         values ($1, $2, $2, current_date, 'expected', $2) returning status`,
+        [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
+      );
+      expect(r.rows[0].status).toBe('expected');
+    });
+  });
+
+  test('I2 — INSERT with status=pending_approval succeeds (allowed initial)', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+      const r = await client.query(
+        `insert into public.visitors (tenant_id, person_id, host_person_id, visit_date, status, primary_host_person_id)
+         values ($1, $2, $2, current_date, 'pending_approval', $2) returning status`,
+        [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
+      );
+      expect(r.rows[0].status).toBe('pending_approval');
     });
   });
 });
