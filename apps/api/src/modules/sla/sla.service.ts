@@ -43,8 +43,16 @@ export class SlaService {
 
     let q2 = this.supabase.admin.from('work_orders').update(patch).eq('id', id);
     if (tenantId) q2 = q2.eq('tenant_id', tenantId);
-    const { error } = await q2;
+    // Step 1c.10c: detect "id in neither" rather than silently succeeding —
+    // hides stale timer/crossing references otherwise. Use .select('id') so
+    // we can count affected rows.
+    const { data: woHit, error } = await q2.select('id').maybeSingle();
     if (error) throw error;
+    if (!woHit) {
+      throw new Error(
+        `updateTicketOrWorkOrder: id ${id} not found in tickets or work_orders`,
+      );
+    }
   }
 
   /**
@@ -365,12 +373,22 @@ export class SlaService {
       return { teamId: threshold.target_id };
     }
     if (threshold.target_type === 'manager_of_requester') {
-      const { data: ticket } = await this.supabase.admin
+      // Step 1c.10c: id may live in tickets (case) or work_orders.
+      let requesterId: string | null = null;
+      const caseRes = await this.supabase.admin
         .from('tickets')
         .select('requester_person_id')
         .eq('id', ticketId)
-        .single();
-      const requesterId = ticket?.requester_person_id as string | null;
+        .maybeSingle();
+      requesterId = (caseRes.data?.requester_person_id as string | null) ?? null;
+      if (!requesterId) {
+        const woRes = await this.supabase.admin
+          .from('work_orders')
+          .select('requester_person_id')
+          .eq('id', ticketId)
+          .maybeSingle();
+        requesterId = (woRes.data?.requester_person_id as string | null) ?? null;
+      }
       if (!requesterId) return null;
       const { data: requester } = await this.supabase.admin
         .from('persons')
@@ -385,13 +403,32 @@ export class SlaService {
   }
 
   private async loadTicketForFire(ticketId: string) {
-    const { data, error } = await this.supabase.admin
+    // Step 1c.10c: id may live in tickets (case) or work_orders. Try
+    // tickets first, fall back to work_orders.
+    const cols = 'id, tenant_id, title, assigned_user_id, assigned_team_id, requester_person_id, watchers';
+    const caseRes = await this.supabase.admin
       .from('tickets')
-      .select('id, tenant_id, title, assigned_user_id, assigned_team_id, requester_person_id, watchers')
+      .select(cols)
+      .eq('id', ticketId)
+      .maybeSingle();
+    if (caseRes.data) {
+      return caseRes.data as {
+        id: string;
+        tenant_id: string;
+        title: string;
+        assigned_user_id: string | null;
+        assigned_team_id: string | null;
+        requester_person_id: string | null;
+        watchers: string[] | null;
+      };
+    }
+    const woRes = await this.supabase.admin
+      .from('work_orders')
+      .select(cols)
       .eq('id', ticketId)
       .single();
-    if (error) throw error;
-    return data as {
+    if (woRes.error) throw woRes.error;
+    return woRes.data as {
       id: string;
       tenant_id: string;
       title: string;

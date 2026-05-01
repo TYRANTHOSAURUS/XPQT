@@ -506,8 +506,21 @@ export class TicketService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !data) throw new NotFoundException('Ticket not found');
-    return data;
+    if (error || !data) {
+      // Step 1c.10c: id might be a work_order — try work_orders before 404.
+      const woResult = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', id)
+        .eq('tenant_id', tenant.id)
+        .single();
+      if (woResult.data) {
+        return { ...woResult.data, ticket_kind: 'work_order' as const };
+      }
+      throw new NotFoundException('Ticket not found');
+    }
+    // Step 1c.10c: synthesize ticket_kind for frontend contract continuity.
+    return { ...data, ticket_kind: 'case' as const };
   }
 
   async create(
@@ -606,12 +619,14 @@ export class TicketService {
         metadata: { event: 'approval_requested' },
       });
 
-      return data;
+      // Step 1c.10c: synthesize ticket_kind for frontend contract.
+      return { ...data, ticket_kind: 'case' as const };
     }
 
     // Normal path: routing → SLA → workflow
     await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg, options);
-    return data;
+    // Step 1c.10c: synthesize ticket_kind for frontend contract.
+    return { ...data, ticket_kind: 'case' as const };
   }
 
   /**
@@ -914,7 +929,8 @@ export class TicketService {
       });
     }
 
-    return data;
+    // Step 1c.10c: synthesize ticket_kind for frontend contract.
+    return { ...data, ticket_kind: 'case' as const };
   }
 
   /**
@@ -1331,7 +1347,9 @@ export class TicketService {
       .order('created_at');
 
     if (error) throw error;
-    return data;
+    // Step 1c.10c: synthesize ticket_kind='work_order' for frontend
+    // WorkOrderRow type continuity.
+    return (data ?? []).map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
   }
 
   async bulkUpdate(

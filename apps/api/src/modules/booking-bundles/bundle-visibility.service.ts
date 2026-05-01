@@ -123,10 +123,13 @@ export class BundleVisibilityService {
       if ((data ?? []).length > 0) return;
     }
 
-    // Work-order assignee: any ticket with this bundle_id assigned to me.
+    // Work-order assignee: any work_order with this bundle_id assigned to me.
+    // Step 1c.10c: booking-origin work orders are in public.work_orders now,
+    // not tickets. Without this fix, work-order assignees would lose access
+    // to bundle pages they manage.
     {
       const { data, error } = await this.supabase.admin
-        .from('tickets')
+        .from('work_orders')
         .select('id')
         .eq('tenant_id', ctx.tenant_id)
         .eq('booking_bundle_id', bundle.id)
