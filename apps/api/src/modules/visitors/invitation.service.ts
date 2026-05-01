@@ -231,12 +231,12 @@ export class InvitationService {
              visit_invitation_tokens; the plaintext exists transiently
              in this row until the worker consumes it.
 
-             Privacy note: domain_events is tenant-scoped + RLS-protected.
-             The plaintext is high-entropy bearer token but the row is
-             only readable by service_role + the tenant's authed users.
-             A future cleanup pass could redact `cancel_token` after the
-             worker has dispatched (Sprint X) but for v1 the row's
-             rate-limited audience makes this acceptable. */
+             Privacy: as of migration 00269, public.domain_events is
+             service-role-only — `authenticated` and `anon` no longer
+             have SELECT/INSERT/UPDATE/DELETE on the table. The email
+             worker reads the payload via the service-role client; no
+             tenant user can harvest cancel tokens through PostgREST.
+             RLS still enforces tenant isolation defense-in-depth. */
           payload: {
             visitor_id: visitorId,
             primary_host_person_id: actor.person_id,

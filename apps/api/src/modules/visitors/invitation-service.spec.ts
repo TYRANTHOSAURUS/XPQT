@@ -59,6 +59,8 @@ interface FakeOptions {
   insertedApprovals?: Array<Record<string, unknown>>;
   /** Inserted audit_events rows captured. */
   insertedAudit?: Array<Record<string, unknown>>;
+  /** Inserted domain_events rows captured. */
+  insertedDomainEvents?: Array<Record<string, unknown>>;
 }
 
 function makeService(opts: FakeOptions = {}) {
@@ -87,6 +89,7 @@ function makeService(opts: FakeOptions = {}) {
   const insertedTokens: Array<Record<string, unknown>> = opts.insertedTokens ?? [];
   const insertedApprovals: Array<Record<string, unknown>> = opts.insertedApprovals ?? [];
   const insertedAudit: Array<Record<string, unknown>> = opts.insertedAudit ?? [];
+  const insertedDomainEvents: Array<Record<string, unknown>> = opts.insertedDomainEvents ?? [];
 
   // Wrap an arbitrary terminal value into a thenable PostgrestFilterBuilder-shaped chain.
   const term = (terminal: unknown) => {
@@ -204,7 +207,10 @@ function makeService(opts: FakeOptions = {}) {
             };
           case 'domain_events':
             return {
-              insert: () => Promise.resolve({ data: null, error: null }),
+              insert: (row: Record<string, unknown>) => {
+                insertedDomainEvents.push(row);
+                return Promise.resolve({ data: row, error: null });
+              },
             };
           default:
             return term({ data: null, error: null });
@@ -272,6 +278,7 @@ function makeService(opts: FakeOptions = {}) {
     insertedTokens,
     insertedApprovals,
     insertedAudit,
+    insertedDomainEvents,
     getInsertedVisitor: () => opts.insertedVisitor,
   };
 }
@@ -379,6 +386,30 @@ describe('InvitationService.create', () => {
   it('unknown visitor_type: throws NotFoundException', async () => {
     const ctx = makeService({ visitorTypes: {} });
     await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('emits visitor.invitation.expected domain_event with plaintext cancel_token in payload', async () => {
+    // Regression for post-shipping review C2: the email worker reads the
+    // plaintext cancel_token from domain_events.payload to render the
+    // cancel-link URL. Migration 00269 revokes SELECT/INSERT/UPDATE/DELETE
+    // on public.domain_events from anon + authenticated, so the plaintext
+    // is service-role-only on the wire. This test pins the contract on the
+    // worker side: the payload MUST contain the same plaintext that
+    // create() returns to its caller.
+    const ctx = makeService();
+    const result = await ctx.svc.create(baseDto(), ACTOR);
+
+    const expectedEvent = ctx.insertedDomainEvents.find(
+      (e) => e.event_type === 'visitor.invitation.expected',
+    );
+    expect(expectedEvent).toBeTruthy();
+    const payload = expectedEvent!.payload as Record<string, unknown>;
+    expect(payload.cancel_token).toBe(result.cancel_token);
+    expect(payload.visitor_id).toBe(VISITOR_ID);
+    // Sanity: the plaintext is high-entropy hex (not a sha256 hash from the token row).
+    expect(typeof payload.cancel_token).toBe('string');
+    expect((payload.cancel_token as string).length).toBe(64);
+    expect(payload.cancel_token).not.toBe(ctx.insertedTokens[0].token_hash);
   });
 
   it('expected_until defaults from visitor_type.default_expected_until_offset_minutes', async () => {
