@@ -75,6 +75,15 @@ const ReceptionPassesPage = lazyNamed(() => import('@/pages/reception/passes'), 
 const ReceptionYesterdayPage = lazyNamed(() => import('@/pages/reception/yesterday'), 'ReceptionYesterdayPage');
 const ReceptionDaglijstPage = lazyNamed(() => import('@/pages/reception/daglijst'), 'ReceptionDaglijstPage');
 
+// Kiosk-lite — anonymous, building-bound. NOT wrapped in ProtectedRoute.
+const KioskLayout = lazyNamed(() => import('@/pages/kiosk/_layout'), 'KioskLayout');
+const KioskIdlePage = lazyNamed(() => import('@/pages/kiosk/index'), 'KioskIdlePage');
+const KioskSetupPage = lazyNamed(() => import('@/pages/kiosk/setup'), 'KioskSetupPage');
+const KioskQrScanPage = lazyNamed(() => import('@/pages/kiosk/qr-scan'), 'KioskQrScanPage');
+const KioskNameFallbackPage = lazyNamed(() => import('@/pages/kiosk/name-fallback'), 'KioskNameFallbackPage');
+const KioskWalkupPage = lazyNamed(() => import('@/pages/kiosk/walkup'), 'KioskWalkupPage');
+const KioskConfirmationPage = lazyNamed(() => import('@/pages/kiosk/confirmation'), 'KioskConfirmationPage');
+
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
 const DeskSchedulerPage = lazyNamed(() => import('@/pages/desk/scheduler'), 'DeskSchedulerPage');
@@ -163,6 +172,17 @@ export function App() {
                 {/* Auth pages — no layout */}
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/signup" element={<SignUpPage />} />
+
+                {/* Kiosk-lite — public, building-bound (anonymous Bearer-token auth
+                    on /api/kiosk/*). NO ProtectedRoute: the kiosk has no user. */}
+                <Route path="/kiosk" element={<KioskLayout />}>
+                  <Route index element={<KioskIdlePage />} />
+                  <Route path="setup" element={<KioskSetupPage />} />
+                  <Route path="qr-scan" element={<KioskQrScanPage />} />
+                  <Route path="name-fallback" element={<KioskNameFallbackPage />} />
+                  <Route path="walkup" element={<KioskWalkupPage />} />
+                  <Route path="confirmation" element={<KioskConfirmationPage />} />
+                </Route>
 
                 {/* Employee Portal — requires auth */}
                 <Route
