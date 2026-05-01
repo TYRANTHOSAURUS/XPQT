@@ -30,7 +30,6 @@ export interface TicketListFilters {
   assignedVendorId?: string | null;
   requesterPersonId?: string | null;
   locationId?: string | null;
-  ticketKind?: 'case' | 'work_order' | null;
   slaAtRisk?: boolean | null;
   slaBreached?: boolean | null;
   page?: number | null;

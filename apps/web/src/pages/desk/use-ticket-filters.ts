@@ -71,7 +71,6 @@ export interface RawFilters {
   requester: string | null;
   location: string | null;
   sla: 'at_risk' | 'breached' | null;
-  kind: 'case' | 'work_order' | null;
 }
 
 const splitList = (v: string | null): string[] =>
@@ -95,7 +94,6 @@ export function useTicketFilters() {
       requester: params.get('requester'),
       location: params.get('location'),
       sla: (params.get('sla') as RawFilters['sla']) ?? null,
-      kind: (params.get('kind') as RawFilters['kind']) ?? null,
     }),
     [params],
   );
@@ -123,7 +121,6 @@ export function useTicketFilters() {
       assignedTeamId: resolveNullable(raw.team),
       requesterPersonId: raw.requester ?? null,
       locationId: raw.location ?? null,
-      ticketKind: raw.kind ?? null,
       slaAtRisk: raw.sla === 'at_risk' ? true : null,
       slaBreached: raw.sla === 'breached' ? true : null,
     };
@@ -175,7 +172,6 @@ export function useTicketFilters() {
     if (raw.requester) n++;
     if (raw.location) n++;
     if (raw.sla) n++;
-    if (raw.kind) n++;
     return n;
   }, [raw]);
 

@@ -473,28 +473,6 @@ function SlaChip({ raw, patch }: { raw: RawFilters; patch: PatchFn }) {
   );
 }
 
-function KindChip({ raw, patch }: { raw: RawFilters; patch: PatchFn }) {
-  const options = [
-    { id: 'case', label: 'Cases' },
-    { id: 'work_order', label: 'Work orders' },
-  ];
-  const selectedLabel = options.find((o) => o.id === raw.kind)?.label ?? null;
-  return (
-    <FilterChip
-      label="Type"
-      valueSummary={selectedLabel}
-      onClear={() => patch({ kind: null })}
-    >
-      <SingleOptionList
-        options={options}
-        selected={raw.kind}
-        onSelect={(id) => patch({ kind: id })}
-        searchPlaceholder="Filter type…"
-      />
-    </FilterChip>
-  );
-}
-
 type PatchFn = (next: Partial<Record<keyof RawFilters, string | string[] | null>>) => void;
 
 export interface TicketFilterBarProps {
@@ -521,7 +499,6 @@ export function TicketFilterBar({
       <RequesterChip raw={raw} patch={patch} />
       <LocationChip raw={raw} patch={patch} />
       <SlaChip raw={raw} patch={patch} />
-      <KindChip raw={raw} patch={patch} />
       {activeCount > 0 && (
         <Button
           variant="ghost"

@@ -78,7 +78,6 @@ export function ticketListOptions<TItem = TicketDetail>(filters: TicketListFilte
           parent_ticket_id: filters.requesterPersonId ? undefined : 'null',
           status_category: filters.status ?? undefined,
           priority: filters.priority ?? undefined,
-          kind: filters.ticketKind ?? undefined,
           assigned_team_id: nullable(filters.assignedTeamId),
           assigned_user_id: nullable(filters.assignedUserId),
           assigned_vendor_id: nullable(filters.assignedVendorId),
