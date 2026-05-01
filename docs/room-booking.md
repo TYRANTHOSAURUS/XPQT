@@ -335,12 +335,18 @@ Specificity (lowest is most specific):
 ### Bundle visibility
 
 Three tiers per spec §3.5, mirrored in TS (`BundleVisibilityService`) and
-SQL (`bundle_is_visible_to_user` from migration 00148). Both implementations
-must agree.
+SQL (`bundle_is_visible_to_user`, originally migration 00148, brought to
+parity with TS in migration 00245). Both implementations must agree;
+`scripts/ci-migration-asserts.sql` A11 enforces parity in CI by running
+behavioral fixture tests against the SQL helper on every PR.
 
 1. **Participant** — `requester_person_id`, `host_person_id`, anyone in any
-   approval row's `approver_person_id` for this bundle, or any work-order
-   ticket's `assigned_user_id`.
+   approval row's `approver_person_id` for this bundle (filtered by
+   `target_entity_type='booking_bundle'` to avoid UUID-collision false
+   grants), or any work_order's `assigned_user_id` where the work_order is
+   linked via `booking_bundle_id` (note: `work_orders` is its own table
+   post-1c.10c; the visibility check does NOT extend to team membership —
+   user-only).
 2. **Operator** — `rooms.read_all` permission. Location-grant scoping is a
    sub-project 4 follow-up.
 3. **Admin** — `rooms.admin` permission. Tenant-wide.

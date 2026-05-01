@@ -111,12 +111,20 @@ export class BundleVisibilityService {
     if (ctx.has_read_all) return;
 
     // Approval participant: any scope_breakdown.approver_person_id mention.
+    // The target_entity_type filter is a defensive correctness improvement:
+    // approvals.target_entity_id is shared across multiple entity types
+    // (ticket / booking_bundle / order). Filtering by type prevents a
+    // theoretical UUID collision from granting bundle access via a non-bundle
+    // approval, and lets Postgres use idx_approvals_target's leading column.
+    // SQL helper public.bundle_is_visible_to_user has the same filter
+    // (migration 00245).
     if (ctx.person_id) {
       const { data, error } = await this.supabase.admin
         .from('approvals')
         .select('id')
         .eq('tenant_id', ctx.tenant_id)
         .eq('target_entity_id', bundle.id)
+        .eq('target_entity_type', 'booking_bundle')
         .eq('approver_person_id', ctx.person_id)
         .limit(1);
       if (error) throw error;
