@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { DbService } from '../../common/db/db.service';
+import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import type {
   CheckoutSource,
@@ -8,6 +9,7 @@ import type {
   TransitionStatusOpts,
   VisitorStatus,
 } from './dto/transition-status.dto';
+import { HostNotificationService } from './host-notification.service';
 
 /**
  * Visitor record + lifecycle.
@@ -45,7 +47,26 @@ interface VisitorRow {
 export class VisitorService {
   private readonly log = new Logger(VisitorService.name);
 
-  constructor(private readonly db: DbService) {}
+  /**
+   * `db` is the only required dependency — `transitionStatus` is the
+   * load-bearing path and runs purely on the pg pool. The other two
+   * collaborators are optional so existing unit tests that construct
+   * `new VisitorService(ctx.db as never)` keep working without churn:
+   *
+   *   - `supabase` — used by `onApprovalDecided` to read the visitor row
+   *     and emit the `visitor.invitation.expected` domain event on grant.
+   *   - `hostNotifications` — used by `onApprovalDecided` to fan out a
+   *     decline notification to hosts on deny.
+   *
+   * If either is missing when `onApprovalDecided` is called, the method
+   * throws — this is a developer error (Nest DI would normally inject
+   * them), not a runtime concern.
+   */
+  constructor(
+    private readonly db: DbService,
+    @Optional() private readonly supabase?: SupabaseService,
+    @Optional() private readonly hostNotifications?: HostNotificationService,
+  ) {}
 
   /**
    * Apply a status transition. The only function in the codebase that
@@ -229,6 +250,147 @@ export class VisitorService {
 
       return next;
     });
+  }
+
+  /**
+   * Handle an approval decision on a `target_entity_type='visitor_invite'`
+   * row. Called by `ApprovalService.respond` once the approver's grant /
+   * deny is committed and the dispatcher fans out per target type.
+   *
+   * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §11.3
+   *
+   * Behavior:
+   *   - outcome='approved' → visitor `pending_approval → expected`, then
+   *     emit `visitor.invitation.expected` so the slice 5 email worker
+   *     picks up and sends the invitation. This mirrors the
+   *     `InvitationService.create` no-approval branch.
+   *   - outcome='rejected' → visitor `pending_approval → denied`, then
+   *     fan out a decline notification to hosts via HostNotificationService.
+   *     The visitor receives nothing (spec §11.3).
+   *
+   * Idempotency: a second call with the same outcome on a visitor whose
+   * status already matches the post-transition state is a no-op (returns
+   * silently). A second call with the OPPOSITE outcome — e.g. attempting
+   * to deny an already-approved invite — throws BadRequestException so
+   * the caller can detect a routing bug. Pure state-machine drift (e.g.
+   * visitor was cancelled between approval grant and dispatcher firing)
+   * also throws BadRequest.
+   *
+   * Cross-tenant: the explicit `tenantId` param must match
+   * `TenantContext.current()`. The composite-FK on the approvals row
+   * already gates this (approval.tenant_id is the source) but defending
+   * here too prevents any future caller from short-circuiting the
+   * tenant boundary.
+   *
+   * Why we don't accept `'approved' | 'denied'` directly: the existing
+   * approval module's `dto.status` and `respond()` switch propagate
+   * `'approved' | 'rejected'` (the approver-domain words). Translating
+   * to the visitor-domain `'denied'` happens here so the approval
+   * dispatcher branch stays a one-line passthrough that matches every
+   * other target type's branch shape.
+   */
+  async onApprovalDecided(
+    visitorId: string,
+    outcome: 'approved' | 'rejected',
+    approverUserId: string,
+    tenantId: string,
+  ): Promise<void> {
+    const ctx = TenantContext.current();
+    if (ctx.id !== tenantId) {
+      // Cross-tenant defence — never let approver context drift.
+      throw new ForbiddenException('tenant context mismatch');
+    }
+
+    if (!this.supabase) {
+      throw new Error('VisitorService.onApprovalDecided requires SupabaseService');
+    }
+
+    // Read the visitor — we can't piggy-back on transitionStatus's
+    // SELECT FOR UPDATE here because the idempotency check needs to run
+    // BEFORE attempting the transition (a `denied → expected` attempt
+    // should throw BadRequest, not silently no-op via transitionStatus's
+    // same-status short-circuit).
+    const { data: visitorRow, error: readErr } = await this.supabase.admin
+      .from('visitors')
+      .select('id, tenant_id, status')
+      .eq('id', visitorId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!visitorRow) {
+      throw new NotFoundException(`visitor ${visitorId} not found`);
+    }
+    const row = visitorRow as { id: string; tenant_id: string; status: VisitorStatus };
+    if (row.tenant_id !== tenantId) {
+      // Cross-tenant: surface as not-found so we don't leak existence.
+      throw new NotFoundException(`visitor ${visitorId} not found`);
+    }
+
+    const targetStatus: VisitorStatus = outcome === 'approved' ? 'expected' : 'denied';
+
+    // Idempotent: already in the target post-state — no-op.
+    if (row.status === targetStatus) {
+      return;
+    }
+
+    // Anything other than pending_approval is a state-machine bug at
+    // the caller — likely the dispatcher fired twice with conflicting
+    // outcomes, or the visitor was cancelled between approval grant and
+    // dispatcher firing. Surface clearly rather than silently no-op'ing.
+    if (row.status !== 'pending_approval') {
+      throw new BadRequestException(
+        `visitor ${visitorId} is not pending approval (status=${row.status})`,
+      );
+    }
+
+    const actor: TransitionStatusActor = {
+      user_id: approverUserId,
+      person_id: null,
+    };
+
+    if (outcome === 'approved') {
+      await this.transitionStatus(visitorId, 'expected', actor);
+
+      // Mirror InvitationService.create's `expected` branch — the slice 5
+      // email worker subscribes to this event to send the invitation.
+      try {
+        await this.supabase.admin.from('domain_events').insert({
+          tenant_id: tenantId,
+          event_type: 'visitor.invitation.expected',
+          entity_type: 'visitor',
+          entity_id: visitorId,
+          payload: {
+            visitor_id: visitorId,
+            triggered_by: 'approval_grant',
+            approver_user_id: approverUserId,
+          },
+        });
+      } catch (err) {
+        // Best-effort. The visitor is already 'expected' — the worker
+        // can reconcile from visitors.status if the event log is missing.
+        this.log.warn(
+          `domain_events emit visitor.invitation.expected failed: ${(err as Error).message}`,
+        );
+      }
+    } else {
+      await this.transitionStatus(visitorId, 'denied', actor);
+
+      if (!this.hostNotifications) {
+        // Same developer-error shape as the supabase guard above.
+        throw new Error(
+          'VisitorService.onApprovalDecided requires HostNotificationService for denial flow',
+        );
+      }
+      try {
+        await this.hostNotifications.notifyInvitationDenied(visitorId, tenantId);
+      } catch (err) {
+        // The visitor is already in 'denied' — failing to notify the
+        // host is a soft error. Log and move on so the approval dispatch
+        // doesn't roll back the (correct) state transition.
+        this.log.warn(
+          `notifyInvitationDenied failed for visitor ${visitorId}: ${(err as Error).message}`,
+        );
+      }
+    }
   }
 
   private auditEventName(status: VisitorStatus): string {

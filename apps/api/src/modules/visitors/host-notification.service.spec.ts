@@ -375,4 +375,60 @@ describe('HostNotificationService', () => {
       }
     });
   });
+
+  describe('notifyInvitationDenied (slice 3 — approval deny path)', () => {
+    it('fans out a denial notification to every host', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyInvitationDenied(VISITOR_ID, TENANT_ID);
+
+        expect(ctx.notifications.send).toHaveBeenCalledTimes(3);
+        for (const send of ctx.sentNotifications) {
+          expect(send.notification_type).toBe('visitor.invitation_denied');
+          expect(send.related_entity_type).toBe('visitor');
+          expect(send.related_entity_id).toBe(VISITOR_ID);
+          expect(send.channels).toEqual(['email', 'in_app']);
+        }
+        const recipients = ctx.sentNotifications.map((n) => n.recipient_person_id);
+        expect(recipients).toEqual(expect.arrayContaining([PRIMARY_HOST, COHOST_A, COHOST_B]));
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('does NOT update notified_at on visitor_hosts (denial is not arrival)', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyInvitationDenied(VISITOR_ID, TENANT_ID);
+        // notifyArrival writes notified_at; denial must not.
+        expect(ctx.visitorHostUpdates).toHaveLength(0);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('emits per-host audit events with visitor.invitation_denied_notified', async () => {
+      const ctx = makeHarness();
+      try {
+        await ctx.svc.notifyInvitationDenied(VISITOR_ID, TENANT_ID);
+        const audited = ctx.auditInserts.filter(
+          (a) => a.event_type === 'visitor.invitation_denied_notified',
+        );
+        expect(audited).toHaveLength(3);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+
+    it('rejects mismatched tenant context', async () => {
+      const ctx = makeHarness();
+      try {
+        await expect(
+          ctx.svc.notifyInvitationDenied(VISITOR_ID, OTHER_TENANT_ID),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      } finally {
+        ctx.cleanup();
+      }
+    });
+  });
 });

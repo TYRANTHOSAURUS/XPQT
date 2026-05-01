@@ -216,6 +216,63 @@ export class HostNotificationService {
   }
 
   /**
+   * Notify hosts that the visitor invitation they sent was declined by the
+   * approval gatekeeper. Called from VisitorService.onApprovalDecided when
+   * an approval row resolves to `rejected` (visitor goes pending_approval
+   * → denied — spec §11.3).
+   *
+   * Fan-out shape mirrors notifyArrival but with notification_type
+   * 'visitor.invitation_denied' so the email worker (slice 5) can render a
+   * different template. We do NOT touch visitor_hosts.notified_at —
+   * that column is reserved for arrival-time fan-out and reusing it would
+   * confuse the reception today-view ("X notified" badge).
+   *
+   * The visitor receives no notification — denials are a desk-internal
+   * concern. Spec §11.3 explicitly: "visitor receives nothing".
+   *
+   * Cross-tenant: tenant context must match the supplied tenantId.
+   */
+  async notifyInvitationDenied(visitorId: string, tenantId: string): Promise<void> {
+    const ctxTenant = TenantContext.current();
+    if (ctxTenant.id !== tenantId) {
+      throw new BadRequestException('tenant context mismatch');
+    }
+
+    const visitor = await this.loadVisitor(visitorId, tenantId);
+    const hosts = await this.loadHosts(visitorId, tenantId);
+
+    for (const host of hosts) {
+      try {
+        const subject = this.deniedSubject(visitor);
+        const body = this.deniedBody(visitor);
+
+        await this.notifications.send({
+          notification_type: 'visitor.invitation_denied',
+          recipient_person_id: host.person_id,
+          related_entity_type: 'visitor',
+          related_entity_id: visitor.id,
+          subject,
+          body,
+          channels: ['email', 'in_app'],
+        });
+
+        await this.emitAudit('visitor.invitation_denied_notified', visitor.id, {
+          visitor_id: visitor.id,
+          host_person_id: host.person_id,
+        });
+      } catch (err) {
+        // One host's notification failure shouldn't block the rest. The
+        // approval state is already committed by the time we get here.
+        this.log.warn(
+          `denial notify failed for visitor ${visitor.id} host ${host.person_id}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+  }
+
+  /**
    * Hosts attached to the visitor with their notify/ack state — used by
    * reception's today-view (slice 2d controller will expose).
    */
@@ -299,6 +356,16 @@ export class HostNotificationService {
     const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'Your visitor';
     const company = visitor.company ? ` from ${visitor.company}` : '';
     return `${name}${company} has checked in at reception.`;
+  }
+
+  private deniedSubject(visitor: VisitorRow): string {
+    const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'your visitor';
+    return `Your invitation for ${name} was declined`;
+  }
+
+  private deniedBody(visitor: VisitorRow): string {
+    const name = [visitor.first_name, visitor.last_name].filter(Boolean).join(' ') || 'your visitor';
+    return `The invitation for ${name} was declined by the approval gatekeeper. Contact your facilities lead if you have questions.`;
   }
 
   private async emitAudit(

@@ -365,3 +365,197 @@ describe('VisitorService.transitionStatus', () => {
     });
   });
 });
+
+/**
+ * VisitorService.onApprovalDecided — slice 3 unit tests.
+ *
+ * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §11.3
+ *
+ * The dispatcher in ApprovalService.respond() calls onApprovalDecided when
+ * an approvals row with target_entity_type='visitor_invite' is granted or
+ * denied. The visitor side must:
+ *   - on 'approved': transition pending_approval → expected and emit
+ *     visitor.invitation.expected (parallels InvitationService.create's
+ *     no-approval branch).
+ *   - on 'rejected': transition pending_approval → denied and notify
+ *     hosts via HostNotificationService.notifyInvitationDenied. The
+ *     visitor receives nothing (spec §11.3).
+ *   - on already-resolved: idempotent if outcome matches, otherwise
+ *     BadRequest.
+ *   - cross-tenant: throw rather than silently no-op.
+ */
+describe('VisitorService.onApprovalDecided', () => {
+  const APPROVER_USER_ID = 'apr-user-uuid';
+
+  afterEach(() => jest.restoreAllMocks());
+
+  /**
+   * Build a service plus a mutable visitor row + a SupabaseService stub
+   * that serves the row on `.from('visitors').select().eq().maybeSingle()`
+   * and captures `.from('domain_events').insert()` writes.
+   * The DbService is the same makeFakeDb harness used above so
+   * transitionStatus exercises its real path.
+   */
+  function makeApprovalCtx(initialStatus: VisitorStatus, opts: { tenantOverride?: string } = {}) {
+    const visitorRow = {
+      id: VISITOR_ID,
+      tenant_id: opts.tenantOverride ?? TENANT_ID,
+      status: initialStatus,
+    };
+    const dbCtx = makeFakeDb(baseVisitor({ status: initialStatus }));
+
+    const insertedDomainEvents: Array<Record<string, unknown>> = [];
+    const supabase = {
+      admin: {
+        from: jest.fn((table: string) => {
+          if (table === 'visitors') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: visitorRow, error: null }),
+                }),
+              }),
+            };
+          }
+          if (table === 'domain_events') {
+            return {
+              insert: async (row: Record<string, unknown>) => {
+                insertedDomainEvents.push(row);
+                return { data: row, error: null };
+              },
+            };
+          }
+          throw new Error(`unexpected supabase table in onApprovalDecided test: ${table}`);
+        }),
+      },
+    };
+
+    const notifyDeniedSpy = jest.fn(async () => undefined);
+    const hostNotifications = {
+      notifyInvitationDenied: notifyDeniedSpy,
+    };
+
+    tenantCtx();
+    const svc = new VisitorService(
+      dbCtx.db as never,
+      supabase as never,
+      hostNotifications as never,
+    );
+
+    return { svc, dbCtx, supabase, insertedDomainEvents, notifyDeniedSpy, visitorRow };
+  }
+
+  it('approved: transitions pending_approval → expected and emits visitor.invitation.expected', async () => {
+    const ctx = makeApprovalCtx('pending_approval');
+
+    await ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID);
+
+    expect(ctx.dbCtx.getRow().status).toBe('expected');
+    const expectedEvt = ctx.insertedDomainEvents.find(
+      (e) => e.event_type === 'visitor.invitation.expected',
+    );
+    expect(expectedEvt).toBeTruthy();
+    expect(expectedEvt!.tenant_id).toBe(TENANT_ID);
+    expect(expectedEvt!.entity_id).toBe(VISITOR_ID);
+    // The approver_user_id must round-trip into the payload so the email
+    // worker has audit lineage on the invitation send.
+    const payload = expectedEvt!.payload as Record<string, unknown>;
+    expect(payload.triggered_by).toBe('approval_grant');
+    expect(payload.approver_user_id).toBe(APPROVER_USER_ID);
+
+    // Audit insert from transitionStatus should record visitor.expected.
+    expect(
+      ctx.dbCtx.auditInserts.find((a) => a.event_type === 'visitor.expected'),
+    ).toBeTruthy();
+  });
+
+  it('rejected: transitions pending_approval → denied and notifies host', async () => {
+    const ctx = makeApprovalCtx('pending_approval');
+
+    await ctx.svc.onApprovalDecided(VISITOR_ID, 'rejected', APPROVER_USER_ID, TENANT_ID);
+
+    expect(ctx.dbCtx.getRow().status).toBe('denied');
+    expect(ctx.notifyDeniedSpy).toHaveBeenCalledWith(VISITOR_ID, TENANT_ID);
+    // No invitation.expected event on denial — the email must NOT be sent.
+    expect(
+      ctx.insertedDomainEvents.find((e) => e.event_type === 'visitor.invitation.expected'),
+    ).toBeUndefined();
+  });
+
+  it('idempotent: approved on already-expected visitor is a no-op', async () => {
+    const ctx = makeApprovalCtx('expected');
+
+    await ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID);
+
+    // No status mutation, no domain event, no audit on transitionStatus
+    // (it's never called when the row is already in the target state).
+    expect(ctx.dbCtx.getRow().status).toBe('expected');
+    expect(ctx.insertedDomainEvents).toHaveLength(0);
+    expect(ctx.notifyDeniedSpy).not.toHaveBeenCalled();
+    // No SELECT FOR UPDATE / no UPDATE statement on the visitors table.
+    const updateCalls = ctx.dbCtx.captured.filter((c) =>
+      c.sql.toLowerCase().trim().startsWith('update public.visitors'),
+    );
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('idempotent: rejected on already-denied visitor is a no-op', async () => {
+    const ctx = makeApprovalCtx('denied');
+
+    await ctx.svc.onApprovalDecided(VISITOR_ID, 'rejected', APPROVER_USER_ID, TENANT_ID);
+
+    expect(ctx.dbCtx.getRow().status).toBe('denied');
+    expect(ctx.notifyDeniedSpy).not.toHaveBeenCalled();
+    expect(ctx.insertedDomainEvents).toHaveLength(0);
+  });
+
+  it('rejected on already-approved visitor throws BadRequest (state-machine bug)', async () => {
+    // The dispatcher should not be able to flip an approved visitor into
+    // denied — that would mean two conflicting approval grants on the
+    // same target. Surface clearly.
+    const ctx = makeApprovalCtx('expected');
+
+    await expect(
+      ctx.svc.onApprovalDecided(VISITOR_ID, 'rejected', APPROVER_USER_ID, TENANT_ID),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(ctx.dbCtx.getRow().status).toBe('expected');
+    expect(ctx.notifyDeniedSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws BadRequest when visitor is in a non-pending_approval state (e.g. cancelled)', async () => {
+    const ctx = makeApprovalCtx('cancelled');
+
+    await expect(
+      ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('cross-tenant: tenantId param mismatching TenantContext is rejected', async () => {
+    const ctx = makeApprovalCtx('pending_approval');
+
+    await expect(
+      ctx.svc.onApprovalDecided(
+        VISITOR_ID,
+        'approved',
+        APPROVER_USER_ID,
+        '99999999-9999-4999-8999-999999999999',
+      ),
+    ).rejects.toThrow();
+    // No transition fired.
+    expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
+  });
+
+  it('cross-tenant: visitor row in different tenant surfaces as not-found', async () => {
+    // Same TenantContext as the caller, but the visitors row in our stub
+    // belongs to a different tenant — composite-FK / explicit guard catches
+    // this before any transition fires.
+    const ctx = makeApprovalCtx('pending_approval', {
+      tenantOverride: '99999999-9999-4999-8999-999999999999',
+    });
+
+    await expect(
+      ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
+    ).rejects.toThrow();
+    expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
+  });
+});
