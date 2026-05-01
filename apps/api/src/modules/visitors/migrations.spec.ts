@@ -57,6 +57,10 @@ afterAll(async () => {
     await client.query(`delete from public.visitor_pass_pool where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
     await client.query(`delete from public.visitor_types where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
     await client.query(`delete from public.visitors where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
+    // user_role_assignments / users / roles — cleaned up before persons because of FKs.
+    await client.query(`delete from public.user_role_assignments where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
+    await client.query(`delete from public.users where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
+    await client.query(`delete from public.roles where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
     await client.query(`delete from public.persons where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
     await client.query(`delete from public.spaces where tenant_id=$1 or tenant_id=$2`, [TENANT_A, TENANT_B]);
     await client.query(`delete from public.tenants where id=$1 or id=$2`, [TENANT_A, TENANT_B]);
@@ -376,6 +380,108 @@ describe('visitors v1 schema — status FSM trigger', () => {
       await expect(
         client.query(`update public.visitors set status='arrived' where id=$1`, [id]),
       ).rejects.toMatchObject({ message: expect.stringContaining('invalid visitor status transition') });
+    });
+  });
+});
+
+// --------------------------------------------------------------------------
+// 4. Visibility predicate — Tier 2 empty-scope leak regression (00259).
+//
+// Bug being prevented:
+//   00255 used `array_length(rc.location_closure, 1) is null
+//                 OR v.building_id = any(rc.location_closure)
+//                 OR v.building_id is null`
+//   array_length on an empty array is NULL, so a user with
+//   `visitors.reception` permission and NULL/{} location_scope would see
+//   every visitor in the tenant — silent Tier 3 escalation. 00259 replaces
+//   that with `cardinality(...) > 0 AND (...)` so empty scope = no rows.
+// --------------------------------------------------------------------------
+
+describe('visitor_visibility_ids — Tier 2 empty-scope leak regression', () => {
+  test('Tier 2 user with empty location_scope sees zero visitors', async () => {
+    if (!dbAvailable) return;
+    await withTxn(async () => {
+      await client.query(`set local role postgres`);
+      await ensureBaseFixtures();
+
+      // Building belonging to tenant A (under the site fixture) — used both
+      // for the visitor's building_id and as the scope value in step 2.
+      const buildingId = '99000000-0000-0000-0000-000000000a02';
+      await client.query(
+        `insert into public.spaces (id, tenant_id, type, name, parent_id) values
+           ($1, $2, 'building', 'A Building', '99000000-0000-0000-0000-000000000a01')
+         on conflict (id) do nothing`,
+        [buildingId, TENANT_A],
+      );
+
+      // Visitor anchored to that building.
+      const v = await client.query(
+        `insert into public.visitors (tenant_id, person_id, host_person_id, visit_date, status, primary_host_person_id, building_id)
+         values ($1, $2, $2, current_date, 'expected', $2, $3) returning id`,
+        [TENANT_A, '99000000-0000-0000-0000-000000000a99', buildingId],
+      );
+      const visitorId = v.rows[0].id;
+
+      // Operator user (NOT a host on this visitor) with `visitors.reception`
+      // permission via a role assignment that has NULL location_scope.
+      // Person is distinct from the visitor's host_person_id so Tier 1
+      // can't accidentally satisfy the predicate.
+      const operatorPersonId = '99000000-0000-0000-0000-000000000a98';
+      await client.query(
+        `insert into public.persons (id, tenant_id, type, first_name, last_name) values
+           ($1, $2, 'employee', 'Olive', 'Operator')
+         on conflict (id) do nothing`,
+        [operatorPersonId, TENANT_A],
+      );
+      const userInsert = await client.query(
+        `insert into public.users (tenant_id, person_id, email, status)
+         values ($1, $2, 'olive.operator+spec@example.com', 'active') returning id`,
+        [TENANT_A, operatorPersonId],
+      );
+      const userId = userInsert.rows[0].id;
+
+      const roleInsert = await client.query(
+        `insert into public.roles (tenant_id, name, type, permissions, active)
+         values ($1, 'Spec Reception', 'agent', '["visitors.reception"]'::jsonb, true)
+         returning id`,
+        [TENANT_A],
+      );
+      const roleId = roleInsert.rows[0].id;
+
+      // Step 1 — empty (NULL) location_scope. Must yield ZERO visible rows.
+      await client.query(
+        `insert into public.user_role_assignments (tenant_id, user_id, role_id, location_scope, active)
+         values ($1, $2, $3, null, true)`,
+        [TENANT_A, userId, roleId],
+      );
+      const beforeScope = await client.query(
+        `select count(*)::int as n from public.visitor_visibility_ids($1, $2) where visitor_visibility_ids = $3`,
+        [userId, TENANT_A, visitorId],
+      );
+      expect(beforeScope.rows[0].n).toBe(0);
+
+      // Sanity check: '{}'::uuid[] (empty non-null array) must also yield 0.
+      await client.query(
+        `update public.user_role_assignments set location_scope='{}'::uuid[] where user_id=$1 and role_id=$2`,
+        [userId, roleId],
+      );
+      const emptyArray = await client.query(
+        `select count(*)::int as n from public.visitor_visibility_ids($1, $2) where visitor_visibility_ids = $3`,
+        [userId, TENANT_A, visitorId],
+      );
+      expect(emptyArray.rows[0].n).toBe(0);
+
+      // Step 2 — assign the building to the user's location_scope. Visitor
+      // becomes visible via Tier 2.
+      await client.query(
+        `update public.user_role_assignments set location_scope=array[$1::uuid] where user_id=$2 and role_id=$3`,
+        [buildingId, userId, roleId],
+      );
+      const afterScope = await client.query(
+        `select count(*)::int as n from public.visitor_visibility_ids($1, $2) where visitor_visibility_ids = $3`,
+        [userId, TENANT_A, visitorId],
+      );
+      expect(afterScope.rows[0].n).toBe(1);
     });
   });
 });
