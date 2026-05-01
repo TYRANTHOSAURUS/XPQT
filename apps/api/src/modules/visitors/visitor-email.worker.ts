@@ -6,6 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -541,22 +542,39 @@ export class VisitorEmailWorker implements OnModuleInit {
   /**
    * Resolve the cancel-link URL for a visitor.
    *
-   * The plaintext token is NOT stored — only sha256(token). For the v1
-   * worker, we look up the latest unused cancel token row for this
-   * visitor and use its `id` as the lookup key — but the URL embedded
-   * in the email needs the plaintext.
+   * The plaintext token is NOT stored — only sha256(token). Two paths
+   * supply the plaintext to this worker:
    *
-   * Slice 2a's InvitationService writes the plaintext into the
-   * domain_events payload at create time so the worker can pick it up
-   * without ever persisting it. For events triggered later (cascade,
-   * approval grant), the plaintext is re-emitted into the payload by
-   * the emitter for the same reason.
+   * Primary path — InvitationService.create writes the plaintext into
+   * `domain_events.payload.cancel_token` at invite-creation time. The
+   * `visitor.invitation.expected` event carries it for the first
+   * invitation email.
    *
-   * If the payload doesn't carry a token, we DO NOT generate a new one
-   * here — silently rotating the token would invalidate the original
-   * link in any earlier email and is more confusion than value. We
-   * instead omit the cancel URL; the visitor can still cancel by replying
-   * to the email or contacting reception.
+   * Secondary path — cascade emails (`visitor.cascade.moved`,
+   * `visitor.cascade.room_changed`) are emitted by BundleCascadeAdapter
+   * which doesn't have access to the original plaintext (it was given
+   * to the visitor's first email and the server discarded it). Without
+   * a token, the cascade email would arrive with no cancel link — a
+   * regression vs. the first email.
+   *
+   * I9 (full review) fix: when the payload doesn't carry a cancel
+   * token AND the email is a cascade reminder that should expose a
+   * cancel option, mint a NEW token here:
+   *   - 64-char hex plaintext
+   *   - sha256 stored as a new row in `visit_invitation_tokens`
+   *   - 24h expiry from now (the visit is by definition imminent —
+   *     cascade messages are sent close to expected_at)
+   *   - purpose='cancel'
+   *
+   * The previous token (if any) remains valid until consumed; first
+   * one used wins (validate_invitation_token marks `used_at` and
+   * subsequent presses on either link return SQLSTATE 45002, which the
+   * cancel controller maps to a clean "already cancelled" message).
+   * No revocation — that would invite token-rotation race bugs.
+   *
+   * For the unconditional-decline path (`visitor.invitation.declined`
+   * and `visitor.cancelled`) we never include a cancel URL because the
+   * visit is already terminal; nothing to cancel.
    */
   private async resolveCancelUrl(
     visitorId: string,
@@ -564,13 +582,63 @@ export class VisitorEmailWorker implements OnModuleInit {
     event: DomainEventRow,
   ): Promise<string | null> {
     const payload = (event.payload ?? {}) as Record<string, unknown>;
-    const plaintext = typeof payload.cancel_token === 'string'
+    const fromPayload = typeof payload.cancel_token === 'string'
       ? payload.cancel_token
       : null;
-    if (!plaintext) return null;
-    void visitorId;
-    void tenantId;
-    return `${this.webBaseUrl}/visit/cancel/${encodeURIComponent(plaintext)}`;
+    if (fromPayload) {
+      return `${this.webBaseUrl}/visit/cancel/${encodeURIComponent(fromPayload)}`;
+    }
+
+    // Cascade-reminder events arrive without a plaintext token. Mint a
+    // fresh one so the email's cancel link still works. We do NOT do
+    // this for the initial invitation event — InvitationService is the
+    // source of truth there and a missing token would indicate a real
+    // bug worth investigating, not a regression worth papering over.
+    if (
+      event.event_type !== 'visitor.cascade.moved'
+      && event.event_type !== 'visitor.cascade.room_changed'
+    ) {
+      return null;
+    }
+
+    const minted = await this.mintFreshCancelToken(visitorId, tenantId);
+    if (!minted) return null;
+    return `${this.webBaseUrl}/visit/cancel/${encodeURIComponent(minted)}`;
+  }
+
+  /**
+   * Insert a new cancel-purpose row in visit_invitation_tokens for this
+   * visitor and return the plaintext. Returns null if the supabase
+   * service is unavailable (the worker is misconfigured) or the insert
+   * fails — the email still goes out without a cancel URL in that case.
+   */
+  private async mintFreshCancelToken(
+    visitorId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    if (!this.supabase) return null;
+    const plaintext = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(plaintext).digest('hex');
+    // 24h expiry: cascade emails are reminders sent close to expected_at;
+    // a longer TTL would extend the bearer-token attack surface for no
+    // user benefit.
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { error } = await this.supabase.admin
+      .from('visit_invitation_tokens')
+      .insert({
+        tenant_id: tenantId,
+        visitor_id: visitorId,
+        token_hash: tokenHash,
+        purpose: 'cancel',
+        expires_at: expiresAt,
+      });
+    if (error) {
+      this.log.warn(
+        `mintFreshCancelToken insert failed for visitor=${visitorId}: ${error.message}`,
+      );
+      return null;
+    }
+    return plaintext;
   }
 
   private async lookupRoomName(

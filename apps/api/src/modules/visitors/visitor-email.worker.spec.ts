@@ -37,6 +37,7 @@ interface FakeSupabaseOpts {
 
 function makeFakeSupabase(opts: FakeSupabaseOpts = {}) {
   const auditInserts: Array<Record<string, unknown>> = [];
+  const tokenInserts: Array<Record<string, unknown>> = [];
 
   const builder = (table: string) => {
     const filters: Record<string, unknown> = {};
@@ -46,6 +47,9 @@ function makeFakeSupabase(opts: FakeSupabaseOpts = {}) {
       maybeSingle: () => Promise<{ data: unknown; error: null }>;
       insert: (rows: Record<string, unknown> | Array<Record<string, unknown>>) => {
         select: () => { single: () => Promise<{ data: Record<string, unknown>; error: null }>; };
+        // Bare-promise form for inserts where the caller doesn't .select() — used
+        // by the email worker's mintFreshCancelToken (full-review I9).
+        then?: (resolve: (v: { data: null; error: null }) => void) => void;
       };
     };
 
@@ -98,11 +102,20 @@ function makeFakeSupabase(opts: FakeSupabaseOpts = {}) {
           const arr = Array.isArray(rows) ? rows : [rows];
           for (const r of arr) auditInserts.push(r);
         }
-        return {
+        if (table === 'visit_invitation_tokens') {
+          const arr = Array.isArray(rows) ? rows : [rows];
+          for (const r of arr) tokenInserts.push(r);
+        }
+        const result = {
           select: () => ({
             single: async () => ({ data: { id: 'inserted' }, error: null }),
           }),
+          // Promise-shape thenable for `await ...insert(row)` without .select():
+          then(resolve: (v: { data: null; error: null }) => void) {
+            resolve({ data: null, error: null });
+          },
         };
+        return result as ReturnType<Q['insert']>;
       },
     };
     return q;
@@ -114,7 +127,7 @@ function makeFakeSupabase(opts: FakeSupabaseOpts = {}) {
     },
   };
 
-  return { supabase, auditInserts };
+  return { supabase, auditInserts, tokenInserts };
 }
 
 interface FakeDbOpts {
@@ -341,6 +354,86 @@ describe('VisitorEmailWorker.processOne', () => {
     expect(calls[0]!.subject).toContain('moved');
     expect(calls[0]!.textBody).toContain('Was:');
     expect(calls[0]!.textBody).toContain('Now:');
+  });
+
+  it('cascade.moved without payload.cancel_token mints a fresh token (I9)', async () => {
+    const { db } = makeFakeDb();
+    const { supabase, tokenInserts } = makeFakeSupabase(defaultSupabaseFixtures());
+    const { mail, calls } = makeFakeMail();
+    const { adapter } = makeFakeAdapter();
+    const worker = new VisitorEmailWorker(db as never, supabase as never, mail as never, adapter as never);
+
+    // No `cancel_token` in payload — replicating BundleCascadeAdapter,
+    // which doesn't have access to the original plaintext.
+    await worker.processOne(buildEvent('visitor.cascade.moved', {
+      old_expected_at: '2026-05-01T09:00:00Z',
+      new_expected_at: '2026-05-01T14:00:00Z',
+    }));
+
+    // A fresh token row was inserted into visit_invitation_tokens.
+    expect(tokenInserts).toHaveLength(1);
+    const tokenRow = tokenInserts[0]!;
+    expect(tokenRow.purpose).toBe('cancel');
+    expect(tokenRow.tenant_id).toBe(TENANT_A);
+    expect(tokenRow.visitor_id).toBe(VISITOR);
+    expect(typeof tokenRow.token_hash).toBe('string');
+    expect((tokenRow.token_hash as string).length).toBeGreaterThan(50); // sha256 hex = 64
+    // 24h expiry from "now"; we just check it's in the future.
+    expect(new Date(tokenRow.expires_at as string).getTime()).toBeGreaterThan(Date.now());
+    // The email got a cancel link — implies the worker built a URL from the
+    // minted plaintext.
+    expect(calls[0]!.htmlBody).toContain('/visit/cancel/');
+  });
+
+  it('cascade.cancelled does NOT mint a cancel token (visit is terminal)', async () => {
+    const { db } = makeFakeDb();
+    const { supabase, tokenInserts } = makeFakeSupabase(defaultSupabaseFixtures());
+    const { mail } = makeFakeMail();
+    const { adapter } = makeFakeAdapter();
+    const worker = new VisitorEmailWorker(db as never, supabase as never, mail as never, adapter as never);
+
+    await worker.processOne(buildEvent('visitor.cascade.cancelled'));
+
+    expect(tokenInserts).toHaveLength(0);
+  });
+
+  it('initial invitation event without payload.cancel_token does NOT mint (real bug, not regression)', async () => {
+    // The first invite path is InvitationService's responsibility — if its
+    // domain_event arrives without a cancel_token that's a real invariant
+    // violation worth flagging, not papering over with a silent mint.
+    const { db } = makeFakeDb();
+    const { supabase, tokenInserts } = makeFakeSupabase(defaultSupabaseFixtures());
+    const { mail, calls } = makeFakeMail();
+    const { adapter } = makeFakeAdapter();
+    const worker = new VisitorEmailWorker(db as never, supabase as never, mail as never, adapter as never);
+
+    await worker.processOne(buildEvent('visitor.invitation.expected', {
+      // intentionally no cancel_token
+    }));
+
+    expect(tokenInserts).toHaveLength(0);
+    // Email still goes out, just without a cancel URL — the visitor can
+    // still cancel by reply / via reception.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.htmlBody).not.toContain('/visit/cancel/');
+  });
+
+  it('cascade.moved → moved template, embeds cancel_token from payload when present', async () => {
+    const { db } = makeFakeDb();
+    const { supabase, tokenInserts } = makeFakeSupabase(defaultSupabaseFixtures());
+    const { mail, calls } = makeFakeMail();
+    const { adapter } = makeFakeAdapter();
+    const worker = new VisitorEmailWorker(db as never, supabase as never, mail as never, adapter as never);
+
+    await worker.processOne(buildEvent('visitor.cascade.moved', {
+      old_expected_at: '2026-05-01T09:00:00Z',
+      new_expected_at: '2026-05-01T14:00:00Z',
+      cancel_token: 'existing-plaintext-token',
+    }));
+
+    // Existing token reused — no fresh mint.
+    expect(tokenInserts).toHaveLength(0);
+    expect(calls[0]!.htmlBody).toContain('/visit/cancel/existing-plaintext-token');
   });
 
   it('cascade.cancelled → cancellation template', async () => {
