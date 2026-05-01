@@ -1,6 +1,8 @@
-# Ticket Visibility
+# Visibility
 
-This document is the operational reference for **who can see which tickets** in Prequest. Visibility is the fourth axis of the routing model (routing / ownership / execution / **visibility**) and is enforced independently of routing.
+This document is the operational reference for **who can see which records** in Prequest. Tickets are the canonical case (and most of this document is written from that lens), but visitor management adds a second tier-1 visibility predicate that follows the same three-tier shape — see §9.
+
+Visibility is the fourth axis of the routing model (routing / ownership / execution / **visibility**) and is enforced independently of routing.
 
 ## 1. Mental model — three tiers
 
@@ -85,7 +87,36 @@ Internal service-to-service calls (workflow engine, approvals, resolver callback
 - **RLS defense-in-depth.** Possible Phase 2 addition. The tenant-isolation RLS stays; a per-user visibility RLS policy can be added later that calls `ticket_visibility_ids` from a `SECURITY DEFINER` function.
 - **Per-activity visibility.** `ticket_activities.visibility` (internal/external/system) is a separate concern and remains unchanged.
 
-## 8. When to update this document
+## 9. Visitor visibility
+
+Visitor management ships its own three-tier predicate that mirrors the ticket model. Same shape, different population paths.
+
+### 9.1 The SQL predicate
+
+`public.visitor_visibility_ids(p_user_id uuid, p_tenant_id uuid)` returns `SETOF uuid` — the set of visitor ids visible to a user. It's the single source of truth for read visibility on the `visitors` table.
+
+Canonical predicate file: `supabase/migrations/00255_visitor_visibility_ids_function.sql` (initial), with bug-fix follow-ups in `00259_fix_visitor_visibility_ids.sql` (and any later `*_fix_visitor_visibility_ids*` migration — check `git log` for the latest before editing).
+
+### 9.2 Three tiers
+
+| Tier | Who it covers | How they enter the tier |
+|---|---|---|
+| **Hosts** | `visitors.primary_host_person_id` is the user's `person_id`, OR a row in `visitor_hosts` with `person_id = user.person_id` | Created at invite time (primary host) or added via the multi-host UI (co-hosts). |
+| **Operators** | Has `roles.permissions` containing `visitors.reception` AND the visitor's `building_id` is inside their `location_scope` (via `org_node_location_grants` + `user_role_assignments`) | Tenant admin grants the role at `/admin/users/roles`. Defaults OFF — opt-in per the v1 spec §13.1. |
+| **Read-all override** | Has `roles.permissions` containing `visitors.read_all` | Admin role only. Sees every visitor in the tenant regardless of building scope. |
+
+A user can read a visitor row if **any** tier matches. Write paths (check-in, check-out, status transitions) are gated by service-level checks — see `VisitorService` for the per-action authorization rules.
+
+### 9.3 Permissions are dot-form
+
+The visitor permission keys in `roles.permissions` are stored dot-form: `visitors.invite`, `visitors.reception`, `visitors.read_all`. The v1 design spec narrative occasionally used colon-form (`visitors:reception`); that was a documentation bug. The actual stored shape is dot-form, matching the rest of the catalog. The function `public.user_has_permission` accepts the stored shape verbatim.
+
+### 9.4 What this section does NOT yet cover
+
+- **Vendor-as-host.** External vendors are not first-class hosts in v1. If a tenant invites a vendor as a contractor visitor, the vendor is the *visitor*, not a host. Vendor visibility for vendor-side surfaces (vendor portal Phase B) follows the vendor module's separate model.
+- **Per-building lens for desk users.** `/desk/visitors` filters to visitors tied to active tickets the user can see (intersect with ticket visibility) — that intersection is enforced at the API layer, not in the SQL predicate.
+
+## 10. When to update this document
 
 Update this document in the same PR as any change to:
 
@@ -93,5 +124,6 @@ Update this document in the same PR as any change to:
 - `apps/api/src/modules/ticket/ticket.service.ts` (read/write methods or their signatures)
 - `apps/api/src/modules/ticket/ticket.controller.ts` (routing of `req.user.id` into the service)
 - `apps/api/src/modules/ticket/reclassify.service.ts` — because reclassify mutates `watchers` (Participants tier).
-- Any migration that alters: `ticket_visibility_ids`, `expand_space_closure`, `user_has_permission`, `users`, `user_role_assignments`, `team_members`, `roles`, or the tickets columns used by the predicate.
-- New permission strings on `roles.permissions`.
+- `apps/api/src/modules/visitors/visitor.service.ts` — read paths use `visitor_visibility_ids` as the canonical predicate; changes to the read shape or the supplementary scope filters belong here.
+- Any migration that alters: `ticket_visibility_ids`, `visitor_visibility_ids`, `expand_space_closure`, `user_has_permission`, `users`, `user_role_assignments`, `team_members`, `roles`, or the tickets/visitors columns used by either predicate.
+- New permission strings on `roles.permissions` (especially the `visitors.*` family).
