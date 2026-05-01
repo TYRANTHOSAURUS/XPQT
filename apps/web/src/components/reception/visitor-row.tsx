@@ -18,7 +18,7 @@
  * arrives now; clicking the chevron opens a popover with a HH:mm input
  * to backdate.
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { ChevronDown, Clock, KeyRound, LogOut, UserCheck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -64,7 +64,7 @@ interface ReceptionVisitorRowProps {
   busy?: boolean;
 }
 
-export function ReceptionVisitorRow({
+function ReceptionVisitorRowImpl({
   row,
   onCheckIn,
   onCheckOut,
@@ -78,7 +78,7 @@ export function ReceptionVisitorRow({
   const fullTs = ts ? formatFullTimestamp(ts) : null;
 
   return (
-    <div className="flex items-center gap-4 px-4 py-3 hover:bg-muted/30 transition-colors">
+    <div className="flex items-center gap-4 px-4 py-3 hover:bg-muted/30 transition-colors duration-150 [transition-timing-function:var(--ease-snap)]">
       {time && (
         <time
           dateTime={ts ?? undefined}
@@ -123,6 +123,15 @@ export function ReceptionVisitorRow({
     </div>
   );
 }
+
+/** Memoised — the today-view polls every 15s. Without this each parent
+ *  refetch re-renders every visitor row even when its data didn't change.
+ *  Callbacks are recreated on each parent render so a default shallow
+ *  compare wouldn't help; we compare row identity + busy state explicitly. */
+export const ReceptionVisitorRow = memo(
+  ReceptionVisitorRowImpl,
+  (prev, next) => prev.row === next.row && prev.busy === next.busy,
+);
 
 function RowActions({
   row,

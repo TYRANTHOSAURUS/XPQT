@@ -43,7 +43,7 @@ import { ReceptionVisitorRow } from '@/components/reception/visitor-row';
 import { WalkupForm } from '@/components/reception/walkup-form';
 import { AssignPassDialog } from '@/components/reception/assign-pass-dialog';
 import { CheckoutDialog } from '@/components/reception/checkout-dialog';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
 import { Link } from 'react-router-dom';
 
 /** Local hook: a debounced version of `value`. Avoids pulling a dep just
@@ -100,7 +100,10 @@ export function ReceptionTodayPage() {
   const handleCheckIn = async (row: RowT, arrivedAt?: string) => {
     try {
       await markArrived.mutateAsync({ visitorId: row.visitor_id, arrived_at: arrivedAt });
-      toastSuccess(`${formatReceptionRowName(row)} checked in`);
+      // Silent on success — at the 9am rush 8 visitors arriving in close
+      // succession would stack 8 toasts. The optimistic move from the
+      // expected bucket → currently_arriving is the visible feedback.
+      toastSaved('visitor', { silent: true });
     } catch (err) {
       toastError("Couldn't check the visitor in", {
         error: err,
@@ -172,7 +175,52 @@ export function ReceptionTodayPage() {
               spellCheck={false}
               className="h-10 pl-9 text-base"
               aria-label="Search visitors"
+              aria-autocomplete="list"
+              aria-expanded={isSearching}
             />
+            {/* Search results overlay — anchored to the input. The today
+                buckets stay visible behind it so the receptionist never
+                loses orientation while typing. Esc clears the search. */}
+            {isSearching && (
+              <div
+                role="listbox"
+                aria-label="Search results"
+                className="absolute left-0 right-0 top-full z-30 mt-2 max-h-[60vh] overflow-y-auto rounded-lg border bg-popover shadow-md divide-y"
+              >
+                {searchFetching && results.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    Searching…
+                  </div>
+                ) : results.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    No matches in today's list.
+                  </div>
+                ) : (
+                  results.map((row, i) => (
+                    <div
+                      key={row.visitor_id}
+                      role="option"
+                      aria-selected={i === activeIndex}
+                      className={
+                        i === activeIndex ? 'bg-accent/50' : undefined
+                      }
+                    >
+                      <ReceptionVisitorRow
+                        row={row}
+                        busy={
+                          markArrived.isPending &&
+                          markArrived.variables?.visitorId === row.visitor_id
+                        }
+                        onCheckIn={(at) => handleCheckIn(row, at)}
+                        onCheckOut={() => setActiveRow({ row, action: 'checkout' })}
+                        onAssignPass={() => setActiveRow({ row, action: 'assign-pass' })}
+                        onNoShow={() => setNoShowConfirm(row)}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
           <Button onClick={() => setWalkupOpen((v) => !v)} className="h-10">
             <Plus className="size-4" aria-hidden />
@@ -188,117 +236,77 @@ export function ReceptionTodayPage() {
         </div>
       )}
 
-      {/* Search-results mode — replaces the bucket layout. */}
-      {isSearching && (
-        <div className="rounded-lg border bg-card divide-y overflow-hidden">
-          {searchFetching && results.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              Searching…
-            </div>
-          ) : results.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No matches in today's list.
-            </div>
-          ) : (
-            results.map((row, i) => (
-              <div
-                key={row.visitor_id}
-                className={
-                  i === activeIndex
-                    ? 'bg-accent/50'
-                    : undefined
-                }
-              >
-                <ReceptionVisitorRow
-                  row={row}
-                  busy={
-                    markArrived.isPending && markArrived.variables?.visitorId === row.visitor_id
-                  }
-                  onCheckIn={(at) => handleCheckIn(row, at)}
-                  onCheckOut={() => setActiveRow({ row, action: 'checkout' })}
-                  onAssignPass={() => setActiveRow({ row, action: 'assign-pass' })}
-                  onNoShow={() => setNoShowConfirm(row)}
-                />
-              </div>
-            ))
-          )}
+      {/* Bucket layout — always rendered. Search results overlay above
+          via the popover anchored to the input. */}
+      {isLoading && (
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
         </div>
       )}
 
-      {/* Bucket layout */}
-      {!isSearching && (
-        <>
-          {isLoading && (
-            <div className="flex flex-col gap-4">
-              <Skeleton className="h-24 w-full" />
-              <Skeleton className="h-24 w-full" />
-            </div>
-          )}
+      {isError && !isLoading && (
+        <div role="alert" className="text-sm text-destructive">
+          Couldn't load today's visitors. Try refreshing.
+        </div>
+      )}
 
-          {isError && !isLoading && (
-            <div role="alert" className="text-sm text-destructive">
-              Couldn't load today's visitors. Try refreshing.
-            </div>
-          )}
+      {today && (
+        <div className="flex flex-col gap-6">
+          <Bucket
+            title="Currently arriving"
+            description="Within the last 30 minutes"
+            rows={today.currently_arriving}
+            emptyText="No-one has arrived yet."
+            onCheckIn={handleCheckIn}
+            onCheckout={(row) => setActiveRow({ row, action: 'checkout' })}
+            onAssignPass={(row) => setActiveRow({ row, action: 'assign-pass' })}
+            onNoShow={(row) => setNoShowConfirm(row)}
+            busyVisitorId={
+              markArrived.isPending ? markArrived.variables?.visitorId : undefined
+            }
+          />
 
-          {today && (
-            <div className="flex flex-col gap-6">
-              <Bucket
-                title="Currently arriving"
-                description="Within the last 30 minutes"
-                rows={today.currently_arriving}
-                emptyText="No-one has arrived yet."
-                onCheckIn={handleCheckIn}
-                onCheckout={(row) => setActiveRow({ row, action: 'checkout' })}
-                onAssignPass={(row) => setActiveRow({ row, action: 'assign-pass' })}
-                onNoShow={(row) => setNoShowConfirm(row)}
-                busyVisitorId={
-                  markArrived.isPending ? markArrived.variables?.visitorId : undefined
-                }
+          <Bucket
+            title="Expected"
+            description="Pre-registered for today"
+            rows={today.expected}
+            emptyText="Nothing on the books."
+            onCheckIn={handleCheckIn}
+            onCheckout={(row) => setActiveRow({ row, action: 'checkout' })}
+            onAssignPass={(row) => setActiveRow({ row, action: 'assign-pass' })}
+            onNoShow={(row) => setNoShowConfirm(row)}
+            busyVisitorId={
+              markArrived.isPending ? markArrived.variables?.visitorId : undefined
+            }
+          />
+
+          {/* On site — collapsed by default to keep the rush surface clean. */}
+          <CollapsibleBucket
+            title="On site"
+            description={`${today.in_meeting.length} ${
+              today.in_meeting.length === 1 ? 'visitor' : 'visitors'
+            } currently in meetings`}
+            expanded={onSiteExpanded}
+            onToggle={() => setOnSiteExpanded((v) => !v)}
+          >
+            {today.in_meeting.map((row) => (
+              <ReceptionVisitorRow
+                key={row.visitor_id}
+                row={row}
+                onCheckIn={() => handleCheckIn(row)}
+                onCheckOut={() => setActiveRow({ row, action: 'checkout' })}
+                onAssignPass={() => setActiveRow({ row, action: 'assign-pass' })}
               />
+            ))}
+          </CollapsibleBucket>
 
-              <Bucket
-                title="Expected"
-                description="Pre-registered for today"
-                rows={today.expected}
-                emptyText="Nothing on the books."
-                onCheckIn={handleCheckIn}
-                onCheckout={(row) => setActiveRow({ row, action: 'checkout' })}
-                onAssignPass={(row) => setActiveRow({ row, action: 'assign-pass' })}
-                onNoShow={(row) => setNoShowConfirm(row)}
-                busyVisitorId={
-                  markArrived.isPending ? markArrived.variables?.visitorId : undefined
-                }
-              />
-
-              {/* On site — collapsed by default to keep the rush surface clean. */}
-              <CollapsibleBucket
-                title="On site"
-                description={`${today.in_meeting.length} ${
-                  today.in_meeting.length === 1 ? 'visitor' : 'visitors'
-                } currently in meetings`}
-                expanded={onSiteExpanded}
-                onToggle={() => setOnSiteExpanded((v) => !v)}
-              >
-                {today.in_meeting.map((row) => (
-                  <ReceptionVisitorRow
-                    key={row.visitor_id}
-                    row={row}
-                    onCheckIn={() => handleCheckIn(row)}
-                    onCheckOut={() => setActiveRow({ row, action: 'checkout' })}
-                    onAssignPass={() => setActiveRow({ row, action: 'assign-pass' })}
-                  />
-                ))}
-              </CollapsibleBucket>
-
-              {/* Yesterday's loose ends — link, not expanded. */}
-              <YesterdayWidget
-                autoCheckedOut={yesterday?.auto_checked_out_count ?? 0}
-                unreturnedPasses={yesterday?.unreturned_passes.length ?? 0}
-              />
-            </div>
-          )}
-        </>
+          {/* Yesterday's loose ends — link, not expanded. */}
+          <YesterdayWidget
+            autoCheckedOut={yesterday?.auto_checked_out_count ?? 0}
+            unreturnedPasses={yesterday?.unreturned_passes.length ?? 0}
+          />
+        </div>
       )}
 
       {/* Modals */}
