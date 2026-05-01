@@ -152,6 +152,93 @@ export class VisitorsController {
   }
 
   /**
+   * GET /visitors/cancel/:token/preview — public, NON-CONSUMING preview.
+   *
+   * Spec §6.4 cancel UX, slice 10. Pairs with the cancel POST below.
+   *
+   * The cancel landing page renders an interstitial confirmation
+   * ("You're cancelling your visit on Wed at HQ Amsterdam — are you
+   * sure?") before the visitor commits. To do that without burning the
+   * single-use cancel token, we expose this read-only sibling that calls
+   * `peek_invitation_token` (migration 00265) instead of
+   * `validate_invitation_token`.
+   *
+   * Auth model: identical to the cancel POST. The token is the auth;
+   * the route is `@Public()`. Cross-tenant defence is the same — a
+   * tenant-A subdomain reading a tenant-B token is treated as
+   * not-found.
+   *
+   * Idempotent: calling preview N times never consumes the token. The
+   * confirmation page can re-render on every refresh until the visitor
+   * either confirms cancel (POST) or navigates away.
+   *
+   * Error codes (same envelope as the POST):
+   *   45001 → 410 { code: 'invalid_token' }
+   *   45003 → 410 { code: 'token_expired' }
+   * Note: there is NO 45002 (already_used) on peek — peek is read-only.
+   * If the visitor has already cancelled, that's surfaced via the
+   * returned `visitor_status='cancelled'`, not via an error.
+   */
+  @Public()
+  @Get('cancel/:token/preview')
+  async previewCancel(@Param('token') token: string) {
+    if (!token || token.trim().length === 0) {
+      throw new BadRequestException('Token is required');
+    }
+
+    type PeekRow = {
+      visitor_id: string;
+      tenant_id: string;
+      visitor_status: string;
+      first_name: string;
+      expected_at: string | null;
+      expected_until: string | null;
+      building_id: string | null;
+      building_name: string;
+      host_first_name: string;
+    };
+
+    let row: PeekRow | null;
+    try {
+      row = await this.db.queryOne<PeekRow>(
+        `select * from public.peek_invitation_token($1, $2)`,
+        [token, 'cancel'],
+      );
+      if (!row) {
+        // SECURITY DEFINER raises on miss; defence-in-depth.
+        throw new GoneException({ code: 'invalid_token' });
+      }
+    } catch (err) {
+      throw mapTokenError(err);
+    }
+
+    /* Same cross-tenant guard as the POST: subdomain → TenantContext
+       must match the token's tenant. Otherwise treat as not-found. */
+    const ctxTenant = TenantContext.currentOrNull();
+    if (!ctxTenant) {
+      throw new UnauthorizedException('No tenant context resolved');
+    }
+    if (ctxTenant.id !== row.tenant_id) {
+      throw new GoneException({ code: 'invalid_token' });
+    }
+
+    /* Strip tenant_id from the response — the visitor doesn't need it
+       and surfacing it adds nothing. The frontend already knows the
+       tenant from the subdomain. visitor_id stays because the cancel
+       POST useMutation can use it for optimistic cache updates. */
+    return {
+      visitor_id: row.visitor_id,
+      visitor_status: row.visitor_status,
+      first_name: row.first_name,
+      expected_at: row.expected_at,
+      expected_until: row.expected_until,
+      building_id: row.building_id,
+      building_name: row.building_name,
+      host_first_name: row.host_first_name,
+    };
+  }
+
+  /**
    * POST /visitors/cancel/:token — public visitor cancel link.
    *
    * Spec §6.1, §17. Token is the auth — the route is `@Public()`.

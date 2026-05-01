@@ -116,6 +116,34 @@ function build() {
         row.used = true;
         return { visitor_id: row.visitor_id, tenant_id: row.tenant_id };
       }
+      // peek_invitation_token — read-only, no SQLSTATE 45002, returns
+      // denormalised visit details (used by /cancel/:token/preview).
+      if (sql.includes('peek_invitation_token')) {
+        const token = params[0] as string;
+        const row = state.tokens.get(token);
+        if (!row) {
+          const e = new Error('invalid_token');
+          (e as { code?: string }).code = '45001';
+          throw e;
+        }
+        if (row.expired) {
+          const e = new Error('token_expired');
+          (e as { code?: string }).code = '45003';
+          throw e;
+        }
+        // peek does NOT mutate `used` — this is the contract.
+        return {
+          visitor_id: row.visitor_id,
+          tenant_id: row.tenant_id,
+          visitor_status: state.visitor?.status ?? 'expected',
+          first_name: 'Marleen',
+          expected_at: '2026-05-02T09:00:00.000Z',
+          expected_until: '2026-05-02T11:00:00.000Z',
+          building_id: BUILDING_ID,
+          building_name: 'HQ Amsterdam',
+          host_first_name: 'Sarah',
+        };
+      }
       return null;
     }),
     queryMany: jest.fn(async () => []),
@@ -269,6 +297,85 @@ describe('Visitor cancel-link flow — slice 5', () => {
     ).rejects.toBeInstanceOf(GoneException);
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
+  });
+
+  it('preview returns visit details without consuming the token', async () => {
+    const h = build();
+    await h.controller.createInvitation(makeReq(), {
+      first_name: 'Marleen',
+      visitor_type_id: VISITOR_TYPE_ID,
+      expected_at: '2026-05-02T09:00:00.000Z',
+      building_id: BUILDING_ID,
+    });
+
+    const preview = await h.controller.previewCancel(TOKEN_OK);
+    expect(preview).toMatchObject({
+      visitor_id: VISITOR_ID,
+      visitor_status: 'expected',
+      first_name: 'Marleen',
+      building_name: 'HQ Amsterdam',
+      host_first_name: 'Sarah',
+    });
+    // Crucial: the cancel POST still works after the preview — the
+    // token wasn't consumed by peek.
+    const cancel = await h.controller.cancelByToken(TOKEN_OK);
+    expect(cancel).toEqual({ ok: true, visitor_id: VISITOR_ID });
+  });
+
+  it('preview returns 410 for invalid tokens', async () => {
+    const h = build();
+    await expect(h.controller.previewCancel('garbage')).rejects.toBeInstanceOf(
+      GoneException,
+    );
+  });
+
+  it('preview returns 410 for expired tokens', async () => {
+    const h = build();
+    h.state.tokens.set(TOKEN_EXPIRED, {
+      visitor_id: VISITOR_ID,
+      tenant_id: TENANT_A,
+      used: false,
+      expired: true,
+    });
+    await expect(h.controller.previewCancel(TOKEN_EXPIRED)).rejects.toBeInstanceOf(
+      GoneException,
+    );
+  });
+
+  it('preview returns 410 for cross-tenant tokens', async () => {
+    const h = build();
+    h.state.tokens.set(TOKEN_CROSS_TENANT, {
+      visitor_id: VISITOR_ID,
+      tenant_id: TENANT_B,
+      used: false,
+      expired: false,
+    });
+    await expect(
+      h.controller.previewCancel(TOKEN_CROSS_TENANT),
+    ).rejects.toBeInstanceOf(GoneException);
+  });
+
+  it('preview after cancel returns visitor_status=cancelled (idempotent)', async () => {
+    const h = build();
+    await h.controller.createInvitation(makeReq(), {
+      first_name: 'Marleen',
+      visitor_type_id: VISITOR_TYPE_ID,
+      expected_at: '2026-05-02T09:00:00.000Z',
+      building_id: BUILDING_ID,
+    });
+
+    await h.controller.cancelByToken(TOKEN_OK);
+
+    // After cancel, the cancel POST 410s — but peek (which uses a
+    // separate function that ignores `used_at`) should still resolve.
+    // The visitor's status now reads as 'cancelled', which is how the
+    // landing page renders the "already cancelled" state.
+    //
+    // In this mock, validate_invitation_token sets `used=true`, but
+    // peek_invitation_token doesn't check `used`. The mock's peek
+    // branch ignores the flag too, matching production behaviour.
+    const preview2 = await h.controller.previewCancel(TOKEN_OK);
+    expect(preview2.visitor_status).toBe('cancelled');
   });
 
   it('host notification failure does not block the cancel itself', async () => {

@@ -75,6 +75,10 @@ const ReceptionPassesPage = lazyNamed(() => import('@/pages/reception/passes'), 
 const ReceptionYesterdayPage = lazyNamed(() => import('@/pages/reception/yesterday'), 'ReceptionYesterdayPage');
 const ReceptionDaglijstPage = lazyNamed(() => import('@/pages/reception/daglijst'), 'ReceptionDaglijstPage');
 
+// Public visitor cancel landing — anonymous; token IS the auth.
+// NOT wrapped in ProtectedRoute. Routes outside any layout shell.
+const VisitCancelPage = lazyNamed(() => import('@/pages/public/visit-cancel'), 'VisitCancelPage');
+
 // Kiosk-lite — anonymous, building-bound. NOT wrapped in ProtectedRoute.
 const KioskLayout = lazyNamed(() => import('@/pages/kiosk/_layout'), 'KioskLayout');
 const KioskIdlePage = lazyNamed(() => import('@/pages/kiosk/index'), 'KioskIdlePage');
@@ -177,6 +181,12 @@ export function App() {
                 {/* Auth pages — no layout */}
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/signup" element={<SignUpPage />} />
+
+                {/* Public visitor cancel landing — anonymous, token in path.
+                    NO ProtectedRoute: visitor isn't logged in. The backend
+                    GET /visitors/cancel/:token/preview + POST /visitors/cancel/:token
+                    are @Public() and validate via SECURITY DEFINER fns. */}
+                <Route path="/visit/cancel/:token" element={<VisitCancelPage />} />
 
                 {/* Kiosk-lite — public, building-bound (anonymous Bearer-token auth
                     on /api/kiosk/*). NO ProtectedRoute: the kiosk has no user. */}

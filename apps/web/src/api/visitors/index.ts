@@ -255,6 +255,60 @@ export function useVisitorTypes() {
   return useQuery(visitorTypesOptions());
 }
 
+/**
+ * Public cancel-token preview (slice 10).
+ *
+ * Backend: `GET /visitors/cancel/:token/preview` — anonymous; the token is
+ * the auth. NON-CONSUMING — calling N times is safe. Errors surface as
+ * `ApiError` with status 410 and a body containing a stable `code`:
+ *   - `invalid_token`   → token doesn't exist (or wrong tenant)
+ *   - `token_expired`   → token is past expires_at
+ * There is no `token_already_used` because peek is read-only — the
+ * visitor's own status (e.g. 'cancelled') signals that path instead.
+ *
+ * Spec: §6.4 cancel UX
+ */
+export interface CancelPreview {
+  visitor_id: string;
+  visitor_status: VisitorStatus;
+  first_name: string;
+  expected_at: string | null;
+  expected_until: string | null;
+  building_id: string | null;
+  building_name: string;
+  host_first_name: string;
+}
+
+export const cancelTokenKeys = {
+  all: ['visit-cancel-token'] as const,
+  preview: (token: string) => [...cancelTokenKeys.all, 'preview', token] as const,
+} as const;
+
+export function cancelPreviewOptions(token: string | null | undefined) {
+  return queryOptions({
+    queryKey: cancelTokenKeys.preview(token ?? '__none__'),
+    queryFn: ({ signal }) =>
+      apiFetch<CancelPreview>(`/visitors/cancel/${encodeURIComponent(token!)}/preview`, {
+        signal,
+      }),
+    enabled: Boolean(token && token.trim().length > 0),
+    // Tokens are short-lived (24-72h typical); we still cache long enough
+    // to avoid a re-fetch when the visitor flips between confirmation
+    // states. Don't auto-refetch: the preview doesn't drift.
+    staleTime: 60 * 60_000,
+    retry: (failureCount, error) => {
+      // 410 errors (invalid/expired) are terminal — never retry.
+      const status = (error as { status?: number })?.status;
+      if (status === 410 || status === 400) return false;
+      return failureCount < 2;
+    },
+  });
+}
+
+export function useCancelPreview(token: string | null | undefined) {
+  return useQuery(cancelPreviewOptions(token));
+}
+
 // ─── Mutations ─────────────────────────────────────────────────────────────
 
 /**
