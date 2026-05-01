@@ -125,7 +125,7 @@ export class KioskService {
     }
     const row = data as { id: string };
 
-    await this.audit('kiosk.token_provisioned', null, {
+    await this.audit('kiosk.token_provisioned', tenantId, null, {
       kiosk_token_id: row.id,
       tenant_id: tenantId,
       building_id: buildingId,
@@ -167,7 +167,7 @@ export class KioskService {
       .eq('tenant_id', tenantId);
     if (error) throw error;
 
-    await this.audit('kiosk.token_rotated', null, {
+    await this.audit('kiosk.token_rotated', tenantId, null, {
       kiosk_token_id: kioskTokenId,
       tenant_id: tenantId,
       building_id: existing.building_id,
@@ -195,7 +195,7 @@ export class KioskService {
       .eq('tenant_id', tenantId);
     if (error) throw error;
 
-    await this.audit('kiosk.token_revoked', null, {
+    await this.audit('kiosk.token_revoked', tenantId, null, {
       kiosk_token_id: kioskTokenId,
       tenant_id: tenantId,
       building_id: existing.building_id,
@@ -341,7 +341,7 @@ export class KioskService {
       // token issued in tenant B even if the function returned
       // successfully. (Shouldn't happen because function tokens are
       // tenant-scoped, but never trust a single layer.)
-      await this.audit('kiosk.checkin_failed', null, {
+      await this.audit('kiosk.checkin_failed', kioskContext.tenantId, null, {
         kiosk_token_id: kioskContext.kioskTokenId,
         reason: 'cross_tenant_token',
       });
@@ -354,7 +354,7 @@ export class KioskService {
     );
 
     if (visitor.building_id !== kioskContext.buildingId) {
-      await this.audit('kiosk.checkin_failed', visitorId, {
+      await this.audit('kiosk.checkin_failed', kioskContext.tenantId, visitorId, {
         kiosk_token_id: kioskContext.kioskTokenId,
         reason: 'wrong_building',
         kiosk_building_id: kioskContext.buildingId,
@@ -412,7 +412,7 @@ export class KioskService {
     const expectedHost = (visitor.primary_host_first_name ?? '').trim().toLowerCase();
     const supplied = hostFirstNameConfirmation.trim().toLowerCase();
     if (!expectedHost || expectedHost !== supplied) {
-      await this.audit('kiosk.checkin_failed', visitorId, {
+      await this.audit('kiosk.checkin_failed', kioskContext.tenantId, visitorId, {
         kiosk_token_id: kioskContext.kioskTokenId,
         reason: 'host_name_mismatch',
       });
@@ -560,39 +560,26 @@ export class KioskService {
       });
     if (hostsError) throw hostsError;
 
-    await this.audit('kiosk.walkup_invited', visitorId, {
+    await this.audit('kiosk.walkup_invited', kioskContext.tenantId, visitorId, {
       kiosk_token_id: kioskContext.kioskTokenId,
       visitor_id: visitorId,
       visitor_type_id: type.id,
       primary_host_person_id: dto.primary_host_person_id,
     });
 
-    // 4. Transition to arrived. The visitor row was just created at
-    // status='expected'; expected → arrived is valid per §5.
-    await this.visitors.transitionStatus(
+    // 4. Transition to arrived + fire host notification + audit success.
+    //    Routed through `runArrivalUnderTenantContext` so VisitorService.
+    //    transitionStatus has a TenantContext to read (it calls
+    //    TenantContext.current() unconditionally). The kiosk path is
+    //    anonymous — no TenantMiddleware fires — so we synthesize one
+    //    here from the kiosk's bound tenantId. Bypassing this helper
+    //    crashes the walk-up flow (Fix #1 of slice 2 review).
+    await this.runArrivalUnderTenantContext(
       visitorId,
-      'arrived',
-      { user_id: 'kiosk', person_id: null },
-      { arrived_at: expectedAt },
+      kioskContext,
+      'walkup',
+      expectedAt,
     );
-
-    // 5. Fire host notifications inline so the host sees the alert
-    // synchronously (lobby UX — host walks down to greet).
-    try {
-      await this.hostNotifications.notifyArrival(visitorId, tenantId);
-    } catch (err) {
-      this.log.warn(
-        `notifyArrival failed for kiosk walkup ${visitorId}: ${
-          (err as Error).message
-        }`,
-      );
-    }
-
-    await this.audit('kiosk.checkin_succeeded', visitorId, {
-      kiosk_token_id: kioskContext.kioskTokenId,
-      visitor_id: visitorId,
-      mode: 'walkup',
-    });
 
     return { visitor_id: visitorId, status: 'arrived' };
   }
@@ -685,35 +672,65 @@ export class KioskService {
     visitor: VisitorRowForKiosk,
     kioskContext: KioskContext,
   ): Promise<void> {
-    // Bring up a TenantContext so VisitorService.transitionStatus can
-    // verify it. The kiosk is anonymous so there's no middleware
-    // context; we synthesize one bound to the kiosk's tenant.
+    await this.runArrivalUnderTenantContext(
+      visitor.id,
+      kioskContext,
+      'qr_or_name',
+      new Date().toISOString(),
+    );
+  }
+
+  /**
+   * Run the "transition to arrived + notify host + audit success" trio
+   * inside a synthesized TenantContext.
+   *
+   * Why: VisitorService.transitionStatus calls TenantContext.current()
+   * unconditionally. The kiosk paths are anonymous (no TenantMiddleware)
+   * so there's no AsyncLocalStorage to read from — the kioskContext IS
+   * the tenant authority. Every kiosk arrival flow (QR, name-confirm,
+   * walk-up) MUST funnel through here so the context exists for the
+   * downstream service call.
+   *
+   * `mode` is recorded on the audit row so we can tell post-hoc which
+   * check-in path was used.
+   */
+  private async runArrivalUnderTenantContext(
+    visitorId: string,
+    kioskContext: KioskContext,
+    mode: 'qr_or_name' | 'walkup',
+    arrivedAtIso: string,
+  ): Promise<void> {
     await TenantContext.run(
       { id: kioskContext.tenantId, slug: 'kiosk', tier: 'standard' },
       async () => {
         await this.visitors.transitionStatus(
-          visitor.id,
+          visitorId,
           'arrived',
           { user_id: 'kiosk', person_id: null },
-          { arrived_at: new Date().toISOString() },
+          { arrived_at: arrivedAtIso },
         );
         try {
           await this.hostNotifications.notifyArrival(
-            visitor.id,
+            visitorId,
             kioskContext.tenantId,
           );
         } catch (err) {
           this.log.warn(
-            `notifyArrival failed for kiosk checkin ${visitor.id}: ${
+            `notifyArrival failed for kiosk checkin ${visitorId}: ${
               (err as Error).message
             }`,
           );
         }
-        await this.audit('kiosk.checkin_succeeded', visitor.id, {
-          kiosk_token_id: kioskContext.kioskTokenId,
-          visitor_id: visitor.id,
-          mode: 'qr_or_name',
-        });
+        await this.audit(
+          'kiosk.checkin_succeeded',
+          kioskContext.tenantId,
+          visitorId,
+          {
+            kiosk_token_id: kioskContext.kioskTokenId,
+            visitor_id: visitorId,
+            mode,
+          },
+        );
       },
     );
   }
@@ -739,20 +756,32 @@ export class KioskService {
     return Boolean(row?.has);
   }
 
+  /**
+   * Insert an audit_events row. `tenant_id` is REQUIRED — the column is
+   * NOT NULL. The kiosk paths run anonymously (no TenantContext / no
+   * authenticated user), so the caller must pass the tenant explicitly
+   * from `kioskContext.tenantId`. Falling back to `TenantContext` here
+   * silently drops audit rows on the kiosk path, which is a P0 audit
+   * coverage gap (Fix #2 of the slice 2 review).
+   */
   private async audit(
     eventType: string,
+    tenantId: string,
     visitorId: string | null,
     details: Record<string, unknown>,
   ): Promise<void> {
+    if (!tenantId) {
+      // Loud failure — better to surface "missing tenant_id" in tests +
+      // logs than to write an audit row with NULL tenant_id (constraint
+      // violation, dropped silently inside try/catch) or, worse, a row
+      // that fails RLS and leaks across tenants.
+      throw new Error(
+        `audit(${eventType}) called without a tenantId — every audit row MUST be tenant-scoped`,
+      );
+    }
     try {
       await this.supabase.admin.from('audit_events').insert({
-        // The kiosk path may not have a TenantContext (truly anonymous);
-        // pass tenant_id from `details.tenant_id` if present, else fall
-        // back to TenantContext for the admin-side calls.
-        tenant_id:
-          (details.tenant_id as string | undefined) ??
-          TenantContext.currentOrNull()?.id ??
-          (details.kiosk_token_id ? null : null),
+        tenant_id: tenantId,
         event_type: eventType,
         entity_type: 'visitor',
         entity_id: visitorId,
