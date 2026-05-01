@@ -125,12 +125,14 @@ export class BundleCascadeService {
     // include defensively so a future code path that DOES land them there
     // doesn't silently bypass the cascade.
     const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
+    // Step 1c.4 cutover: target work_orders directly. The reverse shadow
+    // trigger keeps tickets in sync. Removes the ticket_kind filter
+    // (work_orders is single-kind).
     const { data: linkedTickets } = await this.supabase.admin
-      .from('tickets')
+      .from('work_orders')
       .update({ status_category: 'closed', closed_at: new Date().toISOString() })
       .eq('linked_order_line_item_id', args.line_id)
       .eq('tenant_id', tenantId)
-      .eq('ticket_kind', 'work_order')
       .in('status_category', NON_TERMINAL_STATUSES)
       .select('id');
     if (linkedTickets) {
@@ -271,12 +273,12 @@ export class BundleCascadeService {
     const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
     let cancelledTicketIds: string[] = [];
     if (cancelledLineIds.length > 0) {
+      // Step 1c.4 cutover: target work_orders directly.
       const { data: linkedTickets } = await this.supabase.admin
-        .from('tickets')
+        .from('work_orders')
         .update({ status_category: 'closed', closed_at: new Date().toISOString() })
         .in('linked_order_line_item_id', cancelledLineIds)
         .eq('tenant_id', tenantId)
-        .eq('ticket_kind', 'work_order')
         .in('status_category', NON_TERMINAL_STATUSES)
         .select('id');
       cancelledTicketIds = (linkedTickets as Array<{ id: string }> | null)?.map((t) => t.id) ?? [];

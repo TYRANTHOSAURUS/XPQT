@@ -614,12 +614,12 @@ export class BundleService {
         // Match cancel-cascade whitelist (bundle-cascade.service.ts) — see
         // the comment there for the schema-history reasoning.
         const NON_TERMINAL = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
+        // Step 1c.4 cutover: read+write work_orders directly.
         const { data: linkedWos } = await this.supabase.admin
-          .from('tickets')
+          .from('work_orders')
           .select('id, sla_resolution_due_at')
           .eq('linked_order_line_item_id', line.id)
           .eq('tenant_id', tenantId)
-          .eq('ticket_kind', 'work_order')
           .in('status_category', NON_TERMINAL);
         for (const wo of (linkedWos ?? []) as Array<{ id: string; sla_resolution_due_at: string | null }>) {
           if (!wo.sla_resolution_due_at) continue;
@@ -627,7 +627,7 @@ export class BundleService {
             new Date(wo.sla_resolution_due_at).getTime() + deltaMs,
           ).toISOString();
           await this.supabase.admin
-            .from('tickets')
+            .from('work_orders')
             .update({ sla_resolution_due_at: shifted })
             .eq('id', wo.id)
             .eq('tenant_id', tenantId);
@@ -1151,12 +1151,12 @@ export class BundleService {
       }
       const staleOliIds = ((stale ?? []) as Array<{ id: string }>).map((r) => r.id);
       if (staleOliIds.length > 0) {
+        // Step 1c.4 cutover: target work_orders directly.
         const { data: closedTickets, error: closeErr } = await this.supabase.admin
-          .from('tickets')
+          .from('work_orders')
           .update({ status_category: 'closed', closed_at: new Date().toISOString() })
           .in('linked_order_line_item_id', staleOliIds)
           .eq('tenant_id', tenantId)
-          .eq('ticket_kind', 'work_order')
           .in('status_category', ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'])
           .select('id');
         if (closeErr) {

@@ -105,9 +105,10 @@ function makeService(opts: {
             }),
           };
         }
-        if (table === 'tickets') {
-          // Defensive close of any work order that was just inserted for an
-          // OLI that's already cancelled. Returns the closed ticket ids.
+        if (table === 'work_orders' || table === 'tickets') {
+          // Step 1c.4: bundle close-race targets work_orders directly.
+          // Filter chain shortened — ticket_kind=work_order filter is gone
+          // since work_orders is single-kind. Now: in().eq().in()
           return {
             update: (patch: Record<string, unknown>) => {
               const filters: UpdateCapture['filters'] = [];
@@ -118,19 +119,14 @@ function makeService(opts: {
                     eq: (c2: string, v2: unknown) => {
                       filters.push({ kind: 'eq', col: c2, val: v2 });
                       return {
-                        eq: (c3: string, v3: unknown) => {
-                          filters.push({ kind: 'eq', col: c3, val: v3 });
+                        in: (c4: string, v4: unknown) => {
+                          filters.push({ kind: 'in', col: c4, val: v4 });
+                          updates.push({ table, patch, filters });
                           return {
-                            in: (c4: string, v4: unknown) => {
-                              filters.push({ kind: 'in', col: c4, val: v4 });
-                              updates.push({ table, patch, filters });
-                              return {
-                                select: () => Promise.resolve({
-                                  data: (opts.closedTicketIds ?? []).map((id) => ({ id })),
-                                  error: null,
-                                }),
-                              };
-                            },
+                            select: () => Promise.resolve({
+                              data: (opts.closedTicketIds ?? []).map((id) => ({ id })),
+                              error: null,
+                            }),
                           };
                         },
                       };
@@ -457,8 +453,8 @@ describe('BundleService.onApprovalDecided', () => {
 
       await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
 
-      // Defensive close ran against tickets table.
-      const ticketClose = updates.find((u) => u.table === 'tickets');
+      // Step 1c.4: defensive close now runs against work_orders directly.
+      const ticketClose = updates.find((u) => u.table === 'work_orders');
       expect(ticketClose).toBeDefined();
       expect(ticketClose!.patch).toMatchObject({ status_category: 'closed' });
 
@@ -479,7 +475,8 @@ describe('BundleService.onApprovalDecided', () => {
 
       await withTenant(() => service.onApprovalDecided(BUNDLE, 'approved'));
 
-      expect(updates.find((u) => u.table === 'tickets')).toBeUndefined();
+      // Step 1c.4: defensive close target is now work_orders.
+      expect(updates.find((u) => u.table === 'work_orders')).toBeUndefined();
       expect(auditInserts.some(
         (a) => a.event_type === 'bundle.deferred_setup_closed_after_concurrent_cancel',
       )).toBe(false);
