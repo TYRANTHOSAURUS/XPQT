@@ -35,22 +35,33 @@ import { VisitorService } from './visitor.service';
  *     IS the "we've run today" record. Re-runs of the same key on the
  *     same date are no-ops; new runs happen tomorrow under a new key.
  *
- * Cron windowing:
- *   - Cron tick: every 5 minutes between :30 of hour 17 and :00 of hour
- *     19 in UTC. We then filter buildings whose LOCAL time is in
- *     [18:00, 19:00). Buildings outside the window are skipped this
- *     tick. Edge: a building in UTC-2 starts at hour 20 UTC, well
- *     outside the cron window — the cron pattern is too tight. v1 ships
- *     with the spec's stated window (Benelux primary market is
- *     UTC+1/+2 in winter/summer); cross-timezone tenants will need a
- *     wider cron — open follow-up flagged in the report.
+ * Cron windowing — global tick + per-building local-time filter:
+ *   - Single cron expression fires every 15 minutes around the clock
+ *     (`*\/15 * * * *`). Per-building local-hour filtering happens inside
+ *     the SQL: a building is swept when `(now() at time zone
+ *     spaces.timezone)::hour = 18`. Worldwide buildings are covered:
+ *     a Tokyo (UTC+9) building hits the 18-local window at 09:00 UTC,
+ *     an Amsterdam (UTC+1/+2) building hits it at 16-17:00 UTC, a Los
+ *     Angeles (UTC-7/-8) building hits it at 01-02:00 UTC. The
+ *     idempotency lease (`task_leases.lease_key = 'visitor.eod.<bid>.<date>'`)
+ *     ensures a building is swept exactly once per LOCAL date even
+ *     though the global cron fires four times per hour.
+ *   - Original v1 patterns were UTC 17:30–19:00 only — Benelux-only.
+ *     I3 fix: widen to global so cross-timezone tenants are covered
+ *     without code change per market.
+ *   - Trade-off: 4 ticks/hour × 24 hours = 96 cron firings/day. Each
+ *     tick runs one cheap SELECT + a no-op exit when the building set
+ *     is empty (the common case for any single timezone slice). At
+ *     fewer than ~10ms per empty tick that's a ~1s/day load. The lease
+ *     IS the idempotency guarantee; the cron just has to fire often
+ *     enough that we don't miss the local 18:00 hour.
  *
  * Timezone handling — Postgres-side:
- *   - We resolve the building's local hour with `(now() at time zone
- *     spaces.timezone)::time` and filter in the SELECT. Keeps DST math
- *     in Postgres (correct), avoids a Node-side `Intl.DateTimeFormat`
- *     dance per building. Spec §4.8 says `spaces.timezone` defaults to
- *     'Europe/Amsterdam'.
+ *   - We resolve the building's local hour with `extract(hour from (now()
+ *     at time zone spaces.timezone))` and filter in the SELECT. Keeps
+ *     DST math in Postgres (correct), avoids a Node-side
+ *     `Intl.DateTimeFormat` dance per building. Spec §4.8 says
+ *     `spaces.timezone` defaults to 'Europe/Amsterdam'.
  *
  * Env knobs:
  *   - `VISITOR_EOD_SWEEP_ENABLED=false` disables the cron entirely
@@ -73,27 +84,18 @@ export class EodSweepWorker {
   ) {}
 
   /**
-   * Run every 5 minutes inside the EOD window. Cron expression covers
-   * 18:00-18:55 UTC. The 17:30-17:55 prelude lives on tickEarly().
-   * Per-building local-time filtering happens inside the tick.
+   * Global 15-minute tick. Per-building local-hour filtering happens
+   * inside the SQL — see `findBuildingsInLocalEodWindow` — so this
+   * single cron expression covers every timezone. The lease key is
+   * scoped to the building's local date, so a building gets swept
+   * exactly once even though the global cron fires every 15 min.
    *
-   * Two crons together cover the full 17:30-19:00 window.
+   * I3 fix (full review): replaced the narrow UTC-17:30–19:00 pattern
+   * with a global tick so non-Benelux tenants (Tokyo, NYC, LA, …) are
+   * covered without per-deploy code changes.
    */
-  @Cron('0 */5 18 * * *')
+  @Cron('0 */15 * * * *')
   async tick(): Promise<void> {
-    if (!this.enabled) return;
-    if (this.running) return;
-    this.running = true;
-    try {
-      await this.runForAllBuildingsInWindow();
-    } finally {
-      this.running = false;
-    }
-  }
-
-  /** Same body, different cron — covers the 17:30-17:55 prelude. */
-  @Cron('0 30-55/5 17 * * *')
-  async tickEarly(): Promise<void> {
     if (!this.enabled) return;
     if (this.running) return;
     this.running = true;

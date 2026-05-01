@@ -356,4 +356,143 @@ describe('EodSweepWorker', () => {
       expect(leaseReleases).toHaveLength(1);
     });
   });
+
+  // ─── I3 (full review): timezone coverage ────────────────────────────────
+  //
+  // The cron now fires globally every 15 minutes; per-building local-hour
+  // filtering is the SQL's job. We verify:
+  //   - the SQL filter is `extract(hour from (now() at time zone …)) = 18`
+  //     so a Tokyo building hits the window at its own local 18:00, not
+  //     at UTC 18:00.
+  //   - when `findBuildingsInLocalEodWindow` returns a Tokyo + an
+  //     Amsterdam building, BOTH are processed (global cron covers any
+  //     timezone slice, not just Benelux).
+  describe('timezone coverage (I3)', () => {
+    it('SQL filter selects buildings whose LOCAL hour is 18, regardless of UTC', async () => {
+      const { worker, sqlCalls } = makeHarness();
+      await (worker as unknown as { runForAllBuildingsInWindow: () => Promise<void> })
+        .runForAllBuildingsInWindow();
+      const filterSql = sqlCalls.find((c) =>
+        c.sql.toLowerCase().includes('extract(hour from'),
+      );
+      expect(filterSql).toBeTruthy();
+      const lower = filterSql!.sql.toLowerCase();
+      // Must compute hour in the building's own zone, not UTC.
+      expect(lower).toContain('at time zone timezone');
+      expect(lower).toContain('= 18');
+    });
+
+    it('processes a Tokyo (UTC+9) building at its local 18:00 even when UTC is 09:00', async () => {
+      // Harness returns the building set as if the SQL filter matched —
+      // simulating the cron tick at the moment Tokyo's local hour is 18.
+      const TOKYO_BUILDING = '77777777-7777-4777-8777-777777777777';
+      const { worker, transitionCalls } = makeHarness({
+        buildingsInWindow: [
+          { id: TOKYO_BUILDING, tenant_id: TENANT_A, timezone: 'Asia/Tokyo' },
+        ],
+        candidates: {
+          [`${TENANT_A}|${TOKYO_BUILDING}`]: [
+            {
+              id: VISITOR_A1,
+              status: 'expected',
+              visitor_pass_id: null,
+              expected_until: '2026-04-30T08:00:00Z', // earlier than Tokyo local 18:00 = 09:00 UTC
+            },
+          ],
+        },
+      });
+      await (worker as unknown as { runForAllBuildingsInWindow: () => Promise<void> })
+        .runForAllBuildingsInWindow();
+      // Tokyo building was processed; visitor flipped to no_show.
+      expect(transitionCalls).toHaveLength(1);
+      expect(transitionCalls[0]!.to).toBe('no_show');
+    });
+
+    it('processes Tokyo + Amsterdam in the same global tick when both are at local 18:00', async () => {
+      const TOKYO_BUILDING = '77777777-7777-4777-8777-777777777777';
+      const AMS_BUILDING = '66666666-6666-4666-8666-666666666666';
+      const { worker, transitionCalls } = makeHarness({
+        buildingsInWindow: [
+          { id: TOKYO_BUILDING, tenant_id: TENANT_A, timezone: 'Asia/Tokyo' },
+          { id: AMS_BUILDING, tenant_id: TENANT_A, timezone: 'Europe/Amsterdam' },
+        ],
+        candidates: {
+          [`${TENANT_A}|${TOKYO_BUILDING}`]: [
+            {
+              id: VISITOR_A1,
+              status: 'expected',
+              visitor_pass_id: null,
+              expected_until: '2026-04-30T08:00:00Z',
+            },
+          ],
+          [`${TENANT_A}|${AMS_BUILDING}`]: [
+            {
+              id: VISITOR_A2,
+              status: 'arrived',
+              visitor_pass_id: null,
+              expected_until: '2026-04-30T15:00:00Z',
+            },
+          ],
+        },
+      });
+      await (worker as unknown as { runForAllBuildingsInWindow: () => Promise<void> })
+        .runForAllBuildingsInWindow();
+      expect(transitionCalls).toHaveLength(2);
+      expect(transitionCalls.map((c) => c.to).sort()).toEqual(['checked_out', 'no_show']);
+    });
+  });
+
+  // ─── C6: lease idempotency under concurrent ticks ───────────────────────
+  //
+  // The current implementation uses INSERT … ON CONFLICT (lease_key) DO
+  // NOTHING + RETURNING id. Postgres' unique index on `lease_key` is the
+  // race-free guarantee: only one INSERT can succeed per key, every other
+  // INSERT returns rowCount=0 and the worker bails. We can't simulate the
+  // actual race in a unit test (would need two pg clients hitting a real
+  // DB), but we verify the contract: when the harness reports the lease
+  // as "already taken" (rowCount=0), the worker SKIPS — no transitions,
+  // no audit, no pass mutations. That's the only thing the application
+  // code can do; the unique index does the rest.
+  describe('lease idempotency under concurrent ticks (C6)', () => {
+    it('two simulated concurrent runs: only the lease winner sweeps', async () => {
+      const sweepDate = new Date().toISOString().slice(0, 10);
+      const leaseKey = `visitor.eod.${BUILDING_A}.${sweepDate}`;
+      // Run 1 acquires; run 2 sees the lease taken.
+      const harness1 = makeHarness({
+        candidates: {
+          [`${TENANT_A}|${BUILDING_A}`]: [
+            {
+              id: VISITOR_A1,
+              status: 'expected',
+              visitor_pass_id: null,
+              expected_until: '2026-04-30T10:00:00Z',
+            },
+          ],
+        },
+      });
+      const harness2 = makeHarness({
+        leaseAcquired: { [leaseKey]: false },
+        candidates: {
+          [`${TENANT_A}|${BUILDING_A}`]: [
+            {
+              id: VISITOR_A1,
+              status: 'expected',
+              visitor_pass_id: null,
+              expected_until: '2026-04-30T10:00:00Z',
+            },
+          ],
+        },
+      });
+      const [r1, r2] = await Promise.all([
+        harness1.worker.runSweepForBuilding(BUILDING_A, TENANT_A),
+        harness2.worker.runSweepForBuilding(BUILDING_A, TENANT_A),
+      ]);
+      // Winner ran the sweep.
+      expect(r1.skipped).toBe(false);
+      expect(harness1.transitionCalls).toHaveLength(1);
+      // Loser bailed without touching visitors.
+      expect(r2.skipped).toBe(true);
+      expect(harness2.transitionCalls).toHaveLength(0);
+    });
+  });
 });
