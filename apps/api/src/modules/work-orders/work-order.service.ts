@@ -1277,6 +1277,35 @@ export class WorkOrderService {
       .eq('tenant_id', tenant.id);
     if (updateErr) throw updateErr;
 
+    // Audit row — `metadata_changed` event with per-field diff. One row
+    // per call (not per field) so the audit feed stays scannable when
+    // multiple fields change in a bulk PATCH. Wrapped in try/catch so
+    // an activity write failure doesn't roll back the user-visible
+    // change. Mirrors `assignment_changed` / `priority_changed` shape
+    // from sibling methods.
+    try {
+      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
+      const changes: Record<string, { previous: unknown; next: unknown }> = {};
+      if ('title' in diff) changes.title = { previous: currentRow.title, next: diff.title };
+      if ('description' in diff) changes.description = { previous: currentRow.description, next: diff.description };
+      if ('cost' in diff) changes.cost = { previous: currentRow.cost, next: diff.cost };
+      if ('tags' in diff) changes.tags = { previous: currentRow.tags, next: diff.tags };
+      if ('watchers' in diff) changes.watchers = { previous: currentRow.watchers, next: diff.watchers };
+      const { error: activityErr } = await this.supabase.admin
+        .from('ticket_activities')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId,
+          activity_type: 'system_event',
+          author_person_id: authorPersonId,
+          visibility: 'system',
+          metadata: { event: 'metadata_changed', changes },
+        });
+      if (activityErr) throw activityErr;
+    } catch (err) {
+      console.error('[work-order] metadata_changed activity failed', err);
+    }
+
     const { data: refreshed, error: refetchErr } = await this.supabase.admin
       .from('work_orders')
       .select('*')

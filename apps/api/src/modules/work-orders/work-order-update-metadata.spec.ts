@@ -37,10 +37,31 @@ function makeDeps(
   );
   let row: WorkOrderRow = { ...initial };
   const updates: Array<Record<string, unknown>> = [];
+  const activities: Array<Record<string, unknown>> = [];
 
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
+        if (table === 'ticket_activities') {
+          return {
+            insert: async (a: Record<string, unknown>) => {
+              activities.push(a);
+              return { error: null };
+            },
+          } as unknown;
+        }
+        if (table === 'users') {
+          // resolveAuthorPersonId — return null (system attribution).
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: null, error: null }),
+                }),
+              }),
+            }),
+          } as unknown;
+        }
         if (table === 'work_orders') {
           return {
             select: () => ({
@@ -122,7 +143,7 @@ function makeDeps(
     assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
-  return { row: () => row, updates, supabase, slaService, visibility };
+  return { row: () => row, updates, activities, supabase, slaService, visibility };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>) {
@@ -653,6 +674,49 @@ describe('WorkOrderService.updateMetadata', () => {
     // bypasses validation entirely.
     await svc.updateMetadata('wo1', { watchers: [GHOST_UUID] }, SYSTEM_ACTOR);
     expect(deps.updates).toHaveLength(1);
+  });
+
+  // ── activity emission (metadata_changed) ──────────────────────────
+
+  it('emits a metadata_changed activity with per-field diff on a write', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 'old', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata(
+      'wo1',
+      { title: 'new', description: 'd' },
+      SYSTEM_ACTOR,
+    );
+
+    expect(deps.activities).toHaveLength(1);
+    expect(deps.activities[0]).toMatchObject({
+      tenant_id: TENANT,
+      ticket_id: 'wo1',
+      activity_type: 'system_event',
+      visibility: 'system',
+      metadata: {
+        event: 'metadata_changed',
+        changes: {
+          title: { previous: 'old', next: 'new' },
+          description: { previous: null, next: 'd' },
+        },
+      },
+    });
+  });
+
+  it('does NOT emit activity on a no-op call', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 'same', description: null, cost: null, tags: null, watchers: null,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { title: 'same' }, SYSTEM_ACTOR);
+
+    expect(deps.activities).toHaveLength(0);
   });
 
   // ── orchestrator integration: WorkOrderService.update routes

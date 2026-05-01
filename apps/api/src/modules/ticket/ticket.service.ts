@@ -1076,6 +1076,40 @@ export class TicketService {
       await this.logDomainEvent(id, 'ticket_assigned', { previous, next });
     }
 
+    // priority_changed activity — case side previously only logged this
+    // event for assignment + status changes. Bringing case audit closer
+    // to parity with WO surface (which has logged priority_changed since
+    // Slice 2). Matches the WorkOrderService.updatePriority shape.
+    if (changes.priority) {
+      await this.addActivity(id, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: {
+          event: 'priority_changed',
+          previous: changes.priority.from,
+          next: changes.priority.to,
+        },
+      }, undefined, actorAuthUid);
+    }
+
+    // metadata_changed activity — title / description / cost / tags /
+    // watchers. One row per call (not per field) so the audit feed
+    // stays scannable when a bulk PATCH changes several at once.
+    // Mirrors WorkOrderService.updateMetadata's emission shape.
+    const metadataChanges: Record<string, { previous: unknown; next: unknown }> = {};
+    if (changes.title) metadataChanges.title = { previous: changes.title.from, next: changes.title.to };
+    if (changes.description) metadataChanges.description = { previous: changes.description.from, next: changes.description.to };
+    if (changes.cost) metadataChanges.cost = { previous: changes.cost.from, next: changes.cost.to };
+    if (changes.tags) metadataChanges.tags = { previous: changes.tags.from, next: changes.tags.to };
+    if (changes.watchers) metadataChanges.watchers = { previous: changes.watchers.from, next: changes.watchers.to };
+    if (Object.keys(metadataChanges).length > 0) {
+      await this.addActivity(id, {
+        activity_type: 'system_event',
+        visibility: 'system',
+        metadata: { event: 'metadata_changed', changes: metadataChanges },
+      }, undefined, actorAuthUid);
+    }
+
     // Step 1c.10c: synthesize ticket_kind for frontend contract.
     return { ...data, ticket_kind: 'case' as const };
   }
