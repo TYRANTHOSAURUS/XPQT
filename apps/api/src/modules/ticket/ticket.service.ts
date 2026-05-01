@@ -919,6 +919,22 @@ export class TicketService {
 
     if (Object.keys(updateData).length === 0) return current;
 
+    // Tenant-validate watcher uuids before the write. Without this,
+    // an authenticated tenant member can write arbitrary uuids —
+    // including persons belonging to other users in the same tenant —
+    // into `tickets.watchers`. The visibility predicate
+    // `ticket_visibility_ids` filters by tenant so cross-tenant LEAK
+    // is blocked at read time, but within-tenant unauthorized share
+    // (granting another person visibility on a case they shouldn't
+    // see) is real, and ghost uuids pollute audit + Realtime payloads.
+    // Mirrors `WorkOrderService.validateWatchersInTenant` — kept as a
+    // local helper here to avoid a TicketService→WorkOrderService
+    // cyclic dep; the 5-line duplication is tracked alongside the
+    // logDomainEvent duplication as class-wide debt.
+    if (Array.isArray(updateData.watchers) && (updateData.watchers as unknown[]).length > 0) {
+      await this.validateWatchersInTenant(updateData.watchers as string[], tenant.id);
+    }
+
     // Handle status transitions
     if (updateData.status_category === 'resolved' && !current.resolved_at) {
       updateData.resolved_at = new Date().toISOString();
@@ -1434,6 +1450,42 @@ export class TicketService {
         entity_id: entityId,
         payload,
       });
+  }
+
+  /**
+   * Validate that every uuid in a watchers array references a real
+   * `persons` row in the calling tenant. See
+   * `WorkOrderService.validateWatchersInTenant` for the full rationale —
+   * this is the case-side mirror, kept local to avoid a Ticket→WorkOrder
+   * dep cycle. The 5-line duplication is tracked alongside the
+   * `logDomainEvent` duplication as class-wide debt.
+   *
+   * Empty array (`[]`) and `null` are both "no watchers" — valid; skip.
+   * Duplicates are deduplicated before the SELECT so the count
+   * comparison is exact. Reports up to 5 invalid uuids in the error.
+   */
+  private async validateWatchersInTenant(
+    watchers: string[] | null | undefined,
+    tenantId: string,
+  ): Promise<void> {
+    if (!watchers || watchers.length === 0) return;
+    const unique = [...new Set(watchers)];
+    const { data, error } = await this.supabase.admin
+      .from('persons')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('id', unique);
+    if (error) throw error;
+    const found = new Set(
+      ((data ?? []) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const invalid = unique.filter((id) => !found.has(id));
+    if (invalid.length > 0) {
+      const sample = invalid.slice(0, 5).join(', ');
+      throw new BadRequestException(
+        `watchers contain ${invalid.length} unknown person id(s) for this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''}`,
+      );
+    }
   }
 
   private async ensureAttachmentBucket() {

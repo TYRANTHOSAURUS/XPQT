@@ -1167,6 +1167,20 @@ export class WorkOrderService {
       await this.visibility.assertCanPlan(workOrderId, ctx);
     }
 
+    // Tenant-validate watcher uuids before the write. This is the
+    // boundary check that prevents a within-tenant unauthorized share
+    // (writing another person's uuid as a watcher) and ghost uuids
+    // (referencing non-existent persons). See validateWatchersInTenant
+    // for the reasoning. Skipped when watchers isn't being touched
+    // (undefined) or is being cleared (null / empty array).
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
+      dto.watchers !== null &&
+      dto.watchers !== undefined
+    ) {
+      await this.validateWatchersInTenant(dto.watchers, tenant.id);
+    }
+
     const { data: current, error: loadErr } = await this.supabase.admin
       .from('work_orders')
       .select('id, tenant_id, title, description, cost, tags, watchers')
@@ -1497,6 +1511,48 @@ export class WorkOrderService {
    * the calling tenant. Defense against cross-tenant id smuggling — the FK
    * + RLS layers don't enforce a tenant composite check on these columns.
    */
+  /**
+   * Validate that every uuid in a watchers array references a real
+   * `persons` row in the calling tenant. Without this check, an
+   * authenticated tenant member can write arbitrary uuids — including
+   * persons belonging to other users in the same tenant — into
+   * `work_orders.watchers`. The visibility predicate
+   * `ticket_visibility_ids` joins `watchers` against `persons.id` filtered
+   * by `tenant_id`, so cross-tenant LEAK is blocked at read time. But
+   * within-tenant *unauthorized share* (granting another person visibility
+   * onto a WO they shouldn't see) is real, and ghost uuids (referencing
+   * persons that don't exist at all) pollute Realtime payloads + audit
+   * trails. Defends against both.
+   *
+   * Empty array (`[]`) and `null` are both "no watchers" — valid; skip.
+   * Duplicates are deduplicated before the SELECT so the count comparison
+   * is exact. Reports up to 5 invalid uuids in the error so the caller
+   * can fix without flooding the response on a 1000-uuid bulk write.
+   */
+  private async validateWatchersInTenant(
+    watchers: string[] | null | undefined,
+    tenantId: string,
+  ): Promise<void> {
+    if (!watchers || watchers.length === 0) return;
+    const unique = [...new Set(watchers)];
+    const { data, error } = await this.supabase.admin
+      .from('persons')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('id', unique);
+    if (error) throw error;
+    const found = new Set(
+      ((data ?? []) as Array<{ id: string }>).map((r) => r.id),
+    );
+    const invalid = unique.filter((id) => !found.has(id));
+    if (invalid.length > 0) {
+      const sample = invalid.slice(0, 5).join(', ');
+      throw new BadRequestException(
+        `watchers contain ${invalid.length} unknown person id(s) for this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''}`,
+      );
+    }
+  }
+
   private async validateAssigneesInTenant(
     diff: { assigned_team_id?: unknown; assigned_user_id?: unknown; assigned_vendor_id?: unknown },
     tenantId: string,

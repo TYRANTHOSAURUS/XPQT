@@ -22,8 +22,19 @@ type WorkOrderRow = {
 
 const TENANT = 't1';
 
-function makeDeps(initial: WorkOrderRow, options: { wo_exists?: boolean } = {}) {
+function makeDeps(
+  initial: WorkOrderRow,
+  options: {
+    wo_exists?: boolean;
+    persons_in_tenant?: string[];
+  } = {},
+) {
   const exists = options.wo_exists !== false;
+  // Default: every person uuid the tests use exists in the tenant. Tests
+  // exercising tenant-rejection override with an explicit allowlist.
+  const personsInTenant = new Set(
+    options.persons_in_tenant ?? ['p1', 'p2', 'p3', 'p4', 'p5'],
+  );
   let row: WorkOrderRow = { ...initial };
   const updates: Array<Record<string, unknown>> = [];
 
@@ -57,6 +68,28 @@ function makeDeps(initial: WorkOrderRow, options: { wo_exists?: boolean } = {}) 
               };
               return { eq: () => ({ eq: () => second }) };
             },
+          } as unknown;
+        }
+        if (table === 'persons') {
+          return {
+            select: () => ({
+              eq: () => ({
+                in: (_col: string, ids: string[]) => ({
+                  // The promise-style chain returned by supabase-js's
+                  // builder; awaiting yields { data, error }.
+                  then: (
+                    resolve: (v: { data: Array<{ id: string }>; error: null }) => unknown,
+                    reject: (e: unknown) => unknown,
+                  ) =>
+                    Promise.resolve({
+                      data: ids
+                        .filter((id) => personsInTenant.has(id))
+                        .map((id) => ({ id })),
+                      error: null,
+                    }).then(resolve, reject),
+                }),
+              }),
+            }),
           } as unknown;
         }
         throw new Error(`unexpected table in mock: ${table}`);
@@ -478,6 +511,77 @@ describe('WorkOrderService.updateMetadata', () => {
 
     expect(deps.updates).toHaveLength(1);
     expect(deps.updates[0].cost).toBe(12.35);
+  });
+
+  // ── watcher uuid tenant validation (full-review #2: critical) ─────
+
+  it('rejects watchers that include a uuid not in the tenant', async () => {
+    // Within-tenant unauthorized share + ghost-uuid hazard. Caller writes
+    // a uuid that doesn't belong to the tenant — service must 400.
+    const deps = makeDeps(
+      {
+        id: 'wo1', tenant_id: TENANT,
+        title: 't', description: null, cost: null, tags: null, watchers: null,
+      },
+      { persons_in_tenant: ['p1', 'p2'] }, // foreign-tenant uuid 'pX' missing.
+    );
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.updateMetadata('wo1', { watchers: ['p1', 'pX'] }, SYSTEM_ACTOR),
+    ).rejects.toThrow(/unknown person id\(s\)/);
+    expect(deps.updates).toHaveLength(0);
+  });
+
+  it('accepts watchers that all reference real persons in the tenant', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1', tenant_id: TENANT,
+        title: 't', description: null, cost: null, tags: null, watchers: null,
+      },
+      { persons_in_tenant: ['p1', 'p2'] },
+    );
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { watchers: ['p1', 'p2'] }, SYSTEM_ACTOR);
+
+    expect(deps.updates).toHaveLength(1);
+    expect(deps.updates[0]).toMatchObject({ watchers: ['p1', 'p2'] });
+  });
+
+  it('handles duplicate watcher uuids — dedup before validation', async () => {
+    // ['p1', 'p1'] should not be rejected as "1 unknown of 2"; the dedup
+    // before SELECT means the count comparison is exact.
+    const deps = makeDeps(
+      {
+        id: 'wo1', tenant_id: TENANT,
+        title: 't', description: null, cost: null, tags: null, watchers: null,
+      },
+      { persons_in_tenant: ['p1'] },
+    );
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { watchers: ['p1', 'p1'] }, SYSTEM_ACTOR);
+
+    expect(deps.updates).toHaveLength(1);
+  });
+
+  it('skips validation when watchers is null (clear) or empty array', async () => {
+    const deps = makeDeps({
+      id: 'wo1', tenant_id: TENANT,
+      title: 't', description: null, cost: null, tags: null, watchers: ['p1'],
+    });
+    const svc = makeSvc(deps);
+
+    await svc.updateMetadata('wo1', { watchers: null }, SYSTEM_ACTOR);
+    await svc.updateMetadata('wo1', { watchers: [] }, SYSTEM_ACTOR);
+
+    // Both writes go through (transition from ['p1'] → null on first call,
+    // then null → [] no-ops because both are "no watchers"). Either way
+    // no rejection.
+    expect(
+      deps.updates.every((u) => u.watchers === null || (Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0)),
+    ).toBe(true);
   });
 
   // ── orchestrator integration: WorkOrderService.update routes
