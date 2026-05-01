@@ -1,22 +1,28 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
+import { PermissionGuard } from '../../common/permission-guard';
 import { ApprovalModule } from '../approval/approval.module';
+import { AuthModule } from '../auth/auth.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { NotificationModule } from '../notification/notification.module';
 import { PersonModule } from '../person/person.module';
 import { PrivacyComplianceModule } from '../privacy-compliance/privacy-compliance.module';
 import { SpaceModule } from '../space/space.module';
+import { VisitorsAdminController } from './admin.controller';
 import { BundleCascadeAdapter } from './bundle-cascade.adapter';
 import { EodSweepWorker } from './eod-sweep.worker';
 import { HostNotificationService } from './host-notification.service';
 import { InvitationService } from './invitation.service';
 import { KioskAuthGuard } from './kiosk-auth.guard';
+import { KioskController } from './kiosk.controller';
 import { KioskService } from './kiosk.service';
 import { VisitorPassPoolService } from './pass-pool.service';
+import { ReceptionController } from './reception.controller';
 import { ReceptionService } from './reception.service';
 import { VisitorEventBus } from './visitor-event-bus';
 import { VisitorMailDeliveryAdapter } from './visitor-mail-delivery.adapter';
 import { VisitorService } from './visitor.service';
+import { VisitorsController } from './visitors.controller';
 
 /**
  * Visitor Management v1 — backend module.
@@ -54,8 +60,15 @@ import { VisitorService } from './visitor.service';
     NotificationModule,
     PrivacyComplianceModule,
     SpaceModule,
+    AuthModule,
     forwardRef(() => BookingBundlesModule),
     forwardRef(() => ApprovalModule),
+  ],
+  controllers: [
+    VisitorsController,
+    ReceptionController,
+    KioskController,
+    VisitorsAdminController,
   ],
   providers: [
     VisitorService,
@@ -69,6 +82,7 @@ import { VisitorService } from './visitor.service';
     KioskAuthGuard,
     KioskService,
     EodSweepWorker,
+    PermissionGuard,
   ],
   exports: [
     VisitorService,
