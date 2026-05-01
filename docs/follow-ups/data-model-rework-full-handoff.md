@@ -97,7 +97,8 @@ Total bugs caught by codex:        39+ across the rework (incl. 2 catastrophic d
 | 0 | `updateSla` | ✅ shipped (Session 9) |
 | 1 | `setPlan` + `canPlan` | ✅ shipped (Session 10) — migration 00246 |
 | 2 | `updateStatus` / `updatePriority` / `updateAssignment` / `reassign` | ✅ shipped (Session 11) |
-| 3 | `cost` / `tags` / `watchers` / `title` / `description` + single `PATCH /work-orders/:id` | ⏸ NOT STARTED |
+| 3.0 | Single `PATCH /work-orders/:id` orchestrator (collapses Slices 0–2 into one endpoint) | ✅ shipped (Session 12) |
+| 3.1 | `cost` / `tags` / `watchers` / `title` / `description` field add | ⏸ NOT STARTED |
 
 ---
 
@@ -174,16 +175,19 @@ The two-gate pattern (full-review for breadth + codex for depth) **is robust to 
 
 Full-review's Opus subagents (same model class as the main agent) systematically miss those.
 
-### Mitigation options to evaluate (NOT yet picked — surface to user)
+### Mitigation policy (decided Session 12)
 
-These are the options on the table. Pick deliberately; don't drift into one by accident.
+User chose combination **(c) + (d)**:
 
-1. **Self-host gpt-5.5 via OpenRouter.** Removes the quota constraint. Latency, cost, and prompt compatibility need spike testing. Likely the cleanest fix.
-2. **Use a different LLM as the second gate** — Gemini 2.5 Pro with deep reasoning, or Claude 4.7 Opus + extended thinking on a fresh context. Not a drop-in for codex's Postgres specialty but might catch a different bug class.
-3. **Escalate to human review for destructive changes when codex is unavailable.** Slow; appropriate for the 1–2 destructive migrations per quarter that genuinely matter.
-4. **Accept "full-review only" as a degraded mode for non-destructive work; require codex (or skip) for destructive.** Document the rule. Defer the destructive change until codex is available.
+- **(c)** Escalate to human review for destructive changes when codex is unavailable.
+- **(d)** Accept "full-review only" as a degraded mode for non-destructive work; require codex (or skip) for destructive.
 
-A combination is plausible: (4) as the default policy + (1) when the user is willing to invest in tooling.
+Rationale: full-review handles additive work fine — Sessions 11 and 12 both shipped under degraded-mode without bugs slipping through. Destructive work is rare and high-stakes; waiting for codex availability or escalating to human review is acceptable for the 1–2 destructive migrations per quarter that genuinely matter.
+
+**Options NOT picked** (left on the table for future re-evaluation):
+
+1. **Self-host gpt-5.5 via OpenRouter.** Removes the quota constraint. Reconsider if codex quota becomes a chronic blocker.
+2. **Use a different LLM as the second gate** — Gemini 2.5 Pro with deep reasoning. Not a drop-in for codex's Postgres specialty but might catch a different bug class. Worth a spike if (c)+(d) starts feeling restrictive.
 
 ---
 
@@ -236,31 +240,24 @@ cited. Status reflects current state on `main`.
   status filter — and CI parity test (A11) needs to assert the behavior matches.
   *Origin: Session 8 codex round.*
 
-### Work-order command surface — Slice 3 + alignment
+### Work-order command surface — Slice 3.1 + alignment
 
-- **Slice 3 — `cost` / `tags` / `watchers` / `title` / `description` on work_orders** (also broken from desk detail). Plus the single `PATCH /work-orders/:id` endpoint that resolves the FE multi-field PATCH fan-out race (Session 11 full-review #9).
-  *Origin: Sessions 10 + 11.*
+- **Slice 3.1 — `cost` / `tags` / `watchers` / `title` / `description` on work_orders** (also broken from desk detail). The single PATCH endpoint orchestrator already exists (Slice 3.0, Session 12); this slice just adds the fields to the union DTO + dispatches them.
+  *Origin: Sessions 10 + 11. The single-PATCH-endpoint half of this resolved Session 12 P1.*
 
-- **Security alignment slice (decision needed)** — case-side
-  `TicketService.update()` and `reassign()` use ONLY `assertVisible('write')`.
-  WO-side adds `tickets.change_priority` and `tickets.assign` permission
-  gates per the catalog. **Real divergence** — case is under-gated OR WO is
-  over-gated. WO-side is likely the canonical pattern (green-field; the
-  catalog's per-action keys exist for a reason); case-side is legacy
-  undergated. Either expand Slice 3 scope or schedule a separate
-  "security alignment" slice.
-  *Origin: Session 11 full-review #10. User has not decided.*
+- ✅ **Security alignment slice — closed Session 12.** `tickets.assign` and
+  `tickets.change_priority` gates backported to `TicketService.update`
+  and `reassign` via commit `f376e12`. Migration 00247 grandfathers
+  existing roles. UPDATE 0 on remote (no roles needed it).
 
-### Plandate workstream coordination (still uncommitted)
+### Plandate workstream coordination
 
-- **Plandate workstream owner: when you commit your work, please delete:**
-  - `TicketService.setPlan` at `apps/api/src/modules/ticket/ticket.service.ts:1082-1180`
-  - `PATCH /tickets/:id/plan` and `GET /tickets/:id/can-plan` routes
-  - `useSetTicketPlan`, `useCanPlanTicket`, `ticketCanPlanOptions`
-  
-  The Plan SidebarGroup is the only consumer and it's now rewired onto
-  `useSetWorkOrderPlan` / `useCanPlanWorkOrder` (Slice 1 / Session 10).
-  *Origin: Sessions 9 + 10.*
+- ✅ **Plandate workstream merged Session 12** (`849aaee` + `09e28f6`).
+  Dead case-side surfaces deleted in the same session: `TicketService
+  .setPlan`, `/tickets/:id/plan`, `/tickets/:id/can-plan`,
+  `useSetTicketPlan`, `useCanPlanTicket`, `ticketCanPlanOptions`. The
+  Plan SidebarGroup uses `useSetWorkOrderPlan` + `useCanPlanWorkOrder`
+  via the new single PATCH endpoint.
 
 ### Test/observability debt
 
@@ -304,20 +301,20 @@ The work-order command surface is complete when ALL of:
 
 1. ⏳ The desk-detail sidebar can mutate every WO field without touching `TicketService`.
    Specifically: status / priority / team / user / vendor / plan / SLA / cost / tags / watchers / title / description.
-   - status / priority / team / user / vendor / plan / SLA: ✅ done (Slices 0–2)
-   - cost / tags / watchers / title / description: ❌ pending (Slice 3)
+   - status / priority / team / user / vendor / plan / SLA: ✅ done (Slices 0–2 + Slice 3.0 single PATCH orchestrator)
+   - cost / tags / watchers / title / description: ❌ pending (Slice 3.1)
 
-2. ❌ The plandate workstream has merged. (Still uncommitted in working tree.)
+2. ✅ The plandate workstream has merged. (Session 12 commits `849aaee` + `09e28f6`.)
 
-3. ❌ Case-side gates match WO-side. (Session 11 full-review #10 — security alignment slice. User has not decided whether to expand or schedule separately.)
+3. ✅ Case-side gates match WO-side. (Session 12 commit `f376e12` — `tickets.assign` + `tickets.change_priority` backported with grandfathering migration 00247.)
 
-4. ❌ `TicketService.setPlan`, `useSetTicketPlan`, `useCanPlanTicket`, and the `/tickets/:id/plan` and `/tickets/:id/can-plan` routes have been deleted (dead code, blocked on Plandate workstream commit per item 2).
+4. ✅ `TicketService.setPlan`, `useSetTicketPlan`, `useCanPlanTicket`, and the `/tickets/:id/plan` and `/tickets/:id/can-plan` routes deleted. (Session 12 commit `09e28f6`.)
 
 5. ⏳ CI assertion script confirms the polymorphic gates work end-to-end.
    Currently A1..A11 assert structural integrity. The end-state version
    should also include behavioral assertions that exercise the WO command
    surface against `tickets` and confirm the case-only guards reject.
-   Partially done; expand on Slice 3.
+   Partially done; expand on Slice 3.1.
 
 **The full data-model rework is complete when ALL of the above PLUS:**
 
@@ -423,6 +420,7 @@ Each session has its own archive file with the full content that previously live
 | 9  | 2026-05-01 | Slice 0 (originally "B1.5") — work-order command surface scaffolding + SLA edit | [`session-09-b15-sla-edit.md`](./data-model-rework-archive/session-09-b15-sla-edit.md) |
 | 10 | 2026-05-01 | Slice 1 — `setPlan` on work_orders | [`session-10-slice1-setplan.md`](./data-model-rework-archive/session-10-slice1-setplan.md) |
 | 11 | 2026-05-01 | Slice 2 — `updateStatus` / `updatePriority` / `updateAssignment` / `reassign` | [`session-11-slice2-status-priority-assignment.md`](./data-model-rework-archive/session-11-slice2-status-priority-assignment.md) |
+| 12 | 2026-05-01 | Plandate merge + dead-code cleanup + Slice 3.0 single-PATCH orchestrator + security alignment (P2 backport) + 5 code-review fixes | [`session-12-plandate-merge-and-orchestrator.md`](./data-model-rework-archive/session-12-plandate-merge-and-orchestrator.md) |
 
 > **Chronology fix:** earlier versions of this doc had Session 9 appearing
 > AFTER Sessions 10 and 11 (because Session 9's content was appended after
@@ -440,6 +438,6 @@ material from those sessions.
 
 ## Final word
 
-Step 1 is done. Sessions 7–11 closed the highest-leverage follow-ups (CI smoke gate, dead filter, bundle parity, work-order command surface through Slice 2). The biggest remaining risks are (a) Slice 3 not yet started and (b) the CI assertion gate brittleness when Steps 2/4 ship. Both are documented above with concrete next steps and effort estimates.
+Step 1 is done. Sessions 7–12 closed the highest-leverage follow-ups: CI smoke gate, dead filter, bundle parity, work-order command surface through Slice 3.0 (single PATCH orchestrator), plandate workstream merge, security gate alignment, dead-code cleanup, all code-review findings except the deferred items in the consolidated open work list above. The desk-detail sidebar can now mutate every WO field that previously silently no-op'd, with the right per-field gates and a clean union DTO endpoint. The biggest remaining risks are (a) Slice 3.1 (cost / tags / watchers / title / description) not yet started — but cheap, ~half day on top of the orchestrator — and (b) the CI assertion gate brittleness when Steps 2/4 ship. Both are documented above with concrete next steps and effort estimates.
 
 The honest meta-lesson: **codex (gpt-5.5 xhigh) is genuinely a better adversarial reviewer than this agent for migration work.** The codex fragility section above frames the option space when codex is unavailable. Don't drift into a degraded mode by accident.
