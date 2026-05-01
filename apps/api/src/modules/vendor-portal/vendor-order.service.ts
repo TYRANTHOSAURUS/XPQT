@@ -220,6 +220,7 @@ export class VendorOrderService {
            'per_item'
          )                                       as unit,
          oli.dietary_notes                       as dietary_notes,
+         oli.requester_notes                     as requester_notes,
          oli.fulfillment_status                  as fulfillment_status,
          oli.requires_phone_followup             as requires_phone_followup,
          oli.daglijst_locked_at                  as daglijst_locked_at
@@ -324,6 +325,10 @@ export interface VendorOrderLine {
   quantity: number;
   unit: string;
   dietary_notes: string | null;
+  /** Free-text from the requester for non-dietary instructions
+   *  (AV placement, setup notes, anything that's NOT food). Distinct
+   *  channel from dietary_notes so it doesn't clutter dietary feeds. */
+  requester_notes: string | null;
   fulfillment_status: string;
   requires_phone_followup: boolean;
   daglijst_locked_at: string | null;

@@ -122,6 +122,7 @@ export class DailyListService {
               oli.catalog_item_id           as catalog_item_id,
               oli.quantity                  as quantity,
               oli.dietary_notes             as dietary_notes,
+              oli.requester_notes           as requester_notes,
               oli.fulfillment_status        as fulfillment_status,
               oli.service_window_start_at   as service_window_start_at,
               oli.service_window_end_at     as service_window_end_at,
@@ -185,6 +186,7 @@ export class DailyListService {
         catalog_item_name: l.catalog_item_name,
         quantity: l.quantity,
         dietary_notes: l.dietary_notes,
+        requester_notes: l.requester_notes,
         delivery_time: l.delivery_time,
         delivery_window: l.service_window_start_at && l.service_window_end_at
           ? { start_at: l.service_window_start_at, end_at: l.service_window_end_at }
@@ -1059,6 +1061,7 @@ export interface DailyListPayload {
     catalog_item_name: string | null;
     quantity: number;
     dietary_notes: string | null;
+    requester_notes: string | null;
     delivery_time: string | null;
     delivery_window: { start_at: string; end_at: string } | null;
     delivery_location_name: string | null;
@@ -1105,6 +1108,7 @@ interface DaglijstLineRow {
   catalog_item_name: string | null;
   quantity: number;
   dietary_notes: string | null;
+  requester_notes: string | null;
   fulfillment_status: string;
   service_window_start_at: string | null;
   service_window_end_at: string | null;

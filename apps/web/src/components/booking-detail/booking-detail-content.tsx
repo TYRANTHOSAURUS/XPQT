@@ -13,14 +13,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
-import { SpaceSelect } from '@/components/space-select';
 import { Link } from 'react-router-dom';
 import {
   useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
-  useReservationGroupSiblings,
+  useReservationGroupSiblings, usePicker,
 } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
+import { cn } from '@/lib/utils';
 import { useAuth } from '@/providers/auth-provider';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { NumberStepper } from '@/components/ui/number-stepper';
@@ -147,16 +146,24 @@ export function BookingDetailContent({
   // Multi-room bookings promise atomic time + cancellation across siblings
   // (CLAUDE.md spec line). The current single-reservation PATCH/cancel
   // endpoints only operate on `this` reservation, which would silently
-  // break that promise. Until group-scoped endpoints exist, gate the
-  // mutating actions on multi-room bookings and route the user to the
-  // desk for the change.
+  // break that promise — for REQUESTERS, we gate the mutating actions and
+  // route them to the desk. For DESK OPERATORS we don't: they ARE the
+  // desk, and pointing them back to themselves is a circular dead-end.
+  // Operators get the action with explicit single-room semantics in the
+  // copy ("only edits this room"). This accepts a documented divergence
+  // from the atomic-group promise on operator-initiated multi-room edits;
+  // when group-scoped endpoints land, both surfaces converge again.
   const isMultiRoom = Boolean(reservation.multi_room_group_id);
+  const isDeskOperator = surface === 'desk' && isOperator;
 
   const isEditableStatus =
     !isPast && (reservation.status === 'confirmed' || reservation.status === 'pending_approval');
-  const showEdit = isEditableStatus && !isMultiRoom;
+  const showEdit = isEditableStatus && (!isMultiRoom || isDeskOperator);
   const showChangeRoom = showEdit; // same gate; rendered on the Where row
-  const showMultiRoomLockedNotice = isEditableStatus && isMultiRoom;
+  const showMultiRoomLockedNotice =
+    isEditableStatus && isMultiRoom && !isDeskOperator;
+  const showMultiRoomOperatorWarning =
+    isEditableStatus && isMultiRoom && isDeskOperator;
 
   const onCheckIn = async () => {
     try {
@@ -218,6 +225,13 @@ export function BookingDetailContent({
           {showMultiRoomLockedNotice && (
             <div className="mt-1.5 text-[11px] text-muted-foreground">
               Multi-room bookings need to change rooms together — contact the desk.
+            </div>
+          )}
+          {showMultiRoomOperatorWarning && (
+            <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+              Operator override: this only changes the current room. Other
+              rooms in the group must be edited separately until atomic
+              group endpoints land.
             </div>
           )}
         </DetailRow>
@@ -336,8 +350,10 @@ export function BookingDetailContent({
               <div className="text-sm">Part of a multi-room group</div>
             )}
             <div className="mt-1 text-xs text-muted-foreground">
-              All rooms share the same start/end. To change time or cancel,
-              contact the desk so all rooms are updated together.
+              All rooms share the same start/end.{' '}
+              {isDeskOperator
+                ? 'Operators can edit each room individually until atomic group endpoints land — heads-up, the group will desync until each is touched.'
+                : 'To change time or cancel, contact the desk so all rooms are updated together.'}
             </div>
           </DetailRow>
         )}
@@ -460,6 +476,9 @@ export function BookingDetailContent({
           }
         }}
         currentSpaceId={reservation.space_id}
+        startAt={reservation.start_at}
+        endAt={reservation.end_at}
+        attendeeCount={reservation.attendee_count ?? 1}
         nextSpaceId={nextSpaceId}
         onNextSpaceIdChange={setNextSpaceId}
         saving={editBooking.isPending}
@@ -485,10 +504,25 @@ export function BookingDetailContent({
   );
 }
 
+/**
+ * Change-room picker. Calls `usePicker` with the booking's start/end +
+ * attendees so the user only sees rooms that are actually available at
+ * that time. Replaces the previous bare `SpaceSelect` (codex flag) which
+ * accepted any room and produced 409s on submit when the picked room was
+ * busy.
+ *
+ * Each row shows: name · capacity · rule outcome (deny / require_approval
+ * / warn / allow). Deny rows are still visible but disabled — operators
+ * sometimes need to see "would have been allowed but for X" to explain to
+ * a requester. Allow + warn rows are selectable.
+ */
 function ChangeRoomDialog({
   open,
   onOpenChange,
   currentSpaceId,
+  startAt,
+  endAt,
+  attendeeCount,
   nextSpaceId,
   onNextSpaceIdChange,
   saving,
@@ -497,41 +531,129 @@ function ChangeRoomDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   currentSpaceId: string;
+  startAt: string;
+  endAt: string;
+  attendeeCount: number;
   nextSpaceId: string;
   onNextSpaceIdChange: (id: string) => void;
   saving: boolean;
   onConfirm: () => Promise<void>;
 }) {
+  // Only fetch when the dialog is open — closing the dialog should not
+  // keep a live realtime subscription warm.
+  const picker = usePicker({
+    start_at: open ? startAt : '',
+    end_at: open ? endAt : '',
+    attendee_count: attendeeCount,
+  });
+
+  const candidates = useMemo(() => {
+    const rooms = picker.data?.rooms ?? [];
+    return rooms.filter((r) => r.space_id !== currentSpaceId);
+  }, [picker.data?.rooms, currentSpaceId]);
+
   const disabled =
     saving || !nextSpaceId || nextSpaceId === currentSpaceId;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Change room</DialogTitle>
           <DialogDescription>
-            The booking moves to the new room at the same time. The server
-            re-runs availability + rules and rejects the change if the new
-            room is busy.
+            Showing rooms available at this time for {attendeeCount}{' '}
+            {attendeeCount === 1 ? 'person' : 'people'}. Services keep their
+            relative timing.
           </DialogDescription>
         </DialogHeader>
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="change-room-select">New room</FieldLabel>
-            <SpaceSelect
-              id="change-room-select"
-              value={nextSpaceId}
-              onChange={onNextSpaceIdChange}
-              typeFilter={['room']}
-              placeholder="Pick a room"
-              emptyLabel={null}
-            />
-            <FieldDescription>
-              Services keep their relative timing. If your services were
-              scoped to the old room, you may need to adjust them.
-            </FieldDescription>
-          </Field>
-        </FieldGroup>
+
+        <div
+          className="max-h-[55vh] overflow-y-auto rounded-md border bg-card"
+          role="radiogroup"
+          aria-label="Available rooms"
+        >
+          {picker.isLoading ? (
+            <div className="px-4 py-6 text-sm text-muted-foreground">
+              Loading available rooms…
+            </div>
+          ) : picker.error ? (
+            <div className="px-4 py-6 text-sm text-destructive">
+              Couldn't load available rooms. Try again.
+            </div>
+          ) : candidates.length === 0 ? (
+            <div className="px-4 py-6 text-sm text-muted-foreground">
+              No other rooms are available at this time. Move the meeting
+              first, or contact the desk.
+            </div>
+          ) : (
+            <ul className="divide-y">
+              {candidates.map((room) => {
+                const effect = room.rule_outcome.effect;
+                const isDenied = effect === 'deny';
+                const isSelected = nextSpaceId === room.space_id;
+                return (
+                  <li key={room.space_id}>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      disabled={isDenied}
+                      onClick={() => onNextSpaceIdChange(room.space_id)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left',
+                        '[transition:background-color_120ms_var(--ease-snap)]',
+                        'hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none',
+                        isSelected && 'bg-primary/10 hover:bg-primary/15',
+                        isDenied && 'cursor-not-allowed opacity-50',
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">
+                          {room.name}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {room.capacity != null
+                            ? `${room.capacity} cap`
+                            : 'Capacity unknown'}
+                          {room.parent_chain.length > 0 && (
+                            <>
+                              {' · '}
+                              {room.parent_chain
+                                .filter(
+                                  (p) => p.type === 'building' || p.type === 'floor',
+                                )
+                                .map((p) => p.name)
+                                .join(' › ')}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {effect === 'require_approval' && (
+                        <span className="shrink-0 rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-purple-800 dark:text-purple-300">
+                          Approval
+                        </span>
+                      )}
+                      {effect === 'warn' && (
+                        <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                          Heads-up
+                        </span>
+                      )}
+                      {isDenied && (
+                        <span
+                          className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+                          title={room.rule_outcome.denial_message ?? undefined}
+                        >
+                          Denied
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
         <DialogFooter>
           <Button
             variant="outline"

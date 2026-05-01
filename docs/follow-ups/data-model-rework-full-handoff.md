@@ -279,6 +279,215 @@ Stress test fixtures (NOT committed, in `/tmp/`):
 
 Re-create these in `apps/api/test/sql/` if you want them in CI.
 
+## Codex usage — when, how, what to ask
+
+The single most valuable session learning. Capturing this so the next agent doesn't relearn at the cost of more catastrophic data losses.
+
+### When to use codex
+
+**ALWAYS before shipping** (not after — see "before vs after" below):
+- Destructive migrations (DELETE, DROP COLUMN, DROP TABLE, ALTER FK with cascade implications)
+- Schema changes that affect existing FKs, triggers, or check constraints
+- Anything described in the migration as "ON DELETE CASCADE" or "ON DELETE SET NULL"
+- Any migration with a `do $$ ... loop ... drop constraint ... $$` pattern (pattern-matching DDL is fragile)
+- Cross-table data integrity changes
+- Any migration where a comment says "fix" or "follow-up" referencing a prior migration that may have been a no-op
+- Service-layer changes that consume schema that recently changed
+
+**Run after** (post-shipping review still useful):
+- Multi-file refactors (>3 services touched)
+- Test suite changes that mark scenarios as `it.skip`
+- Data-model documentation updates
+
+**SKIP codex for:**
+- Pure additive migrations on new tables nobody reads from yet (low risk)
+- Test fixture cleanup
+- Comment / doc-only changes
+- Trivial renames within a single file
+
+### How to use codex effectively
+
+#### The recursion fact
+
+Each codex round on this session's work caught 4–8 bugs IN MY FIXES from the previous round. Six rounds in a row. That's not codex being annoying — that's reality. Migration work has hidden coupling. Plan for it:
+
+- Budget multiple rounds for any destructive work. 3–6 is normal.
+- Don't ship to production after one round. Iterate to convergence (zero new findings).
+- The convergence trajectory was 8 → 8 → 7 → 4 → 6 → 6 — it slows but doesn't reach zero quickly.
+
+#### Before vs after the destructive cutover
+
+The biggest mistake this session: I ran codex AFTER shipping 1c.10c. Round 1 caught loss #1. The fix in 00234 was itself a no-op for the same reason. Round 4 (3 rounds later) caught the same bug class in 00233 — but by then loss #2 (646 sla_timers) had already happened. **Running codex on the migration BEFORE shipping would have caught both losses.**
+
+Rule: **for destructive migrations, codex review is a pre-ship gate, not a post-ship audit.**
+
+#### Prompt patterns that worked
+
+Copy these. They produced the catches that mattered.
+
+**Numbered specific questions about specific concerns.** Vague "review this migration" prompts produced vague reviews. Numbered prompts with concrete pressure-test items produced numbered findings. Example:
+
+```
+Review migration 00xxx at /Users/x/Desktop/XPQT.
+
+Pressure-test specifically:
+1. The DO block at line 23 filters constraints by `like '%public.tablename%'`.
+   pg_get_constraintdef omits the schema. Verify with a query.
+2. After this migration, what FKs to <table> remain? Run the audit.
+3. ...
+```
+
+**Always ask "what did I miss that ISN'T in this diff."** Codex is best at finding adjacent files I forgot. Patterns:
+- "What other tables FK to X that this migration didn't touch?"
+- "What other code paths still reference Y after this change?"
+- "What tests should be obsolete now that aren't marked it.skip?"
+
+**Demand convergence estimate.** "How many more rounds do you think this needs?" Codex gives honest numbers (round 5 said "1–2 more" and round 6 was indeed mostly cleanup).
+
+**Ask for severity categorization.** "Critical / Important / Nit." Without this, codex returns 8 findings and you don't know which to fix first. With it, you can prioritize rationally.
+
+**Cite file paths + line numbers in the prompt.** Codex returns findings with paths + lines that you can directly Edit. Without prompting for this, codex returns "the trigger function has a bug" — useless to fix.
+
+#### What codex catches well (and what it doesn't)
+
+**Catches well:**
+- LIKE-pattern silent no-ops in DDL
+- Schema-cache stale references (PostgREST FK aliases)
+- View-on-view dependents that block DROP
+- Cascade FK semantics across rebuild migrations
+- Service-layer drift after schema changes (every round)
+- Constraint conflicts with FK actions (SET NULL vs CHECK)
+- Test fixtures that should be obsolete
+- Cross-table data integrity gaps
+- Race conditions in trigger ordering
+
+**Misses or weakly catches:**
+- Performance regressions under real load (no production traffic to measure against)
+- UX impact of API contract changes (it can flag the contract change but not the user experience)
+- Legacy code paths that aren't grep-discoverable from the diff
+- Whether a deferred item is "production-blocking" vs "cosmetic" — it can flag both, judgment is the user's
+- Multi-step plans where step N's correctness depends on step N+1 design (it's better at "this code is wrong" than "this design is wrong")
+
+### What to ask codex specifically — checklist
+
+Copy this to every prompt for destructive migrations:
+
+```
+Pressure-test:
+1. Does this migration drop the constraints it claims to? Verify with
+   a pg_constraint query against remote post-flight.
+2. What other tables have FKs pointing at the changed table? Are any
+   ON DELETE CASCADE? Will my DELETE cascade-nuke them?
+3. What views, functions, triggers reference the columns I'm dropping?
+   Will they break or block the migration?
+4. What service-layer code reads or writes the affected schema? Grep
+   the codebase. Specifically check: writers, readers, joins, RPC calls.
+5. What tests cover the affected paths? Will they pass after this
+   migration? Are any tests now obsolete (testing dead code paths)?
+6. What's the rollback path? If "restore from backup," flag it.
+7. What CI/test gates would have caught this if they existed? Suggest
+   the assertion to add.
+8. Convergence estimate.
+9. Severity-ranked findings: critical / important / nit.
+```
+
+### Cost vs value
+
+Each codex round on this session ran ~5–10 minutes and used ~300K–800K tokens. Six rounds = ~3M tokens of codex compute. Found 39+ bugs. **Each bug avoided is worth more than 100K codex tokens** — production data-loss recovery is far more expensive.
+
+Counter-balance: don't run codex on trivial changes. The signal-to-noise drops on small additive diffs. Reserve it for boundary moments (destructive cutovers, multi-file refactors, schema-shape changes).
+
+### The pre-mortem question
+
+Before running codex, ask yourself: **"if codex finds nothing, would I trust this enough to ship to production?"** If no, don't even ship to dev — fix the gaps first. If yes, run codex anyway as a final check.
+
+This session: I shipped 1c.10c thinking the iterative review had de-risked it. Codex round 1 immediately found the data loss. The pre-mortem question would have caught my overconfidence: I should NOT have shipped without a final destructive-migration-specific codex review. Lesson absorbed.
+
+---
+
+## `/full-review` skill — when, how, what to ask
+
+The skill lives at `~/.claude/skills/full-review/SKILL.md`. It spawns TWO adversarial subagents (plan reviewer + code reviewer) in parallel using the same model that's running the main session (currently Opus 4.7). It's the in-session equivalent of codex — but cheaper, faster, and weaker.
+
+### When to use full-review (vs codex vs self-review)
+
+| Context | First-pass tool | Why |
+|---|---|---|
+| Trivial change (typo, single-line config, pure doc) | self-review | overhead not justified |
+| Multi-file additive refactor | full-review | fresh-context catches what self-review misses; codex would be overkill |
+| Multi-step plan / spec doc | full-review (plan reviewer half) | challenges design before any code is written; cheap to iterate |
+| Schema migration, additive only | full-review | first pass; escalate to codex only if findings are significant |
+| Schema migration, destructive | **codex** (skip full-review) | full-review uses the same model that wrote the bug — won't catch it. Loss-class bugs need a different model. |
+| Service-layer drift after a destructive cutover | **codex** | proven this session: codex caught 39+ bugs that full-review missed |
+| Test-coverage check ("did I miss any test that should fail") | full-review | adequate; codex overkill |
+| Pre-merge sanity on a feature branch | full-review | adequate |
+| Pre-production cutover audit | **codex** AND full-review | both gates; redundancy is worth the cost |
+
+**The rule of thumb:** full-review is the cheap first pass. Codex is the heavy gate. For destructive work skip full-review and go straight to codex.
+
+### How to invoke
+
+The skill description triggers on the user typing "full-review" (with or without slash, with or without quotes). It also fires proactively after a "complex task" — codified in the description as: any of (database migration shipped, security/RLS/visibility/auth code modified, multi-file changes >3 files, TodoWrite list of 3+ items completed, multi-step refactor shipped).
+
+What it does internally:
+1. Captures `git log` + diff + recent commits.
+2. Spawns two `Agent` subagents in parallel:
+   - **Plan reviewer** — reads design docs, doesn't review code. Pressure-tests "is the approach correct."
+   - **Code reviewer** — reads the diff, reads adjacent files. Pressure-tests "what did this miss."
+3. Synthesizes findings into one severity-ranked report.
+4. Asks user: apply critical+important fixes? (yes / pick / skip).
+
+The skill file at `~/.claude/skills/full-review/SKILL.md` is the source of truth — read it for the exact subagent prompts.
+
+### What full-review catches well (vs codex)
+
+| | full-review | codex |
+|---|---|---|
+| Forgot to update a sibling test fixture | ✓ | ✓ |
+| Stale comment / docstring | ✓ | ✓ |
+| Missing column in a view recreation | ✓ | ✓ |
+| Cross-tenant FK gap | ✓ | ✓ |
+| Plan-level "did you consider X alternative" | ✓ (plan reviewer) | ✓ |
+| LIKE-pattern silent no-op in DDL | ✗ usually misses | ✓ caught it |
+| Service-layer drift after schema change | ✗ partially | ✓ caught all |
+| Cascade FK data-loss hazard | ✗ partially | ✓ caught both |
+| Constraint conflict with FK SET NULL | ✗ missed | ✓ caught |
+| Trigger nesting / pg_trigger_depth nuance | ✗ missed | ✓ caught |
+
+The pattern: full-review catches the same CLASS of issue I would catch if I were more careful. Codex catches issues that require knowing Postgres internals at depth. Both have value; neither replaces the other for destructive work.
+
+### Lessons specific to this session
+
+- Built the skill mid-session (commit `34ffe59` era). Used it ~4 times. Each time it caught real issues — including the missing-columns bug in the cases/work_orders views (00204→00205 follow-up was needed because of full-review).
+- Full-review's "spawn two parallel subagents" pattern catches more than one subagent because the plan/code split forces breadth.
+- Full-review can NOT substitute for codex on destructive migrations. Full-review missed both data-loss disasters this session. Codex caught them.
+- If you're tempted to skip codex because full-review came back clean: don't. The two are complementary, not redundant.
+
+### What to ask full-review
+
+Same prompt patterns as codex (numbered specifics, severity ranking, file:line citations). The skill prompts the subagents with these defaults already. If you want extra specificity, pass it via the user message that triggers the skill.
+
+### Cost vs value
+
+Full-review uses two parallel subagents, each ~30-90s. ~50K-200K tokens total. Cheap relative to codex (3-10x cheaper). Run it freely on additive work; skip it for trivial; supplement it (don't replace) with codex for destructive.
+
+---
+
+## Combining the two
+
+The good workflow this session would have followed (with hindsight):
+
+1. **Plan stage:** write the migration plan as a doc. Run `full-review` (plan reviewer specifically) on the plan. Iterate until plan is solid. Cost: ~2 cheap subagent runs.
+2. **Implementation stage:** write the migration. Run `full-review` (code reviewer half) on the migration alone. Fix obvious bugs. Cost: ~1 cheap subagent run.
+3. **Pre-ship gate (destructive only):** run `codex exec` with the destructive-migration prompt checklist. Iterate to convergence. Cost: 3-6 codex rounds (~5-10 min each).
+4. **Ship to remote.**
+5. **Post-ship verify:** smoke tests + `psql` queries asserting expected post-state.
+6. **CI gate (one-time setup):** `psql` assertions on every PR that ships migrations.
+
+If we'd done this for 1c.10c specifically: the LIKE-pattern bug would have been caught at step 3 or step 6, before any data was lost. The 961 lost rows were the cost of skipping steps 3 and 6.
+
+---
+
 ## Final word
 
 Step 1 is done. The post-cutover repair is at convergence-1 to convergence-2 rounds. The biggest remaining risk is CI-not-catching-LIKE-bugs — fix that next or accept the same disaster will happen on step 3.

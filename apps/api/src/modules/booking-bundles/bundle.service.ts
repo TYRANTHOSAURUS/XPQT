@@ -482,13 +482,61 @@ export class BundleService {
     /**
      * Optimistic-concurrency token. When provided, the UPDATE only succeeds
      * if the row's `updated_at` matches — protecting against stale browser
-     * edits that would otherwise overwrite a concurrent change. Optional
-     * for older callers; PATCH wires it through from `If-Match`-style
-     * `expected_updated_at` request body.
+     * edits that would otherwise overwrite a concurrent change.
+     *
+     * THREAT MODEL: callers that omit this accept last-write-wins semantics.
+     * In practice every browser-driven edit MUST send it (the
+     * bundle-services-section line editor threads `line.updated_at` through
+     * automatically). The optionality exists for non-interactive callers
+     * (admin scripts, server-to-server jobs) that have already taken a
+     * fresher read before deciding to write. The reviewer-rule: any new
+     * caller that touches `requester_notes`, `quantity`, or
+     * `service_window_*` from a UI surface must include this token, or
+     * the review is wrong. There's no DB-level enforcement — this is a
+     * code-review contract, not a constraint.
      */
     expected_updated_at?: string | null;
   }): Promise<{ line_id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null; requester_notes: string | null; updated_at: string }> {
     const tenantId = TenantContext.current().id;
+
+    // Shape-validate the patch BEFORE any DB hit. The PATCH endpoint
+    // accepts a JSON body without class-validator (project convention —
+    // see room-booking-rules/dto/index.ts comment). Without this, a
+    // client could send `expected_updated_at: 12345` and Postgres would
+    // try to cast a number to timestamp at write time, surfacing as a
+    // 500 instead of a clean 400. Same risk for `requester_notes:
+    // {evil:1}` reaching .trim() further down. Validate explicitly.
+    if (args.patch.quantity !== undefined && (typeof args.patch.quantity !== 'number' || !Number.isFinite(args.patch.quantity))) {
+      throw new BadRequestException({ code: 'invalid_quantity', message: 'quantity must be a finite number.' });
+    }
+    if (
+      args.patch.service_window_start_at !== undefined &&
+      args.patch.service_window_start_at !== null &&
+      (typeof args.patch.service_window_start_at !== 'string' || Number.isNaN(Date.parse(args.patch.service_window_start_at)))
+    ) {
+      throw new BadRequestException({ code: 'invalid_service_window_start_at', message: 'service_window_start_at must be an ISO string or null.' });
+    }
+    if (
+      args.patch.service_window_end_at !== undefined &&
+      args.patch.service_window_end_at !== null &&
+      (typeof args.patch.service_window_end_at !== 'string' || Number.isNaN(Date.parse(args.patch.service_window_end_at)))
+    ) {
+      throw new BadRequestException({ code: 'invalid_service_window_end_at', message: 'service_window_end_at must be an ISO string or null.' });
+    }
+    if (
+      args.patch.requester_notes !== undefined &&
+      args.patch.requester_notes !== null &&
+      (typeof args.patch.requester_notes !== 'string' || args.patch.requester_notes.length > 2000)
+    ) {
+      throw new BadRequestException({ code: 'invalid_requester_notes', message: 'requester_notes must be a string ≤ 2000 chars or null.' });
+    }
+    if (
+      args.expected_updated_at !== undefined &&
+      args.expected_updated_at !== null &&
+      (typeof args.expected_updated_at !== 'string' || Number.isNaN(Date.parse(args.expected_updated_at)))
+    ) {
+      throw new BadRequestException({ code: 'invalid_expected_updated_at', message: 'expected_updated_at must be an ISO string or null.' });
+    }
 
     const { data: existing, error: loadErr } = await this.supabase.admin
       .from('order_line_items')
@@ -724,6 +772,23 @@ export class BundleService {
       const startAt = input.service_window_start_at ?? reservation.start_at;
       const endAt = input.service_window_end_at ?? reservation.end_at;
       const leadRemaining = (Date.parse(startAt) - now) / 3_600_000; // hours
+
+      // Server-side lead-time guard. The picker (service-picker-sheet)
+      // already disables items whose `lead_time_hours` exceeds remaining
+      // time, but that's a UX layer — any non-portal write path (admin
+      // tools, future bulk-edit, server-to-server) bypasses it. This
+      // hard gate catches those. Only fires when the menu offer carries
+      // an explicit lead_time_hours; offer-less items (catalog default
+      // pricing) skip the check the same way they did before.
+      if (
+        offerRow?.lead_time_hours != null &&
+        offerRow.lead_time_hours > leadRemaining
+      ) {
+        throw new BadRequestException({
+          code: 'lead_time_violation',
+          message: `Service requires ${offerRow.lead_time_hours}h advance notice; only ${leadRemaining.toFixed(1)}h remain. Move the meeting later or remove this service.`,
+        });
+      }
 
       out.push({
         id: '', // assigned by Supabase on insert

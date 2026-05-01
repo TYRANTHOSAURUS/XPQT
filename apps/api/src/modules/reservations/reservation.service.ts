@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional,
+  BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -20,6 +20,8 @@ import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
  */
 @Injectable()
 export class ReservationService {
+  private readonly log = new Logger(ReservationService.name);
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly conflict: ConflictGuardService,
@@ -40,13 +42,25 @@ export class ReservationService {
     // Denormalize the parent-trail of the booked space so the booking
     // detail "Where" row can render "Building › Floor › Room" without
     // the frontend having to fetch the full tenant tree just to walk
-    // parents. Best-effort — a missing path doesn't fail the read.
+    // parents. Best-effort — a missing path doesn't fail the read, but
+    // it IS logged because a silent failure here masks (a) a stale env
+    // missing the migration, (b) a permission error from the rpc, or
+    // (c) an outage of the function — all of which we want to see.
     try {
-      const { data: pathData } = await this.supabase.admin
+      const { data: pathData, error: rpcErr } = await this.supabase.admin
         .rpc('space_path', { p_space_id: r.space_id });
+      if (rpcErr) {
+        this.log.warn(
+          `space_path rpc failed for reservation ${r.id} (space_id=${r.space_id}): ${rpcErr.message}`,
+        );
+        return r;
+      }
       const path = Array.isArray(pathData) ? (pathData as string[]) : null;
       return { ...r, space_path: path && path.length > 0 ? path : null };
-    } catch {
+    } catch (err) {
+      this.log.warn(
+        `space_path rpc threw for reservation ${r.id} (space_id=${r.space_id}): ${(err as Error).message}`,
+      );
       return r;
     }
   }

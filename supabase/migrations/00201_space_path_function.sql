@@ -7,9 +7,24 @@
 -- outer query reverses the order so the result reads root-first
 -- (matching how a breadcrumb is read).
 --
--- Stable + language sql so the planner can inline it. Tenant isolation
--- is enforced by RLS on `spaces` — callers only see their tenant's rows
--- regardless of the input id.
+-- Stable + language sql so the planner can inline it.
+--
+-- IMPORTANT — security model:
+-- `security invoker` means RLS on `spaces` is enforced when the function
+-- is called by an anon/authenticated PostgREST client. The current caller
+-- in our code (`reservation.service.ts:findOne`) uses `supabase.admin`
+-- (service role key), which BYPASSES RLS. The call is safe ONLY because
+-- `space_id` is read from a tenant-scoped `reservations` row immediately
+-- before the rpc call.
+--
+-- DO NOT call this function from a service-role context with a
+-- user-controlled `p_space_id` without first verifying the space belongs
+-- to the current tenant. Doing so leaks names from other tenants.
+--
+-- TODO (data-model-redesign Step 3): when the unified `resources` catalog
+-- lands and replaces `spaces`, this function becomes obsolete. Replace
+-- with `resource_path(uuid)` reading from `resources`, drop this
+-- function, and update `reservation.service.ts:findOne` accordingly.
 create or replace function public.space_path(p_space_id uuid)
 returns text[]
 language sql

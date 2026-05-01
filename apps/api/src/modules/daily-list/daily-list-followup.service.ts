@@ -44,6 +44,7 @@ export class DailyListFollowupService {
          coalesce(ci.name, '(unknown item)')         as catalog_item_name,
          oli.quantity                 as quantity,
          oli.dietary_notes            as dietary_notes,
+         oli.requester_notes          as requester_notes,
          oli.fulfillment_status       as fulfillment_status,
          oli.fulfillment_notes        as fulfillment_notes,
          oli.daglijst_locked_at       as locked_at,
@@ -98,6 +99,7 @@ export class DailyListFollowupService {
         catalog_item_name: row.catalog_item_name,
         quantity: row.quantity,
         dietary_notes: row.dietary_notes,
+        requester_notes: row.requester_notes,
         fulfillment_status: row.fulfillment_status,
         fulfillment_notes: row.fulfillment_notes,
         locked_at: row.locked_at,
@@ -219,6 +221,7 @@ export interface PostCutoffLine {
   catalog_item_name: string;
   quantity: number;
   dietary_notes: string | null;
+  requester_notes: string | null;
   fulfillment_status: string | null;
   fulfillment_notes: string | null;
   locked_at: string | null;

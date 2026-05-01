@@ -62,6 +62,7 @@ export interface DailyListPayload {
     catalog_item_name: string;
     quantity: number;
     dietary_notes: string | null;
+    requester_notes: string | null;
     delivery_time: string | null;
     delivery_window: { start: string | null; end: string | null } | null;
     delivery_location_name: string | null;

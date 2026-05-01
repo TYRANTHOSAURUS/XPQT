@@ -16,6 +16,9 @@ export interface PostCutoffLine {
   catalog_item_name: string;
   quantity: number;
   dietary_notes: string | null;
+  /** Free-text from the requester for non-dietary instructions
+   *  (AV placement, setup notes, anything that's NOT food). */
+  requester_notes: string | null;
   fulfillment_status: string | null;
   fulfillment_notes: string | null;
   locked_at: string | null;

@@ -124,6 +124,7 @@ function VendorCard({ group }: { group: PostCutoffGroup }) {
                   </>
                 ) : null}
                 {line.dietary_notes ? ` · diet: ${line.dietary_notes}` : ''}
+                {line.requester_notes ? ` · note: ${line.requester_notes}` : ''}
               </div>
             </div>
             <Button

@@ -369,15 +369,27 @@ export function BookingComposer({
   // arrive at the Book button with a stale invalid selection. The picker
   // prevents NEW invalid picks; this handles EXISTING valid picks that
   // become invalid because the meeting was moved closer to "now".
+  //
+  // Reads services through a ref so back-to-back time changes always see
+  // the latest list (closure capture would otherwise re-add a just-dropped
+  // service when two changes happen in the same render). dispatch is
+  // stable, so the callback identity never changes — handlers don't
+  // re-bind on every services edit.
+  const servicesRef = useRef(state.services);
+  useEffect(() => {
+    servicesRef.current = state.services;
+  }, [state.services]);
+
   const dispatchTimeChange = useCallback(
     (startAt: string | null, endAt: string | null) => {
-      if (startAt && state.services.length > 0) {
+      const services = servicesRef.current;
+      if (startAt && services.length > 0) {
         const startMs = new Date(startAt).getTime();
         if (Number.isFinite(startMs)) {
           const hoursUntilStart = (startMs - Date.now()) / 3_600_000;
-          const dropped: typeof state.services = [];
-          const kept: typeof state.services = [];
-          for (const s of state.services) {
+          const dropped: typeof services = [];
+          const kept: typeof services = [];
+          for (const s of services) {
             if (
               typeof s.lead_time_hours === 'number' &&
               s.lead_time_hours > hoursUntilStart
@@ -389,6 +401,9 @@ export function BookingComposer({
           }
           if (dropped.length > 0) {
             dispatch({ type: 'SET_SERVICES', services: kept });
+            // Update the ref synchronously so a SECOND change in the same
+            // tick doesn't re-add the just-dropped items via stale state.
+            servicesRef.current = kept;
             const names = dropped.map((s) => s.name).join(', ');
             toast.message(
               dropped.length === 1
@@ -403,7 +418,7 @@ export function BookingComposer({
       }
       dispatch({ type: 'SET_TIME', startAt, endAt });
     },
-    [state.services],
+    [],
   );
 
   // Lead-time defense in depth. The picker gate prevents new invalid picks,
