@@ -4,6 +4,22 @@ Tracking the polish items the design review surfaced that we deliberately
 did not implement in the must-fix pass. Source: the visitor management v1
 design review reports.
 
+## Highest-priority post-v1 polish
+
+- **Visitor-email translation (NL + FR).** Visitor-facing surfaces ship in
+  English only in v1. The largest commercial risk surfaced by the post-
+  shipping product review: NL/BE wave-1 customers expect a Dutch
+  invitation email, cancel landing page, and kiosk welcome. Mitigation
+  for v1 is customer-expectation management at the sales conversation;
+  the actual fix is a platform-wide translation pass that picks up the
+  visitor module along with every other tenant-facing surface. Shipping
+  visitor-only translation ahead of that pass would diverge i18n
+  primitives across the app and is explicitly NOT what we want — the
+  whole point of English-only-for-now is that the eventual translation
+  is one mechanical pass. **Track at the platform-i18n level, not as a
+  visitor-module sprint.** Visitor email is the surface that matters
+  most when the platform pass runs.
+
 ## Deferred motion / polish (yellow)
 
 These are real improvements but each is small enough on its own that we'd
