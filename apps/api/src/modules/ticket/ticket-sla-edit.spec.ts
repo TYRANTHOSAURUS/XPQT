@@ -103,9 +103,6 @@ describe('TicketService.update — sla_id', () => {
   });
 
   // Step 1c.10c: ticket.service.update is case-only post-cutover. SLA edits
-  // on work_orders go through a different service path (TODO step 1c.9
-  // split-API). Mark the work_order scenarios as obsolete here.
-  it.skip('OBSOLETE post-1c.10c: accepts sla_id change on a child work_order and restarts timers', () => {});
-  it.skip('OBSOLETE post-1c.10c: accepts sla_id = null on a child (clear SLA)', () => {});
-  it.skip('OBSOLETE post-1c.10c: does not restart timers if sla_id is unchanged', () => {});
+  // on work_orders moved to WorkOrderService.updateSla — see
+  // `apps/api/src/modules/work-orders/work-order-sla-edit.spec.ts`.
 });

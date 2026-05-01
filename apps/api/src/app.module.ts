@@ -10,6 +10,7 @@ import { HealthController } from './health.controller';
 import { TenantModule } from './modules/tenant/tenant.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { TicketModule } from './modules/ticket/ticket.module';
+import { WorkOrdersModule } from './modules/work-orders/work-orders.module';
 import { SpaceModule } from './modules/space/space.module';
 import { ConfigEngineModule } from './modules/config-engine/config-engine.module';
 import { RoutingModule } from './modules/routing/routing.module';
@@ -58,6 +59,7 @@ import { MailModule } from './common/mail/mail.module';
     TenantModule,
     AuthModule,
     TicketModule,
+    WorkOrdersModule,
     SpaceModule,
     ConfigEngineModule,
     RoutingModule,

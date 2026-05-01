@@ -177,3 +177,57 @@ export function useAddActivity(id: string) {
       ]),
   });
 }
+
+interface UpdateWorkOrderSlaContext {
+  previous: TicketDetail | undefined;
+}
+
+/**
+ * PATCH /work-orders/:id/sla — change the executor SLA on a child work
+ * order. Step 1c.10c made `PATCH /tickets/:id` case-only; the SLA edit
+ * affordance for work_orders has to route here instead.
+ *
+ * Cache shape is shared with TicketDetail (work_orders are loaded through
+ * the same ticket detail endpoint), so we invalidate the same ticket keys
+ * the regular `useUpdateTicket` mutation does.
+ */
+// Narrow command response — codex round 1 nit: typing as TicketDetail was
+// misleading because the backend returns a raw WorkOrderRow. The hook never
+// reads the response (just invalidates the ticket detail cache), so a Pick
+// of the columns the SLA edit actually changes is the honest contract.
+type WorkOrderSlaResponse = Pick<TicketDetail, 'id' | 'sla_id'>;
+
+export function useUpdateWorkOrderSla(id: string) {
+  const qc = useQueryClient();
+
+  return useMutation<WorkOrderSlaResponse, Error, string | null, UpdateWorkOrderSlaContext>({
+    mutationFn: (slaId) =>
+      apiFetch<WorkOrderSlaResponse>(`/work-orders/${id}/sla`, {
+        method: 'PATCH',
+        body: JSON.stringify({ sla_id: slaId }),
+      }),
+
+    onMutate: async (slaId) => {
+      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
+      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
+      if (previous) {
+        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
+          ...previous,
+          sla_id: slaId,
+        });
+      }
+      return { previous };
+    },
+
+    onError: (_err, _slaId, ctx) => {
+      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+    },
+
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
+        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
+        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
+      ]),
+  });
+}

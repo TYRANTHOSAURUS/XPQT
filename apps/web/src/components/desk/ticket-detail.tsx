@@ -37,6 +37,7 @@ import {
   useTicketActivities,
   useTicketTagSuggestions,
   useUpdateTicket,
+  useUpdateWorkOrderSla,
   useReassignTicket,
   useAddActivity,
   type UpdateTicketPayload,
@@ -309,6 +310,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   }, []);
 
   const updateTicket = useUpdateTicket(ticketId);
+  const updateWorkOrderSla = useUpdateWorkOrderSla(ticketId);
   const reassignTicket = useReassignTicket(ticketId);
 
   const patch = (updates: Partial<UpdateTicketPayload>) => {
@@ -1038,7 +1040,17 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                   value={displayedTicket!.sla_id ?? '__none__'}
                   onValueChange={(v) => {
                     const next = v === '__none__' ? null : v;
-                    if (next !== displayedTicket!.sla_id) patch({ sla_id: next } as Partial<UpdateTicketPayload>);
+                    if (next === displayedTicket!.sla_id) return;
+                    // Step 1c.10c: SLA edits on work_orders go through
+                    // PATCH /work-orders/:id/sla (TicketService.update is
+                    // case-only). Cases keep the existing patch path.
+                    updateWorkOrderSla.mutate(next, {
+                      onError: (err) =>
+                        toastError("Couldn't update SLA", {
+                          error: err,
+                          retry: () => updateWorkOrderSla.mutate(next),
+                        }),
+                    });
                   }}
                 >
                   <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="No SLA" /></SelectTrigger>

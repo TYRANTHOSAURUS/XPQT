@@ -193,13 +193,15 @@ Now a `doors` ticket at a location that only has an `fm` team will resolve via `
 
 ## 6. Case vs Work Order — the two-level ticket model
 
-A **case** (`ticket_kind = 'case'`) is the requester-facing ticket. One case per request.
-A **work order** (`ticket_kind = 'work_order'`) is a child of a case, representing a specific unit of executor work. A case can have **zero, one, or many** work orders.
+A **case** is the requester-facing ticket. One case per request. Cases live in `public.tickets`.
+A **work order** is a child of a case, representing a specific unit of executor work. A case can have **zero, one, or many** work orders. Work orders live in `public.work_orders` (their own base table since step 1c.3.6).
+
+> **Step 1c.10c (2026-04-30) note.** The `tickets.ticket_kind` discriminator was dropped. `tickets` is now case-only; `work_orders` is its own base table. References below to `ticket_kind = 'case'` / `ticket_kind = 'work_order'` describe the post-1c.10c behavior — **the column no longer exists in the schema**. Rows are case vs. work_order purely by which table they live in. The API response shape still synthesizes `ticket_kind` for frontend continuity until step 1c.9 splits the read APIs.
 
 ### 6.1 When each is created
 
-- **Case** — created by `TicketService.create` from the portal or the desk. Auto-routed via the resolver to a service desk team.
-- **Work order** — created by `DispatchService.dispatch(parentId, dto)` OR by a workflow's `create_child_tasks` node. Never created directly through `POST /tickets`.
+- **Case** — created by `TicketService.create` from the portal or the desk. Auto-routed via the resolver to a service desk team. Inserts into `public.tickets`.
+- **Work order** — created by `DispatchService.dispatch(parentId, dto)` OR by a workflow's `create_child_tasks` node. Never created directly through `POST /tickets`. Inserts into `public.work_orders`.
 
 ### 6.2 Why this split
 
@@ -295,9 +297,16 @@ This is intentional and matches standard ITSM behavior: SLA is a promise to the 
 
 ### Changing a child's SLA policy
 
-To change a child's `sla_id` after dispatch: PATCH the child with `{ sla_id: '<new-policy-id>' | null }`. `TicketService.update`:
-- Refuses the change on cases (`ticket_kind = 'case'` → `BadRequestException`).
-- For children: calls `SlaService.restartTimers(ticketId, tenantId, newSlaPolicyId)`, which stops existing `sla_timers`, clears computed breach/due fields on `tickets`, and starts new timers from the new policy. Logs a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
+Post-1c.10c, this command lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
+
+- **Endpoint:** `PATCH /work-orders/:id/sla` with body `{ sla_id: '<new-policy-id>' | null }`.
+- **Service:** `WorkOrderService.updateSla(workOrderId, slaId, actorAuthUid)` (`apps/api/src/modules/work-orders/work-order.service.ts`).
+- **Visibility gate:** `TicketVisibilityService.assertCanPlan` — wider than `assertVisible('write')` because parent-case team owners must be able to act on child WOs (assignee, vendor, WO team, parent-case team, writable role operator, `tickets.write_all`).
+- **Validation:** `slaId` must reference a real `sla_policies` row in the calling tenant (or be `null`).
+- **Side effects:** persists `sla_id` on `work_orders`, calls `SlaService.restartTimers(workOrderId, tenantId, slaId)` (stops old `sla_timers`, clears computed breach/due fields, starts fresh timers if non-null), writes a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
+- **No-op fast path:** if `slaId === current.sla_id`, returns the row without writing or restarting timers.
+
+> **Where future work-order commands go.** `WorkOrderService` is the surface for *every* mutating command on a work_order — status, plan (`planned_start_at` / `planned_duration_minutes`), priority, assignment, watchers, cost, etc. **Do not add work-order commands to `TicketService`.** TicketService is permanently case-only after step 1c.10c. New commands accumulate on `WorkOrderService` / `WorkOrderController` (`/work-orders/*`); the SLA edit above is the first such command and the template to copy. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
 
 ### Shared mechanics
 
