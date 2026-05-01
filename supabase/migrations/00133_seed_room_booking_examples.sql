@@ -166,6 +166,22 @@ declare
   v_anchor      timestamptz := date_trunc('week', now()) + interval '7 days' + interval '9 hours';
   v_series_id   uuid := 'a0010001-0000-0000-0000-000000000001'::uuid;
 begin
+  -- Defensive guard: this seed expects three meeting rooms with hardcoded
+  -- UUIDs to exist (originally seeded by the centralised-example tenant in
+  -- 00102, but only after a manual UUID alignment). On a fresh `db:reset`
+  -- where 00102 generated procedural UUIDs, those rooms don't exist with
+  -- these IDs and the inserts below would FK-fail. Skip the entire example
+  -- payload in that case — the seed becomes a no-op rather than a failure,
+  -- which is what dev/CI fresh installs want. On remote (where the rooms
+  -- exist with these IDs) behaviour is unchanged.
+  if not exists (
+    select 1 from public.spaces
+     where id in (v_room_huddle, v_room_team, v_room_board)
+  ) then
+    raise notice '00133: skipping room booking example seed — sample rooms not present';
+    return;
+  end if;
+
   -- 3a. CONFIRMED — Thomas books huddle room next Tue 14:00–15:00 (just him + Liam).
   insert into public.reservations (
     id, tenant_id, reservation_type, space_id, requester_person_id,

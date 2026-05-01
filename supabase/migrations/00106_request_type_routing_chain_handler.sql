@@ -108,6 +108,14 @@ $$;
 -- chain answer alongside the override + defaults. The backend composer can
 -- then present a real team/vendor to the admin instead of a bare
 -- "routing chain" placeholder.
+--
+-- The 7-col version was created in 00103. Postgres rejects CREATE OR REPLACE
+-- when the return type changes (routing_chain column added) with SQLSTATE
+-- 42P13, so we drop the prior signature first. On remote this is a no-op
+-- net change (function is already in 8-col shape); locally / in CI it's the
+-- only way `db:reset` from scratch can cross this migration.
+drop function if exists public.request_type_coverage_matrix(uuid, uuid);
+
 create or replace function public.request_type_coverage_matrix(
   p_tenant_id uuid,
   p_request_type_id uuid

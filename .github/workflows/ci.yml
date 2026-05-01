@@ -45,3 +45,45 @@ jobs:
 
       - name: Typecheck api
         run: pnpm --filter @prequest/api run lint
+
+  migration-smoke:
+    name: Migration smoke (db:reset + invariants)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Why this job exists: the 2026-04-30 destructive cutover lost 961 rows
+    # because a `pg_get_constraintdef like '%public.tickets%'` loop in a DDL
+    # migration silently failed to drop the CASCADE FKs it claimed to. CI
+    # had no migration assertion to catch it. This job applies every
+    # migration to a fresh database, then runs scripts/ci-migration-asserts.sql
+    # which verifies the invariants (no CASCADE FKs to tickets, polymorphic
+    # FKs intact, tenant_id present everywhere, canonical visibility/permission
+    # functions exist, etc.). Any future migration that re-introduces the bug
+    # class fails this gate before merge.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.54.11
+
+      - name: Boot Supabase local stack
+        run: supabase start
+
+      - name: Apply all migrations (db:reset)
+        # `db:reset` drops the local DB and re-runs every file in
+        # supabase/migrations/ in lex order. If any migration fails to apply
+        # cleanly (return-type changes via CREATE OR REPLACE, missing
+        # prerequisites, syntax errors, etc.), this step exits non-zero.
+        run: supabase db reset
+
+      - name: Run schema-integrity assertions
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
+            -v ON_ERROR_STOP=1 \
+            -f scripts/ci-migration-asserts.sql
+
+      - name: Stop Supabase stack
+        if: always()
+        run: supabase stop --no-backup
