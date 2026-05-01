@@ -235,11 +235,13 @@ export class TicketService {
       query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
     }
     // Step 1c.10c: ticket_kind column dropped. tickets is case-only.
-    // Listing work_orders is a separate API surface (TODO step 1c.9). For
-    // backward compat: silently ignore filters.ticket_kind when set to
-    // 'work_order' the result is empty (correct: tickets has no WOs).
-    // When set to 'case' it's a no-op.
-    // if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
+    // Listing work_orders is a separate API surface (TODO step 1c.9).
+    // Be EXPLICIT about the contract: kind=work_order on the tickets
+    // endpoint returns empty (codex round 4 flagged silent fall-through).
+    // kind=case is the implicit default; pass-through.
+    if (filters.ticket_kind === 'work_order') {
+      return { items: [], next_cursor: null };
+    }
     if (filters.assigned_team_id === null) query = query.is('assigned_team_id', null);
     else if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id === null) query = query.is('assigned_user_id', null);
@@ -286,7 +288,10 @@ export class TicketService {
 
     // Step 1c.10c: list reads from tickets (case-only). Synthesize
     // ticket_kind='case' for every item so frontend type contracts hold.
-    const items = (data ?? []).map((row) => ({ ...row, ticket_kind: 'case' as const }));
+    const items = (data ?? []).map((row: Record<string, unknown>) => ({
+      ...row,
+      ticket_kind: 'case' as const,
+    }));
     return {
       items,
       next_cursor:
