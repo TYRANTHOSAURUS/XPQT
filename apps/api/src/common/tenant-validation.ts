@@ -67,10 +67,23 @@ export async function validateWatcherIdsInTenant(
     );
   }
 
+  // Filter to persons in good standing:
+  //   active = true        — not deactivated
+  //   anonymized_at IS NULL — not GDPR-erased
+  //   left_at IS NULL       — not off-boarded / departed
+  // A watcher-add for any of those three conditions is rejected. Existing
+  // watchers added before a person changed state are NOT touched (this
+  // runs at write-time only); the visibility predicate is also intentionally
+  // unfiltered so historical visibility doesn't churn — the goal here is
+  // to prevent NEW additions of stale-state persons, not to retroactively
+  // strip them.
   const { data, error } = await supabase.admin
     .from('persons')
     .select('id')
     .eq('tenant_id', tenantId)
+    .eq('active', true)
+    .is('anonymized_at', null)
+    .is('left_at', null)
     .in('id', unique);
   if (error) throw error;
 
@@ -79,7 +92,7 @@ export async function validateWatcherIdsInTenant(
   if (invalid.length > 0) {
     const sample = invalid.slice(0, 5).join(', ');
     throw new BadRequestException(
-      `watchers contain ${invalid.length} unknown person id(s) for this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''} (note: watchers expects persons.id, not users.id)`,
+      `watchers contain ${invalid.length} person id(s) that are unknown, deactivated, anonymized, or off-boarded in this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''} (note: watchers expects persons.id, not users.id)`,
     );
   }
 }

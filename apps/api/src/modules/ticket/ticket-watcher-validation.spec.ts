@@ -71,24 +71,27 @@ function makeDeps(
           } as unknown;
         }
         if (table === 'persons') {
-          return {
-            select: () => ({
-              eq: () => ({
-                in: (_col: string, ids: string[]) => ({
-                  then: (
-                    resolve: (v: { data: Array<{ id: string }>; error: null }) => unknown,
-                    reject: (e: unknown) => unknown,
-                  ) =>
-                    Promise.resolve({
-                      data: ids
-                        .filter((id) => personsInTenant.has(id))
-                        .map((id) => ({ id })),
-                      error: null,
-                    }).then(resolve, reject),
-                }),
-              }),
-            }),
-          } as unknown;
+          // Resilient chain mock: every filter (.eq, .is) returns the
+          // chain; only .in resolves. See work-order-update-metadata.spec
+          // for the rationale (mock tolerates future filter additions
+          // like persons.active / anonymized_at / left_at without churn).
+          const chain: Record<string, unknown> = {};
+          chain.select = () => chain;
+          chain.eq = () => chain;
+          chain.is = () => chain;
+          chain.in = (_col: string, ids: string[]) => ({
+            then: (
+              resolve: (v: { data: Array<{ id: string }>; error: null }) => unknown,
+              reject: (e: unknown) => unknown,
+            ) =>
+              Promise.resolve({
+                data: ids
+                  .filter((id) => personsInTenant.has(id))
+                  .map((id) => ({ id })),
+                error: null,
+              }).then(resolve, reject),
+          });
+          return chain as unknown;
         }
         if (table === 'users') {
           return {
@@ -178,7 +181,7 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
 
     await expect(
       svc.update(TICKET_ID, { watchers: [REAL_PERSON, GHOST_UUID] }, 'real-uid'),
-    ).rejects.toThrow(/unknown person id\(s\)/);
+    ).rejects.toThrow(/person id\(s\) that are unknown/);
     expect(deps.updates).toHaveLength(0);
   });
 
