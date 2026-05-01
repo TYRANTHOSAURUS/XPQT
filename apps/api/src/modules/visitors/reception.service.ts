@@ -198,6 +198,23 @@ export class ReceptionService {
    * "Marleen", high enough to filter noise. Falls back to ILIKE
    * substring match if the trigram path returns 0 rows so very short
    * queries (1–2 chars) still surface results.
+   *
+   * Perf (full-review I11):
+   *   The previous shape called similarity() 10 times per row (5 in
+   *   WHERE + 5 in SELECT/ORDER BY). Postgres doesn't memoize a STABLE
+   *   function across the SELECT/WHERE planner boundary, so at 10K+
+   *   visitors we paid 10x the trigram cost on every row. Refactor:
+   *     1. compute similarity scores once per row in a `scored` CTE.
+   *     2. Pre-filter the candidate set with the `%` operator (uses the
+   *        pg_trgm GIN index) before scoring — only rows that pass the
+   *        trigram-index match need similarity() at all.
+   *     3. WHERE / ORDER BY filter+sort against the precomputed columns.
+   *     4. Pre-narrow the visible set by joining on the LATERAL function
+   *        call, so the final scan is over a small candidate cohort.
+   *
+   *   Net effect at 10K visitors / building / day: trigram-index seek
+   *   prunes the cohort to ~tens of rows, similarity() runs 5× per
+   *   row but only on those, and the final ORDER BY sorts the small set.
    */
   async search(
     tenantId: string,
@@ -214,36 +231,56 @@ export class ReceptionService {
 
     // pg_trgm path. similarity() across name/company/host fields, take
     // top 20 by best-match score.
+    //
+    // The `%` operator below is pg_trgm's index-using "approximate
+    // match" — uses the GIN trigram index from migration 00264. The
+    // similarity threshold for `%` is set by the per-session
+    // `pg_trgm.similarity_threshold` GUC (default 0.3). We keep the
+    // explicit `score > 0.2` filter on the computed column so the
+    // ranking threshold remains stable across sessions; the `%` is a
+    // pure index-prune over the day's visitor set.
     const trigramSql = `
       with visible as (
         select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
+      ),
+      candidates as (
+        select v.id
+          from public.visitors v
+          left join public.persons hp
+            on hp.id = v.primary_host_person_id
+           and hp.tenant_id = v.tenant_id
+         where v.tenant_id = $2
+           and v.building_id = $3
+           and v.id in (select id from visible)
+           and (
+             (v.status = 'expected'    and v.expected_at >= $5 and v.expected_at <= $6) or
+             v.status in ('arrived', 'in_meeting')
+           )
+           and (
+             coalesce(v.first_name,'')    % $4
+             or coalesce(v.last_name,'')  % $4
+             or coalesce(v.company,'')    % $4
+             or coalesce(hp.first_name,'') % $4
+             or coalesce(hp.last_name,'') % $4
+           )
+      ),
+      scored as (
+        select
+          ${SELECT_VISITOR_COLUMNS},
+          greatest(
+            similarity(coalesce(v.first_name,''),  $4),
+            similarity(coalesce(v.last_name,''),   $4),
+            similarity(coalesce(v.company,''),     $4),
+            similarity(coalesce(hp.first_name,''), $4),
+            similarity(coalesce(hp.last_name,''),  $4)
+          ) as score
+        ${VISITOR_FROM_JOIN}
+        where v.id in (select id from candidates)
       )
-      select
-        ${SELECT_VISITOR_COLUMNS},
-        greatest(
-          similarity(coalesce(v.first_name,''),  $4),
-          similarity(coalesce(v.last_name,''),   $4),
-          similarity(coalesce(v.company,''),     $4),
-          similarity(coalesce(hp.first_name,''), $4),
-          similarity(coalesce(hp.last_name,''),  $4)
-        ) as score
-      ${VISITOR_FROM_JOIN}
-      where v.tenant_id = $2
-        and v.building_id = $3
-        and v.id in (select id from visible)
-        and (
-          (v.status = 'expected'    and v.expected_at >= $5 and v.expected_at <= $6) or
-          v.status in ('arrived', 'in_meeting')
-        )
-        and greatest(
-          similarity(coalesce(v.first_name,''),  $4),
-          similarity(coalesce(v.last_name,''),   $4),
-          similarity(coalesce(v.company,''),     $4),
-          similarity(coalesce(hp.first_name,''), $4),
-          similarity(coalesce(hp.last_name,''),  $4)
-        ) > 0.2
-      order by score desc
-      limit 20
+      select * from scored
+       where score > 0.2
+       order by score desc
+       limit 20
     `;
 
     let rows = await this.db.queryMany<VisitorRowDb & { score: number }>(

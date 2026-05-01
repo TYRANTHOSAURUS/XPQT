@@ -360,10 +360,22 @@ export class ApprovalService {
     // gate the booking_bundle branch uses.
     if (approval.target_entity_type === 'visitor_invite') {
       try {
+        // I13 (full review): require respondingUserId. The legacy fallback
+        // `respondingUserId ?? respondingPersonId` smuggled a person_id
+        // value into a user_id field — VisitorService.onApprovalDecided
+        // stores the value in `audit_events.details.actor_user_id`, so
+        // the fallback wrote a person uuid where the schema expects a
+        // user uuid. Better to fail fast: the controller always passes
+        // `actor.userId`; a missing value here is a real bug.
+        if (!respondingUserId) {
+          throw new BadRequestException(
+            'respondingUserId is required for visitor_invite approval dispatch',
+          );
+        }
         await this.visitorService.onApprovalDecided(
           approval.target_entity_id,
           dto.status,
-          respondingUserId ?? respondingPersonId,
+          respondingUserId,
           approval.tenant_id,
         );
       } catch (err) {
