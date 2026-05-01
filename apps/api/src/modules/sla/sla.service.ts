@@ -239,6 +239,49 @@ export class SlaService {
   }
 
   /**
+   * Apply pause/resume on SLA timers when a ticket OR work_order's
+   * status_category transitions to/from 'waiting'. The pause is conditional
+   * on the SLA policy's `pause_on_waiting_reasons` array containing the new
+   * waiting_reason — a policy with an empty pause_on_waiting_reasons list
+   * never triggers pause.
+   *
+   * Both TicketService.update (cases) and WorkOrderService.updateStatus
+   * (work_orders) call this. Cross-table polymorphism is handled by
+   * pauseTimers/resumeTimers via updateTicketOrWorkOrder.
+   */
+  async applyWaitingStateTransition(
+    entityId: string,
+    tenantId: string,
+    before: { status_category: string; waiting_reason: string | null; sla_id: string | null },
+    after: { status_category: string; waiting_reason: string | null; sla_id: string | null },
+  ): Promise<void> {
+    const slaPolicyId = after.sla_id ?? before.sla_id;
+    if (!slaPolicyId) return;
+
+    const { data: policy } = await this.supabase.admin
+      .from('sla_policies')
+      .select('pause_on_waiting_reasons')
+      .eq('id', slaPolicyId)
+      .maybeSingle();
+
+    const pauseReasons =
+      ((policy as { pause_on_waiting_reasons: string[] | null } | null)?.pause_on_waiting_reasons) ?? [];
+    const shouldPause = (state: { status_category: string; waiting_reason: string | null }) =>
+      state.status_category === 'waiting' &&
+      !!state.waiting_reason &&
+      pauseReasons.includes(state.waiting_reason);
+
+    const wasPaused = shouldPause(before);
+    const isPaused = shouldPause(after);
+
+    if (!wasPaused && isPaused) {
+      await this.pauseTimers(entityId, tenantId);
+    } else if (wasPaused && !isPaused) {
+      await this.resumeTimers(entityId, tenantId);
+    }
+  }
+
+  /**
    * Stop existing timers and start fresh ones from a new policy.
    * Used when a child ticket's sla_id is reassigned (parent cases keep SLA on reassign).
    * If `newSlaPolicyId` is null, only stops existing timers (effectively "switch to No SLA").

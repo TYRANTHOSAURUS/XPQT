@@ -306,7 +306,52 @@ Post-1c.10c, this command lives on `WorkOrderService`, not `TicketService`. `Tic
 - **Side effects:** persists `sla_id` on `work_orders`, calls `SlaService.restartTimers(workOrderId, tenantId, slaId)` (stops old `sla_timers`, clears computed breach/due fields, starts fresh timers if non-null), writes a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
 - **No-op fast path:** if `slaId === current.sla_id`, returns the row without writing or restarting timers.
 
-> **Where future work-order commands go.** `WorkOrderService` is the surface for *every* mutating command on a work_order — status, plan (`planned_start_at` / `planned_duration_minutes`), priority, assignment, watchers, cost, etc. **Do not add work-order commands to `TicketService`.** TicketService is permanently case-only after step 1c.10c. New commands accumulate on `WorkOrderService` / `WorkOrderController` (`/work-orders/*`); the SLA edit above is the first such command and the template to copy. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
+> **Where future work-order commands go.** `WorkOrderService` is the surface for *every* mutating command on a work_order — status, plan (`planned_start_at` / `planned_duration_minutes`), priority, assignment, watchers, cost, etc. **Do not add work-order commands to `TicketService`.** TicketService is permanently case-only after step 1c.10c. New commands accumulate on `WorkOrderService` / `WorkOrderController` (`/work-orders/*`); the SLA edit above was the first such command and the template to copy. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
+
+### Status / priority / assignment / reassign on a work_order
+
+Slice 2 of the work-order command surface (post-1c.10c) — these mirror the case-side `TicketService.update` and `TicketService.reassign` paths but write to `work_orders` directly. The desk detail sidebar dispatches by `displayedTicket.ticket_kind`: cases keep the existing `PATCH /tickets/:id` + `POST /tickets/:id/reassign` paths; work_orders go through the four endpoints below.
+
+| Endpoint | Service method | Visibility gate | Permission gate |
+|---|---|---|---|
+| `PATCH /work-orders/:id/status` | `WorkOrderService.updateStatus` | `assertCanPlan` | none beyond visibility |
+| `PATCH /work-orders/:id/priority` | `WorkOrderService.updatePriority` | `assertCanPlan` | `tickets.change_priority` OR `tickets.write_all` |
+| `PATCH /work-orders/:id/assignment` | `WorkOrderService.updateAssignment` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` |
+| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` |
+
+Shared invariants for all four:
+
+- **No-op fast path** — every command refetches and returns without writing if all provided fields equal the current values (mirrors `updateSla` / `setPlan`).
+- **Explicit `updated_at`** — the work_orders table has no auto-trigger for `updated_at` post-1c.10c (the bridge-era trigger was dropped in 00217 and never restored). Each UPDATE includes `updated_at = new Date().toISOString()`.
+- **Activity row swallow + log** — same pattern as `updateSla` / `setPlan`. Class-wide debt; the real fix is a transactional command pattern in `SlaService` + `addActivity`.
+- **Cross-tenant id validation** — `updateAssignment` and `reassign` validate that any non-null `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` belongs to the calling tenant. Defense against id smuggling — `assigned_vendor_id` has no FK and the team/user FKs don't enforce a tenant composite check.
+
+`updateStatus` specifics:
+
+- DTO `{ status?, status_category?, waiting_reason? }`. Rejects an empty DTO (no fields to change) as `BadRequest`.
+- Synthesizes `resolved_at = now()` when entering `status_category = 'resolved'` (only if currently null) and `closed_at = now()` when entering `'closed'`.
+- On `status_category` / `waiting_reason` transitions, calls `SlaService.applyWaitingStateTransition` — the shared helper that the case-side `TicketService.update` also uses. It loads the SLA policy's `pause_on_waiting_reasons`, then calls `SlaService.pauseTimers` / `resumeTimers` only when the new waiting_reason actually triggers a transition into or out of the paused state.
+- Activity row: `system_event` with `metadata.event = 'status_changed'`, `previous`, `next`. Domain event: `ticket_status_changed` (same name as case-side; `entity_id` disambiguates).
+
+`updatePriority` specifics:
+
+- Single-field: `{ priority }`. Rejects values outside `low | medium | high | critical`.
+- **Does NOT trigger SLA recompute.** Mirrors case-side behavior — priority change does not churn timers.
+- Activity row: `system_event` with `metadata.event = 'priority_changed'`, `previous`, `next`.
+
+`updateAssignment` specifics:
+
+- DTO `{ assigned_team_id?, assigned_user_id?, assigned_vendor_id? }`. At least one field required.
+- **Does NOT auto-promote `new → assigned` on first-time assignment.** Mirrors case-side. Use the resolver / dispatch paths when status implication is desired.
+- Activity row: `system_event` with `metadata.event = 'assignment_changed'`, per-field `previous` / `next`. Domain event: `ticket_assigned`.
+
+`reassign` specifics:
+
+- DTO `{ ...assignment_fields, reason, actor_person_id?, rerun_resolver? }`. `reason` is required (non-empty).
+- Writes a `routing_decisions` row with `entity_kind = 'work_order'` + `work_order_id` set explicitly. The 00232 derive trigger (which superseded 00230) would also fill these polymorphic columns via existence-check across `tickets` + `work_orders`, but writing them directly skips a per-row trigger lookup and makes the audit row deterministic on the application side.
+- `chosen_by = 'manual_reassign'`, `strategy = 'manual'`, `trace = [{ step: 'manual_reassign', matched: true, reason, by: actor_person_id }]`, `context = { reason, previous, actor }`.
+- Activity row: `system_event` with `visibility = 'internal'` (NOT `'system'` — the reason is human-authored and surfaces in the timeline as a note), `content = reason`, `author_person_id = actor_person_id ?? resolved-from-actor-uid`.
+- `rerun_resolver: true` is rejected with **501 NotImplemented** for now — the resolver-rerun path needs a planning-board-aware decision about whether to use the case_owner or child_dispatch routing context, and the existing case-side implementation in `ticket.service.ts:986-1029` is case-shaped. 501 (not 400) because the request shape is valid; the resource just doesn't implement that mode yet. Surface as a follow-up slice when the planning board needs it.
 
 ### Shared mechanics
 

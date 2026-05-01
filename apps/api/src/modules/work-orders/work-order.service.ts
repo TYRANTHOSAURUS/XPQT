@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  NotImplementedException,
   forwardRef,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -422,6 +423,751 @@ export class WorkOrderService {
       if (err instanceof ForbiddenException) return { canPlan: false };
       throw err;
     }
+  }
+
+  /**
+   * Update status / status_category / waiting_reason on a work_order. Mirrors
+   * the case-side `TicketService.update` status path (ticket.service.ts:880-952)
+   * but writes to work_orders directly.
+   *
+   * Visibility gate: `assertCanPlan` (the same operator floor used by
+   * `setPlan` / `updateAssignment` / `updatePriority`). No per-transition
+   * close/reopen permission gate — case side doesn't have one and divergence
+   * here would be a footgun for the desk UI which calls both paths
+   * symmetrically.
+   *
+   * Side effects:
+   *  - When status_category enters 'resolved', synthesize `resolved_at = now()`.
+   *  - When status_category enters 'closed', synthesize `closed_at = now()`.
+   *  - On waiting-state transitions, call
+   *    `slaService.applyWaitingStateTransition` (the shared helper that the
+   *    case-side `TicketService.update` also uses) to pause/resume SLA timers
+   *    when the policy's `pause_on_waiting_reasons` matches the new
+   *    waiting_reason. No double-fire risk via workflow listeners (verified
+   *    against case-side code path).
+   *  - Activity row: `system_event` with `metadata.event = 'status_changed'`,
+   *    previous/next snapshots of the changed fields.
+   *  - Domain event: `ticket_status_changed` (same name as case-side; the
+   *    entity_id disambiguates).
+   */
+  async updateStatus(
+    workOrderId: string,
+    dto: { status?: string; status_category?: string; waiting_reason?: string | null },
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertCanPlan(workOrderId, ctx);
+    }
+
+    // Validate the DTO has at least one field to change. An empty PATCH
+    // is a malformed request, not a no-op — surface it as 400 so the FE
+    // sees the bug immediately rather than silently no-oping.
+    const provided: Array<'status' | 'status_category' | 'waiting_reason'> = [];
+    if (dto.status !== undefined) provided.push('status');
+    if (dto.status_category !== undefined) provided.push('status_category');
+    if (dto.waiting_reason !== undefined) provided.push('waiting_reason');
+    if (provided.length === 0) {
+      throw new BadRequestException(
+        'updateStatus requires at least one of: status, status_category, waiting_reason',
+      );
+    }
+
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id, tenant_id, sla_id, status, status_category, waiting_reason, resolved_at, closed_at')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+    const currentRow = current as {
+      id: string;
+      tenant_id: string;
+      sla_id: string | null;
+      status: string;
+      status_category: string;
+      waiting_reason: string | null;
+      resolved_at: string | null;
+      closed_at: string | null;
+    };
+
+    // Compute diff. No-op fast-path: every provided field already matches
+    // the current value — refetch + return without writing.
+    const diff: Record<string, unknown> = {};
+    const previous: Record<string, unknown> = {};
+    const next: Record<string, unknown> = {};
+    for (const field of provided) {
+      const cur = currentRow[field];
+      const incoming = dto[field] as string | null | undefined;
+      if (cur !== incoming) {
+        diff[field] = incoming;
+        previous[field] = cur;
+        next[field] = incoming;
+      }
+    }
+
+    if (Object.keys(diff).length === 0) {
+      const { data: full, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .single();
+      if (refetchErr) throw refetchErr;
+      return full as WorkOrderRow;
+    }
+
+    // Synthesize terminal-state timestamps. Mirror of the case-side
+    // ticket.service.ts:880-885 behavior. Set only if the column is
+    // currently null — re-resolving an already-resolved row should not
+    // overwrite the historical timestamp.
+    if (diff.status_category === 'resolved' && !currentRow.resolved_at) {
+      diff.resolved_at = new Date().toISOString();
+    }
+    if (diff.status_category === 'closed' && !currentRow.closed_at) {
+      diff.closed_at = new Date().toISOString();
+    }
+
+    // Explicit updated_at — work_orders has no auto-trigger for it
+    // post-1c.10c (codex round 1 finding from Session 9).
+    diff.updated_at = new Date().toISOString();
+
+    const { error: updateErr } = await this.supabase.admin
+      .from('work_orders')
+      .update(diff)
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id);
+    if (updateErr) throw updateErr;
+
+    // SLA pause/resume on waiting-state transitions. Only fires when the
+    // status_category or waiting_reason actually changed (covered by the
+    // diff check above). Delegates to SlaService.applyWaitingStateTransition,
+    // the same helper TicketService.update calls on the case side — single
+    // source of truth, no divergence risk if a future transition rule lands.
+    if (diff.status_category !== undefined || diff.waiting_reason !== undefined) {
+      try {
+        const beforeRow = {
+          status_category: currentRow.status_category,
+          waiting_reason: currentRow.waiting_reason,
+          sla_id: currentRow.sla_id,
+        };
+        const afterRow = {
+          status_category: (diff.status_category as string | undefined) ?? currentRow.status_category,
+          waiting_reason:
+            diff.waiting_reason !== undefined
+              ? (diff.waiting_reason as string | null)
+              : currentRow.waiting_reason,
+          sla_id: currentRow.sla_id,
+        };
+        await this.slaService.applyWaitingStateTransition(workOrderId, tenant.id, beforeRow, afterRow);
+      } catch (err) {
+        // KNOWN DEBT (Session 9 codex): swallowing leaves status updated but
+        // SLA timer state stale. Class-wide cleanup tracked in the handoff.
+        console.error('[work-order] sla pause/resume failed', err);
+      }
+    }
+
+    // Activity row. Same `status_changed` event shape as the case side
+    // (ticket.service.ts:925-932) so the activity feed renderer keeps
+    // working uniformly across cases and work_orders.
+    try {
+      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
+      const { error: activityErr } = await this.supabase.admin
+        .from('ticket_activities')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId,
+          activity_type: 'system_event',
+          author_person_id: authorPersonId,
+          visibility: 'system',
+          metadata: {
+            event: 'status_changed',
+            previous,
+            next,
+          },
+        });
+      if (activityErr) throw activityErr;
+    } catch (err) {
+      console.error('[work-order] status_changed activity failed', err);
+    }
+
+    // Domain event. Same `ticket_status_changed` name as case side; the
+    // entity_id field disambiguates which kind of entity it refers to.
+    try {
+      await this.logDomainEvent(workOrderId, tenant.id, 'ticket_status_changed', {
+        previous,
+        next,
+      });
+    } catch (err) {
+      console.error('[work-order] status_changed domain event failed', err);
+    }
+
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw new ForbiddenException('Work order no longer accessible');
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Update priority on a work_order. Two-axis gate:
+   *  - Visibility: `assertCanPlan` (operator floor).
+   *  - Permission: `tickets.change_priority` OR `tickets.write_all`.
+   *
+   * Note: priority change does NOT trigger SLA recompute on the case side
+   * (ticket.service.ts:867-952 only fires SLA on status / sla_id transitions).
+   * Mirror that here — no SLA churn on priority change.
+   */
+  async updatePriority(
+    workOrderId: string,
+    priority: 'low' | 'medium' | 'high' | 'critical',
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    const tenant = TenantContext.current();
+
+    const VALID = ['low', 'medium', 'high', 'critical'] as const;
+    if (!VALID.includes(priority)) {
+      throw new BadRequestException(
+        `priority must be one of: ${VALID.join(', ')}`,
+      );
+    }
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertCanPlan(workOrderId, ctx);
+
+      // Per the permission catalog, tickets.change_priority is NOT a
+      // danger:true gate (only tickets.write_all is). Plain permission
+      // check: change_priority OR write_all.
+      if (!ctx.has_write_all) {
+        const { data: hasChange, error: permErr } = await this.supabase.admin.rpc(
+          'user_has_permission',
+          {
+            p_user_id: ctx.user_id,
+            p_tenant_id: tenant.id,
+            p_permission: 'tickets.change_priority',
+          },
+        );
+        if (permErr) throw permErr;
+        if (!hasChange) {
+          throw new ForbiddenException(
+            'tickets.change_priority permission required to change a work order priority',
+          );
+        }
+      }
+    }
+
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id, tenant_id, priority')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+    const currentRow = current as {
+      id: string;
+      tenant_id: string;
+      priority: string;
+    };
+
+    if (currentRow.priority === priority) {
+      const { data: full, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .single();
+      if (refetchErr) throw refetchErr;
+      return full as WorkOrderRow;
+    }
+
+    const { error: updateErr } = await this.supabase.admin
+      .from('work_orders')
+      .update({ priority, updated_at: new Date().toISOString() })
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id);
+    if (updateErr) throw updateErr;
+
+    try {
+      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
+      const { error: activityErr } = await this.supabase.admin
+        .from('ticket_activities')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId,
+          activity_type: 'system_event',
+          author_person_id: authorPersonId,
+          visibility: 'system',
+          metadata: {
+            event: 'priority_changed',
+            previous: currentRow.priority,
+            next: priority,
+          },
+        });
+      if (activityErr) throw activityErr;
+    } catch (err) {
+      console.error('[work-order] priority_changed activity failed', err);
+    }
+
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw new ForbiddenException('Work order no longer accessible');
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Update assignment on a work_order — silent PATCH path (no reason audit).
+   * Mirrors the case-side update path (ticket.service.ts:934-948) but writes
+   * to work_orders.
+   *
+   * Two-axis gate:
+   *  - Visibility: `assertCanPlan` (operator floor).
+   *  - Permission: `tickets.assign` OR `tickets.write_all`.
+   *
+   * Does NOT auto-promote `new → assigned` on first assignment via PATCH —
+   * the case side doesn't, and quietly flipping status here would be
+   * surprising. Use the resolver / dispatch paths when status implication
+   * is desired.
+   */
+  async updateAssignment(
+    workOrderId: string,
+    dto: {
+      assigned_team_id?: string | null;
+      assigned_user_id?: string | null;
+      assigned_vendor_id?: string | null;
+    },
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    const tenant = TenantContext.current();
+
+    await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
+
+    const provided: Array<'assigned_team_id' | 'assigned_user_id' | 'assigned_vendor_id'> = [];
+    if (dto.assigned_team_id !== undefined) provided.push('assigned_team_id');
+    if (dto.assigned_user_id !== undefined) provided.push('assigned_user_id');
+    if (dto.assigned_vendor_id !== undefined) provided.push('assigned_vendor_id');
+    if (provided.length === 0) {
+      throw new BadRequestException(
+        'updateAssignment requires at least one of: assigned_team_id, assigned_user_id, assigned_vendor_id',
+      );
+    }
+
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id, tenant_id, assigned_team_id, assigned_user_id, assigned_vendor_id')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+    const currentRow = current as {
+      id: string;
+      tenant_id: string;
+      assigned_team_id: string | null;
+      assigned_user_id: string | null;
+      assigned_vendor_id: string | null;
+    };
+
+    const diff: Record<string, unknown> = {};
+    const previous: Record<string, string | null> = {};
+    const next: Record<string, string | null> = {};
+    for (const field of provided) {
+      const cur = currentRow[field];
+      const incoming = dto[field] as string | null;
+      if (cur !== incoming) {
+        diff[field] = incoming;
+        previous[field] = cur;
+        next[field] = incoming;
+      }
+    }
+
+    if (Object.keys(diff).length === 0) {
+      const { data: full, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .single();
+      if (refetchErr) throw refetchErr;
+      return full as WorkOrderRow;
+    }
+
+    // Validate any non-null new assignee belongs to this tenant. Cross-tenant
+    // id smuggling defense — without this, a malicious caller could attach a
+    // foreign team / user / vendor id and the FK / RLS layers would NOT catch
+    // it (assigned_vendor_id has no FK; teams + users have FKs but no tenant
+    // composite check).
+    await this.validateAssigneesInTenant(diff, tenant.id);
+
+    diff.updated_at = new Date().toISOString();
+
+    const { error: updateErr } = await this.supabase.admin
+      .from('work_orders')
+      .update(diff)
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id);
+    if (updateErr) throw updateErr;
+
+    try {
+      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
+      const { error: activityErr } = await this.supabase.admin
+        .from('ticket_activities')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId,
+          activity_type: 'system_event',
+          author_person_id: authorPersonId,
+          visibility: 'system',
+          metadata: {
+            event: 'assignment_changed',
+            previous,
+            next,
+          },
+        });
+      if (activityErr) throw activityErr;
+    } catch (err) {
+      console.error('[work-order] assignment_changed activity failed', err);
+    }
+
+    try {
+      await this.logDomainEvent(workOrderId, tenant.id, 'ticket_assigned', {
+        previous,
+        next,
+      });
+    } catch (err) {
+      console.error('[work-order] ticket_assigned domain event failed', err);
+    }
+
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw new ForbiddenException('Work order no longer accessible');
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Reassign a work_order with a reason. Distinct from `updateAssignment` —
+   * this writes a `routing_decisions` row tagged `chosen_by: 'manual_reassign'`
+   * and a corresponding internal-visibility activity row carrying the human
+   * reason in `content`. Mirrors ticket.service.ts:959-1074.
+   *
+   * Two-axis gate (same as updateAssignment):
+   *  - Visibility: `assertCanPlan` (operator floor).
+   *  - Permission: `tickets.assign` OR `tickets.write_all`.
+   *
+   * The current implementation is "manual" mode only (caller supplies the
+   * target). The case-side has a `rerun_resolver` mode that re-invokes the
+   * routing engine — wired here as a passthrough that throws BadRequest
+   * because resolver-rerun on a work_order is a separate decision (which
+   * routing context to use, child_dispatch vs case_owner). When the
+   * planning board needs it, surface as a follow-up slice.
+   */
+  async reassign(
+    workOrderId: string,
+    dto: {
+      assigned_team_id?: string | null;
+      assigned_user_id?: string | null;
+      assigned_vendor_id?: string | null;
+      reason: string;
+      actor_person_id?: string | null;
+      rerun_resolver?: boolean;
+    },
+    actorAuthUid: string,
+  ): Promise<WorkOrderRow> {
+    const tenant = TenantContext.current();
+
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('reassignment reason is required');
+    }
+
+    if (dto.rerun_resolver) {
+      // Defer until the planning board needs it — mirrors the brief
+      // ("Mirror case-side reassign() implementation" but the case-side
+      // resolver-rerun path uses request_type/asset/location lookups that
+      // need to be re-evaluated against work_order context, not case
+      // context). 501 (not 400) — the request is well-formed; the resource
+      // just doesn't implement that mode yet. Surface explicitly so callers
+      // know it's missing rather than silently degrade to manual mode.
+      throw new NotImplementedException(
+        'rerun_resolver is not yet supported for work_order reassign — pass an explicit assignee instead',
+      );
+    }
+
+    await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
+
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id, tenant_id, assigned_team_id, assigned_user_id, assigned_vendor_id')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+    const currentRow = current as {
+      id: string;
+      tenant_id: string;
+      assigned_team_id: string | null;
+      assigned_user_id: string | null;
+      assigned_vendor_id: string | null;
+    };
+
+    const prev = {
+      team: currentRow.assigned_team_id,
+      user: currentRow.assigned_user_id,
+      vendor: currentRow.assigned_vendor_id,
+    };
+
+    let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
+    if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+    else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+    else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+
+    // Validate the new assignee belongs to this tenant before we reassign.
+    if (nextTarget) {
+      await this.validateAssigneesInTenant(
+        nextTarget.kind === 'team'
+          ? { assigned_team_id: nextTarget.id }
+          : nextTarget.kind === 'user'
+            ? { assigned_user_id: nextTarget.id }
+            : { assigned_vendor_id: nextTarget.id },
+        tenant.id,
+      );
+    }
+
+    const updates: Record<string, unknown> = {
+      assigned_team_id: null,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      updated_at: new Date().toISOString(),
+    };
+    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
+    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
+    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+
+    const { error: updateErr } = await this.supabase.admin
+      .from('work_orders')
+      .update(updates)
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id);
+    if (updateErr) throw updateErr;
+
+    // Routing decision audit row. Set entity_kind/work_order_id explicitly.
+    // The 00232 derive trigger would also fill these via existence-check
+    // across tickets + work_orders (00232 supersedes 00230, which only saw
+    // public.tickets), but writing them directly skips a per-row trigger
+    // lookup and makes the audit row deterministic on the application side.
+    const trace = [
+      {
+        step: 'manual_reassign',
+        matched: true,
+        reason: dto.reason,
+        by: dto.actor_person_id ?? null,
+      },
+    ];
+    try {
+      const { error: rdErr } = await this.supabase.admin
+        .from('routing_decisions')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId, // legacy soft pointer; FK to tickets dropped in 00233
+          entity_kind: 'work_order',
+          work_order_id: workOrderId,
+          strategy: 'manual',
+          chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+          chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+          chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+          chosen_by: 'manual_reassign',
+          trace,
+          context: {
+            reason: dto.reason,
+            previous: prev,
+            actor: dto.actor_person_id ?? null,
+          },
+        });
+      if (rdErr) throw rdErr;
+    } catch (err) {
+      console.error('[work-order] reassign routing_decisions write failed', err);
+    }
+
+    // Activity row. Internal visibility (NOT 'system') because the reason
+    // is human-authored and surfaces in the timeline as a note. Matches
+    // ticket.service.ts:1060-1071.
+    try {
+      const authorPersonId =
+        dto.actor_person_id ?? (await this.resolveAuthorPersonId(actorAuthUid, tenant.id));
+      const { error: activityErr } = await this.supabase.admin
+        .from('ticket_activities')
+        .insert({
+          tenant_id: tenant.id,
+          ticket_id: workOrderId,
+          activity_type: 'system_event',
+          author_person_id: authorPersonId,
+          visibility: 'internal',
+          content: dto.reason,
+          metadata: {
+            event: 'reassigned',
+            previous: prev,
+            next: nextTarget,
+            mode: 'manual_reassign',
+            reason: dto.reason,
+          },
+        });
+      if (activityErr) throw activityErr;
+    } catch (err) {
+      console.error('[work-order] reassigned activity failed', err);
+    }
+
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw new ForbiddenException('Work order no longer accessible');
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Shared two-axis gate for assignment + reassign — visibility floor
+   * (`assertCanPlan`) plus the `tickets.assign` OR `tickets.write_all`
+   * permission check. Per the catalog, `tickets.assign` is NOT a danger:true
+   * gate, so this is a plain permission check (no danger ceremony).
+   */
+  private async assertAssignPermission(
+    actorAuthUid: string,
+    workOrderId: string,
+    tenantId: string,
+  ): Promise<void> {
+    if (actorAuthUid === SYSTEM_ACTOR) return;
+    const ctx = await this.visibility.loadContext(actorAuthUid, tenantId);
+    await this.visibility.assertCanPlan(workOrderId, ctx);
+
+    if (ctx.has_write_all) return;
+
+    const { data: hasAssign, error: permErr } = await this.supabase.admin.rpc(
+      'user_has_permission',
+      {
+        p_user_id: ctx.user_id,
+        p_tenant_id: tenantId,
+        p_permission: 'tickets.assign',
+      },
+    );
+    if (permErr) throw permErr;
+    if (!hasAssign) {
+      throw new ForbiddenException(
+        'tickets.assign permission required to change a work order assignment',
+      );
+    }
+  }
+
+  /**
+   * Validate that any non-null assignee id in a partial update belongs to
+   * the calling tenant. Defense against cross-tenant id smuggling — the FK
+   * + RLS layers don't enforce a tenant composite check on these columns.
+   */
+  private async validateAssigneesInTenant(
+    diff: { assigned_team_id?: unknown; assigned_user_id?: unknown; assigned_vendor_id?: unknown },
+    tenantId: string,
+  ): Promise<void> {
+    const teamId = diff.assigned_team_id;
+    if (typeof teamId === 'string') {
+      const { data, error } = await this.supabase.admin
+        .from('teams')
+        .select('id')
+        .eq('id', teamId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        throw new BadRequestException(
+          `assigned_team_id ${teamId} does not reference a known team in this tenant`,
+        );
+      }
+    }
+    const userId = diff.assigned_user_id;
+    if (typeof userId === 'string') {
+      const { data, error } = await this.supabase.admin
+        .from('users')
+        .select('id')
+        .eq('id', userId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        throw new BadRequestException(
+          `assigned_user_id ${userId} does not reference a known user in this tenant`,
+        );
+      }
+    }
+    const vendorId = diff.assigned_vendor_id;
+    if (typeof vendorId === 'string') {
+      const { data, error } = await this.supabase.admin
+        .from('vendors')
+        .select('id')
+        .eq('id', vendorId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        throw new BadRequestException(
+          `assigned_vendor_id ${vendorId} does not reference a known vendor in this tenant`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Domain event emitter. Mirrors `TicketService.logDomainEvent` (private
+   * there). Local copy so this service doesn't depend on TicketService for
+   * what is effectively a one-line insert.
+   */
+  private async logDomainEvent(
+    entityId: string,
+    tenantId: string,
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    await this.supabase.admin.from('domain_events').insert({
+      tenant_id: tenantId,
+      event_type: eventType,
+      entity_type: 'ticket', // case-side uses 'ticket' uniformly; entity_id disambiguates
+      entity_id: entityId,
+      payload,
+    });
   }
 
   /**

@@ -38,7 +38,11 @@ import {
   useTicketTagSuggestions,
   useUpdateTicket,
   useUpdateWorkOrderSla,
+  useUpdateWorkOrderStatus,
+  useUpdateWorkOrderPriority,
+  useUpdateWorkOrderAssignment,
   useReassignTicket,
+  useReassignWorkOrder,
   useAddActivity,
   type UpdateTicketPayload,
 } from '@/api/tickets';
@@ -311,9 +315,28 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
   const updateTicket = useUpdateTicket(ticketId);
   const updateWorkOrderSla = useUpdateWorkOrderSla(ticketId);
+  // Slice 2: TicketService.update / reassign are case-only post-1c.10c. The
+  // four hooks below are the work-order-side counterparts of useUpdateTicket
+  // / useReassignTicket. Dispatch happens inside `patch()` and
+  // `updateAssignment()` based on `displayedTicket.ticket_kind`.
+  const updateWorkOrderStatus = useUpdateWorkOrderStatus(ticketId);
+  const updateWorkOrderPriority = useUpdateWorkOrderPriority(ticketId);
+  const updateWorkOrderAssignment = useUpdateWorkOrderAssignment(ticketId);
   const reassignTicket = useReassignTicket(ticketId);
+  const reassignWorkOrder = useReassignWorkOrder(ticketId);
 
+  // Slice 2 dispatch.
+  // Cases → PATCH /tickets/:id (single endpoint, all fields).
+  // Work orders → split per category to the `/work-orders/:id/*` endpoints.
+  // Fields not yet covered by a work-order endpoint (cost / tags / watchers
+  // / title / description) silently no-op for work_orders today — those are
+  // Slice 3 deferred items. sla_id has its own dedicated hook
+  // (useUpdateWorkOrderSla) wired separately in the SLA SidebarGroup.
   const patch = (updates: Partial<UpdateTicketPayload>) => {
+    if (displayedTicket?.ticket_kind === 'work_order') {
+      patchWorkOrder(updates);
+      return;
+    }
     updateTicket.mutate(updates as UpdateTicketPayload, {
       onError: (err) => {
         const field = Object.keys(updates)[0] ?? 'field';
@@ -323,6 +346,53 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
         });
       },
     });
+  };
+
+  const patchWorkOrder = (updates: Partial<UpdateTicketPayload>) => {
+    const statusFields: { status?: string; status_category?: string; waiting_reason?: string | null } = {};
+    if (updates.status !== undefined) statusFields.status = updates.status;
+    if (updates.status_category !== undefined) statusFields.status_category = updates.status_category;
+    if (updates.waiting_reason !== undefined) statusFields.waiting_reason = updates.waiting_reason;
+
+    const assignmentFields: {
+      assigned_team_id?: string | null;
+      assigned_user_id?: string | null;
+      assigned_vendor_id?: string | null;
+    } = {};
+    if (updates.assigned_team_id !== undefined) assignmentFields.assigned_team_id = updates.assigned_team_id;
+    if (updates.assigned_user_id !== undefined) assignmentFields.assigned_user_id = updates.assigned_user_id;
+    if (updates.assigned_vendor_id !== undefined) assignmentFields.assigned_vendor_id = updates.assigned_vendor_id;
+
+    if (Object.keys(statusFields).length > 0) {
+      updateWorkOrderStatus.mutate(statusFields, {
+        onError: (err) =>
+          toastError("Couldn't update status", {
+            error: err,
+            retry: () => updateWorkOrderStatus.mutate(statusFields),
+          }),
+      });
+    }
+    if (updates.priority !== undefined) {
+      const next = updates.priority as 'low' | 'medium' | 'high' | 'critical';
+      updateWorkOrderPriority.mutate(next, {
+        onError: (err) =>
+          toastError("Couldn't update priority", {
+            error: err,
+            retry: () => updateWorkOrderPriority.mutate(next),
+          }),
+      });
+    }
+    if (Object.keys(assignmentFields).length > 0) {
+      updateWorkOrderAssignment.mutate(assignmentFields, {
+        onError: (err) =>
+          toastError("Couldn't update assignment", {
+            error: err,
+            retry: () => updateWorkOrderAssignment.mutate(assignmentFields),
+          }),
+      });
+    }
+    // Slice 3 deferred: cost, tags, watchers, title, description on
+    // work_orders. They silently no-op here today.
   };
 
   type AssignmentTarget = {
@@ -339,14 +409,25 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
         ? 'assigned_user_id'
         : 'assigned_vendor_id';
 
+    const isWorkOrder = displayedTicket?.ticket_kind === 'work_order';
+
     // First-time assignment — silent PATCH, no routing_decisions audit needed.
     if (target.previousLabel === null) {
-      updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
-        onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
-          error: err,
-          retry: () => updateAssignment(target),
-        }),
-      });
+      if (isWorkOrder) {
+        updateWorkOrderAssignment.mutate({ [field]: target.id }, {
+          onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
+            error: err,
+            retry: () => updateAssignment(target),
+          }),
+        });
+      } else {
+        updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
+          onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
+            error: err,
+            retry: () => updateAssignment(target),
+          }),
+        });
+      }
       return;
     }
 
@@ -354,22 +435,26 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     const actorName = person ? `${person.first_name} ${person.last_name}`.trim() : 'an agent';
     const reason = `Reassigned ${target.kind} from ${target.previousLabel} to ${target.nextLabel ?? 'unassigned'} by ${actorName} via ticket sidebar`;
 
-    reassignTicket.mutate(
-      {
-        kind: target.kind,
-        id: target.id,
-        nextLabel: target.nextLabel,
-        previousLabel: target.previousLabel,
-        reason,
-        actorPersonId: person?.id,
-      },
-      {
-        onError: (err) => toastError(`Couldn't reassign ${target.kind}`, {
-          error: err,
-          retry: () => updateAssignment(target),
-        }),
-      },
-    );
+    const reassignVars = {
+      kind: target.kind,
+      id: target.id,
+      nextLabel: target.nextLabel,
+      previousLabel: target.previousLabel,
+      reason,
+      actorPersonId: person?.id,
+    };
+    const reassignOpts = {
+      onError: (err: Error) => toastError(`Couldn't reassign ${target.kind}`, {
+        error: err,
+        retry: () => updateAssignment(target),
+      }),
+    };
+
+    if (isWorkOrder) {
+      reassignWorkOrder.mutate(reassignVars, reassignOpts);
+    } else {
+      reassignTicket.mutate(reassignVars, reassignOpts);
+    }
   };
 
   const displayedTicket = ticket;

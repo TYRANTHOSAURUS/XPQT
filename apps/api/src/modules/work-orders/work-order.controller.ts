@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -18,6 +19,28 @@ interface UpdateWorkOrderSlaDto {
 interface SetWorkOrderPlanDto {
   planned_start_at: string | null;
   planned_duration_minutes?: number | null;
+}
+
+interface UpdateWorkOrderStatusDto {
+  status?: string;
+  status_category?: string;
+  waiting_reason?: string | null;
+}
+
+interface UpdateWorkOrderPriorityDto {
+  priority: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface UpdateWorkOrderAssignmentDto {
+  assigned_team_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_vendor_id?: string | null;
+}
+
+interface ReassignWorkOrderDto extends UpdateWorkOrderAssignmentDto {
+  reason: string;
+  actor_person_id?: string | null;
+  rerun_resolver?: boolean;
 }
 
 /**
@@ -97,5 +120,91 @@ export class WorkOrderController {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.workOrderService.canPlan(id, actorAuthUid);
+  }
+
+  @Patch(':id/status')
+  async updateStatus(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: UpdateWorkOrderStatusDto,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('body required');
+    }
+    // Type-narrow each provided field. undefined is "no change"; null is
+    // only valid for waiting_reason (clear it).
+    if (dto.status !== undefined && typeof dto.status !== 'string') {
+      throw new BadRequestException('status must be a string');
+    }
+    if (dto.status_category !== undefined && typeof dto.status_category !== 'string') {
+      throw new BadRequestException('status_category must be a string');
+    }
+    if (
+      dto.waiting_reason !== undefined &&
+      dto.waiting_reason !== null &&
+      typeof dto.waiting_reason !== 'string'
+    ) {
+      throw new BadRequestException('waiting_reason must be a string or null');
+    }
+    return this.workOrderService.updateStatus(id, dto, actorAuthUid);
+  }
+
+  @Patch(':id/priority')
+  async updatePriority(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: UpdateWorkOrderPriorityDto,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!dto || typeof dto.priority !== 'string') {
+      throw new BadRequestException('priority is required (string)');
+    }
+    return this.workOrderService.updatePriority(id, dto.priority as 'low' | 'medium' | 'high' | 'critical', actorAuthUid);
+  }
+
+  @Patch(':id/assignment')
+  async updateAssignment(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: UpdateWorkOrderAssignmentDto,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('body required');
+    }
+    for (const k of ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const) {
+      const v = dto[k];
+      if (v !== undefined && v !== null && typeof v !== 'string') {
+        throw new BadRequestException(`${k} must be a string or null`);
+      }
+    }
+    return this.workOrderService.updateAssignment(id, dto, actorAuthUid);
+  }
+
+  @Post(':id/reassign')
+  async reassign(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() dto: ReassignWorkOrderDto,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!dto || typeof dto !== 'object') {
+      throw new BadRequestException('body required');
+    }
+    if (typeof dto.reason !== 'string' || !dto.reason.trim()) {
+      throw new BadRequestException('reason is required (non-empty string)');
+    }
+    for (const k of ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const) {
+      const v = dto[k];
+      if (v !== undefined && v !== null && typeof v !== 'string') {
+        throw new BadRequestException(`${k} must be a string or null`);
+      }
+    }
+    return this.workOrderService.reassign(id, dto, actorAuthUid);
   }
 }

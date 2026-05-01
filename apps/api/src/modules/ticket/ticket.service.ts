@@ -897,7 +897,22 @@ export class TicketService {
     // ── SLA pause/resume on waiting-state transitions ──────────
     if (changes.status_category || changes.waiting_reason) {
       try {
-        await this.applyWaitingStateTransition(id, tenant.id, current, data);
+        const currentRow = current as Record<string, unknown>;
+        const dataRow = data as Record<string, unknown>;
+        await this.slaService.applyWaitingStateTransition(
+          id,
+          tenant.id,
+          {
+            status_category: (currentRow.status_category as string) ?? '',
+            waiting_reason: (currentRow.waiting_reason as string | null) ?? null,
+            sla_id: (currentRow.sla_id as string | null) ?? null,
+          },
+          {
+            status_category: (dataRow.status_category as string) ?? '',
+            waiting_reason: (dataRow.waiting_reason as string | null) ?? null,
+            sla_id: (dataRow.sla_id as string | null) ?? null,
+          },
+        );
       } catch (err) {
         console.error('[sla] pause/resume failed', err);
       }
@@ -1157,37 +1172,6 @@ export class TicketService {
     await this.logDomainEvent(id, 'ticket_plan_changed', { previous, next: nextValues });
 
     return data;
-  }
-
-  private async applyWaitingStateTransition(
-    ticketId: string,
-    tenantId: string,
-    before: Record<string, unknown>,
-    after: Record<string, unknown>,
-  ) {
-    const slaPolicyId = (after.sla_id ?? before.sla_id) as string | null;
-    if (!slaPolicyId) return;
-
-    const { data: policy } = await this.supabase.admin
-      .from('sla_policies')
-      .select('pause_on_waiting_reasons')
-      .eq('id', slaPolicyId)
-      .maybeSingle();
-
-    const pauseReasons = (policy?.pause_on_waiting_reasons as string[] | null) ?? [];
-    const shouldPause = (t: Record<string, unknown>) =>
-      t.status_category === 'waiting' &&
-      !!t.waiting_reason &&
-      pauseReasons.includes(t.waiting_reason as string);
-
-    const wasPaused = shouldPause(before);
-    const isPaused = shouldPause(after);
-
-    if (!wasPaused && isPaused) {
-      await this.slaService.pauseTimers(ticketId, tenantId);
-    } else if (wasPaused && !isPaused) {
-      await this.slaService.resumeTimers(ticketId, tenantId);
-    }
   }
 
   async getActivities(ticketId: string, visibility: string | undefined, actorAuthUid: string) {
