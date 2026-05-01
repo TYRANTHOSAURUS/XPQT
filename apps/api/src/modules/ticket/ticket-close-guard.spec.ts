@@ -14,11 +14,12 @@ function makeDeps(parent: Row, openChildren: string[]) {
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'tickets') {
+        // Step 1c.10c: parent close guard now queries work_orders for children.
+        if (table === 'tickets' || table === 'work_orders') {
           return {
             select: (cols?: string) => {
-              // children query path: select id from tickets where parent_ticket_id = X and status not in (resolved, closed)
-              if (cols && cols.includes('id') && !cols.includes('*')) {
+              // children query path: select id from work_orders where parent_ticket_id = X and status not in (resolved, closed)
+              if (table === 'work_orders' || (cols && cols.includes('id') && !cols.includes('*'))) {
                 return {
                   eq: () => ({
                     eq: () => ({
@@ -105,12 +106,10 @@ describe('TicketService.update — parent close guard', () => {
     expect(row().status_category).toBe('resolved');
   });
 
-  it('allows resolving a child work_order regardless of its siblings', async () => {
-    const { svc, row } = makeDeps(
-      { id: 'wo1', tenant_id: 't1', ticket_kind: 'work_order', status_category: 'assigned', sla_id: null },
-      ['wo-a'],
-    );
-    await svc.update('wo1', { status_category: 'resolved' } as UpdateTicketDto, '__system__');
-    expect(row().status_category).toBe('resolved');
+  // Step 1c.10c: ticket.service.update is case-only post-cutover. Work-order
+  // updates go through dispatch/work-order paths. The "resolve a child WO
+  // through ticket.service.update" scenario no longer applies.
+  it.skip('OBSOLETE post-1c.10c: allows resolving a child work_order regardless of its siblings', async () => {
+    // Test scenario removed — ticket.service.update is case-only now.
   });
 });

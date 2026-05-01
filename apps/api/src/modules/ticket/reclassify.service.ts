@@ -409,15 +409,19 @@ export class ReclassifyService {
   // ─────── Loaders ───────
 
   private async loadTicket(id: string, tenantId: string): Promise<TicketRow | null> {
+    // Step 1c.10c: ticket_kind dropped. Reclassify only operates on cases
+    // (assertReclassifiable refuses non-case rows), and tickets is now
+    // case-only — synthesize ticket_kind='case' for the type contract.
     const { data } = await this.supabase.admin
       .from('tickets')
       .select(
-        'id, tenant_id, ticket_type_id, ticket_kind, status_category, assigned_team_id, assigned_user_id, assigned_vendor_id, location_id, asset_id, priority, watchers',
+        'id, tenant_id, ticket_type_id, status_category, assigned_team_id, assigned_user_id, assigned_vendor_id, location_id, asset_id, priority, watchers',
       )
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    return (data as TicketRow | null) ?? null;
+    if (!data) return null;
+    return { ...(data as Omit<TicketRow, 'ticket_kind'>), ticket_kind: 'case' } as TicketRow;
   }
 
   private async loadRequestType(id: string, tenantId: string): Promise<RequestTypeRow | null> {

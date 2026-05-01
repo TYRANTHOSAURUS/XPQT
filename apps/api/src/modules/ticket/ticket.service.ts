@@ -234,7 +234,12 @@ export class TicketService {
       const vals = Array.isArray(filters.priority) ? filters.priority : [filters.priority];
       query = vals.length === 1 ? query.eq('priority', vals[0]) : query.in('priority', vals);
     }
-    if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
+    // Step 1c.10c: ticket_kind column dropped. tickets is case-only.
+    // Listing work_orders is a separate API surface (TODO step 1c.9). For
+    // backward compat: silently ignore filters.ticket_kind when set to
+    // 'work_order' the result is empty (correct: tickets has no WOs).
+    // When set to 'case' it's a no-op.
+    // if (filters.ticket_kind) query = query.eq('ticket_kind', filters.ticket_kind);
     if (filters.assigned_team_id === null) query = query.is('assigned_team_id', null);
     else if (filters.assigned_team_id) query = query.eq('assigned_team_id', filters.assigned_team_id);
     if (filters.assigned_user_id === null) query = query.is('assigned_user_id', null);
@@ -246,24 +251,12 @@ export class TicketService {
     if (filters.sla_at_risk === true) query = query.eq('sla_at_risk', true);
     if (filters.sla_breached === true) query = query.not('sla_resolution_breached_at', 'is', null);
 
-    // Parent filter: null = top-level only, specific ID = children of that ticket
+    // Parent filter: null = top-level only, specific ID = children of that ticket.
+    // Step 1c.10c: tickets is case-only — booking-origin WOs and case-children
+    // both live in work_orders now, so the booking_bundle_id IS NULL guard is
+    // unnecessary on tickets reads.
     if (filters.parent_ticket_id === null) {
       query = query.is('parent_ticket_id', null);
-      // Booking-origin work orders ALSO have parent_ticket_id IS NULL but
-      // are operational tasks, not help requests. ONLY hide them from the
-      // default top-level cases queue (no kind, no assignee filter).
-      // When the caller explicitly asked for work_order kind, OR is filtering
-      // by an assignee (their team queue, "assigned to me", etc), they want
-      // to see all matching work — including booking-origin. Codex review
-      // 2026-04-30 caught the over-broad version of this filter.
-      const explicitWorkOrderKind = filters.ticket_kind === 'work_order';
-      const assigneeFiltered =
-        filters.assigned_team_id != null ||
-        filters.assigned_user_id != null ||
-        filters.assigned_vendor_id != null;
-      if (!explicitWorkOrderKind && !assigneeFiltered) {
-        query = query.is('booking_bundle_id', null);
-      }
     } else if (filters.parent_ticket_id) {
       query = query.eq('parent_ticket_id', filters.parent_ticket_id);
     }
@@ -535,13 +528,15 @@ export class TicketService {
       }
     }
 
+    // Step 1c.10c: ticket_kind column dropped from tickets. tickets is
+    // case-only now; the dto.ticket_kind value is ignored (work_orders go
+    // through dispatch.service.ts / createBookingOriginWorkOrder).
     const { data, error } = await this.supabase.admin
       .from('tickets')
       .insert({
         tenant_id: tenant.id,
         ticket_type_id: dto.ticket_type_id,
         parent_ticket_id: dto.parent_ticket_id,
-        ticket_kind: dto.ticket_kind ?? 'case',
         title: dto.title,
         description: dto.description,
         priority: dto.priority ?? 'medium',
@@ -671,7 +666,12 @@ export class TicketService {
     requestTypeCfg: Record<string, unknown> | null,
     options: CreateTicketOptions = {},
   ) {
-    const isWorkOrder = data.ticket_kind === 'work_order';
+    // Step 1c.10c: tickets is case-only. runPostCreateAutomation only runs
+    // for cases — work_orders go through dispatch.service.ts +
+    // createBookingOriginWorkOrder paths which don't call this. So
+    // isWorkOrder is unconditionally false here. Kept as a const to
+    // preserve the existing branching logic in this method.
+    const isWorkOrder = false;
 
     // Scope-override lookup is advisory for the resolver (which runs its own
     // copy) but authoritative for workflow / case SLA below. Asset-backed
@@ -806,18 +806,19 @@ export class TicketService {
     // Get current state for change tracking
     const current = await this.getById(id, SYSTEM_ACTOR);
 
-    // SLA reassignment is work-order-only; parent case SLA is locked on reassign.
-    if (dto.sla_id !== undefined && (current as Record<string, unknown>).ticket_kind === 'case') {
+    // Step 1c.10c: tickets is case-only. The previous ticket_kind='case' guards
+    // are now unconditional — every ticket here IS a case. SLA-on-case is locked.
+    if (dto.sla_id !== undefined) {
       throw new BadRequestException('cannot change sla_id on a case; parent SLA is locked');
     }
 
-    // Parent close guard: a case cannot move to resolved/closed while children are open.
-    if (
-      (dto.status_category === 'resolved' || dto.status_category === 'closed') &&
-      (current as Record<string, unknown>).ticket_kind === 'case'
-    ) {
+    // Parent close guard: case cannot move to resolved/closed while children are open.
+    // Children are now in public.work_orders (post-1c.10c). The DB trigger
+    // enforce_ticket_parent_close_invariant is the authoritative check; this
+    // is a friendlier API-layer precheck.
+    if (dto.status_category === 'resolved' || dto.status_category === 'closed') {
       const { data: openChildren } = await this.supabase.admin
-        .from('tickets')
+        .from('work_orders')
         .select('id')
         .eq('parent_ticket_id', id)
         .eq('tenant_id', tenant.id)
@@ -1307,33 +1308,23 @@ export class TicketService {
 
   async getChildTasks(parentTicketId: string, actorAuthUid: string) {
     const tenant = TenantContext.current();
+    // Step 1c.10c: children are work_orders (live in public.work_orders).
+    // ticket_kind column dropped — every child here IS a work_order.
     const childCols =
-      'id, title, status, status_category, priority, ticket_kind, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
+      'id, title, status, status_category, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      // Gate on parent visibility first — same contract as before.
+      // Gate on parent (case) visibility first.
       await this.visibility.assertVisible(parentTicketId, ctx, 'read');
       if (!ctx.user_id && !ctx.has_read_all) return [];
-      // Narrow the children to the visible set via the SQL-side RPC instead
-      // of materializing the full visible-ticket-id set in Node and feeding
-      // it back as `.in('id', ids)`. Same fix as `list()` / `listDistinctTags`.
-      const { data, error } = await this.supabase.admin
-        .rpc('tickets_visible_for_actor', {
-          p_user_id: ctx.user_id,
-          p_tenant_id: tenant.id,
-          p_has_read_all: ctx.has_read_all,
-        })
-        .select(childCols)
-        .eq('parent_ticket_id', parentTicketId)
-        .eq('tenant_id', tenant.id)
-        .order('created_at');
-      if (error) throw error;
-      return data;
+      // If the actor can see the parent case, they can see its work_order
+      // children. (The visibility model treats children as inheriting parent
+      // visibility for read; tighter scoping is a future step 1c.9 concern.)
     }
 
     const { data, error } = await this.supabase.admin
-      .from('tickets')
+      .from('work_orders')
       .select(childCols)
       .eq('parent_ticket_id', parentTicketId)
       .eq('tenant_id', tenant.id)

@@ -219,10 +219,13 @@ export class BookingBundlesController {
         .from('orders')
         .select('id, status, requested_for_start_at, requested_for_end_at')
         .eq('booking_bundle_id', id),
+      // Step 1c.10c: tickets is case-only. Booking-origin work orders are
+      // in work_orders. ticket_kind column is dropped — every row here is
+      // a work_order by construction (it has booking_bundle_id).
       this.supabase.admin
-        .from('tickets')
+        .from('work_orders')
         .select(
-          'id, ticket_kind, status_category, assigned_user_id, assigned_team_id, assigned_vendor_id, module_number, ' +
+          'id, status_category, assigned_user_id, assigned_team_id, assigned_vendor_id, module_number, ' +
             'assigned_user:users!assigned_user_id(person:persons!person_id(first_name,last_name)), ' +
             'assigned_team:teams!assigned_team_id(name), ' +
             'assigned_vendor:vendors!assigned_vendor_id(name)',
@@ -305,9 +308,10 @@ export class BookingBundlesController {
     // Denormalize an assignee_label per ticket so the frontend renders
     // "Sarah Lim" / "Catering team" / "Acme Catering" instead of a
     // category placeholder. Joins above already pulled the name fields.
+    // Step 1c.10c: rows come from work_orders, not tickets. ticket_kind
+    // is gone; all rows are work_orders by construction.
     type TicketJoinRow = {
       id: string;
-      ticket_kind: string;
       status_category: string | null;
       assigned_user_id: string | null;
       assigned_team_id: string | null;
@@ -333,7 +337,8 @@ export class BookingBundlesController {
             : null;
       return {
         id: t.id,
-        ticket_kind: t.ticket_kind,
+        // Synthesize ticket_kind for API contract continuity with frontend.
+        ticket_kind: 'work_order' as const,
         status_category: t.status_category,
         assigned_user_id: t.assigned_user_id,
         assigned_team_id: t.assigned_team_id,

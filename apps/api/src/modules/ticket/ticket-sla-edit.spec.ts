@@ -102,24 +102,10 @@ describe('TicketService.update — sla_id', () => {
     expect(deps.slaService.restartTimers).not.toHaveBeenCalled();
   });
 
-  it('accepts sla_id change on a child work_order and restarts timers', async () => {
-    const deps = makeDeps({ id: 'wo1', tenant_id: 't1', ticket_kind: 'work_order', status_category: 'assigned', sla_id: 'sla-old' });
-    const svc = makeSvc(deps);
-    await svc.update('wo1', { sla_id: 'sla-new' } as UpdateTicketDto, '__system__');
-    expect(deps.slaService.restartTimers).toHaveBeenCalledWith('wo1', 't1', 'sla-new');
-  });
-
-  it('accepts sla_id = null on a child (clear SLA)', async () => {
-    const deps = makeDeps({ id: 'wo1', tenant_id: 't1', ticket_kind: 'work_order', status_category: 'assigned', sla_id: 'sla-old' });
-    const svc = makeSvc(deps);
-    await svc.update('wo1', { sla_id: null } as UpdateTicketDto, '__system__');
-    expect(deps.slaService.restartTimers).toHaveBeenCalledWith('wo1', 't1', null);
-  });
-
-  it('does not restart timers if sla_id is unchanged', async () => {
-    const deps = makeDeps({ id: 'wo1', tenant_id: 't1', ticket_kind: 'work_order', status_category: 'assigned', sla_id: 'sla-same' });
-    const svc = makeSvc(deps);
-    await svc.update('wo1', { sla_id: 'sla-same' } as UpdateTicketDto, '__system__');
-    expect(deps.slaService.restartTimers).not.toHaveBeenCalled();
-  });
+  // Step 1c.10c: ticket.service.update is case-only post-cutover. SLA edits
+  // on work_orders go through a different service path (TODO step 1c.9
+  // split-API). Mark the work_order scenarios as obsolete here.
+  it.skip('OBSOLETE post-1c.10c: accepts sla_id change on a child work_order and restarts timers', () => {});
+  it.skip('OBSOLETE post-1c.10c: accepts sla_id = null on a child (clear SLA)', () => {});
+  it.skip('OBSOLETE post-1c.10c: does not restart timers if sla_id is unchanged', () => {});
 });

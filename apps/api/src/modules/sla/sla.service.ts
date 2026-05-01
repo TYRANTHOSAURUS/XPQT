@@ -22,6 +22,32 @@ export class SlaService {
   ) {}
 
   /**
+   * Step 1c.10c helper: SLA-related updates to a ticket-shaped row need to
+   * route to the right table based on whether the id is a case (tickets)
+   * or a work_order (work_orders). Try tickets first; if no row matches
+   * (case id never matches a wo and vice versa — UUIDs are globally
+   * unique across both tables), fall back to work_orders.
+   *
+   * Pre-1c.10c the same logic was implicit (every row lived in tickets).
+   * Post-cutover, this helper hides the dispatch from every SLA call site.
+   */
+  private async updateTicketOrWorkOrder(
+    id: string,
+    patch: Record<string, unknown>,
+    tenantId?: string,
+  ): Promise<void> {
+    let q1 = this.supabase.admin.from('tickets').update(patch).eq('id', id);
+    if (tenantId) q1 = q1.eq('tenant_id', tenantId);
+    const { data: caseHit } = await q1.select('id').maybeSingle();
+    if (caseHit) return;
+
+    let q2 = this.supabase.admin.from('work_orders').update(patch).eq('id', id);
+    if (tenantId) q2 = q2.eq('tenant_id', tenantId);
+    const { error } = await q2;
+    if (error) throw error;
+  }
+
+  /**
    * Start SLA timers when a ticket is created.
    * Called by the ticket service after ticket creation.
    */
@@ -50,10 +76,10 @@ export class SlaService {
         business_hours_calendar_id: policy.business_hours_calendar_id,
       });
 
-      await this.supabase.admin
-        .from('tickets')
-        .update({ sla_response_due_at: responseDue.toISOString() })
-        .eq('id', ticketId);
+      // Step 1c.10c: route to tickets (case) or work_orders.
+      await this.updateTicketOrWorkOrder(ticketId, {
+        sla_response_due_at: responseDue.toISOString(),
+      });
     }
 
     if (policy.resolution_time_minutes) {
@@ -68,10 +94,9 @@ export class SlaService {
         business_hours_calendar_id: policy.business_hours_calendar_id,
       });
 
-      await this.supabase.admin
-        .from('tickets')
-        .update({ sla_resolution_due_at: resolutionDue.toISOString() })
-        .eq('id', ticketId);
+      await this.updateTicketOrWorkOrder(ticketId, {
+        sla_resolution_due_at: resolutionDue.toISOString(),
+      });
     }
 
     if (timers.length > 0) {
@@ -104,10 +129,10 @@ export class SlaService {
       .is('completed_at', null)
       .is('stopped_at', null);
 
-    await this.supabase.admin
-      .from('tickets')
-      .update({ sla_paused: true, sla_paused_at: now.toISOString() })
-      .eq('id', ticketId);
+    await this.updateTicketOrWorkOrder(ticketId, {
+      sla_paused: true,
+      sla_paused_at: now.toISOString(),
+    });
   }
 
   /**
@@ -181,7 +206,7 @@ export class SlaService {
       if (t.timer_type === 'resolution') updates.sla_resolution_due_at = t.due_at;
     }
 
-    await this.supabase.admin.from('tickets').update(updates).eq('id', ticketId);
+    await this.updateTicketOrWorkOrder(ticketId, updates);
   }
 
   /**
@@ -212,18 +237,15 @@ export class SlaService {
     await this.completeTimers(ticketId, tenantId);
 
     // Clear ticket-level SLA computed fields. startTimers will re-set them if a policy is provided.
-    await this.supabase.admin
-      .from('tickets')
-      .update({
-        sla_response_due_at: null,
-        sla_resolution_due_at: null,
-        sla_response_breached_at: null,
-        sla_resolution_breached_at: null,
-        sla_at_risk: false,
-        sla_paused: false,
-        sla_paused_at: null,
-      })
-      .eq('id', ticketId);
+    await this.updateTicketOrWorkOrder(ticketId, {
+      sla_response_due_at: null,
+      sla_resolution_due_at: null,
+      sla_response_breached_at: null,
+      sla_resolution_breached_at: null,
+      sla_at_risk: false,
+      sla_paused: false,
+      sla_paused_at: null,
+    });
 
     if (newSlaPolicyId) {
       await this.startTimers(ticketId, tenantId, newSlaPolicyId);
@@ -293,11 +315,20 @@ export class SlaService {
       if (percentUsed >= 0.8) atRiskTicketIds.push(timer.ticket_id as string);
     }
     if (atRiskTicketIds.length > 0) {
-      await this.supabase.admin
-        .from('tickets')
-        .update({ sla_at_risk: true })
-        .in('id', atRiskTicketIds)
-        .eq('sla_at_risk', false); // skip rows already flagged
+      // Step 1c.10c: ids may live in tickets (cases) or work_orders. Issue
+      // both updates; each is a no-op for ids not in that table.
+      await Promise.all([
+        this.supabase.admin
+          .from('tickets')
+          .update({ sla_at_risk: true })
+          .in('id', atRiskTicketIds)
+          .eq('sla_at_risk', false),
+        this.supabase.admin
+          .from('work_orders')
+          .update({ sla_at_risk: true })
+          .in('id', atRiskTicketIds)
+          .eq('sla_at_risk', false),
+      ]);
     }
 
     // Threshold-crossing pass — fires notify/escalate actions.
@@ -456,7 +487,8 @@ export class SlaService {
 
     if (changed) {
       updates.watchers = Array.from(newWatchers);
-      await this.supabase.admin.from('tickets').update(updates).eq('id', ticket.id);
+      // Step 1c.10c: route to tickets (case) or work_orders.
+      await this.updateTicketOrWorkOrder(ticket.id, updates);
     }
     return changed;
   }

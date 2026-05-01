@@ -200,10 +200,10 @@ describe('ReclassifyService.computeImpact', () => {
     expect(impact.routing.current_user_will_become_watcher).toBe(true);
   });
 
-  it('throws when ticket is a child work order', async () => {
-    const { service } = makeService({ ticket: { ticket_kind: 'work_order' } });
-    await expect(service.computeImpact('tk1', 'rt-new', '__system__')).rejects.toThrow(/child/i);
-  });
+  // Step 1c.10c: tickets is case-only post-cutover. loadTicket synthesizes
+  // ticket_kind='case' unconditionally — work_orders are in a separate
+  // table and aren't loadable via reclassify.service.loadTicket.
+  it.skip('OBSOLETE post-1c.10c: throws when ticket is a child work order', () => {});
 
   it('throws when ticket is closed', async () => {
     const { service } = makeService({ ticket: { status_category: 'closed' } });
