@@ -117,7 +117,8 @@ function build() {
         return { visitor_id: row.visitor_id, tenant_id: row.tenant_id };
       }
       // peek_invitation_token — read-only, no SQLSTATE 45002, returns
-      // denormalised visit details (used by /cancel/:token/preview).
+      // denormalised visit details pre-use; tombstone post-use (full-
+      // review fix I12 — migration 00272).
       if (sql.includes('peek_invitation_token')) {
         const token = params[0] as string;
         const row = state.tokens.get(token);
@@ -131,7 +132,22 @@ function build() {
           (e as { code?: string }).code = '45003';
           throw e;
         }
-        // peek does NOT mutate `used` — this is the contract.
+        if (row.used) {
+          // I12 tombstone — once consumed, peek returns the visitor id +
+          // tenant_id + a fixed 'cancelled' status. No PII, ever, after
+          // consumption.
+          return {
+            visitor_id: row.visitor_id,
+            tenant_id: row.tenant_id,
+            visitor_status: 'cancelled',
+            first_name: null,
+            expected_at: null,
+            expected_until: null,
+            building_id: null,
+            building_name: null,
+            host_first_name: null,
+          };
+        }
         return {
           visitor_id: row.visitor_id,
           tenant_id: row.tenant_id,
@@ -355,7 +371,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
     ).rejects.toBeInstanceOf(GoneException);
   });
 
-  it('preview after cancel returns visitor_status=cancelled (idempotent)', async () => {
+  it('preview after cancel returns visitor_status=cancelled with tombstoned PII (I12)', async () => {
     const h = build();
     await h.controller.createInvitation(makeReq(), {
       first_name: 'Marleen',
@@ -364,18 +380,27 @@ describe('Visitor cancel-link flow — slice 5', () => {
       building_id: BUILDING_ID,
     });
 
+    // Pre-cancel preview: full denormalized payload — first name + host
+    // name + building name all present.
+    const previewPre = await h.controller.previewCancel(TOKEN_OK);
+    expect(previewPre.visitor_status).toBe('expected');
+    expect(previewPre.first_name).toBe('Marleen');
+    expect(previewPre.host_first_name).toBe('Sarah');
+    expect(previewPre.building_name).toBe('HQ Amsterdam');
+
     await h.controller.cancelByToken(TOKEN_OK);
 
-    // After cancel, the cancel POST 410s — but peek (which uses a
-    // separate function that ignores `used_at`) should still resolve.
-    // The visitor's status now reads as 'cancelled', which is how the
-    // landing page renders the "already cancelled" state.
-    //
-    // In this mock, validate_invitation_token sets `used=true`, but
-    // peek_invitation_token doesn't check `used`. The mock's peek
-    // branch ignores the flag too, matching production behaviour.
+    // Post-cancel: peek (the SECURITY DEFINER fn) returns a tombstone
+    // payload — visitor_status='cancelled' as the landing page expects,
+    // BUT every PII field NULL. Without this, anyone who once captured
+    // the cancel link could keep scraping first names + visit times
+    // indefinitely.
     const preview2 = await h.controller.previewCancel(TOKEN_OK);
     expect(preview2.visitor_status).toBe('cancelled');
+    expect(preview2.first_name).toBeNull();
+    expect(preview2.host_first_name).toBeNull();
+    expect(preview2.building_name).toBeNull();
+    expect(preview2.expected_at).toBeNull();
   });
 
   it('host notification failure does not block the cancel itself', async () => {

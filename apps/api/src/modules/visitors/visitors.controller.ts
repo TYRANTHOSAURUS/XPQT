@@ -190,12 +190,17 @@ export class VisitorsController {
       visitor_id: string;
       tenant_id: string;
       visitor_status: string;
-      first_name: string;
+      // Post-tombstone (migration 00272 / I12): every PII field is NULL
+      // once the token has been consumed. Pre-use, all fields are
+      // populated. The cancel landing page renders one of two states
+      // based on `visitor_status` — never relies on first_name etc.
+      // being non-null.
+      first_name: string | null;
       expected_at: string | null;
       expected_until: string | null;
       building_id: string | null;
-      building_name: string;
-      host_first_name: string;
+      building_name: string | null;
+      host_first_name: string | null;
     };
 
     let row: PeekRow | null;
