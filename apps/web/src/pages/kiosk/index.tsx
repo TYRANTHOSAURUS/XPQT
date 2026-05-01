@@ -22,7 +22,7 @@ export function KioskIdlePage() {
   const logoUrl = session?.branding?.logo_light_url;
 
   return (
-    <div className="kiosk-idle relative flex flex-1 flex-col items-center justify-center gap-12 p-12 portrait:hidden">
+    <div className="kiosk-idle relative flex flex-1 flex-col items-center justify-center gap-12 p-12">
       {/* Discreet settings link in the corner — admin can re-provision
           without scrolling through tablet OS settings. */}
       <Link

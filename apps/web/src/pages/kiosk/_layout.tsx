@@ -47,20 +47,29 @@ export function KioskLayout() {
   const isSetupRoute = location.pathname.startsWith('/kiosk/setup');
   const isIdleRoute = location.pathname === '/kiosk' || location.pathname === '/kiosk/';
   const idleTimer = useRef<number | null>(null);
+  const lastResetAt = useRef<number>(0);
 
   // Reset on every interaction. Auto-lock cancels in-flight flows by
-  // navigating back to idle.
+  // navigating back to idle. pointermove is throttled to once per second
+  // so we don't thrash setTimeout/clearTimeout on every cursor movement.
   useEffect(() => {
     if (isIdleRoute || isSetupRoute) {
       // No auto-lock on idle or setup — there's nothing to reset to.
       return;
     }
     function reset() {
+      const now = Date.now();
+      if (now - lastResetAt.current < 1000) return;
+      lastResetAt.current = now;
       if (idleTimer.current) window.clearTimeout(idleTimer.current);
       idleTimer.current = window.setTimeout(() => {
         navigate('/kiosk', { replace: true });
       }, IDLE_TIMEOUT_MS);
     }
+    // Force-reset on mount even though the throttle would otherwise let
+    // the first call through — explicit to avoid races with previous-page
+    // resets bleeding into the new page.
+    lastResetAt.current = 0;
     reset();
     const evts: Array<keyof DocumentEventMap> = [
       'pointerdown',

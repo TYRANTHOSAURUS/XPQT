@@ -47,9 +47,11 @@ export interface KioskSession {
   /** Bearer token for `/api/kiosk/*`. Kept private — never log or render. */
   token: string;
   /** Resolved at provisioning. Recorded so the welcome screen can show
-   *  "Welcome to <Building Name>" without an extra fetch. */
-  tenantId: string;
-  buildingId: string;
+   *  "Welcome to <Building Name>" without an extra fetch. Both can be
+   *  null when the admin pasted only the token without a setup URL —
+   *  in that case the backend resolves the binding from the token. */
+  tenantId: string | null;
+  buildingId: string | null;
   buildingName: string;
   /** ISO. Kiosk shows a "needs re-provisioning soon" banner inside 7 days. */
   expiresAt?: string | null;
@@ -64,7 +66,10 @@ export function readKioskSession(): KioskSession | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as KioskSession;
-    if (!parsed.token || !parsed.buildingId || !parsed.tenantId) return null;
+    if (!parsed.token) return null;
+    // tenantId / buildingId can legitimately be null when the admin pastes
+    // a bare token without a setup URL; the backend resolves the binding
+    // from the token in that case.
     return parsed;
   } catch {
     return null;

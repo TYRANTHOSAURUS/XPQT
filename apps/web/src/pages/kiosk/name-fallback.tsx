@@ -102,7 +102,7 @@ export function KioskNameFallbackPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col portrait:hidden">
+    <div className="flex flex-1 flex-col">
       <header className="flex items-center justify-between border-b px-6 py-4">
         <Button
           variant="ghost"

@@ -59,6 +59,13 @@ export function KioskQrScanPage() {
   const decodedRef = useRef<boolean>(false);
   const [state, setState] = useState<ScanState>({ kind: 'requesting' });
 
+  // Inner functions live in refs so the camera-start effect can run once
+  // on mount without restarting whenever a state-derived dependency
+  // updates. Restarting mid-submit would tear down the stream while the
+  // backend call is still in flight — wrong.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
   const stop = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
@@ -77,7 +84,7 @@ export function KioskQrScanPage() {
       try {
         const outcome = await checkInQrOrQueue(token);
         if (outcome.mode === 'queued') {
-          navigate('/kiosk/confirmation', {
+          navigateRef.current('/kiosk/confirmation', {
             replace: true,
             state: {
               hostFirstName: null,
@@ -87,7 +94,7 @@ export function KioskQrScanPage() {
           });
           return;
         }
-        navigate('/kiosk/confirmation', {
+        navigateRef.current('/kiosk/confirmation', {
           replace: true,
           state: {
             hostFirstName: outcome.result.host_first_name,
@@ -101,8 +108,13 @@ export function KioskQrScanPage() {
         setState({ kind: 'error', title: mapped.title, message: mapped.message });
       }
     },
-    [navigate, stop],
+    [stop],
   );
+
+  // Refs so tick + startCamera can pull the latest function without
+  // depending on it (preventing effect re-runs mid-flow).
+  const handleDecodedRef = useRef(handleDecoded);
+  handleDecodedRef.current = handleDecoded;
 
   const tick = useCallback(() => {
     if (decodedRef.current) return;
@@ -129,11 +141,14 @@ export function KioskQrScanPage() {
       inversionAttempts: 'dontInvert',
     });
     if (code?.data) {
-      void handleDecoded(code.data);
+      void handleDecodedRef.current(code.data);
       return;
     }
     rafRef.current = requestAnimationFrame(tick);
-  }, [handleDecoded]);
+  }, []);
+
+  const tickRef = useRef(tick);
+  tickRef.current = tick;
 
   const startCamera = useCallback(async () => {
     decodedRef.current = false;
@@ -185,24 +200,27 @@ export function KioskQrScanPage() {
     }
 
     setState({ kind: 'scanning' });
-    tick();
-  }, [tick]);
+    tickRef.current();
+  }, []);
 
   // 60s timeout — back to idle.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      navigate('/kiosk', { replace: true });
+      navigateRef.current('/kiosk', { replace: true });
     }, TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [navigate]);
+  }, []);
 
+  // Mount-only — start the camera once, stop once on unmount. Re-runs of
+  // this effect would restart the camera mid-submit, which is wrong.
   useEffect(() => {
     void startCamera();
     return () => stop();
-  }, [startCamera, stop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <div className="flex flex-1 flex-col portrait:hidden">
+    <div className="flex flex-1 flex-col">
       <header className="flex items-center justify-between border-b px-6 py-4">
         <Button
           variant="ghost"
@@ -221,7 +239,10 @@ export function KioskQrScanPage() {
 
       <div className="flex flex-1 items-center justify-center p-6">
         {state.kind === 'denied' ? (
-          <DeniedView onTryName={() => navigate('/kiosk/name-fallback')} />
+          <DeniedView
+            onTryName={() => navigate('/kiosk/name-fallback')}
+            onRetry={() => startCamera()}
+          />
         ) : state.kind === 'no-camera' ? (
           <NoCameraView onTryName={() => navigate('/kiosk/name-fallback')} />
         ) : state.kind === 'error' ? (
@@ -265,7 +286,10 @@ function ScannerView({
           playsInline
           muted
         />
-        <canvas ref={canvasRef} className="hidden" />
+        {/* sr-only keeps the element rendered (so the rasterization path
+             jsQR depends on isn't broken on browsers that skip
+             display:none) while making it invisible / inaccessible. */}
+        <canvas ref={canvasRef} className="sr-only" aria-hidden />
         {/* Crosshair */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="size-64 rounded-2xl border-4 border-white/70 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" />
@@ -280,7 +304,13 @@ function ScannerView({
   );
 }
 
-function DeniedView({ onTryName }: { onTryName: () => void }) {
+function DeniedView({
+  onTryName,
+  onRetry,
+}: {
+  onTryName: () => void;
+  onRetry: () => void;
+}) {
   return (
     <div className="flex max-w-xl flex-col items-center gap-6 text-center">
       <CameraOff className="size-16 text-muted-foreground" aria-hidden="true" />
@@ -288,12 +318,23 @@ function DeniedView({ onTryName }: { onTryName: () => void }) {
         Camera access is blocked
       </h2>
       <p className="text-lg text-muted-foreground">
-        We can't open the camera on this device. You can still check in by
-        typing your name.
+        We can't open the camera on this device. If you just allowed
+        camera access, retry. Otherwise type your name to check in.
       </p>
-      <Button size="lg" className="h-14 px-8 text-lg" onClick={onTryName}>
-        Type your name instead
-      </Button>
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          size="lg"
+          className="h-14 gap-2 px-6 text-lg"
+          onClick={onRetry}
+        >
+          <RefreshCw className="size-5" aria-hidden="true" />
+          Try camera again
+        </Button>
+        <Button size="lg" className="h-14 px-8 text-lg" onClick={onTryName}>
+          Type your name instead
+        </Button>
+      </div>
     </div>
   );
 }

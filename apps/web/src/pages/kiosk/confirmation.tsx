@@ -38,7 +38,24 @@ export function KioskConfirmationPage() {
   const subline = composeSubline(state);
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-8 p-12 text-center portrait:hidden">
+    <div className="relative flex flex-1 flex-col items-center justify-center gap-8 p-12 text-center">
+      {/* Auto-dismiss progress bar at the top edge — gives the visitor a
+          visual cue for how much time is left before the screen returns
+          to idle. CSS-only animation; respects prefers-reduced-motion
+          (clamped to 0.001ms by the global media query in index.css). */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-1 origin-right bg-primary"
+        style={{
+          animation: `kiosk-confirmation-countdown ${REDIRECT_MS}ms linear forwards`,
+        }}
+      />
+      <style>{`
+        @keyframes kiosk-confirmation-countdown {
+          from { transform: scaleX(1); }
+          to   { transform: scaleX(0); }
+        }
+      `}</style>
       <CheckCircle2 className="size-24 text-green-600" aria-hidden="true" />
       <h1 className="text-balance text-5xl font-semibold tracking-tight">
         You're checked in
@@ -53,7 +70,10 @@ export function KioskConfirmationPage() {
           Done
         </Button>
       </div>
-      <p className="text-base text-muted-foreground">
+      <p
+        className="text-base text-muted-foreground"
+        aria-live="polite"
+      >
         Returning to the welcome screen in a few seconds…
       </p>
     </div>

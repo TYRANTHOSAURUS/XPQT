@@ -24,7 +24,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { toastError } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
 import { clearKioskSession, readKioskSession, writeKioskSession } from '@/lib/kiosk-auth';
 import { probeKioskToken } from '@/api/visitors/kiosk';
 
@@ -69,8 +69,8 @@ export function KioskSetupPage() {
 
   async function verifyAndStore(args: {
     token: string;
-    tenantId: string;
-    buildingId: string;
+    tenantId: string | null;
+    buildingId: string | null;
     buildingName: string;
     tenantName: string | null;
     primaryColor: string | null;
@@ -108,10 +108,14 @@ export function KioskSetupPage() {
     e.preventDefault();
     const trimmed = manualToken.trim();
     if (!trimmed) return;
+    // Manual paste-only flow — no setup URL means we don't yet know the
+    // tenantId / buildingId. Backend resolves both from the token; we
+    // store null rather than the literal string 'unknown' so any code
+    // that branches on the value handles "unknown" honestly.
     void verifyAndStore({
       token: trimmed,
-      tenantId: 'unknown',
-      buildingId: 'unknown',
+      tenantId: null,
+      buildingId: null,
       buildingName: manualBuildingName.trim() || 'this building',
       tenantName: null,
       primaryColor: null,
@@ -123,13 +127,15 @@ export function KioskSetupPage() {
   function handleReset() {
     clearKioskSession();
     setStatus('idle');
-    toastError('Kiosk reset', { description: 'Local session cleared.' });
+    // Reset is a successful admin action, not an error — surface it as
+    // a confirmation rather than an error toast.
+    toastSuccess('Kiosk reset', { description: 'Local session cleared.' });
   }
 
   const existing = readKioskSession();
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-8 p-8 portrait:hidden">
+    <div className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
       <div className="flex w-full max-w-2xl flex-col gap-8">
         <header className="flex flex-col gap-2 text-center">
           <h1 className="text-4xl font-semibold tracking-tight">Kiosk setup</h1>
