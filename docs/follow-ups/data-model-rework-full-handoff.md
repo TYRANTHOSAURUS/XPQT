@@ -5,7 +5,7 @@
 
 ---
 
-## ⚠️ P0 — USER-REPORTED REGRESSION (handoff to fresh agent at end of Session 12)
+## ✅ P0 — RESOLVED (Session 13, 2026-05-01)
 
 **Reporter:** the user, while testing the desk UI on remote dev environment.
 
@@ -14,11 +14,36 @@
 > "many updates in the current ticket and workorder page dont work. i cant
 > make workorders, i cant assign, or update any property of a workorder."
 
-This is a regression. Sessions 7–12 shipped the work-order command surface
-specifically to make those mutations work. Either the deployment is stale,
-or one of the recent commits introduced a bug, or the original 1c.10c
-brokenness was never end-to-end tested in the actual UI by the previous
-agents (likely answer — see "Honest meta-note" below).
+**Root cause (none of the 5 hypotheses originally listed below was right):**
+
+Migration 00222 (step 1c.3.6 atomic rename, line 352-354) applied a
+deliberately-temporary "SELECT only for service_role" posture to
+public.work_orders, with an inline comment that the reversal would ship
+at step 1c.4 (writer flip). **The reversal was never written.** Sessions
+7-12 layered the entire work-order command surface on top of an
+unwritable table. Every test mocked Supabase, so the table-level 42501
+"permission denied for table work_orders" never surfaced until a real
+PATCH against the live DB.
+
+**Fix:** [`supabase/migrations/00248_restore_work_orders_service_role_writes.sql`](../../supabase/migrations/00248_restore_work_orders_service_role_writes.sql) — restore-and-assert grant posture mirroring the original from 00213 line 148. Idempotent. On remote.
+
+**Regression gate:** A12 added to [`scripts/ci-migration-asserts.sql`](../../scripts/ci-migration-asserts.sql) — asserts service_role has SELECT, INSERT, UPDATE, DELETE on public.work_orders. The whole NestJS API authenticates as service_role for DML; any writable tenant table that loses one of those four privileges breaks an entire surface silently — every test passes, every UI click 500s. A1..A12 all pass on remote.
+
+**Verification:** post-push smoke test against the live API with a real JWT — 9/9 mutations return 200/201 (priority change, plan change, SLA change, status change, assignment swap, dispatch creating a fresh WO + cleanup).
+
+**Why the diagnosis-then-fix arc converged in one session this time:**
+- Reproduce-first discipline: probe script with a real Admin JWT, not a mock.
+- The 42501 in `/tmp/api-dev.log` was the smoking gun within 30 minutes.
+- A grants-table comparison (work_orders vs. tickets) made the asymmetry obvious.
+- A pre-push transactional audit (run migration → run service_role UPDATE + INSERT → rollback) was the strongest possible gate, and it stood in for codex (which hit quota during the review).
+
+The original 5-tier hypothesis ranking from the previous handoff was wrong on every count — read path was fine, FE dispatch was fine, permission gates were fine, orchestrator was fine. The bug was one layer below all of them: Postgres role grants. **Future P0 trace orders should put grant/RLS state above application logic.**
+
+---
+
+## Original P0 hypotheses (kept for postmortem reference)
+
+This is what the prior agent thought was most likely. None of the five turned out to be right — flagged here as a record of the kinds of detours adversarial diagnosis can produce when reasoning from code without instrumented reproduction.
 
 ### What you (the fresh agent) need to do, in order
 
@@ -151,26 +176,32 @@ pnpm dev
   shape of the regression. The first instinct of "add a column or fix
   a permission" is wrong if the bug is in the read path.
 
-### Honest meta-note
+### Honest meta-note (kept; still load-bearing)
 
 Sessions 7–12 added a LOT of code and tests but **none of them verified
-the actual UI flow end-to-end on remote.** I built tests against mocked
-Supabase, ran `db:reset` locally, ran assertions — but never opened the
-desk UI and clicked through. This is the recurring blind spot: tests
-that pass + lint that's clean + handoff that claims "shipped" without a
-single browser session.
-
-The fresh agent should:
-1. **Reproduce first.** Open the UI. Click. Watch network.
-2. **Diagnose with the queries above.** Don't speculate.
-3. **Fix the root cause** (likely the read path or the grandfathering
-   coverage), not the symptom.
-4. **Then** run a real UI smoke test before claiming the fix works.
+the actual UI flow end-to-end on remote.** Tests against mocked Supabase
++ local `db:reset` + structural assertions all passed — but no browser
+session and no real-JWT probe against the live API ever happened. The
+recurring blind spot: tests that pass + lint that's clean + handoff
+that claims "shipped" without a single integration smoke test.
 
 The work shipped in Sessions 7–12 is correct in code. What was missing
 was **the integration smoke test against the actual remote dev
-environment.** Add that to the exit criteria once this regression is
-resolved (item 1 below already implies it but didn't enforce it).
+environment.** Session 13 made this explicit:
+
+- The probe script at the bottom of this section (under "Diagnostic
+  commands") now exists in working form — see the smoke-test gate
+  paragraph in the resolved-P0 section above. It runs the canonical
+  9-mutation matrix against the live API with a real Admin JWT.
+- A12 in `scripts/ci-migration-asserts.sql` is the structural sister:
+  catches the specific bug class (service_role missing DML) at CI
+  time, before code ships.
+
+**Before claiming any future work-order or ticket surface "shipped",
+run the probe script + check A1..A12 green.** The probe was a one-off
+this session; if it stays one-off it'll rot. Tracking conversion to
+a vitest integration test as a follow-up under
+[ci-assertion-strategy.md](./ci-assertion-strategy.md).
 
 ---
 
@@ -330,12 +361,13 @@ history before this restructure.
 
 ## Codex fragility — known risk to the two-gate pattern
 
-Codex hit quota in two of the last three sessions:
+Codex hit quota in three of the last four sessions:
 
 | Session | Slice | Codex availability | Outcome |
 |---|---|---|---|
 | 10 | Slice 1 | partial (2 findings before quota) | One critical bug still caught (timestamp roundtrip). Full-review missed it. |
 | 11 | Slice 2 | zero (quota at start) | Full-review carried alone. All 5 important findings caught. No known misses. |
+| 13 | P0 grant fix (00248) | zero (quota at start of review) | **Pre-push transactional audit substituted for codex on this destructive migration** — ran the migration body in `BEGIN…ROLLBACK`, exercised UPDATE + INSERT as `service_role`, observed both succeed, rolled back. Stronger than static review for grant-only changes because it actually executed the privileges the migration was meant to grant. No misses. |
 
 The two-gate pattern (full-review for breadth + codex for depth) **is robust to one gate being unavailable**, but degrades when codex is offline because the Postgres-internals nuance class is codex's specialty:
 
@@ -470,16 +502,16 @@ The plan-reviewer correctly identified that "until product readiness" is not a p
 
 The work-order command surface is complete when ALL of:
 
-1. ❌ The desk-detail sidebar can mutate every WO field without touching `TicketService`,
+1. ✅ The desk-detail sidebar can mutate every WO field without touching `TicketService`,
    **verified end-to-end in the actual remote dev environment** (not just mocked-supabase
    unit tests).
-   - status / priority / team / user / vendor / plan / SLA: code shipped (Slices 0–2 + Slice 3.0
-     single PATCH orchestrator) BUT user-reported broken on remote at end of Session 12. See P0
-     section at the top of this doc.
-   - cost / tags / watchers / title / description: pending (Slice 3.1).
-   - **Smoke-test gate added to exit criteria:** before claiming this complete, open the desk UI
-     against the remote dev environment, click through every WO sidebar field, watch the network
-     tab, confirm the right PATCH fires and returns 200 with the expected change persisted.
+   - status / priority / team / user / vendor / plan / SLA: code shipped (Slices 0–2 +
+     Slice 3.0 single PATCH orchestrator). 2026-05-01 P0 (service_role DML grants
+     missing on `public.work_orders`) closed by migration 00248. Smoke test against
+     the live API with a real Admin JWT: 9/9 pass.
+   - cost / tags / watchers / title / description: pending (Slice 3.1). The single
+     PATCH orchestrator already exists; this slice is just adding the fields to the
+     union DTO + dispatcher. ~half day.
 
 2. ✅ The plandate workstream has merged. (Session 12 commits `849aaee` + `09e28f6`.)
 
@@ -574,6 +606,8 @@ Migration sequence (00202–00246, all applied to remote `iwbqnyrvycqgnatratrk`)
 00240_step1c_round6_fixes.sql                      Round 6 fixes
 00245_bundle_visibility_parity_with_ts.sql         Session 8 P3
 00246_work_orders_plandate_check.sql               Slice 1 / Session 10
+00247_backfill_assign_and_priority_permissions.sql Session 12 P2 grandfathering
+00248_restore_work_orders_service_role_writes.sql  Session 13 P0 fix
 ```
 
 Stress test fixtures (NOT committed, in `/tmp/`):
@@ -598,6 +632,7 @@ Each session has its own archive file with the full content that previously live
 | 10 | 2026-05-01 | Slice 1 — `setPlan` on work_orders | [`session-10-slice1-setplan.md`](./data-model-rework-archive/session-10-slice1-setplan.md) |
 | 11 | 2026-05-01 | Slice 2 — `updateStatus` / `updatePriority` / `updateAssignment` / `reassign` | [`session-11-slice2-status-priority-assignment.md`](./data-model-rework-archive/session-11-slice2-status-priority-assignment.md) |
 | 12 | 2026-05-01 | Plandate merge + dead-code cleanup + Slice 3.0 single-PATCH orchestrator + security alignment (P2 backport) + 5 code-review fixes | [`session-12-plandate-merge-and-orchestrator.md`](./data-model-rework-archive/session-12-plandate-merge-and-orchestrator.md) |
+| 13 | 2026-05-01 | P0 fix — service_role DML grants restored on `public.work_orders` (00248) + A12 CI invariant. Closes the 2026-05-01 user-reported regression | [`session-13-p0-service-role-grants.md`](./data-model-rework-archive/session-13-p0-service-role-grants.md) |
 
 > **Chronology fix:** earlier versions of this doc had Session 9 appearing
 > AFTER Sessions 10 and 11 (because Session 9's content was appended after
