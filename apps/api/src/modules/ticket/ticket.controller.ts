@@ -21,7 +21,6 @@ import {
   UpdateTicketDto,
   AddActivityDto,
   ReassignDto,
-  SetPlanDto,
 } from './ticket.service';
 import { DispatchService, DispatchDto } from './dispatch.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
@@ -136,27 +135,6 @@ export class TicketController {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw new UnauthorizedException('No auth user');
     return this.dispatchService.dispatch(id, dto, actorAuthUid);
-  }
-
-  @Patch(':id/plan')
-  async setPlan(@Req() request: Request, @Param('id') id: string, @Body() dto: SetPlanDto) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    return this.ticketService.setPlan(id, dto, actorAuthUid);
-  }
-
-  @Get(':id/can-plan')
-  async getCanPlan(@Req() request: Request, @Param('id') id: string) {
-    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
-    const tenantId = TenantContext.current().id;
-    const ctx = await this.visibility.loadContext(actorAuthUid, tenantId);
-    try {
-      await this.visibility.assertCanPlan(id, ctx);
-      return { canPlan: true };
-    } catch {
-      return { canPlan: false };
-    }
   }
 
   @Get(':id/activities')

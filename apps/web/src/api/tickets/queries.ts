@@ -38,19 +38,6 @@ export function useTicketActivities(id: string) {
   return useQuery(ticketActivitiesOptions(id));
 }
 
-export function ticketCanPlanOptions(id: string) {
-  return queryOptions({
-    queryKey: ticketKeys.canPlan(id),
-    queryFn: ({ signal }) => apiFetch<{ canPlan: boolean }>(`/tickets/${id}/can-plan`, { signal }),
-    staleTime: 60_000,
-    enabled: Boolean(id),
-  });
-}
-
-export function useCanPlanTicket(id: string) {
-  return useQuery(ticketCanPlanOptions(id));
-}
-
 export function ticketTagSuggestionsOptions() {
   return queryOptions({
     queryKey: ticketKeys.tagSuggestions(),

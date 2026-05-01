@@ -141,54 +141,6 @@ export function useReassignTicket(id: string) {
   });
 }
 
-interface SetPlanMutationContext {
-  previous: TicketDetail | undefined;
-}
-
-/**
- * PATCH /tickets/:id/plan — assignee/vendor/team-member declare when work
- * is planned. Plandate is distinct from due_at (commitment) and resolved_at
- * (actual). Always emits an activity row, so the feed cache is invalidated.
- */
-export function useSetTicketPlan(id: string) {
-  const qc = useQueryClient();
-
-  return useMutation<TicketDetail, Error, SetPlanPayload, SetPlanMutationContext>({
-    mutationFn: (payload) =>
-      apiFetch<TicketDetail>(`/tickets/${id}/plan`, {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
-      }),
-
-    onMutate: async (payload) => {
-      await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
-      const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
-      if (previous) {
-        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), {
-          ...previous,
-          planned_start_at: payload.planned_start_at,
-          planned_duration_minutes:
-            payload.planned_start_at === null
-              ? null
-              : payload.planned_duration_minutes ?? previous.planned_duration_minutes,
-        });
-      }
-      return { previous };
-    },
-
-    onError: (_err, _payload, ctx) => {
-      if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
-    },
-
-    onSettled: () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
-        qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
-        qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
-  });
-}
-
 /**
  * POST a comment/note to a ticket. Uploads attachments first (if any), then
  * creates the activity row referencing them. One mutation from the caller's
