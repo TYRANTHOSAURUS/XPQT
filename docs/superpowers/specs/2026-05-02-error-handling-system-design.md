@@ -252,30 +252,83 @@ export function RateLimitToast(props): JSX.Element;     // live countdown via us
 
 Why a class component, not data-router `errorElement`: the app uses `<BrowserRouter>` + `<Routes>` (`apps/web/src/main.tsx:13-21`). `errorElement` requires `createBrowserRouter` + `RouterProvider`. Migrating the route tree (131 `<Route>` declarations across `App.tsx` + nested layouts) is a multi-day refactor outside this spec. Class boundaries handle the same use case with less ceremony and don't block this work; if/when a future decision migrates to a data router, the boundary becomes a thin wrapper around `errorElement`.
 
-### 3.5 Hook integration — the only API call sites should learn
+### 3.5 Hook integration — composable helpers, not a hook replacement
+
+A wrapper hook that owns `onError` fights React Query's contract: caller `onError` is where rollback / cache invalidation lives, `onMutate` returns context the rollback path reads, and ordering between wrapper-`onError` and caller-`onError` is ambiguous. Of the ~42 `useMutation` call sites in the codebase, ~6 use `onMutate` (optimistic) and several are RHF-coupled or composer-flow-coupled — none of these compose cleanly with a wrapping hook.
+
+Instead, ship **composable helpers** that the caller invokes from inside their own `onError`:
 
 ```ts
-// apps/web/src/lib/errors/use-mutation-with-errors.ts
-export function useMutationWithErrors<TData, TVars>(
-  options: UseMutationOptions<TData, ApiError, TVars> & {
-    /** Title for action-class toasts. Required if onError isn't provided. */
-    actionTitle?: string;
-    /** RHF setError, if this mutation backs a form. Field errors flow here. */
-    setFormError?: (field: string, error: { type: string; message: string }) => void;
+// apps/web/src/lib/errors/handle-mutation-error.ts
+export function handleMutationError(
+  error: unknown,
+  context: {
+    actionTitle: string;                                          // 'Couldn't save webhook' (voice rule applies)
+    retry?: () => void;                                           // re-run, if mutation is re-runnable
+    setFormError?: (field: string, error: FieldError) => void;    // RHF setError, for validation
+    onConflict?: 'modal' | 'silent_revert' | 'throw_to_boundary'; // default 'modal' once shipped
+    rollbackExplain?: string;                                     // appended to optimistic-rollback toast if set
   },
-): UseMutationResult<TData, ApiError, TVars>;
+): void;
+
+// apps/web/src/lib/errors/mutation-options.ts
+export function withErrorHandling<TVars>(
+  context: HandleMutationErrorContext,
+): { onError: (error: unknown, vars: TVars, ctx: unknown) => void };
+//   ↑ returns an `onError` the caller spreads into mutationOptions when they
+//     don't have their own onError. For callers with their own onError, they
+//     call handleMutationError(error, { ... }) directly inside it.
 ```
 
-That's the single new API surface. Hand-rolling `onError` is no longer needed for 95% of cases. The hook:
+Three usage shapes — caller picks the one that fits:
 
-1. Classifies the thrown `ApiError`.
-2. If validation + `setFormError` provided → routes fields, optionally suppresses toast.
-3. If conflict → opens `ConflictModal` with the body's `serverVersion`/`clientVersion`.
-4. If retry-able server error → toast with `Retry` action wired to mutation re-run.
-5. If anything else → renders to the surface for that class.
-6. Logs the full classified error with traceId.
+**A. Simple mutation (no optimistic, no form, no rollback) — most common:**
 
-A matching `useQueryWithErrors` exists for read paths; mostly thinner because read errors usually surface as page state, not toast.
+```tsx
+const mutation = useMutation({
+  mutationFn: api.saveWebhook,
+  ...withErrorHandling({ actionTitle: "Couldn't save webhook" }),
+});
+```
+
+**B. Form-coupled mutation — fields[] route to RHF:**
+
+```tsx
+const form = useForm<WebhookFormValues>();
+const mutation = useMutation({
+  mutationFn: api.saveWebhook,
+  ...withErrorHandling({
+    actionTitle: "Couldn't save webhook",
+    setFormError: form.setError,                       // validation errors paint inline
+  }),
+});
+```
+
+**C. Optimistic mutation — caller owns onError, calls helper inside:**
+
+```tsx
+const mutation = useMutation({
+  mutationFn: api.toggleFavorite,
+  onMutate: async (vars) => {
+    await qc.cancelQueries(...);
+    const prev = qc.getQueryData(...);
+    qc.setQueryData(..., optimistic(prev, vars));
+    return { prev };
+  },
+  onError: (error, vars, ctx) => {
+    qc.setQueryData(..., ctx?.prev);                   // rollback FIRST
+    handleMutationError(error, {                       // then surface
+      actionTitle: "Couldn't update favorite",
+      rollbackExplain: 'We undid your change',
+    });
+  },
+  onSettled: () => qc.invalidateQueries(...),
+});
+```
+
+That's the single new API surface. The voice rule (`actionTitle = "Couldn't <verb> <thing>"`) is preserved because the helpers feed into the existing `toastError` from `apps/web/src/lib/toast.ts` (see §3.4 below). The wrapper-hook idea is explicitly rejected.
+
+A matching `handleQueryError` helper exists for read paths and is thinner — most read errors surface via the route ErrorBoundary (page-class) or React Query's normal error state (inline-class). Pages that want a toast fallback for transient query errors call `handleQueryError(error, { actionTitle })` from a `useEffect` keyed on `error`.
 
 ## 4 · The error class × surface × recovery matrix
 
@@ -383,10 +436,13 @@ When a mutation hits `409 conflict` with `serverVersion` + `clientVersion`:
 
 ### 6.4 Optimistic rollback animation
 
-`useMutationWithErrors` extends React Query's `onError` rollback path:
-1. Restore previous state via the user-supplied `rollback`.
-2. If `setFormError` not provided and class is server/conflict/permission → toast: "We undid your change — <message>".
-3. Toast duration = 6s; includes `Retry`.
+The caller owns the `onMutate` / rollback path (see §3.5 shape C). `handleMutationError` ships an opt-in animation step:
+
+1. Caller restores previous state inside its own `onError` (using `ctx.prev` from `onMutate`).
+2. Caller passes `rollbackExplain: 'We undid your change'` to `handleMutationError`.
+3. The helper renders a toast with that prefix + the classified message, duration 6s, `Retry` action wired to the caller's mutation.
+
+The animation itself (smooth revert, not a flicker) is the **caller's** responsibility and is enabled by passing the previous and current values through a shared `useTransition` / `view-transition` wrapper — documented as a recipe, not enforced. Silent reverts are still banned: callers must pass `rollbackExplain` if the rollback is user-visible.
 
 ### 6.5 Internationalization
 
@@ -406,7 +462,7 @@ This is incremental. Nothing breaks on day one.
 
 **Wave 1 — Classifier + 3 surfaces** — ~3 days
 - Ship `classify()` + `ClassifiedError` types + tests.
-- Ship `useMutationWithErrors` + `useQueryWithErrors`.
+- Ship `handleMutationError` + `withErrorHandling` + `handleQueryError` helpers.
 - Ship 3 renderers: toast, inline (FieldError integration), banner.
 - Migrate the 5 highest-traffic mutations behind a feature flag.
 - **Visible result:** validation errors paint inline; offline shows a banner; toasts for everything else look mostly the same but now have traceId.
