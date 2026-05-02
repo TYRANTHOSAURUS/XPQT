@@ -693,11 +693,22 @@ function VisitorsSidebarPanel() {
         <SidebarGroup>
           <SidebarGroupLabel>Calendar</SidebarGroupLabel>
           <SidebarGroupContent className="px-2">
+            {/*
+             * Fill the sidebar width. shadcn's Calendar defaults to
+             * `w-fit` on its root + classNames.root, which collapses to
+             * the day-grid's natural width and leaves a gap on the
+             * right inside the sidebar. Override the root classes to
+             * `w-full` so the day cells flex-grow across the available
+             * width. The day cells themselves already use
+             * `aspect-square w-full` per the upstream classNames, so
+             * widening the row hands the extra px to each cell evenly.
+             */}
             <Calendar
               mode="single"
               selected={activeDate}
               onSelect={onPickDate}
-              className="rounded-md border bg-background"
+              className="w-full rounded-md border bg-background"
+              classNames={{ root: "rdp-root w-full" }}
             />
           </SidebarGroupContent>
         </SidebarGroup>
