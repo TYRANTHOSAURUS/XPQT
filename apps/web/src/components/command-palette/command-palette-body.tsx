@@ -18,10 +18,10 @@ import {
   Search as SearchIcon,
   Store,
   Ticket,
-  Trash2,
   User,
   UserCheck,
   Users,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -36,7 +36,6 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import {
   HoverCard,
   HoverCardContent,
@@ -684,28 +683,13 @@ function RecentsGroup({
   onClear: () => void;
   onDrop: (key: string) => void;
 }) {
+  // The clear-recents control must be reachable by keyboard. cmdk strips
+  // focus from non-CommandItem children inside CommandGroup heading, so
+  // a `<Button onMouseDown>` in the heading was mouse-only. We render
+  // the action as the LAST CommandItem in the group instead — arrow keys
+  // walk into it; Enter triggers `onClear`.
   return (
-    <CommandGroup
-      heading={
-        <div className="flex items-center justify-between">
-          <span>Recent</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 px-1.5 text-[10px] font-normal text-muted-foreground hover:text-foreground"
-            onMouseDown={(e) => {
-              // Prevent cmdk from absorbing the click.
-              e.preventDefault();
-              e.stopPropagation();
-              onClear();
-            }}
-          >
-            <Trash2 className="size-3" />
-            Clear
-          </Button>
-        </div>
-      }
-    >
+    <CommandGroup heading="Recent">
       {recents.map((r) => (
         <CommandItem
           key={r.key}
@@ -721,6 +705,15 @@ function RecentsGroup({
           ) : null}
         </CommandItem>
       ))}
+      <CommandItem
+        value="__clear_recents__"
+        onSelect={onClear}
+        aria-label="Clear recent items"
+        className="text-muted-foreground"
+      >
+        <X className="opacity-60" />
+        <span className="text-xs">Clear recent</span>
+      </CommandItem>
     </CommandGroup>
   );
 }
