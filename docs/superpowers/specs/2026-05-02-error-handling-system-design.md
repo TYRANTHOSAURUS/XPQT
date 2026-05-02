@@ -41,7 +41,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 16 | **Realtime / sync drops are status-bar UI, not toasts.** A subtle dot in the app shell shows connection state; only escalate to a banner if disconnected >30s; only toast if unrecoverable. | Realtime flaps. Toasting every flap is hostile. |
 | 17 | **Rate-limit errors carry `retryAfter` seconds** and the renderer shows a live countdown ("Try in 47s"). 429s without `retryAfter` are a server bug. | "Too many requests" with no countdown is information-free. |
 | 18 | **Stale / version conflicts ship with `serverVersion` and `clientVersion` in the body.** Renderer surfaces "Someone else just changed this" with `[Use theirs] [Keep mine] [Show diff]` — actual conflict resolution, not a generic "Reload". | Linear / Notion / Figma all do this. It's a tier-1 differentiator for a multi-user product. |
-| 19 | **No new logging system.** TraceId + structured server logs already exist; this spec only demands the traceId be surfaced to the user and propagated through `ApiError`. Sentry / external aggregator is a separate decision. | Resist scope creep — this spec is about the contract + UX, not observability infra. |
+| 19 | **TraceId infrastructure is greenfield in this codebase and ships as part of Wave 0.** Today there is no request-id middleware, `req.id` is not populated (NestJS/Express don't set it), and structured logs do not carry a traceId. Wave 0 builds: (a) a request-id Nest middleware (`req.id = req.headers['x-request-id'] ?? newUlid()`), (b) `X-Request-Id` response header, (c) traceId injection into the existing logger (no new logging *system*; minimal changes to the existing Logger to include traceId on every log line), (d) traceId propagation into `ApiError` from the response header. **Out of scope:** Sentry / external log aggregator / centralized observability platform — those remain a separate decision. | Resist scope creep on observability tooling, but be honest that the traceId glue this spec relies on is new code, not "already exists." |
 | 20 | **Ship behind a feature flag for the renderer**, not the filter. The filter normalises silently; the new toast/page renderers can be toggled per surface during rollout to validate they aren't more noisy than the old behaviour. | Filter is server-side and harmless to turn on. UX changes need supervised rollout. |
 
 ## 3 · Architecture
@@ -345,8 +345,10 @@ Adding a new code to the server without registering a client message is allowed 
 
 ### 6.1 TraceId propagation
 
-- API middleware generates `traceId` (`req_<ulid>`) per request, attaches to `req.id`, sets `X-Request-Id` response header.
-- All structured logs include `traceId`.
+**This is greenfield infrastructure** — see decision #19. Today the API has no request-id middleware, `req.id` is unset, and the logger does not include a traceId on log lines. Wave 0 ships all of the below:
+
+- **New** Nest middleware (`apps/api/src/common/middleware/request-id.middleware.ts`): reads `X-Request-Id` from inbound headers, falls back to a generated `req_<ulid>`, assigns to `req.id`, and sets `X-Request-Id` on the response. Registered globally before any route handlers run.
+- **Existing logger gets enrichment**: extend the Nest `Logger` adapter so every log line emitted during a request automatically includes `traceId` from `req.id` via AsyncLocalStorage (the same ALS the tenant middleware already uses — see `apps/api/src/common/middleware/tenant.middleware.ts`). No new logging system, no log shipper.
 - `AllExceptionsFilter` injects `traceId` into the response body's `traceId` field.
 - `apiFetch` reads `X-Request-Id` from every response (success or error) and stamps it on `ApiError.traceId`.
 - Toast helper for server-class errors renders traceId as small monospace text below the description with a copy-on-click.
@@ -386,12 +388,13 @@ When a mutation hits `409 conflict` with `serverVersion` + `clientVersion`:
 
 This is incremental. Nothing breaks on day one.
 
-**Wave 0 — Foundation (no UX change yet)** — ~3 days
-- Ship `AllExceptionsFilter` server-side. Default behaviour: every error is now wire-shaped. Old throw sites map to `generic.bad_request` etc. — no client behaviour change because client still reads `error.message`.
-- Ship `ApiError` extensions (typed accessors for `code`, `traceId`, `fields`, etc.).
-- Ship traceId middleware on the API.
-- Ship Sentry-equivalent log enrichment with traceId.
-- **Visible result:** every error now has a traceId in the body. Nothing else changes.
+**Wave 0 — Foundation (no UX change yet)** — ~5 days
+- Ship request-id middleware (`apps/api/src/common/middleware/request-id.middleware.ts`): reads `X-Request-Id` from inbound, generates ULID-prefixed `req_<ulid>` if missing, attaches to `req.id`, sets response header.
+- Ship logger enrichment so every log line includes `traceId` (extend the existing Nest `Logger` adapter; no new logging system).
+- Ship `AllExceptionsFilter` server-side with `normalize()` covering AppError / HttpException / ZodError / Postgrest / pg-native / AbortError / unknown.
+- Ship `AppError` + factory module + ESLint guard against bare `throw new Error(...)` outside the factory.
+- Ship `ApiError` client extensions (typed accessors for `code`, `traceId`, `fields`, etc.) + read `X-Request-Id` from every response.
+- **Visible result:** every error now has a traceId in the body and in server logs. Nothing else changes user-visibly.
 
 **Wave 1 — Classifier + 3 surfaces** — ~3 days
 - Ship `classify()` + `ClassifiedError` types + tests.
