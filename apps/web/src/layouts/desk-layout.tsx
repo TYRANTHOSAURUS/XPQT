@@ -18,6 +18,7 @@ import { ShellSwitcher } from '@/components/shell-switcher';
 import { SearchTrigger } from '@/components/command-palette/search-trigger';
 import { useTicketDetail } from '@/api/tickets';
 import { formatTicketRef } from '@/lib/format-ref';
+import { ReceptionBuildingProvider } from '@/components/desk/desk-building-context';
 
 const pageTitles: Record<string, string> = {
   '/desk/inbox': 'Inbox',
@@ -35,6 +36,15 @@ export function DeskLayout() {
     (location.pathname.startsWith('/desk/reports') ? 'Reports' : 'Service Desk');
 
   return (
+    // ReceptionBuildingProvider must wrap BOTH the sidebar and the page
+    // content. The visitors-sidebar panel renders the building picker
+    // (which reads `useReceptionBuilding`), and the visitors page
+    // consumes the same context. Mounting the provider only inside the
+    // page (the previous shape) crashed the sidebar's picker with
+    // "useReceptionBuilding called outside provider". Provider work is
+    // light — it just reads the cached spaces query — so other desk
+    // pages that don't render a building-aware sidebar pay nothing.
+    <ReceptionBuildingProvider>
     <SidebarProvider>
       <DeskSidebar />
       <SidebarInset>
@@ -74,6 +84,7 @@ export function DeskLayout() {
         </div>
       </SidebarInset>
     </SidebarProvider>
+    </ReceptionBuildingProvider>
   );
 }
 

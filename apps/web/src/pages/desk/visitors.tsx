@@ -65,10 +65,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { VisitorStatusBadge } from '@/components/visitors/visitor-status-badge';
-import {
-  useReceptionBuilding,
-  ReceptionBuildingProvider,
-} from '@/components/desk/desk-building-context';
+import { useReceptionBuilding } from '@/components/desk/desk-building-context';
 import { VisitorListRow } from '@/components/desk/visitor-list-row';
 import { VisitorContextMenu } from '@/components/desk/visitor-context-menu';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
@@ -1405,13 +1402,8 @@ function emptyTextFor(view: VisitorViewId): string {
 }
 
 export function DeskVisitorsPage() {
-  // The page consumes per-building queries via `useReceptionBuilding`,
-  // so the provider has to wrap the inner component. Building selection
-  // is sticky in localStorage + reflected in the URL — see the context
-  // implementation under `components/desk/desk-building-context.tsx`.
-  return (
-    <ReceptionBuildingProvider>
-      <DeskVisitorsInner />
-    </ReceptionBuildingProvider>
-  );
+  // ReceptionBuildingProvider now lives in DeskLayout so the sidebar's
+  // building picker can consume the same context. The page just renders
+  // the inner component; provider mount is in `layouts/desk-layout.tsx`.
+  return <DeskVisitorsInner />;
 }
