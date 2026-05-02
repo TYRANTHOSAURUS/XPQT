@@ -235,9 +235,11 @@ export class ReceptionService {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];
 
-    const dayStart = startOfDay(new Date()).toISOString();
-    const dayEnd = endOfDay(new Date()).toISOString();
-
+    // Search is explicit user intent — typing "james" should find James
+    // regardless of when he's expected. Previously the SQL date-windowed to
+    // "today" which silently hid future-dated visitors created via the
+    // booking-composer. Now the only date floor is "not in the past more
+    // than 30 days" (a soft sanity bound to keep the trigram pool small).
     // pg_trgm path. similarity() across name/company/host fields, take
     // top 20 by best-match score.
     //
@@ -247,7 +249,8 @@ export class ReceptionService {
     // `pg_trgm.similarity_threshold` GUC (default 0.3). We keep the
     // explicit `score > 0.2` filter on the computed column so the
     // ranking threshold remains stable across sessions; the `%` is a
-    // pure index-prune over the day's visitor set.
+    // pure index-prune over the candidate set.
+    const horizonStart = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
     const trigramSql = `
       with visible as (
         select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
@@ -262,8 +265,8 @@ export class ReceptionService {
            and v.building_id = $3
            and v.id in (select id from visible)
            and (
-             (v.status = 'expected'    and v.expected_at >= $5 and v.expected_at <= $6) or
-             v.status in ('arrived', 'in_meeting')
+             v.status in ('pending_approval', 'expected', 'arrived', 'in_meeting') or
+             (v.status in ('checked_out', 'no_show', 'cancelled', 'denied') and coalesce(v.checked_out_at, v.arrived_at, v.expected_at) >= $5)
            )
            and (
              coalesce(v.first_name,'')    % $4
@@ -294,7 +297,7 @@ export class ReceptionService {
 
     let rows = await this.db.queryMany<VisitorRowDb & { score: number }>(
       trigramSql,
-      [userId, tenantId, buildingId, trimmed, dayStart, dayEnd],
+      [userId, tenantId, buildingId, trimmed, horizonStart],
     );
 
     if (rows.length === 0) {
@@ -312,8 +315,8 @@ export class ReceptionService {
           and v.building_id = $3
           and v.id in (select id from visible)
           and (
-            (v.status = 'expected'    and v.expected_at >= $5 and v.expected_at <= $6) or
-            v.status in ('arrived', 'in_meeting')
+            v.status in ('pending_approval', 'expected', 'arrived', 'in_meeting') or
+            (v.status in ('checked_out', 'no_show', 'cancelled', 'denied') and coalesce(v.checked_out_at, v.arrived_at, v.expected_at) >= $5)
           )
           and (
             v.first_name  ilike $4 or
@@ -327,7 +330,7 @@ export class ReceptionService {
       `;
       rows = await this.db.queryMany<VisitorRowDb & { score: number }>(
         ilikeSql,
-        [userId, tenantId, buildingId, pattern, dayStart, dayEnd],
+        [userId, tenantId, buildingId, pattern, horizonStart],
       );
     }
 
