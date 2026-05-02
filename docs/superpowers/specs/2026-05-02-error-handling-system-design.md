@@ -372,13 +372,13 @@ This is the contract. Every classifier branch lands one row. **Surface = `f(clas
 
 ## 5 · Code taxonomy — the registry
 
-Codes are domain-namespaced. The **single source of truth** is the workspace package `packages/shared/error-codes` (already a viable home — `packages/shared` exists and exports types consumed by both apps). The package exports:
+Codes are domain-namespaced. The **single source of truth** lives in the existing workspace package `@prequest/shared` (`packages/shared/`, single-export `index.ts`). Add `packages/shared/src/error-codes.ts` and re-export from `index.ts`; consumers import via `import { ErrorCode, ERROR_CODES } from '@prequest/shared'`. No subpath exports, no package config changes — extend the existing surface, don't fork it. The module exports:
 
 - `ErrorCode` — a TypeScript string-literal union of every registered code.
-- `ERROR_CODE_DOMAINS` — `Record<string, string>` mapping code → domain (`'ticket' | 'permission' | …`) for ESLint partition rules.
-- A runtime `Set<string>` for the filter to validate that any code it emits is registered.
+- `ERROR_CODE_DOMAINS` — `Record<ErrorCode, string>` mapping code → domain (`'ticket' | 'permission' | …`) for ESLint partition rules.
+- `ERROR_CODES: ReadonlySet<ErrorCode>` — runtime set the filter uses to validate every code it emits is registered.
 
-The server reads `ErrorCode` from this package when constructing `AppError`. The client reads it as the key set for `messages.<locale>.ts`. Adding a code = one PR that updates the shared package + adds messages in `messages.en.ts` + (Wave 4+) `messages.nl.ts`. CI guard:
+The server reads `ErrorCode` from `@prequest/shared` when constructing `AppError`. The client reads it as the key set for `messages.<locale>.ts`. Adding a code = one PR that touches `packages/shared/src/error-codes.ts` + adds messages in `messages.en.ts` + (Wave 4+) `messages.nl.ts`. CI guard:
 
 - Build fails if the server emits a code that isn't in the shared `Set`.
 - Build fails if `messages.en.ts` is missing any code from `ErrorCode`.
