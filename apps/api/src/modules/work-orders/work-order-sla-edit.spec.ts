@@ -235,7 +235,7 @@ describe('WorkOrderService.updateSla', () => {
     const svc = makeSvc(deps);
 
     await expect(svc.updateSla('wo1', 'sla-new', 'auth-uid-non-admin')).rejects.toThrow(
-      /sla\.override permission required/,
+      /sla\.override/,
     );
 
     // Confirm the gate ran the right RPC and stopped before mutating anything.

@@ -10,7 +10,13 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { WorkOrderService, type UpdateWorkOrderDto } from './work-order.service';
+import {
+  ERR_PRIORITY_INVALID,
+  ERR_TITLE_EMPTY,
+  VALID_PRIORITIES,
+  WorkOrderService,
+  type UpdateWorkOrderDto,
+} from './work-order.service';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -25,7 +31,10 @@ interface ReassignWorkOrderDto extends UpdateWorkOrderAssignmentDto {
 }
 
 const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
-const PRIORITY_VALUES = ['low', 'medium', 'high', 'critical'] as const;
+// Priority enum lives in work-order.service.ts as VALID_PRIORITIES — single
+// source of truth shared with the preflight + per-field methods. Importing
+// here so the controller's type-narrowing rejects malformed bodies before
+// the service runs, without drifting from the canonical list.
 
 /**
  * Work-order command surface. Lives at `/work-orders/*` and is intentionally
@@ -93,10 +102,8 @@ export class WorkOrderController {
     ) {
       throw new BadRequestException('waiting_reason must be a string or null');
     }
-    if (dto.priority !== undefined && !PRIORITY_VALUES.includes(dto.priority)) {
-      throw new BadRequestException(
-        `priority must be one of: ${PRIORITY_VALUES.join(', ')}`,
-      );
+    if (dto.priority !== undefined && !VALID_PRIORITIES.includes(dto.priority)) {
+      throw new BadRequestException(ERR_PRIORITY_INVALID);
     }
     for (const k of ASSIGNMENT_FIELDS) {
       if (
@@ -112,7 +119,7 @@ export class WorkOrderController {
       throw new BadRequestException('title must be a string');
     }
     if (dto.title !== undefined && dto.title.trim() === '') {
-      throw new BadRequestException('title must be a non-empty string');
+      throw new BadRequestException(ERR_TITLE_EMPTY);
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'description') &&

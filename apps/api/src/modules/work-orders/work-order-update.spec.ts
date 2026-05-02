@@ -386,13 +386,13 @@ describe('WorkOrderService.update (orchestrator)', () => {
     const { svc, spies } = makeSvc();
     spies.updateSla.mockReset().mockRejectedValue(
       new (require('@nestjs/common').ForbiddenException)(
-        'sla.override permission required to change a work order SLA',
+        "missing 'sla.override' permission",
       ),
     );
 
     await expect(
       svc.update('wo1', { sla_id: 'sla-x', priority: 'high' }, 'auth-uid-no-sla'),
-    ).rejects.toThrow(/sla\.override permission required/);
+    ).rejects.toThrow(/sla\.override/);
 
     // Priority dispatch was downstream of SLA in the apply order — must not
     // have fired after the SLA gate failed.
@@ -403,13 +403,13 @@ describe('WorkOrderService.update (orchestrator)', () => {
     const { svc, spies } = makeSvc();
     spies.updatePriority.mockReset().mockRejectedValue(
       new (require('@nestjs/common').ForbiddenException)(
-        'tickets.change_priority permission required to change a work order priority',
+        "missing 'tickets.change_priority' permission",
       ),
     );
 
     await expect(
       svc.update('wo1', { priority: 'high' }, 'auth-uid-no-priority'),
-    ).rejects.toThrow(/tickets\.change_priority permission required/);
+    ).rejects.toThrow(/tickets\.change_priority/);
   });
 
   // ── partial-commit prevention via preflight ────────────────────────
@@ -433,7 +433,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
         SYSTEM_ACTOR, // SYSTEM_ACTOR bypasses permission/visibility but
                       // NOT the format/validation checks
       ),
-    ).rejects.toThrow(/title must be a non-empty string/);
+    ).rejects.toThrow(/title must not be empty/);
 
     // Critical assertion: NONE of the per-field methods were dispatched.
     // Pre-fix, priority + assignment would have committed before the
@@ -464,6 +464,82 @@ describe('WorkOrderService.update (orchestrator)', () => {
     expect(spies.updateAssignment).not.toHaveBeenCalled();
   });
 
+  it('preflight rejects with 403 when caller lacks tickets.assign — no per-field method runs', async () => {
+    // Full-review #5 — every existing partial-commit-prevention test
+    // uses has_write_all=true, which short-circuits the permission RPC
+    // path entirely. This test covers the gap: real auth uid + write_all
+    // disabled + the RPC mock returning falsy. Asserts the 403 propagates
+    // and NO per-field method ran.
+    const refetchedRow = makeRow();
+    const refetchCalls: RefetchCall[] = [];
+    const supabase = {
+      admin: {
+        from: jest.fn((table: string) => ({
+          select: () => ({
+            eq: (_c1: string, v1: string) => ({
+              eq: (_c2: string, v2: string) => ({
+                maybeSingle: async () => {
+                  refetchCalls.push({ table, id: v1, tenant: v2 });
+                  return { data: { ...refetchedRow }, error: null };
+                },
+              }),
+            }),
+          }),
+        })),
+        // Permission RPC always returns falsy → preflight 403.
+        rpc: jest.fn(async () => ({ data: false, error: null })),
+      },
+    };
+    const slaService = {
+      restartTimers: jest.fn(),
+      pauseTimers: jest.fn(),
+      resumeTimers: jest.fn(),
+      completeTimers: jest.fn(),
+      startTimers: jest.fn(),
+      applyWaitingStateTransition: jest.fn(),
+    };
+    const visibility = {
+      loadContext: jest.fn().mockResolvedValue({
+        user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
+        team_ids: [], role_assignments: [], vendor_id: null,
+        has_read_all: false, has_write_all: false, // critical: no override
+      }),
+      assertCanPlan: jest.fn().mockResolvedValue(undefined),
+    };
+    const svc = new WorkOrderService(
+      supabase as never,
+      slaService as never,
+      visibility as never,
+    );
+    const spies = {
+      updateSla: jest.spyOn(svc, 'updateSla').mockResolvedValue(makeRow()),
+      setPlan: jest.spyOn(svc, 'setPlan').mockResolvedValue(makeRow()),
+      updateStatus: jest.spyOn(svc, 'updateStatus').mockResolvedValue(makeRow()),
+      updatePriority: jest.spyOn(svc, 'updatePriority').mockResolvedValue(makeRow()),
+      updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow()),
+      updateMetadata: jest.spyOn(svc, 'updateMetadata').mockResolvedValue(makeRow()),
+    };
+
+    await expect(
+      svc.update(
+        'wo1',
+        { assigned_team_id: '99999999-9999-9999-9999-999999999999' },
+        'auth-uid-no-perm',
+      ),
+    ).rejects.toThrow(/tickets\.assign/);
+
+    // Critical assertion: NO per-field method ran. Pre-fix this would
+    // have committed assignment because the per-field method's own
+    // permission gate fires AFTER its own visibility check — the
+    // orchestrator's preflight is the structural gate.
+    expect(spies.updateSla).not.toHaveBeenCalled();
+    expect(spies.setPlan).not.toHaveBeenCalled();
+    expect(spies.updateStatus).not.toHaveBeenCalled();
+    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(spies.updateAssignment).not.toHaveBeenCalled();
+    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  });
+
   it('preflight rejects on invalid priority before any write — no per-field method runs', async () => {
     const { svc, spies } = makeSvc();
 
@@ -491,7 +567,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
     const { svc, spies } = makeSvc();
     spies.updateAssignment.mockReset().mockRejectedValue(
       new (require('@nestjs/common').ForbiddenException)(
-        'tickets.assign permission required to change a work order assignment',
+        "missing 'tickets.assign' permission",
       ),
     );
 
@@ -501,6 +577,6 @@ describe('WorkOrderService.update (orchestrator)', () => {
         { assigned_user_id: '99999999-9999-9999-9999-999999999999' },
         SYSTEM_ACTOR,
       ),
-    ).rejects.toThrow(/tickets\.assign permission required/);
+    ).rejects.toThrow(/tickets\.assign/);
   });
 });

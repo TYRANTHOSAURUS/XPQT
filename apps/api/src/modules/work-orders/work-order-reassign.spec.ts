@@ -319,7 +319,7 @@ describe('WorkOrderService.reassign', () => {
         },
         'auth-uid-non-admin',
       ),
-    ).rejects.toThrow(/tickets\.assign permission required/);
+    ).rejects.toThrow(/tickets\.assign/);
 
     expect(deps.permissionChecks).toEqual([
       { user_id: 'u1', permission: 'tickets.assign' },

@@ -188,7 +188,7 @@ describe('WorkOrderService.updatePriority', () => {
     const svc = makeSvc(deps);
 
     await expect(svc.updatePriority('wo1', 'high', 'auth-uid-non-admin')).rejects.toThrow(
-      /tickets\.change_priority permission required/,
+      /tickets\.change_priority/,
     );
 
     expect(deps.permissionChecks).toEqual([
