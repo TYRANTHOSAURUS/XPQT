@@ -51,6 +51,10 @@ import {
   SearchIcon,
   ChefHatIcon,
   UserPlusIcon,
+  CalendarDaysIcon,
+  CheckCheckIcon,
+  KeyRoundIcon,
+  AlertCircleIcon,
 } from "lucide-react"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { useQuery, queryOptions } from "@tanstack/react-query"
@@ -60,7 +64,13 @@ import {
   viewPresets,
   type ViewId,
 } from "@/pages/desk/use-ticket-filters"
+import {
+  VISITOR_VIEW_ORDER,
+  visitorViewPresets,
+  type VisitorViewId,
+} from "@/pages/desk/use-visitor-filters"
 import { SchedulerSidebarPanel } from "@/components/desk/scheduler-sidebar-panel"
+import { Calendar } from "@/components/ui/calendar"
 
 const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
@@ -104,6 +114,17 @@ const viewLabels: Record<ViewId, string> = {
   unassigned: "Unassigned",
   sla_at_risk: "SLA at risk",
   recent: "Recent",
+}
+
+// Visitor view ids — match `useVisitorFilters` preset ids.
+const visitorViewIcons: Record<VisitorViewId, typeof UserIcon> = {
+  today: CalendarDaysIcon,
+  expected: HourglassIcon,
+  arrived: CheckCheckIcon,
+  pending_approval: AlertCircleIcon,
+  loose_ends: KeyRoundIcon,
+  all: GlobeIcon,
+  recent: ClockIcon,
 }
 
 const reportGroups: Array<{
@@ -430,6 +451,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
           </>
         ) : activeNav.path === "/desk/tickets" ? (
           <TicketsSidebarPanel />
+        ) : activeNav.path === "/desk/visitors" ? (
+          <VisitorsSidebarPanel />
         ) : activeNav.path === "/desk/bookings" ? (
           <BookingsSidebarPanel />
         ) : activeNav.path === "/desk/scheduler" ? (
@@ -577,6 +600,105 @@ function TicketsSidebarPanel() {
                 )
               })}
             </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </>
+  )
+}
+
+/**
+ * Sidebar panel shown when /desk/visitors is active. Mirrors the
+ * TicketsSidebarPanel: a list of named view presets at the top, plus
+ * a small calendar widget that drives the `?date=YYYY-MM-DD` filter
+ * for arbitrary days. The active view is derived from the `view`
+ * search param so deep-links highlight correctly.
+ */
+function VisitorsSidebarPanel() {
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const activeView = React.useMemo(() => {
+    if (!location.pathname.startsWith("/desk/visitors")) return null
+    const params = new URLSearchParams(location.search)
+    return params.get("view")
+  }, [location.pathname, location.search])
+
+  const activeDate = React.useMemo(() => {
+    if (!location.pathname.startsWith("/desk/visitors")) return undefined
+    const v = new URLSearchParams(location.search).get("date")
+    if (!v) return undefined
+    if (v === "today") {
+      const d = new Date()
+      d.setHours(0, 0, 0, 0)
+      return d
+    }
+    if (v === "tomorrow") {
+      const d = new Date()
+      d.setHours(0, 0, 0, 0)
+      d.setDate(d.getDate() + 1)
+      return d
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      const [yyyy, mm, dd] = v.split("-").map(Number)
+      return new Date(yyyy, mm - 1, dd)
+    }
+    return undefined
+  }, [location.pathname, location.search])
+
+  const onPickDate = (d: Date | undefined) => {
+    const params = new URLSearchParams(location.search)
+    if (!d) {
+      params.delete("date")
+    } else {
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, "0")
+      const dd = String(d.getDate()).padStart(2, "0")
+      params.set("date", `${yyyy}-${mm}-${dd}`)
+    }
+    navigate(`/desk/visitors?${params.toString()}`)
+  }
+
+  return (
+    <>
+      <SidebarHeader className="gap-3.5 border-b p-4">
+        <div className="text-base font-medium text-foreground">Visitors</div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Views</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {VISITOR_VIEW_ORDER.map((id) => {
+                const Icon = visitorViewIcons[id]
+                const preset = visitorViewPresets[id].params()
+                const qs = new URLSearchParams(preset).toString()
+                const isActive = activeView === id || (!activeView && id === "today")
+                return (
+                  <SidebarMenuItem key={id}>
+                    <SidebarMenuButton
+                      className="text-sm"
+                      isActive={isActive}
+                      onClick={() => navigate(`/desk/visitors?${qs}`)}
+                    >
+                      <Icon className="size-4" />
+                      <span>{visitorViewPresets[id].label}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Calendar</SidebarGroupLabel>
+          <SidebarGroupContent className="px-2">
+            <Calendar
+              mode="single"
+              selected={activeDate}
+              onSelect={onPickDate}
+              className="rounded-md border bg-background"
+            />
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
