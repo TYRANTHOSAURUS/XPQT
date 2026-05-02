@@ -80,7 +80,6 @@ export interface BundleTicketRef {
 export interface BookingBundle {
   id: string;
   tenant_id: string;
-  bundle_type: BundleType;
   requester_person_id: string;
   host_person_id: string | null;
   location_id: string;
@@ -88,6 +87,10 @@ export interface BookingBundle {
   end_at: string;
   timezone: string | null;
   source: BundleSource;
+  /** Booking-level status (00277:49 enum), distinct from `status_rollup`
+   *  which folds in line states. UI usually renders the rollup; this is
+   *  surfaced for completeness. */
+  status: string;
   cost_center_id: string | null;
   template_id: string | null;
   calendar_event_id: string | null;
@@ -95,10 +98,10 @@ export interface BookingBundle {
   status_rollup: BundleStatusRollup;
   created_at: string;
   updated_at: string;
-  /** Populated by the legacy GET /booking-bundles/:id detail endpoint
-   *  (now gone). New backend slice will surface these via a
-   *  `/bookings/:id/services` (or similar) endpoint; until then `useBundle`
-   *  returns no data and these fields stay undefined. */
+  /** Populated by `GET /reservations/:id/bundle-detail` (the read endpoint
+   *  that replaced the dropped `/booking-bundles/:id` route post-rewrite).
+   *  Always present in the response; declared optional only because callers
+   *  short-circuit before render when the query is in flight. */
   orders?: BundleOrderRef[];
   tickets?: BundleTicketRef[];
   lines?: BundleLine[];

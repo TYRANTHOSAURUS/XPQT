@@ -7,7 +7,6 @@ import {
 import { useReservationDetail } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
 import { formatRelativeTime } from '@/lib/format';
-import { formatRef } from '@/lib/format-ref';
 import { BookingDetailContent } from './booking-detail-content';
 
 /**
@@ -46,8 +45,11 @@ export function BookingDetailPage() {
     );
   }
 
-  const description =
-    `${formatRef('reservation', reservation.module_number)} · Booked ${formatRelativeTime(reservation.created_at)}`;
+  // Reference chip retired post-canonicalisation (2026-05-02) — `bookings`
+  // table doesn't carry a per-booking monotonic counter (was on legacy
+  // `reservations.module_number`, dropped in 00276). The relative-time
+  // breadcrumb still anchors the booking visually.
+  const description = `Booked ${formatRelativeTime(reservation.created_at)}`;
 
   return (
     <SettingsPageShell width="default">

@@ -5,7 +5,6 @@ import { PortalPage } from '@/components/portal/portal-page';
 import { useReservationDetail } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
 import { formatRelativeTime } from '@/lib/format';
-import { formatRef } from '@/lib/format-ref';
 import { BookingDetailContent } from '@/components/booking-detail/booking-detail-content';
 
 /**
@@ -55,12 +54,9 @@ export function MyBookingDetailPage() {
       ) : (
         <>
           <div className="mt-3 mb-6 space-y-1">
-            <code
-              data-chip
-              className="font-mono text-xs text-muted-foreground tabular-nums inline-block"
-            >
-              {formatRef('reservation', reservation.module_number)}
-            </code>
+            {/* Reference chip retired post-canonicalisation (2026-05-02) —
+                `bookings` table has no per-booking monotonic counter. Title
+                + booked-relative line below already identify the booking. */}
             <h1 className="text-2xl font-semibold tracking-tight text-balance">
               {spaceName ?? 'Booking'}
             </h1>

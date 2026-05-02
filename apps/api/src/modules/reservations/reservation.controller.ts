@@ -403,6 +403,32 @@ export class ReservationController {
     });
   }
 
+  /**
+   * `GET /reservations/:id/bundle-detail` — returns the booking's services
+   * (order_line_items) + cascaded work_orders + a derived status rollup,
+   * for the booking-detail surface's services + fulfillment sections.
+   *
+   * Replaces the dropped `GET /booking-bundles/:id` endpoint
+   * (booking-bundles.controller.ts deleted in commit 2745be0). The booking
+   * IS the bundle now (00277:27), so the same id segment that `findOne`
+   * accepts is also a valid booking id here. Mounted under `/reservations`
+   * (rather than a future `/bookings`) because the live frontend already
+   * holds reservation ids and the route ergonomics match the rest of the
+   * detail surface (`/reservations/:id/visitors`, `/reservations/:id/services`).
+   *
+   * Visibility gate: piggy-backs on `service.findOne(id, authUid)`, which
+   * already runs `assertVisible` against the same tenant + person/operator
+   * context. A non-visible booking 404s there before we hit `getBookingDetail`.
+   */
+  @Get(':id/bundle-detail')
+  async findBundleDetail(@Req() request: Request, @Param('id') id: string) {
+    const authUid = this.getAuthUid(request);
+    // Throws if not visible — gates the bundle-detail read identically to
+    // the booking-detail read above.
+    await this.service.findOne(id, authUid);
+    return this.bundle.getBookingDetail(id);
+  }
+
   // ---- Visitors attached to a reservation ----
 
   /**

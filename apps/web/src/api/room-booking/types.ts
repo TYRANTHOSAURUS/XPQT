@@ -159,7 +159,15 @@ export interface BookingSlot {
 export interface Reservation {
   id: string;
   tenant_id: string;
-  module_number: number;
+  // `module_number` is intentionally omitted post-canonicalisation (2026-05-02).
+  // The legacy `reservations.module_number` column lived on the dropped
+  // `reservations` table (00139:147); the new `bookings` table (00277:27)
+  // does NOT carry a per-booking monotonic counter — and the projection at
+  // reservation-projection.ts:55 doesn't synthesise one. Detail surfaces
+  // that used `formatRef('reservation', module_number)` were retired in
+  // the same slice; show the booking title or fall back to the booking id
+  // tail instead. If a per-booking ref string is needed in the future,
+  // re-introduce it as a real column on `bookings` first.
   reservation_type: ReservationType;
   space_id: string;
   requester_person_id: string;

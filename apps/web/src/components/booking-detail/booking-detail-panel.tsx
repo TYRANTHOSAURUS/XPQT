@@ -3,7 +3,6 @@ import { Maximize2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useReservationDetail } from '@/api/room-booking';
 import { formatRelativeTime } from '@/lib/format';
-import { formatRef } from '@/lib/format-ref';
 import { BookingDetailContent } from './booking-detail-content';
 
 interface Props {
@@ -30,14 +29,11 @@ export function BookingDetailPanel({ reservationId, spaceName, onClose }: Props)
     <div className="absolute inset-0 flex flex-col overflow-hidden border-l bg-background">
       <div className="flex items-start justify-between gap-3 border-b px-5 py-4 shrink-0">
         <div className="min-w-0">
-          {reservation && (
-            <code
-              data-chip
-              className="font-mono text-xs text-muted-foreground tabular-nums mb-1 inline-block"
-            >
-              {formatRef('reservation', reservation.module_number)}
-            </code>
-          )}
+          {/* Reference chip retired post-canonicalisation (2026-05-02) — the
+              `bookings` table doesn't carry a per-booking monotonic counter,
+              so there's nothing to render as `RES-N`. The title + booked-relative
+              line below already identify the booking. See `Reservation` type
+              note in @/api/room-booking/types.ts for the rationale. */}
           <h2 className="truncate text-lg font-semibold tracking-tight">
             {spaceName ?? 'Booking'}
           </h2>

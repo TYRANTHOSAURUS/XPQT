@@ -21,7 +21,6 @@ import type { OperatorReservationItem, ReservationStatus } from '@/api/room-book
 import { useAuth } from '@/providers/auth-provider';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
-import { formatRef } from '@/lib/format-ref';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
 import { BookingComposer } from '@/components/booking-composer/booking-composer';
@@ -421,9 +420,9 @@ function BookingRow({
               with attached services (server-side via has_bundle=true). */}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
-          <span className="font-mono tabular-nums">
-            {formatRef('reservation', item.module_number)}
-          </span>
+          {/* Reference chip retired post-canonicalisation (2026-05-02) —
+              `bookings` table has no per-booking monotonic counter. The
+              meta line still surfaces the requester / time / status. */}
           <span className="truncate">{requesterName}</span>
           {typeof item.attendee_count === 'number' && item.attendee_count > 0 && (
             <span className="inline-flex items-center gap-1 tabular-nums">

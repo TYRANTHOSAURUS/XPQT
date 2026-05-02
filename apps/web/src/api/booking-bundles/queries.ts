@@ -1,27 +1,29 @@
 import { queryOptions, useQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
 import { bundleKeys } from './keys';
 import type { BookingBundle } from './types';
 
 /**
- * Booking-canonicalisation rewrite (2026-05-02): the `/booking-bundles/*`
- * HTTP surface is GONE on the backend. The `booking_bundles` table was
- * dropped — the `bookings` row IS the bundle now (00277:27).
+ * Booking-canonicalisation rewrite (2026-05-02 + follow-up):
+ *   - The `booking_bundles` table was dropped — the `bookings` row IS the
+ *     bundle now (00277:27).
+ *   - The legacy `/booking-bundles/*` HTTP surface stays gone.
+ *   - This slice ships the replacement read at
+ *     `GET /reservations/:id/bundle-detail` (apps/api/src/modules/reservations/
+ *     reservation.controller.ts). The endpoint returns the booking row's
+ *     columns plus `lines[]` / `orders[]` / `tickets[]` / `status_rollup` —
+ *     the same shape the old `GET /booking-bundles/:id` produced.
  *
- * No backend endpoint currently surfaces a booking's attached services
- * (orders + lines) or cascaded tickets. The hooks below are kept so the
- * existing call sites still compile, but they DO NOT FETCH — they always
- * resolve to `data: undefined`. The UI components that consume them
- * already have an empty-state branch (the operator surface renders a
- * "no services / nothing dispatched yet" header; the requester surface
- * hides the section entirely).
+ * The id passed to `useBundle` is a booking id (== reservation id under
+ * the legacy projection); the frontend already holds it from the
+ * surrounding booking-detail surface.
  *
- * When the backend slice ships read endpoints for the booking's services,
- * point `bundleDetailOptions` at the new URL and the UI will start
- * surfacing data automatically — no component changes needed.
- *
- * TODO(backend): expose `GET /bookings/:id/services` (or similar) so
- * BundleServicesSection / BundleWorkOrdersSection re-light. Tracking
- * note in this slice's report.
+ * The mutation hooks in `./mutations.ts` are still stubs (the write paths
+ * — POST add-line / PATCH edit-line / POST cancel-line / POST cancel-bundle —
+ * have not yet been wired to the canonical surface). The detail page's
+ * "Add services" CTA goes through `useAttachReservationServices` instead;
+ * inline-edit + cancel buttons are unreachable on a fresh bundle until
+ * backend mutations land.
  */
 
 export interface RecentBundleSummary {
@@ -41,15 +43,18 @@ export interface RecentBundleSummary {
 }
 
 /**
- * Stub. Returns no data; the previous `/booking-bundles/:id` endpoint is
- * gone. See file header for the migration plan.
+ * `GET /reservations/:id/bundle-detail` — the booking's services + cascaded
+ * work-orders + status rollup. Visibility-gated server-side via the same
+ * predicate used by `GET /reservations/:id`, so an out-of-scope read
+ * returns 404 here too (the UI's empty-bundle branch handles undefined
+ * data gracefully).
  */
 export function bundleDetailOptions(id: string) {
   return queryOptions({
     queryKey: bundleKeys.detail(id),
-    queryFn: async () => undefined as unknown as BookingBundle,
+    queryFn: () => apiFetch<BookingBundle>(`/reservations/${id}/bundle-detail`),
     staleTime: 30_000,
-    enabled: false,
+    enabled: !!id,
   });
 }
 

@@ -799,6 +799,253 @@ export class BundleService {
     };
   }
 
+  /**
+   * `getBookingDetail` — read a booking's services + cascaded work-orders for
+   * the booking-detail surface. Replaces the `GET /booking-bundles/:id`
+   * endpoint (deleted with the bundles controller in this rewrite slice);
+   * the booking IS the bundle now (00277:27), so the input is a booking id.
+   *
+   * Visibility: caller's responsibility — controllers must `assertVisible`
+   * BEFORE calling. This method assumes the read is already authorized
+   * because the matching reservation/booking detail endpoints already gate
+   * via their own visibility services and we don't want to double-check
+   * (the column shape on `bookings` is the same the visibility check
+   * consumes — `requester_person_id` / `host_person_id` / `location_id`).
+   *
+   * Status rollup:
+   *   pre-rewrite this came from the `booking_bundle_status_v` view (dropped
+   *   in 00276:40). The simple line-status rollup is reproduced inline here:
+   *     all-cancelled               → 'cancelled'
+   *     mixed cancelled + active    → 'partially_cancelled'
+   *     any pending approval        → 'pending_approval'   (reads booking.status)
+   *     all delivered               → 'completed'
+   *     otherwise                   → 'confirmed'
+   *   Empty bundles (no lines yet) bubble up the booking's own `status`
+   *   ('pending_approval' / 'confirmed' / 'cancelled') so the UI's status
+   *   pill still reads truthfully on a booking with no services.
+   */
+  async getBookingDetail(bookingId: string): Promise<BookingDetail> {
+    const tenantId = TenantContext.current().id;
+
+    // 1. The booking row itself (also confirms tenant-scope existence).
+    const { data: bookingRow, error: bookingErr } = await this.supabase.admin
+      .from('bookings')
+      .select(
+        // 00277:27 — every column the legacy `BookingBundle` shape echoed
+        // back to the frontend. `location_id` (00277:41) replaces the legacy
+        // bundle.location_id; identical semantics.
+        'id, tenant_id, requester_person_id, host_person_id, location_id, ' +
+          'start_at, end_at, timezone, source, status, ' +
+          'cost_center_id, template_id, calendar_event_id, policy_snapshot, ' +
+          'created_at, updated_at',
+      )
+      .eq('id', bookingId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (bookingErr) throw bookingErr;
+    if (!bookingRow) {
+      throw new NotFoundException({
+        code: 'booking_not_found',
+        message: `Booking ${bookingId} not found.`,
+      });
+    }
+    const booking = bookingRow as unknown as {
+      id: string;
+      tenant_id: string;
+      requester_person_id: string;
+      host_person_id: string | null;
+      location_id: string;
+      start_at: string;
+      end_at: string;
+      timezone: string | null;
+      source: string;
+      status: string;
+      cost_center_id: string | null;
+      template_id: string | null;
+      calendar_event_id: string | null;
+      policy_snapshot: Record<string, unknown>;
+      created_at: string;
+      updated_at: string;
+    };
+
+    // 2. Orders + work_orders in parallel. Both use the renamed
+    //    `booking_id` FK (00278:109 for orders, 00278:87 for work_orders).
+    //    Work-order joins denormalize the assignee label so the frontend
+    //    doesn't need a second round-trip per ticket.
+    const [ordersRes, workOrdersRes] = await Promise.all([
+      this.supabase.admin
+        .from('orders')
+        .select('id, status, requested_for_start_at, requested_for_end_at')
+        .eq('booking_id', bookingId)
+        .eq('tenant_id', tenantId),
+      this.supabase.admin
+        .from('work_orders')
+        .select(
+          // module_number from 00213:118 (alloced via tickets_assign_module_number trigger);
+          // assignee fields per 00213:71-74; status_category 00213:53.
+          'id, status_category, assigned_user_id, assigned_team_id, assigned_vendor_id, module_number, ' +
+            'assigned_user:users!assigned_user_id(person:persons!person_id(first_name,last_name)), ' +
+            'assigned_team:teams!assigned_team_id(name), ' +
+            'assigned_vendor:vendors!assigned_vendor_id(name)',
+        )
+        .eq('booking_id', bookingId)
+        .eq('tenant_id', tenantId),
+    ]);
+    if (ordersRes.error) throw ordersRes.error;
+    if (workOrdersRes.error) throw workOrdersRes.error;
+
+    const orders = (ordersRes.data ?? []) as Array<{
+      id: string;
+      status: string;
+      requested_for_start_at: string | null;
+      requested_for_end_at: string | null;
+    }>;
+    const orderIds = orders.map((o) => o.id);
+
+    // 3. Lines (a second round-trip; unavoidable without a SQL function
+    //    because PostgREST doesn't let us join order_line_items via the
+    //    booking → orders → lines path in one query without losing the
+    //    catalog_item name embed).
+    type LineRow = {
+      id: string;
+      order_id: string;
+      catalog_item_id: string;
+      quantity: number;
+      unit_price: number | null;
+      line_total: number | null;
+      service_window_start_at: string | null;
+      service_window_end_at: string | null;
+      requester_notes: string | null;
+      updated_at: string;
+      // 00013:82 — fulfillment_status enum (ordered/confirmed/preparing/delivered/cancelled).
+      fulfillment_status: 'ordered' | 'confirmed' | 'preparing' | 'delivered' | 'cancelled' | null;
+      linked_ticket_id: string | null;
+      linked_asset_reservation_id: string | null;
+      catalog_item: { name: string } | { name: string }[] | null;
+    };
+    let lines: BundleLineDetail[] = [];
+    if (orderIds.length > 0) {
+      const linesRes = await this.supabase.admin
+        .from('order_line_items')
+        .select(
+          'id, order_id, catalog_item_id, quantity, unit_price, line_total, ' +
+            'service_window_start_at, service_window_end_at, requester_notes, ' +
+            'updated_at, fulfillment_status, linked_ticket_id, linked_asset_reservation_id, ' +
+            'catalog_item:catalog_items(name)',
+        )
+        .in('order_id', orderIds)
+        .eq('tenant_id', tenantId);
+      if (linesRes.error) throw linesRes.error;
+      lines = ((linesRes.data ?? []) as unknown as LineRow[]).map((row) => {
+        const ci = Array.isArray(row.catalog_item) ? row.catalog_item[0] : row.catalog_item;
+        return {
+          id: row.id,
+          order_id: row.order_id,
+          catalog_item_id: row.catalog_item_id,
+          catalog_item_name: ci?.name ?? null,
+          quantity: row.quantity,
+          unit_price: row.unit_price,
+          line_total: row.line_total,
+          service_window_start_at: row.service_window_start_at,
+          service_window_end_at: row.service_window_end_at,
+          requester_notes: row.requester_notes,
+          updated_at: row.updated_at,
+          fulfillment_status: row.fulfillment_status,
+          linked_ticket_id: row.linked_ticket_id,
+          linked_asset_reservation_id: row.linked_asset_reservation_id,
+        };
+      });
+    }
+
+    // 4. Denormalized assignee label per work_order. Mirrors the legacy
+    //    controller's join handling so the frontend BundleTicketRef shape
+    //    is unchanged. `ticket_kind` is synthesized as 'work_order' — the
+    //    column was dropped in step 1c.10c (every row in `work_orders` is
+    //    a work order by table-membership), but the frontend still
+    //    branches on it.
+    type WorkOrderRow = {
+      id: string;
+      status_category: string | null;
+      assigned_user_id: string | null;
+      assigned_team_id: string | null;
+      assigned_vendor_id: string | null;
+      module_number: number | null;
+      assigned_user?:
+        | { person?: { first_name: string | null; last_name: string | null } | null }
+        | null;
+      assigned_team?: { name: string | null } | null;
+      assigned_vendor?: { name: string | null } | null;
+    };
+    const tickets: BundleTicketDetail[] = (
+      (workOrdersRes.data ?? []) as unknown as WorkOrderRow[]
+    ).map((wo) => {
+      const userPerson = wo.assigned_user?.person ?? null;
+      const userName = userPerson
+        ? `${userPerson.first_name ?? ''} ${userPerson.last_name ?? ''}`.trim()
+        : null;
+      const assignee_label = wo.assigned_vendor_id
+        ? wo.assigned_vendor?.name ?? 'Vendor'
+        : wo.assigned_team_id
+          ? wo.assigned_team?.name ?? 'Team'
+          : wo.assigned_user_id
+            ? userName || 'User'
+            : null;
+      return {
+        id: wo.id,
+        ticket_kind: 'work_order' as const,
+        status_category: wo.status_category,
+        assigned_user_id: wo.assigned_user_id,
+        assigned_team_id: wo.assigned_team_id,
+        assigned_vendor_id: wo.assigned_vendor_id,
+        module_number: wo.module_number,
+        assignee_label,
+      };
+    });
+
+    return {
+      ...booking,
+      status_rollup: this.computeStatusRollup(booking.status, lines),
+      orders,
+      tickets,
+      lines,
+    };
+  }
+
+  /**
+   * Reproduces the rollup the dropped `booking_bundle_status_v` view used to
+   * compute. Called by `getBookingDetail`; not exposed.
+   *
+   *   - Empty bundle → bubble booking.status (so a 'pending_approval' booking
+   *     with no lines still surfaces as 'pending_approval', not 'confirmed').
+   *   - Any line in 'cancelled' AND every other line in 'cancelled' → 'cancelled'.
+   *   - Mix of cancelled + non-cancelled → 'partially_cancelled'.
+   *   - Booking itself pending approval → 'pending_approval' wins.
+   *   - All non-cancelled lines delivered → 'completed'.
+   *   - Otherwise → 'confirmed'.
+   */
+  private computeStatusRollup(
+    bookingStatus: string,
+    lines: BundleLineDetail[],
+  ): BundleStatusRollup {
+    if (bookingStatus === 'cancelled') return 'cancelled';
+    if (bookingStatus === 'pending_approval') return 'pending_approval';
+    if (lines.length === 0) {
+      // Map the booking's own status to a rollup label the frontend
+      // recognises. 'completed' / 'confirmed' / 'cancelled' / 'pending_approval'
+      // all already map 1:1; 'draft'/'checked_in'/'released' fall back to
+      // 'pending' (the only safe neutral the frontend renders).
+      if (bookingStatus === 'completed') return 'completed';
+      if (bookingStatus === 'confirmed') return 'confirmed';
+      return 'pending';
+    }
+    const cancelled = lines.filter((l) => l.fulfillment_status === 'cancelled');
+    const active = lines.filter((l) => l.fulfillment_status !== 'cancelled');
+    if (cancelled.length === lines.length) return 'cancelled';
+    if (cancelled.length > 0 && active.length > 0) return 'partially_cancelled';
+    if (active.every((l) => l.fulfillment_status === 'delivered')) return 'completed';
+    return 'confirmed';
+  }
+
   // ── Internals ──────────────────────────────────────────────────────────
 
   /**
@@ -1482,6 +1729,102 @@ export class BundleService {
 }
 
 // ── Local types ───────────────────────────────────────────────────────────
+
+/**
+ * Status rollup string the frontend's BundleStatusRollup union expects.
+ * Mirrors `apps/web/src/api/booking-bundles/types.ts` so wire-shape parity
+ * doesn't need a separate package.
+ */
+export type BundleStatusRollup =
+  | 'pending'
+  | 'pending_approval'
+  | 'confirmed'
+  | 'partially_cancelled'
+  | 'cancelled'
+  | 'completed';
+
+/**
+ * Per-line shape returned by `getBookingDetail`. Mirrors the legacy
+ * `BundleLine` projection — column list at the SELECT in `getBookingDetail`.
+ */
+export interface BundleLineDetail {
+  id: string;
+  order_id: string;
+  catalog_item_id: string;
+  /** Pulled from the embedded `catalog_items.name`; null if the catalog row
+   *  was deleted (rare; soft-delete is the norm on the catalog side). */
+  catalog_item_name: string | null;
+  quantity: number;
+  unit_price: number | null;
+  line_total: number | null;
+  service_window_start_at: string | null;
+  service_window_end_at: string | null;
+  requester_notes: string | null;
+  /** Optimistic-concurrency token for `editLine`. */
+  updated_at: string;
+  fulfillment_status:
+    | 'ordered'
+    | 'confirmed'
+    | 'preparing'
+    | 'delivered'
+    | 'cancelled'
+    | null;
+  linked_ticket_id: string | null;
+  linked_asset_reservation_id: string | null;
+}
+
+/**
+ * Per-ticket (work-order today; cases later) shape. `ticket_kind` is
+ * synthesized as 'work_order' — the underlying column was dropped at step
+ * 1c.10c, but the frontend BundleTicketRef still branches on it.
+ */
+export interface BundleTicketDetail {
+  id: string;
+  ticket_kind: 'work_order';
+  status_category: string | null;
+  assigned_user_id: string | null;
+  assigned_team_id: string | null;
+  assigned_vendor_id: string | null;
+  module_number: number | null;
+  /** Pre-computed assignee label so the frontend doesn't need a second
+   *  round-trip per ticket — vendor name | team name | user full name. */
+  assignee_label: string | null;
+}
+
+/**
+ * `BookingDetail` — return shape of `getBookingDetail`. Echoes the booking
+ * row's columns plus the cascaded entity arrays. Stays close to the legacy
+ * `GET /booking-bundles/:id` payload so the existing frontend BundleData
+ * type continues to compile (only delta: the empty-bundle case used to
+ * return zero lines/tickets/orders, which this method also does).
+ */
+export interface BookingDetail {
+  id: string;
+  tenant_id: string;
+  requester_person_id: string;
+  host_person_id: string | null;
+  location_id: string;
+  start_at: string;
+  end_at: string;
+  timezone: string | null;
+  source: string;
+  status: string;
+  cost_center_id: string | null;
+  template_id: string | null;
+  calendar_event_id: string | null;
+  policy_snapshot: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  status_rollup: BundleStatusRollup;
+  orders: Array<{
+    id: string;
+    status: string;
+    requested_for_start_at: string | null;
+    requested_for_end_at: string | null;
+  }>;
+  tickets: BundleTicketDetail[];
+  lines: BundleLineDetail[];
+}
 
 /**
  * In-service projection of a Booking + its primary slot, hand-built by
