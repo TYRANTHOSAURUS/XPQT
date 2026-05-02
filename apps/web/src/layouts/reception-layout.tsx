@@ -20,8 +20,8 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { ConciergeBell, Printer, type LucideIcon } from 'lucide-react';
 import { ShellSwitcher } from '@/components/shell-switcher';
-import { ReceptionBuildingPicker } from '@/components/reception/reception-building-picker';
-import { ReceptionBuildingProvider } from '@/components/reception/reception-building-context';
+import { ReceptionBuildingPicker } from '@/components/desk/desk-building-picker';
+import { ReceptionBuildingProvider } from '@/components/desk/desk-building-context';
 import { cn } from '@/lib/utils';
 
 interface ReceptionTab {

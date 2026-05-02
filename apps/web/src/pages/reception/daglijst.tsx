@@ -21,7 +21,7 @@ import { useEffect } from 'react';
 import { Printer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useReceptionBuilding } from '@/components/reception/reception-building-context';
+import { useReceptionBuilding } from '@/components/desk/desk-building-context';
 import {
   formatPrimaryHost,
   formatReceptionRowName,

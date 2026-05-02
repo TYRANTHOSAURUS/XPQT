@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useReceptionBuilding } from './reception-building-context';
+import { useReceptionBuilding } from './desk-building-context';
 
 export function ReceptionBuildingPicker() {
   const { buildingId, buildings, setBuildingId, loading } = useReceptionBuilding();

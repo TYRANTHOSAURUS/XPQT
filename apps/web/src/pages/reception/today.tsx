@@ -39,11 +39,11 @@ import {
   useReceptionYesterday,
   type ReceptionVisitorRow as RowT,
 } from '@/api/visitors/reception';
-import { useReceptionBuilding } from '@/components/reception/reception-building-context';
-import { ReceptionVisitorRow } from '@/components/reception/visitor-row';
-import { WalkupForm } from '@/components/reception/walkup-form';
-import { AssignPassDialog } from '@/components/reception/assign-pass-dialog';
-import { CheckoutDialog } from '@/components/reception/checkout-dialog';
+import { useReceptionBuilding } from '@/components/desk/desk-building-context';
+import { ReceptionVisitorRow } from '@/components/desk/visitor-action-row';
+import { WalkupForm } from '@/components/desk/visitor-walkup-form';
+import { AssignPassDialog } from '@/components/desk/visitor-assign-pass-dialog';
+import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
 import { Link } from 'react-router-dom';
 

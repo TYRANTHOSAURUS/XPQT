@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/settings-page';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useReceptionBuilding } from '@/components/reception/reception-building-context';
+import { useReceptionBuilding } from '@/components/desk/desk-building-context';
 import {
   useMarkPassMissing,
   useMarkPassRecovered,

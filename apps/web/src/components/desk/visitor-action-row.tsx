@@ -1,12 +1,15 @@
 /**
- * One row in the reception today-view / search results.
+ * Visitor "action row" — large-text, low-density, with the primary
+ * action button rendered inline. Used by the desk's loose-ends fallback
+ * view (yesterday's tile inside /desk/visitors), the detail panel, and
+ * the walk-up search overlay where reception needs to hit "Mark
+ * arrived" without going through a context menu.
+ *
+ * For dense list/table rows mirroring /desk/tickets, see
+ * `visitor-list-row.tsx` and the inline table-row component in the
+ * page itself.
  *
  * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §7.3
- *
- * Large-text, low-density layout — the rush UX is built around glanceable
- * rows reception can hit at speed. Status badge on the right; expected
- * time + host first name in the middle; primary action button on the
- * far right.
  *
  * Action set is determined by the row's status:
  *   - expected            → Mark arrived (with backdated dropdown)
@@ -107,10 +110,15 @@ function ReceptionVisitorRowImpl({
  *  refetch re-renders every visitor row even when its data didn't change.
  *  Callbacks are recreated on each parent render so a default shallow
  *  compare wouldn't help; we compare row identity + busy state explicitly. */
-export const ReceptionVisitorRow = memo(
+export const VisitorActionRow = memo(
   ReceptionVisitorRowImpl,
   (prev, next) => prev.row === next.row && prev.busy === next.busy,
 );
+
+/** Legacy alias — historical callers (and a few tests if they ever land)
+ *  still expect `ReceptionVisitorRow`. Re-export the new name as the same
+ *  symbol so the import surface stays stable while we migrate. */
+export const ReceptionVisitorRow = VisitorActionRow;
 
 function RowActions({
   row,
