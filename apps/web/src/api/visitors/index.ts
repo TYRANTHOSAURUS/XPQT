@@ -105,8 +105,13 @@ export interface CreateInvitationPayload {
   expected_until?: string;
   building_id: string;
   meeting_room_id?: string;
+  /** Canonical link post-rewrite (00278:41 — visitors.booking_bundle_id
+   *  → visitors.booking_id). Backend dto/schemas.ts:45 accepts this as
+   *  the preferred field. */
+  booking_id?: string;
+  /** Legacy alias — backend dto/schemas.ts:46 still accepts it for
+   *  callers mid-migration. New code should send `booking_id`. */
   booking_bundle_id?: string;
-  reservation_id?: string;
   co_host_person_ids?: string[];
   notes_for_visitor?: string;
   notes_for_reception?: string;
@@ -132,7 +137,14 @@ export interface ExpectedVisitor {
   meeting_room_id: string | null;
 }
 
-/** Row shape returned by GET /visitors/:id. */
+/** Row shape returned by GET /visitors/:id.
+ *
+ *  Post-canonicalisation (2026-05-02):
+ *    - `reservation_id` is gone (column dropped 00278:38).
+ *    - `booking_bundle_id` was renamed to `booking_id` (00278:41).
+ *  Booking is the only canonical link to the booking surface; from
+ *  the booking id callers can navigate to /desk/bookings/:id directly
+ *  (the booking id IS the reservation id under the projection). */
 export interface VisitorDetail {
   id: string;
   tenant_id: string;
@@ -151,8 +163,7 @@ export interface VisitorDetail {
   building_id: string | null;
   meeting_room_id: string | null;
   visitor_type_id: string | null;
-  booking_bundle_id: string | null;
-  reservation_id: string | null;
+  booking_id: string | null;
   notes_for_visitor: string | null;
   notes_for_reception: string | null;
   primary_host_person_id: string | null;

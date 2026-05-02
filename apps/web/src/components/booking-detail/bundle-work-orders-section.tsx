@@ -5,7 +5,16 @@ import { formatTicketRef } from '@/lib/format-ref';
 import { cn } from '@/lib/utils';
 
 interface Props {
-  bundleId: string;
+  /**
+   * Booking id (post-canonicalisation 2026-05-02 the booking IS the
+   * bundle — 00277:27). Param renamed from `bundleId` so the call
+   * sites read truthfully; the underlying `useBundle` hook is a no-op
+   * stub today (the `/booking-bundles/:id` read endpoint was deleted
+   * along with the rest of the bundle HTTP surface), so this section
+   * renders only the empty-state branch until the backend follow-up
+   * slice ships replacement reads.
+   */
+  bookingId: string;
   /** When true (operator surfaces), render an empty header even when
    *  there are no tickets so the operator can SEE that nothing is
    *  dispatched yet. */
@@ -35,13 +44,32 @@ const STATUS_DOT: Record<string, string> = {
  * so the two sections don't blur together. Status lives on the meta
  * line as a dot+label so the right edge stays clean for the chevron.
  *
- * Reads from the same `useBundle(bundleId)` cache the services
+ * Reads from the same `useBundle(bookingId)` cache the services
  * section uses — TanStack Query dedupes, no extra fetch.
  */
-export function BundleWorkOrdersSection({ bundleId, alwaysShow = false }: Props) {
-  const { data, isLoading } = useBundle(bundleId);
+export function BundleWorkOrdersSection({ bookingId, alwaysShow = false }: Props) {
+  const { data, isLoading } = useBundle(bookingId);
 
-  if (isLoading || !data) return null;
+  if (isLoading || !data) {
+    if (!alwaysShow) return null;
+    // Operator empty-state — surfaces "nothing dispatched yet" so a
+    // freshly-booked event is distinguishable from one whose tickets
+    // we couldn't load. No data is the common case post-rewrite until
+    // the read endpoint comes back.
+    return (
+      <div className="border-t">
+        <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
+          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Fulfillment
+          </span>
+        </div>
+        <p className="px-5 pb-3 text-xs text-muted-foreground">
+          Nothing dispatched yet — work orders appear here once services
+          are attached and assigned.
+        </p>
+      </div>
+    );
+  }
   const tickets = data.tickets ?? [];
   if (tickets.length === 0 && !alwaysShow) return null;
 

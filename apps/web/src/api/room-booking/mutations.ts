@@ -62,7 +62,13 @@ export function useMultiRoomBooking() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: MultiRoomBookingPayload) =>
-      apiFetch<{ multi_room_group_id: string; reservations: Reservation[] }>(
+      // Post-canonicalisation (2026-05-02): the response shape is
+      // `{ group_id, reservations[] }` where `group_id` is the booking
+      // id (the dropped `multi_room_groups` table is replaced by
+      // `booking_id` grouping; multi-room-booking.service.ts:331).
+      // Each `reservations[i].id` also equals the booking id, so any
+      // of them resolves to /desk/bookings/:id correctly.
+      apiFetch<{ group_id: string; reservations: Reservation[] }>(
         '/reservations/multi-room',
         { method: 'POST', body: JSON.stringify(payload) },
       ),
@@ -154,11 +160,15 @@ export function useAttachReservationServices(reservationId: string) {
         body: JSON.stringify({ services }),
       }),
     onSuccess: (data) => {
-      // Reservation's booking_bundle_id may have just been set; refresh
-      // the reservation and the bundle's lines.
+      // Post-canonicalisation (2026-05-02) the booking IS the bundle, so
+      // attaching services doesn't flip a `booking_bundle_id` field on
+      // the reservation — but the booking now carries linked orders.
+      // Invalidate detail (in case denormalized status changes), the
+      // bundle key (no-op today since `useBundle` is stubbed, but
+      // future-proof against the read endpoint coming back), and the
+      // lists (which the `?scope=bundles` filter narrows on).
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(reservationId) });
       queryClient.invalidateQueries({ queryKey: ['booking-bundles', 'detail', data.bundle_id] as const });
-      // Lists may surface new bundle status / has-services chip.
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
     },
   });

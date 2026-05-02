@@ -6,7 +6,8 @@
  * Shows pending visitor invitations attached to the booking-in-progress.
  * Visitors are NOT POSTed at click-time — they're queued in the composer's
  * local state and flushed by the wrapper after the booking lands so the
- * invitation can carry the booking_bundle_id / reservation_id back.
+ * invitation can carry the canonical `booking_id` (00278:41) back for
+ * cascade-on-cancel.
  *
  * Hidden by the parent composer when the booking has no building anchor
  * (visitors need a building) or when the user lacks `visitors:invite`.

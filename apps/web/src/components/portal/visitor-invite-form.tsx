@@ -81,8 +81,11 @@ export interface VisitorInviteFormDefaults {
   expected_until?: string;
   building_id?: string;
   meeting_room_id?: string | null;
-  booking_bundle_id?: string;
-  reservation_id?: string;
+  /** Canonical link to the booking the visitor is attached to. Renamed
+   *  from the legacy dual-link (`booking_bundle_id` + `reservation_id`)
+   *  post-canonicalisation 2026-05-02 — visitors carry a single
+   *  `booking_id` (00278:41). */
+  booking_id?: string;
 }
 
 /** Captured-only payload the composer's queue keeps locally before flushing
@@ -381,8 +384,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       expected_until: finalExpectedUntil || undefined,
       building_id: finalBuildingId,
       meeting_room_id: finalMeetingRoom || undefined,
-      booking_bundle_id: defaults?.booking_bundle_id,
-      reservation_id: defaults?.reservation_id,
+      booking_id: defaults?.booking_id,
     };
 
     try {

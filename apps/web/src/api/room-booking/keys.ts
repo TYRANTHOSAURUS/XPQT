@@ -31,9 +31,11 @@ export interface ReservationListFilters {
   limit?: number | null;
   /** 'operator' triggers the cross-tenant operator list (requires rooms.read_all). */
   as?: 'mine' | 'operator';
-  /** Server-side filter on `booking_bundle_id IS NOT NULL` — used by the
-   *  /desk/bookings "Bundles" chip to skip room-only reservations. Backed
-   *  by partial index 00199. */
+  /** Server-side filter for the /desk/bookings "Bundles" chip to skip
+   *  bookings without attached service orders. Post-canonicalisation
+   *  (2026-05-02) the booking IS the bundle, so the backend now resolves
+   *  this as "any orders linked via orders.booking_id" — see
+   *  reservation.service.ts:262-267. */
   has_bundle?: boolean;
 }
 

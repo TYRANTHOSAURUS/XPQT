@@ -9,8 +9,14 @@ export type OrderStatus =
 export interface Order {
   id: string;
   tenant_id: string;
-  booking_bundle_id: string | null;
-  linked_reservation_id: string | null;
+  /** Renamed from `booking_bundle_id` post-canonicalisation
+   *  (00278:109 — orders.booking_bundle_id → orders.booking_id). FK now
+   *  targets `bookings(id)` directly — the booking IS the bundle. */
+  booking_id: string | null;
+  /** Renamed from `linked_reservation_id` post-canonicalisation
+   *  (00278:115 — orders.linked_reservation_id → orders.linked_slot_id).
+   *  FK now targets `booking_slots(id)`. */
+  linked_slot_id: string | null;
   requester_person_id: string;
   delivery_space_id: string | null;
   requested_for_start_at: string | null;

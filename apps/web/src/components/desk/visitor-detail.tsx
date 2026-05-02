@@ -56,7 +56,6 @@ import {
 } from '@/api/visitors/reception';
 import { useSpaces } from '@/api/spaces';
 import { usePerson, personFullName } from '@/api/persons';
-import { useBundle } from '@/api/booking-bundles';
 import { useReservationDetail } from '@/api/room-booking';
 import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSuccess } from '@/lib/toast';
@@ -283,7 +282,7 @@ export function VisitorDetail({
                 <ValueMuted>Not anchored</ValueMuted>
               )}
             </InlineProperty>
-            {meetingRoomName && !visitor.reservation_id && (
+            {meetingRoomName && !visitor.booking_id && (
               <InlineProperty label="Meeting room">
                 <ValueText>{meetingRoomName}</ValueText>
               </InlineProperty>
@@ -291,11 +290,12 @@ export function VisitorDetail({
           </SidebarGroup>
 
           {/* Linked booking — visible when the visitor was created from a
-           *  booking-composer flow. Lazy-fetches the reservation so the
-           *  panel doesn't pay the cost on visitors that aren't linked. */}
+           *  booking-composer flow. Post-canonicalisation (2026-05-02)
+           *  visitors carry a single canonical link via `booking_id`
+           *  (the dropped `reservation_id` and `booking_bundle_id`
+           *  were collapsed — 00278:38, 00278:41). */}
           <LinkedBookingSection
-            reservationId={visitor.reservation_id}
-            bundleId={visitor.booking_bundle_id}
+            bookingId={visitor.booking_id}
             spaces={spaces ?? []}
           />
 
@@ -475,35 +475,27 @@ function DetailToolbar({
 
 /** Linked-booking section.
  *
- *  Booking-composer-created visitors carry both `reservation_id` and
- *  `booking_bundle_id`. We prefer the reservation when present (it
- *  resolves directly to /desk/bookings/:reservation_id) and fall back
- *  to the bundle's primary reservation otherwise.
+ *  Booking-composer-created visitors carry a single canonical link to
+ *  the booking via `visitors.booking_id` (00278:41). Pre-rewrite this
+ *  was a dual-link (`reservation_id` + `booking_bundle_id`); both
+ *  collapsed into the single `booking_id`. We resolve the booking via
+ *  `useReservationDetail` because `/reservations/:id` now accepts a
+ *  booking id and returns the legacy projection (the booking IS the
+ *  reservation under the projection).
  *
- *  Both queries are gated on the relevant id being non-null so visitors
- *  that aren't linked to a booking don't pay the fetch cost. */
+ *  Gated on `bookingId` being non-null so visitors that aren't linked
+ *  to a booking don't pay the fetch cost. */
 function LinkedBookingSection({
-  reservationId,
-  bundleId,
+  bookingId,
   spaces,
 }: {
-  reservationId: string | null;
-  bundleId: string | null;
+  bookingId: string | null;
   spaces: Array<{ id: string; name: string }>;
 }) {
-  // Reservation fetch — primary path. Disabled when reservationId is null.
-  const { data: reservation } = useReservationDetail(reservationId ?? '');
+  const { data: reservation } = useReservationDetail(bookingId ?? '');
 
-  // Bundle fetch — only fires when there's no reservation but a bundle is
-  // attached. Most booking-composer visitors carry both; the bundle path
-  // is the fallback for invitations linked to a bundle without a primary
-  // reservation snapshot yet.
-  const { data: bundle } = useBundle(bundleId && !reservationId ? bundleId : '');
+  if (!bookingId) return null;
 
-  if (!reservationId && !bundleId) return null;
-
-  // When the reservation is loaded, render its room name + start/end + a
-  // deep-link to /desk/bookings/:id.
   if (reservation) {
     const roomName =
       spaces.find((s) => s.id === reservation.space_id)?.name ?? 'Booked room';
@@ -527,35 +519,8 @@ function LinkedBookingSection({
     );
   }
 
-  // Reservation didn't resolve — fall back to bundle data when present.
-  if (bundle) {
-    const targetReservationId = bundle.primary_reservation_id ?? null;
-    return (
-      <SidebarGroup title="Linked booking">
-        <InlineProperty label="Bundle" icon={<CalendarClock className="h-3 w-3" />}>
-          {targetReservationId ? (
-            <Link
-              to={`/desk/bookings/${targetReservationId}`}
-              className="inline-flex items-center gap-1 text-sm text-foreground underline underline-offset-2 hover:no-underline"
-            >
-              {bundle.bundle_type.replace('_', ' ')}
-              <ExternalLink className="size-3" aria-hidden />
-            </Link>
-          ) : (
-            <span className="text-sm capitalize">{bundle.bundle_type.replace('_', ' ')}</span>
-          )}
-        </InlineProperty>
-        <InlineProperty label="When">
-          <span className="text-sm tabular-nums">
-            <ValueDateRange startIso={bundle.start_at} endIso={bundle.end_at} />
-          </span>
-        </InlineProperty>
-      </SidebarGroup>
-    );
-  }
-
-  // Linked but data is still loading or non-resolvable — render a
-  // minimal stub so the section doesn't disappear during the fetch.
+  // Linked but data is still loading — render a minimal stub so the
+  // section doesn't disappear during the fetch.
   return (
     <SidebarGroup title="Linked booking">
       <InlineProperty label="Status">

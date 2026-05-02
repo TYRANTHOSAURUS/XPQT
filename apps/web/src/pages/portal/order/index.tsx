@@ -30,8 +30,10 @@ import { toastError, toastSuccess } from '@/lib/toast';
 import { usePortal } from '@/providers/portal-provider';
 
 /**
- * `/portal/order` — services-only order flow. No reservation; the bundle
- * lands as `primary_reservation_id=null`. Common shapes:
+ * `/portal/order` — services-only order flow. No booking; the resulting
+ * order rows carry `booking_id=null` (00278:109 — under canonicalisation
+ * the booking IS the bundle, so a standalone order has no booking link).
+ * Common shapes:
  *   - Office party catering for the breakroom
  *   - Weekly snack delivery
  *   - Equipment loan for an off-site demo

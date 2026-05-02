@@ -13,7 +13,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Link } from 'react-router-dom';
 import {
   useReservationDetail, useCheckInBooking, useRestoreBooking, useEditBooking,
   useReservationGroupSiblings, usePicker,
@@ -77,11 +76,6 @@ export function BookingDetailContent({
   const [changingRoom, setChangingRoom] = useState(false);
   const [nextSpaceId, setNextSpaceId] = useState<string>('');
 
-  // Sibling chip targets must match the surface we're rendering inside —
-  // portal users can't reach /desk/* routes (and vice versa).
-  const siblingHrefBase =
-    surface === 'portal' ? '/portal/me/bookings' : '/desk/bookings';
-
   // Build a "Building › Floor › Room" trail for the Where row. The
   // server-computed `space_path` (via the SQL `public.space_path` fn) is
   // authoritative — it avoids fetching the full tenant tree just to
@@ -105,14 +99,20 @@ export function BookingDetailContent({
     return trail.length > 0 ? trail : null;
   }, [reservation, spaces]);
 
-  // Multi-room siblings — fetched only when this reservation has a group
-  // so solo bookings don't pay the round-trip. The component below renders
-  // a chip strip so the operator can navigate to any sibling room without
-  // leaving the booking detail context.
+  // Multi-room siblings — fetched only when this booking has more than
+  // one slot. Post-canonicalisation (2026-05-02) the legacy
+  // `multi_room_group_id` column is gone; group membership is now
+  // expressed as multiple booking_slots sharing the same booking_id.
+  // We always probe the endpoint and let the items length signal
+  // whether this is a multi-room booking (single-slot bookings return
+  // []). The chip-navigation in the multi-room block has been retired —
+  // post-rewrite every slot in the group resolves back to the same
+  // booking page, so chips would navigate to themselves.
   const groupSiblings = useReservationGroupSiblings(
     reservationId ?? '',
-    Boolean(reservation?.multi_room_group_id),
+    Boolean(reservationId),
   );
+  const isMultiRoom = (groupSiblings.data?.items.length ?? 0) > 1;
 
   // Service desk / admin is rendering this — they always need to SEE the
   // children of a booking (services, work orders, multi-room) even when
@@ -145,15 +145,18 @@ export function BookingDetailContent({
 
   // Multi-room bookings promise atomic time + cancellation across siblings
   // (CLAUDE.md spec line). The current single-reservation PATCH/cancel
-  // endpoints only operate on `this` reservation, which would silently
-  // break that promise — for REQUESTERS, we gate the mutating actions and
+  // endpoints only operate on `this` booking, which would silently break
+  // that promise — for REQUESTERS, we gate the mutating actions and
   // route them to the desk. For DESK OPERATORS we don't: they ARE the
   // desk, and pointing them back to themselves is a circular dead-end.
   // Operators get the action with explicit single-room semantics in the
   // copy ("only edits this room"). This accepts a documented divergence
   // from the atomic-group promise on operator-initiated multi-room edits;
   // when group-scoped endpoints land, both surfaces converge again.
-  const isMultiRoom = Boolean(reservation.multi_room_group_id);
+  // Multi-room is detected via `groupSiblings.data.items.length > 1`
+  // (computed above) — the legacy `reservation.multi_room_group_id`
+  // column is dropped post-rewrite (always null) and is no longer a
+  // reliable signal.
   const isDeskOperator = surface === 'desk' && isOperator;
 
   const isEditableStatus =
@@ -316,44 +319,26 @@ export function BookingDetailContent({
           </DetailRow>
         )}
 
-        {reservation.multi_room_group_id && (
+        {isMultiRoom && groupSiblings.data && (
           <DetailRow icon={<Layers className="size-3.5" />} label="Multi-room">
-            {groupSiblings.data && groupSiblings.data.items.length > 1 ? (
-              <>
-                <div className="text-sm">
-                  Part of a {groupSiblings.data.items.length}-room group
-                </div>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {groupSiblings.data.items.map((s) => {
-                    const isCurrent = s.id === reservation.id;
-                    return isCurrent ? (
-                      <span
-                        key={s.id}
-                        className="inline-flex h-6 items-center rounded-full bg-foreground px-2.5 text-[11px] font-medium text-background"
-                        aria-current="page"
-                      >
-                        {s.space_name ?? 'Room'}
-                      </span>
-                    ) : (
-                      <Link
-                        key={s.id}
-                        to={`${siblingHrefBase}/${s.id}`}
-                        className="inline-flex h-6 items-center rounded-full border bg-card px-2.5 text-[11px] [transition:background-color_120ms_var(--ease-snap)] hover:bg-accent/40"
-                      >
-                        {s.space_name ?? 'Room'}
-                      </Link>
-                    );
-                  })}
-                </div>
-              </>
-            ) : (
-              <div className="text-sm">Part of a multi-room group</div>
-            )}
+            <div className="text-sm">
+              {groupSiblings.data.items.length} rooms in this booking
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {groupSiblings.data.items.map((s) => (
+                <span
+                  key={s.id}
+                  className="inline-flex h-6 items-center rounded-full border bg-card px-2.5 text-[11px]"
+                >
+                  {s.space_name ?? 'Room'}
+                </span>
+              ))}
+            </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              All rooms share the same start/end.{' '}
-              {isDeskOperator
-                ? 'Operators can edit each room individually until atomic group endpoints land — heads-up, the group will desync until each is touched.'
-                : 'To change time or cancel, contact the desk so all rooms are updated together.'}
+              All rooms share the same start/end and cancel together as one
+              booking. {isDeskOperator
+                ? 'Editing the time updates every slot in the group.'
+                : 'To change time or cancel, contact the desk.'}
             </div>
           </DetailRow>
         )}
@@ -385,18 +370,17 @@ export function BookingDetailContent({
         alwaysShow={isOperator}
       />
 
-      {/* Work-orders / cases attached to this booking. Mounts only when
-          a bundle exists (no bundle = no work orders). For operators,
-          the header always renders with an explicit empty state so a
-          dispatched-yet booking is distinguishable from a not-yet-
-          dispatched one. Requesters see nothing when there are no
-          tickets — work orders are an operator concept. */}
-      {reservation.booking_bundle_id && (
-        <BundleWorkOrdersSection
-          bundleId={reservation.booking_bundle_id}
-          alwaysShow={isOperator}
-        />
-      )}
+      {/* Work-orders / cases attached to this booking. Post-canonicalisation
+          (2026-05-02) the booking IS the bundle (no separate bundle row),
+          so we always pass the booking id. The section's own `useBundle`
+          hook is currently a no-op stub (the read endpoint shipped with
+          the legacy `/booking-bundles/*` surface that was removed) — the
+          operator empty-state header still renders so it's clear no
+          work orders are attached, while requester surfaces stay quiet. */}
+      <BundleWorkOrdersSection
+        bookingId={reservation.id}
+        alwaysShow={isOperator}
+      />
 
       {(showCheckIn || showRestore || showEdit) && (
         <div className="border-t px-5 py-3">

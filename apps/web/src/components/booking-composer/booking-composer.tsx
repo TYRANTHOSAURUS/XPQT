@@ -512,8 +512,12 @@ export function BookingComposer({
     const overrideValidation = validateForSubmit(effectiveState, mode);
     if (overrideValidation) return;
     try {
+      // Post-canonicalisation (2026-05-02) the booking IS the bundle —
+      // every successful create response carries an `id` that is a
+      // booking id. Multi-room returns N projected slots that all share
+      // the same booking id, so the `group_id` field is the canonical
+      // pointer.
       let reservationId: string | undefined;
-      let bookingBundleId: string | null | undefined;
       if (effectiveState.additionalSpaceIds.length > 0) {
         const payload = buildMultiRoomBookingPayload({
           state: effectiveState,
@@ -523,11 +527,11 @@ export function BookingComposer({
         });
         if (!payload) return;
         const result = await createMultiRoom.mutateAsync(payload);
-        // Surface the primary's reservation id for the onBooked callback
-        // so navigation lands on a useful page.
-        const primary = (result as { reservations?: Array<{ id: string; booking_bundle_id?: string | null }> })?.reservations?.[0];
-        reservationId = primary?.id;
-        bookingBundleId = primary?.booking_bundle_id ?? null;
+        // Multi-room shape: { group_id, reservations[] }. group_id is
+        // the booking id; every reservation row's `id` is also the
+        // booking id (per the slot-with-booking projection on the
+        // backend). Either is correct here.
+        reservationId = result.group_id;
       } else {
         const payload = buildBookingPayload({
           state: effectiveState,
@@ -537,14 +541,13 @@ export function BookingComposer({
         });
         if (!payload) return;
         const result = await createBooking.mutateAsync(payload);
-        reservationId = (result as { id?: string })?.id;
-        bookingBundleId = (result as { booking_bundle_id?: string | null })?.booking_bundle_id ?? null;
+        reservationId = result.id;
       }
 
       // Visitors flush — POST each pending invitation now that the
-      // reservation exists. We carry booking_bundle_id (when the
-      // reservation has one) and reservation_id back so the invite is
-      // cascaded if the booking is later cancelled. Failures don't roll
+      // booking exists. We send the canonical `booking_id` link so the
+      // invite is cascaded if the booking is later cancelled
+      // (visitors.booking_id, 00278:41). Failures don't roll
       // back the booking — surface a per-row toast and leave the
       // successful invites in place. The host's expected list is
       // invalidated on each success via the mutation's onSuccess.
@@ -564,8 +567,10 @@ export function BookingComposer({
                 expected_until: effectiveState.endAt ?? undefined,
                 building_id: buildingId,
                 meeting_room_id: effectiveState.spaceId ?? undefined,
-                booking_bundle_id: bookingBundleId ?? undefined,
-                reservation_id: reservationId,
+                // Post-canonicalisation (2026-05-02): visitors link to
+                // bookings via a single canonical `booking_id` (00278:41).
+                // The booking IS the bundle, so a single id covers both.
+                booking_id: reservationId,
                 co_host_person_ids:
                   v.co_host_persons && v.co_host_persons.length > 0
                     ? v.co_host_persons.map((c) => c.id)
@@ -942,8 +947,8 @@ export function BookingComposer({
           until the booking has a building anchor (which is implicit from
           the picked room). The section enqueues PendingVisitor rows in
           composer state; the flush in `handleSubmit` POSTs them after the
-          reservation lands so each invite carries booking_bundle_id +
-          reservation_id for cascade. */}
+          booking lands so each invite carries the canonical booking_id
+          for cascade. */}
       <VisitorsSection
         visitors={state.visitors}
         bookingDefaults={{

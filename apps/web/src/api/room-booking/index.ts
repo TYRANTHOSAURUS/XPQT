@@ -9,6 +9,8 @@ export type {
   ReservationStatus, ReservationSource, ReservationType, CalendarProvider,
   RecurrenceRule, PolicySnapshot, Reservation, RuleOutcome, RankedRoom,
   FreeSlot, BookingPayload, MultiRoomBookingPayload, ServiceLinePayload,
+  // Canonical post-rewrite types — prefer these in new code.
+  Booking, BookingSlot, BookingStatus, BookingSource, SlotType,
 } from './types';
 
 export {

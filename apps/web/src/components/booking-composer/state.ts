@@ -5,7 +5,8 @@ import type { PickerSelection } from './service-picker-sheet';
  * One pending visitor in the composer's "Visitors" section. These rows
  * are NOT yet POSTed — the composer holds them in local state and only
  * fires `POST /visitors/invitations` after the booking succeeds (so the
- * invitation can carry the booking_bundle_id / reservation_id back).
+ * invitation can carry the canonical `booking_id` back for cascade —
+ * 00278:41).
  *
  * Unlike services, visitors don't merge into the reservation payload —
  * they're a separate API surface. The composer's submit step iterates
@@ -88,7 +89,7 @@ export interface ComposerState {
   /** Service selections — same shape the ServicePickerSheet returns. */
   services: PickerSelection[];
   /** Pending visitor invitations — created AFTER the booking lands so
-   *  each invitation can carry the booking_bundle_id / reservation_id
+   *  each invitation can carry the canonical `booking_id` (00278:41)
    *  for cascade. The composer never POSTs these directly; the wrapper
    *  iterates them in handleSubmit's post-success block. */
   visitors: PendingVisitor[];

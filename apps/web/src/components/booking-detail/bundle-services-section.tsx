@@ -59,8 +59,11 @@ interface Props {
  * composer; mobile-bottom-sheet rendering comes from the sheet primitive.
  */
 export function BundleServicesSection({ reservation, canEdit, alwaysShow = false }: Props) {
-  const bundleId = reservation.booking_bundle_id;
-  const onDate = reservation.start_at.slice(0, 10);
+  // Post-canonicalisation (2026-05-02): the booking IS the bundle
+  // (00277:27). The bundle id equals the booking id which equals
+  // `reservation.id` under the legacy projection. The previous
+  // "no bundle yet" branch is dead — every booking is a bundle now.
+  const bundleId = reservation.id;
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editingLineId, setEditingLineId] = useState<string | null>(null);
@@ -89,101 +92,6 @@ export function BundleServicesSection({ reservation, canEdit, alwaysShow = false
       toastError("Couldn't add services", { error: e, retry: () => handleAdd(selections) });
     }
   };
-
-  // No bundle yet — branch on operator vs requester surface.
-  // Operator (alwaysShow): explicit "no services" header so the section is
-  //   visible and they know nothing is attached. Add CTA when canEdit.
-  // Requester (canEdit): full add-services empty-state with hero CTA.
-  // Neither: hide the section.
-  if (!bundleId) {
-    if (alwaysShow) {
-      return (
-        <>
-          <div className="border-t">
-            <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-1">
-              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Services
-              </span>
-              {canEdit && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setPickerOpen(true)}
-                >
-                  <Plus className="size-3.5" />
-                  Add
-                </Button>
-              )}
-            </div>
-            <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
-              <span
-                aria-hidden
-                className="flex size-9 items-center justify-center rounded-full bg-muted/60"
-              >
-                <Sparkles className="size-4 text-muted-foreground" />
-              </span>
-              <p className="text-sm font-medium">No services yet</p>
-              <p className="max-w-xs text-xs text-muted-foreground">
-                Catering, AV, and supplies attached to this booking will
-                appear here.
-              </p>
-            </div>
-          </div>
-          <ServicePickerSheet
-            open={pickerOpen}
-            onOpenChange={setPickerOpen}
-            deliverySpaceId={reservation.space_id}
-            onDate={onDate}
-            attendeeCount={reservation.attendee_count ?? 1}
-            bookingStartAt={reservation.start_at}
-            bookingEndAt={reservation.end_at}
-            onConfirm={handleAdd}
-            submitting={attach.isPending}
-            subtitle="Defaults to your meeting time and attendee count."
-          />
-        </>
-      );
-    }
-    if (!canEdit) return null;
-    return (
-      <>
-        <div className="border-t">
-          <button
-            type="button"
-            onClick={() => setPickerOpen(true)}
-            className="group flex w-full items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-accent/30"
-            style={{ transitionDuration: '120ms', transitionTimingFunction: 'var(--ease-snap)' }}
-          >
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
-              <Sparkles className="size-4 text-primary" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">Add services</div>
-              <div className="text-xs text-muted-foreground">
-                Catering, AV, supplies, or anything else for this booking.
-              </div>
-            </div>
-            <Plus className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-          </button>
-        </div>
-
-        <ServicePickerSheet
-          open={pickerOpen}
-          onOpenChange={setPickerOpen}
-          deliverySpaceId={reservation.space_id}
-          onDate={onDate}
-          attendeeCount={reservation.attendee_count ?? 1}
-          bookingStartAt={reservation.start_at}
-          bookingEndAt={reservation.end_at}
-          onConfirm={handleAdd}
-          submitting={attach.isPending}
-          subtitle="Defaults to your meeting time and attendee count."
-        />
-      </>
-    );
-  }
 
   return (
     <BundleServicesContent
@@ -259,11 +167,19 @@ function BundleServicesContent({
     );
   }
 
-  if (!data) return null;
-
-  const lines = data.lines ?? [];
+  // Post-canonicalisation (2026-05-02): the `useBundle` hook is a no-op
+  // stub until the backend ships replacement read endpoints, so `data`
+  // is `undefined` for every booking. Treat the missing payload as an
+  // empty bundle (no lines, neutral status) rather than bailing out —
+  // requester surfaces still get the "+ Add services" hero CTA via
+  // `canEdit`, and operator surfaces still get the explicit "no
+  // services attached" header via `alwaysShow`. When the read endpoint
+  // returns, this branch will start hydrating real data without UI
+  // changes.
+  const lines = data?.lines ?? [];
   // Operator surface always renders the header so "no lines" is visible
-  // (vs. silently missing). Requester surface hides empty sections.
+  // (vs. silently missing). Requester surface hides empty sections
+  // unless they have edit rights (then we show the add CTA).
   if (lines.length === 0 && !canEdit && !alwaysShow) return null;
 
   const total = lines.reduce(
@@ -313,7 +229,7 @@ function BundleServicesContent({
         )}
       </div>
 
-      {lines.length === 0 && alwaysShow ? (
+      {lines.length === 0 ? (
         <div className="flex flex-col items-center gap-2 px-5 py-6 text-center">
           <span
             aria-hidden
@@ -323,7 +239,8 @@ function BundleServicesContent({
           </span>
           <p className="text-sm font-medium">No services yet</p>
           <p className="max-w-xs text-xs text-muted-foreground">
-            A bundle exists but no lines are attached.
+            Catering, AV, and supplies attached to this booking will
+            appear here.
           </p>
         </div>
       ) : (
@@ -353,7 +270,9 @@ function BundleServicesContent({
           </ul>
 
           <div className="flex items-center justify-between px-5 py-2 text-xs text-muted-foreground">
-            <span>Status: {prettyBundleStatus(data.status_rollup)}</span>
+            {data?.status_rollup && (
+              <span>Status: {prettyBundleStatus(data.status_rollup)}</span>
+            )}
             <span className="tabular-nums">{formatCurrency(total)}</span>
           </div>
         </>

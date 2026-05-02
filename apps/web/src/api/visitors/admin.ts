@@ -388,7 +388,8 @@ export interface DeskLensRow {
   visitor_type_id: string | null;
   visitor_type_name: string | null;
   primary_host_name: string | null;
-  booking_bundle_id?: string | null;
+  /** Renamed from `booking_bundle_id` post-canonicalisation (00278:41). */
+  booking_id?: string | null;
   seconds_since_arrival?: number;
 }
 

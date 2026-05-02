@@ -1,9 +1,43 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api';
 import { bundleKeys } from './keys';
 import { approvalKeys } from '@/api/approvals';
 import { roomBookingKeys } from '@/api/room-booking';
 import { ticketKeys } from '@/api/tickets';
+
+/**
+ * Booking-canonicalisation rewrite (2026-05-02): all `/booking-bundles/*`
+ * HTTP routes are GONE — the controller was deleted entirely
+ * (apps/api/src/modules/booking-bundles/booking-bundles.module.ts:27).
+ *
+ * The hooks below are TRANSITIONAL STUBS. Their type signatures and
+ * cache-invalidation semantics are preserved so existing components
+ * (BundleServicesSection, BundleWorkOrdersSection, etc.) compile, but
+ * the mutation functions throw `unsupported_operation` when invoked.
+ * In practice they are unreachable from the live UI today because
+ * `useBundle` returns no data, so the per-line edit/cancel buttons
+ * never render — they only render when `bundle.lines` has entries.
+ *
+ * When the backend slice ships replacement endpoints (POST
+ * `/bookings/:id/services` for append, PATCH `/bookings/services/lines/:id`
+ * for edit, etc.) wire them here and the UI lights up automatically.
+ *
+ * TODO(backend): replacement endpoints, per booking-canonical
+ * follow-up. The `useAttachReservationServices` hook in
+ * `@/api/room-booking` already targets the still-living
+ * `POST /reservations/:id/services` route (which now takes a booking id),
+ * so the "+ Add service" affordance on the booking detail surface
+ * continues to work.
+ */
+
+const BUNDLE_HTTP_GONE = 'booking_bundles_http_gone';
+
+function bundleEndpointError(): never {
+  throw new Error(
+    `${BUNDLE_HTTP_GONE}: /booking-bundles/* endpoints were removed in the ` +
+      'booking-canonicalisation rewrite. Wait for the backend follow-up ' +
+      'slice to ship replacement endpoints.',
+  );
+}
 
 export interface CancelBundlePayload {
   /** Line-item ids to KEEP — everything else cancels. */
@@ -16,19 +50,14 @@ export interface CancelBundlePayload {
 export function useCancelBundle() {
   const qc = useQueryClient();
   return useMutation<void, Error, { id: string; payload: CancelBundlePayload }>({
-    mutationFn: ({ id, payload }) =>
-      apiFetch(`/booking-bundles/${id}/cancel`, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      }),
+    mutationFn: async () => {
+      bundleEndpointError();
+    },
     onSettled: (_data, _err, { id }) => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(id) });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
       qc.invalidateQueries({ queryKey: roomBookingKeys.lists() });
       qc.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
-      // Cascading entities — work-order tickets get cancelled, approvals
-      // get expired. Refresh both so pages displaying them show the new
-      // state without a manual reload.
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
@@ -44,11 +73,10 @@ export interface AddBundleLinesInput {
 }
 
 /**
- * Append service lines to an existing bundle. Used by the post-booking
- * "+ Add service" affordance on `BundleServicesSection` (portal drawer +
- * desk panel + desk full page). The backend reuses
- * `attachServicesToReservation`, so rule resolution + approval routing
- * fire the same way they do at initial booking.
+ * @deprecated The append-services path is now `useAttachReservationServices`
+ * in `@/api/room-booking` (still calling the live `POST /reservations/:id/services`
+ * route, which takes a booking id post-rewrite). This stub remains for
+ * compile-compat only.
  */
 export function useAddBundleLines(bundleId: string) {
   const qc = useQueryClient();
@@ -64,15 +92,12 @@ export function useAddBundleLines(bundleId: string) {
     Error,
     { services: AddBundleLinesInput[] }
   >({
-    mutationFn: ({ services }) =>
-      apiFetch(`/booking-bundles/${bundleId}/lines`, {
-        method: 'POST',
-        body: JSON.stringify({ services }),
-      }),
+    mutationFn: async () => {
+      bundleEndpointError();
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
-      // New lines may trigger pending approvals + work-order tickets.
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
@@ -85,24 +110,11 @@ export interface EditBundleLinePatch {
   service_window_end_at?: string | null;
   requester_notes?: string | null;
   /** If-Match-style CAS — when present, the server rejects with 409 if
-   *  the line was updated by someone else since the read. Optional for
-   *  legacy callers; bundle-services-section threads the read-time
-   *  `updated_at` here so stale browser edits don't clobber. */
+   *  the line was updated by someone else since the read. */
   expected_updated_at?: string | null;
 }
 
-/**
- * Patch quantity / service window on an existing line. Recomputes
- * line_total when qty changes. Cascades window to the linked work-order
- * ticket. Rejects if the line is `preparing | delivered | cancelled`
- * (cancel + re-add is the path).
- *
- * Cache invalidation is surgical: bundle detail always; reservation
- * detail when caller passes `reservationId` (the detail page may show
- * derived bundle status); ticket caches ONLY when the patch touched a
- * service window (qty-only edits don't cascade to tickets, so don't
- * waste a refetch on the inbox / scheduler ticket caches).
- */
+/** @deprecated See file header — backend route gone. */
 export function useEditBundleLine(bundleId: string, reservationId?: string) {
   const qc = useQueryClient();
   return useMutation<
@@ -118,11 +130,9 @@ export function useEditBundleLine(bundleId: string, reservationId?: string) {
     Error,
     { lineId: string; patch: EditBundleLinePatch }
   >({
-    mutationFn: ({ lineId, patch }) =>
-      apiFetch(`/booking-bundles/lines/${lineId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(patch),
-      }),
+    mutationFn: async () => {
+      bundleEndpointError();
+    },
     onSuccess: (_data, { patch }) => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
       if (reservationId) {
@@ -137,11 +147,7 @@ export function useEditBundleLine(bundleId: string, reservationId?: string) {
   });
 }
 
-/**
- * Cancel a single service line. Used by the bundle services drawer's
- * per-line × button. Returns the cascaded ticket + asset_reservation ids
- * + closed approvals so the toast can mention them.
- */
+/** @deprecated See file header — backend route gone. */
 export function useCancelBundleLine(bundleId: string) {
   const qc = useQueryClient();
   return useMutation<
@@ -153,22 +159,12 @@ export function useCancelBundleLine(bundleId: string) {
     Error,
     { lineId: string; reason?: string }
   >({
-    mutationFn: ({ lineId, reason }) =>
-      apiFetch(`/booking-bundles/lines/${lineId}/cancel`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      }),
+    mutationFn: async () => {
+      bundleEndpointError();
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
-      // Cascading: line cancel cancels the linked asset reservation and
-      // may auto-close approval rows whose scope drops to empty.
-      //
-      // Note (2026-04-29): the work-order ticket cascade is currently a
-      // no-op — linked_ticket_id is an inert FK until Wave 2 ships the
-      // proper link table (see fulfillment-fixes plan). The ticketKeys
-      // invalidation stays defensively in case Wave 2 lands and someone
-      // forgets to revisit this comment.
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },

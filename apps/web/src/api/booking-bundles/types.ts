@@ -62,13 +62,27 @@ export interface BundleTicketRef {
   assignee_label: string | null;
 }
 
+/**
+ * Legacy `BookingBundle` shape — TRANSITIONAL.
+ *
+ * Booking-canonicalisation rewrite (2026-05-02):
+ *   - `booking_bundles` was dropped; the booking IS the bundle now.
+ *   - The `/booking-bundles/*` HTTP surface is GONE on the backend.
+ *   - `primary_reservation_id` was removed (the bundle's id is the
+ *     booking id, which is also the reservation id in callers' eyes).
+ *
+ * The type is retained so existing component imports compile while the
+ * UI is being migrated. `useBundle` (queries.ts) is now a no-op stub
+ * that never resolves a body — the lines/orders/tickets array surfaces
+ * are intentionally empty until a backend slice ships read endpoints
+ * for the booking's services + cascaded tickets.
+ */
 export interface BookingBundle {
   id: string;
   tenant_id: string;
   bundle_type: BundleType;
   requester_person_id: string;
   host_person_id: string | null;
-  primary_reservation_id: string | null;
   location_id: string;
   start_at: string;
   end_at: string;
@@ -81,7 +95,10 @@ export interface BookingBundle {
   status_rollup: BundleStatusRollup;
   created_at: string;
   updated_at: string;
-  /** Populated by the GET /booking-bundles/:id detail endpoint. */
+  /** Populated by the legacy GET /booking-bundles/:id detail endpoint
+   *  (now gone). New backend slice will surface these via a
+   *  `/bookings/:id/services` (or similar) endpoint; until then `useBundle`
+   *  returns no data and these fields stay undefined. */
   orders?: BundleOrderRef[];
   tickets?: BundleTicketRef[];
   lines?: BundleLine[];

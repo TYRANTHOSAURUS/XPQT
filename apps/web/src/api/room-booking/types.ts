@@ -1,4 +1,24 @@
 // Mirrors the API's reservations DTOs (apps/api/src/modules/reservations/dto/types.ts).
+//
+// Booking-canonicalization rewrite (2026-05-02):
+//   `bookings`        replaces `booking_bundles`  (00277:27)
+//   `booking_slots`   replaces `reservations`     (00277:116)
+//
+// The frontend keeps the legacy `Reservation` shape because the API
+// projects every booking-slot read back into that flat shape via
+// `slotWithBookingToReservation` (apps/api/src/modules/reservations/
+// reservation-projection.ts:55). New canonical types `Booking` /
+// `BookingSlot` are exposed below for any new code that wants to
+// consume the modern shape directly.
+//
+// BREAKING SEMANTICS (carried by the legacy Reservation shape post-rewrite):
+//   - `Reservation.id` is now a `bookings.id` (was `reservations.id`).
+//   - `Reservation.booking_bundle_id` is ALWAYS equal to `Reservation.id`
+//     (the booking IS the bundle now — no separate booking_bundles row).
+//   - `Reservation.multi_room_group_id` is ALWAYS null (column dropped;
+//     multi-room atomicity now lives in shared `booking_id` on slots).
+//   - `Reservation.recurrence_master_id` is ALWAYS null (column dropped;
+//     the only canonical link is `recurrence_series_id`).
 
 export type ReservationStatus =
   | 'draft'
@@ -19,6 +39,23 @@ export type ReservationSource =
 
 export type ReservationType = 'room' | 'desk' | 'parking' | 'other';
 export type CalendarProvider = 'outlook';
+
+// `parking` is on the new schema; the new check constraint accepts only
+// room/desk/asset/parking — 00277:122. Frontend keeps `'other'` in the
+// legacy Reservation type for the projection (asset → other on read).
+export type SlotType = 'room' | 'desk' | 'asset' | 'parking';
+
+// Source values the new bookings table accepts (00277:56-58, FIX#2).
+// The legacy `ReservationSource` retains 'auto' for calendar-sync intercept
+// callers; the booking layer never sees 'auto' (it's coerced to
+// 'calendar_sync' before insert).
+export type BookingStatus = ReservationStatus;
+export type BookingSource =
+  | 'portal'
+  | 'desk'
+  | 'api'
+  | 'calendar_sync'
+  | 'reception';
 
 export interface RecurrenceRule {
   frequency: 'daily' | 'weekly' | 'monthly';
@@ -44,6 +81,81 @@ export interface PolicySnapshot {
   }>;
 }
 
+/**
+ * Canonical `Booking` shape — matches the API's `Booking` interface
+ * (apps/api/src/modules/reservations/dto/types.ts:87). Use this for any
+ * new code that doesn't need to interop with the flat `Reservation`
+ * projection.
+ */
+export interface Booking {
+  id: string;
+  tenant_id: string;
+  title: string | null;
+  description: string | null;
+  requester_person_id: string;
+  host_person_id: string | null;
+  booked_by_user_id: string | null;
+  location_id: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  status: BookingStatus;
+  source: BookingSource;
+  cost_center_id: string | null;
+  cost_amount_snapshot: string | null;
+  policy_snapshot: PolicySnapshot;
+  applied_rule_ids: string[];
+  config_release_id: string | null;
+  calendar_event_id: string | null;
+  calendar_provider: CalendarProvider | null;
+  calendar_etag: string | null;
+  calendar_last_synced_at: string | null;
+  recurrence_series_id: string | null;
+  recurrence_index: number | null;
+  recurrence_overridden: boolean;
+  recurrence_skipped: boolean;
+  template_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Canonical `BookingSlot` — per-resource holding within a Booking. One
+ * slot per held space (room/desk/asset/parking). Multi-room bookings
+ * have N slots all keyed to the same booking_id. Mirrors the API
+ * (apps/api/src/modules/reservations/dto/types.ts:137).
+ */
+export interface BookingSlot {
+  id: string;
+  tenant_id: string;
+  booking_id: string;
+  slot_type: SlotType;
+  space_id: string;
+  start_at: string;
+  end_at: string;
+  setup_buffer_minutes: number;
+  teardown_buffer_minutes: number;
+  effective_start_at: string;
+  effective_end_at: string;
+  attendee_count: number | null;
+  attendee_person_ids: string[];
+  status: BookingStatus;
+  check_in_required: boolean;
+  check_in_grace_minutes: number;
+  checked_in_at: string | null;
+  released_at: string | null;
+  cancellation_grace_until: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Legacy flat `Reservation` projection — what the API still returns
+ * from every reservations endpoint (apps/api/src/modules/reservations/
+ * reservation-projection.ts). Field semantics post-rewrite are
+ * documented at the top of this file.
+ */
 export interface Reservation {
   id: string;
   tenant_id: string;
@@ -59,6 +171,9 @@ export interface Reservation {
   status: ReservationStatus;
   recurrence_rule: RecurrenceRule | null;
   recurrence_series_id: string | null;
+  /** ALWAYS null post-rewrite (column dropped). Field kept on the
+   *  legacy shape so existing readers compile; the only canonical
+   *  series link is `recurrence_series_id`. */
   recurrence_master_id: string | null;
   recurrence_index: number | null;
   recurrence_overridden: boolean;
@@ -77,24 +192,25 @@ export interface Reservation {
   source: ReservationSource;
   booked_by_user_id: string | null;
   cost_amount_snapshot: string | null;
+  /** ALWAYS null post-rewrite (column dropped; multi-room atomicity is
+   *  now expressed via shared `booking_id` on slots). Group siblings are
+   *  now discovered by querying slots that share the booking id, not by
+   *  this column. */
   multi_room_group_id: string | null;
   calendar_event_id: string | null;
   calendar_provider: CalendarProvider | null;
   calendar_etag: string | null;
   calendar_last_synced_at: string | null;
+  /** Post-rewrite this is ALWAYS equal to `id` (the booking IS the
+   *  bundle). Field kept so existing UI that branched on truthiness
+   *  still compiles; new code should treat it as a synonym for `id`. */
   booking_bundle_id: string | null;
   created_at: string;
   updated_at: string;
-  /** Root-first parent trail of the booked space (e.g.
-   *  ["HQ", "Floor 3", "Conf Room A"]). Populated by `GET /reservations/:id`
-   *  via `public.space_path(uuid)`. Lets the booking detail "Where" row
-   *  render the trail without the frontend fetching the full tenant tree
-   *  just to walk parents. Absent on list endpoints. */
+  /** Root-first parent trail of the booked space. */
   space_path?: string[] | null;
-  // Optional denormalised display fields. Populated by `/scheduler-data`
-  // and the operator list endpoint so the desk grid + lists can label
-  // rows without each block firing its own `usePerson` lookup. Absent on
-  // reads from `/reservations/:id` and friends.
+  // Optional denormalised display fields populated by the operator list
+  // / scheduler-data endpoint.
   requester_first_name?: string | null;
   requester_last_name?: string | null;
   requester_email?: string | null;
@@ -172,9 +288,10 @@ export interface BookingPayload {
   override_reason?: string;
   /**
    * Optional service lines (catering / AV / setup) attached at booking
-   * time. Triggers `BundleService.attachServicesToReservation` on the
-   * backend after the reservation lands. Lazy bundle creation: room-only
-   * bookings (services absent or empty) skip the bundle entirely.
+   * time. Triggers `BundleService.attachServicesToBooking` on the
+   * backend after the booking lands. Lazy bundle creation: room-only
+   * bookings (services absent or empty) skip the service-attachment
+   * pipeline entirely.
    */
   services?: ServiceLinePayload[];
   /** Bundle metadata. Honored only when `services` is present. */

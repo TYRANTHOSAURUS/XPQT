@@ -410,14 +410,15 @@ function BookingRow({
               series
             </span>
           )}
-          {item.booking_bundle_id && (
-            <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary"
-              title="Has services attached"
-            >
-              services
-            </span>
-          )}
+          {/* Post-canonicalisation (2026-05-02): the per-row "services"
+              chip used to gate on `item.booking_bundle_id`, which under
+              the new projection is ALWAYS equal to `item.id` and so the
+              chip would render on every row. Without a per-row
+              "has-services" signal on the operator list response we
+              can't tell from this layer alone — the chip is omitted
+              until the backend list grows a discriminator. The
+              `?scope=bundles` toggle still narrows the LIST to bookings
+              with attached services (server-side via has_bundle=true). */}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
           <span className="font-mono tabular-nums">
