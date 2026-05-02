@@ -36,7 +36,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 11 | **Field-level errors never toast.** When `fields[]` is present, the form's mutation hook stuffs them into RHF state and the toast either suppresses or becomes a generic "Some fields need attention." | The current setup turns `class-validator` arrays into comma-joined toast text — unusable. |
 | 12 | **Optimistic-update rollback is animated and explained.** The `useMutation` `onError` rollback path adds a one-line toast "We undid that change because: <reason from code>". Silent reverts are banned. | Most apps fail here; it's a high-leverage polish moment. |
 | 13 | **No vendor names leak to users.** Resend / Supabase / Stripe / Postgres errors are mapped to neutral codes (`email.dispatch_failed`, `realtime.unavailable`, `payment.failed`, `db.constraint`). Internal logs keep the original. | Both branding (don't ship "Resend down") and security (don't leak stack info). |
-| 14 | **Page-level errors replace the page**, not toast over a now-broken page. React Router `errorElement` reads the classified error and renders the right page-level state (forbidden / not-found / gone / offline / generic 500). | Toasting "Not found" while leaving a broken detail page on screen is the worst UX in the platform today. |
+| 14 | **Page-level errors replace the page**, not toast over a now-broken page. Implemented via per-route React class `ErrorBoundary` components wrapping each top-level route element (`<Route element={<ErrorBoundary><DeskPage/></ErrorBoundary>}>`). The boundary catches both render errors *and* errors thrown into a `throwToBoundary()` ref by query/mutation hooks for page-level classes (`not_found`, `forbidden`, `gone`, generic 500). Renders forbidden / not-found / gone / offline / generic 500 states. | Toasting "Not found" while leaving a broken detail page on screen is the worst UX in the platform today. **Note:** the app currently uses `<BrowserRouter>` + `<Routes>` (component router). React Router's data-router `errorElement` is not available; migrating to `createBrowserRouter` is a separate decision (see §8). |
 | 15 | **Error boundary at the route level**, not the app root. Catches render-time errors, classifies as `class: 'render'`, shows a minimal fallback with reload + report. Sentry-style report dialog gated to power users (settings flag). | App-root boundaries lose all context. Per-route boundaries let other regions stay alive. |
 | 16 | **Realtime / sync drops are status-bar UI, not toasts.** A subtle dot in the app shell shows connection state; only escalate to a banner if disconnected >30s; only toast if unrecoverable. | Realtime flaps. Toasting every flap is hostile. |
 | 17 | **Rate-limit errors carry `retryAfter` seconds** and the renderer shows a live countdown ("Try in 47s"). 429s without `retryAfter` are a server bug. | "Too many requests" with no countdown is information-free. |
@@ -234,10 +234,15 @@ export function renderError(classified: ClassifiedError, context: RenderContext)
 
 // React-side state + UI primitives:
 export function ErrorBanner(): JSX.Element;             // mounts in app shell, listens to transport/realtime store
-export function RouteErrorElement(): JSX.Element;       // for React Router errorElement; pulls error via useRouteError
+export class RouteErrorBoundary extends React.Component  // class component (componentDidCatch); wraps each top-level route
+                                  <Props, State> { ... } // exposes a context: { throwToBoundary(error) } so query/mutation hooks
+                                                         // can promote a page-class error (not_found / forbidden / gone)
+                                                         // to the same boundary that catches render errors.
 export function ConflictModal(props): JSX.Element;      // 'Use theirs / Keep mine / Show diff'
 export function RateLimitToast(props): JSX.Element;     // live countdown via useNow
 ```
+
+Why a class component, not data-router `errorElement`: the app uses `<BrowserRouter>` + `<Routes>` (`apps/web/src/main.tsx:13-21`). `errorElement` requires `createBrowserRouter` + `RouterProvider`. Migrating the route tree (131 `<Route>` declarations across `App.tsx` + nested layouts) is a multi-day refactor outside this spec. Class boundaries handle the same use case with less ceremony and don't block this work; if/when a future decision migrates to a data router, the boundary becomes a thin wrapper around `errorElement`.
 
 ### 3.5 Hook integration — the only API call sites should learn
 
@@ -273,14 +278,14 @@ This is the contract. Every classifier branch lands one row.
 | `transport` (offline / DNS / timeout) | Banner pill in app shell | `retry` (auto-retry on reconnect) · `dismiss` | React Query `onlineManager` triggers refetch on reconnect. No toast; banner says it. |
 | `auth` (401 expired) | Silent → redirect to sign-in | `signIn` (carries `next=` to current URL with form draft preserved) | Toast is wrong here. Just navigate. AuthProvider already partly handles this. |
 | `permission` (403) | Page if route-level; toast if action-level | `askAdmin` (with admin names if known) · `goBack` | Inline page state for navigation; toast for 'Save failed: missing permission' |
-| `not_found` (404) | Route page replacement | `goBack` · `reload` | Renders 'This was removed' page-level; never toast over a stale page. |
-| `gone` (410) | Route page replacement | `goBack` | Distinguished from 404 — entity existed, was removed. Different copy. |
+| `not_found` (404) | Page replacement via `RouteErrorBoundary` | `goBack` · `reload` | Renders 'This was removed' page-level; never toast over a stale page. Hook calls `throwToBoundary()` to promote a query/mutation 404 into the same boundary that catches render errors. |
+| `gone` (410) | Page replacement via `RouteErrorBoundary` | `goBack` | Distinguished from 404 — entity existed, was removed. Different copy. |
 | `validation` (422) | Inline `<FieldError>` | (no toast; field errors are the recovery) | Submit button disabled until form is valid. |
 | `conflict` (409) | Modal | `pickAlternative` (use theirs/keep mine/show diff) · `reload` | Tier-1 multi-user differentiator. |
 | `rate_limit` (429) | Toast with live countdown | `retry` (auto, when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
 | `server` (5xx) | Toast | `retry` · `contactSupport` (with traceId pre-filled) | TraceId is small text in toast, click to copy. |
 | `realtime` (ws drop) | Status-bar dot → banner if >30s | `retry` (auto-reconnect with backoff) | Distinct from `transport` because realtime can drop while HTTP works. |
-| `render` (ErrorBoundary) | Per-route fallback page | `reload` · `goBack` · `contactSupport` | App keeps running, only the broken route is replaced. |
+| `render` (caught by `RouteErrorBoundary`) | Per-route fallback page | `reload` · `goBack` · `contactSupport` | App keeps running, only the broken route is replaced. Same boundary that handles `not_found`/`gone`/`forbidden`-as-page. |
 | `unknown` | Toast | `retry` · `contactSupport` | Landing here is a classifier bug. Add a class branch. |
 
 ## 5 · Code taxonomy — the registry
@@ -395,12 +400,15 @@ This is incremental. Nothing breaks on day one.
 - Migrate the 5 highest-traffic mutations behind a feature flag.
 - **Visible result:** validation errors paint inline; offline shows a banner; toasts for everything else look mostly the same but now have traceId.
 
-**Wave 2 — Page-level surfaces** — ~2 days
-- Ship `RouteErrorElement` + register on the route tree.
+**Wave 2 — Page-level surfaces** — ~3 days
+- Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
+- Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
 - Ship 404 / 403 / 410 / 5xx page templates.
 - Ship `ConflictModal`.
-- Migrate top-traffic queries.
+- Migrate top-traffic queries to call `throwToBoundary()` for page-class errors.
 - **Visible result:** broken pages now show real page state instead of stale content + toast.
+
+**Wave 2 explicitly does NOT migrate the route tree to a data router.** That migration (`createBrowserRouter` + loaders/actions) is a separate decision; it's a multi-day refactor across 131+ routes and is out of scope here.
 
 **Wave 3 — Recovery polish** — ~3 days
 - Sign-in `next=` redirect with form-draft preservation.
