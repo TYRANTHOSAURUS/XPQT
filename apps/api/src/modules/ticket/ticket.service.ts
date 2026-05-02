@@ -946,10 +946,26 @@ export class TicketService {
       }
     }
 
+    // Cost is `numeric(12,2)` in Postgres — exact 2-dp decimal. JS sends
+    // IEEE-754 floats, so a UI-derived `0.1 + 0.2 = 0.30000000000000004`
+    // PATCH would round to 0.30 on write but compare against 0.3 on the
+    // next refetch — the no-op fast-path below would never fire and every
+    // PATCH with a fractional cost would re-write the row. Mirrors the
+    // WO-side normalization in WorkOrderService.updateMetadata; backported
+    // here per /full-review I3 (case-side parity gap).
+    const dtoNormalized: typeof dto = { ...dto };
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'cost') &&
+      typeof dto.cost === 'number' &&
+      Number.isFinite(dto.cost)
+    ) {
+      dtoNormalized.cost = Math.round(dto.cost * 100) / 100;
+    }
+
     const updateData: Record<string, unknown> = {};
     const changes: Record<string, { from: unknown; to: unknown }> = {};
 
-    for (const [key, value] of Object.entries(dto)) {
+    for (const [key, value] of Object.entries(dtoNormalized)) {
       if (value !== undefined && (current as Record<string, unknown>)[key] !== value) {
         updateData[key] = value;
         changes[key] = { from: (current as Record<string, unknown>)[key], to: value };

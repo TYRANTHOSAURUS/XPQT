@@ -235,6 +235,18 @@ async function runCaseMutations(headers, probe) {
     url: `${API_BASE}/api/tickets/${CASE_ID}`,
     body: { title: `smoke-case-${Date.now()}` },
   });
+
+  // cost (fractional — float-normalization regression test, case side).
+  // Backports the WO-side fix per /full-review I3. Sends 0.1+0.2 which
+  // is 0.30000000000000004 in IEEE-754; without normalization the no-op
+  // fast-path would never fire and every PATCH would re-write the row.
+  const r = await fetch(`${API_BASE}/api/tickets/${CASE_ID}`, { headers });
+  const cur = await r.json();
+  const nextCost = (cur.cost ?? 0) + 0.1 + 0.2;
+  await probe('CASE: cost (fractional, normalization)', {
+    url: `${API_BASE}/api/tickets/${CASE_ID}`,
+    body: { cost: nextCost },
+  });
 }
 
 async function runValidationProbes(headers, probe) {
