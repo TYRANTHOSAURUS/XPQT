@@ -25,7 +25,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 |---|---|---|
 | 1 | Adopt **RFC 9457 Problem Details** as the wire shape for all error responses. | Industry standard, replaces RFC 7807, already what Stripe / Linear / Vercel converged on. Future-proof. |
 | 2 | Every error response carries `code` (stable, machine-readable) + `title` (human outcome) + `detail` (one-line explanation) + optional `fields[]` + always a `traceId`. | Code is the join key for client message lookup + recovery. TraceId is non-negotiable — support uses it. |
-| 3 | A **single global Nest `AllExceptionsFilter`** normalises every thrown thing — `HttpException`, `class-validator` errors, raw `pg` errors, `PostgrestError`, unknown errors — into the wire shape. Migrating call sites is incremental; the filter handles legacy `BadRequestException(string)` cleanly. | One file, every endpoint benefits day one. Migrate throw sites by traffic, not all-at-once. |
+| 3 | A **single global Nest `AllExceptionsFilter`** normalises every thrown thing — `HttpException`, `ZodError`, raw `pg` errors, `PostgrestError`, unknown errors — into the wire shape. Migrating call sites is incremental; the filter handles legacy `BadRequestException(string)` cleanly. **Note:** the repo uses Zod for runtime validation (manually called per controller via `safeParse`); `class-validator` is not installed and there is no `ValidationPipe`. The filter has no `class-validator` branch. | One file, every endpoint benefits day one. Migrate throw sites by traffic, not all-at-once. |
 | 4 | An **`AppError` class** (server) with `code`, `status`, `fields?`, `cause?`, `docsUrl?`. New throw sites use it. Legacy `BadRequestException(string)` is mapped by the filter to `code: 'generic.bad_request'` until migrated. | Coded errors at the source preserve intent; string errors stay supported during migration. |
 | 5 | A **client-side `classify()` function** turns any thrown thing (`ApiError`, `Error`, fetch failure, abort) into a `ClassifiedError` with `class` + `code` + `fields?` + `traceId?` + `recovery`. **Classification happens once, at the boundary.** Renderers read the classified shape. | Decouples "what went wrong" from "how it shows up". Without this layer every renderer re-derives the same state. |
 | 6 | **11 error classes**, each mapped to a default surface and recovery. (Matrix in §4.) Classes are exhaustive — every error must classify into exactly one. `unknown` exists as a last-resort bucket for renderer correctness, but landing there is a bug to fix at the classifier. | A taxonomy with a default-OK case isn't a taxonomy. Forcing exhaustiveness drives classifier completeness. |
@@ -33,7 +33,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 8 | **Every error has a recovery.** If the design can't name one, the class is wrong. Recovery options are typed: `retry` · `signIn` · `reload` · `goBack` · `pickAlternative` · `askAdmin` · `contactSupport` · `dismiss`. | "Try again" is the floor, not the ceiling. The button labels are the UX. |
 | 9 | **Messages are looked up client-side by `code`, not read from the server's `title`/`detail`.** Server message is fallback only. Lookup table is per-locale; Dutch first-class. | Localisation, ability to rewrite a confusing message without a deploy, ability to gracefully handle codes the client doesn't know yet. |
 | 10 | **TraceId everywhere.** Generate at request boundary (`X-Request-Id`), echo in every error response and every server log line, surface subtly on every user-visible error (copy-on-click). Frontend captures it on every `ApiError`. | Highest-leverage single change. Support resolution drops from 30 min to 30 sec. |
-| 11 | **Field-level errors never toast.** When `fields[]` is present, the form's mutation hook stuffs them into RHF state and the toast either suppresses or becomes a generic "Some fields need attention." | The current setup turns `class-validator` arrays into comma-joined toast text — unusable. |
+| 11 | **Field-level errors never toast.** When `fields[]` is present, the form's mutation hook stuffs them into RHF state and the toast either suppresses or becomes a generic "Some fields need attention." | The current setup turns Zod errors (via `formatZodError`) into a single comma-joined string — unusable as toast text and impossible to map to specific form fields. |
 | 12 | **Optimistic-update rollback is animated and explained.** The `useMutation` `onError` rollback path adds a one-line toast "We undid that change because: <reason from code>". Silent reverts are banned. | Most apps fail here; it's a high-leverage polish moment. |
 | 13 | **No vendor names leak to users.** Resend / Supabase / Stripe / Postgres errors are mapped to neutral codes (`email.dispatch_failed`, `realtime.unavailable`, `payment.failed`, `db.constraint`). Internal logs keep the original. | Both branding (don't ship "Resend down") and security (don't leak stack info). |
 | 14 | **Page-level errors replace the page**, not toast over a now-broken page. Implemented via per-route React class `ErrorBoundary` components wrapping each top-level route element (`<Route element={<ErrorBoundary><DeskPage/></ErrorBoundary>}>`). The boundary catches both render errors *and* errors thrown into a `throwToBoundary()` ref by query/mutation hooks for page-level classes (`not_found`, `forbidden`, `gone`, generic 500). Renders forbidden / not-found / gone / offline / generic 500 states. | Toasting "Not found" while leaving a broken detail page on screen is the worst UX in the platform today. **Note:** the app currently uses `<BrowserRouter>` + `<Routes>` (component router). React Router's data-router `errorElement` is not available; migrating to `createBrowserRouter` is a separate decision (see §8). |
@@ -133,8 +133,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 // normalize() handles, in order:
 //   AppError          → straight passthrough
 //   HttpException     → map status → code; pull message into detail
-//   ZodError          → 422 + fields[]
-//   class-validator   → 422 + fields[]
+//   ZodError          → 422 + fields[] (see "Zod migration" below — non-trivial)
 //   PostgrestError    → 4xx/5xx based on code; map RLS denial → permission.denied
 //   pg native error   → 'db.constraint' / 'db.unique_violation' / 'db.fk_violation'; never leak SQL
 //   AbortError        → 'request.cancelled' (don't log)
@@ -142,6 +141,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
 ```
 
 `normalize()` is the **only** place errors become wire-shaped. Lives behind 100% unit-test coverage. Adding a new server error class = adding one branch + tests.
+
+**Zod migration** — the repo uses Zod manually via `safeParse` + a helper called `formatZodError` that returns a **single comma-joined string** (e.g. `"title: Required, priority: Invalid enum value"`). For the filter to produce structured `fields[]` output, every controller's Zod-handling site needs to switch from "join into a string" to "pass the raw `ZodError` up so the filter formats it." Plan:
+
+1. Add a `throwZodError(result: SafeParseError)` helper that throws an `AppError` with `code: 'validation.failed'`, `status: 422`, and `fields[]` derived from `result.error.issues` (mapping `path` → `field`, `code` → field code, `message` → message).
+2. Update `formatZodError` to be a thin wrapper that calls `throwZodError`.
+3. Migrate call sites — they're already in a uniform shape, so this is a 1-line replacement per site.
+4. The filter's `ZodError` branch is then a fallback for any uncaught `ZodError` that escapes (via library code).
+
+This is a real piece of work — call it out in Wave 0 rather than burying it.
 
 ### 3.3 Client: `ApiError` extension + `classify()`
 
