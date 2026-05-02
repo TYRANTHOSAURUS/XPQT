@@ -142,11 +142,23 @@ export function VisitorDetail({
         onExpand={onExpand}
       />
 
-      {/* Action row */}
+      {/* Action row.
+       *
+       * Demoted from filled-primary to outline so it doesn't compete with
+       * the toolbar's `+ Invite` primary button. Same shape as ticket
+       * detail's quiet header — destructive / state-change verbs are
+       * outline-secondary and live next to the title rather than at the
+       * top of a sidebar. Power users still have the right-click context
+       * menu for the same set of actions. */}
       <div className="flex flex-wrap items-center gap-2 border-b px-6 py-3">
         {isExpected && (
           <>
-            <Button size="sm" onClick={handleArrive} disabled={markArrived.isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleArrive}
+              disabled={markArrived.isPending}
+            >
               <UserCheck className="size-4" /> Mark arrived
             </Button>
             <Button
@@ -161,7 +173,12 @@ export function VisitorDetail({
         )}
         {isOnSite && (
           <>
-            <Button size="sm" onClick={openCheckout} disabled={markCheckedOut.isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={openCheckout}
+              disabled={markCheckedOut.isPending}
+            >
               <LogOut className="size-4" /> Mark left
             </Button>
             {!visitor.visitor_pass_id && (
