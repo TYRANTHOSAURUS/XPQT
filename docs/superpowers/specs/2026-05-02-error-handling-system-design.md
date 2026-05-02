@@ -583,7 +583,7 @@ This is incremental. Nothing breaks on day one.
 **Wave 1 — Classifier + 3 surfaces** — ~5 days
 - Ship `classify()` + `ClassifiedError` types + tests.
 - Ship `handleMutationError` + `withErrorHandling` + `handleQueryError` helpers.
-- Ship 3 renderers: toast, inline (FieldError integration), banner.
+- Ship 3 renderers: toast, inline (FieldError integration), banner. **Banner is scoped to `transport`-class only in Wave 1** — the banner UI mounts and listens to a transport-only state (offline / online). Realtime aggregation is added in Wave 3 once the `RealtimeStatusStore` exists; the same banner component then accepts a second source.
 - Wire `apiFetch` mid-call session-refresh retry (§6.2).
 - **Migrate the Zod sites that back the 5 highest-traffic mutations to `throwZodError`** in lockstep — the helper's `setFormError` integration depends on `fields[]` being present, and that requires the Zod migration described in §3.2 to land *for these 5 endpoints* in Wave 1. The remaining controllers stay on the old `formatZodError` string until Wave 4; their validation errors surface as a single whole-form toast in the meantime (no field-level inline display).
 - Migrate the 5 highest-traffic mutations behind a feature flag; verify voice rule preserved.
