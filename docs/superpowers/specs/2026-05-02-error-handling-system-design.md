@@ -427,6 +427,13 @@ The server reads `ErrorCode` from `@prequest/shared` when constructing `AppError
 
 **No fall-through to server `detail`.** The renderer never displays the server's `title`/`detail` verbatim. If a code isn't registered (which the CI guard makes nearly impossible), the renderer shows `unknown.server_error` copy + traceId. This is the leak-prevention control for decision #13: even if a server error string accidentally embeds a vendor name, SQL, or stack, the user never sees it.
 
+**Wave-0 transition escape hatch (time-limited).** During Wave 0, every legacy `BadRequestException(string)` site is mapped to `code: 'generic.bad_request'` by the filter — registered, fine. But if a code escapes the migration to `'unknown.server_error'` during the transition, the user sees a generic "Something went wrong" instead of the legacy English string that would have been adequate. To avoid this regression during the migration window:
+
+- A **dev-only** env flag `ERRORS_RENDER_DETAIL_ON_UNKNOWN=1` makes the renderer fall back to `detail` for `unknown.server_error` (engineering can see the underlying message in dev / staging).
+- A **prod** feature flag `errors_render_detail_on_unknown` (default off) can be temporarily flipped during the Wave-0a/0b transition window if a regression is observed for end users. The flag is removed in Wave 4 once the runtime audit (§9 risks) shows zero `error_normalize_unknown` events from production for a 1-week window.
+
+The escape hatch is explicitly scoped: feature-flagged, time-limited, and removed by Wave 4. After that, fail-closed is permanent.
+
 Initial code set (not exhaustive — extend as the migration ships):
 
 ```
