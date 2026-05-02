@@ -3,7 +3,7 @@
 **Date:** 2026-05-01 (continuation of the same calendar day as Sessions 7–12)
 **Branch:** `main`
 **Commit:** `ce4d157 fix(work-orders): restore service_role DML grants on public.work_orders + A12 CI invariant`
-**Migration:** `00248_restore_work_orders_service_role_writes.sql` (on remote)
+**Migration:** `00275_restore_work_orders_service_role_writes.sql` (on remote)
 **Closes:** the P0 reported by the user at the end of Session 12.
 
 ---
@@ -118,7 +118,7 @@ class never surfaced until a real PATCH against the real DB.
 
 ## The fix
 
-### `supabase/migrations/00248_restore_work_orders_service_role_writes.sql`
+### `supabase/migrations/00275_restore_work_orders_service_role_writes.sql`
 
 ```sql
 revoke all on public.work_orders from anon, authenticated, public;

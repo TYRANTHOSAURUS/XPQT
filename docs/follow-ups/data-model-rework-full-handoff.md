@@ -25,7 +25,7 @@ unwritable table. Every test mocked Supabase, so the table-level 42501
 "permission denied for table work_orders" never surfaced until a real
 PATCH against the live DB.
 
-**Fix:** [`supabase/migrations/00248_restore_work_orders_service_role_writes.sql`](../../supabase/migrations/00248_restore_work_orders_service_role_writes.sql) — restore-and-assert grant posture mirroring the original from 00213 line 148. Idempotent. On remote.
+**Fix:** [`supabase/migrations/00275_restore_work_orders_service_role_writes.sql`](../../supabase/migrations/00275_restore_work_orders_service_role_writes.sql) — restore-and-assert grant posture mirroring the original from 00213 line 148. Idempotent. On remote.
 
 **Regression gate:** A12 added to [`scripts/ci-migration-asserts.sql`](../../scripts/ci-migration-asserts.sql) — asserts service_role has SELECT, INSERT, UPDATE, DELETE on public.work_orders. The whole NestJS API authenticates as service_role for DML; any writable tenant table that loses one of those four privileges breaks an entire surface silently — every test passes, every UI click 500s. A1..A12 all pass on remote.
 
@@ -622,7 +622,7 @@ Migration sequence (00202–00246, all applied to remote `iwbqnyrvycqgnatratrk`)
 00245_bundle_visibility_parity_with_ts.sql         Session 8 P3
 00246_work_orders_plandate_check.sql               Slice 1 / Session 10
 00247_backfill_assign_and_priority_permissions.sql Session 12 P2 grandfathering
-00248_restore_work_orders_service_role_writes.sql  Session 13 P0 fix
+00275_restore_work_orders_service_role_writes.sql  Session 13 P0 fix
 ```
 
 Stress test fixtures (NOT committed, in `/tmp/`):

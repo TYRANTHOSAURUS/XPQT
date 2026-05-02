@@ -12,7 +12,7 @@
     "build": "pnpm -r run build",
     "build:api": "pnpm --filter @prequest/api run build",
     "build:web": "pnpm --filter @prequest/web run build",
-    "lint": "pnpm -r run lint",
+    "lint": "bash scripts/check-migration-prefixes.sh && pnpm -r run lint",
     "test": "pnpm -r run test",
     "smoke:work-orders": "pnpm --filter @prequest/api run smoke:work-orders",
     "design:check": "bash scripts/check-design.sh",

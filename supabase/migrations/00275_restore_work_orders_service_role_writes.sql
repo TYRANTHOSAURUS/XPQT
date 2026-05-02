@@ -1,4 +1,4 @@
--- 00248_restore_work_orders_service_role_writes.sql
+-- 00275_restore_work_orders_service_role_writes.sql
 --
 -- Root cause: at step 1c.3.6 (atomic rename, migration 00222 line 352-354),
 -- public.work_orders was given a deliberately-temporary "SELECT only" grant
