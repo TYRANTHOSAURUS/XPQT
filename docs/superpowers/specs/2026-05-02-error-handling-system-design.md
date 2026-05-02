@@ -459,9 +459,21 @@ The `auth.expired` UX problem isn't "user gets redirected to sign-in mid-edit" �
 **v1 behaviour for this case:** when `apiFetch` sees a 401 and the Supabase client reports a *different* (newer) session than the one used for the request, retry the request once with the new token transparently, no UX. Implement at the `apiFetch` boundary so every call site benefits.
 
 **Hard 401 (refresh token dead) — fallback path:**
-1. Clear local Supabase session.
-2. Redirect to sign-in with `?next=<current_url>`.
-3. (Polish, deferred) Form-draft preservation via `sessionStorage` keyed by route + form id, rehydrated post-sign-in. This is genuinely a "love this app" detail in Linear / Stripe, but it fires approximately never given Supabase's silent refresh, so demote to a polish item — ship the redirect first, add the draft preservation when there's user demand.
+1. Serialise the current form state (RHF `getValues()`) to `sessionStorage` keyed by route + form id. **This is v1, not polish, for the visitor + ticket forms** — see "Form-draft preservation v1 scope" below.
+2. Clear local Supabase session.
+3. Redirect to sign-in with `?next=<current_url>`.
+4. After sign-in, the form's `useEffect` rehydrates from `sessionStorage` and clears the key.
+
+**Form-draft preservation v1 scope** (mandatory, not polish):
+
+The receptionist persona explains why this can't wait. Shared front-desk terminal during a 09:00 visitor rush, JWT silently expires under load, six in-progress visitor entries vanish on the redirect — that's not a "love this app" detail, it's catastrophic data loss for a non-technical user during a peak. The same logic applies to the ticket form (employees mid-submission) and the booking-composer (operators mid-edit). v1 ships draft preservation for:
+
+- **`/reception/walk-up`** + `/reception/check-in` (visitor forms — receptionist primary surface)
+- **`/portal/new-ticket`** + the desk inline ticket creator (employee + operator surfaces)
+- **The booking composer** (operators, often mid-rush)
+- **Any admin form open in a `SettingsPageShell` with `dirty: true` form state** (catch-all for /admin/*)
+
+Out-of-scope for v1: file inputs (warn the user to re-attach), drag-and-drop ordering state, mid-flight uploads. The text/select/checkbox/radio/textarea path covers the harm.
 
 **Refresh-loop bail rule (mandatory).** A dead refresh token surfaces a 401 on every subsequent request. If the AuthProvider re-attempts to read the session after the redirect (or if a third-party tab races the sign-in), the user can land in a tight 401 → redirect → 401 loop with the URL never settling.
 
