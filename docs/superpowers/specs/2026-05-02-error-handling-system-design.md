@@ -77,7 +77,16 @@ Every non-2xx response from the API has the same body, regardless of route, fram
 
 `code` is the contract surface. Once shipped, codes never change semantics — only new codes are added. Codes are dot-namespaced by domain (`ticket.*`, `permission.*`, `routing.*`, `db.*`, `email.*`, `auth.*`, `quota.*`, `network.*`).
 
-**Bulk operations:** any endpoint that accepts a batch of items (delete-many, update-many, dispatch-many, etc.) returns the same wire shape with `results[]` + `partialSuccess`. The HTTP status is the worst-case outcome (any failed → 207 Multi-Status; all failed → 4xx/5xx; all ok → 2xx with `results[]` for confirmation). The renderer surfaces partial-success as a toast: `"7 of 10 deleted — 3 failed [Show me]"` where Show-me opens a sheet listing the failed items with per-item code lookup. **Adding bulk semantics is not optional and not deferrable** — once a non-bulk endpoint exists, evolving it to a bulk shape would be a breaking change to the wire contract that decision #1 forbids.
+**Bulk operations:** any endpoint that accepts a batch of items (delete-many, update-many, dispatch-many, etc.) returns the same wire shape with `results[]` + `partialSuccess`. The HTTP status is the worst-case outcome (any failed → 207 Multi-Status; all failed → 4xx/5xx; all ok → 2xx with `results[]` for confirmation). **Adding bulk semantics is not optional and not deferrable** — once a non-bulk endpoint exists, evolving it to a bulk shape would be a breaking change to the wire contract that decision #1 forbids.
+
+**Bulk surface (v1 — keep simple).** When `handleMutationError` sees `partialSuccess: true` on a 207 response, it overrides the call site's `actionTitle` and renders a toast formatted from the bulk shape: `"<n_ok> of <n_total> <entityPlural> <verbPast> — <n_fail> failed [Show me]"` (e.g. `"7 of 10 webhooks deleted — 3 failed [Show me]"`). Two new params on the call site's helper:
+
+- `entityPlural: string` — e.g. `'webhooks'` (used in the partial-success toast title).
+- `verbPast: string` — e.g. `'deleted'`, `'updated'` (drives the past-tense template).
+
+Both are inferred from the `actionTitle` when possible (`"Couldn't delete webhooks"` → `entityPlural: 'webhooks'`, `verbPast: 'deleted'`); the call site overrides explicitly when the inference fails.
+
+`[Show me]` opens an **expanding inline list under the toast** (not a separate sheet) listing each failed item with per-item code lookup. Spec'd as expanding-inline because most bulk operations in this app today are admin-side and the failure list is short (1–10 items). When a real high-volume bulk surface ships and 50+-item failure lists become normal, promote to a Sheet with virtualized scroll. Spec'ing the Sheet now would gold-plate v1 for a path that fires rarely.
 
 ### 3.2 Server: `AppError` + global filter
 
