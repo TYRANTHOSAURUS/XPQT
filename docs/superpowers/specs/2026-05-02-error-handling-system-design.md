@@ -214,7 +214,12 @@ export function classify(error: unknown, ctx?: ClassifyContext): ClassifiedError
 
 `classify()` is pure. It looks at the error, the route it came from (passed via `ctx`), the user's permissions (passed via `ctx`), and produces a `ClassifiedError` with **at least one** recovery. If it would produce zero, that's a bug — caught by tests on the `recoveries[].length >= 1` invariant.
 
-### 3.4 Renderers — surface chosen by class
+### 3.4 Renderers — surface chosen by `(class, callSite)`
+
+**The renderer composes with the existing toast helpers in `apps/web/src/lib/toast.ts` — it does not replace them.** When a classified error needs a toast, the renderer calls `toastError(title, { error, retry })` from the existing module so the voice rule ("Couldn't <verb> <thing>"), Retry/View/Undo conventions, and styling stay consistent across the app. Two toast systems would drift; one is mandatory.
+
+Concretely: `renderError(classified, ctx)` derives `title` from the code-message lookup (§5), then calls `toastError(title, { description: classified.detail, retry: ctx.retry })`. The `actionTitle` parameter the call site passes to `handleMutationError` (§3.5) is what becomes the toast title — and the call site is responsible for writing it in the existing voice ("Couldn't save webhook" not "Save webhook").
+
 
 ```ts
 // apps/web/src/lib/errors/renderer.tsx
