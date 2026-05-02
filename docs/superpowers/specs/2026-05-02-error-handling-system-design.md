@@ -604,7 +604,22 @@ The animation itself (smooth revert, not a flicker) is the **caller's** responsi
 
 Adding new locales beyond `en` + `nl` is a separate decision; the registry supports `messages.<locale>.ts` arbitrarily but the spec only mandates en + nl for v1.
 
-## 7 · Migration plan
+### 6.6 Accessibility (mandatory)
+
+The error system spans toasts, banners, inline field errors, and full-page replacements — every one of which must work for keyboard and screen-reader users. The platform sells into Benelux including public-sector tenants where WCAG 2.1 AA is a procurement floor; this is non-negotiable.
+
+The rules:
+
+- **Toasts are `role="alert"` + `aria-live="assertive"`.** Sonner ships with this default; the renderer must not override it. A toast that fires must announce immediately to assistive tech.
+- **`<FieldError>` is `role="alert"` + `aria-live="polite"`.** Per-field validation errors announce to a screen reader without interrupting current speech. RHF doesn't add this for free — the shadcn `<FieldError>` primitive in `apps/web/src/components/ui/field.tsx` must include the attributes; verify before merging Wave 1.
+- **`scrollFirstErrorIntoView()` (decision #11) sets DOM focus on the offending input** in addition to scrolling. Focus is the screen-reader cue; scroll is the visual cue. Both fire.
+- **The 500ms ring animation respects `prefers-reduced-motion: reduce`.** The global `index.css` rule clamps every animation/transition to 0.001ms under that media query; the ring uses `transition-timing-function: var(--ease-snap)` so it inherits the clamp. Verify with axe / a manual setting check before Wave 1 ships.
+- **`RouteErrorBoundary` page replacement moves DOM focus to the page heading.** When the boundary swaps the page tree, focus is otherwise lost — screen-reader users hear nothing about the new content. The boundary's `componentDidMount` (or `useEffect`-equivalent in a render-once swap) calls `headingRef.current?.focus()`; the page template's `<h1>` carries `tabIndex={-1}` to make it programmatically focusable without becoming a tab stop.
+- **The realtime status dot announces transitions to a polite live region.** A visually-hidden `<span aria-live="polite">` adjacent to the dot reads "Reconnecting" / "Connection lost — write actions disabled" / "Reconnected" when state transitions. Otherwise sighted users see the dot change but SR users miss it entirely.
+- **TraceId chips are `<button>` not `<span>`.** Click-to-copy is a button action, must be reachable by keyboard, must announce "Copy trace ID" via `aria-label`.
+- **Bulk partial-success "Show me" expanding list is a `<details>` / `<summary>` pair** so it works with native keyboard expansion (Enter/Space) and announces collapsed/expanded state to SR.
+
+The Wave 0 + Wave 1 implementation MUST pass an automated `axe-core` scan plus a manual VoiceOver/NVDA walk through one error from each class before either wave can be marked done. Add to §11 success criteria.
 
 This is incremental. Nothing breaks on day one.
 
@@ -706,5 +721,6 @@ The spec is shipped when:
 - A support engineer can resolve a "something broke" ticket in <2 minutes given only a traceId and the URL the user was on.
 - `messages.nl.ts` covers 100% of registered codes; lint passes.
 - The codex review of the implementation finds zero "vendor name leaks" and zero "stack trace in response body" issues.
+- An automated `axe-core` scan of every error surface returns zero violations; a manual VoiceOver/NVDA walk of one error from each of the 11 classes confirms the announcement and focus rules in §6.6.
 
 When all eight hold, we have an error system that's better than every product in the FMIS market and competitive with the best products outside it.
