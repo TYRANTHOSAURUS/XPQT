@@ -397,7 +397,7 @@ A matching `handleQueryError` helper exists for read paths and is thinner — mo
 
 The mechanism that promotes a page-load query's error to the route boundary (instead of a toast) is the boundary-context. The `RouteErrorBoundary` exposes a `throwToBoundary(error: ApiError)` function via React context. The convention:
 
-- A page's **primary** queries (the ones whose failure means the page can't render meaningfully) wrap their query in `usePageQuery(...)` — a thin shadcn-style helper that calls `useQuery(...)` and, on error with class ∈ `('not_found','permission','server','gone')`, calls `throwToBoundary(error)` from the boundary context. The boundary catches it the same way it catches a render error.
+- A page's **primary** queries (the ones whose failure means the page can't render meaningfully) wrap their query in `usePageQuery(...)` — a thin shadcn-style helper that calls `useQuery(...)` and, on error with class ∈ `('not_found','permission','server')`, calls `throwToBoundary(error)` from the boundary context. The boundary catches it the same way it catches a render error.
 - A page's **secondary** queries (sidebar lists, autocomplete sources, prefetch) call `useQuery(...)` normally and pass the error to `handleQueryError(error, { callSite: 'mutation', actionTitle: "Couldn't load <thing>" })` from a `useEffect`. These don't fail the page; they toast.
 
 The distinction is made by the call site, not inferred — there's no implicit "first query in the file." A page that has 3 primary queries calls `usePageQuery` 3 times.
