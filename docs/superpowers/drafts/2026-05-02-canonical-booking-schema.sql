@@ -1,8 +1,23 @@
 -- ============================================================================
--- DRAFT — End-state canonical booking schema
+-- DRAFT v2 — End-state canonical booking schema
 -- ============================================================================
 -- Status: NOT FOR APPLICATION YET — this is the design contract for the
 -- booking-canonicalization rewrite (2026-05-02).
+--
+-- v2 corrections from review (2026-05-02):
+--   FIX#1 — Added bookings.location_id (was missing; visibility scoped on it)
+--   FIX#2 — Dropped 'auto' from bookings.source enum (was reservation-only,
+--           BookingFlowService strips it when promoting to bundle today)
+--   FIX#3 — Added p_location_id, p_cost_amount_snapshot, p_config_release_id
+--           parameters to create_booking (function was omitting columns)
+--   FIX#4 — Added btree_gist + booking_slots_no_overlap EXCLUDE constraint
+--           (btree index alone does NOT prevent concurrent double-booking;
+--           00123:13-18 is the working pattern)
+--   FIX#5 — Security model resolved: security invoker, tenant_id derived
+--           from JWT via current_tenant_id() with override allowed for
+--           service-role callers (matches 00002:5-14 pattern)
+--   FIX#9 — Added 3 indexes from 00129 (auto-release, my-bookings, attendee GIN)
+--   Note added — approvals back-link via target_entity_id, no inverse cache
 --
 -- Approach: code-first. This file is the single-source-of-truth for the
 -- target schema. Every implementation slice maps changes against this file.
@@ -24,6 +39,7 @@
 --   booking_slots.recurrence_master_id  (recurrence belongs on booking, not slot)
 --   booking_slots.calendar_*   (calendar sync anchors on booking, not slot)
 --   bookings.primary_reservation_id  (no longer needed; slot→booking is single-direction FK)
+--   bookings.source = 'auto'   (reservation-only enum value; explicitly stripped today)
 --
 -- Adds:
 --   bookings.title             NEW — was the original ship blocker
@@ -32,6 +48,8 @@
 --
 -- Cyclic FK eliminated: slot.booking_id → bookings.id (single direction).
 -- ============================================================================
+
+create extension if not exists btree_gist;                          -- 00123:6 — required for slot conflict-guard EXCLUDE
 
 -- ----------------------------------------------------------------------------
 -- bookings — the canonical "Booking" entity (replaces booking_bundles)
@@ -52,6 +70,9 @@ create table public.bookings (
   host_person_id      uuid references public.persons(id),           -- 00140:12 (nullable; derives to requester in app)
   booked_by_user_id   uuid references public.users(id),             -- 00122:38 (operator on behalf-of bookings)
 
+  -- Location anchor (visibility queries scope on this; was 00140:17, doc 00140:4 confirms)
+  location_id uuid not null references public.spaces(id),           -- 00140:17 (FIX#1 — was missing in v1 of this draft)
+
   -- Time window (the booking's overall span; slots are inside this)
   start_at timestamptz not null,                                    -- 00140:18
   end_at   timestamptz not null,                                    -- 00140:19
@@ -62,12 +83,14 @@ create table public.bookings (
     'draft','pending_approval','confirmed','checked_in','released','cancelled','completed'
   )),                                                               -- 00122:17 lifted
 
-  -- Source / provenance
+  -- Source / provenance — 'auto' deliberately excluded (reservation-only enum
+  -- value per 00122:36-37; BookingFlowService:280 strips it when promoting to
+  -- bundle today, so it should never reach the booking layer)
   source text not null check (source in (
-    'portal','desk','api','calendar_sync','reception','auto'
-  )),                                                               -- unified from 00140:21-22 + 00122:36-37
+    'portal','desk','api','calendar_sync','reception'
+  )),                                                               -- 00140:21-22 (FIX#2 — dropped 'auto')
 
-  -- Cost + approvals
+  -- Cost + approvals (approvals.target_entity_id points HERE; no inverse cache column on bookings)
   cost_center_id        uuid references public.cost_centers(id),    -- 00140:23, FK at 00140:99
   cost_amount_snapshot  numeric(10,2),                              -- 00122:39
   policy_snapshot       jsonb not null default '{}'::jsonb,         -- 00122:34 + 00140:30 unified
@@ -76,7 +99,7 @@ create table public.bookings (
 
   -- Calendar sync (single canonical surface — was duplicated on bundle + reservation)
   calendar_event_id        text,                                    -- 00140:26 (canonical) + 00122:50 (deduped)
-  calendar_provider        text check (calendar_provider in ('outlook') or calendar_provider is null),
+  calendar_provider        text check (calendar_provider in ('outlook') or calendar_provider is null), -- 00140:27
   calendar_etag            text,                                    -- 00140:28 + 00122:52
   calendar_last_synced_at  timestamptz,                             -- 00140:29 + 00122:53
 
@@ -102,12 +125,17 @@ create policy "tenant_isolation" on public.bookings
   using (tenant_id = public.current_tenant_id());
 
 create index idx_bookings_tenant            on public.bookings (tenant_id);
+create index idx_bookings_location          on public.bookings (location_id);  -- FIX#1
 create index idx_bookings_requester         on public.bookings (requester_person_id);
 create index idx_bookings_host              on public.bookings (host_person_id) where host_person_id is not null;
 create index idx_bookings_window            on public.bookings (tenant_id, start_at);
 create index idx_bookings_status            on public.bookings (tenant_id, status);
 create index idx_bookings_recurrence_series on public.bookings (recurrence_series_id) where recurrence_series_id is not null;
 create index idx_bookings_calendar_event    on public.bookings (calendar_event_id) where calendar_event_id is not null;
+-- "My bookings" (FIX#9 — lifted from 00129:12-14)
+create index idx_bookings_requester_time
+  on public.bookings (tenant_id, requester_person_id, start_at desc)
+  where status not in ('cancelled','released');
 
 create trigger set_bookings_updated_at before update on public.bookings
   for each row execute function public.set_updated_at();
@@ -171,17 +199,31 @@ create policy "tenant_isolation" on public.booking_slots
 -- Tenant + booking lookups
 create index idx_slots_booking on public.booking_slots (booking_id);
 create index idx_slots_tenant  on public.booking_slots (tenant_id);
--- Conflict-detection / scheduler reads
-create index idx_slots_space_time on public.booking_slots (space_id, start_at, end_at)
-  where status not in ('cancelled','released');
+-- Conflict-detection / scheduler reads (FIX#9 — was 00129:17-19 idx_reservations_space_time_active)
+create index idx_slots_space_time_active
+  on public.booking_slots (tenant_id, space_id, start_at, end_at)
+  where status in ('confirmed','checked_in','pending_approval');
 -- Status scans (auto-release worker, daglijst)
 create index idx_slots_status on public.booking_slots (tenant_id, status);
+-- Auto-release scheduler (FIX#9 — lifted from 00129:5-9)
+create index idx_slots_pending_check_in
+  on public.booking_slots (tenant_id, start_at)
+  where check_in_required = true
+    and status = 'confirmed'
+    and checked_in_at is null;
+-- Multi-attendee find-time (FIX#9 — lifted from 00129:22-24)
+create index idx_slots_attendee_persons
+  on public.booking_slots using gin (attendee_person_ids)
+  where status in ('confirmed','checked_in','pending_approval');
+-- Cancellation grace cleanup (lifted from 00129:27-29)
+create index idx_slots_cancellation_grace
+  on public.booking_slots (tenant_id, cancellation_grace_until)
+  where cancellation_grace_until is not null;
 
 create trigger set_slots_updated_at before update on public.booking_slots
   for each row execute function public.set_updated_at();
 
 -- Maintain effective window from start_at + buffers (was 00122:58-75 trigger).
--- Same logic; renamed function to match new table name.
 create or replace function public.booking_slots_compute_effective_window()
 returns trigger language plpgsql as $$
 begin
@@ -196,63 +238,93 @@ create trigger set_slots_effective_window
   before insert or update on public.booking_slots
   for each row execute function public.booking_slots_compute_effective_window();
 
+-- FIX#4 — Conflict guard: no two active slots overlap on the same space within a tenant.
+-- Pattern from 00123:12-18. Buffers are baked into time_range via the trigger above.
+-- Same-requester back-to-back collapse stays in app code (BookingFlowService).
+alter table public.booking_slots
+  add constraint booking_slots_no_overlap
+  exclude using gist (
+    tenant_id  with =,
+    space_id   with =,
+    time_range with &&
+  ) where (status in ('confirmed','checked_in','pending_approval'));
+
 -- ----------------------------------------------------------------------------
 -- Atomic creation primitive — single function, single source of truth.
 -- ----------------------------------------------------------------------------
 -- Replaces today's "BookingFlowService.create -> insert reservation -> maybe
 -- lazyCreateBundle" choreography. One booking + N slots inserted atomically.
 --
--- Caller passes:
---   - Booking attributes (title, host, time window, source, etc.)
---   - Array of slot specs (slot_type, space_id, start/end_at, attendees, buffers)
--- Function returns: { booking_id, slot_ids[] }
+-- Tenant model (FIX#5):
+--   - security invoker (RLS enforces on insert)
+--   - p_tenant_id is OPTIONAL; defaults to current_tenant_id() from JWT
+--   - Service-role callers (this.supabase.admin) bypass RLS and pass p_tenant_id
+--     explicitly; the function trusts it (matches today's pattern where
+--     services construct rows with explicit tenant_id from AsyncLocalStorage)
+--   - User-token callers omit p_tenant_id; function derives from JWT
 --
 -- For multi-room: pass N slot specs in one call.
 -- For recurrence: caller invokes per occurrence (each occurrence is its own booking).
 -- ----------------------------------------------------------------------------
 create or replace function public.create_booking(
-  p_tenant_id              uuid,
   p_requester_person_id    uuid,
-  p_host_person_id         uuid,
-  p_title                  text,
-  p_description            text,
+  p_location_id            uuid,                       -- FIX#3 — was missing
   p_start_at               timestamptz,
   p_end_at                 timestamptz,
-  p_timezone               text,
-  p_source                 text,
-  p_status                 text,                       -- 'confirmed' | 'pending_approval'
-  p_booked_by_user_id      uuid,
-  p_cost_center_id         uuid,
-  p_policy_snapshot        jsonb,
-  p_applied_rule_ids       uuid[],
-  p_recurrence_series_id   uuid,
-  p_recurrence_index       int,
-  p_template_id            uuid,
-  p_slots                  jsonb                       -- array of {slot_type, space_id, start_at, end_at, attendee_count, attendee_person_ids[], setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes, display_order}
+  p_source                 text,                       -- 'portal'|'desk'|'api'|'calendar_sync'|'reception'
+  p_status                 text,                       -- 'confirmed' | 'pending_approval' | 'draft'
+  p_slots                  jsonb,                      -- array of slot specs (see below)
+
+  -- Optional booking attributes
+  p_tenant_id              uuid default null,          -- defaults to current_tenant_id() if null
+  p_host_person_id         uuid default null,
+  p_title                  text default null,
+  p_description            text default null,
+  p_timezone               text default 'UTC',
+  p_booked_by_user_id      uuid default null,
+  p_cost_center_id         uuid default null,
+  p_cost_amount_snapshot   numeric default null,       -- FIX#3 — was missing
+  p_policy_snapshot        jsonb default '{}'::jsonb,
+  p_applied_rule_ids       uuid[] default '{}',
+  p_config_release_id      uuid default null,          -- FIX#3 — was missing
+  p_recurrence_series_id   uuid default null,
+  p_recurrence_index       int default null,
+  p_template_id            uuid default null
 ) returns table (booking_id uuid, slot_ids uuid[])
 language plpgsql
 security invoker
 as $$
 declare
+  v_tenant_id uuid;
   v_booking_id uuid;
   v_slot_ids uuid[] := '{}';
   v_slot jsonb;
   v_slot_id uuid;
 begin
+  -- FIX#5: derive tenant from JWT when caller doesn't pass one
+  v_tenant_id := coalesce(p_tenant_id, public.current_tenant_id());
+  if v_tenant_id is null then
+    raise exception 'create_booking: tenant_id required (none in JWT, none passed)';
+  end if;
+
   -- 1. Insert the booking
   insert into public.bookings (
     tenant_id, title, description,
     requester_person_id, host_person_id, booked_by_user_id,
+    location_id,
     start_at, end_at, timezone,
     status, source,
-    cost_center_id, policy_snapshot, applied_rule_ids,
+    cost_center_id, cost_amount_snapshot,
+    policy_snapshot, applied_rule_ids, config_release_id,
     recurrence_series_id, recurrence_index, template_id
   ) values (
-    p_tenant_id, p_title, p_description,
+    v_tenant_id, p_title, p_description,
     p_requester_person_id, p_host_person_id, p_booked_by_user_id,
+    p_location_id,
     p_start_at, p_end_at, coalesce(p_timezone, 'UTC'),
     p_status, p_source,
-    p_cost_center_id, coalesce(p_policy_snapshot, '{}'::jsonb), coalesce(p_applied_rule_ids, '{}'),
+    p_cost_center_id, p_cost_amount_snapshot,
+    coalesce(p_policy_snapshot, '{}'::jsonb), coalesce(p_applied_rule_ids, '{}'), p_config_release_id,
     p_recurrence_series_id, p_recurrence_index, p_template_id
   ) returning id into v_booking_id;
 
@@ -269,13 +341,16 @@ begin
       check_in_required, check_in_grace_minutes,
       display_order
     ) values (
-      p_tenant_id, v_booking_id,
+      v_tenant_id, v_booking_id,
       (v_slot->>'slot_type')::text,
       (v_slot->>'space_id')::uuid,
       (v_slot->>'start_at')::timestamptz,
       (v_slot->>'end_at')::timestamptz,
       (v_slot->>'attendee_count')::integer,
-      coalesce((select array_agg(value::uuid) from jsonb_array_elements_text(v_slot->'attendee_person_ids')), '{}'),
+      coalesce(
+        (select array_agg(value::uuid) from jsonb_array_elements_text(v_slot->'attendee_person_ids')),
+        '{}'
+      ),
       coalesce((v_slot->>'setup_buffer_minutes')::integer, 0),
       coalesce((v_slot->>'teardown_buffer_minutes')::integer, 0),
       p_status,                                                    -- slot status mirrors booking on create
@@ -294,12 +369,13 @@ $$;
 -- ----------------------------------------------------------------------------
 -- Sibling table updates (FKs that pointed at old tables now point at bookings)
 -- ----------------------------------------------------------------------------
--- These tables exist today; their relationships shift in the rewrite:
+-- These tables exist today; their relationships shift in the rewrite.
+-- The actual ALTER statements live in per-table migration slices, not in this
+-- contract file. Listed here so reviewers can verify completeness.
 --
 -- visitors:
---   DROP visitors.reservation_id  (single-direction is bad — was a denormalized cache)
---   DROP visitors.booking_bundle_id (rename to visitors.booking_id, single FK)
---   ADD  visitors.booking_id uuid references public.bookings(id) on delete cascade
+--   DROP visitors.reservation_id  (was a denormalized cache)
+--   RENAME visitors.booking_bundle_id -> visitors.booking_id (FK to bookings)
 --   Source: 00252_visitors_v1_extensions.sql:36-37 dual-link pattern
 --
 -- tickets / work_orders:
@@ -315,6 +391,8 @@ $$;
 -- approvals:
 --   approvals.target_entity_type values constrain to ('booking','order','ticket','visitor_invite')
 --   No more 'reservation' — bookings own approval state
+--   approvals back-link is via target_entity_id lookup, NOT via an inverse
+--   bookings.approval_id column (consciously omitted)
 --   Source: approval.service.ts:329-347 dispatcher
 --
 -- audit_events:
@@ -329,10 +407,11 @@ $$;
 --
 -- multi_room_groups: DROPPED entirely (replaced by booking_id grouping)
 --   Source: 00125_multi_room_groups.sql
+--
+-- recurrence_series:
+--   recurrence_series.parent_reservation_id -> recurrence_series.parent_booking_id
+--   (FK retarget to bookings; each occurrence is now its own booking)
+--   Source: 00124_recurrence_series.sql
 -- ----------------------------------------------------------------------------
-
--- (FK reshape statements not included in this contract file; they belong in
--- the per-table migration slices that come after the bookings/booking_slots
--- create-table slice. The sequence is in the companion design doc.)
 
 notify pgrst, 'reload schema';
