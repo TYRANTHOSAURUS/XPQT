@@ -340,19 +340,13 @@ function ServiceLineRow({
   const status = line.fulfillment_status ?? 'ordered';
   const isFulfilled = FULFILLED.has(status);
   const isCancelled = status === 'cancelled';
-  // TODO(backend): bundle line mutations pending backend endpoint. The
-  // canonicalisation rewrite (2026-05-02) deleted the `/booking-bundles/*`
-  // HTTP surface; `useEditBundleLine` and `useCancelBundleLine` are
-  // transitional stubs that throw `booking_bundles_http_gone` (see
-  // api/booking-bundles/mutations.ts). Until replacement endpoints ship,
-  // hide the Pencil + X affordances so the row reads as read-only and
-  // the user never sees a raw sentinel toast. When the backend slice
-  // lands (POST `/bookings/:id/services` for append, PATCH
-  // `/bookings/services/lines/:id` for edit, etc.) flip both gates back
-  // to the original `canEdit && !FROZEN_FOR_EDIT.has(status)` /
-  // `canEdit && !isCancelled && !isFulfilled` predicates.
-  const canEditThisLine = false && canEdit && !FROZEN_FOR_EDIT.has(status);
-  const canCancelThisLine = false && canEdit && !isCancelled && !isFulfilled;
+  // Edit affordance hidden for any line whose state has frozen the row
+  // (preparing/delivered/cancelled) — `BundleService.editLine` would 409
+  // with `line_frozen` anyway. Cancel affordance hidden for already-
+  // cancelled and any fulfilled state ('confirmed'/'preparing'/'delivered'),
+  // which the bundle-cascade rejects with `line_already_fulfilled`.
+  const canEditThisLine = canEdit && !FROZEN_FOR_EDIT.has(status);
+  const canCancelThisLine = canEdit && !isCancelled && !isFulfilled;
 
   if (editing) {
     return (

@@ -1,5 +1,5 @@
 import {
-  BadRequestException, Body, Controller, Get, Header, Headers, Param,
+  BadRequestException, Body, Controller, Delete, Get, Header, Headers, Param,
   Patch, Post, Query, Req, Res, UnauthorizedException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -12,6 +12,8 @@ import { ReservationVisibilityService } from './reservation-visibility.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
 import { BundleService, type ServiceLineInput } from '../booking-bundles/bundle.service';
+import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
+import { BundleVisibilityService } from '../booking-bundles/bundle-visibility.service';
 import { resolveRequesterForActor } from './book-on-behalf.gate';
 import { Public } from '../auth/public.decorator';
 import { TenantContext } from '../../common/tenant-context';
@@ -34,6 +36,8 @@ export class ReservationController {
     private readonly findTime: MultiAttendeeFinder,
     private readonly supabase: SupabaseService,
     private readonly bundle: BundleService,
+    private readonly bundleCascade: BundleCascadeService,
+    private readonly bundleVisibility: BundleVisibilityService,
   ) {}
 
   // ---- Reads ----
@@ -427,6 +431,154 @@ export class ReservationController {
     // the booking-detail read above.
     await this.service.findOne(id, authUid);
     return this.bundle.getBookingDetail(id);
+  }
+
+  /**
+   * `PATCH /reservations/:id/services/:lineId` — edit a single service line
+   * on a booking (quantity, service window, requester notes). Wraps
+   * `BundleService.editLine`, which already enforces frozen-state protection
+   * (preparing/delivered/cancelled), optimistic concurrency via
+   * `expected_updated_at`, and SLA-due shift on the linked work order when
+   * the service window moves.
+   *
+   * Replaces the dropped `PATCH /booking-bundles/:bundleId/lines/:lineId`
+   * endpoint. The booking IS the bundle now (00277:27) so the URL `:id`
+   * segment is the booking id — same as on `findBundleDetail`.
+   *
+   * Authorisation pattern mirrors `attachServices`: the booking must be
+   * visible AND writable to the caller (requester / host / booker / admin).
+   * The line itself is then re-validated tenant-side inside `editLine`
+   * (line_not_found 404 if it doesn't belong to this tenant).
+   *
+   * Body shape matches the frontend `EditBundleLinePatch` interface
+   * (`apps/web/src/api/booking-bundles/mutations.ts`): all fields optional;
+   * a no-op patch returns the current row unchanged.
+   */
+  @Patch(':id/services/:lineId')
+  async editServiceLine(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Param('lineId') lineId: string,
+    @Body() body: {
+      quantity?: number;
+      service_window_start_at?: string | null;
+      service_window_end_at?: string | null;
+      requester_notes?: string | null;
+      expected_updated_at?: string | null;
+    },
+  ) {
+    const authUid = this.getAuthUid(request);
+    const reservation = await this.service.findOne(id, authUid);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const r = reservation as {
+      requester_person_id: string;
+      host_person_id?: string | null;
+      booked_by_user_id?: string | null;
+    };
+    this.assertReservationWritable(r, ctx);
+
+    return this.bundle.editLine({
+      line_id: lineId,
+      patch: {
+        quantity: body?.quantity,
+        service_window_start_at: body?.service_window_start_at,
+        service_window_end_at: body?.service_window_end_at,
+        requester_notes: body?.requester_notes,
+      },
+      expected_updated_at: body?.expected_updated_at ?? null,
+    });
+  }
+
+  /**
+   * `DELETE /reservations/:id/services/:lineId` — cancel a single service
+   * line. Wraps `BundleCascadeService.cancelLine`, which:
+   *   - Cascades to the linked work-order ticket (`work_orders.status_category` → 'closed').
+   *   - Cancels any linked `asset_reservation`.
+   *   - Re-scopes pending approvals (auto-closes if scope drops to empty).
+   *   - Refuses if the line is in a fulfilled state (`preparing`/`delivered`).
+   *
+   * Replaces the dropped `POST /booking-bundles/:bundleId/lines/:lineId/cancel`.
+   *
+   * Same write-gate as the edit path. The cascade service then performs its
+   * own bundle visibility assert as defence-in-depth (it loads the line's
+   * parent bundle and checks `BundleVisibilityService.assertVisible` against
+   * the supplied context).
+   */
+  @Delete(':id/services/:lineId')
+  async cancelServiceLine(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Param('lineId') lineId: string,
+    @Body() body: { reason?: string } | undefined,
+  ) {
+    const authUid = this.getAuthUid(request);
+    const reservation = await this.service.findOne(id, authUid);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const r = reservation as {
+      requester_person_id: string;
+      host_person_id?: string | null;
+      booked_by_user_id?: string | null;
+    };
+    this.assertReservationWritable(r, ctx);
+
+    // Build the bundle visibility context from the same authUid; the
+    // cascade service uses `rooms.{read_all,write_all,admin}` permissions
+    // off this. We've already passed the reservation write-gate above —
+    // this assert is the cascade service's own defence-in-depth.
+    const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    return this.bundleCascade.cancelLine(
+      { line_id: lineId, reason: body?.reason },
+      bundleCtx,
+    );
+  }
+
+  /**
+   * `DELETE /reservations/:id/bundle` — cancel every active line on the
+   * booking (with optional opt-out via `keep_line_ids`). Wraps
+   * `BundleCascadeService.cancelBundle`, which:
+   *   - Skips fulfilled lines (returned in `fulfilled_line_ids`).
+   *   - Cascade-cancels each non-fulfilled line's work-order + asset reservation.
+   *   - Cancels the booking row + its slots when nothing remains alive.
+   *   - Cancels all pending approvals on the bundle.
+   *
+   * Replaces the dropped `POST /booking-bundles/:bundleId/cancel`. The URL
+   * `:id` segment is the booking id (= bundle id post-rewrite).
+   *
+   * Same write-gate as `editServiceLine` / `cancelServiceLine`.
+   */
+  @Delete(':id/bundle')
+  async cancelBundle(
+    @Req() request: Request,
+    @Param('id') id: string,
+    @Body() body: {
+      keep_line_ids?: string[];
+      recurrence_scope?: 'this' | 'this_and_following' | 'series';
+      reason?: string;
+    } | undefined,
+  ) {
+    const authUid = this.getAuthUid(request);
+    const reservation = await this.service.findOne(id, authUid);
+    const tenantId = TenantContext.current().id;
+    const ctx = await this.visibility.loadContext(authUid, tenantId);
+    const r = reservation as {
+      requester_person_id: string;
+      host_person_id?: string | null;
+      booked_by_user_id?: string | null;
+    };
+    this.assertReservationWritable(r, ctx);
+
+    const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    return this.bundleCascade.cancelBundle(
+      {
+        bundle_id: id,
+        keep_line_ids: body?.keep_line_ids,
+        recurrence_scope: body?.recurrence_scope,
+        reason: body?.reason,
+      },
+      bundleCtx,
+    );
   }
 
   // ---- Visitors attached to a reservation ----
