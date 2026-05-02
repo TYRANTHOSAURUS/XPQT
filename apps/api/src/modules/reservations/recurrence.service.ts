@@ -4,8 +4,13 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
-import type { ActorContext, RecurrenceRule, RecurrenceScope, Reservation } from './dto/types';
+import type { ActorContext, RecurrenceRule, RecurrenceScope } from './dto/types';
 import type { BookingFlowService } from './booking-flow.service';
+import {
+  SLOT_WITH_BOOKING_SELECT,
+  slotWithBookingToReservation,
+  type SlotWithBookingEmbed,
+} from './reservation-projection';
 
 /**
  * RecurrenceService — pure expander + materialisation helpers.
@@ -42,10 +47,17 @@ export class RecurrenceService {
    */
   private bookingFlow: BookingFlowService | null = null;
   /**
-   * Sub-project 2 fan-out: when a master reservation has a booking_bundle,
-   * we clone its orders + lines + asset_reservations for each new occurrence.
+   * Sub-project 2 fan-out: when a master booking has services attached,
+   * clone its orders + lines + asset_reservations for each new occurrence.
    * Wired lazily because OrdersModule imports ServiceCatalogModule which
    * imports RoomBookingRulesModule — a circular dep at the import level.
+   *
+   * Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27),
+   * so the per-occurrence "bundle id" passed downstream equals the
+   * occurrence's booking id. Field name kept as `bundleId` for OrderService
+   * signature compatibility — the OrdersModule rewrite is a separate slice.
+   * `newReservation.id` here is the occurrence's BOOKING id (Slice A
+   * BookingFlowService.create return shape).
    */
   private orders: { cloneOrderForOccurrence: (args: {
     masterOrderId: string;
@@ -296,22 +308,35 @@ export class RecurrenceService {
       max_occurrences: number;
       holiday_calendar_id: string | null;
       materialized_through: string;
-      parent_reservation_id: string | null;
+      // Renamed from parent_reservation_id (00278:179-181). Now points at
+      // bookings.id; each occurrence is its own booking.
+      parent_booking_id: string | null;
     };
 
-    if (!series.parent_reservation_id) {
-      throw new Error(`recurrence_series ${seriesId} has no parent_reservation_id`);
+    if (!series.parent_booking_id) {
+      throw new Error(`recurrence_series ${seriesId} has no parent_booking_id`);
     }
 
-    const { data: masterRow, error: masterErr } = await this.supabase.admin
-      .from('reservations')
-      .select('*')
-      .eq('id', series.parent_reservation_id)
+    // Read the master booking + its primary slot to seed each new occurrence.
+    // Pre-rewrite this was one read of `reservations`; now it's a 2-step
+    // read through `bookings` + `booking_slots` (00277:27,116). The legacy
+    // `Reservation` shape is reconstructed via the projection helper so
+    // downstream cloning code (which still consumes `Reservation`) doesn't
+    // change.
+    const masterBookingId = series.parent_booking_id;
+    const { data: masterSlotRow, error: masterErr } = await this.supabase.admin
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
+      .eq('booking_id', masterBookingId)
+      .order('display_order', { ascending: true })
+      .limit(1)
       .maybeSingle();
-    if (masterErr || !masterRow) {
-      throw new Error(`master reservation ${series.parent_reservation_id} not found`);
+    if (masterErr || !masterSlotRow) {
+      throw new Error(`master booking ${masterBookingId} not found`);
     }
-    const master = masterRow as Reservation;
+    const master = slotWithBookingToReservation(
+      masterSlotRow as unknown as SlotWithBookingEmbed,
+    );
     // If the user cancelled forward from the very first occurrence, the
     // master row itself is now cancelled. Continuing here would happily
     // re-materialise occurrences anchored on a cancelled row — visually
@@ -356,9 +381,10 @@ export class RecurrenceService {
     });
 
     // Find which occurrence indices are already on disk for this series so we
-    // don't double-create on cron re-runs.
+    // don't double-create on cron re-runs. Recurrence index lives on the
+    // BOOKING (00277:75) post-canonicalisation, not the slot.
     const { data: existingRows } = await this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .select('recurrence_index')
       .eq('tenant_id', series.tenant_id)
       .eq('recurrence_series_id', seriesId);
@@ -398,7 +424,9 @@ export class RecurrenceService {
             attendee_count: master.attendee_count ?? undefined,
             attendee_person_ids: master.attendee_person_ids ?? undefined,
             recurrence_series_id: seriesId,
-            recurrence_master_id: master.id,
+            // recurrence_master_id dropped from canonical schema — series
+            // → bookings is one-direction (00277). The series row's
+            // parent_booking_id (00278:179-181) is the only link.
             recurrence_index: occ.index,
             source: 'auto',
           },
@@ -406,18 +434,33 @@ export class RecurrenceService {
         );
         created.push(created_row.id);
 
-        // Sub-project 2 fan-out: if the master has a bundle, clone its
+        // Sub-project 2 fan-out: if the master has services, clone its
         // orders + lines + asset_reservations onto the new occurrence.
+        //
+        // Post-canonicalisation (2026-05-02): the booking IS the bundle
+        // (00277:27). We pass the OCCURRENCE's booking id (created_row.id)
+        // as the `bundleId` so the cloned orders attach to the new
+        // occurrence's booking — not the master's. This mirrors the
+        // pre-rewrite behaviour where `lazyCreateBundle` would mint a
+        // per-occurrence bundle row, but without the extra row.
+        //
         // Best-effort — a failure here doesn't fail the materialise run;
-        // the user still got their occurrence's reservation.
-        if (master.booking_bundle_id && this.orders && this.supabase) {
+        // the user still got their occurrence's booking.
+        //
+        // BREAKING for OrderService.cloneOrderForOccurrence (separate slice):
+        // it still writes to legacy `booking_bundle_id` / `linked_reservation_id`
+        // columns which were renamed in 00278:108-118. That writer will fail
+        // at runtime until OrdersModule is rewritten; the caller-side
+        // contract here is correct.
+        if (this.orders && this.supabase) {
           await this.cloneBundleOrdersToOccurrence({
-            masterReservationId: master.id,
+            masterReservationId: master.id,             // = master booking id
             masterStartAt: master.start_at,
-            bundleId: master.booking_bundle_id,
+            // Occurrence's booking id — clones land on the NEW booking.
+            bundleId: created_row.id,
             seriesId,
             newReservation: {
-              id: created_row.id,
+              id: created_row.id,                       // also booking id
               start_at: created_row.start_at,
               end_at: created_row.end_at,
             },
@@ -471,14 +514,16 @@ export class RecurrenceService {
     requesterPersonId: string;
   }): Promise<void> {
     if (!this.supabase || !this.orders) return;
-    // Find the master reservation's orders. We use linked_reservation_id
-    // (and not booking_bundle_id) so a bundle whose later occurrences also
-    // got services attached separately doesn't get its later orders re-cloned.
+    // Find the master booking's orders. Post-canonicalisation
+    // `orders.booking_id` (00278:109) is the only column that ties an order
+    // to its parent — `linked_reservation_id` was renamed to `linked_slot_id`
+    // (00278:112) and is per-slot, not per-booking. Filter on
+    // `booking_id = master.id` (the master booking id, == legacy
+    // booking_bundle_id under canonicalisation).
     const { data: orders, error } = await this.supabase.admin
       .from('orders')
       .select('id')
-      .eq('linked_reservation_id', args.masterReservationId)
-      .eq('booking_bundle_id', args.bundleId);
+      .eq('booking_id', args.masterReservationId);
     if (error) {
       this.log.warn(
         `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
@@ -562,17 +607,21 @@ export class RecurrenceService {
    * + every subsequent occurrence move to a fresh series_id (new
    * recurrence_series row, cloned from the source). Returns the new series id.
    */
-  async splitSeries(reservationId: string): Promise<string> {
+  async splitSeries(bookingId: string): Promise<string> {
     if (!this.supabase) {
       throw new Error('RecurrenceService.splitSeries requires Supabase injection');
     }
 
+    // The pivot is a BOOKING row (00277:74-77). Recurrence linkage lives on
+    // bookings, not slots. The pre-rewrite `reservations` read becomes a
+    // `bookings` read with the same column shape minus `recurrence_master_id`
+    // (dropped by 00277 — series→bookings is one-direction).
     const { data: pivot } = await this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .select('id, tenant_id, start_at, recurrence_series_id, recurrence_index')
-      .eq('id', reservationId)
+      .eq('id', bookingId)
       .maybeSingle();
-    if (!pivot) throw new Error(`reservation ${reservationId} not found`);
+    if (!pivot) throw new Error(`booking ${bookingId} not found`);
     const p = pivot as {
       id: string;
       tenant_id: string;
@@ -581,7 +630,7 @@ export class RecurrenceService {
       recurrence_index: number | null;
     };
     if (!p.recurrence_series_id) {
-      throw new Error('reservation is not part of a recurring series');
+      throw new Error('booking is not part of a recurring series');
     }
 
     const { data: srcSeriesRow } = await this.supabase.admin
@@ -601,10 +650,11 @@ export class RecurrenceService {
       max_occurrences: number;
       holiday_calendar_id: string | null;
       materialized_through: string;
-      parent_reservation_id: string | null;
+      // Renamed from parent_reservation_id (00278:179-181).
+      parent_booking_id: string | null;
     };
 
-    // Create the new series row anchored at this occurrence.
+    // Create the new series row anchored at this occurrence's booking.
     const { data: newSeriesRow, error: seriesErr } = await this.supabase.admin
       .from('recurrence_series')
       .insert({
@@ -615,7 +665,7 @@ export class RecurrenceService {
         max_occurrences: srcSeries.max_occurrences,
         holiday_calendar_id: srcSeries.holiday_calendar_id,
         materialized_through: srcSeries.materialized_through,
-        parent_reservation_id: p.id,
+        parent_booking_id: p.id,                  // renamed 00278:179-181
       })
       .select('id')
       .single();
@@ -624,10 +674,12 @@ export class RecurrenceService {
     }
     const newSeriesId = (newSeriesRow as { id: string }).id;
 
-    // Move this occurrence + all later occurrences onto the new series_id.
+    // Move this occurrence + all later occurrence BOOKINGS onto the new
+    // series_id. recurrence_master_id was dropped from the canonical
+    // schema — the only link is recurrence_series_id.
     const { error: updErr } = await this.supabase.admin
-      .from('reservations')
-      .update({ recurrence_series_id: newSeriesId, recurrence_master_id: p.id })
+      .from('bookings')
+      .update({ recurrence_series_id: newSeriesId })
       .eq('tenant_id', srcSeries.tenant_id)
       .eq('recurrence_series_id', srcSeries.id)
       .gte('start_at', p.start_at);
@@ -645,11 +697,11 @@ export class RecurrenceService {
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: srcSeries.tenant_id,
-        event_type: 'reservation.recurrence_split',
+        event_type: 'booking.recurrence_split',
         entity_type: 'recurrence_series',
         entity_id: srcSeries.id,
         details: {
-          pivot_reservation_id: p.id,
+          pivot_booking_id: p.id,
           pivot_start_at: p.start_at,
           new_series_id: newSeriesId,
         },
@@ -665,28 +717,30 @@ export class RecurrenceService {
    * job won't re-materialise the dropped occurrences.
    */
   async cancelForward(
-    reservationId: string,
+    bookingId: string,
     scope: Extract<RecurrenceScope, 'this_and_following' | 'series'>,
     _opts: { reason?: string } = {},
   ): Promise<{ cancelled: number }> {
     if (!this.supabase) {
       throw new Error('RecurrenceService.cancelForward requires Supabase injection');
     }
+    // Pivot is a BOOKING (each occurrence is its own booking post-rewrite).
     const { data: pivot } = await this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .select('id, tenant_id, start_at, recurrence_series_id')
-      .eq('id', reservationId)
+      .eq('id', bookingId)
       .maybeSingle();
-    if (!pivot) throw new Error(`reservation ${reservationId} not found`);
+    if (!pivot) throw new Error(`booking ${bookingId} not found`);
     const p = pivot as {
       id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
     };
     if (!p.recurrence_series_id) {
-      throw new Error('reservation is not part of a recurring series');
+      throw new Error('booking is not part of a recurring series');
     }
 
+    // Cancel the booking-level rows (status enum on bookings = 00277:49-51).
     let q = this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .update({ status: 'cancelled' })
       .eq('tenant_id', p.tenant_id)
       .eq('recurrence_series_id', p.recurrence_series_id)
@@ -700,50 +754,59 @@ export class RecurrenceService {
     const { data, error } = await q.select('id');
     if (error) throw new Error(`cancelForward failed: ${error.message}`);
 
-    // Sub-project 2 cascade: per cancelled occurrence, cancel the orders
-    // linked to that reservation (and downstream entities). Scoped per
-    // reservation rather than per bundle so we cleanly cascade occurrences'
-    // services without taking sibling occurrences down. The cascade helper
-    // is a no-op for reservations without bundle-linked orders.
+    const cancelledBookingIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
+
+    // Mirror the cancel onto each booking's slots so per-slot status (used
+    // by scheduler/visibility queries) matches the booking-level decision.
+    if (cancelledBookingIds.length > 0) {
+      await this.supabase.admin
+        .from('booking_slots')
+        .update({ status: 'cancelled' })
+        .eq('tenant_id', p.tenant_id)
+        .in('booking_id', cancelledBookingIds)
+        .in('status', ['confirmed', 'checked_in', 'pending_approval']);
+    }
+
+    // Sub-project 2 cascade: per cancelled occurrence, cancel orders
+    // linked to that booking. Scoped per booking so each occurrence's
+    // services drop without affecting siblings. The cascade helper is a
+    // no-op for bookings without orders.
+    //
+    // Caller signature kept as `reservation_id` for now — the
+    // bundle-cascade rewrite (this slice) maps that to the booking lookup
+    // via orders.booking_id (00278:109).
     if (this.bundleCascade) {
-      for (const row of (data ?? []) as Array<{ id: string }>) {
+      for (const id of cancelledBookingIds) {
         await this.bundleCascade.cancelOrdersForReservation({
-          reservation_id: row.id,
+          reservation_id: id,
           reason: `recurrence_cancel_forward:${scope}`,
         });
       }
     }
 
-    // Cap the series so the rollover doesn't re-create. For 'series' the
-    // pivot start_at is also a safe end-cap because every occurrence at or
-    // after it has been cancelled in the same statement above; using epoch
-    // here would technically work but the rollover scan only filters on
-    // `materialized_through < cutoff`, leaving an epoch row matching every
-    // night and burning loop budget on no-op processing.
+    // Cap the series so the rollover doesn't re-create.
     await this.supabase.admin
       .from('recurrence_series')
       .update({ series_end_at: p.start_at })
       .eq('id', p.recurrence_series_id);
 
-    // Audit — phase K. Distinct event_type from `reservation.cancelled`
-    // (which fires per-row) so analytics can tell "scope cancel of N
-    // occurrences" apart from N independent cancels.
+    // Audit — phase K.
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: p.tenant_id,
-        event_type: 'reservation.recurrence_cancel_forward',
+        event_type: 'booking.recurrence_cancel_forward',
         entity_type: 'recurrence_series',
         entity_id: p.recurrence_series_id,
         details: {
           scope,
-          pivot_reservation_id: p.id,
+          pivot_booking_id: p.id,
           pivot_start_at: p.start_at,
-          cancelled_count: (data ?? []).length,
+          cancelled_count: cancelledBookingIds.length,
         },
       });
     } catch { /* best-effort */ }
 
-    return { cancelled: (data ?? []).length };
+    return { cancelled: cancelledBookingIds.length };
   }
 
   // --- helpers ---

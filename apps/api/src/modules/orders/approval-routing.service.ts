@@ -34,7 +34,16 @@ import type {
  */
 
 export interface AssembleApprovalsArgs {
-  target_entity_type: 'booking_bundle' | 'order';
+  /**
+   * Post-canonicalisation (2026-05-02): the canonical type for booking-anchored
+   * approvals is `'booking'` — the booking IS the bundle (00277:27). The
+   * `'booking_bundle'` value is retained for transitional callers (legacy
+   * order-only paths that haven't been rewritten yet) but new callers should
+   * pass `'booking'`. The 00278:172 CHECK constraint enforces the new vocabulary
+   * at the DB layer; legacy `'booking_bundle'` rows are backfilled to `'booking'`
+   * by 00278:163-165.
+   */
+  target_entity_type: 'booking' | 'booking_bundle' | 'order';
   target_entity_id: string;
   /** Per-line rule outcomes from `ServiceRuleResolverService.resolveBulk`. */
   per_line_outcomes: Array<{

@@ -11,6 +11,15 @@ export interface CreateReservationDto {
   host_person_id?: string | null;
   start_at: string;
   end_at: string;
+  /**
+   * Booking-level identity (NEW post-canonicalisation, 00277:32-33).
+   * Optional in the DTO so legacy callers don't break; the controller
+   * forwards them straight through to BookingFlowService.create.
+   */
+  title?: string | null;
+  description?: string | null;
+  /** IANA tz. Defaults to 'UTC' at the RPC if omitted (00277:46). */
+  timezone?: string;
   attendee_count?: number;
   attendee_person_ids?: string[];
   recurrence_rule?: RecurrenceRule;

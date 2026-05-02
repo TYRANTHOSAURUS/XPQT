@@ -1,30 +1,41 @@
 import {
-  ConflictException, Injectable, Logger, BadRequestException,
+  ConflictException, Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { BookingFlowService } from './booking-flow.service';
+import { BundleService } from '../booking-bundles/bundle.service';
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
-import type { ActorContext, Reservation } from './dto/types';
+import { ConflictGuardService } from './conflict-guard.service';
+import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
+import {
+  SLOT_WITH_BOOKING_SELECT,
+  slotWithBookingToReservation,
+  type SlotWithBookingEmbed,
+} from './reservation-projection';
+import type { ActorContext, Reservation, PolicySnapshot } from './dto/types';
 
 /**
- * Multi-room atomic create.
+ * Multi-room atomic create — post-canonicalisation (2026-05-02).
  *
- * Per spec §G3: book the same time window across N rooms as one logical
- * booking. If any room fails (rule deny, conflict guard race, validation),
- * cancel any rows already created and throw 409 with the failed rooms.
+ * Pre-rewrite: this service did N sequential `bookingFlow.create` calls, one
+ * per room, with a `multi_room_groups` row tying them together. The rewrite
+ * collapses that into ONE atomic `create_booking` RPC call (00277:236-334)
+ * with N slot specs in `p_slots`. The single booking row IS the multi-room
+ * group; the N slots are the rooms. The dropped `multi_room_groups` /
+ * `primary_reservation_id` machinery is replaced by the booking_id grouping.
  *
- * Postgres has no cross-row "all or nothing" mode that BookingFlowService
- * would naturally fit into without a stored proc. We implement
- * sequential-best-effort with rollback: create the multi_room_groups row,
- * then create reservations one-by-one through BookingFlowService (so the
- * full pipeline runs per room). On any failure, mark each successfully-
- * created row as cancelled and surface the structured error.
+ * Spec §G3 still applies: if any room would conflict (rule deny, GiST race),
+ * the whole atomic group fails — no partial bookings. The RPC enforces this
+ * inside one transaction so atomicity is now a DB property, not a
+ * sequential-best-effort choreography.
  *
- * The single approval row covers the group when any rule requires approval
- * (the highest-specificity approval_config wins via per-room resolution;
- * BookingFlowService creates the per-room approval row, and we point the
- * group at the primary).
+ * Service attach (catering / AV) lives on the PRIMARY room only — multi-room
+ * events have one bundle per booking, regardless of N rooms. Post-RPC we
+ * delegate to BundleService.attachServicesToBooking with the new booking id.
+ *
+ * Returns shape: `{ group_id, reservations[] }`. Under canonicalisation
+ * `group_id` is the booking id (the atomic grouping), and each
+ * `Reservation` is one slot's projection. Controller doesn't change.
  */
 @Injectable()
 export class MultiRoomBookingService {
@@ -32,7 +43,9 @@ export class MultiRoomBookingService {
 
   constructor(
     private readonly supabase: SupabaseService,
-    private readonly bookingFlow: BookingFlowService,
+    private readonly conflict: ConflictGuardService,
+    private readonly ruleResolver: RuleResolverService,
+    private readonly bundle: BundleService,
     private readonly bundleCascade: BundleCascadeService,
   ) {}
 
@@ -78,203 +91,238 @@ export class MultiRoomBookingService {
       });
     }
 
-    // 1. Insert the multi_room_groups row first so each reservation can
-    //    point at it. We fill `primary_reservation_id` after the first room
-    //    succeeds.
-    const { data: groupRow, error: groupErr } = await this.supabase.admin
-      .from('multi_room_groups')
-      .insert({
-        tenant_id: tenantId,
+    // 1. Per-room rule resolution + space hydration. We resolve rules
+    //    per-room because each room can have distinct rule set (e.g.
+    //    catering required for room A, not B). The most restrictive
+    //    outcome wins for the booking-level status.
+    const spaceRows = await this.loadSpaces(tenantId, spaceIds);
+    const denialMessages: string[] = [];
+    let anyRequireApproval = false;
+    const matchedRuleIds = new Set<string>();
+    const slotSpecs: Array<{
+      slot_type: 'room' | 'desk' | 'asset' | 'parking';
+      space_id: string;
+      start_at: string;
+      end_at: string;
+      attendee_count: number | null;
+      attendee_person_ids: string[];
+      setup_buffer_minutes: number;
+      teardown_buffer_minutes: number;
+      check_in_required: boolean;
+      check_in_grace_minutes: number;
+      display_order: number;
+    }> = [];
+
+    let displayOrder = 0;
+    for (const spaceId of spaceIds) {
+      const space = spaceRows.get(spaceId);
+      if (!space) {
+        throw new NotFoundException({ code: 'space_not_found', message: `Space ${spaceId}` });
+      }
+      if (!space.active) {
+        throw new BadRequestException({ code: 'space_inactive', message: `Space ${spaceId}` });
+      }
+      if (!space.reservable) {
+        throw new BadRequestException({ code: 'space_not_reservable', message: `Space ${spaceId}` });
+      }
+
+      const buffers = await this.conflict.snapshotBuffersForBooking({
+        space_id: spaceId,
         requester_person_id: input.requester_person_id,
-      })
-      .select('id')
-      .single();
-    if (groupErr || !groupRow) {
-      throw new BadRequestException({
-        code: 'multi_room_group_insert_failed',
-        message: groupErr?.message ?? 'unknown',
+        start_at: input.start_at,
+        end_at: input.end_at,
+        room_setup_buffer_minutes: space.setup_buffer_minutes ?? 0,
+        room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
+      });
+
+      const ruleOutcome = await this.ruleResolver.resolve({
+        requester_person_id: input.requester_person_id,
+        space_id: spaceId,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      });
+      ruleOutcome.matchedRules.forEach((r) => matchedRuleIds.add(r.id));
+      if (ruleOutcome.final === 'deny') {
+        const overridable = actor.has_override_rules && ruleOutcome.overridable;
+        if (!overridable) {
+          throw new ForbiddenException({
+            code: 'rule_deny',
+            message: ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.',
+            denial_messages: ruleOutcome.denialMessages,
+            failed_space_id: spaceId,
+          });
+        }
+        if (!actor.override_reason) {
+          throw new BadRequestException({
+            code: 'override_reason_required',
+            message: 'Service-desk override requires a reason.',
+          });
+        }
+        denialMessages.push(...ruleOutcome.denialMessages);
+      }
+      if (ruleOutcome.final === 'require_approval') {
+        anyRequireApproval = true;
+      }
+
+      slotSpecs.push({
+        slot_type: 'room',
+        space_id: spaceId,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        attendee_person_ids: input.attendee_person_ids ?? [],
+        setup_buffer_minutes: buffers.setup_buffer_minutes,
+        teardown_buffer_minutes: buffers.teardown_buffer_minutes,
+        check_in_required: space.check_in_required ?? false,
+        check_in_grace_minutes: space.check_in_grace_minutes ?? 15,
+        display_order: displayOrder++,
       });
     }
-    const groupId = (groupRow as { id: string }).id;
 
-    const created: Reservation[] = [];
-    const failures: Array<{ space_id: string; reason: string; details?: unknown }> = [];
+    // 2. Coerce source. The legacy ReservationSource admits 'auto' for
+    //    calendar-sync / system actors; the new bookings.source CHECK
+    //    rejects it (00277:56-58). Map 'auto' → 'calendar_sync' to
+    //    preserve provenance. System actors (recurrence/cron) hit this
+    //    too via actor.user_id.startsWith('system:').
+    const rawSource = actor.user_id.startsWith('system:')
+      ? 'auto'
+      : input.source ?? 'portal';
+    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' =
+      rawSource === 'auto' ? 'calendar_sync' : rawSource;
 
-    // 2. Create per-room reservations in sequence. Sequential keeps the
-    //    same-tenant connection ordering predictable and lets us short-
-    //    circuit on the first failure cheaply.
-    //
-    // Services bind to the PRIMARY room only (the first space_id) — a
-    // multi-room event has one bundle for catering/AV regardless of how
-    // many rooms the attendees spread across. The non-primary rooms are
-    // booked room-only and link via multi_room_group_id.
-    const resolvedSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto' =
-      actor.user_id.startsWith('system:')
-        ? 'auto'
-        : input.source ?? 'portal';
+    const status: 'pending_approval' | 'confirmed' = anyRequireApproval ? 'pending_approval' : 'confirmed';
+    const policySnapshot: PolicySnapshot = {
+      matched_rule_ids: Array.from(matchedRuleIds),
+      effects_seen: [],
+    };
 
-    for (const spaceId of spaceIds) {
-      const isPrimary = spaceId === spaceIds[0];
-      try {
-        const r = await this.bookingFlow.create(
-          {
-            space_id: spaceId,
-            requester_person_id: input.requester_person_id,
-            host_person_id: input.host_person_id ?? null,
-            start_at: input.start_at,
-            end_at: input.end_at,
-            attendee_count: input.attendee_count,
-            attendee_person_ids: input.attendee_person_ids,
-            multi_room_group_id: groupId,
-            source: resolvedSource,
-            services: isPrimary ? input.services : undefined,
-            bundle: isPrimary ? input.bundle : undefined,
-          },
-          actor,
-        );
-        created.push(r);
-      } catch (err) {
-        const e = err as { response?: { code?: string; message?: string }; message?: string };
-        failures.push({
-          space_id: spaceId,
-          reason: e.response?.code ?? 'unknown',
-          details: e.response ?? e.message,
+    // 3. Atomic create_booking RPC with N slots (00277:236-334). The slot
+    //    GiST exclusion fires inside the transaction so concurrent races
+    //    surface as 23P01 here — caller gets a clean 409 with the
+    //    failed-room id.
+    const primarySpaceId = spaceIds[0];
+    const { data: rpcData, error: rpcError } = await this.supabase.admin.rpc('create_booking', {
+      p_requester_person_id: input.requester_person_id,
+      p_location_id: primarySpaceId,                // booking-level anchor; slot-level holds the per-room space
+      p_start_at: input.start_at,
+      p_end_at: input.end_at,
+      p_source: bookingSource,
+      p_status: status,
+      p_slots: slotSpecs,
+      p_tenant_id: tenantId,
+      p_host_person_id: input.host_person_id ?? null,
+      p_title: null,
+      p_description: null,
+      p_timezone: 'UTC',
+      p_booked_by_user_id: actor.user_id,
+      p_cost_center_id: input.bundle?.cost_center_id ?? null,
+      p_cost_amount_snapshot: null,
+      p_policy_snapshot: policySnapshot,
+      p_applied_rule_ids: Array.from(matchedRuleIds),
+      p_config_release_id: null,
+      p_recurrence_series_id: null,
+      p_recurrence_index: null,
+      p_template_id: input.bundle?.template_id ?? null,
+    });
+
+    if (rpcError) {
+      if (this.conflict.isExclusionViolation(rpcError)) {
+        throw new ConflictException({
+          code: 'multi_room_booking_failed',
+          message: 'One or more rooms are no longer available. No partial bookings created.',
+          // The RPC inserts N slots in a single tx; on race the GiST
+          // exclusion fails for whichever slot collided. We don't get
+          // the offending space_id back from Postgres, so report all
+          // requested rooms — the client picker will surface
+          // alternatives.
+          failed_space_ids: spaceIds,
         });
-        // Don't keep trying — the group is already broken.
-        break;
       }
+      throw new BadRequestException({
+        code: 'multi_room_create_failed',
+        message: rpcError.message,
+      });
     }
 
-    if (failures.length > 0) {
-      // 3. Rollback. Codex flagged on the contract-widening review:
-      //    the previous version (a) missed reservations that landed but
-      //    failed during attachServicesToReservation (the row sits in
-      //    DB but BookingFlowService.create threw before pushing into
-      //    `created`), and (b) raw-updated reservations.status without
-      //    cascading to bundle/orders/tickets/assets.
-      //
-      //    Fix: re-query by multi_room_group_id so we capture orphans,
-      //    then cascade through BundleCascadeService.cancelOrdersForReservation
-      //    before flipping the reservation status.
-      // Union: rooms BookingFlowService.create returned cleanly + any
-      // orphans we discover via group_id (e.g. the primary's attach-
-      // services step threw after the reservation already landed).
-      const captured = new Map<string, { id: string; status: string }>();
-      for (const r of created) captured.set(r.id, { id: r.id, status: r.status });
-      const { data: groupRes, error: groupQueryErr } = await this.supabase.admin
-        .from('reservations')
-        .select('id, status')
-        .eq('tenant_id', tenantId)
-        .eq('multi_room_group_id', groupId);
-      // If the compensating read fails, log and proceed with `created`
-      // alone. The orphan prevention loses one branch but the booking-
-      // flow's own Cleanup.rollback (now also voids bundle approvals)
-      // means the worst case is a stale reservation row, not a stale
-      // bundle/order/ticket cluster.
-      if (groupQueryErr) {
-        this.log.warn(
-          `multi-room rollback: compensating read failed for group ${groupId}: ${groupQueryErr.message}`,
-        );
-      } else {
-        for (const r of (groupRes ?? []) as Array<{ id: string; status: string }>) {
-          if (!captured.has(r.id)) captured.set(r.id, r);
-        }
-      }
-      const allInGroup = [...captured.values()].filter((r) => r.status !== 'cancelled');
+    const rpcRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
+      | { booking_id: string; slot_ids: string[] }
+      | undefined;
+    if (!rpcRow?.booking_id) {
+      throw new BadRequestException({
+        code: 'multi_room_create_failed',
+        message: 'create_booking returned no booking_id',
+      });
+    }
+    const bookingId = rpcRow.booking_id;
 
-      // Cascade bundles/orders/tickets first; then flip the reservation
-      // row. Best-effort cascade — if the bundle service throws, log and
-      // continue so the reservation rollback still happens.
-      for (const r of allInGroup) {
+    // 4. Service attach (catering / AV) — primary slot only. Anchor on
+    //    the booking id (the bundle, post-canonicalisation).
+    if (input.services && input.services.length > 0) {
+      try {
+        await this.bundle.attachServicesToBooking({
+          booking_id: bookingId,
+          requester_person_id: input.requester_person_id,
+          bundle: input.bundle
+            ? {
+                bundle_type: input.bundle.bundle_type,
+                cost_center_id: input.bundle.cost_center_id ?? null,
+                template_id: input.bundle.template_id ?? null,
+                source: bookingSource,
+              }
+            : { source: bookingSource },
+          services: input.services,
+        });
+      } catch (err) {
+        // Service attach failed AFTER the booking + slots landed. The
+        // booking is technically usable as room-only; surface the error
+        // so the user can retry attach without re-booking.
+        // Log + audit + cascade-cancel orders the bundle service may have
+        // partially created (its own Cleanup rolls back what it inserted),
+        // then surface the original error.
+        this.log.warn(
+          `multi-room service attach failed for booking ${bookingId}: ${(err as Error).message}`,
+        );
         try {
           await this.bundleCascade.cancelOrdersForReservation({
-            reservation_id: r.id,
-            reason: 'Multi-room booking rolled back — sibling reservation failed.',
+            reservation_id: bookingId,
+            reason: 'multi_room_service_attach_failed',
           });
-        } catch (err) {
-          this.log.warn(`bundle cascade on rollback failed for ${r.id}: ${(err as Error).message}`);
+        } catch (cleanupErr) {
+          this.log.warn(`bundle cascade cleanup failed: ${(cleanupErr as Error).message}`);
         }
+        throw err;
       }
+    }
 
-      for (const r of allInGroup) {
-        await this.supabase.admin
-          .from('reservations')
-          .update({ status: 'cancelled', cancellation_grace_until: null })
-          .eq('tenant_id', tenantId)
-          .eq('id', r.id);
-      }
-      // Cancel any approval rows the BookingFlow may have created for the
-      // rolled-back reservations. Without this, approvers receive a
-      // notification + see a pending row in /desk/approvals for a booking
-      // that no longer exists. We update — not delete — so the audit
-      // trail keeps a record of "this approval was opened then voided
-      // because the group rolled back". Use the by-group set so an
-      // attach-failure orphan also gets its approval voided.
-      if (allInGroup.length > 0) {
-        await this.supabase.admin
-          .from('approvals')
-          .update({
-            status: 'cancelled',
-            comments: 'Multi-room booking rolled back — sibling reservation failed.',
-          })
-          .eq('tenant_id', tenantId)
-          .eq('target_entity_type', 'reservation')
-          .in('target_entity_id', allInGroup.map((r) => r.id))
-          .eq('status', 'pending');
-      }
-      // The group row stays — the FK in 00125 (reservations.multi_room_group_id
-      // → multi_room_groups.id) lacks ON DELETE CASCADE, so a delete would
-      // throw with cancelled reservations still pointing at it. Leaving the
-      // row preserves the audit + analytics linkage; the rolled-back state
-      // is determined from reservation.status, not from the group's
-      // existence.
-
-      // Audit — phase K. Distinct from `reservation.multi_room_created`
-      // so reporting can see how often atomic groups roll back and which
-      // sibling failed (typically a slot conflict on one room of N).
-      try {
-        await this.supabase.admin.from('audit_events').insert({
-          tenant_id: tenantId,
-          event_type: 'reservation.multi_room_rolled_back',
-          entity_type: 'multi_room_group',
-          entity_id: groupId,
-          details: {
-            attempted_space_ids: input.space_ids,
-            cancelled_reservation_ids: allInGroup.map((r) => r.id),
-            failures,
-          },
-        });
-      } catch { /* best-effort */ }
-
-      throw new ConflictException({
-        code: 'multi_room_booking_failed',
-        message: 'One or more rooms could not be booked. No partial bookings created.',
-        failed: failures,
-        rolled_back_count: allInGroup.length,
+    // 5. Read the slots back through the booking for the response shape.
+    const { data: slotRows, error: readErr } = await this.supabase.admin
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', bookingId)
+      .order('display_order', { ascending: true });
+    if (readErr || !slotRows) {
+      throw new BadRequestException({
+        code: 'multi_room_read_failed',
+        message: readErr?.message ?? 'no slots returned',
       });
     }
+    const reservations = (slotRows as unknown as SlotWithBookingEmbed[]).map(
+      slotWithBookingToReservation,
+    );
 
-    // 4. Set the primary reservation pointer (the first room).
-    if (created.length > 0) {
-      await this.supabase.admin
-        .from('multi_room_groups')
-        .update({ primary_reservation_id: created[0].id })
-        .eq('id', groupId);
-    }
-
-    // Audit — phase K. One event per group create. Per-reservation
-    // create events are already emitted by BookingFlowService for each
-    // child; this gives reporting a way to count "atomic group bookings"
-    // independent of the per-room count.
+    // Audit — phase K. One event per group create.
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
-        event_type: 'reservation.multi_room_created',
-        entity_type: 'multi_room_group',
-        entity_id: groupId,
+        event_type: 'booking.multi_room_created',
+        entity_type: 'booking',
+        entity_id: bookingId,
         details: {
-          space_ids: input.space_ids,
-          reservation_ids: created.map((r) => r.id),
+          space_ids: spaceIds,
+          slot_ids: rpcRow.slot_ids,
           requester_person_id: input.requester_person_id,
           start_at: input.start_at,
           end_at: input.end_at,
@@ -282,7 +330,39 @@ export class MultiRoomBookingService {
       });
     } catch { /* best-effort */ }
 
-    this.log.log(`multi_room_group ${groupId}: ${created.length} rooms`);
-    return { group_id: groupId, reservations: created };
+    this.log.log(`multi_room booking ${bookingId}: ${spaceIds.length} rooms`);
+    return { group_id: bookingId, reservations };
+  }
+
+  // === helpers ===
+
+  private async loadSpaces(
+    tenantId: string,
+    spaceIds: string[],
+  ): Promise<Map<string, {
+    id: string; type: string; reservable: boolean; active: boolean;
+    setup_buffer_minutes: number | null; teardown_buffer_minutes: number | null;
+    check_in_required: boolean | null; check_in_grace_minutes: number | null;
+  }>> {
+    const { data, error } = await this.supabase.admin
+      .from('spaces')
+      .select('id, type, reservable, active, setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes')
+      .eq('tenant_id', tenantId)
+      .in('id', spaceIds);
+    if (error) throw new BadRequestException(`load_spaces_failed:${error.message}`);
+    const out = new Map<string, {
+      id: string; type: string; reservable: boolean; active: boolean;
+      setup_buffer_minutes: number | null; teardown_buffer_minutes: number | null;
+      check_in_required: boolean | null; check_in_grace_minutes: number | null;
+    }>();
+    for (const row of (data ?? []) as Array<{
+      id: string; type: string; reservable: boolean; active: boolean;
+      setup_buffer_minutes: number | null; teardown_buffer_minutes: number | null;
+      check_in_required: boolean | null; check_in_grace_minutes: number | null;
+    }>) {
+      out.set(row.id, row);
+    }
+    return out;
   }
 }
+

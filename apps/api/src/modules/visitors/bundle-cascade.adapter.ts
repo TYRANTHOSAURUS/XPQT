@@ -310,12 +310,14 @@ export class BundleCascadeAdapter implements OnModuleInit {
 
   private async handleBundleCancelled(event: BundleCancelledEvent): Promise<void> {
     // Find every visitor linked to this bundle and cascade per-line semantics.
+    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
+    // Under canonicalisation `event.bundle_id` is the booking id.
     const visitorIds = await this.runInTenant(event.tenant_id, async () => {
       const rows = await this.db.queryMany<{ id: string }>(
         `select id
            from public.visitors
           where tenant_id = $1
-            and booking_bundle_id = $2`,
+            and booking_id = $2`,
         [event.tenant_id, event.bundle_id],
       );
       return rows.map((r) => r.id);

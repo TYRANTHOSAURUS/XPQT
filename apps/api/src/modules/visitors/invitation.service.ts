@@ -113,6 +113,13 @@ export class InvitationService {
     // contract — not a different value. Compute from the same ISO so
     // they always match.
     const visitDate = isoToVisitDate(dto.expected_at);
+    // Post-canonicalisation (2026-05-02): visitors link to a single
+    // booking via `visitors.booking_id` — the legacy dual-link
+    // (booking_bundle_id + reservation_id, 00252:36-37) is gone. 00278
+    // dropped `reservation_id` and renamed `booking_bundle_id` →
+    // `booking_id`. The DTO field name is migrated below; the
+    // service-level write goes through the canonical column directly.
+    const bookingId = dto.booking_id ?? dto.booking_bundle_id ?? null;
     const { data: visitorRow, error: insertError } = await this.supabase.admin
       .from('visitors')
       .insert({
@@ -132,8 +139,7 @@ export class InvitationService {
         visit_date: visitDate,                      // derived from expected_at; legacy NOT NULL
         building_id: dto.building_id,
         meeting_room_id: dto.meeting_room_id ?? null,
-        booking_bundle_id: dto.booking_bundle_id ?? null,
-        reservation_id: dto.reservation_id ?? null,
+        booking_id: bookingId,                      // 00278:41 (renamed from booking_bundle_id)
         notes_for_visitor: dto.notes_for_visitor ?? null,
         notes_for_reception: dto.notes_for_reception ?? null,
       })

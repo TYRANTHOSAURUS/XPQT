@@ -9,6 +9,11 @@ import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
+import {
+  SLOT_WITH_BOOKING_SELECT,
+  slotWithBookingToReservation,
+  type SlotWithBookingEmbed,
+} from './reservation-projection';
 import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
 
 /**
@@ -18,6 +23,26 @@ import type { ActorContext, RecurrenceScope, Reservation } from './dto/types';
  * (file booking-flow.service.ts) which integrates with the rule resolver
  * from Phase B. This service handles the simpler, rule-resolver-independent
  * lifecycle methods.
+ *
+ * Booking-canonicalisation rewrite (2026-05-02): every read of `reservations`
+ * is now a read of `booking_slots` joined with `bookings` (00277:27,116).
+ * The legacy flat `Reservation` shape is preserved in API responses via
+ * `slotWithBookingToReservation` so frontend callers don't change in this
+ * slice. The `id` field on returned rows is now the BOOKING id (00278 +
+ * Slice A), not the slot id — see BookingFlowService for the breaking-change
+ * rationale.
+ *
+ * What edits/cancels touch:
+ *   - status / check-in / cancellation-grace fields → updated on
+ *     `booking_slots` (per-slot semantics; multi-room can have one slot
+ *     cancelled while others continue per 00277:142-144).
+ *   - space_id / start_at / end_at on edit → updated on the SLOT (the actual
+ *     resource window). For single-slot v1 bookings we also keep the
+ *     booking-level location_id/start_at/end_at in sync so visibility +
+ *     "my bookings" lookups stay consistent.
+ *   - Audit events for booking-level lifecycle (created, cancelled,
+ *     restored) carry `entity_type='booking'` (Slice A); per-slot events
+ *     (check-in, auto-release) carry `entity_type='booking_slot'`.
  */
 @Injectable()
 export class ReservationService {
@@ -53,7 +78,7 @@ export class ReservationService {
         .rpc('space_path', { p_space_id: r.space_id });
       if (rpcErr) {
         this.log.warn(
-          `space_path rpc failed for reservation ${r.id} (space_id=${r.space_id}): ${rpcErr.message}`,
+          `space_path rpc failed for booking ${r.id} (space_id=${r.space_id}): ${rpcErr.message}`,
         );
         return r;
       }
@@ -61,7 +86,7 @@ export class ReservationService {
       return { ...r, space_path: path && path.length > 0 ? path : null };
     } catch (err) {
       this.log.warn(
-        `space_path rpc threw for reservation ${r.id} (space_id=${r.space_id}): ${(err as Error).message}`,
+        `space_path rpc threw for booking ${r.id} (space_id=${r.space_id}): ${(err as Error).message}`,
       );
       return r;
     }
@@ -70,13 +95,7 @@ export class ReservationService {
   /**
    * Mutation-path counterpart to `findOne(id, authUid)`. Resolves
    * visibility against an `ActorContext` (which holds `user_id`, the
-   * app-side users.id, NOT auth_uid). The previous implementation
-   * accidentally passed `actor.user_id` as `authUid` to `findOne`,
-   * which caused the underlying `users.eq('auth_uid', actor.user_id)`
-   * lookup to return null — yielding an empty context with every
-   * permission flag false, which then failed `assertVisible` with
-   * "reservation_not_visible" for every drag-move / cancel / restore
-   * an operator attempted from the desk scheduler.
+   * app-side users.id, NOT auth_uid).
    */
   async findOneForActor(id: string, actor: ActorContext): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
@@ -87,12 +106,15 @@ export class ReservationService {
   }
 
   /**
-   * Sibling reservations in the same multi_room_group. Used by the
-   * booking detail surface so an operator can navigate to any room in
-   * the atomic group without leaving the detail context. Returns []
-   * for solo bookings (no group). Visibility is inherited from the
-   * pivot reservation — the group is atomic, so if you can see one you
-   * can see the rest.
+   * Sibling slots in the same booking (multi-room atomic group). Used by
+   * the booking detail surface so an operator can navigate to any room in
+   * the group without leaving the detail context. Returns []  for
+   * single-slot bookings.
+   *
+   * Post-canonicalisation (2026-05-02): groupings live on `booking_id`
+   * (00277:119) instead of the dropped `multi_room_group_id` column. The
+   * "siblings" are every other slot keyed to the same booking. Visibility
+   * is inherited from the pivot booking — the group is atomic.
    */
   async listGroupSiblings(
     id: string,
@@ -104,20 +126,24 @@ export class ReservationService {
     const ctx = await this.visibility.loadContext(authUid, tenantId);
     const pivot = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(pivot, ctx);
-    if (!pivot.multi_room_group_id) return { items: [] };
 
+    // Read every slot on this booking; if there's only one, no siblings.
     const { data, error } = await this.supabase.admin
-      .from('reservations')
+      .from('booking_slots')
       .select('id, space_id, status, space:spaces(name)')
       .eq('tenant_id', tenantId)
-      .eq('multi_room_group_id', pivot.multi_room_group_id)
+      .eq('booking_id', id)
+      .order('display_order', { ascending: true })
       .order('created_at', { ascending: true });
     if (error) throw new BadRequestException(`group_siblings_failed:${error.message}`);
 
     type Row = { id: string; space_id: string; status: string; space?: { name: string | null } | null };
+    const rows = (data ?? []) as unknown as Row[];
+    if (rows.length <= 1) return { items: [] };
+
     return {
-      items: ((data ?? []) as unknown as Row[]).map((r) => ({
-        id: r.id,
+      items: rows.map((r) => ({
+        id: r.id,                       // slot id (per-slot for the multi-room rail)
         space_id: r.space_id,
         space_name: r.space?.name ?? null,
         status: r.status,
@@ -125,15 +151,27 @@ export class ReservationService {
     };
   }
 
+  /**
+   * Internal: load a booking by id and return the legacy `Reservation`
+   * projection. Picks the booking's PRIMARY slot (lowest display_order,
+   * 00277:154) for slot-level fields. Multi-slot bookings still get a
+   * single representative row through this path; per-slot reads use
+   * `booking_slots` directly (e.g. listGroupSiblings).
+   */
   private async findByIdOrThrow(id: string, tenantId: string): Promise<Reservation> {
+    // Try slot-then-booking embed in one round-trip. The PostgREST embed
+    // resolves through the booking_slots → bookings FK (00277:119).
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('*')
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
       .eq('tenant_id', tenantId)
-      .eq('id', id)
+      .eq('booking_id', id)
+      .order('display_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
       .maybeSingle();
-    if (error || !data) throw new NotFoundException('reservation_not_found');
-    return data as unknown as Reservation;
+    if (error || !data) throw new NotFoundException('booking_not_found');
+    return slotWithBookingToReservation(data as unknown as SlotWithBookingEmbed);
   }
 
   async listMine(authUid: string, opts: {
@@ -149,21 +187,25 @@ export class ReservationService {
     // read more naturally with most-recent first.
     const ascending = opts.scope === 'upcoming';
 
+    // Read from booking_slots embedding the parent booking — gives us the
+    // per-slot start_at + status that matches what the legacy reservations
+    // table surfaced. Filter on booking-level requester_person_id by
+    // pushing the predicate into the embedded relation.
     let q = this.supabase.admin
-      .from('reservations')
-      // Join the room name in the same round-trip so the portal "my bookings"
-      // page doesn't have to fetch the spaces list just to label rows.
-      .select('*, space:spaces(id,name,type)')
+      .from('booking_slots')
+      .select(`
+        ${SLOT_WITH_BOOKING_SELECT},
+        space:spaces(id,name,type)
+      `)
       .eq('tenant_id', tenantId)
       .order('start_at', { ascending })
-      .order('id', { ascending: true }) // tiebreaker for stable cursor paging
+      .order('id', { ascending: true })
       .limit(limit + 1);
 
     if (ctx.person_id) {
-      // For listMine, restrict to own reservations regardless of read_all.
-      q = q.eq('requester_person_id', ctx.person_id);
+      q = q.eq('bookings.requester_person_id', ctx.person_id);
     } else if (ctx.user_id) {
-      q = q.eq('booked_by_user_id', ctx.user_id);
+      q = q.eq('bookings.booked_by_user_id', ctx.user_id);
     } else {
       return { items: [] };
     }
@@ -177,12 +219,6 @@ export class ReservationService {
       q = q.in('status', ['cancelled', 'released']);
     }
 
-    // Cursor format: `${start_at}__${id}` from the previous page's last row.
-    // We page on `start_at` with `id` as a tiebreaker — without the
-    // tiebreaker, rows sharing a start_at can swap positions across pages
-    // and cause duplicates or skips. Until we wired this, the API quietly
-    // returned the first N rows and never paged, so anyone with more than
-    // limit bookings could not see them.
     if (opts.cursor) {
       const sep = opts.cursor.lastIndexOf('__');
       if (sep > 0) {
@@ -197,34 +233,43 @@ export class ReservationService {
     const { data, error } = await q;
     if (error) throw new BadRequestException(`list_failed:${error.message}`);
 
-    type Row = Reservation & { space?: { id: string; name: string; type: string } | null };
-    const all = (data ?? []) as unknown as Row[];
-    const rows = all.slice(0, limit).map((r) => ({
-      ...r,
-      space_name: r.space?.name ?? null,
-    }));
+    type SlotRow = SlotWithBookingEmbed & {
+      space?: { id: string; name: string; type: string } | null;
+    };
+    const all = ((data ?? []) as unknown as SlotRow[]);
+    const rowsToReturn = all.slice(0, limit).map((r) => {
+      const projected = slotWithBookingToReservation(r);
+      return {
+        ...projected,
+        space_name: r.space?.name ?? null,
+      };
+    });
     const next_cursor =
-      all.length > limit && rows.length > 0
-        ? `${rows[rows.length - 1].start_at}__${rows[rows.length - 1].id}`
+      all.length > limit && rowsToReturn.length > 0
+        ? `${rowsToReturn[rowsToReturn.length - 1].start_at}__${rowsToReturn[rowsToReturn.length - 1].id}`
         : undefined;
-    return { items: rows, next_cursor };
+    return { items: rowsToReturn, next_cursor };
   }
 
   /**
-   * Operator/admin list — every reservation in the tenant, filterable by
+   * Operator/admin list — every booking in the tenant, filterable by
    * scope + status. Used by /desk/bookings (the operator list view).
    * Throws ForbiddenException if the caller has no rooms.read_all/admin.
    *
    * Joins room name + requester name in one round-trip so the desk page
    * doesn't hydrate per-row.
+   *
+   * Post-rewrite: `has_bundle` historically meant "has at least one
+   * service line attached" (the booking_bundle_id was nullable on
+   * reservations). Under canonicalisation every booking IS a bundle, so
+   * the meaningful question is "does this booking have orders". For now,
+   * `has_bundle=true` falls back to "any orders linked via orders.booking_id"
+   * — implemented as a join filter rather than the dropped column.
    */
   async listForOperator(authUid: string, opts: {
     scope?: 'upcoming' | 'past' | 'cancelled' | 'all' | 'pending_approval';
     status?: string[];
     limit?: number;
-    /** Only return reservations that have services attached (a non-null
-     *  `booking_bundle_id`). Backed by the partial index in 00199 so the
-     *  query stays fast on tenants where most reservations are room-only. */
     has_bundle?: boolean;
   }): Promise<{ items: Array<Reservation & {
     space_name?: string | null;
@@ -237,8 +282,12 @@ export class ReservationService {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
 
     let q = this.supabase.admin
-      .from('reservations')
-      .select('*, space:spaces(id,name,type), requester:persons!requester_person_id(id,first_name,last_name)')
+      .from('booking_slots')
+      .select(`
+        ${SLOT_WITH_BOOKING_SELECT},
+        space:spaces(id,name,type),
+        requester:bookings!inner(requester:persons!requester_person_id(id,first_name,last_name))
+      `)
       .eq('tenant_id', tenantId)
       .order('start_at', { ascending: false })
       .limit(limit);
@@ -254,31 +303,58 @@ export class ReservationService {
       q = q.eq('status', 'pending_approval');
     }
     if (opts.status?.length) q = q.in('status', opts.status);
-    if (opts.has_bundle) q = q.not('booking_bundle_id', 'is', null);
+    // has_bundle: filter to bookings that have at least one row in `orders`
+    // pointing back via orders.booking_id (00278:109). Pre-rewrite this was
+    // a `booking_bundle_id IS NOT NULL` check on reservations; under
+    // canonicalisation the bundle IS the booking, so "has services" is the
+    // right question. We do it via a defensive double-query (orders by
+    // booking_id IN (...)) rather than a complex OR clause to keep the
+    // query readable; the operator list rarely exceeds 200 rows.
+    if (opts.has_bundle) {
+      const { data: bookingIdsWithOrders, error: ordersErr } = await this.supabase.admin
+        .from('orders')
+        .select('booking_id')
+        .eq('tenant_id', tenantId)
+        .not('booking_id', 'is', null);
+      if (ordersErr) throw new BadRequestException(`list_for_operator_orders:${ordersErr.message}`);
+      const ids = Array.from(new Set(
+        ((bookingIdsWithOrders ?? []) as Array<{ booking_id: string | null }>)
+          .map((r) => r.booking_id)
+          .filter((id): id is string => Boolean(id)),
+      ));
+      if (ids.length === 0) {
+        return { items: [] };
+      }
+      q = q.in('booking_id', ids);
+    }
 
     const { data, error } = await q;
     if (error) throw new BadRequestException(`list_for_operator_failed:${error.message}`);
 
-    type Row = Reservation & {
+    type SlotRow = SlotWithBookingEmbed & {
       space?: { id: string; name: string; type: string } | null;
-      requester?: { id: string; first_name: string | null; last_name: string | null } | null;
+      requester?: { requester?: { id: string; first_name: string | null; last_name: string | null } | null } | null;
     };
-    const items = ((data ?? []) as unknown as Row[]).map((r) => ({
-      ...r,
-      space_name: r.space?.name ?? null,
-      requester_first_name: r.requester?.first_name ?? null,
-      requester_last_name: r.requester?.last_name ?? null,
-    }));
+    const items = ((data ?? []) as unknown as SlotRow[]).map((r) => {
+      const projected = slotWithBookingToReservation(r);
+      const requesterPerson = r.requester?.requester ?? null;
+      return {
+        ...projected,
+        space_name: r.space?.name ?? null,
+        requester_first_name: requesterPerson?.first_name ?? null,
+        requester_last_name: requesterPerson?.last_name ?? null,
+      };
+    });
     return { items };
   }
 
   /**
-   * Desk-scheduler window read. Returns every reservation on `spaceIds`
-   * whose effective_*_at range overlaps [start_at, end_at). Operator-or-admin
+   * Desk-scheduler window read. Returns every booking on `spaceIds` whose
+   * effective_*_at range overlaps [start_at, end_at). Operator-or-admin
    * only — caller verifies via `assertOperatorOrAdmin`.
    *
    * Cancelled / released / completed rows are excluded; the grid only renders
-   * blocks for active or pending reservations. (Released slots free the cell.)
+   * blocks for active or pending bookings. (Released slots free the cell.)
    *
    * Returns rows in a single query (no N+1) so the page can paint 50 rooms ×
    * 7 days inside the §5.6 < 1.2 s perceived budget.
@@ -293,18 +369,17 @@ export class ReservationService {
 
     const spaceIds = (args.space_ids ?? []).filter((id) => typeof id === 'string' && id.length > 0);
     if (spaceIds.length === 0) return { items: [] };
-    // Hard cap to keep the query bounded; the desk grid trims its filter
-    // before sending — this guards against pathological clients.
     const cappedSpaceIds = spaceIds.slice(0, 200);
 
     if (!args.start_at || !args.end_at) {
       throw new BadRequestException('scheduler_window_requires_range');
     }
 
-    // Range overlap: row.effective_start_at < window_end AND row.effective_end_at > window_start.
+    // Range overlap on slot-level effective_*_at (trigger-maintained per
+    // 00277:194-201).
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('*')
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
       .eq('tenant_id', tenantId)
       .in('space_id', cappedSpaceIds)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
@@ -314,7 +389,8 @@ export class ReservationService {
       .limit(2000);
 
     if (error) throw new BadRequestException(`scheduler_window_failed:${error.message}`);
-    return { items: (data ?? []) as unknown as Reservation[] };
+    const items = ((data ?? []) as unknown as SlotWithBookingEmbed[]).map(slotWithBookingToReservation);
+    return { items };
   }
 
   // === Lifecycle ===
@@ -323,9 +399,11 @@ export class ReservationService {
    * Soft cancel. status='cancelled'. Sets cancellation_grace_until so a
    * follow-up restore can revert within the grace window.
    *
-   * For recurring scope='this_and_following' or 'series', the caller is
-   * BookingFlowService which knows how to emit impact preview and split
-   * the series. This method handles a single occurrence.
+   * Post-canonicalisation: per-slot status (00277:142-144) is the
+   * authoritative cancel signal. We update the booking's slots; the
+   * booking-level status mirror is left in sync with the primary slot's
+   * state for v1 single-slot bookings — multi-slot booking-level rollup
+   * is a separate concern (a future view will compute it).
    */
   async cancelOne(id: string, actor: ActorContext, opts: {
     reason?: string;
@@ -336,9 +414,9 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
     if (r.status === 'cancelled') return r;
-    if (r.status === 'completed') throw new BadRequestException('reservation_completed');
+    if (r.status === 'completed') throw new BadRequestException('booking_completed');
 
     // Recurrence-scoped cancel: fan-out cancel for this and following / series.
     if (opts.scope && opts.scope !== 'this') {
@@ -349,17 +427,15 @@ export class ReservationService {
         throw new BadRequestException('not_a_recurring_occurrence');
       }
       const result = await this.recurrence.cancelForward(id, opts.scope, { reason: opts.reason });
-      // Notify on the pivot only (single email rather than N).
       if (this.notifications) void this.notifications.onCancelled(r, opts.reason);
-      // Audit event
       try {
         await this.supabase.admin.from('audit_events').insert({
           tenant_id: tenantId,
-          event_type: 'reservation.cancelled',
-          entity_type: 'reservation',
+          event_type: 'booking.cancelled',
+          entity_type: 'booking',
           entity_id: id,
           details: {
-            reservation_id: id, scope: opts.scope, cancelled_count: result.cancelled,
+            booking_id: id, scope: opts.scope, cancelled_count: result.cancelled,
             reason: opts.reason ?? null,
           },
         });
@@ -370,39 +446,46 @@ export class ReservationService {
     const grace = opts.grace_minutes ?? 5;
     const cancellationGraceUntil = new Date(Date.now() + grace * 60 * 1000).toISOString();
 
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
+    // Update every slot on this booking. For single-slot v1 there's just
+    // one row; for multi-slot bookings we cancel the whole atomic group
+    // (legacy behaviour preserved). Per-slot cancel within a multi-slot
+    // booking is a future endpoint (separate slice).
+    const { error: slotsErr } = await this.supabase.admin
+      .from('booking_slots')
       .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
       .eq('tenant_id', tenantId)
-      .eq('id', id)
-      .select('*')
-      .single();
+      .eq('booking_id', id);
+    if (slotsErr) throw new BadRequestException(`cancel_failed:${slotsErr.message}`);
 
-    if (error) throw new BadRequestException(`cancel_failed:${error.message}`);
+    // Mirror to booking-level status so /desk/bookings sees the cancel
+    // immediately. Best-effort — the source-of-truth for cell rendering
+    // is the slot status, but the booking-level status is what listMine /
+    // listForOperator filter on today.
+    await this.supabase.admin
+      .from('bookings')
+      .update({ status: 'cancelled' })
+      .eq('tenant_id', tenantId)
+      .eq('id', id);
 
-    const updated = data as unknown as Reservation;
+    const updated = await this.findByIdOrThrow(id, tenantId);
     if (this.notifications) void this.notifications.onCancelled(updated, opts.reason);
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
-        event_type: 'reservation.cancelled',
-        entity_type: 'reservation',
+        event_type: 'booking.cancelled',
+        entity_type: 'booking',
         entity_id: id,
-        details: { reservation_id: id, scope: 'this', reason: opts.reason ?? null },
+        details: { booking_id: id, scope: 'this', reason: opts.reason ?? null },
       });
     } catch { /* best-effort */ }
 
-    // Sub-project 2 cascade: cancel orders linked to this specific
-    // reservation (and their downstream lines, tickets, asset reservations,
-    // approvals — rescoped or auto-closed). Scoped to the reservation_id so
-    // a non-master occurrence cancel doesn't take sibling occurrences down.
-    // The helper looks up the bundle via orders.linked_reservation_id, so
-    // it works whether or not reservations.booking_bundle_id is set.
-    // Best-effort — a failure here doesn't undo the reservation cancel.
+    // Sub-project 2 cascade: cancel orders linked to this booking. The
+    // helper now resolves orders via orders.booking_id (00278:109);
+    // best-effort — a failure here doesn't undo the booking cancel.
     if (this.bundleCascade) {
       await this.bundleCascade.cancelOrdersForReservation({
-        reservation_id: updated.id,
-        reason: opts.reason ?? 'reservation_cancelled',
+        reservation_id: updated.id,                   // = booking id under canonicalisation
+        reason: opts.reason ?? 'booking_cancelled',
       });
     }
 
@@ -410,7 +493,7 @@ export class ReservationService {
   }
 
   /**
-   * Restore a cancelled reservation if still within cancellation_grace_until.
+   * Restore a cancelled booking if still within cancellation_grace_until.
    * Re-runs conflict guard (someone else may have booked the slot).
    */
   async restore(id: string, actor: ActorContext): Promise<Reservation> {
@@ -418,49 +501,68 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
 
-    if (r.status !== 'cancelled') throw new BadRequestException('reservation_not_cancelled');
+    if (r.status !== 'cancelled') throw new BadRequestException('booking_not_cancelled');
     if (!r.cancellation_grace_until || new Date(r.cancellation_grace_until) < new Date()) {
       throw new BadRequestException('cancellation_grace_expired');
     }
 
-    // Re-check conflict: someone may have booked this slot in the meantime.
+    // Re-check conflict on the slot's effective window; need the slot id
+    // to exclude.
+    const { data: slotRow } = await this.supabase.admin
+      .from('booking_slots')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', id)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const slotIdToExclude = (slotRow as { id: string } | null)?.id ?? null;
+
     const conflicts = await this.conflict.preCheck({
       space_id: r.space_id,
       effective_start_at: r.effective_start_at,
       effective_end_at: r.effective_end_at,
-      exclude_ids: [r.id],
+      exclude_ids: slotIdToExclude ? [slotIdToExclude] : [],
     });
     if (conflicts.length > 0) {
-      throw new BadRequestException('reservation_slot_taken');
+      throw new BadRequestException('booking_slot_taken');
     }
 
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
+    // Re-confirm both layers.
+    const { error: slotsErr } = await this.supabase.admin
+      .from('booking_slots')
       .update({ status: 'confirmed', cancellation_grace_until: null })
       .eq('tenant_id', tenantId)
-      .eq('id', id)
-      .select('*')
-      .single();
+      .eq('booking_id', id);
+    if (slotsErr) throw new BadRequestException(`restore_failed:${slotsErr.message}`);
 
-    if (error) throw new BadRequestException(`restore_failed:${error.message}`);
+    await this.supabase.admin
+      .from('bookings')
+      .update({ status: 'confirmed' })
+      .eq('tenant_id', tenantId)
+      .eq('id', id);
 
-    // Audit — phase K.
+    const updated = await this.findByIdOrThrow(id, tenantId);
+
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
-        event_type: 'reservation.restored',
-        entity_type: 'reservation',
+        event_type: 'booking.restored',
+        entity_type: 'booking',
         entity_id: id,
         details: { restored_by: actor.user_id },
       });
     } catch { /* best-effort */ }
-    return data as unknown as Reservation;
+    return updated;
   }
 
   /**
    * Skip a single occurrence (mark recurrence_skipped + cancelled).
+   *
+   * Post-canonicalisation: `recurrence_skipped` lives on `bookings`
+   * (00277:77), so we toggle it there and cancel the slot(s).
    */
   async skipOccurrence(id: string, actor: ActorContext): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
@@ -469,24 +571,35 @@ export class ReservationService {
       throw new BadRequestException('not_a_recurring_occurrence');
     }
 
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
+    const { error: bookingErr } = await this.supabase.admin
+      .from('bookings')
       .update({ status: 'cancelled', recurrence_skipped: true })
       .eq('tenant_id', tenantId)
-      .eq('id', id)
-      .select('*')
-      .single();
+      .eq('id', id);
+    if (bookingErr) throw new BadRequestException(`skip_failed:${bookingErr.message}`);
 
-    if (error) throw new BadRequestException(`skip_failed:${error.message}`);
-    return data as unknown as Reservation;
+    const { error: slotsErr } = await this.supabase.admin
+      .from('booking_slots')
+      .update({ status: 'cancelled' })
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', id);
+    if (slotsErr) throw new BadRequestException(`skip_failed:${slotsErr.message}`);
+
+    return this.findByIdOrThrow(id, tenantId);
   }
 
   /**
    * Edit a single occurrence. Sets recurrence_overridden=true if part of a series.
    * Re-runs conflict guard if time/space changed.
    *
-   * Full edit-this-and-following / edit-entire-series semantics live in
-   * BookingFlowService since they re-run the rule resolver.
+   * Post-canonicalisation: time/space changes update the SLOT (the actual
+   * resource window). For single-slot bookings we also keep the
+   * booking-level location_id/start_at/end_at in sync so visibility +
+   * "my bookings" reads stay consistent (00277:41/44/45).
+   *
+   * Multi-slot bookings: edits via this single-occurrence path are scoped
+   * to the booking's PRIMARY slot only (lowest display_order). Editing
+   * non-primary slots goes through a future per-slot endpoint.
    */
   async editOne(id: string, actor: ActorContext, patch: {
     space_id?: string;
@@ -500,63 +613,89 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('reservation_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
 
-    const next: Record<string, unknown> = {};
-    if (patch.space_id && patch.space_id !== r.space_id) next.space_id = patch.space_id;
-    if (patch.start_at && patch.start_at !== r.start_at) next.start_at = patch.start_at;
-    if (patch.end_at && patch.end_at !== r.end_at) next.end_at = patch.end_at;
-    if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
-    if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
-    if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
-
-    if (r.recurrence_series_id) next.recurrence_overridden = true;
-
-    if (Object.keys(next).length === 0) return r;
-
-    // The exclusion-constraint will catch race conditions. The trigger
-    // recomputes effective_*_at + time_range from the new values.
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .update(next)
+    // Find the primary slot to mutate.
+    const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
+      .from('booking_slots')
+      .select('id')
       .eq('tenant_id', tenantId)
-      .eq('id', id)
-      .select('*')
-      .single();
+      .eq('booking_id', id)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (slotErr || !primarySlotRow) {
+      throw new BadRequestException(`edit_failed:no_primary_slot`);
+    }
+    const primarySlotId = (primarySlotRow as { id: string }).id;
 
-    if (error) {
-      if (this.conflict.isExclusionViolation(error)) {
-        throw new BadRequestException('reservation_slot_conflict');
-      }
-      throw new BadRequestException(`edit_failed:${error.message}`);
+    const slotPatch: Record<string, unknown> = {};
+    const bookingPatch: Record<string, unknown> = {};
+
+    if (patch.space_id && patch.space_id !== r.space_id) {
+      slotPatch.space_id = patch.space_id;
+      bookingPatch.location_id = patch.space_id;
+    }
+    if (patch.start_at && patch.start_at !== r.start_at) {
+      slotPatch.start_at = patch.start_at;
+      bookingPatch.start_at = patch.start_at;
+    }
+    if (patch.end_at && patch.end_at !== r.end_at) {
+      slotPatch.end_at = patch.end_at;
+      bookingPatch.end_at = patch.end_at;
+    }
+    if (patch.attendee_count !== undefined) slotPatch.attendee_count = patch.attendee_count;
+    if (patch.attendee_person_ids !== undefined) slotPatch.attendee_person_ids = patch.attendee_person_ids;
+    if (patch.host_person_id !== undefined) bookingPatch.host_person_id = patch.host_person_id;
+
+    if (r.recurrence_series_id) bookingPatch.recurrence_overridden = true;
+
+    if (Object.keys(slotPatch).length === 0 && Object.keys(bookingPatch).length === 0) {
+      return r;
     }
 
-    const updated = data as unknown as Reservation;
+    if (Object.keys(slotPatch).length > 0) {
+      const { error: updErr } = await this.supabase.admin
+        .from('booking_slots')
+        .update(slotPatch)
+        .eq('tenant_id', tenantId)
+        .eq('id', primarySlotId);
+      if (updErr) {
+        if (this.conflict.isExclusionViolation(updErr)) {
+          throw new BadRequestException('booking_slot_conflict');
+        }
+        throw new BadRequestException(`edit_failed:${updErr.message}`);
+      }
+    }
+    if (Object.keys(bookingPatch).length > 0) {
+      const { error: bErr } = await this.supabase.admin
+        .from('bookings')
+        .update(bookingPatch)
+        .eq('tenant_id', tenantId)
+        .eq('id', id);
+      if (bErr) throw new BadRequestException(`edit_failed:${bErr.message}`);
+    }
+
+    const updated = await this.findByIdOrThrow(id, tenantId);
     if (this.notifications) void this.notifications.onCreated(updated);
     try {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
-        event_type: 'reservation.updated',
-        entity_type: 'reservation',
+        event_type: 'booking.updated',
+        entity_type: 'booking',
         entity_id: id,
-        details: { reservation_id: id, patch: next },
+        details: {
+          booking_id: id,
+          slot_patch: slotPatch,
+          booking_patch: bookingPatch,
+        },
       });
     } catch { /* best-effort */ }
 
     // Slice 4: emit bundle-cascade events for any visitors linked to the
-    // bundle that owns this reservation. The visitor adapter (in
-    // VisitorsModule) translates each per-visitor event into the right
-    // status/email/host-alert action per spec §10.2.
-    //
-    // Fired AFTER the DB update succeeds + audit landed. Visitors are
-    // resolved via `visitors.booking_bundle_id`, the canonical link added in
-    // 00252. We emit one event per visitor with line_id=visitor.id +
-    // line_kind='visitor' so the adapter can handle each row individually
-    // (status-aware cascade matrix).
-    //
-    // Visibility: ReservationService.editOne already passed assertVisible +
-    // canEdit checks above. Tenant-id is on the BundleEvent payload so the
-    // adapter defends explicitly.
+    // booking. Resolved via `visitors.booking_id` (00278:41 — column
+    // renamed from booking_bundle_id). Under canonicalisation the booking
+    // IS the bundle, so r.booking_bundle_id (== r.id) is the right key.
     const movedTime = patch.start_at && patch.start_at !== r.start_at;
     const changedRoom = patch.space_id && patch.space_id !== r.space_id;
     if ((movedTime || changedRoom) && r.booking_bundle_id && this.bundleEventBus) {
@@ -575,15 +714,10 @@ export class ReservationService {
 
   /**
    * Slice 4 helper — fan out bundle-cascade events to visitor adapter for a
-   * bundle whose primary reservation just changed.
+   * booking whose primary slot just changed.
    *
-   * Walks `visitors.booking_bundle_id`, emits one event per visitor with
-   * line_kind='visitor' so the adapter's status-aware matrix can decide
-   * cancel/email/alert per row.
-   *
-   * Best-effort: a query failure logs + returns; the reservation edit has
-   * already succeeded and we don't want a downstream event hiccup to
-   * masquerade as an edit failure.
+   * Walks `visitors.booking_id` (00278:41 — column renamed from
+   * `booking_bundle_id`).
    */
   private async emitVisitorCascadeForBundle(args: {
     tenantId: string;
@@ -599,10 +733,10 @@ export class ReservationService {
         .from('visitors')
         .select('id')
         .eq('tenant_id', args.tenantId)
-        .eq('booking_bundle_id', args.bundleId);
+        .eq('booking_id', args.bundleId);
       if (error) {
         this.log.warn(
-          `visitor cascade lookup failed for bundle ${args.bundleId}: ${error.message}`,
+          `visitor cascade lookup failed for booking ${args.bundleId}: ${error.message}`,
         );
         return;
       }
@@ -637,7 +771,7 @@ export class ReservationService {
       }
     } catch (err) {
       this.log.warn(
-        `visitor cascade emit failed for bundle ${args.bundleId}: ${(err as Error).message}`,
+        `visitor cascade emit failed for booking ${args.bundleId}: ${(err as Error).message}`,
       );
     }
   }

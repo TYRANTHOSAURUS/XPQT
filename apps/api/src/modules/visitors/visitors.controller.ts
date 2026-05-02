@@ -402,6 +402,9 @@ export class VisitorsController {
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
 
+    // Post-canonicalisation (2026-05-02): visitors.booking_bundle_id was
+    // renamed to visitors.booking_id and visitors.reservation_id was dropped
+    // (00278:38,41). Booking is the only canonical link now.
     const sql = `
       with visible as (
         select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
@@ -412,7 +415,7 @@ export class VisitorsController {
         v.expected_at, v.expected_until, v.arrived_at, v.checked_out_at,
         v.checkout_source, v.auto_checked_out,
         v.building_id, v.meeting_room_id, v.visitor_type_id,
-        v.booking_bundle_id, v.reservation_id,
+        v.booking_id,
         v.notes_for_visitor, v.notes_for_reception,
         v.primary_host_person_id, v.visitor_pass_id
       from public.visitors v

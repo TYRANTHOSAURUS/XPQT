@@ -4,6 +4,11 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { NotificationService } from '../notification/notification.service';
+import {
+  SLOT_WITH_BOOKING_SELECT,
+  slotWithBookingToReservation,
+  type SlotWithBookingEmbed,
+} from './reservation-projection';
 import type { Reservation } from './dto/types';
 
 /**
@@ -211,9 +216,14 @@ export class BookingNotificationsService {
     const cutoff = new Date(now + 5 * 60 * 1000).toISOString();
     const earliest = new Date(now - 1 * 60 * 1000).toISOString();
 
+    // Post-canonicalisation (2026-05-02): per-slot check-in lives on
+    // booking_slots (00277:147-151). Embed the parent booking for
+    // policy_snapshot + tenant info. policy_snapshot lives on bookings
+    // (00277:63) — we read it through the embed and update it on the
+    // bookings row.
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('*')
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
       .eq('check_in_required', true)
       .eq('status', 'confirmed')
       .is('checked_in_at', null)
@@ -226,55 +236,37 @@ export class BookingNotificationsService {
       return;
     }
 
-    for (const row of (data ?? []) as Reservation[]) {
-      const ps = (row.policy_snapshot ?? {}) as Record<string, unknown>;
+    for (const slotRow of (data ?? []) as unknown as SlotWithBookingEmbed[]) {
+      const reservation = slotWithBookingToReservation(slotRow);
+      const ps = (reservation.policy_snapshot ?? {}) as Record<string, unknown>;
       if (ps['reminder_sent_at']) continue;
 
-      // The cron fires outside any HTTP request — there's no TenantContext.
-      // sendCheckInReminder + downstream notification code reads
-      // TenantContext.current() (and may rely on slug / tier), so we must
-      // resolve the live tenant row before running the notification.
-      // Mirrors the pattern in RecurrenceService.recurrenceRollover.
       try {
-        const tenant = this.tenants ? await this.tenants.resolveById(row.tenant_id) : null;
+        const tenant = this.tenants ? await this.tenants.resolveById(reservation.tenant_id) : null;
         if (!tenant) {
           this.log.warn(
-            `checkInRemindersScan ${row.id}: tenant ${row.tenant_id} not found, skipping`,
+            `checkInRemindersScan ${reservation.id}: tenant ${reservation.tenant_id} not found, skipping`,
           );
           continue;
         }
         await TenantContext.run(tenant, async () => {
-          await this.sendCheckInReminder(row);
+          await this.sendCheckInReminder(reservation);
         });
-        // Atomic JSONB merge via RPC — never read-modify-write the
-        // snapshot in JS, which would clobber any concurrent change to
-        // the same column (other fields are added to policy_snapshot by
-        // the booking pipeline). The RPC merges with `||` at the row
-        // level so this update is safe under concurrent writes.
-        const { error: rpcError } = await this.supabase.admin.rpc(
-          'reservation_merge_policy_snapshot',
-          {
-            p_reservation_id: row.id,
-            p_patch: { reminder_sent_at: new Date().toISOString() },
-          },
-        );
-        if (rpcError) {
-          // Fallback for environments where the migration hasn't been
-          // pushed yet: at least make the write conditional so we don't
-          // race against another reminder scan. We accept that this can
-          // still clobber unrelated fields — the bug we're guarding
-          // against would only fire when the schema is partially
-          // deployed.
-          await this.supabase.admin
-            .from('reservations')
-            .update({
-              policy_snapshot: { ...ps, reminder_sent_at: new Date().toISOString() },
-            })
-            .eq('id', row.id)
-            .is('policy_snapshot->>reminder_sent_at', null);
-        }
+        // Conditional read-modify-write on bookings.policy_snapshot
+        // (00277:63). The conditional `is('...->>reminder_sent_at', null)`
+        // prevents racing reminders from double-clobbering the field. The
+        // legacy `reservation_merge_policy_snapshot` RPC was bound to the
+        // dropped `reservations` table; the spec defers function rewrites,
+        // so we use the conditional UPDATE pattern directly.
+        await this.supabase.admin
+          .from('bookings')
+          .update({
+            policy_snapshot: { ...ps, reminder_sent_at: new Date().toISOString() },
+          })
+          .eq('id', reservation.id)
+          .is('policy_snapshot->>reminder_sent_at', null);
       } catch (err) {
-        this.log.warn(`checkInRemindersScan ${row.id} failed: ${(err as Error).message}`);
+        this.log.warn(`checkInRemindersScan ${reservation.id} failed: ${(err as Error).message}`);
       }
     }
   }
@@ -357,7 +349,7 @@ export class BookingNotificationsService {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: eventType,
-        entity_type: 'reservation',
+        entity_type: 'booking',
         entity_id: (details.reservation_id as string) ?? null,
         details,
       });

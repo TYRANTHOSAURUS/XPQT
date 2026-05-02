@@ -392,8 +392,12 @@ export class ReservationController {
     const r = reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null };
     this.assertReservationWritable(r, ctx);
 
-    return this.bundle.attachServicesToReservation({
-      reservation_id: id,
+    // Post-canonicalisation (2026-05-02 + Slice A): the URL `:id` is a
+    // BOOKING id (what `findOne` returns now). Call the new canonical
+    // `attachServicesToBooking` directly instead of the deprecated
+    // reservation-named shim.
+    return this.bundle.attachServicesToBooking({
+      booking_id: id,
       requester_person_id: r.requester_person_id,
       services: body?.services ?? [],
     });

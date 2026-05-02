@@ -22,28 +22,63 @@ import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import type { BundleSource, BundleType } from './dto/types';
 
 /**
- * BundleService — orchestration parent for room + N services.
+ * BundleService — orchestration parent for booking + N services.
+ *
+ * Post-canonicalisation (2026-05-02): there is no separate `booking_bundles`
+ * row. The `bookings` row IS the canonical entity (00277:27). This service
+ * attaches service orders/lines/asset-reservations to an existing booking.
  *
  * Responsibilities:
- *   - Lazy-create `booking_bundles` on first-service-attach to a reservation.
- *   - Group lines by service_type → one order per group.
+ *   - Group service lines by service_type → one order per group.
  *   - Insert order_line_items with provenance snapshot from `resolve_menu_offer`.
  *   - Insert asset_reservations when a line linked an asset (GiST exclusion
  *     fires here on conflict).
  *   - Resolve service rules + assemble approvals via the deduping
  *     `ApprovalRoutingService`.
- *   - Emit `bundle.created` / `bundle.cancelled` audit events.
+ *   - Emit `booking.services_attached` / cascade events as the bundle event
+ *     bus expects them (event names retain `bundle.*` for now — bus subscribers
+ *     are out-of-scope slices).
  *
  * Atomicity (v1):
- *   We use a sequence of Supabase calls with explicit cleanup-on-error.
- *   The asset GiST exclusion still fires at insert time so dual-bookings
- *   are impossible. A future refactor will move the whole pipeline into a
- *   single Postgres function for true transactional atomicity, matching
- *   spec §4.1 step 3. Until then, partial-success states are deleted in
- *   reverse-creation order on any thrown exception.
+ *   Booking creation itself is now atomic via the `create_booking` RPC
+ *   (00277:236) — the booking + slot rows go in inside one transaction.
+ *   Service attachment (this service) still uses a sequence of Supabase
+ *   calls with explicit cleanup-on-error. Asset GiST exclusion still fires
+ *   at insert time so dual-bookings are impossible. A future refactor will
+ *   pull the whole pipeline into a single Postgres function.
+ *
+ * Method rename:
+ *   - `attachServicesToReservation` → `attachServicesToBooking`. The legacy
+ *     name remains as a deprecated shim that delegates to the new method,
+ *     translating the renamed `reservation_id` field to `booking_id`. Per the
+ *     destructive-default rewrite plan, the legacy method will be removed
+ *     once `reservation.controller.ts` migrates (separate slice).
  */
 
 export interface AttachServicesArgs {
+  /**
+   * The id of an existing `bookings` row (00277:28) to attach services to.
+   * Field renamed from `reservation_id` post-canonicalisation; the legacy
+   * `attachServicesToReservation` shim accepts the old field name and
+   * translates here.
+   */
+  booking_id: string;
+  requester_person_id: string;
+  bundle?: {
+    bundle_type?: BundleType;
+    host_person_id?: string | null;
+    cost_center_id?: string | null;
+    template_id?: string | null;
+    source?: BundleSource;
+  };
+  services: ServiceLineInput[];
+}
+
+/**
+ * Legacy shape kept ONLY for the deprecated `attachServicesToReservation`
+ * shim. New callers must use `AttachServicesArgs` + `attachServicesToBooking`.
+ */
+export interface AttachServicesToReservationArgsDeprecated {
   reservation_id: string;
   requester_person_id: string;
   bundle?: {
@@ -70,6 +105,12 @@ export interface ServiceLineInput {
 }
 
 export interface AttachServicesResult {
+  /**
+   * Equals `args.booking_id`. Kept under the `bundle_id` field name for
+   * backwards-compat with controllers/UI that still read `bundle_id` —
+   * under canonicalisation the booking IS the bundle. Renamed in a
+   * follow-up frontend slice.
+   */
   bundle_id: string;
   order_ids: string[];
   order_line_item_ids: string[];
@@ -91,39 +132,53 @@ export class BundleService {
   ) {}
 
   /**
-   * The canonical "attach N services to an existing reservation" path. Called
-   * from the booking-confirm dialog (`POST /reservations` with `services[]`)
-   * and from the standalone-order pipeline (with a pre-existing reservation,
-   * if any).
+   * Deprecated legacy entry-point. Translates the old `reservation_id` field
+   * to the new canonical `booking_id` and delegates to
+   * `attachServicesToBooking`.
+   *
+   * Kept ONLY so `reservation.controller.ts` (separate slice) keeps
+   * typechecking. The controller currently passes the URL `:id` segment as
+   * `reservation_id`; that param is now semantically a booking id (the
+   * URL path will be renamed in the controller-rewrite slice). Until then,
+   * runtime correctness depends on callers passing a real booking id.
+   *
+   * @deprecated Use `attachServicesToBooking({ booking_id, ... })` directly.
    */
-  async attachServicesToReservation(args: AttachServicesArgs): Promise<AttachServicesResult> {
+  async attachServicesToReservation(
+    args: AttachServicesToReservationArgsDeprecated,
+  ): Promise<AttachServicesResult> {
+    return this.attachServicesToBooking({
+      booking_id: args.reservation_id,
+      requester_person_id: args.requester_person_id,
+      bundle: args.bundle,
+      services: args.services,
+    });
+  }
+
+  /**
+   * The canonical "attach N services to an existing booking" path. Called
+   * from `BookingFlowService.create` after the `create_booking` RPC lands
+   * the booking + slot rows, and from the standalone-order pipeline
+   * (with a pre-existing booking, if any).
+   */
+  async attachServicesToBooking(args: AttachServicesArgs): Promise<AttachServicesResult> {
     if (args.services.length === 0) {
       throw new BadRequestException({ code: 'no_services', message: 'no service lines provided' });
     }
     const tenantId = TenantContext.current().id;
 
-    const reservation = await this.loadReservation(args.reservation_id);
-    const lines = await this.hydrateLines(args.services, reservation);
+    const booking = await this.loadBooking(args.booking_id);
+    const lines = await this.hydrateLines(args.services, booking);
     const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
     const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
 
     const cleanup = new Cleanup(this.supabase);
     try {
-      const bundle = await this.lazyCreateBundle({
-        tenantId,
-        reservation,
-        requester_person_id: args.requester_person_id,
-        bundle: args.bundle,
-      });
-      cleanup.bundle(bundle.id, bundle.preExisting);
-
-      // Link reservation to bundle if not already linked.
-      if (!reservation.booking_bundle_id || reservation.booking_bundle_id !== bundle.id) {
-        await this.supabase.admin
-          .from('reservations')
-          .update({ booking_bundle_id: bundle.id })
-          .eq('id', reservation.id);
-      }
+      // Under canonicalisation the booking IS the bundle — no separate
+      // `booking_bundles` row to lazy-create. Use the booking's id as the
+      // bundle id throughout (orders, approvals, audit). lazyCreateBundle
+      // is gone entirely.
+      const bundleId = booking.id;
 
       // Group by service_type (from menu_items.menu → catalog_menus.service_type).
       const linesByServiceType = new Map<string, HydratedLine[]>();
@@ -158,9 +213,9 @@ export class BundleService {
       for (const [serviceType, group] of linesByServiceType) {
         const order = await this.createOrder({
           tenantId,
-          reservation,
+          booking,
           requester_person_id: args.requester_person_id,
-          bundle_id: bundle.id,
+          bundle_id: bundleId,
           service_type: serviceType,
         });
         cleanup.order(order.id);
@@ -177,7 +232,7 @@ export class BundleService {
               start_at: line.service_window_start_at,
               end_at: line.service_window_end_at,
               requester_person_id: args.requester_person_id,
-              bundle_id: bundle.id,
+              bundle_id: bundleId,
             });
             cleanup.assetReservation(assetReservationId);
             assetReservationIds.push(assetReservationId);
@@ -211,6 +266,11 @@ export class BundleService {
       }
 
       // Resolve service rules per line, assemble approvals.
+      // The `reservation` slot of the rule-evaluation context still uses
+      // legacy field names (`reservation.id`, etc.) — that's a context-shape
+      // contract owned by ServiceRuleResolverService and untouched by this
+      // slice. We pass the booking's id/window/space into those slots so the
+      // semantic meaning (the holding being booked) is preserved.
       const outcomes = await this.resolver.resolveBulk({
         lines: perLineOutcomeInputs,
         contextFor: (lineKey) => {
@@ -219,16 +279,16 @@ export class BundleService {
           return buildServiceEvaluationContext({
             requester: requesterCtx,
             bundle: {
-              id: bundle.id,
+              id: bundleId,
               cost_center_id: args.bundle?.cost_center_id ?? null,
               template_id: args.bundle?.template_id ?? null,
-              attendee_count: reservation.attendee_count ?? null,
+              attendee_count: booking.attendee_count ?? null,
             },
             reservation: {
-              id: reservation.id,
-              space_id: reservation.space_id,
-              start_at: reservation.start_at,
-              end_at: reservation.end_at,
+              id: booking.id,                       // booking id (canonical entity)
+              space_id: booking.space_id,           // location anchor
+              start_at: booking.start_at,
+              end_at: booking.end_at,
             },
             line: {
               catalog_item_id: line.catalog_item_id,
@@ -262,7 +322,10 @@ export class BundleService {
           line_key: input.lineKey,
           outcome: outcome ?? this.allowOutcome(),
           scope: {
-            reservation_ids: [reservation.id],
+            // ApprovalScope.reservation_ids is the legacy field name — the
+            // value is now the booking id (canonical entity). The approvals
+            // slice rewrite will rename this field on the routing service.
+            reservation_ids: [booking.id],
             order_ids: [scope.order_id],
             order_line_item_ids: [scope.oli_id],
             ticket_ids: scope.ticket_id ? [scope.ticket_id] : [],
@@ -271,14 +334,17 @@ export class BundleService {
         };
       });
 
+      // 00278:172 CHECK constraint enforces target_entity_type = 'booking'
+      // for booking-anchored approvals; the routing service union now
+      // admits 'booking' (approval-routing.service.ts AssembleApprovalsArgs).
       const assembled = await this.approvalRouter.assemble({
-        target_entity_type: 'booking_bundle',
-        target_entity_id: bundle.id,
+        target_entity_type: 'booking',
+        target_entity_id: bundleId,
         per_line_outcomes: perLineApproval,
         bundle_context: {
           cost_center_id: args.bundle?.cost_center_id ?? null,
           requester_person_id: args.requester_person_id,
-          bundle_id: bundle.id,
+          bundle_id: bundleId,
         },
       });
 
@@ -329,11 +395,11 @@ export class BundleService {
             outcome,
             args: {
               tenantId,
-              bundleId: bundle.id,
+              bundleId,                           // = booking.id post-canonicalisation
               oliId,
               serviceCategory: line.service_type,
               serviceWindowStartAt: line.service_window_start_at,
-              locationId: reservation.space_id,
+              locationId: booking.space_id,
               ruleIds: outcome.matched_rule_ids,
               leadTimeOverride: outcome.internal_setup_lead_time_minutes,
               originSurface: 'bundle' as const,
@@ -365,7 +431,7 @@ export class BundleService {
               oliId,
               {
                 line_id: oliId,
-                bundle_id: bundle.id,
+                bundle_id: bundleId,
                 rule_ids: outcome.matched_rule_ids,
                 error: persistErr.message,
                 severity: 'high',
@@ -380,7 +446,7 @@ export class BundleService {
             oliId,
             {
               line_id: oliId,
-              bundle_id: bundle.id,
+              bundle_id: bundleId,
               rule_ids: outcome.matched_rule_ids,
               reason: 'approval_pending',
             },
@@ -390,9 +456,14 @@ export class BundleService {
         await this.setupTrigger.triggerMany(requiresSetup.map((r) => r.args));
       }
 
-      void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundle.id, {
-        bundle_id: bundle.id,
-        reservation_id: reservation.id,
+      // Audit entity_type stays 'booking_bundle' on existing event_types so
+      // pre-rewrite audit consumers keep matching. New events should use
+      // 'booking' going forward — adopted here for the new
+      // 'booking.services_attached' marker. Historical 'booking_bundle' rows
+      // remain immutable (00278:18) and queryable by ops dashboards.
+      void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundleId, {
+        bundle_id: bundleId,
+        booking_id: bundleId,                   // canonical alias (booking.id == bundleId post-rewrite)
         order_ids: orderIds,
         order_line_item_ids: oliIds,
         asset_reservation_ids: assetReservationIds,
@@ -401,7 +472,7 @@ export class BundleService {
       });
 
       return {
-        bundle_id: bundle.id,
+        bundle_id: bundleId,
         order_ids: orderIds,
         order_line_item_ids: oliIds,
         asset_reservation_ids: assetReservationIds,
@@ -423,11 +494,14 @@ export class BundleService {
   }
 
   /**
-   * `addLinesToBundle` — append new service lines to an existing bundle.
-   * Resolves the bundle's primary reservation and delegates to
-   * `attachServicesToReservation`, which already handles bundle reuse,
-   * grouping by service_type, asset reservations, rule resolution, and
-   * approval routing.
+   * `addLinesToBundle` — append new service lines to an existing booking.
+   *
+   * Post-canonicalisation: the bundle IS the booking (00277:27). The legacy
+   * `primary_reservation_id` indirection is gone — we delegate straight to
+   * `attachServicesToBooking` with the same id. Method name kept so the
+   * existing `POST /booking-bundles/:id/lines` endpoint stays callable; the
+   * bookings-controller-rewrite slice will rename to `addLinesToBooking` and
+   * point the route at `POST /bookings/:id/lines`.
    */
   async addLinesToBundle(args: {
     bundle_id: string;
@@ -439,26 +513,22 @@ export class BundleService {
     }
     const tenantId = TenantContext.current().id;
 
+    // Verify the booking exists in this tenant before delegating. Returns
+    // a clean 404 instead of letting `loadBooking` throw the same shape
+    // (which would also work — this is just earlier signalling).
     const { data, error } = await this.supabase.admin
-      .from('booking_bundles')
-      .select('id, primary_reservation_id, requester_person_id, host_person_id, location_id')
+      .from('bookings')
+      .select('id')
       .eq('id', args.bundle_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${args.bundle_id} not found.` });
-    }
-    const bundle = data as { id: string; primary_reservation_id: string | null };
-    if (!bundle.primary_reservation_id) {
-      throw new BadRequestException({
-        code: 'bundle_no_reservation',
-        message: 'Cannot add lines to a bundle without a primary reservation.',
-      });
+      throw new NotFoundException({ code: 'bundle_not_found', message: `Booking ${args.bundle_id} not found.` });
     }
 
-    return this.attachServicesToReservation({
-      reservation_id: bundle.primary_reservation_id,
+    return this.attachServicesToBooking({
+      booking_id: args.bundle_id,
       requester_person_id: args.requester_person_id,
       services: args.services,
     });
@@ -731,23 +801,71 @@ export class BundleService {
 
   // ── Internals ──────────────────────────────────────────────────────────
 
-  private async loadReservation(id: string) {
+  /**
+   * Load the booking row that services will attach to. Reads from `bookings`
+   * (00277:27); the legacy `loadReservation` against `reservations` was
+   * dropped with the table.
+   *
+   * The local `BookingRow` shape preserves the field names the rest of this
+   * service uses, with `space_id` mapped from `bookings.location_id`
+   * (00277:41). Bundle-level booking has no per-slot `space_id` — the
+   * location anchor IS the space for the v1 single-slot path. Multi-slot
+   * bookings (when MultiRoomBookingService rewrites) will need to pick a
+   * primary slot's space_id; v1 keeps the single-slot mapping.
+   */
+  private async loadBooking(id: string): Promise<BookingRow> {
     const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('id, tenant_id, space_id, requester_person_id, host_person_id, start_at, end_at, attendee_count, booking_bundle_id, source')
+      .from('bookings')
+      .select('id, tenant_id, location_id, requester_person_id, host_person_id, start_at, end_at, source')
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException({ code: 'reservation_not_found', message: `Reservation ${id} not found.` });
-    return data as ReservationRow;
+    if (!data) {
+      throw new NotFoundException({ code: 'booking_not_found', message: `Booking ${id} not found.` });
+    }
+    const row = data as {
+      id: string;
+      tenant_id: string;
+      location_id: string;
+      requester_person_id: string;
+      host_person_id: string | null;
+      start_at: string;
+      end_at: string;
+      source: string | null;
+    };
+
+    // Pull attendee_count from the booking's primary slot (lowest
+    // display_order, 00277:154). Multi-slot bookings would want per-slot
+    // counts; the v1 single-slot path collapses to one row.
+    const { data: slot } = await this.supabase.admin
+      .from('booking_slots')
+      .select('attendee_count')
+      .eq('booking_id', id)
+      .eq('tenant_id', tenantId)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    return {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      space_id: row.location_id,
+      requester_person_id: row.requester_person_id,
+      host_person_id: row.host_person_id,
+      start_at: row.start_at,
+      end_at: row.end_at,
+      attendee_count: (slot as { attendee_count: number | null } | null)?.attendee_count ?? null,
+      booking_bundle_id: row.id,                  // booking IS the bundle now
+      source: row.source,
+    };
   }
 
-  private async hydrateLines(inputs: ServiceLineInput[], reservation: ReservationRow): Promise<HydratedLine[]> {
+  private async hydrateLines(inputs: ServiceLineInput[], booking: BookingRow): Promise<HydratedLine[]> {
     const out: HydratedLine[] = [];
     const now = Date.now();
-    const tenantId = reservation.tenant_id;
+    const tenantId = booking.tenant_id;
     for (const input of inputs) {
       // Look up the catalog item — gives us category + price/unit defaults
       // that the resolver doesn't otherwise see. Tenant-filter to refuse
@@ -771,8 +889,8 @@ export class BundleService {
 
       const { data: offer, error: offerErr } = await this.supabase.admin.rpc('resolve_menu_offer', {
         p_catalog_item_id: input.catalog_item_id,
-        p_delivery_space_id: reservation.space_id,
-        p_on_date: reservation.start_at.slice(0, 10),
+        p_delivery_space_id: booking.space_id,
+        p_on_date: booking.start_at.slice(0, 10),
       });
       if (offerErr) throw offerErr;
       const offerRow = ((offer ?? []) as Array<{
@@ -799,8 +917,8 @@ export class BundleService {
         menuUnit = (item as { unit: 'per_item' | 'per_person' | 'flat_rate' }).unit ?? 'per_item';
       }
 
-      const startAt = input.service_window_start_at ?? reservation.start_at;
-      const endAt = input.service_window_end_at ?? reservation.end_at;
+      const startAt = input.service_window_start_at ?? booking.start_at;
+      const endAt = input.service_window_end_at ?? booking.end_at;
       const leadRemaining = (Date.parse(startAt) - now) / 3_600_000; // hours
 
       // Server-side lead-time guard. The picker (service-picker-sheet)
@@ -842,68 +960,26 @@ export class BundleService {
     return out;
   }
 
-  private async lazyCreateBundle(args: {
-    tenantId: string;
-    reservation: ReservationRow;
-    requester_person_id: string;
-    bundle?: AttachServicesArgs['bundle'];
-  }): Promise<{ id: string; preExisting: boolean }> {
-    if (args.reservation.booking_bundle_id) {
-      const { data, error } = await this.supabase.admin
-        .from('booking_bundles')
-        .select('id')
-        .eq('id', args.reservation.booking_bundle_id)
-        .eq('tenant_id', args.tenantId)
-        .maybeSingle();
-      if (error) throw error;
-      if (data) return { id: (data as { id: string }).id, preExisting: true };
-      // Stale FK or cross-tenant leak attempt — fall through to create new
-      // in this tenant.
-    }
+  // lazyCreateBundle removed: post-canonicalisation the booking IS the
+  // bundle (00277:27). Bookings are created upstream by
+  // BookingFlowService.create via the create_booking RPC; service attach
+  // never needs to materialise a bundle row of its own.
 
-    const insertRow = {
-      tenant_id: args.tenantId,
-      bundle_type: args.bundle?.bundle_type ?? 'meeting',
-      requester_person_id: args.requester_person_id,
-      host_person_id: args.bundle?.host_person_id ?? args.reservation.host_person_id ?? null,
-      primary_reservation_id: args.reservation.id,
-      location_id: args.reservation.space_id,
-      start_at: args.reservation.start_at,
-      end_at: args.reservation.end_at,
-      source: args.bundle?.source ?? 'portal',
-      cost_center_id: args.bundle?.cost_center_id ?? null,
-      template_id: args.bundle?.template_id ?? null,
-      policy_snapshot: {},
-    };
-
-    const { data, error } = await this.supabase.admin
-      .from('booking_bundles')
-      .insert(insertRow)
-      .select('id')
-      .single();
-    if (error) {
-      // 23505 = unique violation on (primary_reservation_id) WHERE NOT NULL
-      // (migration 00153). A concurrent attach already created a bundle for
-      // this reservation; fetch + reuse it instead of double-creating.
-      if ((error as { code?: string }).code === '23505') {
-        const existing = await this.supabase.admin
-          .from('booking_bundles')
-          .select('id')
-          .eq('primary_reservation_id', args.reservation.id)
-          .eq('tenant_id', args.tenantId)
-          .maybeSingle();
-        if (existing.data) {
-          return { id: (existing.data as { id: string }).id, preExisting: true };
-        }
-      }
-      throw error;
-    }
-    return { id: (data as { id: string }).id, preExisting: false };
-  }
-
+  /**
+   * Create one `orders` row keyed to the booking + the booking's primary
+   * slot. Column renames from 00278:108-118:
+   *   - orders.booking_bundle_id  → orders.booking_id     (FK to bookings.id)
+   *   - orders.linked_reservation_id → orders.linked_slot_id (FK to booking_slots.id)
+   *
+   * `linked_slot_id` is intentionally null in v1 — the bundle service
+   * doesn't track which booking_slot a service line belongs to (multi-slot
+   * bookings are out of scope until MultiRoomBookingService rewrites). The
+   * column is nullable on the new schema (00278:117 — on delete set null).
+   * Wired up properly when the multi-room slice resumes.
+   */
   private async createOrder(args: {
     tenantId: string;
-    reservation: ReservationRow;
+    booking: BookingRow;
     requester_person_id: string;
     bundle_id: string;
     service_type: string;
@@ -913,12 +989,12 @@ export class BundleService {
       .insert({
         tenant_id: args.tenantId,
         requester_person_id: args.requester_person_id,
-        booking_bundle_id: args.bundle_id,
-        linked_reservation_id: args.reservation.id,
-        delivery_location_id: args.reservation.space_id,
-        delivery_date: args.reservation.start_at.slice(0, 10),
-        requested_for_start_at: args.reservation.start_at,
-        requested_for_end_at: args.reservation.end_at,
+        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:109
+        linked_slot_id: null,                       // multi-slot tracking deferred (see comment above)
+        delivery_location_id: args.booking.space_id,
+        delivery_date: args.booking.start_at.slice(0, 10),
+        requested_for_start_at: args.booking.start_at,
+        requested_for_end_at: args.booking.end_at,
         status: 'draft',
         policy_snapshot: { service_type: args.service_type },
       })
@@ -999,7 +1075,7 @@ export class BundleService {
         end_at: args.end_at,
         status: 'confirmed',
         requester_person_id: args.requester_person_id,
-        booking_bundle_id: args.bundle_id,
+        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:136
       })
       .select('id')
       .single();
@@ -1056,11 +1132,13 @@ export class BundleService {
   ): Promise<void> {
     const tenantId = TenantContext.current().id;
 
+    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+    // bundleId is the booking id under canonicalisation.
     const { data: orders, error: ordersErr } = await this.supabase.admin
       .from('orders')
       .select('id, status')
       .eq('tenant_id', tenantId)
-      .eq('booking_bundle_id', bundleId);
+      .eq('booking_id', bundleId);
 
     if (ordersErr) {
       this.log.error(
@@ -1353,19 +1431,21 @@ export class BundleService {
   }
 
   /**
-   * Resolve bundle_id from an order id with tenant defence. Returns null
-   * when the order isn't bundle-attached or doesn't exist; callers skip
-   * the emit in that case (no-op for non-bundle orders).
+   * Resolve bundle_id (= booking_id under canonicalisation) from an order
+   * id with tenant defence. Returns null when the order isn't booking-attached
+   * or doesn't exist; callers skip the emit in that case.
+   *
+   * Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
    */
   private async bundleIdForOrder(orderId: string, tenantId: string): Promise<string | null> {
     try {
       const { data } = await this.supabase.admin
         .from('orders')
-        .select('booking_bundle_id')
+        .select('booking_id')
         .eq('id', orderId)
         .eq('tenant_id', tenantId)
         .maybeSingle();
-      return ((data as { booking_bundle_id: string | null } | null)?.booking_bundle_id) ?? null;
+      return ((data as { booking_id: string | null } | null)?.booking_id) ?? null;
     } catch {
       return null;
     }
@@ -1403,16 +1483,24 @@ export class BundleService {
 
 // ── Local types ───────────────────────────────────────────────────────────
 
-interface ReservationRow {
+/**
+ * In-service projection of a Booking + its primary slot, hand-built by
+ * `loadBooking`. Field names preserve the legacy `space_id` / `attendee_count`
+ * naming so the rest of this service reads naturally; the actual columns in
+ * Postgres are `bookings.location_id` (00277:41) and
+ * `booking_slots.attendee_count` (00277:138). `booking_bundle_id` is set to
+ * the booking's own id (canonicalisation: booking IS the bundle).
+ */
+interface BookingRow {
   id: string;
   tenant_id: string;
-  space_id: string;
+  space_id: string;                         // mapped from bookings.location_id
   requester_person_id: string;
   host_person_id: string | null;
   start_at: string;
   end_at: string;
-  attendee_count: number | null;
-  booking_bundle_id: string | null;
+  attendee_count: number | null;            // pulled from primary slot
+  booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
   source: string | null;
 }
 
@@ -1436,9 +1524,15 @@ interface HydratedLine {
 }
 
 // ── Cleanup helper ────────────────────────────────────────────────────────
-
+//
+// Post-canonicalisation: there is no booking-row creation in this service
+// (the booking is created upstream by BookingFlowService.create via the
+// create_booking RPC, atomically with its slots). Cleanup only undoes the
+// service-attach-side artefacts — order_line_items, asset_reservations,
+// orders, and any pre-deny approvals routed by ApprovalRoutingService.
+// The booking row stays as-is on rollback (it's the user's room
+// reservation; deleting it because services failed would surprise them).
 class Cleanup {
-  private bundles: Array<{ id: string; preExisting: boolean }> = [];
   private orderIds: string[] = [];
   private oliIds: string[] = [];
   private assetReservationIds: string[] = [];
@@ -1446,7 +1540,6 @@ class Cleanup {
 
   constructor(private readonly supabase: SupabaseService) {}
 
-  bundle(id: string, preExisting: boolean) { this.bundles.push({ id, preExisting }); }
   order(id: string) { this.orderIds.push(id); }
   orderLineItem(id: string) { this.oliIds.push(id); }
   assetReservation(id: string) { this.assetReservationIds.push(id); }
@@ -1455,12 +1548,9 @@ class Cleanup {
 
   async rollback() {
     if (this.done) return;
-    // Reverse-creation order: oli → ar → orders → bundle (only if we
-    // created it). Each step is independent — a failure in step N
-    // shouldn't skip step N+1 (the user is already getting an error;
-    // hiding orphans behind it is worse than half-failed cleanup). Best
-    // effort: each branch in its own try/catch, errors collected for
-    // a single warn-log at the end.
+    // Reverse-creation order: oli → asset_reservation → orders → approvals.
+    // Each step is independent — a failure in step N shouldn't skip step
+    // N+1. Best effort: each branch in its own try/catch.
     const failures: string[] = [];
     if (this.oliIds.length > 0) {
       try {
@@ -1471,7 +1561,7 @@ class Cleanup {
     }
     if (this.assetReservationIds.length > 0) {
       // Soft-delete via status='cancelled' so the GiST exclusion stops
-      // blocking; matches sub-project 1's pattern for reservations rollback.
+      // blocking; matches the room-side rollback semantics.
       try {
         await this.supabase.admin
           .from('asset_reservations')
@@ -1488,13 +1578,13 @@ class Cleanup {
         failures.push(`orders: ${(err as Error).message}`);
       }
     }
-    // Void any approvals already persisted for the rolled-back bundles /
-    // orders / lines. Without this, ApprovalRoutingService.assemble's
-    // pre-anyDeny inserts orphan: approvers see a pending row in their
-    // queue for entities that no longer exist. Codex flagged this on
-    // the multi-room contract widening review (2026-04-28).
+    // Void any approvals already persisted for the rolled-back orders /
+    // lines. Without this, ApprovalRoutingService.assemble's pre-anyDeny
+    // inserts orphan: approvers see a pending row in their queue for
+    // entities that no longer exist. (The booking-level approval row may
+    // also exist via target_entity_id=booking.id but we don't cancel it
+    // here — the booking still exists.)
     const approvalTargetIds = [
-      ...this.bundles.map((b) => b.id),
       ...this.orderIds,
       ...this.oliIds,
     ];
@@ -1504,7 +1594,7 @@ class Cleanup {
           .from('approvals')
           .update({
             status: 'cancelled',
-            comments: 'Auto-voided — bundle creation rolled back (orphan prevention).',
+            comments: 'Auto-voided — service attach rolled back (orphan prevention).',
           })
           .in('target_entity_id', approvalTargetIds)
           .eq('status', 'pending');
@@ -1512,19 +1602,7 @@ class Cleanup {
         failures.push(`approvals: ${(err as Error).message}`);
       }
     }
-    for (const b of this.bundles) {
-      if (!b.preExisting) {
-        try {
-          await this.supabase.admin.from('booking_bundles').delete().eq('id', b.id);
-        } catch (err) {
-          failures.push(`bundle ${b.id}: ${(err as Error).message}`);
-        }
-      }
-    }
     if (failures.length > 0) {
-      // Surface as a single combined log so ops can see the full picture
-      // when investigating an orphan. Doesn't re-throw — the caller's
-      // original error wins.
       // eslint-disable-next-line no-console
       console.warn(
         `[bundle.rollback] ${failures.length} step(s) failed: ${failures.join('; ')}`,

@@ -3,23 +3,33 @@ import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
 /**
- * Conflict guard for reservations.
+ * Conflict guard for booking slots.
  *
  * The actual no-overlap enforcement is the GiST exclusion constraint
- * `reservations_no_overlap` (migration 00123). This service provides:
+ * `booking_slots_no_overlap` (00277:211-217 — was `reservations_no_overlap`
+ * pre-canonicalisation). This service provides:
  *
  * 1. preCheck — a non-binding query so callers can know about a conflict
  *    before they attempt the INSERT (used by edit, multi-room atomic create,
  *    and the recurrence dry-run).
- * 2. parseRaceError — when the INSERT does fail with SQLSTATE 23P01, this
- *    looks up the conflicting row and asks the picker (later in Phase C)
- *    for 3 alternative rooms at the requested time.
+ * 2. isExclusionViolation — when the INSERT does fail with SQLSTATE 23P01,
+ *    callers use this to detect the no-overlap exclusion vs. other 23P errors.
  *
  * Same-requester back-to-back buffer collapse is enforced in BookingFlowService
  * BEFORE INSERT — the constraint can't reference subqueries. We snapshot
  * setup_buffer_minutes / teardown_buffer_minutes to zero (or the actual
  * back-to-back overlap) when the prior or following booking on the same
  * room shares the requester_person_id.
+ *
+ * Schema notes (post-rewrite, 2026-05-02):
+ *   - Reads happen against `booking_slots` (00277:116). The slot row carries
+ *     space_id, status, effective_*_at, and a booking_id back-reference but
+ *     NOT requester_person_id — that lives on `bookings.requester_person_id`
+ *     (00277:36). The buffer-collapse query joins via PostgREST embedding.
+ *   - The slot id surfaced in `preCheck` results is now a SLOT id, not the
+ *     legacy reservations.id. Callers (multi-room, edit) that previously
+ *     used it to look up reservations.id directly will need to walk through
+ *     the booking parent — separate slices' problem.
  */
 @Injectable()
 export class ConflictGuardService {
@@ -30,7 +40,12 @@ export class ConflictGuardService {
   /**
    * Returns rows that would conflict with [start_at, end_at] on space_id.
    * Considers buffers (the candidate's effective_*_at must be supplied).
-   * Excludes any reservation_id in `excludeIds` — used when editing.
+   * Excludes any slot id in `exclude_ids` — used when editing.
+   *
+   * `requester_person_id` is fetched from the parent booking via PostgREST
+   * embed `bookings(requester_person_id)`; in the new schema, slots don't
+   * carry the requester directly. Returned shape is preserved (flat
+   * `requester_person_id`) to keep callers unchanged.
    */
   async preCheck(args: {
     space_id: string;
@@ -41,9 +56,10 @@ export class ConflictGuardService {
     const tenantId = TenantContext.current().id;
 
     // tstzrange overlap query against the active states the exclusion constraint covers.
+    // PostgREST embed shape: `bookings(...)` resolves the FK booking_id -> bookings.id.
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('id, start_at, end_at, status, requester_person_id')
+      .from('booking_slots')
+      .select('id, start_at, end_at, status, bookings(requester_person_id)')
       .eq('tenant_id', tenantId)
       .eq('space_id', args.space_id)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
@@ -54,13 +70,28 @@ export class ConflictGuardService {
       this.log.error(`preCheck supabase error: ${error.message}`);
       return [];
     }
-    const rows = (data ?? []) as Array<{
+    // PostgREST returns a single-row FK embed as an object; in some configs
+    // it can be an array. Normalise to a single object reference.
+    type EmbedRow = {
       id: string;
       start_at: string;
       end_at: string;
       status: string;
-      requester_person_id: string;
-    }>;
+      bookings:
+        | { requester_person_id: string }
+        | Array<{ requester_person_id: string }>
+        | null;
+    };
+    const rows = ((data ?? []) as EmbedRow[]).map((r) => {
+      const embed = Array.isArray(r.bookings) ? r.bookings[0] : r.bookings;
+      return {
+        id: r.id,
+        start_at: r.start_at,
+        end_at: r.end_at,
+        status: r.status,
+        requester_person_id: embed?.requester_person_id ?? '',
+      };
+    });
     if (args.exclude_ids?.length) {
       const exclude = new Set(args.exclude_ids);
       return rows.filter((r) => !exclude.has(r.id));
@@ -71,12 +102,20 @@ export class ConflictGuardService {
   /**
    * Determine if a Postgres error is the no-overlap exclusion violation.
    * SQLSTATE 23P01 = exclusion_violation.
+   *
+   * Constraint name changed from `reservations_no_overlap` (00123) to
+   * `booking_slots_no_overlap` (00277:212). We match either pattern so
+   * downstream callers wired before the rewrite still get a clean
+   * `'reservation_slot_conflict'` 409 instead of a generic 400.
    */
   isExclusionViolation(err: unknown): boolean {
     if (!err || typeof err !== 'object') return false;
     const e = err as { code?: string; message?: string };
     if (e.code === '23P01') return true;
-    return typeof e.message === 'string' && /reservations_no_overlap/.test(e.message);
+    return (
+      typeof e.message === 'string' &&
+      /(?:reservations|booking_slots)_no_overlap/.test(e.message)
+    );
   }
 
   /**
@@ -119,9 +158,11 @@ export class ConflictGuardService {
     const startHigh = new Date(newStart + TOL_MS).toISOString();
     const endLow = new Date(newEnd - TOL_MS).toISOString();
     const endHigh = new Date(newEnd + TOL_MS).toISOString();
+    // Same PostgREST embed pattern as preCheck — slots no longer carry
+    // requester_person_id directly; pull it from the parent booking.
     const probe = await this.supabase.admin
-      .from('reservations')
-      .select('id, start_at, end_at, requester_person_id')
+      .from('booking_slots')
+      .select('id, start_at, end_at, bookings(requester_person_id)')
       .eq('tenant_id', tenantId)
       .eq('space_id', args.space_id)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
@@ -130,12 +171,26 @@ export class ConflictGuardService {
           `and(start_at.gte.${endLow},start_at.lte.${endHigh})`,
       );
 
-    const rows = ((probe.data ?? []) as Array<{
+    type EmbedRow = {
       id: string;
       start_at: string;
       end_at: string;
-      requester_person_id: string;
-    }>).filter((r) => !args.exclude_ids?.includes(r.id));
+      bookings:
+        | { requester_person_id: string }
+        | Array<{ requester_person_id: string }>
+        | null;
+    };
+    const rows = ((probe.data ?? []) as EmbedRow[])
+      .map((r) => {
+        const embed = Array.isArray(r.bookings) ? r.bookings[0] : r.bookings;
+        return {
+          id: r.id,
+          start_at: r.start_at,
+          end_at: r.end_at,
+          requester_person_id: embed?.requester_person_id ?? '',
+        };
+      })
+      .filter((r) => !args.exclude_ids?.includes(r.id));
 
     // The JS-side ±TOL_MS check below stays — same reason: the DB filter
     // can return a row that's 1.5s away if the client rounded into the

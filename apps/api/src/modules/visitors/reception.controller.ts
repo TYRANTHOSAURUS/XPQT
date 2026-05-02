@@ -182,11 +182,12 @@ export class ReceptionController {
        booking_bundle_id (the booking-bundle cascade links visitor lines
        to bundles which spawn work_orders). For visitors without a bundle,
        we surface the contractor type alone in section 1. */
+    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
     const contractorSql = `
       ${visibleCte}
       select v.id, v.first_name, v.last_name, v.company,
              v.expected_at, v.arrived_at, v.status,
-             v.building_id, v.visitor_type_id, v.booking_bundle_id,
+             v.building_id, v.visitor_type_id, v.booking_id,
              vt.display_name as visitor_type_name,
              p.first_name || ' ' || coalesce(p.last_name, '') as primary_host_name
         from public.visitors v

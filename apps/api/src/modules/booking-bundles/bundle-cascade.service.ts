@@ -41,11 +41,15 @@ export interface CancelBundleArgs {
   /** Lines to keep alive — everything else cancels. Empty = cancel all. */
   keep_line_ids?: string[];
   /**
-   * When set, restricts the cascade to orders whose `linked_reservation_id`
-   * matches. Used by recurrence cancel paths so a single occurrence cancel
-   * doesn't take down sibling occurrences sharing the same bundle. Omitting
-   * cancels every order in the bundle (full cascade — single-occurrence /
-   * non-recurring case).
+   * Post-canonicalisation (2026-05-02): the booking IS the bundle, so a
+   * "single occurrence" cancel scoped to one booking targets `orders.booking_id`
+   * directly. The legacy `linked_reservation_id` filter has no semantic
+   * counterpart on the new schema (each occurrence is its own booking, with
+   * its own orders attached via `orders.booking_id`). For recurrence
+   * cancellation: the caller already iterates per-occurrence and calls us
+   * with the occurrence's booking id as `bundle_id`, so this field is
+   * effectively unused now. Kept on the interface for caller-signature
+   * stability through the slice rewrite; ignored by the cascade.
    */
   reservation_id?: string;
   recurrence_scope?: CancelScope;
@@ -237,19 +241,19 @@ export class BundleCascadeService {
 
     // Pull every linked line; partition into fulfilled (untouched) +
     // kept (untouched per opt-out) + cancellable.
-    const { data: lines, error: linesErr } = await this.supabase.admin
-      .from('order_line_items')
-      .select(`
-        id,
-        fulfillment_status,
-        linked_asset_reservation_id,
-        linked_ticket_id,
-        order_id
-      `)
-      .in(
-        'order_id',
-        await this.orderIdsForBundle(args.bundle_id, args.reservation_id),
-      );
+    const orderIds = await this.orderIdsForBundle(args.bundle_id);
+    const { data: lines, error: linesErr } = orderIds.length === 0
+      ? { data: [], error: null }
+      : await this.supabase.admin
+          .from('order_line_items')
+          .select(`
+            id,
+            fulfillment_status,
+            linked_asset_reservation_id,
+            linked_ticket_id,
+            order_id
+          `)
+          .in('order_id', orderIds);
     if (linesErr) throw linesErr;
 
     const fulfilledLineIds: string[] = [];
@@ -316,19 +320,30 @@ export class BundleCascadeService {
         .in('id', cancelledLineIds);
     }
 
-    // Cancel the reservation only when nothing remains alive (no fulfilled
-    // lines AND no kept lines). Otherwise the room stays booked for the
-    // lines that are still going. Skip when scoped to a specific reservation
-    // — the caller already cancelled that reservation, and other occurrences
-    // sharing the bundle's primary_reservation_id should not be touched.
+    // Cancel the booking row + its slots only when nothing remains alive
+    // (no fulfilled lines AND no kept lines). Otherwise the room stays
+    // booked for the lines that are still going.
+    //
+    // Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27).
+    // The pre-rewrite indirection through `bundle.primary_reservation_id`
+    // is gone — we cancel the booking and its slots directly using
+    // `args.bundle_id` (= the booking id). The `args.reservation_id` opt-out
+    // is now a no-op (see CancelBundleArgs comment).
     const cancelledReservationIds: string[] = [];
     const everythingCancelled = fulfilledLineIds.length === 0 && keep.size === 0;
-    if (everythingCancelled && bundle.primary_reservation_id && !args.reservation_id) {
+    if (everythingCancelled && !args.reservation_id) {
       await this.supabase.admin
-        .from('reservations')
+        .from('booking_slots')
         .update({ status: 'cancelled' })
-        .eq('id', bundle.primary_reservation_id);
-      cancelledReservationIds.push(bundle.primary_reservation_id);
+        .eq('tenant_id', tenantId)
+        .eq('booking_id', args.bundle_id)
+        .in('status', ['confirmed', 'checked_in', 'pending_approval']);
+      await this.supabase.admin
+        .from('bookings')
+        .update({ status: 'cancelled' })
+        .eq('tenant_id', tenantId)
+        .eq('id', args.bundle_id);
+      cancelledReservationIds.push(args.bundle_id);
     }
 
     // Approvals: if we're scoped to a single occurrence, rescope per
@@ -420,29 +435,36 @@ export class BundleCascadeService {
     };
     // Walk to bundle_id via orders. Tenant-filter as defence-in-depth in
     // case a malformed line ever points at a cross-tenant order.
+    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
     const { data: order, error: orderErr } = await this.supabase.admin
       .from('orders')
-      .select('booking_bundle_id')
+      .select('booking_id')
       .eq('id', row.order_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (orderErr) throw orderErr;
     return {
       ...row,
-      bundle_id: (order as { booking_bundle_id: string | null } | null)?.booking_bundle_id ?? null,
+      bundle_id: (order as { booking_id: string | null } | null)?.booking_id ?? null,
     };
   }
 
+  /**
+   * Load the booking row that this cascade operates on. Pre-rewrite this
+   * read from `booking_bundles`; under canonicalisation the booking IS the
+   * bundle (00277:27). `primary_reservation_id` is dropped — the booking's
+   * own id is the anchor, and slots are looked up via `booking_id` on
+   * `booking_slots` (00277:119).
+   */
   private async loadBundle(id: string, tenantId: string): Promise<{
     id: string;
     requester_person_id: string;
     host_person_id: string | null;
     location_id: string;
-    primary_reservation_id: string | null;
   } | null> {
     const { data, error } = await this.supabase.admin
-      .from('booking_bundles')
-      .select('id, requester_person_id, host_person_id, location_id, primary_reservation_id')
+      .from('bookings')
+      .select('id, requester_person_id, host_person_id, location_id')
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
@@ -452,47 +474,43 @@ export class BundleCascadeService {
       requester_person_id: string;
       host_person_id: string | null;
       location_id: string;
-      primary_reservation_id: string | null;
     } | null) ?? null;
   }
 
   private async orderIdsForBundle(
     bundleId: string,
-    reservationId?: string,
   ): Promise<string[]> {
-    let q = this.supabase.admin
+    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+    const { data, error } = await this.supabase.admin
       .from('orders')
       .select('id')
-      .eq('booking_bundle_id', bundleId);
-    if (reservationId) q = q.eq('linked_reservation_id', reservationId);
-    const { data, error } = await q;
+      .eq('booking_id', bundleId);
     if (error) throw error;
     return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
   }
 
   /**
-   * Locate the bundle (if any) that this reservation's orders belong to and
-   * cascade-cancel scoped to just that reservation's orders. Used by
+   * Cascade-cancel orders that belong to a booking. Used by
    * ReservationService.cancelOne and RecurrenceService.cancelForward — both
-   * already validated the reservation cancel; this is the bundle cleanup.
+   * already validated the booking cancel; this is the orders cleanup.
+   *
+   * Post-canonicalisation (2026-05-02): the booking IS the bundle, so the
+   * caller's `reservation_id` is already the bundle id. Pre-rewrite this
+   * walked `orders.linked_reservation_id` to find the parent bundle; under
+   * the new schema there's no walk — `args.reservation_id` IS the booking id
+   * (Slice A return-shape contract). The argument is named `reservation_id`
+   * for caller-signature stability through the rewrite.
+   *
+   * No-op when the booking has no orders attached (the bundle-impl filters
+   * `orders` by `booking_id` and short-circuits an empty list).
    */
   async cancelOrdersForReservation(args: {
     reservation_id: string;
     reason?: string;
   }): Promise<void> {
     try {
-      const { data, error } = await this.supabase.admin
-        .from('orders')
-        .select('booking_bundle_id')
-        .eq('linked_reservation_id', args.reservation_id)
-        .not('booking_bundle_id', 'is', null)
-        .limit(1);
-      if (error) throw error;
-      const row = ((data ?? [])[0] as { booking_bundle_id: string | null } | undefined);
-      const bundleId = row?.booking_bundle_id;
-      if (!bundleId) return;
       await this.cancelBundleImpl(
-        { bundle_id: bundleId, reservation_id: args.reservation_id, reason: args.reason },
+        { bundle_id: args.reservation_id, reason: args.reason },
         { skipVisibility: true },
       );
     } catch (err) {

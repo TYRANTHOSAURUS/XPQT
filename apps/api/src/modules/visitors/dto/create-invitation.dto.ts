@@ -36,9 +36,17 @@ export interface CreateInvitationDto {
   building_id: string;
   meeting_room_id?: string;
 
-  /** Booking-first invite — bundle is set; ties cancellation cascade (slice 4). */
+  /**
+   * Booking-first invite — set when this visitor is attached to a booking
+   * (ties cancellation cascade, slice 4). Post-canonicalisation
+   * (2026-05-02): `booking_id` is the canonical name; `booking_bundle_id`
+   * is the legacy alias accepted transitionally for callers that haven't
+   * migrated. The service prefers `booking_id` when both are present.
+   * Visitors no longer carry a `reservation_id` (column dropped 00278:38).
+   */
+  booking_id?: string;
+  /** @deprecated use `booking_id` */
   booking_bundle_id?: string;
-  reservation_id?: string;
 
   /**
    * Co-hosts in addition to the inviter (who is always the primary host).

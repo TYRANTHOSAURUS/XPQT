@@ -11,26 +11,36 @@ import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
 import { ListBookableRoomsService } from './list-bookable-rooms.service';
 import type {
-  ActorContext, CreateReservationInput, PolicySnapshot, RecurrenceScope, Reservation,
+  ActorContext, Booking, CreateReservationInput, PolicySnapshot,
+  RecurrenceScope, Reservation,
 } from './dto/types';
 
 /**
- * BookingFlowService — the canonical create-a-reservation pipeline.
+ * BookingFlowService — the canonical create-a-booking pipeline.
  *
- * This is the only path that should write to `reservations`. The portal,
- * desk scheduler, calendar-sync intercept, and recurrence materialiser all
- * funnel through here.
+ * This is the only path that should create rows in `bookings` + `booking_slots`.
+ * The portal, desk scheduler, calendar-sync intercept, and recurrence
+ * materialiser all funnel through here.
  *
- * Pipeline (matches docs/room-booking.md):
+ * Pipeline (post-canonicalisation 2026-05-02):
  *   1. Load + verify the space (active, reservable)
  *   2. Snapshot buffers/check-in/cost from the space
  *   3. Apply same-requester back-to-back buffer collapse
  *   4. Resolve booking rules via RuleResolverService
  *   5. Handle deny / require_approval / override
  *   6. Compute status + policy_snapshot
- *   7. INSERT — exclusion constraint catches concurrent races (23P01)
+ *   7. CALL `create_booking` RPC — single Postgres function inserts the
+ *      booking row + N slot rows atomically (00277:236-334). The slot
+ *      `booking_slots_no_overlap` GiST exclusion (00277:211-217) catches
+ *      concurrent races and surfaces as 23P01.
  *   8. Fan out side effects (approval row creation; event emission;
  *      notifications + calendar sync are TODOs wired in Phase J / H)
+ *
+ * Return shape: `Booking` — the just-inserted bookings row. Slots are
+ * accessible via the returned `booking.id` if a downstream caller needs them
+ * (today nothing in the create-time pipeline reads back individual slot rows;
+ * the legacy `Reservation`-flat shape is still synthesized for transitional
+ * consumers via `bookingToLegacyReservation` below).
  */
 @Injectable()
 export class BookingFlowService {
@@ -51,13 +61,30 @@ export class BookingFlowService {
   ) {}
 
   /**
-   * Run the full pipeline and return a reservation row, or throw with a
-   * structured error that the controller maps to an HTTP response.
+   * Run the full pipeline and atomically create one Booking + one BookingSlot
+   * via the `create_booking` RPC (00277:236-334), or throw a structured error.
+   *
+   * Single-room only — multi-room batches multiple slot specs into one RPC
+   * call (deferred to MultiRoomBookingService rewrite, separate slice).
+   *
+   * Returns the inserted Booking. The slot id is also returned by the RPC and
+   * accessible via the wrapping `Reservation` shim's `id` field (which now
+   * holds the BOOKING id, not the slot id — see breaking-change comment below).
+   *
+   * BREAKING CHANGE for downstream callers (each fixed in its own slice):
+   *   - The returned object's `id` is now the BOOKING id (`bookings.id`),
+   *     not a `reservations.id`. Multi-room/recurrence/check-in services
+   *     that use the returned id to look up the row in `reservations` will
+   *     hit empty results until they're rewritten to read `bookings`.
+   *   - `recurrence_master_id` / `multi_room_group_id` are always null
+   *     (those columns no longer exist).
+   *   - Approval rows now use `target_entity_type='booking'` instead of
+   *     `'reservation'` (00278:172).
    *
    * Errors:
    *   - 403 'rule_deny' — a deny rule fired and the actor cannot override
-   *   - 409 'reservation_slot_conflict' — the conflict guard rejected; alternatives
-   *     are populated in the error body via picker integration (TODO when picker lands)
+   *   - 409 'reservation_slot_conflict' — `booking_slots_no_overlap` GiST
+   *     exclusion (00277:211-217) rejected; alternatives populated via picker
    *   - 400 'invalid_input' — basic validation failures
    */
   async create(input: CreateReservationInput, actor: ActorContext): Promise<Reservation> {
@@ -114,10 +141,10 @@ export class BookingFlowService {
         ruleOutcome.matchedRules.map((r) => r.id).join(',')}`);
     }
 
-    // 6. Status + policy_snapshot
-    const status =
-      ruleOutcome.final === 'require_approval' ? 'pending_approval' :
-      'confirmed';
+    // 6. Status + policy_snapshot — applied to BOTH booking + slot (the RPC
+    //    mirrors the booking-level status onto each created slot, 00277:323).
+    const status: 'pending_approval' | 'confirmed' =
+      ruleOutcome.final === 'require_approval' ? 'pending_approval' : 'confirmed';
 
     const policySnapshot: PolicySnapshot = {
       matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
@@ -139,48 +166,72 @@ export class BookingFlowService {
     // Cost snapshot
     const costAmount = this.computeCost(space, input);
 
-    // 7. INSERT
-    const insertRow = {
-      tenant_id: tenantId,
-      reservation_type: input.reservation_type ?? 'room',
+    // 7. Atomic create via RPC. The RPC inserts one bookings row + N
+    //    booking_slots rows in a single transaction; the GiST exclusion on
+    //    booking_slots fires inside that transaction so concurrent races
+    //    surface as 23P01 here.
+    //
+    //    Source-narrowing: the legacy `ReservationSource` admits 'auto' for
+    //    calendar-sync polling, but the new `bookings.source` CHECK constraint
+    //    does not (00277:56-58, FIX#2). We coerce 'auto' → 'calendar_sync' to
+    //    preserve provenance; today the only path that emits 'auto' is the
+    //    calendar-sync poller (calendar_sync is the closer fit).
+    const rawSource = input.source ?? 'portal';
+    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' =
+      rawSource === 'auto' ? 'calendar_sync' : rawSource;
+
+    // Map legacy reservation_type 'other' → 'asset' (the new schema's
+    // closest analogue; 00277:122 lists room/desk/asset/parking only).
+    // Default 'room' as before.
+    const inputType = input.reservation_type ?? 'room';
+    const slotType: 'room' | 'desk' | 'asset' | 'parking' =
+      inputType === 'other' ? 'asset' : inputType;
+
+    const slotSpec = {
+      slot_type: slotType,
       space_id: input.space_id,
-      requester_person_id: input.requester_person_id,
-      host_person_id: input.host_person_id ?? null,
       start_at: input.start_at,
       end_at: input.end_at,
       attendee_count: input.attendee_count ?? null,
       attendee_person_ids: input.attendee_person_ids ?? [],
-      status,
-      recurrence_rule: input.recurrence_rule ?? null,
-      recurrence_series_id: input.recurrence_series_id ?? null,
-      recurrence_master_id: input.recurrence_master_id ?? null,
-      recurrence_index: input.recurrence_index ?? null,
       setup_buffer_minutes: buffers.setup_buffer_minutes,
       teardown_buffer_minutes: buffers.teardown_buffer_minutes,
       check_in_required: space.check_in_required ?? false,
       check_in_grace_minutes: space.check_in_grace_minutes ?? 15,
-      policy_snapshot: policySnapshot,
-      applied_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
-      source: input.source ?? 'portal',
-      booked_by_user_id: actor.user_id,
-      cost_amount_snapshot: costAmount,
-      multi_room_group_id: input.multi_room_group_id ?? null,
-      booking_bundle_id: input.booking_bundle_id ?? null,
+      display_order: 0,
     };
 
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .insert(insertRow)
-      .select('*')
-      .single();
+    const { data: rpcData, error: rpcError } = await this.supabase.admin.rpc('create_booking', {
+      // Ordering matches the RPC parameter list (00277:236-292).
+      p_requester_person_id: input.requester_person_id,
+      p_location_id: input.space_id,            // single-room: booking anchors at the slot's space
+      p_start_at: input.start_at,
+      p_end_at: input.end_at,
+      p_source: bookingSource,
+      p_status: status,
+      p_slots: [slotSpec],
+      // Optional booking attributes
+      p_tenant_id: tenantId,                    // explicit (admin client bypasses RLS, no JWT to derive from)
+      p_host_person_id: input.host_person_id ?? null,
+      p_title: input.title ?? null,
+      p_description: input.description ?? null,
+      p_timezone: input.timezone ?? 'UTC',
+      p_booked_by_user_id: actor.user_id,
+      p_cost_center_id: input.bundle?.cost_center_id ?? null,
+      p_cost_amount_snapshot: costAmount,
+      p_policy_snapshot: policySnapshot,
+      p_applied_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+      p_config_release_id: null,                // not surfaced through the booking-flow input today
+      p_recurrence_series_id: input.recurrence_series_id ?? null,
+      p_recurrence_index: input.recurrence_index ?? null,
+      p_template_id: input.bundle?.template_id ?? null,
+    });
 
-    if (error) {
-      if (this.conflict.isExclusionViolation(error)) {
+    if (rpcError) {
+      if (this.conflict.isExclusionViolation(rpcError)) {
         // Look up the conflicting rows + ask the picker for alternative
         // rooms at the same time so the frontend can render a one-click
-        // rebook list. Without this, the user sees a generic "couldn't
-        // book" toast and has to redo the whole reservation by hand —
-        // exactly the bug the user reported.
+        // rebook list.
         const conflicts = await this.conflict.preCheck({
           space_id: input.space_id,
           effective_start_at: this.subtractMinutes(input.start_at, buffers.setup_buffer_minutes),
@@ -214,17 +265,67 @@ export class BookingFlowService {
           alternatives,
         });
       }
-      this.log.error(`reservation insert failed: ${error.message}`);
-      throw new BadRequestException({ code: 'insert_failed', message: error.message });
+      this.log.error(`create_booking RPC failed: ${rpcError.message}`);
+      throw new BadRequestException({ code: 'insert_failed', message: rpcError.message });
     }
+
+    // RPC returns `setof (booking_id uuid, slot_ids uuid[])` — supabase-js
+    // surfaces the row(s) as an array. Take the first row.
+    const rpcRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
+      | { booking_id: string; slot_ids: string[] }
+      | undefined;
+    if (!rpcRow?.booking_id) {
+      throw new BadRequestException({
+        code: 'insert_failed',
+        message: 'create_booking RPC returned no booking_id',
+      });
+    }
+    const bookingId = rpcRow.booking_id;
+    const slotIds = rpcRow.slot_ids ?? [];
+
+    // Re-read the booking row so downstream callers (notifications, audit,
+    // bundle service) have the full server-canonical state (defaults filled
+    // in, updated_at, etc.). Tenant-filter is RLS-bypassed but explicit for
+    // belt-and-braces.
+    const { data: bookingRow, error: readErr } = await this.supabase.admin
+      .from('bookings')
+      .select('*')
+      .eq('id', bookingId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (readErr || !bookingRow) {
+      this.log.error(`booking re-read failed: ${readErr?.message ?? 'no row'}`);
+      throw new BadRequestException({
+        code: 'insert_failed',
+        message: readErr?.message ?? 'Booking re-read returned no row',
+      });
+    }
+    const booking = bookingRow as unknown as Booking;
 
     // 8. Fan out side effects (best-effort)
-    // - Approval row creation (when require_approval)
+    // - Approval row creation (when require_approval).
+    //   target_entity_type changed from 'reservation' → 'booking' (00278:172).
     if (status === 'pending_approval' && ruleOutcome.approvalConfig) {
-      await this.createApprovalRows(data.id, ruleOutcome.approvalConfig, tenantId);
+      await this.createApprovalRows(bookingId, ruleOutcome.approvalConfig, tenantId);
     }
 
-    const reservation = data as unknown as Reservation;
+    // Build a transitional `Reservation`-shaped envelope for downstream
+    // consumers (notifications, audit, bundle attach) that haven't migrated
+    // to the `Booking` shape yet. The slot-level fields are populated from
+    // our slotSpec since we just created exactly one slot.
+    //
+    // BREAKING CHANGE: `id` is now the BOOKING id, not the (deleted)
+    // reservations.id. Other slices (multi-room, recurrence, check-in,
+    // reservation.service) that assumed `id` = `reservations.id` will
+    // need to read `bookings` instead.
+    const reservation: Reservation = bookingToLegacyReservation(
+      booking,
+      slotSpec,
+      slotIds[0] ?? null,
+      ruleOutcome.matchedRules.map((r) => r.id),
+      bookingSource,
+      slotType,
+    );
 
     // - Notifications (Phase J)
     if (this.notifications) {
@@ -236,32 +337,26 @@ export class BookingFlowService {
       }
     }
 
-    // - Audit
-    void this.audit(tenantId, 'reservation.created', {
-      reservation_id: reservation.id,
-      space_id: reservation.space_id,
-      source: reservation.source,
-      requester_person_id: reservation.requester_person_id,
-      status: reservation.status,
+    // - Audit. entity_type was 'reservation'; now 'booking' to match the
+    //   new canonical entity. Historical 'reservation' events stay
+    //   immutable per 00278:18.
+    void this.audit(tenantId, 'booking.created', {
+      booking_id: booking.id,
+      slot_ids: slotIds,
+      space_id: input.space_id,
+      source: booking.source,
+      requester_person_id: booking.requester_person_id,
+      status: booking.status,
       matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
     });
 
-    // - Service lines → bundle creation (sub-project 2)
-    //
-    // Awaited and ordered BEFORE recurrence series materialisation, so
-    // that when the materialiser fans out occurrences and re-reads the
-    // master, `master.booking_bundle_id` is already set and
-    // cloneOrderForOccurrence fires per occurrence. Putting startSeries
-    // first leaves a race where some early-materialised occurrences land
-    // without their services.
-    // Trace + invariant. If the caller submitted services we MUST have the
-    // bundle service injected — otherwise we'd silently drop services on
-    // the floor, leaving the reservation with no bundle and the user
-    // staring at "no services attached" on the detail view (the
-    // disappearing-services bug). Fail loudly instead.
+    // - Service lines → bundle attach (sub-project 2 — kept here so
+    //   the materialiser still sees the booking before fan-out).
+    //   Fail loudly if BundleService isn't wired; silent drop = the
+    //   "disappearing services" bug.
     if (input.services && input.services.length > 0) {
       this.log.log(
-        `[booking-flow] services=${input.services.length} bundle_present=${!!input.bundle} for reservation ${reservation.id}`,
+        `[booking-flow] services=${input.services.length} bundle_present=${!!input.bundle} for booking ${booking.id}`,
       );
       if (!this.bundle) {
         throw new Error(
@@ -269,64 +364,53 @@ export class BookingFlowService {
             'Wire BookingBundlesModule into ReservationsModule.imports.',
         );
       }
-    }
-    if (input.services && input.services.length > 0 && this.bundle) {
       try {
-        // BundleSource is a stricter subset of ReservationSource — drop
-        // 'auto' (calendar-sync polling) since bundle creation is always
-        // user-initiated; otherwise default to 'portal'.
-        const bundleSource = (input.source && input.source !== 'auto'
-          ? input.source
-          : 'portal') as 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception';
-        await this.bundle.attachServicesToReservation({
-          reservation_id: reservation.id,
-          requester_person_id: reservation.requester_person_id,
+        await this.bundle.attachServicesToBooking({
+          booking_id: booking.id,
+          requester_person_id: booking.requester_person_id,
           bundle: input.bundle
             ? {
                 bundle_type: input.bundle.bundle_type,
                 cost_center_id: input.bundle.cost_center_id ?? null,
                 template_id: input.bundle.template_id ?? null,
-                source: bundleSource,
+                source: bookingSource,
               }
-            : { source: bundleSource },
+            : { source: bookingSource },
           services: input.services,
         });
       } catch (err) {
         // The bundle service throws structured exceptions for asset
-        // conflict / rule deny — we surface them up. The reservation has
-        // already landed; caller has to decide whether to roll it back.
-        // For v1 we leave the room-only reservation in place and surface
-        // the bundle error. The user can retry attaching services without
-        // re-booking the room.
+        // conflict / rule deny — surface them up. The booking has already
+        // landed; for v1 we leave the room-only booking in place and
+        // surface the bundle error so the user can retry attaching
+        // services without rebooking.
         this.log.warn(
-          `bundle attach failed for reservation ${reservation.id}: ${(err as Error).message}`,
+          `bundle attach failed for booking ${booking.id}: ${(err as Error).message}`,
         );
         throw err;
       }
-
-      // The booking_bundle_id row was set by attachServicesToReservation;
-      // refresh our local copy so the recurrence materialiser sees it.
-      reservation.booking_bundle_id = (
-        await this.supabase.admin
-          .from('reservations')
-          .select('booking_bundle_id')
-          .eq('id', reservation.id)
-          .maybeSingle()
-      ).data?.booking_bundle_id ?? reservation.booking_bundle_id;
+      // No need to refresh booking_bundle_id — under canonicalisation the
+      // booking IS the bundle (no separate booking_bundles row). Orders
+      // link to the booking directly via orders.booking_id (00278:109).
     }
 
     // - Recurrence series materialisation (master row + first 90d of rows).
     //   Fire-and-forget so the user gets their first booking back immediately.
-    //   Runs AFTER bundle attach so the materialiser sees the master's bundle
-    //   and clones services onto each occurrence (sub-project 2 fan-out).
+    //   Runs AFTER bundle attach so the materialiser sees the booking with
+    //   any attached services and can clone them per occurrence.
+    //
+    //   NOTE: RecurrenceService is a separate slice — it still references
+    //   `reservations` / `parent_reservation_id` and will fail at runtime
+    //   until rewritten. We still call it here so the integration point
+    //   stays observable.
     if (
       input.recurrence_rule &&
       !input.recurrence_series_id &&  // not itself an occurrence being materialised
       this.recurrence &&
-      reservation.status !== 'pending_approval'
+      booking.status !== 'pending_approval'
     ) {
       void this.startSeries(reservation, input.recurrence_rule).catch((err) => {
-        this.log.warn(`startSeries failed for ${reservation.id}: ${(err as Error).message}`);
+        this.log.warn(`startSeries failed for ${booking.id}: ${(err as Error).message}`);
       });
     }
 
@@ -340,11 +424,23 @@ export class BookingFlowService {
    * Called fire-and-forget after a recurring booking's master row is written.
    * If materialisation fails partially (conflict-guard skips), the series is
    * still alive — the rollover cron will keep extending it nightly.
+   *
+   * Post-canonicalisation (2026-05-02):
+   *   - `recurrence_series.parent_reservation_id` was renamed to
+   *     `parent_booking_id` (00278:179-181). FK now targets `bookings.id`.
+   *   - `master.id` is now the BOOKING id, so the rename is semantic-correct.
+   *   - The follow-up update of the master row used to write to `reservations`;
+   *     it now writes to `bookings`. `recurrence_master_id` was dropped from
+   *     the schema (the series → bookings link is one-direction).
+   *   - `recurrence.materialize` is owned by RecurrenceService which still
+   *     reads/writes `reservations` and will fail at runtime until rewritten
+   *     in its own slice. We still call it so the integration point is
+   *     observable.
    */
   private async startSeries(master: Reservation, rule: NonNullable<CreateReservationInput['recurrence_rule']>): Promise<void> {
     if (!this.recurrence) return;
 
-    // Insert series row anchored at the master.
+    // Insert series row anchored at the master booking.
     const horizon = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
     const { data: seriesRow, error: seriesErr } = await this.supabase.admin
       .from('recurrence_series')
@@ -355,7 +451,7 @@ export class BookingFlowService {
         series_end_at: rule.until ?? null,
         max_occurrences: rule.count ?? 365,
         materialized_through: horizon,
-        parent_reservation_id: master.id,
+        parent_booking_id: master.id,            // renamed 00278:179-181
       })
       .select('id')
       .single();
@@ -365,17 +461,18 @@ export class BookingFlowService {
     }
     const seriesId = (seriesRow as { id: string }).id;
 
-    // Link the master row to the series.
+    // Link the master booking back to the series. recurrence_master_id is
+    // dropped — the only canonical link is recurrence_series_id on bookings.
     await this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .update({
         recurrence_series_id: seriesId,
-        recurrence_master_id: master.id,
         recurrence_index: 0,
       })
       .eq('id', master.id);
 
-    // Materialise the rolling 90-day window.
+    // Materialise the rolling 90-day window. Owned by another slice — see
+    // RecurrenceService rewrite TODO.
     try {
       await this.recurrence.materialize(seriesId, new Date(horizon));
     } catch (err) {
@@ -563,20 +660,27 @@ export class BookingFlowService {
   /**
    * Create approvals rows from rule's approval_config.
    * Single-step or parallel/sequential are honoured by `threshold`.
+   *
+   * target_entity_type is now 'booking' (was 'reservation'). The CHECK
+   * constraint added in 00278:170-172 enforces this at the DB layer; the
+   * older approval-routing module still types the union as
+   * 'booking_bundle' | 'order' (see approval-routing.service.ts:37) and
+   * needs widening in its own slice. The dispatcher map in
+   * approval.service.ts:329-347 must learn the new 'booking' value.
    */
   private async createApprovalRows(
-    reservationId: string,
+    bookingId: string,
     config: { required_approvers?: Array<{ type: 'team' | 'person'; id: string }>; threshold?: 'all' | 'any' },
     tenantId: string,
   ): Promise<void> {
     const approvers = config.required_approvers ?? [];
     if (approvers.length === 0) return;
-    const parallelGroup = config.threshold === 'all' ? `parallel-${reservationId}` : null;
+    const parallelGroup = config.threshold === 'all' ? `parallel-${bookingId}` : null;
 
     const rows = approvers.map((a) => ({
       tenant_id: tenantId,
-      target_entity_type: 'reservation',
-      target_entity_id: reservationId,
+      target_entity_type: 'booking',
+      target_entity_id: bookingId,
       parallel_group: parallelGroup,
       approver_person_id: a.type === 'person' ? a.id : null,
       approver_team_id: a.type === 'team' ? a.id : null,
@@ -584,7 +688,7 @@ export class BookingFlowService {
     }));
 
     const { error } = await this.supabase.admin.from('approvals').insert(rows);
-    if (error) this.log.warn(`approval rows insert failed for reservation=${reservationId}: ${error.message}`);
+    if (error) this.log.warn(`approval rows insert failed for booking=${bookingId}: ${error.message}`);
   }
 
   private addMinutes(iso: string, minutes: number): string {
@@ -599,12 +703,116 @@ export class BookingFlowService {
       await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: eventType,
-        entity_type: 'reservation',
-        entity_id: (details.reservation_id as string) ?? null,
+        // Canonical entity_type — booking events use 'booking' post-rewrite.
+        // Per-slot events (check-in, auto-release) live elsewhere with
+        // entity_type='booking_slot' (deferred to those slices).
+        entity_type: 'booking',
+        entity_id: (details.booking_id as string) ?? null,
         details,
       });
     } catch (err) {
       this.log.warn(`audit insert failed for ${eventType}: ${(err as Error).message}`);
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Transitional projection: Booking + slotSpec → Reservation (legacy shape)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// The canonical entity is now `Booking` (one row in `bookings`) plus N
+// `BookingSlot` rows. Several callers (notifications, audit, bundle attach,
+// multi-room rollback) still consume the flat `Reservation` shape that
+// merged booking + reservation fields. This helper synthesises that
+// shape from a freshly-created Booking + the slot spec we just sent to
+// the RPC.
+//
+// `id` is the BOOKING id (breaking change — historically the reservation
+// id). `effective_*_at` is computed locally to mirror the trigger
+// `booking_slots_compute_effective_window` (00277:194-201).
+//
+// Returns a transitional shim — DO NOT extend; new code should consume
+// `Booking` + `BookingSlot` directly. Removed once consumers migrate.
+function bookingToLegacyReservation(
+  booking: Booking,
+  slotSpec: {
+    slot_type: 'room' | 'desk' | 'asset' | 'parking';
+    space_id: string;
+    start_at: string;
+    end_at: string;
+    attendee_count: number | null;
+    attendee_person_ids: string[];
+    setup_buffer_minutes: number;
+    teardown_buffer_minutes: number;
+    check_in_required: boolean;
+    check_in_grace_minutes: number;
+  },
+  _slotId: string | null,
+  appliedRuleIds: string[],
+  source: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception',
+  slotType: 'room' | 'desk' | 'asset' | 'parking',
+): Reservation {
+  // Compute effective window the same way the slot trigger does so
+  // consumers comparing against the slot row see consistent values.
+  const effectiveStart = new Date(
+    new Date(slotSpec.start_at).getTime() - slotSpec.setup_buffer_minutes * 60_000,
+  ).toISOString();
+  const effectiveEnd = new Date(
+    new Date(slotSpec.end_at).getTime() + slotSpec.teardown_buffer_minutes * 60_000,
+  ).toISOString();
+
+  return {
+    id: booking.id,
+    tenant_id: booking.tenant_id,
+    // The legacy `reservation_type` is `'room' | 'desk' | 'parking' | 'other'`;
+    // the new slot_type is `'room' | 'desk' | 'asset' | 'parking'`. Map
+    // 'asset' → 'other' for the shim (the inverse of the create-time map).
+    reservation_type: (slotType === 'asset' ? 'other' : slotType),
+    space_id: slotSpec.space_id,
+    requester_person_id: booking.requester_person_id,
+    host_person_id: booking.host_person_id,
+    start_at: slotSpec.start_at,
+    end_at: slotSpec.end_at,
+    attendee_count: slotSpec.attendee_count,
+    attendee_person_ids: slotSpec.attendee_person_ids,
+    status: booking.status,
+    // Recurrence rule / master fields — null in the shim. The recurrence
+    // service is a separate slice and will read these directly off the
+    // Booking row when rewritten.
+    recurrence_rule: null,
+    recurrence_series_id: booking.recurrence_series_id,
+    recurrence_master_id: null,                 // dropped in canonical schema
+    recurrence_index: booking.recurrence_index,
+    recurrence_overridden: booking.recurrence_overridden,
+    recurrence_skipped: booking.recurrence_skipped,
+    linked_order_id: null,                      // never used by callers in practice; kept for shape completeness
+    approval_id: null,                          // approvals back-link via target_entity_id, no inverse cache
+    setup_buffer_minutes: slotSpec.setup_buffer_minutes,
+    teardown_buffer_minutes: slotSpec.teardown_buffer_minutes,
+    effective_start_at: effectiveStart,
+    effective_end_at: effectiveEnd,
+    check_in_required: slotSpec.check_in_required,
+    check_in_grace_minutes: slotSpec.check_in_grace_minutes,
+    checked_in_at: null,
+    released_at: null,
+    cancellation_grace_until: null,
+    policy_snapshot: booking.policy_snapshot,
+    applied_rule_ids: appliedRuleIds,
+    source,
+    booked_by_user_id: booking.booked_by_user_id,
+    cost_amount_snapshot: booking.cost_amount_snapshot,
+    multi_room_group_id: null,                  // dropped in canonical schema
+    calendar_event_id: booking.calendar_event_id,
+    calendar_provider: booking.calendar_provider,
+    calendar_etag: booking.calendar_etag,
+    calendar_last_synced_at: booking.calendar_last_synced_at,
+    // Legacy `booking_bundle_id`. Under canonicalisation the booking IS
+    // the bundle, so the "bundle id" effectively equals the booking id.
+    // Setting to booking.id keeps any consumer that only checked
+    // truthiness (e.g. recurrence cloning fan-out) working without
+    // creating a phantom row reference.
+    booking_bundle_id: booking.id,
+    created_at: booking.created_at,
+    updated_at: booking.updated_at,
+  };
 }

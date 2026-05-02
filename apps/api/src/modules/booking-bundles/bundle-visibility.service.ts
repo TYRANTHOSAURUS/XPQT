@@ -111,36 +111,33 @@ export class BundleVisibilityService {
     if (ctx.has_read_all) return;
 
     // Approval participant: any scope_breakdown.approver_person_id mention.
-    // The target_entity_type filter is a defensive correctness improvement:
-    // approvals.target_entity_id is shared across multiple entity types
-    // (ticket / booking_bundle / order). Filtering by type prevents a
-    // theoretical UUID collision from granting bundle access via a non-bundle
-    // approval, and lets Postgres use idx_approvals_target's leading column.
-    // SQL helper public.bundle_is_visible_to_user has the same filter
-    // (migration 00245).
+    // Post-canonicalisation: approvals.target_entity_type for booking-anchored
+    // approvals is now `'booking'` (00278:172 CHECK constraint). Pre-rewrite
+    // tenants used `'booking_bundle'`; those legacy rows are backfilled to
+    // `'booking'` by 00278:163-165 so a single equality check works for
+    // both old and new data.
     if (ctx.person_id) {
       const { data, error } = await this.supabase.admin
         .from('approvals')
         .select('id')
         .eq('tenant_id', ctx.tenant_id)
         .eq('target_entity_id', bundle.id)
-        .eq('target_entity_type', 'booking_bundle')
+        .eq('target_entity_type', 'booking')
         .eq('approver_person_id', ctx.person_id)
         .limit(1);
       if (error) throw error;
       if ((data ?? []).length > 0) return;
     }
 
-    // Work-order assignee: any work_order with this bundle_id assigned to me.
-    // Step 1c.10c: booking-origin work orders are in public.work_orders now,
-    // not tickets. Without this fix, work-order assignees would lose access
-    // to bundle pages they manage.
+    // Work-order assignee: any work_order with this booking_id assigned to me.
+    // Column rename: work_orders.booking_bundle_id → work_orders.booking_id
+    // (00278:87). Booking-origin work orders are in public.work_orders.
     {
       const { data, error } = await this.supabase.admin
         .from('work_orders')
         .select('id')
         .eq('tenant_id', ctx.tenant_id)
-        .eq('booking_bundle_id', bundle.id)
+        .eq('booking_id', bundle.id)
         .eq('assigned_user_id', ctx.user_id)
         .limit(1);
       if (error) throw error;

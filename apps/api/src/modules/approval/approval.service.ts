@@ -5,7 +5,11 @@ import { TicketService } from '../ticket/ticket.service';
 import { BookingNotificationsService } from '../reservations/booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
 import { VisitorService } from '../visitors/visitor.service';
-import type { Reservation } from '../reservations/dto/types';
+import {
+  SLOT_WITH_BOOKING_SELECT,
+  slotWithBookingToReservation,
+  type SlotWithBookingEmbed,
+} from '../reservations/reservation-projection';
 
 export interface ApprovalActor {
   userId: string;
@@ -418,27 +422,26 @@ export class ApprovalService {
       }
     }
 
-    // For reservations: transition the reservation status and notify the requester.
-    // Parallel groups: only fire when the whole group is decided (any rejection wins;
-    // otherwise wait for all to approve).
-    // Sequential chains: only fire on the final step's decision.
-    if (approval.target_entity_type === 'reservation') {
+    // For bookings (and standalone orders, which also use
+    // target_entity_type='booking' post-canonicalisation): transition the
+    // booking + linked orders, fire deferred work orders, notify the
+    // requester. The pre-rewrite split (reservation vs. booking_bundle)
+    // collapses into one `'booking'` branch since the booking IS the
+    // bundle (00277:27). Parallel/chain semantics live inside the handler.
+    //
+    // 00278:163-165 backfills any legacy `'reservation'` / `'booking_bundle'`
+    // rows to `'booking'`, so this single branch covers both old and new
+    // data uniformly. The dispatcher used to invoke separate
+    // `handleReservationApprovalDecided` + `handleBookingBundleApprovalDecided`
+    // codepaths; the merged handler invokes BOTH downstream effects so we
+    // (a) flip the booking_slots/bookings status to confirmed/cancelled
+    // (the old reservation handler's job) and (b) flip the orders + fire
+    // deferred internal-setup (the old bundle handler's job).
+    if (approval.target_entity_type === 'booking') {
       try {
-        await this.handleReservationApprovalDecided(approval, dto);
+        await this.handleBookingApprovalDecided(approval, dto);
       } catch (err) {
-        console.error('[approval] reservation notification failed', err);
-      }
-    }
-
-    // For booking bundles (and standalone orders, which also use
-    // target_entity_type='booking_bundle'): transition linked orders'
-    // status and re-fire any deferred internal-setup work orders. Same
-    // parallel/chain semantics as reservations.
-    if (approval.target_entity_type === 'booking_bundle') {
-      try {
-        await this.handleBookingBundleApprovalDecided(approval, dto);
-      } catch (err) {
-        console.error('[approval] booking_bundle notification failed', err);
+        console.error('[approval] booking notification failed', err);
       }
     }
 
@@ -485,80 +488,34 @@ export class ApprovalService {
   }
 
   /**
-   * Update reservation.status from pending_approval → confirmed | cancelled and
-   * dispatch the requester notification. Respects parallel-group all-must-approve
-   * semantics and sequential-chain final-step semantics.
-   */
-  private async handleReservationApprovalDecided(
-    approval: { id: string; target_entity_id: string; parallel_group: string | null;
-                approval_chain_id: string | null; comments?: string | null },
-    dto: RespondDto,
-  ): Promise<void> {
-    const tenant = TenantContext.current();
-
-    // Determine the final decision for the reservation.
-    let finalDecision: 'approved' | 'rejected';
-    if (dto.status === 'rejected') {
-      // Any rejection ends the approval (parallel or chained).
-      finalDecision = 'rejected';
-    } else if (approval.parallel_group) {
-      const complete = await this.isParallelGroupComplete(
-        approval.parallel_group, approval.target_entity_id,
-      );
-      if (!complete) return;       // still waiting on peers
-      finalDecision = 'approved';
-    } else if (approval.approval_chain_id) {
-      // For sequential chains, advanceChain has already activated the next step
-      // OR completed the chain. Only the final step's approval signals "done".
-      const allComplete = await this.isChainComplete(approval.approval_chain_id);
-      if (!allComplete) return;
-      finalDecision = 'approved';
-    } else {
-      // Single-step approval — decided now.
-      finalDecision = 'approved';
-    }
-
-    // Transition reservation status.
-    const newStatus = finalDecision === 'approved' ? 'confirmed' : 'cancelled';
-    const { data: reservation } = await this.supabase.admin
-      .from('reservations')
-      .update({
-        status: newStatus,
-        ...(newStatus === 'cancelled'
-          ? { cancellation_grace_until: null }
-          : {}),
-      })
-      .eq('id', approval.target_entity_id)
-      .eq('tenant_id', tenant.id)
-      .eq('status', 'pending_approval')        // optimistic — only transition once
-      .select('*')
-      .maybeSingle();
-
-    if (!reservation) return;                  // already transitioned by another path
-
-    await this.bookingNotifications.onApprovalDecided(
-      reservation as unknown as Reservation,
-      finalDecision,
-      approval.comments ?? undefined,
-    );
-  }
-
-  /**
-   * Resolve final decision for a booking_bundle approval and call
-   * BundleService.onApprovalDecided once the bundle is fully resolved.
+   * Merged booking approval handler. Post-canonicalisation (2026-05-02):
+   * the booking IS the bundle (00277:27), so a single approval target —
+   * `target_entity_type='booking'` — covers what used to be split between
+   * the `'reservation'` and `'booking_bundle'` branches. We:
    *
-   * Why this doesn't branch on `parallel_group` / `approval_chain_id`
-   * like the reservation handler does: bundle approvals are typically
-   * upserted by `ApprovalRoutingService.assemble` as independent
-   * single-step rows (one per unique approver — cost-center owner +
-   * threshold approver + dietary officer, etc.). They have no
-   * parallel_group and no chain. But it IS possible for the same bundle
-   * to ALSO be targeted by `createParallelGroup` / `createSequentialChain`
-   * via the generic API, mixing topologies on a single target. To handle
-   * any combination correctly — and to never under-block or over-fire —
-   * we always require EVERY approval row on the target to be resolved
-   * (`approved` or `expired`). That superset covers single-step, parallel,
-   * chained, and mixed bundles uniformly.
+   *   1. Resolve the final decision using the strictest topology rule
+   *      across single-step / parallel / sequential / mixed approvals
+   *      (every approval row on the target must be `approved` or
+   *      `expired` — see `areAllTargetApprovalsApproved` for why
+   *      `expired` counts).
+   *   2. Flip the booking_slots' status from pending_approval →
+   *      confirmed | cancelled (per-slot status, 00277:142-144). For
+   *      v1 single-slot bookings this is one row; for multi-slot,
+   *      every pending_approval slot transitions together.
+   *   3. Mirror to bookings.status (booking-level, 00277:49-51) so list
+   *      endpoints reflect the change.
+   *   4. Re-read the booking via the slot+booking projection helper
+   *      (the notification consumer still takes the legacy `Reservation`
+   *      shape) and dispatch the requester email via
+   *      BookingNotificationsService.onApprovalDecided.
+   *   5. Cascade through BundleService.onApprovalDecided to flip linked
+   *      orders + fire deferred internal-setup work orders.
+   *
+   * Why the merger is safe: orders attach to bookings via
+   * orders.booking_id (00278:109). Any order linked to this approval's
+   * booking is the same set previously found via the legacy
+   * `target_entity_type='booking_bundle'` lookup — under canonicalisation
+   * those are the same id.
    *
    * Resolution rules:
    *   - Any rejection ends the approval immediately ('rejected'). Sibling
@@ -569,11 +526,13 @@ export class ApprovalService {
    *     `pending` (or defensively `rejected`), return — the next peer's
    *     grant will re-enter this handler.
    */
-  private async handleBookingBundleApprovalDecided(
+  private async handleBookingApprovalDecided(
     approval: { id: string; target_entity_id: string; parallel_group: string | null;
                 approval_chain_id: string | null; comments?: string | null },
     dto: RespondDto,
   ): Promise<void> {
+    const tenant = TenantContext.current();
+
     let finalDecision: 'approved' | 'rejected';
     if (dto.status === 'rejected') {
       finalDecision = 'rejected';
@@ -585,10 +544,82 @@ export class ApprovalService {
       finalDecision = 'approved';
     }
 
-    await this.bundleService.onApprovalDecided(
-      approval.target_entity_id,
-      finalDecision,
-    );
+    const newStatus = finalDecision === 'approved' ? 'confirmed' : 'cancelled';
+
+    // Transition booking_slots first (the per-slot source of truth).
+    // Optimistic: only transition pending_approval rows.
+    const { data: transitionedSlots, error: slotErr } = await this.supabase.admin
+      .from('booking_slots')
+      .update({
+        status: newStatus,
+        ...(newStatus === 'cancelled'
+          ? { cancellation_grace_until: null }
+          : {}),
+      })
+      .eq('booking_id', approval.target_entity_id)
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'pending_approval')
+      .select('id');
+    if (slotErr) {
+      console.error('[approval] booking_slots transition failed', slotErr);
+    }
+
+    // Mirror to bookings.status. The "did anything actually change?"
+    // signal comes from the slot result above — if no slot transitioned,
+    // the booking has already been resolved by another path.
+    const { data: bookingRow } = await this.supabase.admin
+      .from('bookings')
+      .update({
+        status: newStatus,
+      })
+      .eq('id', approval.target_entity_id)
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'pending_approval')
+      .select('id')
+      .maybeSingle();
+
+    // If neither layer transitioned, another path beat us to it. Don't
+    // re-fire the downstream notification or bundle cascade — those
+    // already ran (or will run) on the winning path.
+    if (!bookingRow && (transitionedSlots ?? []).length === 0) {
+      return;
+    }
+
+    // Notification: the consumer takes the legacy Reservation shape, so
+    // re-read the booking via the slot+booking projection. Best-effort —
+    // the approval has already been recorded; a notification failure
+    // shouldn't roll the decision back.
+    try {
+      const { data: refreshed } = await this.supabase.admin
+        .from('booking_slots')
+        .select(SLOT_WITH_BOOKING_SELECT)
+        .eq('tenant_id', tenant.id)
+        .eq('booking_id', approval.target_entity_id)
+        .order('display_order', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (refreshed) {
+        await this.bookingNotifications.onApprovalDecided(
+          slotWithBookingToReservation(refreshed as unknown as SlotWithBookingEmbed),
+          finalDecision,
+          approval.comments ?? undefined,
+        );
+      }
+    } catch (err) {
+      console.error('[approval] booking notification fan-out failed', err);
+    }
+
+    // Bundle cascade: flip linked orders + fire deferred internal-setup
+    // work orders. Even when there are no orders attached this is a no-op
+    // (the bundle service short-circuits when zero orders match).
+    try {
+      await this.bundleService.onApprovalDecided(
+        approval.target_entity_id,
+        finalDecision,
+      );
+    } catch (err) {
+      console.error('[approval] booking bundle cascade failed', err);
+    }
   }
 
   /**
