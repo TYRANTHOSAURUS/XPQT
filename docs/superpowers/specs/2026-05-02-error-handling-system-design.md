@@ -416,14 +416,20 @@ Adding a new code to the server without registering a client message is allowed 
 - Toast helper for server-class errors renders traceId as small monospace text below the description with a copy-on-click.
 - The contact-support recovery pre-fills the support form with the traceId.
 
-### 6.2 Form drafts survive auth redirects
+### 6.2 Mid-call session-refresh resilience (the real auth problem)
 
-If a mutation fails with `auth.expired`, before redirecting:
-1. Serialise the current form state (RHF `getValues()`) into `sessionStorage` keyed by route + form id.
+The `auth.expired` UX problem isn't "user gets redirected to sign-in mid-edit" — Supabase's JS client uses `autoRefreshToken: true` + `persistSession: true` by default, refreshes the token silently in the background, and surfaces a 401 to `apiFetch` only when the refresh token itself is dead (rare; the refresh window is days). The frequent failure mode is different:
+
+- A mutation fires.
+- The access token expires *during* the request (server reads it as expired before responding).
+- The mutation gets a 401 even though the user is "still signed in" client-side — Supabase has by now silently refreshed the access token in another listener.
+
+**v1 behaviour for this case:** when `apiFetch` sees a 401 and the Supabase client reports a *different* (newer) session than the one used for the request, retry the request once with the new token transparently, no UX. Implement at the `apiFetch` boundary so every call site benefits.
+
+**Hard 401 (refresh token dead) — fallback path:**
+1. Clear local Supabase session.
 2. Redirect to sign-in with `?next=<current_url>`.
-3. After sign-in, the form's `useEffect` rehydrates from `sessionStorage` and clears the key.
-
-This is one of the biggest "I love this app" details in Linear / Stripe — never lose the user's typing.
+3. (Polish, deferred) Form-draft preservation via `sessionStorage` keyed by route + form id, rehydrated post-sign-in. This is genuinely a "love this app" detail in Linear / Stripe, but it fires approximately never given Supabase's silent refresh, so demote to a polish item — ship the redirect first, add the draft preservation when there's user demand.
 
 ### 6.3 Stale conflict resolution (v1)
 
