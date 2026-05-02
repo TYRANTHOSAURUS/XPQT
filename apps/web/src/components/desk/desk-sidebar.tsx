@@ -425,8 +425,8 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                   <SidebarMenu>
                     {(group.items as RailNavItem[]).map((item) => {
                       const slot = item.countSlot ? countByItem[item.countSlot] : undefined
-                      const showCount = slot && typeof slot.count === "number" && slot.count > 0 && railExpanded
-                      const showUrgency = slot?.hasUrgency === true
+                      const hasCount = slot && typeof slot.count === "number" && slot.count > 0
+                      const isUrgent = slot?.hasUrgency === true
                       return (
                         <SidebarMenuItem key={item.id}>
                           <SidebarMenuButton
@@ -441,18 +441,34 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                           >
                             <item.icon className="shrink-0" />
                             {railExpanded && <span>{item.title}</span>}
-                            {showCount && (
-                              <span className="ml-auto font-mono tabular-nums text-xs text-muted-foreground">
-                                {formatCount(slot.count!)}
+                            {/* Combined count + urgency badge: one pill that
+                                colors red on urgency, muted when normal.
+                                Cleaner than the previous split (neutral
+                                count + separate red dot) which fought for
+                                attention. Slack-style. In compact rail
+                                mode (no labels), hidden in favour of the
+                                tiny absolute-positioned dot below. */}
+                            {hasCount && railExpanded && (
+                              <span
+                                aria-label={
+                                  isUrgent
+                                    ? `${slot!.count} unread, needs attention`
+                                    : `${slot!.count} unread`
+                                }
+                                className={
+                                  isUrgent
+                                    ? "ml-auto inline-flex items-center justify-center rounded-md bg-destructive px-1.5 font-mono tabular-nums text-[11px] font-medium leading-5 text-destructive-foreground"
+                                    : "ml-auto inline-flex items-center justify-center rounded-md bg-sidebar-accent/60 px-1.5 font-mono tabular-nums text-[11px] font-medium leading-5 text-muted-foreground"
+                                }
+                              >
+                                {formatCount(slot!.count!)}
                               </span>
                             )}
-                            {showUrgency && railExpanded && (
-                              <span
-                                aria-label="needs attention"
-                                className="ml-1 inline-block size-1.5 rounded-full bg-destructive"
-                              />
-                            )}
-                            {showUrgency && !railExpanded && (
+                            {/* Compact rail (icon-only): tiny urgency dot
+                                only — count digit doesn't fit. Hidden when
+                                no urgency, since a generic "has-unread"
+                                signal would conflict with the icon. */}
+                            {isUrgent && !railExpanded && (
                               <span
                                 aria-label="needs attention"
                                 className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-destructive"
