@@ -345,7 +345,7 @@ begin
   -- never shipped. Sessions 7-12 layered the entire work-order command
   -- surface on top, mocking Supabase in every test, so the 42501
   -- "permission denied for table work_orders" error only surfaced when
-  -- the user clicked PATCH against the live DB. Migration 00248 restored
+  -- the user clicked PATCH against the live DB. Migration 00275 restored
   -- INSERT/UPDATE/DELETE; this assertion prevents the same shape of
   -- regression on any other tenant-scoped writable table.
   --
@@ -354,44 +354,53 @@ begin
   -- breaks an entire surface silently — every test passes, every UI
   -- click 500s.
   --
-  -- The first version of A12 (Session 13) hard-coded `public.work_orders`
-  -- only. Full-review pointed out that the bug class is broader: any
-  -- tenant-scoped writable BASE TABLE that lost service_role DML during
-  -- a multi-step rework's intermediate state. This list mirrors A6
-  -- (the tenant_id list), minus views — `cases` is a view today and is
-  -- correctly SELECT-only on service_role; views never need DML grants
-  -- because writes go through the underlying table. Adding a new
-  -- tenant-scoped writable table forces an explicit update here, same
-  -- discipline as A6.
+  -- VERSION HISTORY:
+  --   - Session 13 v1: hard-coded `public.work_orders` only (caught
+  --     the immediate P0 instance, missed the bug class).
+  --   - Session 13 v2: hard-coded list of 25 tenant-scoped tables,
+  --     mirroring A6. Caught the class for those 25 — but missed
+  --     ~80 other tenant-scoped writable tables that grew alongside
+  --     (visitor_types, audit_events, domain_events, etc). Migration
+  --     00269 had to "belt-and-braces" re-grant on domain_events
+  --     because no gate caught a hypothetical regression on it.
+  --   - Session 14 v3 (this version): SELF-MAINTAINING. Auto-enumerate
+  --     via `tenant_id` column presence — every public BASE TABLE
+  --     with a `tenant_id` column is in scope. New tenant-scoped
+  --     tables join the gate the moment they're created without any
+  --     manual list update. The `tenant_id` column itself is the
+  --     #0 invariant per CLAUDE.md feedback_tenant_id_ultimate_rule;
+  --     using it as the discriminator means A12 follows the canonical
+  --     "tenant-scoped surface" definition.
+  --
+  -- Exclusions: an EMPTY allowlist today. If a future tenant-scoped
+  -- table genuinely should be SELECT-only on service_role (e.g. a
+  -- read-only materialized view that's a base table), add it to
+  -- v_intentional_select_only_tables with a justifying comment.
+  -- Every entry there is a maintenance hot-spot — keep the list
+  -- explicit, small, and audited.
   declare
+    v_intentional_select_only_tables text[] := array[]::text[];
     v_table text;
     v_priv text;
     v_privs text[] := array['SELECT','INSERT','UPDATE','DELETE'];
-    v_writable_tables text[] := array[
-      'tickets', 'work_orders', 'activities', 'ticket_activities',
-      'persons', 'users', 'teams', 'team_members', 'vendors',
-      'spaces', 'space_groups', 'space_group_members',
-      'request_types', 'routing_rules', 'routing_decisions',
-      'reservations', 'booking_bundles', 'orders', 'order_line_items',
-      'sla_timers', 'sla_policies',
-      'workflow_definitions', 'workflow_instances',
-      'org_nodes', 'person_org_memberships'
-    ];
+    v_writable_tables text[];
     v_checked int := 0;
   begin
+    -- Auto-enumerate every public BASE TABLE that carries a tenant_id
+    -- column. This is the canonical "tenant-scoped surface" set —
+    -- includes inherited partitions (which Postgres reports as
+    -- BASE TABLE with the same tenant_id column).
+    select array_agg(distinct c.table_name order by c.table_name)
+    into v_writable_tables
+    from information_schema.columns c
+    join information_schema.tables t
+      on t.table_schema = c.table_schema and t.table_name = c.table_name
+    where c.table_schema = 'public'
+      and c.column_name = 'tenant_id'
+      and t.table_type = 'BASE TABLE'
+      and not (c.table_name = ANY(v_intentional_select_only_tables));
+
     foreach v_table in array v_writable_tables loop
-      -- Skip tables that don't exist (yet). Same convention as A6 — don't
-      -- false-fail on a fresh DB where a future migration is expected to
-      -- create the table. Only fail when the table EXISTS but is
-      -- under-granted.
-      if not exists (
-        select 1 from information_schema.tables
-         where table_schema = 'public'
-           and table_name = v_table
-           and table_type = 'BASE TABLE'
-      ) then
-        continue;
-      end if;
       foreach v_priv in array v_privs loop
         if not exists (
           select 1 from information_schema.role_table_grants
@@ -400,12 +409,12 @@ begin
              and grantee      = 'service_role'
              and privilege_type = v_priv
         ) then
-          raise exception 'A12: service_role is missing % on public.%. The API uses service_role for all writes; without this, every mutation against this surface 42501s. See migration 00248 + the 2026-05-01 P0 postmortem in docs/follow-ups/data-model-rework-full-handoff.md for the canonical fix pattern.', v_priv, v_table;
+          raise exception 'A12: service_role is missing % on public.%. The API uses service_role for all writes; without this, every mutation against this surface 42501s. See migration 00275 + the 2026-05-01 P0 postmortem in docs/follow-ups/data-model-rework-full-handoff.md for the canonical fix pattern. (If this table is intentionally read-only on service_role, add it to v_intentional_select_only_tables in this file with a justifying comment.)', v_priv, v_table;
         end if;
       end loop;
       v_checked := v_checked + 1;
     end loop;
-    raise notice 'A12 OK: service_role has full DML on % tenant-scoped writable tables', v_checked;
+    raise notice 'A12 OK: service_role has full DML on % tenant-scoped writable tables (auto-enumerated via tenant_id column)', v_checked;
   end;
 
   raise notice '';
