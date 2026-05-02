@@ -1742,9 +1742,10 @@ export class TicketService {
    * Used by Slice 2 of the fulfillment-fixes Wave-2 plan: when a service
    * rule on an order line says requires_internal_setup, the matrix
    * (location_service_routing 00194) gives the team + lead time + SLA,
-   * and this method materialises the work order. The bundle and line
-   * linkage flow through booking_bundle_id and linked_order_line_item_id
-   * respectively (00145).
+   * and this method materialises the work order. The booking and line
+   * linkage flow through `work_orders.booking_id` (renamed from
+   * `booking_bundle_id` in 00278:87) and `linked_order_line_item_id`
+   * respectively (00213).
    *
    * Why a separate method (not dispatch.service.ts):
    *   - dispatch refuses ticket_kind='case' parent and inherits parent
@@ -1753,6 +1754,10 @@ export class TicketService {
    *     request_type, no workflow). SLA is provided explicitly by the
    *     matrix lookup; no workflow today (Wave 3 will extend the workflow
    *     editor to fire on order events).
+   *
+   * Argument name `booking_bundle_id` kept for caller-signature stability
+   * during the rewrite; semantically it's the booking id (canonicalisation
+   * collapsed bundles into bookings — 00277:27).
    */
   async createBookingOriginWorkOrder(args: {
     title: string;
@@ -1797,12 +1802,15 @@ export class TicketService {
 
     // Step 1c.4 cutover: write to public.work_orders directly. ticket_kind
     // is gone (work_orders is single-kind); parent_kind='booking_bundle'
-    // explicit. The reverse shadow trigger keeps tickets in sync.
+    // remains as a discriminator label (00278:81 — the literal string is
+    // not a column reference, harmless to keep). The actual FK column is
+    // `booking_id` post-rename (00278:87). Reverse shadow trigger keeps
+    // tickets in sync.
     const insertRow: Record<string, unknown> = {
       tenant_id: tenant.id,
       parent_kind: 'booking_bundle',
       parent_ticket_id: null, // booking-origin has no parent case
-      booking_bundle_id: args.booking_bundle_id,
+      booking_id: args.booking_bundle_id,
       linked_order_line_item_id: args.linked_order_line_item_id,
       title: args.title,
       description: args.description ?? null,
@@ -1835,12 +1843,16 @@ export class TicketService {
     const ticketId = (data as { id: string }).id;
 
     // System event for audit + activity feed.
+    // Carry both `booking_bundle_id` (legacy key kept for audit-consumer
+    // continuity — historical events use this name) AND the canonical
+    // `booking_id` (00278:87) so new dashboards/queries can read either.
     await this.addActivity(ticketId, {
       activity_type: 'system_event',
       visibility: 'system',
       metadata: {
         event: 'booking_origin_work_order_created',
         booking_bundle_id: args.booking_bundle_id,
+        booking_id: args.booking_bundle_id,
         linked_order_line_item_id: args.linked_order_line_item_id,
         ...(args.audit_metadata ?? {}),
       },
@@ -1849,6 +1861,7 @@ export class TicketService {
     await this.logDomainEvent(ticketId, 'booking_origin_work_order_created', {
       ticket_id: ticketId,
       booking_bundle_id: args.booking_bundle_id,
+      booking_id: args.booking_bundle_id,
       linked_order_line_item_id: args.linked_order_line_item_id,
       ...(args.audit_metadata ?? {}),
     });

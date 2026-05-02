@@ -183,24 +183,63 @@ export class ImpactPreviewService {
     since: string,
   ): Promise<ReservationRow[]> {
     const tenant = TenantContext.current();
+    // Post-canonicalisation (2026-05-02): per-room holdings live on
+    // `booking_slots` (00277:116). The legacy ReservationRow shape
+    // (id/space_id/requester_person_id/start_at/end_at/attendee_count/status)
+    // splits across slot + parent booking now — join via embedded select
+    // and flatten back to the legacy shape so the caller's eval loop is
+    // unchanged.
     const base = this.supabase.admin
-      .from('reservations')
-      .select('id, space_id, requester_person_id, start_at, end_at, attendee_count, status')
+      .from('booking_slots')
+      .select(
+        'id, space_id, start_at, end_at, attendee_count, status, ' +
+          'booking:bookings!booking_id(requester_person_id)',
+      )
       .eq('tenant_id', tenant.id)
       .gte('start_at', since)
       .order('start_at', { ascending: false })
       .limit(REPLAY_LIMIT);
 
+    type SlotJoinRow = {
+      id: string;
+      space_id: string;
+      start_at: string;
+      end_at: string;
+      attendee_count: number | null;
+      status: string;
+      booking:
+        | { requester_person_id: string }
+        | { requester_person_id: string }[]
+        | null;
+    };
+
+    const flatten = (rows: SlotJoinRow[]): ReservationRow[] =>
+      rows
+        .map((r) => {
+          const b = Array.isArray(r.booking) ? r.booking[0] ?? null : r.booking;
+          if (!b?.requester_person_id) return null;
+          return {
+            id: r.id,
+            space_id: r.space_id,
+            requester_person_id: b.requester_person_id,
+            start_at: r.start_at,
+            end_at: r.end_at,
+            attendee_count: r.attendee_count,
+            status: r.status,
+          } satisfies ReservationRow;
+        })
+        .filter((r): r is ReservationRow => r !== null);
+
     if (rule.target_scope === 'room' && rule.target_id) {
       const { data, error } = await base.eq('space_id', rule.target_id);
       if (error) throw error;
-      return (data ?? []) as ReservationRow[];
+      return flatten((data ?? []) as unknown as SlotJoinRow[]);
     }
 
     if (rule.target_scope === 'space_subtree' && rule.target_id) {
       // Pull every descendant space id (including the root), then filter
-      // reservations in TS — Supabase JS doesn't compose .in() with a
-      // sub-select neatly.
+      // slots in TS — Supabase JS doesn't compose .in() with a sub-select
+      // neatly.
       const { data: descIds, error: dErr } = await this.supabase.admin.rpc(
         'space_descendants',
         { root_id: rule.target_id },
@@ -212,14 +251,14 @@ export class ImpactPreviewService {
       if (ids.length === 0) return [];
       const { data, error } = await base.in('space_id', ids);
       if (error) throw error;
-      return (data ?? []) as ReservationRow[];
+      return flatten((data ?? []) as unknown as SlotJoinRow[]);
     }
 
     // tenant + room_type: replay everything in the window. The per-rule
     // evaluation will filter by type/predicate.
     const { data, error } = await base;
     if (error) throw error;
-    return (data ?? []) as ReservationRow[];
+    return flatten((data ?? []) as unknown as SlotJoinRow[]);
   }
 
   private async fetchSpaceNames(

@@ -58,9 +58,19 @@ export class MultiAttendeeFinder {
     if (durationMs <= 0) return { slots: [] };
 
     // 1. Load each person's busy intervals.
+    // Post-canonicalisation (2026-05-02): per-resource time + attendee
+    // arrays live on `booking_slots` (00277:127-128, 139); requester is on
+    // the parent `bookings` row (00277:36). Join both via the embedded
+    // select so we keep one round-trip. The partial index
+    // `idx_slots_space_time_active` (00277:181-184) covers the time
+    // predicate; `idx_slots_attendee_persons` GIN (00277:188-190) the
+    // attendee membership.
     const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .select('id, requester_person_id, attendee_person_ids, effective_start_at, effective_end_at, status')
+      .from('booking_slots')
+      .select(
+        'id, attendee_person_ids, effective_start_at, effective_end_at, status, ' +
+          'booking:bookings!booking_id(requester_person_id)',
+      )
       .eq('tenant_id', tenantId)
       .in('status', ['confirmed', 'checked_in', 'pending_approval'])
       .lt('effective_start_at', windowEnd.toISOString())
@@ -73,17 +83,22 @@ export class MultiAttendeeFinder {
 
     type Row = {
       id: string;
-      requester_person_id: string;
       attendee_person_ids: string[] | null;
       effective_start_at: string;
       effective_end_at: string;
+      booking:
+        | { requester_person_id: string }
+        | { requester_person_id: string }[]
+        | null;
     };
 
     const personSet = new Set(personIds);
     const busy: Array<[number, number]> = [];
-    for (const row of (data ?? []) as Row[]) {
+    for (const row of (data ?? []) as unknown as Row[]) {
+      const bookingRow = Array.isArray(row.booking) ? row.booking[0] ?? null : row.booking;
+      const requesterId = bookingRow?.requester_person_id ?? null;
       const isAttendee =
-        personSet.has(row.requester_person_id) ||
+        (requesterId !== null && personSet.has(requesterId)) ||
         (row.attendee_person_ids ?? []).some((p) => personSet.has(p));
       if (!isAttendee) continue;
       busy.push([

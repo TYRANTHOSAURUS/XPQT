@@ -11,11 +11,19 @@ import { TenantContext } from '../../common/tenant-context';
  *
  * `unit_price` is snapshotted onto `order_line_items.unit_price` at create
  * time so future menu repricing doesn't change historical totals — the
- * same pattern as `reservations.cost_amount_snapshot`.
+ * same pattern as `bookings.cost_amount_snapshot` (00277:62, was on
+ * legacy `reservations` pre-canonicalisation).
  *
  * Null `unit_price` lines render as "—" (caller responsibility) and
  * contribute 0 to the total. Approval thresholds compute against
  * per-occurrence, never annualised.
+ *
+ * Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27);
+ * `bundleId` arguments are booking ids. Reads run against `bookings` +
+ * `booking_slots` instead of the dropped `booking_bundles` / `reservations`
+ * tables. Recurrence rule lives on `bookings.recurrence_series_id` (00277:74),
+ * not on a per-slot column — annualisation now derives from the series row,
+ * with the legacy in-row `recurrence_rule` value gone.
  */
 
 export interface BundleCostBreakdown {
@@ -49,40 +57,64 @@ export class CostService {
   async computeBundleCost(bundleId: string): Promise<BundleCostBreakdown> {
     const tenantId = TenantContext.current().id;
 
-    const [bundleRes, reservationRes, ordersRes] = await Promise.all([
+    // Post-canonicalisation: `bundleId` is a booking id (00277:27). Pull the
+    // booking row for cost_amount_snapshot + recurrence_series_id (00277:62,74),
+    // its primary slot for attendee_count (00277:138), and any orders attached
+    // via the renamed `orders.booking_id` column (00278:109).
+    const [bookingRes, slotRes, ordersRes] = await Promise.all([
       this.supabase.admin
-        .from('booking_bundles')
-        .select('id, primary_reservation_id')
+        .from('bookings')
+        .select('id, cost_amount_snapshot, recurrence_series_id')
         .eq('id', bundleId)
         .eq('tenant_id', tenantId)
         .maybeSingle(),
-      // We need attendee_count + cost_amount_snapshot from the primary
-      // reservation. Reservations are cheap; one-shot fetch is fine.
       this.supabase.admin
-        .from('reservations')
-        .select('id, attendee_count, cost_amount_snapshot, recurrence_rule')
-        .eq('booking_bundle_id', bundleId)
-        .order('start_at', { ascending: true })
+        .from('booking_slots')
+        .select('id, attendee_count')
+        .eq('booking_id', bundleId)
+        .eq('tenant_id', tenantId)
+        .order('display_order', { ascending: true })
         .limit(1),
       this.supabase.admin
         .from('orders')
         .select('id, status')
-        .eq('booking_bundle_id', bundleId),
+        .eq('booking_id', bundleId)
+        .eq('tenant_id', tenantId),
     ]);
-    if (bundleRes.error) throw bundleRes.error;
-    if (reservationRes.error) throw reservationRes.error;
+    if (bookingRes.error) throw bookingRes.error;
+    if (slotRes.error) throw slotRes.error;
     if (ordersRes.error) throw ordersRes.error;
 
-    const reservation = ((reservationRes.data ?? []) as Array<{
-      id: string;
-      attendee_count: number | null;
-      cost_amount_snapshot: number | null;
-      recurrence_rule: { until?: string; count?: number; freq?: string; interval?: number } | null;
-    }>)[0];
+    const booking = bookingRes.data as
+      | {
+          id: string;
+          cost_amount_snapshot: number | string | null;
+          recurrence_series_id: string | null;
+        }
+      | null;
+    const slot = ((slotRes.data ?? []) as Array<{ id: string; attendee_count: number | null }>)[0];
+
+    // Recurrence rule moved to `recurrence_series.recurrence_rule` (00124).
+    // Resolve it lazily — most bookings are non-recurring, no point hitting
+    // the table when there's no series.
+    let recurrenceRule:
+      | { until?: string; count?: number; freq?: string; interval?: number }
+      | null = null;
+    if (booking?.recurrence_series_id) {
+      const { data: seriesRow, error: seriesErr } = await this.supabase.admin
+        .from('recurrence_series')
+        .select('recurrence_rule')
+        .eq('id', booking.recurrence_series_id)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (seriesErr) throw seriesErr;
+      recurrenceRule = (seriesRow as { recurrence_rule: typeof recurrenceRule } | null)
+        ?.recurrence_rule ?? null;
+    }
 
     const orderIds = ((ordersRes.data ?? []) as Array<{ id: string }>).map((o) => o.id);
     const lines = orderIds.length > 0 ? await this.loadLineItems(orderIds) : [];
-    const attendeeCount = reservation?.attendee_count ?? null;
+    const attendeeCount = slot?.attendee_count ?? null;
 
     const computedLines = lines.map((l) => {
       const lineTotal = computeLineTotal(l, attendeeCount);
@@ -97,12 +129,12 @@ export class CostService {
       };
     });
 
-    const reservationCost = reservation?.cost_amount_snapshot ?? 0;
+    const reservationCost = booking?.cost_amount_snapshot ?? 0;
     const totalPerOccurrence =
       computedLines.reduce((sum, l) => sum + l.line_total, 0) + Number(reservationCost);
 
-    const annualisedOccurrences = reservation?.recurrence_rule
-      ? estimateAnnualisedOccurrences(reservation.recurrence_rule)
+    const annualisedOccurrences = recurrenceRule
+      ? estimateAnnualisedOccurrences(recurrenceRule)
       : null;
     const totalAnnualised =
       annualisedOccurrences != null ? totalPerOccurrence * annualisedOccurrences : null;

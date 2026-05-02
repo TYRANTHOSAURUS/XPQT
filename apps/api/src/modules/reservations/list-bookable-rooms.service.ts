@@ -455,8 +455,14 @@ export class ListBookableRoomsService {
     const BUFFER_CAP_MS = 60 * 60_000;
     const widenedStart = new Date(new Date(startAt).getTime() - BUFFER_CAP_MS).toISOString();
     const widenedEnd = new Date(new Date(endAt).getTime() + BUFFER_CAP_MS).toISOString();
+    // Post-canonicalisation (2026-05-02): per-resource holdings live on
+    // `booking_slots` (00277:116), not the dropped `reservations` table.
+    // The columns we read here (space_id, start_at, end_at,
+    // effective_*, status) are all per-slot per the schema; same
+    // partial-index `idx_slots_space_time_active` (00277:181-184) covers
+    // this query.
     const { data, error } = await this.supabase.admin
-      .from('reservations')
+      .from('booking_slots')
       .select('space_id, start_at, end_at, effective_start_at, effective_end_at, status')
       .eq('tenant_id', tenantId)
       .in('space_id', spaceIds)

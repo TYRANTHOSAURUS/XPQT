@@ -518,55 +518,106 @@ export class BookingFlowService {
 
     const tenantId = TenantContext.current().id;
 
+    // Post-canonicalisation (2026-05-02):
+    //   - `recurrence_series_id` lives on `bookings` (00277:74), not slots
+    //   - `host_person_id` lives on `bookings` (00277:37)
+    //   - `space_id` / `attendee_count` / `attendee_person_ids` live on
+    //     `booking_slots` (00277:124, 138-139)
+    // The patch is split per-table accordingly. Multi-slot bookings get
+    // the slot-level update applied to ALL slots in the series — v1
+    // expects multi-room editScope to be rare; if a caller needs per-slot
+    // targeting they should use ReservationService.editOne with scope='this'.
+    const bookingPatch: Record<string, unknown> = {};
+    if (patch.host_person_id !== undefined) bookingPatch.host_person_id = patch.host_person_id;
+    const slotPatch: Record<string, unknown> = {};
+    if (patch.space_id) slotPatch.space_id = patch.space_id;
+    if (patch.attendee_count !== undefined) slotPatch.attendee_count = patch.attendee_count;
+    if (patch.attendee_person_ids !== undefined) slotPatch.attendee_person_ids = patch.attendee_person_ids;
+
     if (scope === 'this_and_following') {
       const newSeriesId = await this.recurrence.splitSeries(reservationId);
-      // Apply patch to all rows in the new series (forward).
-      const next: Record<string, unknown> = {};
-      if (patch.space_id) next.space_id = patch.space_id;
-      if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
-      if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
-      if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
 
       let updated = 0;
-      if (Object.keys(next).length > 0) {
+      if (Object.keys(bookingPatch).length > 0) {
         const { data, error } = await this.supabase.admin
-          .from('reservations')
-          .update(next)
+          .from('bookings')
+          .update(bookingPatch)
           .eq('tenant_id', tenantId)
           .eq('recurrence_series_id', newSeriesId)
           .select('id');
         if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
         updated = (data ?? []).length;
       }
+      if (Object.keys(slotPatch).length > 0) {
+        // Resolve booking ids for the series, then update their slots.
+        const { data: bookingsRows, error: bErr } = await this.supabase.admin
+          .from('bookings')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('recurrence_series_id', newSeriesId);
+        if (bErr) throw new BadRequestException({ code: 'edit_scope_failed', message: bErr.message });
+        const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
+        if (bookingIds.length > 0) {
+          const { data: slotsRows, error: sErr } = await this.supabase.admin
+            .from('booking_slots')
+            .update(slotPatch)
+            .eq('tenant_id', tenantId)
+            .in('booking_id', bookingIds)
+            .select('id');
+          if (sErr) throw new BadRequestException({ code: 'edit_scope_failed', message: sErr.message });
+          updated = Math.max(updated, (slotsRows ?? []).length);
+        }
+      }
       return { scope, new_series_id: newSeriesId, updated };
     }
 
     // 'series' — apply patch to all rows in the series, forward & past.
-    // Pull the source series id from the pivot.
+    // Pull the source series id from the pivot booking.
     const { data: pivot } = await this.supabase.admin
-      .from('reservations')
+      .from('bookings')
       .select('recurrence_series_id')
       .eq('id', reservationId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     const seriesId = (pivot as { recurrence_series_id?: string } | null)?.recurrence_series_id;
     if (!seriesId) {
       throw new BadRequestException({ code: 'not_recurring', message: 'Not part of a series.' });
     }
-    const next: Record<string, unknown> = {};
-    if (patch.space_id) next.space_id = patch.space_id;
-    if (patch.attendee_count !== undefined) next.attendee_count = patch.attendee_count;
-    if (patch.attendee_person_ids !== undefined) next.attendee_person_ids = patch.attendee_person_ids;
-    if (patch.host_person_id !== undefined) next.host_person_id = patch.host_person_id;
-    if (Object.keys(next).length === 0) return { scope, updated: 0 };
+    if (Object.keys(bookingPatch).length === 0 && Object.keys(slotPatch).length === 0) {
+      return { scope, updated: 0 };
+    }
 
-    const { data, error } = await this.supabase.admin
-      .from('reservations')
-      .update(next)
-      .eq('tenant_id', tenantId)
-      .eq('recurrence_series_id', seriesId)
-      .select('id');
-    if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
-    return { scope, updated: (data ?? []).length };
+    let updated = 0;
+    if (Object.keys(bookingPatch).length > 0) {
+      const { data, error } = await this.supabase.admin
+        .from('bookings')
+        .update(bookingPatch)
+        .eq('tenant_id', tenantId)
+        .eq('recurrence_series_id', seriesId)
+        .select('id');
+      if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
+      updated = (data ?? []).length;
+    }
+    if (Object.keys(slotPatch).length > 0) {
+      const { data: bookingsRows, error: bErr } = await this.supabase.admin
+        .from('bookings')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('recurrence_series_id', seriesId);
+      if (bErr) throw new BadRequestException({ code: 'edit_scope_failed', message: bErr.message });
+      const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
+      if (bookingIds.length > 0) {
+        const { data: slotsRows, error: sErr } = await this.supabase.admin
+          .from('booking_slots')
+          .update(slotPatch)
+          .eq('tenant_id', tenantId)
+          .in('booking_id', bookingIds)
+          .select('id');
+        if (sErr) throw new BadRequestException({ code: 'edit_scope_failed', message: sErr.message });
+        updated = Math.max(updated, (slotsRows ?? []).length);
+      }
+    }
+    return { scope, updated };
   }
 
   /**
