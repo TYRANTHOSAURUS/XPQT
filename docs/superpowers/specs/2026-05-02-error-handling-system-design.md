@@ -452,13 +452,16 @@ The animation itself (smooth revert, not a flicker) is the **caller's** responsi
 
 This is incremental. Nothing breaks on day one.
 
-**Wave 0 — Foundation (no UX change yet)** — ~5 days
+**Wave 0 — Foundation (mostly invisible UX change)** — ~5 days
+- **Body-shape audit + shim FIRST.** Today some call sites read `error.body` / `error.details` directly. Confirmed consumer: `apps/web/src/components/booking-composer/helpers.ts:72-85` (`extractAlternatives`) reads `error.details.alternatives` from 409 conflict bodies. There may be a small number of others — `grep -rn "error\.\(body\|details\)" apps/web/src --include="*.ts" --include="*.tsx"` is the audit. The filter ships in two phases:
+  - **0a (shim):** the new `AllExceptionsFilter` writes the new wire shape AND preserves any pre-existing top-level keys legacy consumers rely on (`alternatives`, etc.) at the root level for one release. The filter logs whenever a request hits the legacy-shim branch so we can confirm the consumer set is empty before phase 0b.
+  - **0b (cutover):** once the audit + shim usage logs confirm zero legacy reads in a 1-week window, drop the shim and ship the clean wire shape.
 - Ship request-id middleware (`apps/api/src/common/middleware/request-id.middleware.ts`): reads `X-Request-Id` from inbound, generates ULID-prefixed `req_<ulid>` if missing, attaches to `req.id`, sets response header.
 - Ship logger enrichment so every log line includes `traceId` (extend the existing Nest `Logger` adapter; no new logging system).
 - Ship `AllExceptionsFilter` server-side with `normalize()` covering AppError / HttpException / ZodError / Postgrest / pg-native / AbortError / unknown.
 - Ship `AppError` + factory module + ESLint guard against bare `throw new Error(...)` outside the factory.
 - Ship `ApiError` client extensions (typed accessors for `code`, `traceId`, `fields`, etc.) + read `X-Request-Id` from every response.
-- **Visible result:** every error now has a traceId in the body and in server logs. Nothing else changes user-visibly.
+- **Visible result:** every error now has a traceId in the body and in server logs. The booking-composer 409 alternatives flow continues to work (via the shim). Nothing else changes user-visibly.
 
 **Wave 1 — Classifier + 3 surfaces** — ~3 days
 - Ship `classify()` + `ClassifiedError` types + tests.
