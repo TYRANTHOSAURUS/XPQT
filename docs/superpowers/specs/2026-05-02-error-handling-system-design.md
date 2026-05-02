@@ -65,11 +65,19 @@ Every non-2xx response from the API has the same body, regardless of route, fram
   "docsUrl": "https://docs.prequest.app/errors/ticket.title_required",  // optional, surfaced when present
   "retryAfter": 47,                                             // present on 429 only; seconds
   "serverVersion": "v23",                                       // present on 409 version conflicts
-  "clientVersion": "v22"                                        // present on 409 version conflicts
+  "clientVersion": "v22",                                       // present on 409 version conflicts
+  "results": [                                                  // present iff this was a bulk operation
+    { "id": "abc", "status": "ok" },
+    { "id": "def", "status": "ok" },
+    { "id": "ghi", "status": "error", "code": "ticket.routing_no_match", "detail": "No matching team" }
+  ],
+  "partialSuccess": true                                        // present iff at least one bulk item succeeded AND at least one failed
 }
 ```
 
 `code` is the contract surface. Once shipped, codes never change semantics — only new codes are added. Codes are dot-namespaced by domain (`ticket.*`, `permission.*`, `routing.*`, `db.*`, `email.*`, `auth.*`, `quota.*`, `network.*`).
+
+**Bulk operations:** any endpoint that accepts a batch of items (delete-many, update-many, dispatch-many, etc.) returns the same wire shape with `results[]` + `partialSuccess`. The HTTP status is the worst-case outcome (any failed → 207 Multi-Status; all failed → 4xx/5xx; all ok → 2xx with `results[]` for confirmation). The renderer surfaces partial-success as a toast: `"7 of 10 deleted — 3 failed [Show me]"` where Show-me opens a sheet listing the failed items with per-item code lookup. **Adding bulk semantics is not optional and not deferrable** — once a non-bulk endpoint exists, evolving it to a bulk shape would be a breaking change to the wire contract that decision #1 forbids.
 
 ### 3.2 Server: `AppError` + global filter
 
