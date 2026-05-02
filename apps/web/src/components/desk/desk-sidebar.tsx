@@ -18,6 +18,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar"
 import { Switch } from "@/components/ui/switch"
@@ -31,8 +32,9 @@ import {
   AlertTriangleIcon,
   ClockIcon,
   FilterIcon,
-  PanelLeftOpenIcon,
-  PanelLeftCloseIcon,
+  LayoutGridIcon,
+  MenuIcon,
+  Columns3Icon,
   LayoutDashboardIcon,
   SettingsIcon,
   GaugeIcon,
@@ -48,17 +50,25 @@ import {
   ArchiveIcon,
   XCircleIcon,
   GlobeIcon,
-  SearchIcon,
   ChefHatIcon,
   UserPlusIcon,
   CalendarDaysIcon,
   CheckCheckIcon,
   KeyRoundIcon,
   AlertCircleIcon,
+  type LucideIcon,
 } from "lucide-react"
-import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { useQuery, queryOptions } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/api"
+import { useAuth } from "@/providers/auth-provider"
+import { useReceptionBuilding } from "@/components/desk/desk-building-context"
+import { filterNavGroups, type NavGroup } from "@/lib/nav-permissions"
+import {
+  useInboxUnreadCount,
+  useMyPendingApprovalsCount,
+  useExpectedVisitorsCount,
+} from "@/api/nav"
+import { formatCount } from "@/lib/format"
 import {
   VIEW_ORDER,
   viewPresets,
@@ -73,14 +83,59 @@ import { SchedulerSidebarPanel } from "@/components/desk/scheduler-sidebar-panel
 import { Calendar } from "@/components/ui/calendar"
 import { ReceptionBuildingPicker } from "@/components/desk/desk-building-picker"
 
-const navItems = [
-  { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
-  { title: "Tickets", icon: TicketIcon, path: "/desk/tickets" },
-  { title: "Approvals", icon: CheckSquareIcon, path: "/desk/approvals" },
-  { title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings" },
-  { title: "Scheduler", icon: CalendarRangeIcon, path: "/desk/scheduler" },
-  { title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors" },
-  { title: "Reports", icon: BarChart3Icon, path: "/desk/reports" },
+/**
+ * Grouped rail navigation. Per
+ * docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §IA:
+ *   • MY QUEUE — things waiting on me (specific label, earns its place)
+ *   • unlabeled middle bucket — operational destinations (any label here is
+ *     decorative; visual gap suffices)
+ *   • INSIGHTS — read-only analysis (different mode, earns a label)
+ *
+ * `permission` is currently coarse-grained (admin / agent — anyone with
+ * desk access sees these). When granular permissions ship, swap this for a
+ * permission key per item; the filter helper signature is generic.
+ *
+ * `countSlot` opts an item into the rail-badge count + urgency dot; nav
+ * items without a slot render plain.
+ */
+type RailItemPermission = "agent" | "admin"
+type CountSlot = "inbox" | "approvals" | "visitors"
+
+interface RailNavItem {
+  id: string
+  title: string
+  icon: LucideIcon
+  path: string
+  permission: RailItemPermission
+  countSlot?: CountSlot
+}
+
+const railGroups: NavGroup<RailItemPermission, RailNavItem>[] = [
+  {
+    id: "my-queue",
+    label: "My Queue",
+    items: [
+      { id: "inbox", title: "Inbox", icon: InboxIcon, path: "/desk/inbox", permission: "agent", countSlot: "inbox" },
+      { id: "approvals", title: "Approvals", icon: CheckSquareIcon, path: "/desk/approvals", permission: "agent", countSlot: "approvals" },
+    ],
+  },
+  {
+    id: "work",
+    label: null,
+    items: [
+      { id: "tickets", title: "Tickets", icon: TicketIcon, path: "/desk/tickets", permission: "agent" },
+      { id: "bookings", title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings", permission: "agent" },
+      { id: "scheduler", title: "Scheduler", icon: Columns3Icon, path: "/desk/scheduler", permission: "agent" },
+      { id: "visitors", title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors", permission: "agent", countSlot: "visitors" },
+    ],
+  },
+  {
+    id: "insights",
+    label: "Insights",
+    items: [
+      { id: "reports", title: "Reports", icon: BarChart3Icon, path: "/desk/reports", permission: "agent" },
+    ],
+  },
 ]
 
 // Scopes shown in the Bookings sidebar panel — mirrors the `?scope=` enum
@@ -253,14 +308,51 @@ function inboxPoster(ticket: InboxTicket): string {
 export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation()
   const navigate = useNavigate()
-  const { setOpen } = useSidebar()
-  const { setOpen: setPaletteOpen } = useCommandPalette()
-  const paletteOpen = React.useCallback(() => setPaletteOpen(true), [setPaletteOpen])
+  const { setOpen, railExpanded, toggleRailExpanded } = useSidebar()
+  const { hasRole } = useAuth()
+  const { buildingId: receptionBuildingId } = useReceptionBuilding()
 
-  const activePage = navItems.find((item) => location.pathname.startsWith(item.path))
-  const [activeNav, setActiveNav] = React.useState(activePage ?? navItems[0])
-  const [railExpanded, setRailExpanded] = React.useState(false)
+  // Flatten rail items for active-page lookup. Permission filtering is
+  // applied per-render below; the flatten here is over the unfiltered set
+  // because the URL might match an item the user can't see (defensive — the
+  // route guard would 401 first, but we still derive the activeNav).
+  const allRailItems = React.useMemo(
+    () => railGroups.flatMap((g) => g.items as RailNavItem[]),
+    [],
+  )
+  const activePage = allRailItems.find((item) => location.pathname.startsWith(item.path))
+  const [activeNav, setActiveNav] = React.useState<RailNavItem>(activePage ?? allRailItems[0])
   const [inboxSearch, setInboxSearch] = React.useState("")
+
+  // Permission-aware groups for the current user. Today the gate is coarse
+  // (admin/agent role); when granular permissions ship, swap the predicate
+  // body for `userPermissions.has(item.permission)`.
+  const visibleGroups = React.useMemo(
+    () =>
+      filterNavGroups(railGroups, (perm) => {
+        // Both 'admin' and 'agent' items are visible to anyone with the
+        // 'agent' role gate (admin is a superset — see useAuth().hasRole).
+        if (perm === "admin") return hasRole("admin")
+        return hasRole("agent")
+      }),
+    [hasRole],
+  )
+
+  // Settings (rail footer) is admin-only. Hidden entirely otherwise so
+  // non-admin operators don't see a useless icon.
+  const canSeeSettings = hasRole("admin")
+
+  // Rail-badge counts. Each hook is independent; failures are swallowed
+  // (the badge slot just renders empty) — see error-handling spec, the rail
+  // is a peripheral signal not an action surface.
+  const inboxCount = useInboxUnreadCount()
+  const approvalsCount = useMyPendingApprovalsCount()
+  const visitorsCount = useExpectedVisitorsCount(receptionBuildingId)
+  const countByItem: Record<CountSlot, { count?: number; hasUrgency?: boolean }> = {
+    inbox: { count: inboxCount.data?.count, hasUrgency: inboxCount.data?.hasUrgency },
+    approvals: { count: approvalsCount.data?.count, hasUrgency: approvalsCount.data?.hasUrgency },
+    visitors: { count: visitorsCount.data?.count, hasUrgency: visitorsCount.data?.hasUrgency },
+  }
 
   React.useEffect(() => {
     if (activePage) setActiveNav(activePage)
@@ -298,53 +390,77 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
       variant="inset"
       {...props}
     >
-      {/* First sidebar: icon rail (expandable to show labels) */}
+      {/* First sidebar: icon rail (expandable to show labels). Width is
+          driven by --sidebar-rail-width which the SidebarProvider derives
+          from `railExpanded`; the outer sidebar's total width grows in
+          step so the contextual second pane keeps its width either way. */}
       <Sidebar
         collapsible="none"
-        className={`${railExpanded ? 'w-[180px]!' : 'w-[calc(var(--sidebar-width-icon)+1px)]!'} border-r transition-[width] duration-200`}
+        className="w-(--sidebar-rail-width) border-r border-border/60 transition-[width] duration-200 ease-[var(--ease-smooth)]"
       >
         <SidebarHeader>
           <WorkspaceSwitcher current="desk" collapsed={!railExpanded} />
         </SidebarHeader>
         <SidebarContent>
-          <SidebarGroup>
-            <SidebarGroupContent className={railExpanded ? "px-2" : "px-1.5 md:px-0"}>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    tooltip={{ children: "Search (⌘K)", hidden: railExpanded }}
-                    onClick={() => paletteOpen()}
-                    className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
-                  >
-                    <SearchIcon className="shrink-0" />
-                    {railExpanded && (
-                      <>
-                        <span>Search</span>
-                        <span className="ml-auto text-xs text-muted-foreground">⌘K</span>
-                      </>
-                    )}
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                {navItems.map((item) => (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      tooltip={{ children: item.title, hidden: railExpanded }}
-                      onClick={() => {
-                        setActiveNav(item)
-                        navigate(item.path)
-                        setOpen(true)
-                      }}
-                      isActive={activeNav?.title === item.title}
-                      className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
-                    >
-                      <item.icon className="shrink-0" />
-                      {railExpanded && <span>{item.title}</span>}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          {visibleGroups.map((group, groupIndex) => (
+            <React.Fragment key={group.id}>
+              {/* Visual gap between groups; render only when the group has
+                  no label so labeled groups use SidebarGroupLabel instead. */}
+              {group.label === null && groupIndex > 0 && railExpanded && (
+                <SidebarSeparator className="my-1" />
+              )}
+              <SidebarGroup>
+                {group.label !== null && railExpanded && (
+                  <SidebarGroupLabel className="px-3 uppercase tracking-wide">
+                    {group.label}
+                  </SidebarGroupLabel>
+                )}
+                <SidebarGroupContent className={railExpanded ? "px-2" : "px-1.5 md:px-0"}>
+                  <SidebarMenu>
+                    {(group.items as RailNavItem[]).map((item) => {
+                      const slot = item.countSlot ? countByItem[item.countSlot] : undefined
+                      const showCount = slot && typeof slot.count === "number" && slot.count > 0 && railExpanded
+                      const showUrgency = slot?.hasUrgency === true
+                      return (
+                        <SidebarMenuItem key={item.id}>
+                          <SidebarMenuButton
+                            tooltip={{ children: item.title, hidden: railExpanded }}
+                            onClick={() => {
+                              setActiveNav(item)
+                              navigate(item.path)
+                              setOpen(true)
+                            }}
+                            isActive={activeNav?.id === item.id}
+                            className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                          >
+                            <item.icon className="shrink-0" />
+                            {railExpanded && <span>{item.title}</span>}
+                            {showCount && (
+                              <span className="ml-auto font-mono tabular-nums text-xs text-muted-foreground">
+                                {formatCount(slot.count!)}
+                              </span>
+                            )}
+                            {showUrgency && railExpanded && (
+                              <span
+                                aria-label="needs attention"
+                                className="ml-1 inline-block size-1.5 rounded-full bg-destructive"
+                              />
+                            )}
+                            {showUrgency && !railExpanded && (
+                              <span
+                                aria-label="needs attention"
+                                className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-destructive"
+                              />
+                            )}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      )
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </React.Fragment>
+          ))}
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
@@ -358,27 +474,36 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                 {railExpanded && <span>Portal</span>}
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                tooltip={{ children: "Platform Settings", hidden: railExpanded }}
-                onClick={() => navigate("/admin")}
-                className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
-              >
-                <SettingsIcon className="shrink-0" />
-                {railExpanded && <span>Settings</span>}
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {canSeeSettings && (
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip={{ children: "Platform Settings", hidden: railExpanded }}
+                  onClick={() => navigate("/admin")}
+                  className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                >
+                  <SettingsIcon className="shrink-0" />
+                  {railExpanded && <span>Settings</span>}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )}
           </SidebarMenu>
-          <div className="my-1" />
+          <SidebarSeparator className="my-1" />
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton
-                tooltip={{ children: railExpanded ? "Collapse menu" : "Expand menu", hidden: railExpanded }}
-                onClick={() => setRailExpanded(!railExpanded)}
+                tooltip={{
+                  children: railExpanded ? "Compact view" : "Show labels",
+                  hidden: railExpanded,
+                }}
+                onClick={toggleRailExpanded}
                 className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
               >
-                {railExpanded ? <PanelLeftCloseIcon className="shrink-0" /> : <PanelLeftOpenIcon className="shrink-0" />}
-                {railExpanded && <span>Collapse</span>}
+                {railExpanded ? (
+                  <LayoutGridIcon className="shrink-0" />
+                ) : (
+                  <MenuIcon className="shrink-0" />
+                )}
+                {railExpanded && <span>Compact view</span>}
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

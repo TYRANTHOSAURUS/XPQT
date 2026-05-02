@@ -14,19 +14,23 @@
  * generic so we can swap in granular permission checks later without
  * touching every caller.
  */
-export interface NavItem<T = unknown> {
+/**
+ * Minimum shape every nav item must satisfy. Callers extend this with
+ * domain-specific fields (icon, label, route, count slot, etc.).
+ */
+export interface NavItem<TPermission = unknown> {
   /** Stable identifier — used as React key and in tests. */
   id: string;
   /** The thing the predicate evaluates against. Caller-defined (e.g. a permission key, a role name, an arbitrary tag). */
-  permission: T;
+  permission: TPermission;
 }
 
-export interface NavGroup<T = unknown> {
+export interface NavGroup<TPermission = unknown, TItem extends NavItem<TPermission> = NavItem<TPermission>> {
   /** Stable identifier. */
   id: string;
   /** Group label. `null` renders as an unlabeled (separator-only) section. */
   label: string | null;
-  items: NavItem<T>[];
+  items: TItem[];
 }
 
 /**
@@ -34,12 +38,14 @@ export interface NavGroup<T = unknown> {
  * filtered out are dropped entirely; surviving groups keep their label even
  * when only a single item remains.
  *
- * Pure function — no side effects. Order is preserved.
+ * Pure function — no side effects. Order is preserved. Item shape is
+ * preserved (TItem flows through), so callers can carry arbitrary
+ * domain-specific fields on each item without losing type info.
  */
-export function filterNavGroups<T>(
-  groups: NavGroup<T>[],
-  canShow: (permission: T) => boolean,
-): NavGroup<T>[] {
+export function filterNavGroups<TPermission, TItem extends NavItem<TPermission>>(
+  groups: NavGroup<TPermission, TItem>[],
+  canShow: (permission: TPermission) => boolean,
+): NavGroup<TPermission, TItem>[] {
   return groups
     .map((group) => ({
       ...group,
