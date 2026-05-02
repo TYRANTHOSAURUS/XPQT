@@ -64,10 +64,10 @@ function VisitorListRowImpl({
       className={cn(
         'group relative flex items-stretch transition-colors',
         selected
-          ? 'bg-accent'
+          ? 'bg-primary/10 hover:bg-primary/15'
           : menuOpen
-            ? 'bg-muted/50'
-            : 'hover:bg-muted/30',
+            ? 'bg-muted/60'
+            : 'hover:bg-muted/40',
       )}
       // contentVisibility skips render work for rows scrolled off-screen;
       // intrinsic size keeps the scrollbar stable.

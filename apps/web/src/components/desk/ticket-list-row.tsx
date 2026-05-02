@@ -52,10 +52,10 @@ function TicketListRowImpl({
       }}
       className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${
         selected
-          ? 'bg-accent'
+          ? 'bg-primary/10 hover:bg-primary/15'
           : menuOpen
-            ? 'bg-muted/50'
-            : 'hover:bg-muted/30'
+            ? 'bg-muted/60'
+            : 'hover:bg-muted/40'
       }`}
       // Inset shadow over border + padding shift — keeps cell text
       // anchored when selection toggles. contentVisibility skips render
