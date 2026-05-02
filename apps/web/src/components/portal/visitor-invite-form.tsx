@@ -509,8 +509,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             )}
           </CollapsibleTrigger>
           <CollapsibleContent
-            className="overflow-hidden data-[ending-style]:opacity-0 data-[starting-style]:opacity-0"
-            style={{ transitionDuration: '180ms' }}
+            className="overflow-hidden h-[var(--collapsible-panel-height)] [transition:height_220ms_var(--ease-smooth),opacity_220ms_var(--ease-smooth)] data-[ending-style]:h-0 data-[ending-style]:opacity-0 data-[starting-style]:h-0 data-[starting-style]:opacity-0"
           >
             <FieldSeparator className="my-4" />
             <FieldGroup>

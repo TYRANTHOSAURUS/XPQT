@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import { useCallback, useState, type ReactElement } from 'react';
 import {
   Copy,
   ExternalLink,
@@ -22,6 +22,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSuccess } from '@/lib/toast';
 import {
   formatReceptionRowName,
@@ -70,7 +71,7 @@ export function VisitorContextMenu({
   const markArrived = useMarkArrived(buildingId);
   const markCheckedOut = useMarkCheckedOut(buildingId);
   const markNoShow = useMarkNoShow(buildingId);
-  const [pending, setPending] = useState<string | null>(null);
+  const [checkoutDialog, setCheckoutDialog] = useState(false);
 
   const visitorLabel = formatReceptionRowName(row);
   const isExpected = row.status === 'expected' || row.status === 'pending_approval';
@@ -80,57 +81,62 @@ export function VisitorContextMenu({
     row.status === 'cancelled' ||
     row.status === 'no_show';
 
-  const handleArrive = (minutesAgo: number) => {
-    setPending('arrive');
-    markArrived.mutate(
-      {
-        visitorId: row.visitor_id,
-        arrived_at: minutesAgo > 0 ? backdatedIso(minutesAgo) : undefined,
-      },
-      {
-        onSuccess: () => toastSuccess(`${visitorLabel} marked arrived`),
-        onError: (err) =>
-          toastError("Couldn't mark arrived", {
-            error: err,
-            retry: () => handleArrive(minutesAgo),
-          }),
-        onSettled: () => setPending(null),
-      },
-    );
-  };
+  // Wrap handlers in useCallback so the context-menu items don't re-create
+  // their click handlers on every parent render — keeps memoised rows
+  // memoised. Per-mutation isPending replaces the old shared `pending`
+  // string state, so concurrent mark-arrived + mark-no-show on different
+  // rows don't disable each other's items.
+  const handleArrive = useCallback(
+    (minutesAgo: number) => {
+      markArrived.mutate(
+        {
+          visitorId: row.visitor_id,
+          arrived_at: minutesAgo > 0 ? backdatedIso(minutesAgo) : undefined,
+        },
+        {
+          onSuccess: () => toastSuccess(`${visitorLabel} marked arrived`),
+          onError: (err) =>
+            toastError("Couldn't mark arrived", {
+              error: err,
+              retry: () => handleArrive(minutesAgo),
+            }),
+        },
+      );
+    },
+    [markArrived, row.visitor_id, visitorLabel],
+  );
 
-  const handleCheckout = (passReturned: boolean | undefined) => {
-    setPending('checkout');
-    markCheckedOut.mutate(
-      {
-        visitorId: row.visitor_id,
-        checkout_source: 'reception',
-        pass_returned: passReturned,
-      },
-      {
-        onSuccess: () => toastSuccess(`${visitorLabel} checked out`),
-        onError: (err) =>
-          toastError("Couldn't check out", {
-            error: err,
-            retry: () => handleCheckout(passReturned),
-          }),
-        onSettled: () => setPending(null),
-      },
-    );
-  };
+  const handleCheckout = useCallback(
+    (passReturned: boolean | undefined) => {
+      markCheckedOut.mutate(
+        {
+          visitorId: row.visitor_id,
+          checkout_source: 'reception',
+          pass_returned: passReturned,
+        },
+        {
+          onSuccess: () => toastSuccess(`${visitorLabel} checked out`),
+          onError: (err) =>
+            toastError("Couldn't check out", {
+              error: err,
+              retry: () => handleCheckout(passReturned),
+            }),
+        },
+      );
+    },
+    [markCheckedOut, row.visitor_id, visitorLabel],
+  );
 
-  const handleNoShow = () => {
-    setPending('no_show');
+  const handleNoShow = useCallback(() => {
     markNoShow.mutate(
       { visitorId: row.visitor_id },
       {
         onSuccess: () => toastSuccess(`${visitorLabel} marked no-show`),
         onError: (err) =>
           toastError("Couldn't mark no-show", { error: err, retry: handleNoShow }),
-        onSettled: () => setPending(null),
       },
     );
-  };
+  }, [markNoShow, row.visitor_id, visitorLabel]);
 
   const link = `${window.location.origin}/desk/visitors?id=${row.visitor_id}`;
 
@@ -187,31 +193,31 @@ export function VisitorContextMenu({
             <ContextMenuSubContent className="w-48">
               <ContextMenuItem
                 onClick={() => handleArrive(0)}
-                disabled={pending === 'arrive'}
+                disabled={markArrived.isPending}
               >
                 Just now
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleArrive(5)}
-                disabled={pending === 'arrive'}
+                disabled={markArrived.isPending}
               >
                 5 min ago
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleArrive(15)}
-                disabled={pending === 'arrive'}
+                disabled={markArrived.isPending}
               >
                 15 min ago
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleArrive(30)}
-                disabled={pending === 'arrive'}
+                disabled={markArrived.isPending}
               >
                 30 min ago
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleArrive(60)}
-                disabled={pending === 'arrive'}
+                disabled={markArrived.isPending}
               >
                 1 hour ago
               </ContextMenuItem>
@@ -221,34 +227,16 @@ export function VisitorContextMenu({
 
         {isOnSite && (
           <>
-            <ContextMenuSub>
-              <ContextMenuSubTrigger>
-                <LogOut /> Mark left
-              </ContextMenuSubTrigger>
-              <ContextMenuSubContent className="w-52">
-                <ContextMenuLabel className="text-muted-foreground">
-                  Pass return
-                </ContextMenuLabel>
-                <ContextMenuItem
-                  onClick={() => handleCheckout(true)}
-                  disabled={!row.pass_number || pending === 'checkout'}
-                >
-                  Returned
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onClick={() => handleCheckout(false)}
-                  disabled={!row.pass_number || pending === 'checkout'}
-                >
-                  Missing — mark lost
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onClick={() => handleCheckout(undefined)}
-                  disabled={pending === 'checkout'}
-                >
-                  Skip — reconcile later
-                </ContextMenuItem>
-              </ContextMenuSubContent>
-            </ContextMenuSub>
+            {/* "Mark left" routes to the explicit pass-return dialog
+             *  rather than re-implementing the choice inline. The dialog
+             *  also handles the no-pass case so the same affordance
+             *  works for visitors without an assigned pass. */}
+            <ContextMenuItem
+              onClick={() => setCheckoutDialog(true)}
+              disabled={markCheckedOut.isPending}
+            >
+              <LogOut /> Mark left…
+            </ContextMenuItem>
 
             {!row.pass_number && (
               <ContextMenuItem
@@ -262,7 +250,7 @@ export function VisitorContextMenu({
         )}
 
         {isExpected && (
-          <ContextMenuItem onClick={handleNoShow} disabled={pending === 'no_show'}>
+          <ContextMenuItem onClick={handleNoShow} disabled={markNoShow.isPending}>
             <XCircle /> Mark no-show
           </ContextMenuItem>
         )}
@@ -273,6 +261,17 @@ export function VisitorContextMenu({
           </ContextMenuItem>
         )}
       </ContextMenuContent>
+
+      {checkoutDialog && (
+        <CheckoutDialog
+          open
+          onOpenChange={(open) => !open && setCheckoutDialog(false)}
+          buildingId={buildingId}
+          visitorId={row.visitor_id}
+          visitorLabel={visitorLabel}
+          hasPass={Boolean(row.pass_number)}
+        />
+      )}
     </ContextMenu>
   );
 }

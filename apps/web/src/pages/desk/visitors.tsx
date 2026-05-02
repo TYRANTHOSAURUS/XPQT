@@ -36,6 +36,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Command,
+  CommandEmpty,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
@@ -588,64 +594,74 @@ function DeskVisitorsInner() {
             {activeViewLabel}
           </Badge>
         )}
-        <div className="relative max-w-sm flex-1">
-          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            ref={searchInputRef}
-            placeholder="Search visitors, hosts, companies…"
-            className="pl-9"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-            aria-label="Search visitors"
-          />
+        {/* Search box — cmdk-driven so arrow keys + Enter + Escape work
+            without us hand-rolling the keyboard logic. Results are
+            pre-filtered server-side, so shouldFilter={false}. */}
+        <Command
+          shouldFilter={false}
+          className="relative max-w-sm flex-1 overflow-visible bg-transparent rounded-none"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && searchInput) {
+              e.preventDefault();
+              setSearchInput('');
+            }
+          }}
+        >
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              placeholder="Search visitors, hosts, companies…"
+              className="pl-9"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Search visitors"
+            />
+          </div>
           {/* Search results overlay — anchored to the input. The bucket
-              list stays visible behind it (fix point from slice 7). */}
+              list stays visible behind it. */}
           {isSearching && (
-            <div
-              role="listbox"
-              className="absolute inset-x-0 top-full z-30 mt-2 max-h-[60vh] divide-y overflow-y-auto rounded-lg border bg-popover shadow-md"
-            >
+            <CommandList className="absolute inset-x-0 top-full z-30 mt-2 max-h-[60vh] overflow-y-auto rounded-lg border bg-popover shadow-md p-0">
               {searchFetching && (searchResults?.length ?? 0) === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                   Searching…
                 </div>
-              ) : (searchResults?.length ?? 0) === 0 ? (
-                <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No matches.
-                </div>
               ) : (
-                (searchResults ?? []).map((row) => (
-                  <button
-                    key={row.visitor_id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedId(row.visitor_id);
-                      setSearchInput('');
-                    }}
-                    className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent"
-                  >
-                    <span className="w-14 shrink-0 text-xs tabular-nums text-muted-foreground">
-                      {row.expected_at ? formatTimeShort(row.expected_at) : '—'}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm">
-                        {formatReceptionRowName(row)}
+                <>
+                  <CommandEmpty>No matches.</CommandEmpty>
+                  {(searchResults ?? []).map((row) => (
+                    <CommandItem
+                      key={row.visitor_id}
+                      value={`${row.visitor_id} ${formatReceptionRowName(row)} ${formatPrimaryHost(row) ?? ''}`}
+                      onSelect={() => {
+                        setSelectedId(row.visitor_id);
+                        setSearchInput('');
+                      }}
+                      className="rounded-none"
+                    >
+                      <span className="w-14 shrink-0 text-xs tabular-nums text-muted-foreground">
+                        {row.expected_at ? formatTimeShort(row.expected_at) : '—'}
                       </span>
-                      {formatPrimaryHost(row) && (
-                        <span className="block truncate text-xs text-muted-foreground">
-                          Host: {formatPrimaryHost(row)}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm">
+                          {formatReceptionRowName(row)}
                         </span>
-                      )}
-                    </span>
-                    <VisitorStatusBadge status={row.status} />
-                  </button>
-                ))
+                        {formatPrimaryHost(row) && (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            Host: {formatPrimaryHost(row)}
+                          </span>
+                        )}
+                      </span>
+                      <VisitorStatusBadge status={row.status} />
+                    </CommandItem>
+                  ))}
+                </>
               )}
-            </div>
+            </CommandList>
           )}
-        </div>
+        </Command>
 
         {selectedIds.size > 0 ? (
           <div className="flex items-center gap-2">
@@ -741,7 +757,19 @@ function DeskVisitorsInner() {
             </Panel>
             <Separator />
             <Panel id="detail" defaultSize="45%" className="relative">
-              <div className="absolute inset-0 overflow-auto overscroll-contain border-l">
+              {/* Soft slide-in + fade when the detail panel mounts. The
+                  Group itself layouts the column instantly; this wrapper
+                  smooths the transition from "no selection" → "selected"
+                  so the row click feels connected to the panel reveal. */}
+              <div
+                data-state="open"
+                className={cn(
+                  'absolute inset-0 overflow-auto overscroll-contain border-l',
+                  'data-[state=open]:translate-x-0 data-[state=closed]:translate-x-2',
+                  'data-[state=open]:opacity-100 data-[state=closed]:opacity-0',
+                  'transition-[transform,opacity] duration-200 ease-[var(--ease-smooth)]',
+                )}
+              >
                 <VisitorDetail
                   visitorId={selectedId}
                   buildingId={buildingId}

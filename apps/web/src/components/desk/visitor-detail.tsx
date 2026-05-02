@@ -7,7 +7,7 @@
  *
  * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §2, §6, §7
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Building2,
   Calendar as CalendarIcon,
@@ -33,6 +33,7 @@ import {
 } from '@/api/visitors/reception';
 import { useSpaces } from '@/api/spaces';
 import { usePerson, personFullName } from '@/api/persons';
+import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSuccess } from '@/lib/toast';
 import {
   formatFullTimestamp,
@@ -67,6 +68,8 @@ export function VisitorDetail({
   const markArrived = useMarkArrived(buildingId);
   const markCheckedOut = useMarkCheckedOut(buildingId);
   const markNoShow = useMarkNoShow(buildingId);
+
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
 
   const buildingName = useMemo(() => {
     if (!visitor?.building_id) return null;
@@ -113,23 +116,10 @@ export function VisitorDetail({
     );
   };
 
-  const handleCheckout = () => {
-    markCheckedOut.mutate(
-      {
-        visitorId: visitor.id,
-        checkout_source: 'reception',
-        // We don't ask for pass-return here — the dialog/menu has the
-        // explicit choice. The detail panel button is the fast-path
-        // "they left" verb without forcing a modal.
-        pass_returned: undefined,
-      },
-      {
-        onSuccess: () => toastSuccess(`${visitorName} checked out`),
-        onError: (err) =>
-          toastError("Couldn't check out", { error: err, retry: handleCheckout }),
-      },
-    );
-  };
+  // The detail panel's "Mark left" routes through the explicit
+  // pass-return dialog so reception can record returned / lost / skip
+  // in one place. Same dialog handles the no-pass case.
+  const openCheckout = () => setCheckoutOpen(true);
 
   const handleNoShow = () => {
     markNoShow.mutate(
@@ -171,7 +161,7 @@ export function VisitorDetail({
         )}
         {isOnSite && (
           <>
-            <Button size="sm" onClick={handleCheckout} disabled={markCheckedOut.isPending}>
+            <Button size="sm" onClick={openCheckout} disabled={markCheckedOut.isPending}>
               <LogOut className="size-4" /> Mark left
             </Button>
             {!visitor.visitor_pass_id && (
@@ -349,6 +339,17 @@ export function VisitorDetail({
           </Section>
         )}
       </div>
+
+      {checkoutOpen && (
+        <CheckoutDialog
+          open
+          onOpenChange={(open) => !open && setCheckoutOpen(false)}
+          buildingId={buildingId}
+          visitorId={visitor.id}
+          visitorLabel={visitorName}
+          hasPass={Boolean(visitor.visitor_pass_id)}
+        />
+      )}
     </div>
   );
 }
