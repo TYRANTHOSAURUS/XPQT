@@ -302,8 +302,14 @@ export function useCreateInvitation() {
         body: JSON.stringify(payload),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: visitorKeys.expected() });
-      qc.invalidateQueries({ queryKey: visitorKeys.lists() });
+      // Invalidate the whole visitors namespace — receptionKeys live
+      // under `[...visitorKeys.all, 'reception']` (see reception.ts), so
+      // a hierarchical invalidate on `visitors` covers the host's
+      // expected list, generic lists, AND the reception today/search/
+      // daglijst views in one call. Without this the booking-composer
+      // visitor flush would only refresh the host views, leaving
+      // /desk/visitors stale until the 15s poll catches up.
+      qc.invalidateQueries({ queryKey: visitorKeys.all });
     },
   });
 }
