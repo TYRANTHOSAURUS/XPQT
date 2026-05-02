@@ -69,6 +69,7 @@ import {
   useReceptionBuilding,
   ReceptionBuildingProvider,
 } from '@/components/desk/desk-building-context';
+import { ReceptionBuildingPicker } from '@/components/desk/desk-building-picker';
 import { VisitorListRow } from '@/components/desk/visitor-list-row';
 import { VisitorContextMenu } from '@/components/desk/visitor-context-menu';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
@@ -80,9 +81,11 @@ import {
   formatPrimaryHost,
   formatReceptionRowName,
   useMarkArrived,
+  useMarkPassMissing,
   useReceptionSearch,
   useReceptionToday,
   useReceptionYesterday,
+  useReturnPass,
   type ReceptionTodayView,
   type ReceptionVisitorRow as RowT,
 } from '@/api/visitors/reception';
@@ -803,33 +806,15 @@ function DeskVisitorsInner() {
       }));
     }
     if (activeView === 'loose_ends') {
-      // The yesterday endpoint surfaces unreturned passes + bounces, not
-      // visitor rows directly. We synthesise a visitor-shaped row for
-      // the auto-checked-out summary plus the bounce + pass entries.
-      // Today's exemption: this is a v1 best-effort; the dedicated
-      // /reception/yesterday tile in the previous workspace had richer
-      // affordances. Treated as scoped tech debt — listed in
-      // visitors-v1-tech-debt.md as a follow-up.
-      const passes = yesterday.data?.unreturned_passes ?? [];
-      // Build placeholder rows so the table renders something
-      // operational; users still get the count via the section header.
-      return passes.map((p) => ({
-        visitor_id: p.id,
-        first_name: 'Pass',
-        last_name: `#${p.pass_number}`,
-        company: p.notes,
-        primary_host_first_name: null,
-        primary_host_last_name: null,
-        expected_at: null,
-        arrived_at: p.last_assigned_at,
-        status: 'checked_out' as const,
-        visitor_pass_id: p.id,
-        pass_number: p.pass_number,
-        visitor_type_id: null,
-      }));
+      // Loose-ends has its own dedicated panel rendered below the
+      // toolbar — it surfaces unreturned passes + bounce events with
+      // pass-state mutations, not visitor rows. Returning [] here keeps
+      // the visitor table empty when this view is active so the panel
+      // is the only thing on screen.
+      return [];
     }
     return flattenToday(today.data);
-  }, [activeView, today.data, yesterday.data, deskLens.data]);
+  }, [activeView, today.data, deskLens.data]);
 
   // Filter the source rows against the URL filters.
   const filteredRows: RowT[] = useMemo(() => {
@@ -983,6 +968,10 @@ function DeskVisitorsInner() {
           </div>
         ) : (
           <div className="ml-auto flex items-center gap-3">
+            {/* Multi-building tenants get a picker so reception can switch
+             *  scope without leaving the desk shell. Single-building
+             *  tenants see nothing here (the picker self-hides). */}
+            {buildings.length > 1 && <ReceptionBuildingPicker />}
             <span className="text-sm text-muted-foreground">
               {filteredRows.length} visitor{filteredRows.length !== 1 ? 's' : ''}
             </span>
@@ -1065,7 +1054,13 @@ function DeskVisitorsInner() {
       )}
 
       <div className="min-h-0 flex-1 overflow-auto overscroll-contain pb-4">
-        {view === 'list' ? (
+        {activeView === 'loose_ends' ? (
+          <LooseEndsPanel
+            buildingId={buildingId}
+            data={yesterday.data}
+            isLoading={yesterday.isLoading}
+          />
+        ) : view === 'list' ? (
           <VisitorList
             rows={filteredRows}
             loading={isLoading}
@@ -1181,6 +1176,213 @@ function DeskVisitorsInner() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Yesterday's loose ends — auto-checked-out count, unreturned passes
+ * with mark-returned / mark-lost actions, and bounce events.
+ *
+ * This is the receptionist's "what slipped through?" reconciliation
+ * surface. The visitor table is intentionally empty when this view is
+ * active so the panel is the entire workspace.
+ */
+function LooseEndsPanel({
+  buildingId,
+  data,
+  isLoading,
+}: {
+  buildingId: string | null;
+  data: ReturnType<typeof useReceptionYesterday>['data'];
+  isLoading: boolean;
+}) {
+  const returnPass = useReturnPass(buildingId);
+  const markPassMissing = useMarkPassMissing(buildingId);
+
+  if (isLoading) {
+    return (
+      <div className="mx-6 flex flex-col gap-3">
+        <div className="portal-skeleton h-16 rounded-md" />
+        <div className="portal-skeleton h-32 rounded-md" />
+      </div>
+    );
+  }
+
+  const autoCheckedOut = data?.auto_checked_out_count ?? 0;
+  const passes = data?.unreturned_passes ?? [];
+  const bounces = data?.bounced_emails ?? [];
+  const totalSignals = autoCheckedOut + passes.length + bounces.length;
+
+  if (totalSignals === 0) {
+    return (
+      <div className="mx-6 flex flex-col items-center gap-3 rounded-md border bg-muted/20 px-6 py-16 text-center">
+        <Inbox className="size-6 text-muted-foreground/60" aria-hidden />
+        <div>
+          <p className="text-sm font-medium">No loose ends from yesterday.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Everyone returned their pass and the autopilot stayed quiet.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const handleReturn = (passId: string) => {
+    returnPass.mutate(
+      { passId },
+      {
+        onSuccess: () => toastSaved('pass', { silent: true }),
+        onError: (err) =>
+          toastError("Couldn’t mark returned", {
+            error: err,
+            retry: () => handleReturn(passId),
+          }),
+      },
+    );
+  };
+
+  const handleMarkLost = (passId: string) => {
+    markPassMissing.mutate(
+      { passId },
+      {
+        onSuccess: () => toastSaved('pass', { silent: true }),
+        onError: (err) =>
+          toastError("Couldn’t mark lost", {
+            error: err,
+            retry: () => handleMarkLost(passId),
+          }),
+      },
+    );
+  };
+
+  return (
+    <div className="mx-6 flex flex-col gap-4">
+      {/* Auto-checked-out + bounce counters in a single condensed strip. */}
+      {(autoCheckedOut > 0 || bounces.length > 0) && (
+        <div className="flex flex-wrap gap-3">
+          {autoCheckedOut > 0 && (
+            <div className="flex-1 min-w-[200px] rounded-md border bg-amber-50/40 px-4 py-3 dark:bg-amber-950/20">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                Auto-checked-out
+              </div>
+              <div className="mt-1 text-lg font-medium tabular-nums">
+                {autoCheckedOut}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Visitors closed by the nightly job because they never checked
+                out manually.
+              </div>
+            </div>
+          )}
+          {bounces.length > 0 && (
+            <div className="flex-1 min-w-[200px] rounded-md border bg-rose-50/40 px-4 py-3 dark:bg-rose-950/20">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                Email bounces
+              </div>
+              <div className="mt-1 text-lg font-medium tabular-nums">
+                {bounces.length}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Invitation emails that didn’t reach the visitor — host should
+                resend with a corrected address.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Unreturned passes — the actionable list. */}
+      {passes.length > 0 && (
+        <div className="rounded-md border">
+          <div className="flex items-baseline gap-3 border-b bg-muted/30 px-4 py-2 backdrop-blur-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Unreturned passes
+            </span>
+            <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+              {passes.length}
+            </span>
+          </div>
+          <ul className="divide-y">
+            {passes.map((p) => (
+              <li
+                key={p.id}
+                className="flex items-center justify-between gap-3 px-4 py-3"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium tabular-nums">
+                      #{p.pass_number}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {p.last_assigned_at
+                        ? `Last assigned ${formatTimeShort(p.last_assigned_at)}`
+                        : 'Never assigned'}
+                      {p.notes ? ` · ${p.notes}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleReturn(p.id)}
+                    disabled={returnPass.isPending}
+                  >
+                    Mark returned
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleMarkLost(p.id)}
+                    disabled={markPassMissing.isPending}
+                  >
+                    Mark lost
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Bounce list — read-only; surfaced for awareness so reception
+       *  can flag the host. No mutation here yet. */}
+      {bounces.length > 0 && (
+        <div className="rounded-md border">
+          <div className="flex items-baseline gap-3 border-b bg-muted/30 px-4 py-2 backdrop-blur-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Bounce events
+            </span>
+            <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+              {bounces.length}
+            </span>
+          </div>
+          <ul className="divide-y">
+            {bounces.map((b) => (
+              <li
+                key={`${b.visitor_id}-${b.bounced_at}`}
+                className="flex items-center justify-between gap-3 px-4 py-3 text-sm"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium">
+                    {[b.first_name, b.last_name].filter(Boolean).join(' ').trim() ||
+                      'Unnamed visitor'}
+                  </div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {b.email ?? 'no email on record'}
+                    {b.reason ? ` · ${b.reason}` : ''}
+                  </div>
+                </div>
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                  {formatTimeShort(b.bounced_at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
