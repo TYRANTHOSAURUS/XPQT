@@ -175,8 +175,8 @@ Mobile is a first-class consideration — `docs/users.md` says many requesters b
 - The current `booking-composer.tsx` — likely deleted or reduced to a thin re-export shim during migration; the goal is a clean replacement, not parallel maintenance
 
 **Backend (small):**
-- Tenant config table needs `meal_windows` columns OR a new `tenant_meal_windows` table (start_time, end_time, label). v1 default: lunch 11:30–13:30 + dinner 17:00–19:00. Used by `getSuggestions`. (One small migration, name TBD at implementation time.)
-- Endpoint to fetch suggested add-ins for a draft: `POST /bookings/draft-suggestions` accepting `{ room_id, start_at, end_at }` returning `{ catering_suggested: bool, catering_reason: string, av_suggested: bool, av_reason: string, visitors_likely: bool }`. The frontend can call this on draft change with light debounce. Alternative: compute entirely client-side from already-loaded room + meal-window config — preferred for v1, no new endpoint needed.
+- Tenant config table needs `meal_windows` columns OR a new `tenant_meal_windows` table (start_time, end_time, label). v1 default: lunch 11:30–13:30 + dinner 17:00–19:00. Loaded once per session; consumed by the client-side `getSuggestions` function. (One small migration, name TBD at implementation time.)
+- **No `/bookings/draft-suggestions` endpoint in v1.** Contextual surfacing computes entirely client-side from the already-loaded room object + tenant meal-window config. Zero latency, half the effort, full UX win. Migration trigger to add a backend endpoint: when we need a signal the client can't see (vendor capacity, ML-driven suggestions, cross-booking conflicts) or the rules grow past ~5 signals. At that point the client `getSuggestions` becomes a thin wrapper around `POST /bookings/draft-suggestions` and the architecture stays compatible.
 
 **Docs:**
 - This file
