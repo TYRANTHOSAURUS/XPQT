@@ -647,14 +647,18 @@ This is incremental. Nothing breaks on day one.
 - Ship `ApiError` client extensions (typed accessors for `code`, `traceId`, `fields`, etc.) + read `X-Request-Id` from every response.
 - **Visible result:** every error now has a traceId in the body and in server logs. The booking-composer 409 alternatives flow continues to work (via the shim). Nothing else changes user-visibly.
 
-**Wave 1 — Classifier + 3 surfaces** — ~5 days
+**Wave 1 — Classifier + 3 surfaces + form-draft v1** — ~7-8 days
 - Ship `classify()` + `ClassifiedError` types + tests.
 - Ship `handleMutationError` + `withErrorHandling` + `handleQueryError` helpers.
 - Ship 3 renderers: toast, inline (FieldError integration), banner. **Banner is scoped to `transport`-class only in Wave 1** — the banner UI mounts and listens to a transport-only state (offline / online). Realtime aggregation is added in Wave 3 once the `RealtimeStatusStore` exists; the same banner component then accepts a second source.
 - Wire `apiFetch` mid-call session-refresh retry (§6.2).
 - **Migrate the Zod sites that back the 5 highest-traffic mutations to `throwZodError`** in lockstep — the helper's `setFormError` integration depends on `fields[]` being present, and that requires the Zod migration described in §3.2 to land *for these 5 endpoints* in Wave 1. The remaining controllers stay on the old `formatZodError` string until Wave 4; their validation errors surface as a single whole-form toast in the meantime (no field-level inline display).
 - Migrate the 5 highest-traffic mutations behind a feature flag; verify voice rule preserved.
-- **Visible result:** validation errors on the 5 migrated endpoints paint inline; everything else still toasts whole-form. Offline shows a banner; toasts for everything else look mostly the same but now have traceId.
+- Ship the **form-draft preservation v1 mechanism** (per §6.2): user-scoped sessionStorage key shape, `useDraftRehydrate` hook, `AuthProvider`-driven cleanup of mismatched-userId keys on auth state change, kiosk localStorage TTL purge job. Wire into the four surfaces named in §6.2 (visitor forms / ticket forms / booking-composer / dirty admin forms).
+- Ship the **phase-signal Zustand store** + `useMutationStatus` hook + `<Button mutation>` prop extension (per §6.2 pending-state UX).
+- Ship the **scroll-to-error / focus / 500ms ring** infrastructure (per decision #11 + §6.6) — `scrollFirstErrorIntoView()` helper + `data-error-flash` attribute + axe scan in CI.
+- Ship the **bulk partial-success toast** + expanding inline list rendering (per §3.1).
+- **Visible result:** validation errors on the 5 migrated endpoints paint inline (with scroll/focus/ring); everything else still toasts whole-form. Offline shows a banner; toasts for everything else look mostly the same but now have traceId. Form drafts survive auth.expired on every v1 surface. Saves past 600ms on a refresh-retry path show "Saving… (signing back in)".
 
 **Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
@@ -681,7 +685,7 @@ This is incremental. Nothing breaks on day one.
 - Add CI guard that fails the build if a registered code lacks an English message; warn on production-log codes that aren't registered.
 - Document the spec under `docs/error-handling.md` (operational ref, like `docs/visibility.md`).
 
-**Total: ~23 working days (~4–5 weeks) for one engineer.** Waves 0+1 alone (~10 days) eliminate the bulk of the user-visible badness; the rest is the discipline that makes the system stay good.
+**Total: ~26-28 working days (~5-6 weeks) for one engineer.** Waves 0+1 alone (~12-13 days) eliminate the bulk of the user-visible badness AND the GDPR-relevant form-draft preservation; the rest is the discipline that makes the system stay good. The realignment from the original 13-day estimate captures: greenfield traceId infra (Wave 0), Zod migration in lockstep with Wave 1, form-draft preservation promoted to v1, phase-signal wiring + button extension, scroll-to-error infra, axe + manual SR walk in success criteria, 86 throw-site lint phasing, and the realtime store + page-header placement.
 
 ## 8 · Out of scope
 
