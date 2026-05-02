@@ -544,6 +544,13 @@ The receptionist persona explains why this can't wait. Shared front-desk termina
 
 Out-of-scope for v1: file inputs (warn the user to re-attach), drag-and-drop ordering state, mid-flight uploads. The text/select/checkbox/radio/textarea path covers the harm.
 
+**`formDraftKey` mechanism (how the helper integrates).** The helper signature exposes a `formDraftKey?: string` param that the call site provides; it is the user-facing identifier (`'visitor-walkup'`, `'ticket-create'`, `'webhook-edit-:id'`) that combines with the user-scoped prefix below to form the storage key. The full lifecycle:
+
+1. **Write trigger.** `handleMutationError(error, { formDraftKey, … })` runs on `auth.expired` (the hard-401 path). Before redirecting, the helper reads `form.getValues()` from the same form instance the call site is using (passed via the React `FormProvider` context, or — for non-RHF surfaces — via the registered `getDraftSnapshot()` callback below) and writes it to `sessionStorage` under `prequest:draft:${userId}:${formDraftKey}`.
+2. **Where the form is.** RHF forms use `useFormContext()`; if the helper is called from inside `<FormProvider>`, the form is reachable. For mutations triggered outside a form (rare — most are inside one), the call site passes `getDraftSnapshot: () => unknown` instead of `formDraftKey`.
+3. **Read trigger.** Each form-bearing route mounts a `useDraftRehydrate(formDraftKey)` hook that, on mount, reads `prequest:draft:${currentUserId}:${formDraftKey}` from sessionStorage. If a value is present and the userId matches the current session, the hook calls `form.reset(value)` and clears the key. If the userId doesn't match, the key is deleted, not consumed (see GDPR rule below).
+4. **No automatic write on every keystroke.** sessionStorage is written only on `auth.expired` — not as the user types. This avoids both performance overhead and stale-draft accumulation.
+
 **🔒 GDPR / shared-terminal privacy rule (mandatory).** `sessionStorage` is per-tab, not per-user — without scoping, a draft visitor's PII (name, ID number, license plate, host) survives sign-out and is visible to the next user on a shared front-desk terminal. The protections:
 
 1. **All draft keys are user-scoped:** `prequest:draft:${userId}:${route}:${formId}`. The `userId` segment is the Supabase user UUID at the time of write.
