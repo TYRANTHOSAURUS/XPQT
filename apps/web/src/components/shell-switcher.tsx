@@ -1,10 +1,10 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { User, Headset, Settings, ConciergeBell } from 'lucide-react';
+import { User, Headset, Settings } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
 import { cn } from '@/lib/utils';
 
 interface ShellItem {
-  id: 'portal' | 'desk' | 'reception' | 'admin';
+  id: 'portal' | 'desk' | 'admin';
   label: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -44,17 +44,6 @@ export function ShellSwitcher() {
       icon: Headset,
       path: '/desk',
       prefix: '/desk',
-      visible: hasRole('agent') || hasRole('admin'),
-    },
-    {
-      id: 'reception' as const,
-      label: 'Reception',
-      description: 'Front desk — visitors today',
-      icon: ConciergeBell,
-      path: '/reception',
-      prefix: '/reception',
-      // Permission gate is server-side (`visitors.reception`); we surface
-      // the switcher to anyone with agent privileges as a UX hint.
       visible: hasRole('agent') || hasRole('admin'),
     },
     {

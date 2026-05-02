@@ -8,7 +8,6 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { DeskLayout } from '@/layouts/desk-layout';
 import { PortalLayout } from '@/layouts/portal-layout';
 import { AdminLayout } from '@/layouts/admin-layout';
-import { ReceptionLayout } from '@/layouts/reception-layout';
 import { ReportsLayout } from '@/layouts/reports-layout';
 import { BrandingProvider } from '@/hooks/use-branding';
 import { ThemeProvider } from '@/providers/theme-provider';
@@ -68,12 +67,6 @@ const BundleTemplateDetailPage = lazyNamed(() => import('@/pages/admin/bundle-te
 const BookingServicesIndexPage = lazyNamed(() => import('@/pages/admin/booking-services'), 'BookingServicesIndexPage');
 const ServiceRulesPage = lazyNamed(() => import('@/pages/admin/service-rules'), 'ServiceRulesPage');
 const ServiceRuleDetailPage = lazyNamed(() => import('@/pages/admin/service-rule-detail'), 'ServiceRuleDetailPage');
-
-// Reception
-const ReceptionTodayPage = lazyNamed(() => import('@/pages/reception/today'), 'ReceptionTodayPage');
-const ReceptionPassesPage = lazyNamed(() => import('@/pages/reception/passes'), 'ReceptionPassesPage');
-const ReceptionYesterdayPage = lazyNamed(() => import('@/pages/reception/yesterday'), 'ReceptionYesterdayPage');
-const ReceptionDaglijstPage = lazyNamed(() => import('@/pages/reception/daglijst'), 'ReceptionDaglijstPage');
 
 // Public visitor cancel landing — anonymous; token IS the auth.
 // NOT wrapped in ProtectedRoute. Routes outside any layout shell.
@@ -234,27 +227,17 @@ export function App() {
                   <Route path="calendar-sync/callback" element={<PortalCalendarSyncCallbackPage />} />
                 </Route>
 
-                {/* Reception workspace — requires auth + agent role.
-                    Backend gates every endpoint on the `visitors.reception`
-                    permission, so a user with the agent role but without
-                    that permission key will see a populated workspace shell
-                    that 403s on data calls. Acceptable for v1 — once
-                    /users/me exposes effective_permissions we'll switch the
-                    client gate to be permission-aware too. */}
-                <Route
-                  path="/reception"
-                  element={
-                    <ProtectedRoute requiredRole="agent">
-                      <ReceptionLayout />
-                    </ProtectedRoute>
-                  }
-                >
-                  <Route index element={<Navigate to="/reception/today" replace />} />
-                  <Route path="today" element={<ReceptionTodayPage />} />
-                  <Route path="passes" element={<ReceptionPassesPage />} />
-                  <Route path="yesterday" element={<ReceptionYesterdayPage />} />
-                  <Route path="daglijst" element={<ReceptionDaglijstPage />} />
-                </Route>
+                {/* The legacy /reception/* workspace was removed in the
+                    desk-shell rebuild (2026-05-02). Receptionists at
+                    smaller tenants ARE service-desk operators wearing
+                    the reception hat (per docs/users.md §9), so the
+                    front-desk surface lives under /desk/visitors as a
+                    peer of /desk/tickets. Old bookmarks redirect. */}
+                <Route path="/reception" element={<Navigate to="/desk/visitors?view=today" replace />} />
+                <Route path="/reception/today" element={<Navigate to="/desk/visitors?view=today" replace />} />
+                <Route path="/reception/passes" element={<Navigate to="/desk/visitors?view=arrived" replace />} />
+                <Route path="/reception/yesterday" element={<Navigate to="/desk/visitors?view=loose_ends" replace />} />
+                <Route path="/reception/daglijst" element={<Navigate to="/desk/visitors?view=today" replace />} />
 
                 {/* Service Desk — requires auth + agent role */}
                 <Route

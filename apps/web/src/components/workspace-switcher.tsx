@@ -5,7 +5,6 @@ import {
   LayoutDashboardIcon,
   HeadsetIcon,
   SettingsIcon,
-  ConciergeBellIcon,
   type LucideIcon,
 } from "lucide-react"
 import {
@@ -25,7 +24,7 @@ import {
 import { useAuth, type RoleType } from "@/providers/auth-provider"
 import { TenantLogo } from "@/components/tenant-logo"
 
-export type WorkspaceId = "portal" | "desk" | "reception" | "admin"
+export type WorkspaceId = "portal" | "desk" | "admin"
 
 interface Workspace {
   id: WorkspaceId
@@ -38,13 +37,10 @@ interface Workspace {
 const WORKSPACES: Workspace[] = [
   { id: "portal", label: "Employee Portal", icon: LayoutDashboardIcon, path: "/portal" },
   { id: "desk", label: "Service Desk", icon: HeadsetIcon, path: "/desk", requiresRole: "agent" },
-  // Reception is permission-gated server-side on `visitors.reception`. The
-  // client-side `requiresRole: "agent"` here is a UX hint — the backend is
-  // the source of truth. A receptionist who only has visitors.reception
-  // (no agent role) will currently see a 403 on every endpoint until we
-  // expose a permission-aware hook (TODO: wire `/users/me` to surface
-  // effective_permissions and switch this guard).
-  { id: "reception", label: "Reception", icon: ConciergeBellIcon, path: "/reception", requiresRole: "agent" },
+  // Reception was removed as a top-level workspace in the desk-shell
+  // rebuild (2026-05-02) — receptionists access the front desk via the
+  // service desk shell at /desk/visitors. Permission-gating is still
+  // server-side on `visitors.reception`.
   { id: "admin", label: "Platform Settings", icon: SettingsIcon, path: "/admin", requiresRole: "admin" },
 ]
 
