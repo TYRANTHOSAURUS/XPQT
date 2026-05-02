@@ -469,14 +469,15 @@ This is incremental. Nothing breaks on day one.
 - Ship `ApiError` client extensions (typed accessors for `code`, `traceId`, `fields`, etc.) + read `X-Request-Id` from every response.
 - **Visible result:** every error now has a traceId in the body and in server logs. The booking-composer 409 alternatives flow continues to work (via the shim). Nothing else changes user-visibly.
 
-**Wave 1 — Classifier + 3 surfaces** — ~3 days
+**Wave 1 — Classifier + 3 surfaces** — ~5 days
 - Ship `classify()` + `ClassifiedError` types + tests.
 - Ship `handleMutationError` + `withErrorHandling` + `handleQueryError` helpers.
 - Ship 3 renderers: toast, inline (FieldError integration), banner.
-- Migrate the 5 highest-traffic mutations behind a feature flag.
+- Wire `apiFetch` mid-call session-refresh retry (§6.2).
+- Migrate the 5 highest-traffic mutations behind a feature flag; verify voice rule preserved.
 - **Visible result:** validation errors paint inline; offline shows a banner; toasts for everything else look mostly the same but now have traceId.
 
-**Wave 2 — Page-level surfaces** — ~3 days
+**Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
 - Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
 - Ship 404 / 403 / 410 / 5xx page templates.
@@ -485,21 +486,23 @@ This is incremental. Nothing breaks on day one.
 
 **Wave 2 explicitly does NOT migrate the route tree to a data router.** That migration (`createBrowserRouter` + loaders/actions) is a separate decision; it's a multi-day refactor across 131+ routes and is out of scope here.
 
-**Wave 3 — Recovery polish** — ~3 days
-- Sign-in `next=` redirect with form-draft preservation.
+**Wave 3 — Recovery polish + realtime** — ~5 days
+- Realtime status store + listener wiring (no central store today; three call sites manage their own channels).
 - Rate-limit live countdown.
-- Optimistic-rollback animation + explanation.
-- Realtime status indicator.
-- Render-error boundary per route.
+- Optimistic-rollback animation recipe (caller composes; documented).
+- Render-error boundary per route (already shipped in Wave 2 — this is the polish pass).
+- 401 refresh-loop bail rule.
+- (Polish, not strictly required) Form-draft preservation on hard sign-out.
 - **Visible result:** every error has an actionable next step; the platform feels "smart" when things go wrong.
 
-**Wave 4 — Backfill + Dutch** — ~2 days, can run in parallel with Wave 3
+**Wave 4 — Backfill + Dutch** — ~3 days, can run in parallel with Wave 3
 - Migrate the next 30 highest-traffic throw sites to coded `AppError`.
+- Migrate every `safeParse` call site to throw `AppError` via `throwZodError` (Zod migration — see §3.2).
 - Ship `messages.nl.ts` for the registered code set.
-- Add CI lint that warns on unregistered codes seen in production.
+- Add CI guard that fails the build if a registered code lacks an English message; warn on production-log codes that aren't registered.
 - Document the spec under `docs/error-handling.md` (operational ref, like `docs/visibility.md`).
 
-**Total: ~13 working days** for one engineer. Worth noting: Waves 0+1 alone (~6 days) eliminate ~80% of the user-visible badness. The rest is polish.
+**Total: ~23 working days (~4–5 weeks) for one engineer.** Waves 0+1 alone (~10 days) eliminate the bulk of the user-visible badness; the rest is the discipline that makes the system stay good.
 
 ## 8 · Out of scope
 
