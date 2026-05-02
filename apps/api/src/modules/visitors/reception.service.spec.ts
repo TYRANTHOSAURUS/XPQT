@@ -280,6 +280,54 @@ describe('ReceptionService', () => {
       expect(view.building_id).toBe(BUILDING_ID);
     });
 
+    it('returns arrived rows even when arrived_at is older than the 30-minute window', async () => {
+      // Regression for the "all my visitors are gone" bug: the WHERE
+      // clause used to require `arrived_at >= now - 30min` for `arrived`
+      // rows, which silently dropped any visitor who arrived more than
+      // 30 minutes ago and was never transitioned to in_meeting. The
+      // backend now returns them under bucket='in_meeting' so the
+      // frontend's buildTodayBuckets() can route them to the on-site
+      // bucket via status + arrived_at.
+      const ctx = makeHarness({
+        todayRows: [
+          {
+            visitor_id: 'v_old_arrived',
+            first_name: 'Old',
+            last_name: null,
+            company: null,
+            primary_host_first_name: null,
+            primary_host_last_name: null,
+            expected_at: null,
+            arrived_at: '2026-05-01T07:00:00Z',
+            status: 'arrived',
+            visitor_pass_id: null,
+            pass_number: null,
+            visitor_type_id: TYPE_GUEST,
+            bucket: 'in_meeting',
+          },
+        ],
+      });
+      const view = await ctx.svc.today(TENANT_ID, BUILDING_ID, USER_ID);
+      expect(view.in_meeting).toHaveLength(1);
+      expect(view.in_meeting[0].visitor_id).toBe('v_old_arrived');
+      expect(view.currently_arriving).toHaveLength(0);
+    });
+
+    it("includes 'arrived' rows unconditionally in the today WHERE clause", async () => {
+      // Pin the SQL shape so a future regression (re-adding `and v.arrived_at >= $4`
+      // to the arrived branch) fails this test directly rather than only
+      // surfacing as missing rows in production.
+      const ctx = makeHarness({ todayRows: [] });
+      await ctx.svc.today(TENANT_ID, BUILDING_ID, USER_ID);
+      const todayCall = ctx.sqlCalls.find((c) =>
+        c.sql.toLowerCase().includes('visitor_visibility_ids'),
+      );
+      expect(todayCall).toBeTruthy();
+      // The 'arrived' branch in the WHERE must NOT carry an arrived_at
+      // window; the bucket label uses $4 but the predicate doesn't.
+      expect(todayCall!.sql).toMatch(/v\.status = 'arrived'\)\s*or/);
+    });
+
     it('passes user_id + tenant_id to the visibility CTE', async () => {
       const ctx = makeHarness({ todayRows: [] });
       await ctx.svc.today(TENANT_ID, BUILDING_ID, USER_ID);

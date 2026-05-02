@@ -126,6 +126,14 @@ export class ReceptionService {
     const dayStart = startOfDay(now).toISOString();
     const dayEnd = endOfDay(now).toISOString();
 
+    // 'arrived' rows are returned regardless of arrived_at age — the
+    // 30-minute window only controls the `currently_arriving` bucket
+    // label. Older arrived rows go into the 'in_meeting' bucket (the
+    // frontend's `buildTodayBuckets` then re-routes them to `onSite`
+    // based on status + arrived_at, keeping a single source of truth
+    // for the receptionist's mental model). Without this, a visitor
+    // who arrived 31+ minutes ago and was never transitioned to
+    // 'in_meeting' silently disappears from the today view.
     const sql = `
       with visible as (
         select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
@@ -134,6 +142,7 @@ export class ReceptionService {
         ${SELECT_VISITOR_COLUMNS},
         case
           when v.status = 'arrived' and v.arrived_at >= $4 then 'currently_arriving'
+          when v.status = 'arrived' then 'in_meeting'
           when v.status = 'expected' and v.expected_at >= $5 and v.expected_at <= $6 then 'expected'
           when v.status = 'in_meeting' then 'in_meeting'
           when v.status = 'checked_out' and v.checked_out_at >= $5 and v.checked_out_at <= $6 then 'checked_out_today'
@@ -144,7 +153,7 @@ export class ReceptionService {
         and v.building_id = $3
         and v.id in (select id from visible)
         and (
-          (v.status = 'arrived'      and v.arrived_at      >= $4) or
+          (v.status = 'arrived') or
           (v.status = 'expected'     and v.expected_at     >= $5 and v.expected_at     <= $6) or
           (v.status = 'in_meeting') or
           (v.status = 'checked_out'  and v.checked_out_at  >= $5 and v.checked_out_at  <= $6)
