@@ -108,6 +108,13 @@ interface RailNavItem {
   path: string
   permission: RailItemPermission
   countSlot?: CountSlot
+  /**
+   * Whether this route has a contextual second pane (Inbox list, ticket
+   * views, etc.). When false, the rail renders alone and the outer sidebar
+   * width compresses to just the rail — no empty 320px gutter next to the
+   * page content.
+   */
+  hasPanel?: boolean
 }
 
 const railGroups: NavGroup<RailItemPermission, RailNavItem>[] = [
@@ -115,7 +122,7 @@ const railGroups: NavGroup<RailItemPermission, RailNavItem>[] = [
     id: "my-queue",
     label: "My Queue",
     items: [
-      { id: "inbox", title: "Inbox", icon: InboxIcon, path: "/desk/inbox", permission: "agent", countSlot: "inbox" },
+      { id: "inbox", title: "Inbox", icon: InboxIcon, path: "/desk/inbox", permission: "agent", countSlot: "inbox", hasPanel: true },
       { id: "approvals", title: "Approvals", icon: CheckSquareIcon, path: "/desk/approvals", permission: "agent", countSlot: "approvals" },
     ],
   },
@@ -123,17 +130,17 @@ const railGroups: NavGroup<RailItemPermission, RailNavItem>[] = [
     id: "work",
     label: null,
     items: [
-      { id: "tickets", title: "Tickets", icon: TicketIcon, path: "/desk/tickets", permission: "agent" },
-      { id: "bookings", title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings", permission: "agent" },
-      { id: "scheduler", title: "Scheduler", icon: Columns3Icon, path: "/desk/scheduler", permission: "agent" },
-      { id: "visitors", title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors", permission: "agent", countSlot: "visitors" },
+      { id: "tickets", title: "Tickets", icon: TicketIcon, path: "/desk/tickets", permission: "agent", hasPanel: true },
+      { id: "bookings", title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings", permission: "agent", hasPanel: true },
+      { id: "scheduler", title: "Scheduler", icon: Columns3Icon, path: "/desk/scheduler", permission: "agent", hasPanel: true },
+      { id: "visitors", title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors", permission: "agent", countSlot: "visitors", hasPanel: true },
     ],
   },
   {
     id: "insights",
     label: "Insights",
     items: [
-      { id: "reports", title: "Reports", icon: BarChart3Icon, path: "/desk/reports", permission: "agent" },
+      { id: "reports", title: "Reports", icon: BarChart3Icon, path: "/desk/reports", permission: "agent", hasPanel: true },
     ],
   },
 ]
@@ -366,6 +373,12 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
 
   const isInboxPage = location.pathname.startsWith("/desk/inbox")
 
+  // Drives the conditional second-pane render below: routes without a
+  // contextual panel (e.g. Approvals) render rail-only and the outer
+  // sidebar width compresses to just the rail — no empty 320px gutter
+  // sitting next to the page content.
+  const hasContextualPanel = activeNav?.hasPanel === true
+
   const { data: inboxData } = useQuery(queryOptions({
     queryKey: ['tickets', 'inbox', { limit: 20 }] as const,
     queryFn: ({ signal }) => apiFetch<InboxResponse>('/tickets/inbox', { signal, query: { limit: 20 } }),
@@ -394,6 +407,14 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
       collapsible="icon"
       className="overflow-hidden *:data-[sidebar=sidebar]:flex-row"
       variant="inset"
+      // When the active route has no contextual panel, compress the outer
+      // sidebar width to just the rail. The provider's --sidebar-width is
+      // sized for rail+pane (dualPane mode); we override here per-route.
+      style={
+        !hasContextualPanel
+          ? ({ "--sidebar-width": "var(--sidebar-rail-width)" } as React.CSSProperties)
+          : undefined
+      }
       {...props}
     >
       {/* First sidebar: icon rail (expandable to show labels). Width is
@@ -457,7 +478,12 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                                 }
                                 className={
                                   isUrgent
-                                    ? "ml-auto inline-flex items-center justify-center rounded-md bg-destructive px-1.5 font-mono tabular-nums text-[11px] font-medium leading-5 text-destructive-foreground"
+                                    // text-white (not text-destructive-foreground)
+                                    // because the latter var isn't defined in
+                                    // index.css and falls back to the inherited
+                                    // button text color — near-black in light
+                                    // mode = low contrast on the red bg.
+                                    ? "ml-auto inline-flex items-center justify-center rounded-md bg-destructive px-1.5 font-mono tabular-nums text-[11px] font-medium leading-5 text-white"
                                     : "ml-auto inline-flex items-center justify-center rounded-md bg-sidebar-accent/60 px-1.5 font-mono tabular-nums text-[11px] font-medium leading-5 text-muted-foreground"
                                 }
                               >
@@ -533,7 +559,10 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
         </SidebarFooter>
       </Sidebar>
 
-      {/* Second sidebar: nested content panel */}
+      {/* Second sidebar: nested content panel — only rendered when the
+          active route has a contextual panel. Routes like /desk/approvals
+          fall through and the outer sidebar compresses to rail-only. */}
+      {hasContextualPanel && (
       <Sidebar collapsible="none" className="hidden flex-1 md:flex overflow-hidden">
         {isInboxPage ? (
           <>
@@ -642,6 +671,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
           </SidebarHeader>
         )}
       </Sidebar>
+      )}
     </Sidebar>
   )
 }
