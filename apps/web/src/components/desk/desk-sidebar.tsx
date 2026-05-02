@@ -71,6 +71,7 @@ import {
 } from "@/pages/desk/use-visitor-filters"
 import { SchedulerSidebarPanel } from "@/components/desk/scheduler-sidebar-panel"
 import { Calendar } from "@/components/ui/calendar"
+import { ReceptionBuildingPicker } from "@/components/desk/desk-building-picker"
 
 const navItems = [
   { title: "Inbox", icon: InboxIcon, path: "/desk/inbox" },
@@ -665,6 +666,12 @@ function VisitorsSidebarPanel() {
         <div className="text-base font-medium text-foreground">Visitors</div>
       </SidebarHeader>
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Building</SidebarGroupLabel>
+          <SidebarGroupContent className="px-2">
+            <ReceptionBuildingPicker variant="prominent" />
+          </SidebarGroupContent>
+        </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel>Views</SidebarGroupLabel>
           <SidebarGroupContent>

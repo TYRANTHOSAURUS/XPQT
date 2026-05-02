@@ -69,7 +69,6 @@ import {
   useReceptionBuilding,
   ReceptionBuildingProvider,
 } from '@/components/desk/desk-building-context';
-import { ReceptionBuildingPicker } from '@/components/desk/desk-building-picker';
 import { VisitorListRow } from '@/components/desk/visitor-list-row';
 import { VisitorContextMenu } from '@/components/desk/visitor-context-menu';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
@@ -968,10 +967,8 @@ function DeskVisitorsInner() {
           </div>
         ) : (
           <div className="ml-auto flex items-center gap-3">
-            {/* Multi-building tenants get a picker so reception can switch
-             *  scope without leaving the desk shell. Single-building
-             *  tenants see nothing here (the picker self-hides). */}
-            {buildings.length > 1 && <ReceptionBuildingPicker />}
+            {/* Building picker now lives in the sidebar (prominent variant).
+             *  Toolbar shows just the result counts + view toggle. */}
             <span className="text-sm text-muted-foreground">
               {filteredRows.length} visitor{filteredRows.length !== 1 ? 's' : ''}
             </span>
