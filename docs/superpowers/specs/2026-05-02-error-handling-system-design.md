@@ -585,8 +585,8 @@ This is incremental. Nothing breaks on day one.
 The spec is shipped when:
 
 - Every error response from the API has the wire shape (verified by an integration test that hits 30+ endpoints and asserts shape).
-- Every `useMutation` in the codebase uses `useMutationWithErrors` (verified by an ESLint rule).
-- 95% of errors classify into a class other than `unknown` (measured via client-side log sampling for 1 week).
+- The 5 highest-traffic mutations + the 10 highest-traffic queries use the new error helpers (`handleMutationError` / `withErrorHandling` / `handleQueryError`). An ESLint rule **warns** (not fails) on `useMutation` call sites that don't compose with `withErrorHandling` or call `handleMutationError` from `onError`. Migration of the remaining ~37 mutations is tracked as follow-on work, not a blocker for shipping the system.
+- 95% of errors that *reach the renderer* classify into a class other than `unknown` (measured via client-side `logger.warn` count when `classify()` returns `unknown`, sampled over 1 week).
 - A manual QA pass exercises one error from each of the 11 classes and verifies the correct surface + recovery.
 - TraceId is present on every server log line, every error response, and every user-visible error UI.
 - A support engineer can resolve a "something broke" ticket in <2 minutes given only a traceId and the URL the user was on.
