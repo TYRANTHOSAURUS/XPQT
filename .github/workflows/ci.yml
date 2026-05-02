@@ -6,10 +6,22 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel in-progress runs when a new commit lands on the same branch.
+# Concurrency policy:
+#   - For PR runs, cancel earlier in-flight runs on the same branch when a
+#     new commit lands. Saves CI minutes during iterative review; the only
+#     run that matters is the latest.
+#   - For PUSH runs (i.e. main), DO NOT cancel. Every commit on main is a
+#     point that someone may bisect or roll back to, so every commit needs
+#     its own validated typecheck + migration smoke. Cancellation here was
+#     the root cause of commit 4b2f6e0 shipping a self-referential ERR_*
+#     bug that typecheck would have caught — the run got cancelled when
+#     the immediate follow-up commit landed before CI completed.
+#
+# `${{ github.event_name == 'pull_request' }}` evaluates to the literal
+# string "true"/"false", which `cancel-in-progress` accepts directly.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
