@@ -543,8 +543,9 @@ This is incremental. Nothing breaks on day one.
 - Ship `handleMutationError` + `withErrorHandling` + `handleQueryError` helpers.
 - Ship 3 renderers: toast, inline (FieldError integration), banner.
 - Wire `apiFetch` mid-call session-refresh retry (§6.2).
+- **Migrate the Zod sites that back the 5 highest-traffic mutations to `throwZodError`** in lockstep — the helper's `setFormError` integration depends on `fields[]` being present, and that requires the Zod migration described in §3.2 to land *for these 5 endpoints* in Wave 1. The remaining controllers stay on the old `formatZodError` string until Wave 4; their validation errors surface as a single whole-form toast in the meantime (no field-level inline display).
 - Migrate the 5 highest-traffic mutations behind a feature flag; verify voice rule preserved.
-- **Visible result:** validation errors paint inline; offline shows a banner; toasts for everything else look mostly the same but now have traceId.
+- **Visible result:** validation errors on the 5 migrated endpoints paint inline; everything else still toasts whole-form. Offline shows a banner; toasts for everything else look mostly the same but now have traceId.
 
 **Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
