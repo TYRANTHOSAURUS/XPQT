@@ -164,7 +164,23 @@ Quick reference:
 
 **Form validation is NOT a toast** — disable the submit button or use `<FieldError>` near the offender. See [`docs/toast-conventions.md`](docs/toast-conventions.md) for the full rules, anti-patterns, and recipes. Read it before adding any new toast.
 
-### Settings page layout (mandatory)
+### Error handling (mandatory)
+
+Every feature that throws, fetches, mutates, or renders must follow [`docs/superpowers/specs/2026-05-02-error-handling-system-design.md`](docs/superpowers/specs/2026-05-02-error-handling-system-design.md). The spec is the contract — there is no "feature-local error handling," only the system. Read the spec before shipping any feature; touch the spec in the same PR when the feature reveals a gap.
+
+**The non-negotiables for every new or touched code path:**
+
+- **Server: throw `AppError`, never `new Error('...')`.** Use the factories in `apps/api/src/common/errors/app-error.ts` (`AppErrors.notFound`, `AppErrors.permissionDenied`, `AppErrors.validation`, `AppErrors.conflict`, `AppErrors.rateLimited`, etc.). New error scenarios add a code to the shared `packages/shared/error-codes` package + an English message in `messages.en.ts` (Dutch follows). The ESLint rule blocks `throw new Error(...)` outside the factory module — don't disable it; if the error is novel, add a code.
+- **Server: never embed user-facing prose in error messages, never leak vendor names, never let SQL or stack frames out.** The renderer fails closed on unregistered codes; if a code isn't in the registry, the user sees `unknown.server_error`, not your string. Vendor errors (Resend, Supabase, Stripe, Postgres) map to neutral codes (`email.dispatch_failed`, `realtime.unavailable`, `db.constraint`).
+- **Server: validation goes through `throwZodError`** (the helper that converts a Zod `safeParse` failure into an `AppError` with structured `fields[]`). Don't go back to `formatZodError` returning a comma-joined string.
+- **Client: use the error helpers, not hand-rolled `onError`.** Either spread `withErrorHandling({ actionTitle: "Couldn't <verb> <thing>" })` into `useMutation` options, or call `handleMutationError(error, { actionTitle, retry, setFormError })` from inside your own `onError` (when you also need rollback / cache invalidation). For queries, `handleQueryError` for the rare toast-fallback case; otherwise route page-class errors via the route `RouteErrorBoundary`.
+- **Client: never call `toastError` directly with the raw error message.** The renderer does the lookup; your job is to pass an `actionTitle` written in the existing voice (`"Couldn't save webhook"`, not `"Save webhook"`). Field-level validation errors must paint inline via RHF `setFormError` — never as a toast.
+- **Client: page-level errors replace the page** via `RouteErrorBoundary` + `throwToBoundary()`. Toasting "Not found" while leaving a broken detail page on screen is the failure mode this rule exists to prevent.
+- **Every error response carries a `traceId`.** Surface it on `server`-class toasts (small monospace, copy-on-click) and pre-fill it into the contact-support recovery. Do not invent a new trace mechanism — `apiFetch` already stamps it onto `ApiError`.
+- **Bulk operations use the wire shape's `results[]` + `partialSuccess`.** Surface partial-success as `"7 of 10 deleted — 3 failed [Show me]"`, never as a single binary toast.
+- **Never invent a new error class or surface.** The 10 classes in §3.3 of the spec are exhaustive; the surface is decided by `(class, callSite)` per §3.4. If the situation doesn't fit, the fix is to update the spec — don't ship a one-off.
+
+When the spec is silent on something you need: read the spec first to confirm it's actually silent (vs. you skimmed), then propose an addition in the same PR. Don't bypass.
 
 Every admin / settings-style page is built with `SettingsPageShell` + `SettingsPageHeader` + `SettingsSection` + `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx`. Widths are a fixed enum — do not invent new ones.
 
