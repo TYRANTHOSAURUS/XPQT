@@ -395,7 +395,7 @@ This is the contract. Every classifier branch lands one row. **Surface = `f(clas
 | `permission` (403) | Page (`route_load`) · Toast (`mutation`) | `requestAccess` (creates a self-serve access-request ticket against the role-domain admin) · `askAdmin` (with admin names if known) · `goBack` | Page state for navigation; toast for 'Save failed: missing permission'. `requestAccess` is the primary action for tenants where role assignment is admin-mediated; `askAdmin` is the fallback when there's no ticket workflow. |
 | `not_found` (404 / 410 / RLS-hidden) | Page (`route_load`) · Toast (`mutation`) | `goBack` · `reload` | Page template branches on `body.reason ∈ ('missing','removed','hidden')`. Server returns `'hidden'` for RLS-blocked rows (security: never leak tenant existence via 403 vs 404 — see decision #6.1). Page renders the same copy for `'missing'` and `'hidden'`; the difference is only relevant in audit logs. Toast for "Couldn't add — webhook was deleted." 410 is supported in the wire shape but no endpoint throws it today. |
 | `validation` (422) | Inline `<FieldError>` | (no toast; field errors are the recovery) | Submit button disabled until form is valid. |
-| `conflict` (409) | Toast (v1) · Modal (deferred to v2) | `reload` (v1) · `pickAlternative` (v2 only) | v1 surfaces "This was changed by someone else" + Reload. v2 modal with use-theirs/keep-mine deferred until a real surface demands it. Wire fields `serverVersion` / `clientVersion` ship now. |
+| `conflict` (409) | Toast (v1) · Modal (deferred to v2) | `copyDraft` · `reload` (v1) · `pickAlternative` (v2 only) | v1 surfaces "This was changed by someone else" with `[Copy my changes]` + `[Reload]`. Copy serializes the form draft to clipboard before reload destroys edits. v2 modal with use-theirs/keep-mine deferred until a real surface demands it. Wire fields `serverVersion` / `clientVersion` ship now. |
 | `rate_limit` (429) | Toast with live countdown | `wait` (disabled button shows "Try in 47s"; auto-fires when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
 | `server` (5xx) | Toast | `retry` · `contactSupport` (with traceId pre-filled) | TraceId is small text in toast, click to copy. |
 | `realtime` (ws drop) | Status-bar dot → banner if >30s | `retry` (auto-reconnect with backoff) | Distinct from `transport` because realtime can drop while HTTP works. |
@@ -523,11 +523,15 @@ The counter resets on any 2xx response or after 10 seconds idle.
 ### 6.3 Stale conflict resolution (v1)
 
 When a mutation hits `409 conflict` with `serverVersion` + `clientVersion`:
-1. Renderer surfaces a toast: `"<Thing> was changed by someone else"` (e.g. "This webhook was changed by someone else"), with action `[Reload]`.
-2. Reload re-fetches the server state via React Query's `invalidateQueries` for the relevant key.
-3. The user re-applies their edits manually.
+1. Renderer surfaces a toast: `"<Thing> was changed by someone else"` (e.g. "This webhook was changed by someone else"), with two actions:
+   - `[Copy my changes]` — `kind: 'copyDraft'` recovery; serializes the current form state (`form.getValues()`) as JSON or human-readable markdown to the clipboard, then closes the toast. The user can paste their work into the reloaded form.
+   - `[Reload]` — `kind: 'reload'` recovery; re-fetches via React Query's `invalidateQueries` and resets the form.
+2. Toast duration is doubled (12s) so the user has time to choose.
+3. If the user dismisses without choosing, the mutation stays failed (no auto-reload) — destructive default is wrong here.
 
-**Deferred to v2** — the modal with `[Use theirs] [Keep mine] [Show diff]` and forced `If-Match` re-submit. The wire shape (§3.1) ships `serverVersion` + `clientVersion` now so v2 can land without breaking the contract. The trigger to revisit: a concrete admin surface with measured concurrent-edit collisions (e.g. routing rules) where the toast-then-redo flow is shown to be high-friction.
+**Why both actions:** for a Facilities Admin who has 30 minutes of edits open in a routing rule editor, `[Reload]` alone destroys the work. `[Copy my changes]` is the lifeline — paste into the freshly-reloaded form and re-apply. Cheap UX, prevents catastrophic loss until v2 ships a real merge UI.
+
+**Deferred to v2** — the modal with `[Use theirs] [Keep mine] [Show diff]` and forced `If-Match` re-submit. The wire shape (§3.1) ships `serverVersion` + `clientVersion` now so v2 can land without breaking the contract. The trigger to revisit: a concrete admin surface with measured concurrent-edit collisions where the toast-then-redo flow is shown to be high-friction.
 
 ### 6.4 Optimistic rollback animation
 
