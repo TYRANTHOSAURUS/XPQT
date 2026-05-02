@@ -260,6 +260,12 @@ export class RouteErrorBoundary extends React.Component  // class component (com
                                   <Props, State> { ... } // exposes a context: { throwToBoundary(error) } so query/mutation hooks
                                                          // can promote a page-class error (not_found, forbidden)
                                                          // to the same boundary that catches render errors.
+// Page templates — wrap with SettingsPageShell + SettingsPageHeader so
+// the back-nav, title, and chrome are uniform with every other admin
+// surface. NotFoundPage / ForbiddenPage / ServerErrorPage / OfflinePage
+// all live under apps/web/src/components/errors/ and share the same
+// shell. Width = 'default' (640px); the page is mostly headline copy +
+// one or two recovery actions.
 // ConflictModal — deferred to v2. The wire shape (§3.1) ships
 // serverVersion + clientVersion now so v2 can land without contract change.
 export function RateLimitToast(props): JSX.Element;     // live countdown via useNow
@@ -516,7 +522,7 @@ This is incremental. Nothing breaks on day one.
 **Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
 - Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
-- Ship 404-with-`reason` / 403 / 5xx page templates (404 page branches on `body.reason ∈ ('missing','removed')`).
+- Ship 404-with-`reason` / 403 / 5xx page templates, all wrapped in `SettingsPageShell` + `SettingsPageHeader` (width `default`) for back-nav uniformity. 404 page branches on `body.reason ∈ ('missing','removed')`.
 - Migrate top-traffic queries to call `throwToBoundary()` for page-class errors.
 - **Visible result:** broken pages now show real page state instead of stale content + toast.
 
