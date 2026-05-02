@@ -7,11 +7,21 @@
  * The same component renders in the split view on /desk/visitors and on
  * the dedicated route here, so any property-row improvement to the panel
  * shows up in both surfaces.
+ *
+ * Loading + not-found are rendered with the explicit `SettingsPageShell`
+ * skeleton so the back affordance is always visible — the split-view
+ * shell isn't there to give context, and silently mounting an empty
+ * `<VisitorDetail>` for a missing/unreachable id was indistinguishable
+ * from "still loading" forever.
  */
 import { useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
 import { useVisitorDetail } from '@/api/visitors';
+import {
+  SettingsPageShell,
+  SettingsPageHeader,
+} from '@/components/ui/settings-page';
 
 export function DeskVisitorDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -22,7 +32,7 @@ export function DeskVisitorDetailPage() {
   // split-view page we already know the building from the toolbar; on the
   // standalone route we resolve it from the visitor record itself so the
   // actions stay live without forcing the user to pick a building first.
-  const { data: visitor } = useVisitorDetail(id ?? null);
+  const { data: visitor, error, isLoading } = useVisitorDetail(id ?? null);
   const buildingId = visitor?.building_id ?? null;
 
   const backTo = useMemo(() => {
@@ -35,9 +45,41 @@ export function DeskVisitorDetailPage() {
 
   if (!id) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Visitor not found.
-      </div>
+      <SettingsPageShell width="default">
+        <SettingsPageHeader title="Visitor not found" backTo={backTo} />
+        <div className="px-6 py-4 text-sm text-muted-foreground">
+          No visitor id was provided in the URL.
+        </div>
+      </SettingsPageShell>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <SettingsPageShell width="default">
+        <SettingsPageHeader title="Visitor" backTo={backTo} />
+        <div
+          role="status"
+          aria-live="polite"
+          className="px-6 py-4 text-sm text-muted-foreground"
+        >
+          Loading visitor…
+        </div>
+      </SettingsPageShell>
+    );
+  }
+
+  // Error or missing record — explicit not-found state so reception isn't
+  // staring at an empty panel wondering whether it's still loading.
+  if (error || !visitor) {
+    return (
+      <SettingsPageShell width="default">
+        <SettingsPageHeader title="Visitor not found" backTo={backTo} />
+        <div className="px-6 py-4 text-sm text-muted-foreground">
+          This visitor couldn&rsquo;t be loaded. They may have been removed,
+          or your access was revoked.
+        </div>
+      </SettingsPageShell>
     );
   }
 

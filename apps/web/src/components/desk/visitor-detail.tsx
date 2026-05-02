@@ -21,6 +21,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  ArrowLeft,
   Building2,
   CalendarClock,
   ExternalLink,
@@ -391,9 +392,15 @@ export function VisitorDetail({
 }
 
 /** Compact close + expand + kebab bar at the very top of the panel.
- *  Mirrors ticket-detail.tsx line 639 — close-on-left, expand + kebab on
- *  the right. The kebab currently has a single "Open in full page" entry
- *  (so the menu is always populated); add new one-off actions here. */
+ *
+ *  Two shapes — driven by whether `onExpand` is provided:
+ *
+ *  - **Split-view** (`onExpand` present): close `X` on the left, expand +
+ *    kebab on the right. `X` means "close the side panel".
+ *  - **Full-route** (`onExpand` absent): a labelled "Visitors" back button
+ *    on the left, kebab on the right. `X` would have meant the same thing
+ *    as in split-view — but reception doesn't discover that — so we swap
+ *    to an explicit back affordance. */
 function DetailToolbar({
   onClose,
   onExpand,
@@ -401,18 +408,33 @@ function DetailToolbar({
   onClose: () => void;
   onExpand?: () => void;
 }) {
+  const isFullRoute = !onExpand;
   return (
     <div className="flex shrink-0 items-center gap-1 px-3 py-2">
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8"
-        onClick={onClose}
-        aria-label="Close detail panel"
-        title="Close"
-      >
-        <XIcon className="size-4" />
-      </Button>
+      {isFullRoute ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          aria-label="Back to visitors"
+          title="Back to visitors"
+          className="-ml-1 gap-1.5"
+        >
+          <ArrowLeft className="size-4" />
+          Visitors
+        </Button>
+      ) : (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onClose}
+          aria-label="Close detail panel"
+          title="Close"
+        >
+          <XIcon className="size-4" />
+        </Button>
+      )}
       <div className="flex-1" />
       {onExpand && (
         <Button
