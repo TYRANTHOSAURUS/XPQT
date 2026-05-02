@@ -36,7 +36,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 11 | **Field-level errors never toast.** When `fields[]` is present, the form's mutation hook stuffs them into RHF state and the toast either suppresses or becomes a generic "Some fields need attention." | The current setup turns Zod errors (via `formatZodError`) into a single comma-joined string — unusable as toast text and impossible to map to specific form fields. |
 | 12 | **Optimistic-update rollback is animated and explained.** The `useMutation` `onError` rollback path adds a one-line toast "We undid that change because: <reason from code>". Silent reverts are banned. | Most apps fail here; it's a high-leverage polish moment. |
 | 13 | **No vendor names leak to users.** Resend / Supabase / Stripe / Postgres errors are mapped to neutral codes (`email.dispatch_failed`, `realtime.unavailable`, `payment.failed`, `db.constraint`). Internal logs keep the original. | Both branding (don't ship "Resend down") and security (don't leak stack info). |
-| 14 | **Page-level errors replace the page**, not toast over a now-broken page. Implemented via per-route React class `ErrorBoundary` components wrapping each top-level route element (`<Route element={<ErrorBoundary><DeskPage/></ErrorBoundary>}>`). The boundary catches both render errors *and* errors thrown into a `throwToBoundary()` ref by query/mutation hooks for page-level classes (`not_found`, `forbidden`, `gone`, generic 500). Renders forbidden / not-found / gone / offline / generic 500 states. | Toasting "Not found" while leaving a broken detail page on screen is the worst UX in the platform today. **Note:** the app currently uses `<BrowserRouter>` + `<Routes>` (component router). React Router's data-router `errorElement` is not available; migrating to `createBrowserRouter` is a separate decision (see §8). |
+| 14 | **Page-level errors replace the page**, not toast over a now-broken page. Implemented via per-route React class `ErrorBoundary` components wrapping each top-level route element (`<Route element={<ErrorBoundary><DeskPage/></ErrorBoundary>}>`). The boundary catches both render errors *and* errors thrown into a `throwToBoundary()` ref by query/mutation hooks for page-level classes (`not_found`, `forbidden`, generic 500). Renders forbidden / not-found (with `reason` branch for "removed" copy) / offline / generic 500 states. | Toasting "Not found" while leaving a broken detail page on screen is the worst UX in the platform today. **Note:** the app currently uses `<BrowserRouter>` + `<Routes>` (component router). React Router's data-router `errorElement` is not available; migrating to `createBrowserRouter` is a separate decision (see §8). |
 | 15 | **Error boundary at the route level**, not the app root. Catches render-time errors, classifies as `class: 'render'`, shows a minimal fallback with reload + report. Sentry-style report dialog gated to power users (settings flag). | App-root boundaries lose all context. Per-route boundaries let other regions stay alive. |
 | 16 | **Realtime / sync drops are status-bar UI, not toasts.** A subtle dot in the app shell shows connection state; only escalate to a banner if disconnected >30s; only toast if unrecoverable. | Realtime flaps. Toasting every flap is hostile. |
 | 17 | **Rate-limit errors carry `retryAfter` seconds** and the renderer shows a live countdown ("Try in 47s"). 429s without `retryAfter` are a server bug. | "Too many requests" with no countdown is information-free. |
@@ -242,7 +242,7 @@ export function renderError(classified: ClassifiedError, context: RenderContext)
 export function ErrorBanner(): JSX.Element;             // mounts in app shell, listens to transport/realtime store
 export class RouteErrorBoundary extends React.Component  // class component (componentDidCatch); wraps each top-level route
                                   <Props, State> { ... } // exposes a context: { throwToBoundary(error) } so query/mutation hooks
-                                                         // can promote a page-class error (not_found / forbidden / gone)
+                                                         // can promote a page-class error (not_found, forbidden)
                                                          // to the same boundary that catches render errors.
 // ConflictModal — deferred to v2. The wire shape (§3.1) ships
 // serverVersion + clientVersion now so v2 can land without contract change.
@@ -344,7 +344,7 @@ This is the contract. Every classifier branch lands one row.
 | `rate_limit` (429) | Toast with live countdown | `retry` (auto, when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
 | `server` (5xx) | Toast | `retry` · `contactSupport` (with traceId pre-filled) | TraceId is small text in toast, click to copy. |
 | `realtime` (ws drop) | Status-bar dot → banner if >30s | `retry` (auto-reconnect with backoff) | Distinct from `transport` because realtime can drop while HTTP works. |
-| `render` (caught by `RouteErrorBoundary`) | Per-route fallback page | `reload` · `goBack` · `contactSupport` | App keeps running, only the broken route is replaced. Same boundary that handles `not_found`/`gone`/`forbidden`-as-page. |
+| `render` (caught by `RouteErrorBoundary`) | Per-route fallback page | `reload` · `goBack` · `contactSupport` | App keeps running, only the broken route is replaced. Same boundary that handles `not_found`/`forbidden`-as-page. |
 | `unknown` | Toast | `retry` · `contactSupport` | Landing here is a classifier bug. Add a class branch. |
 
 ## 5 · Code taxonomy — the registry
@@ -489,7 +489,7 @@ This is incremental. Nothing breaks on day one.
 **Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
 - Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
-- Ship 404 / 403 / 410 / 5xx page templates.
+- Ship 404-with-`reason` / 403 / 5xx page templates (404 page branches on `body.reason ∈ ('missing','removed')`).
 - Migrate top-traffic queries to call `throwToBoundary()` for page-class errors.
 - **Visible result:** broken pages now show real page state instead of stale content + toast.
 
