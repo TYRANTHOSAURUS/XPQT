@@ -13,15 +13,38 @@
  * shell isn't there to give context, and silently mounting an empty
  * `<VisitorDetail>` for a missing/unreachable id was indistinguishable
  * from "still loading" forever.
+ *
+ * The Assign-pass dialog is mounted directly here (not just on the split
+ * view) so power users coming from the command palette can assign a pass
+ * without round-tripping through the list page.
  */
-import { useMemo } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
+import { AssignPassDialog } from '@/components/desk/visitor-assign-pass-dialog';
 import { useVisitorDetail } from '@/api/visitors';
 import {
   SettingsPageShell,
   SettingsPageHeader,
 } from '@/components/ui/settings-page';
+
+// Filter params we round-trip when navigating back to /desk/visitors.
+// Source of truth lives in `use-visitor-filters.ts` — keep this in sync
+// when filters are added or renamed there. Read by buildBackTo.
+const FILTER_PARAM_KEYS = [
+  'view',
+  'q',
+  'status',
+  'date',
+  'building',
+  'type',
+  'host',
+] as const;
+
+// Internal hint we set when a palette / link wants to remember which
+// view the user came from. Maps onto `?view=` on the way back so the
+// list lands on the same preset.
+const FROM_VIEW_KEY = 'from';
 
 export function DeskVisitorDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -35,13 +58,15 @@ export function DeskVisitorDetailPage() {
   const { data: visitor, error, isLoading } = useVisitorDetail(id ?? null);
   const buildingId = visitor?.building_id ?? null;
 
-  const backTo = useMemo(() => {
-    // Preserve any list filters the user came from (?view, ?status, …) so
-    // closing the full-route page returns them to the same view they
-    // expanded out of.
-    const view = search.get('from');
-    return view ? `/desk/visitors?view=${encodeURIComponent(view)}` : '/desk/visitors';
-  }, [search]);
+  // Preserve the FULL list URL state. Coming in from the palette only
+  // gives us `?from=<view>` (the canonical entry hint); coming in from
+  // the embedded "Open in full page" link round-trips every active
+  // filter param so the back button restores the same filtered view.
+  // No useMemo here — it's a cheap string concat and the closure for
+  // onClose rebuilds either way.
+  const backTo = buildBackTo(search);
+
+  const [assignPassOpen, setAssignPassOpen] = useState(false);
 
   if (!id) {
     return (
@@ -83,19 +108,62 @@ export function DeskVisitorDetailPage() {
     );
   }
 
+  const visitorLabel =
+    [visitor.first_name, visitor.last_name].filter(Boolean).join(' ').trim() ||
+    'this visitor';
+
   return (
     <div className="h-full">
       <VisitorDetail
         visitorId={id}
         buildingId={buildingId}
         onClose={() => navigate(backTo)}
-        onAssignPass={() => {
-          // Standalone route doesn't host the AssignPassDialog (which
-          // lives on the list page). Send the user to the list view's
-          // detail-with-pass-dialog instead — they can re-assign there.
-          navigate(`/desk/visitors?id=${id}`);
-        }}
+        // Mount the dialog inline so reception can assign a pass without
+        // round-tripping through /desk/visitors?id=<id>. The dialog
+        // itself short-circuits when buildingId is null (renders an
+        // empty-passes state), so we don't need a separate guard here.
+        onAssignPass={() => setAssignPassOpen(true)}
+      />
+      <AssignPassDialog
+        open={assignPassOpen}
+        onOpenChange={setAssignPassOpen}
+        buildingId={buildingId}
+        visitorId={id}
+        visitorLabel={visitorLabel}
       />
     </div>
   );
+}
+
+/**
+ * Construct the back-to-list URL from the current search params, preserving
+ * every filter the user came in with. Two paths feed in:
+ *
+ *  - Palette / external link with `?from=<view>` — only the view is known;
+ *    we map it to `?view=<view>` so the preset re-applies.
+ *  - In-app "Open in full page" — the full filter set (`q`, `status`,
+ *    `date`, `building`, `type`, `host`) is already on the URL; we copy
+ *    each known key to the back URL.
+ *
+ * Unknown query params (e.g. `id=`) are dropped. The function is a pure
+ * string-builder so no memo is needed at the call site.
+ */
+function buildBackTo(search: URLSearchParams): string {
+  const next = new URLSearchParams();
+
+  // `from` hint maps to a `view` param on the way back.
+  const fromView = search.get(FROM_VIEW_KEY);
+  if (fromView) next.set('view', fromView);
+
+  // Copy every known filter key. If both `from` and `view` are present,
+  // `view` wins (it's explicit URL state, not a one-shot hint).
+  for (const key of FILTER_PARAM_KEYS) {
+    const value = search.get(key);
+    if (value !== null && value !== '') {
+      next.set(key, value);
+    }
+  }
+
+  const qs = next.toString();
+  return qs ? `/desk/visitors?${qs}` : '/desk/visitors';
 }
