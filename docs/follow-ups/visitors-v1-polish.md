@@ -59,6 +59,88 @@ rather batch them when the next visitor-stack change lands.
   event. The dialog UI is forward-compatible with a button that flips
   from "How to" to "Run decommission" once the endpoint exists.
 
+## 2026-05-02 desk-shell rebuild — must-fix pass
+
+### Shipped
+
+- `/reception/*` redirects now preserve query params (building, q, etc).
+- Curly-quote sweep on `/desk/visitors`, visitor-detail, expected.tsx,
+  context-menu copy.
+- Dropped autoFocus on the desk-visitors search input; focuses only
+  when nothing else holds focus on first mount.
+- spellCheck=false on email + phone inputs in the invite form;
+  spellCheck=false on the visitor search input.
+- Placeholders on first/last name use `e.g. Jane…` / `e.g. Smith…`.
+- Search input search-debounce `useEffect` now depends on the stable
+  `patch` callback, not the literal `filters` object.
+- Detail panel resolves the primary host's name via `usePerson()`
+  instead of showing the literal string `On record`. Falls back to
+  em-dash when the lookup is empty.
+- `CapturedVisitorValues` carries `co_host_persons: { id, label }[]`
+  so the invite form rehydrates with human names. Backend payload
+  still receives `co_host_person_ids[]` — the form maps at the edge.
+- Search overlay rewritten as `Command` + `CommandList` + `CommandItem`.
+  Arrow keys, Enter, Escape work natively via cmdk; we no longer hand-
+  roll keyboard logic.
+- `<div role="button">` row → real `<button>` in `visitor-list-row`.
+  Checkbox moved out of the button so we don't nest interactives.
+- Enter on a focused row → status-aware primary action:
+  expected/pending → mark arrived; arrived/in_meeting → checkout
+  dialog; else → open detail. Cmd/Ctrl+Enter always opens detail.
+  Same wiring on the table view's TableRow.
+- Walk-up button: split-button next to +Invite. Walk-up form mounts
+  inline above the table (NOT a modal); supports batch entry.
+- Today view renders bucketed sections (Currently arriving / Expected
+  next 30 min / Expected later today / On site / Checked out today).
+  Other views stay flat.
+- Loose-ends panel rebuilt: counts for auto-checked-out + bounces,
+  unreturned-passes table with Mark returned + Mark lost actions,
+  bounce list. Replaces fabricated `'Pass #1234'` visitor rows.
+- Multi-building tenants get `ReceptionBuildingPicker` in the toolbar.
+- VisitorContextMenu: shared `pending` string state replaced with
+  per-mutation `isPending`. Concurrent ops on different rows no
+  longer block each other. Handlers wrapped in useCallback.
+- Mark-left from context menu + detail panel → CheckoutDialog with
+  pass-return decision.
+- More-options expander on the invite form animates height + opacity
+  via base-ui's `--collapsible-panel-height` var (was a broken
+  transitionDuration='180ms' style).
+- Detail panel fades + slides in (200ms ease-smooth, +2px offset).
+- Invite form's last-name input now has its own FieldLabel (split
+  the single Field row into two side-by-side fully-labeled Fields).
+- Submit handlers on invite + walkup forms focus the first invalid
+  field instead of just disabling the submit button. Invite form
+  auto-expands the More-options collapse if the invalid field is
+  inside it.
+- `visitor-action-row.tsx` deleted (zero importers since the legacy
+  `/reception/today` was removed in 9776fc1).
+
+### Skipped — backend gap
+
+- Cancel + Resend invitation actions on the portal expected page.
+  No host-side cancel/resend endpoint exists today; only the
+  visitor-token cancel surface is wired. The kebab menu surfaces
+  these as disabled "coming soon" items so the affordance is clear
+  but the click is a no-op. Backend work needed: a `POST
+  /visitors/:id/cancel` (host scope) and a resend equivalent.
+
+### Remaining yellow items
+
+- Apply the same `<div role="button">` → `<button>` migration to
+  `ticket-list-row.tsx`. Same shape as the visitor row fix;
+  intentionally scoped out of this pass to avoid touching ticket
+  semantics in a visitors-focused PR.
+- The TableRow keyboard handler we added (Enter → primary action,
+  Cmd+Enter → open) is a div-row in a `<tr>` — semantically still
+  imperfect. The table view's right answer is to drop the table for
+  the same `<button>`-with-flex idiom we use on the list view. That
+  change is bigger and should ride with a tickets-table refactor
+  rather than only the visitor table.
+- The PersonPicker doesn't surface a stable id we can `.focus()`,
+  so the walk-up "host required" error still relies on the inline
+  FieldError text rather than focusing the picker. Fix is in
+  PersonPicker (expose an `id` prop or a forwardRef target).
+
 ## Already shipped in the must-fix pass
 
 For reference / so the next reviewer doesn't re-flag these:

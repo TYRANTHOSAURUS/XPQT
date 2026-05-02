@@ -120,7 +120,23 @@ export function WalkupForm({ buildingId, onClose }: WalkupFormProps) {
       host: true,
       visitor_type_id: true,
     });
-    if (!canSubmit) return;
+    if (!canSubmit) {
+      // Focus the first invalid field so the receptionist's eyes (and
+      // the screen reader) land on the actual problem instead of just
+      // seeing the submit button stay disabled.
+      const firstInvalid = errors.first_name
+        ? 'walkup-first-name'
+        : errors.host
+          ? null // PersonPicker doesn't expose a stable id; the error message under the field carries the cue.
+          : errors.visitor_type_id
+            ? 'walkup-type'
+            : null;
+      if (firstInvalid) {
+        const el = document.getElementById(firstInvalid);
+        if (el instanceof HTMLElement) el.focus();
+      }
+      return;
+    }
 
     const payload: QuickAddWalkupPayload = {
       first_name: firstName.trim(),

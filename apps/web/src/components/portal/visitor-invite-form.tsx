@@ -313,7 +313,34 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       expected_until: true,
       building_id: true,
     });
-    if (!canSubmit) return;
+    if (!canSubmit) {
+      // If the More-options collapse is closed but the invalid field
+      // lives inside it, expand it so the user can see the error.
+      const inAdvanced =
+        errors.visitor_type_id || errors.building_id || errors.expected_at;
+      if (inAdvanced && !showAdvanced) setShowAdvanced(true);
+
+      const firstInvalid = errors.first_name
+        ? 'visitor-first-name'
+        : errors.email
+          ? 'visitor-email'
+          : errors.expected_at
+            ? 'visitor-when'
+            : errors.visitor_type_id
+              ? 'visitor-type'
+              : errors.building_id
+                ? 'visitor-building'
+                : null;
+      if (firstInvalid) {
+        // Defer focus to the next tick so the collapse expand has time
+        // to mount the field before we focus it.
+        setTimeout(() => {
+          const el = document.getElementById(firstInvalid);
+          if (el instanceof HTMLElement) el.focus();
+        }, 0);
+      }
+      return;
+    }
 
     const coHostIds = coHosts.map((c) => c.id);
     const captured: CapturedVisitorValues = {
