@@ -255,6 +255,27 @@ The "Couldn't <verb> <thing>" rule applies to **toasts**. Other surfaces have th
 
 When you add a new code, you specify the toast title and detail; the page surface auto-falls-back to a generic per-class template ("We can't find this <thing>" using the entity name from the code's first dotted segment) unless you override per-surface.
 
+#### Bilingual reference copy (en / nl) for the new surfaces
+
+The decisions in §6.2 / §6.3 / §3.1 introduce surface-specific copy that doesn't fit the generic code-message lookup. Pin the canonical en + nl phrases here so Wave 1 ships with both locales and Wave 4 doesn't have to retro-translate from English screenshots:
+
+| Surface fragment | English | Dutch (operational) |
+|---|---|---|
+| Bulk partial-success toast title | `"<n_ok> of <n_total> <entityPlural> <verbPast> — <n_fail> failed"` | `"<n_ok> van <n_total> <entityPlural> <verbPast.nl> — <n_fail> mislukt"` |
+| Bulk "Show me" action | `"Show me"` | `"Toon details"` |
+| Rate-limit countdown button | `"Try in {seconds}s"` | `"Probeer over {seconds}s"` |
+| Mid-call refresh button label | `"<verb>… (signing back in)"` | `"<verb.nl>… (opnieuw aanmelden)"` |
+| Realtime banner (>30s disconnected) | `"Reconnecting — your changes will sync when reconnected."` | `"Verbinden… je wijzigingen worden gesynchroniseerd zodra de verbinding terug is."` |
+| Realtime banner (broken / writes disabled) | `"Connection lost. Saving is paused until you reconnect."` | `"Geen verbinding. Opslaan is uitgeschakeld tot de verbinding terug is."` |
+| Conflict toast title | `"<Thing> was changed by someone else."` | `"<Thing.nl> is door iemand anders gewijzigd."` |
+| Conflict toast — Copy action | `"Copy my changes"` | `"Kopieer mijn wijzigingen"` |
+| Conflict toast — Reload action | `"Reload"` | `"Herladen"` |
+| 5xx page heading | `"Something went wrong on our end."` | `"Er is iets misgegaan aan onze kant."` |
+| 5xx page traceId helper | `"Reference: {traceId}"` | `"Referentie: {traceId}"` |
+| Hard sign-out banner | `"Your session ended unexpectedly. Sign in again."` | `"Je sessie is onverwacht afgesloten. Meld je opnieuw aan."` |
+
+Translation rule (already in §6.5): translate the operational consequence, not the literal English. The table above is the v1 baseline; native-NL review still required per §6.5.
+
 
 ```ts
 // apps/web/src/lib/errors/renderer.tsx
