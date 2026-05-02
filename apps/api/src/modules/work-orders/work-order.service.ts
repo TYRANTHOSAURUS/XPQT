@@ -69,6 +69,32 @@ const STATUS_FIELDS = ['status', 'status_category', 'waiting_reason'] as const;
 const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
 const METADATA_FIELDS = ['title', 'description', 'cost', 'tags', 'watchers'] as const;
 
+// Module-level shared constants — used by both per-field methods and the
+// orchestrator's preflight. Single source of truth so a future tweak to
+// any bound or enum doesn't drift between the two validation surfaces.
+// Full-review on commit 4b2f6e0 caught a divergent duration cap (preflight
+// 30d vs setPlan 1y) — the same shape of bug; this is the structural fix.
+export const MAX_DURATION_MINUTES = 60 * 24 * 365; // 1 year
+export const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
+export type Priority = (typeof VALID_PRIORITIES)[number];
+
+export const ERR_DURATION_INVALID = (max = MAX_DURATION_MINUTES) =>
+  `planned_duration_minutes must be a positive integer ≤ ${max}`;
+export const ERR_PRIORITY_INVALID = `priority must be one of: ${VALID_PRIORITIES.join(', ')}`;
+export const ERR_PLANNED_START_INVALID =
+  'planned_start_at must be a valid ISO 8601 timestamp or null';
+export const ERR_TITLE_EMPTY = 'title must not be empty';
+export const ERR_COST_NOT_FINITE = 'cost must be a finite number or null';
+export const ERR_TAGS_INVALID = 'tags must be an array of strings or null';
+export const ERR_WATCHERS_SHAPE_INVALID =
+  'watchers must be an array of strings (person UUIDs) or null';
+export const ERR_PERM_SLA_OVERRIDE =
+  "missing 'sla.override' permission";
+export const ERR_PERM_PRIORITY_CHANGE =
+  "missing 'tickets.change_priority' permission";
+export const ERR_PERM_ASSIGN =
+  "missing 'tickets.assign' permission";
+
 /**
  * WorkOrderService — the work-order command surface.
  *
@@ -177,13 +203,35 @@ export class WorkOrderService {
     // — preflight is not a substitute for them, just a structural gate
     // that closes the multi-field race.
     //
-    // Honest scope note: this closes ~99% of partial-commit scenarios
-    // (every validation failure). The remaining ~1% — runtime DB errors
-    // during phase-2 writes (concurrent UPDATE serialization, FK row
-    // deleted between read and write, transient connection errors) —
-    // can still partial-commit. Closing those needs full transactional
-    // wrapping via `db.tx` with raw-SQL writes; tracked as separate
-    // class-wide debt.
+    // HONEST SCOPE NOTE — what preflight does and does NOT close:
+    //
+    // Closed by preflight:
+    //   • All validation throws on the work_orders row write itself.
+    //     A multi-field PATCH where one field is malformed/forbidden
+    //     now rejects atomically with no partial state.
+    //
+    // NOT closed (still partial-commit hazards on the WO orchestrator):
+    //   1. **Activity-row insert failures** — every per-field method
+    //      writes an activity row in a try/catch that `console.error`s
+    //      on failure (status_changed, priority_changed,
+    //      assignment_changed, sla_changed, plan_changed,
+    //      metadata_changed). The work_orders row commits; the audit
+    //      row may be missing. User sees a 200 but the audit log is
+    //      lying. Tagged as known debt across the file.
+    //   2. **SLA timer churn** — `applyWaitingStateTransition`,
+    //      `restartTimers`, `pauseTimers` write to sla_timers AFTER
+    //      the work_orders write commits. Failure leaves status
+    //      committed and timers stale.
+    //   3. **Multi-field WRITE race** — between phase-2 writes (six
+    //      independent UPDATE statements per orchestrator call), a
+    //      transient DB error / serialization conflict / row-deleted-
+    //      concurrently can leave 1-N branches committed and 1-N not.
+    //
+    // The fix for all three is full transactional wrapping via
+    // `DbService.tx` + raw-SQL writes — separate class-wide debt that
+    // also subsumes the activity-row swallow pattern. Until shipped,
+    // partial commits beyond validation failures remain possible.
+    // Don't claim "atomic"; claim "validation-atomic".
     await this.preflightValidateUpdate(workOrderId, dto, actorAuthUid, {
       hasSla, hasPlan, hasStatus, hasPriority, hasAssignment, hasMetadata,
     });
@@ -352,7 +400,10 @@ export class WorkOrderService {
     //      SLA policy lookup) — SKIPPED for SYSTEM_ACTOR. Trusted-system
     //      writes shouldn't pay the round-trip cost.
 
-    // ── tier 1: stateless format / enum / range checks (always run) ──
+    // ── tier 1: stateless format / enum / range / shape checks ──────
+    // Always run, even for SYSTEM_ACTOR. Workflow + cron writes shouldn't
+    // be able to land malformed data either; matches the per-field method
+    // convention where format checks fire before the SYSTEM_ACTOR bypass.
     if (flags.hasPlan) {
       if (
         Object.prototype.hasOwnProperty.call(dto, 'planned_start_at') &&
@@ -361,9 +412,7 @@ export class WorkOrderService {
       ) {
         const ts = Date.parse(dto.planned_start_at);
         if (Number.isNaN(ts)) {
-          throw new BadRequestException(
-            'planned_start_at must be a valid ISO 8601 timestamp or null',
-          );
+          throw new BadRequestException(ERR_PLANNED_START_INVALID);
         }
       }
       if (
@@ -372,45 +421,61 @@ export class WorkOrderService {
         dto.planned_duration_minutes !== undefined
       ) {
         const d = dto.planned_duration_minutes;
-        if (typeof d !== 'number' || !Number.isInteger(d) || d <= 0 || d > 60 * 24 * 30) {
-          throw new BadRequestException(
-            'planned_duration_minutes must be a positive integer (max 43200 = 30 days) or null',
-          );
+        if (
+          typeof d !== 'number' ||
+          !Number.isInteger(d) ||
+          d <= 0 ||
+          d > MAX_DURATION_MINUTES
+        ) {
+          throw new BadRequestException(ERR_DURATION_INVALID());
         }
       }
     }
     if (flags.hasPriority) {
-      const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
-      if (!VALID_PRIORITIES.includes(dto.priority as string)) {
-        throw new BadRequestException(
-          `priority must be one of: ${VALID_PRIORITIES.join(', ')}`,
-        );
+      if (!VALID_PRIORITIES.includes(dto.priority as Priority)) {
+        throw new BadRequestException(ERR_PRIORITY_INVALID);
       }
     }
     if (flags.hasMetadata) {
       if (dto.title !== undefined && dto.title.trim() === '') {
-        throw new BadRequestException('title must be a non-empty string');
+        throw new BadRequestException(ERR_TITLE_EMPTY);
       }
       if (
-        dto.cost !== undefined &&
+        Object.prototype.hasOwnProperty.call(dto, 'cost') &&
         dto.cost !== null &&
+        dto.cost !== undefined &&
         !Number.isFinite(dto.cost)
       ) {
-        throw new BadRequestException('cost must be a finite number or null');
+        throw new BadRequestException(ERR_COST_NOT_FINITE);
       }
       if (
-        dto.tags !== undefined &&
+        Object.prototype.hasOwnProperty.call(dto, 'tags') &&
         dto.tags !== null &&
+        dto.tags !== undefined &&
         (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
       ) {
-        throw new BadRequestException('tags must be an array of strings or null');
+        throw new BadRequestException(ERR_TAGS_INVALID);
+      }
+      // Watchers SHAPE check (full-review #2 critical fix). Pre-fix this
+      // wasn't in tier-1; SYSTEM_ACTOR with `watchers: "foo"` would commit
+      // prior fields then 400 on metadata — the exact partial-commit
+      // class preflight is meant to prevent. The DEEPER tenant-membership
+      // check stays in tier-2 because it needs DB access.
+      if (
+        Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
+        dto.watchers !== null &&
+        dto.watchers !== undefined &&
+        (!Array.isArray(dto.watchers) ||
+          !dto.watchers.every((w) => typeof w === 'string'))
+      ) {
+        throw new BadRequestException(ERR_WATCHERS_SHAPE_INVALID);
       }
     }
 
-    // Stateless assignee uuid format check (cheap, always run).
-    // Catches malformed uuids before the DB-dependent existence check.
+    // Stateless assignee uuid format check.
     if (flags.hasAssignment) {
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const UUID_RE =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       for (const f of ASSIGNMENT_FIELDS) {
         const v = (dto as Record<string, unknown>)[f];
         if (typeof v === 'string' && !UUID_RE.test(v)) {
@@ -419,7 +484,35 @@ export class WorkOrderService {
       }
     }
 
-    // ── tier 2: DB-dependent checks (skipped for SYSTEM_ACTOR) ───────
+    // SLA policy existence in tenant (full-review #3 critical fix).
+    // Pre-fix this lived in tier-2 and was skipped for SYSTEM_ACTOR;
+    // `updateSla` validates the same thing for SYSTEM_ACTOR (line 587+),
+    // so SYSTEM_ACTOR multi-field PATCH with bad sla_id + good other
+    // fields would commit the others and then reject — partial commit
+    // reintroduced. Hoisted into tier-1 because it's an auth-free DB
+    // lookup keyed by a deterministic id.
+    if (
+      flags.hasSla &&
+      dto.sla_id !== null &&
+      dto.sla_id !== undefined
+    ) {
+      const tenant = TenantContext.current();
+      const { data: policy, error } = await this.supabase.admin
+        .from('sla_policies')
+        .select('id')
+        .eq('id', dto.sla_id)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!policy) {
+        throw new BadRequestException(
+          `sla_id ${dto.sla_id} does not reference a known SLA policy in this tenant`,
+        );
+      }
+    }
+
+    // ── tier 2: visibility + permission + tenant validation ──────────
+    // (skipped for SYSTEM_ACTOR — matches per-field method convention)
     if (actorAuthUid === SYSTEM_ACTOR) return;
 
     const tenant = TenantContext.current();
@@ -442,23 +535,17 @@ export class WorkOrderService {
 
     if (flags.hasSla && !ctx.has_write_all) {
       if (!(await checkPermission('sla.override'))) {
-        throw new ForbiddenException(
-          'sla.override permission required to change a work order SLA',
-        );
+        throw new ForbiddenException(ERR_PERM_SLA_OVERRIDE);
       }
     }
     if (flags.hasPriority && !ctx.has_write_all) {
       if (!(await checkPermission('tickets.change_priority'))) {
-        throw new ForbiddenException(
-          'tickets.change_priority permission required to change a work order priority',
-        );
+        throw new ForbiddenException(ERR_PERM_PRIORITY_CHANGE);
       }
     }
     if (flags.hasAssignment && !ctx.has_write_all) {
       if (!(await checkPermission('tickets.assign'))) {
-        throw new ForbiddenException(
-          'tickets.assign permission required to change a work order assignment',
-        );
+        throw new ForbiddenException(ERR_PERM_ASSIGN);
       }
     }
 
@@ -481,21 +568,9 @@ export class WorkOrderService {
       });
     }
 
-    // SLA policy existence in tenant.
-    if (flags.hasSla && dto.sla_id !== null && dto.sla_id !== undefined) {
-      const { data: policy, error } = await this.supabase.admin
-        .from('sla_policies')
-        .select('id')
-        .eq('id', dto.sla_id)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle();
-      if (error) throw error;
-      if (!policy) {
-        throw new BadRequestException(
-          `sla_id ${dto.sla_id} does not reference a known SLA policy in this tenant`,
-        );
-      }
-    }
+    // SLA policy existence — moved to tier 1 (auth-free; needs to fire
+    // for SYSTEM_ACTOR too because per-field updateSla validates it
+    // there).
   }
 
   /**
@@ -549,7 +624,7 @@ export class WorkOrderService {
         if (permErr) throw permErr;
         if (!hasOverride) {
           throw new ForbiddenException(
-            'sla.override permission required to change a work order SLA',
+            ERR_PERM_SLA_OVERRIDE,
           );
         }
       }
@@ -719,19 +794,17 @@ export class WorkOrderService {
         );
       }
     }
-    // Upper bound: 1 year of minutes. `Number.isInteger` returns true for
-    // some integral floats above 2^31 (e.g. 1e15), which would pass our
+    // Upper bound: 1 year of minutes (module-level MAX_DURATION_MINUTES;
+    // shared with preflight). `Number.isInteger` returns true for some
+    // integral floats above 2^31 (e.g. 1e15), which would pass our
     // validation and 500 on the int4 column overflow. Codex round 1 catch.
-    const MAX_DURATION_MINUTES = 60 * 24 * 365;
     if (
       plannedDurationMinutes !== null &&
       (!Number.isInteger(plannedDurationMinutes) ||
         plannedDurationMinutes <= 0 ||
         plannedDurationMinutes > MAX_DURATION_MINUTES)
     ) {
-      throw new BadRequestException(
-        `planned_duration_minutes must be a positive integer ≤ ${MAX_DURATION_MINUTES}`,
-      );
+      throw new BadRequestException(ERR_DURATION_INVALID());
     }
     // Duration without a start makes no sense — clear them together.
     // Mirror of the legacy method's behavior; the FE relies on this.
@@ -1085,11 +1158,8 @@ export class WorkOrderService {
   ): Promise<WorkOrderRow> {
     const tenant = TenantContext.current();
 
-    const VALID = ['low', 'medium', 'high', 'critical'] as const;
-    if (!VALID.includes(priority)) {
-      throw new BadRequestException(
-        `priority must be one of: ${VALID.join(', ')}`,
-      );
+    if (!VALID_PRIORITIES.includes(priority)) {
+      throw new BadRequestException(ERR_PRIORITY_INVALID);
     }
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
@@ -1111,7 +1181,7 @@ export class WorkOrderService {
         if (permErr) throw permErr;
         if (!hasChange) {
           throw new ForbiddenException(
-            'tickets.change_priority permission required to change a work order priority',
+            ERR_PERM_PRIORITY_CHANGE,
           );
         }
       }
@@ -1367,18 +1437,18 @@ export class WorkOrderService {
       );
     }
     if (dto.title !== undefined && dto.title.trim() === '') {
-      throw new BadRequestException('title must be a non-empty string');
+      throw new BadRequestException(ERR_TITLE_EMPTY);
     }
     if (
       dto.cost !== undefined &&
       dto.cost !== null &&
       !Number.isFinite(dto.cost)
     ) {
-      throw new BadRequestException('cost must be a finite number or null');
+      throw new BadRequestException(ERR_COST_NOT_FINITE);
     }
     if (dto.tags !== undefined && dto.tags !== null) {
       if (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string')) {
-        throw new BadRequestException('tags must be an array of strings or null');
+        throw new BadRequestException(ERR_TAGS_INVALID);
       }
     }
     if (dto.watchers !== undefined && dto.watchers !== null) {
@@ -1387,7 +1457,7 @@ export class WorkOrderService {
         !dto.watchers.every((w) => typeof w === 'string')
       ) {
         throw new BadRequestException(
-          'watchers must be an array of strings (person UUIDs) or null',
+          ERR_WATCHERS_SHAPE_INVALID,
         );
       }
     }
@@ -1559,6 +1629,15 @@ export class WorkOrderService {
    * because resolver-rerun on a work_order is a separate decision (which
    * routing context to use, child_dispatch vs case_owner). When the
    * planning board needs it, surface as a follow-up slice.
+   *
+   * Not a member of the orchestrator's preflight surface — `reassign` is
+   * a single-DTO, single-write path with its own gate
+   * (`assertAssignPermission`) and a routing_decisions audit insert that
+   * MUST run alongside the work_orders write. Routing it through the
+   * orchestrator would lose the routing_decisions semantics. If a future
+   * refactor merges reassign into update(), the routing-decision write
+   * needs to move into the orchestrator's post-write hook AND become
+   * part of any transactional wrapper — flag for the same slice.
    */
   async reassign(
     workOrderId: string,
@@ -1761,7 +1840,7 @@ export class WorkOrderService {
     if (permErr) throw permErr;
     if (!hasAssign) {
       throw new ForbiddenException(
-        'tickets.assign permission required to change a work order assignment',
+        ERR_PERM_ASSIGN,
       );
     }
   }
