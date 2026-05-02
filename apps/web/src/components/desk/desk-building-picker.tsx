@@ -35,64 +35,42 @@ import {
   SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { useReceptionBuilding } from './desk-building-context';
-import { useSpaces } from '@/api/spaces';
+import { useSpaces, resolveSpaceSubline, type Space } from '@/api/spaces';
 import { cn } from '@/lib/utils';
-import type { Space } from '@/api/spaces/types';
 
 interface Props {
   variant?: 'compact' | 'prominent';
 }
 
-/**
- * Resolve a sub-label for a building/site. We don't have a structured
- * `address` field on `spaces`, so we fall back through the most useful
- * context the data model gives us:
- *
- *   1. `attributes.address` (free-form jsonb attribute, if the tenant set it)
- *   2. Parent space name (e.g. "Amsterdam Campus" for a building under it)
- *   3. The building's code (e.g. "AMS-HQ")
- *   4. The space type label ("Building" / "Site")
- *
- * The parent-space lookup needs the full `spaces` list; we accept it as
- * an arg so the caller can pass `null` while the list is still loading.
- * Returning `null` in that window prevents the sub-line from flipping
- * from `code` → parent name once spaces resolve, which would re-shape
- * the trigger height mid-render.
- *
- * Concretely answers "where is this in the world" without requiring a
- * schema change. When backends grow a real address column, swap step 1.
- */
-function resolveSubline(b: Space, allSpaces: Space[] | null): string | null {
-  const attrs = b.attributes as { address?: string; street?: string } | null | undefined;
-  if (attrs?.address) return attrs.address;
-  if (attrs?.street) return attrs.street;
-  // Lazy parent lookup — only scans `allSpaces` when we actually need
-  // the parent. With at most ~N buildings rendered, this is N lookups
-  // over a list of size M, vs. building an M-entry Map up-front for
-  // every render. M can be 1k–10k tenant-wide; N is typically <10.
-  if (b.parent_id) {
-    if (!allSpaces) return null;
-    const parent = allSpaces.find((s) => s.id === b.parent_id);
-    if (parent) return parent.name;
-  }
-  if (b.code) return b.code;
-  return b.type === 'site' ? 'Site' : 'Building';
-}
-
 export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
   const { buildingId, buildings, setBuildingId, loading } = useReceptionBuilding();
-  const { data: allSpaces, isLoading: spacesLoading } = useSpaces();
+  // `error` lets us suppress the parent-name lookup gracefully — if the
+  // spaces list failed, we still render the trigger (with the active
+  // building name) so the user can switch buildings and use reception
+  // even when the auxiliary lookup tipped over.
+  const { data: allSpaces, isLoading: spacesLoading, error: spacesError } = useSpaces();
   const prominent = variant === 'prominent';
 
-  // While allSpaces is still loading, pass `null` so resolveSubline returns
-  // `null` for any building whose subline depends on the parent lookup.
-  // Caller renders an empty subline slot in that window instead of
-  // flipping from code → parent name once the list resolves.
-  const spacesForSubline: Space[] | null = spacesLoading ? null : (allSpaces ?? []);
+  // While allSpaces is still loading, pass `null` so resolveSpaceSubline
+  // returns `null` for any building whose subline depends on the parent
+  // lookup. Caller renders an empty subline slot in that window instead
+  // of flipping from code → parent name once the list resolves.
+  // On error we substitute `[]` so resolveSpaceSubline still produces
+  // the best-effort fallback (code / type) without waiting forever.
+  const spacesForSubline: Space[] | null = spacesError
+    ? []
+    : spacesLoading
+      ? null
+      : (allSpaces ?? []);
+  const sublineErrorTitle = spacesError
+    ? "Couldn't load building details"
+    : undefined;
 
   if (loading) {
     return (
       <div
+        role="status"
+        aria-live="polite"
         className={cn(
           'inline-flex items-center gap-2 text-sm text-muted-foreground',
           prominent && 'w-full px-3 py-2',
@@ -119,7 +97,15 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
   }
 
   const active = buildings.find((b) => b.id === buildingId) ?? buildings[0];
-  const subline = active ? resolveSubline(active, spacesForSubline) : null;
+  const subline = active ? resolveSpaceSubline(active, spacesForSubline) : null;
+  // Combined SR label so screen readers announce "Acme HQ, Amsterdam Campus"
+  // as one phrase instead of two separately-located <span>s, and so the
+  // disabled single-building variant communicates the same context.
+  const combinedLabel = active
+    ? subline
+      ? `${active.name}, ${subline}`
+      : active.name
+    : '';
 
   if (buildings.length === 1) {
     if (prominent) {
@@ -133,7 +119,8 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
               size="lg"
               disabled
               className="md:h-auto md:p-3"
-              aria-label={`Scoped to ${active.name}`}
+              aria-label={`Scoped to ${combinedLabel}`}
+              title={sublineErrorTitle}
             >
               <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
               <div className="grid flex-1 text-left text-sm leading-tight">
@@ -166,7 +153,11 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
               render={
                 <SidebarMenuButton
                   size="lg"
-                  aria-label="Switch building"
+                  // Combined "name, subline" so SR users hear both lines as
+                  // one phrase. The decorative <span>s below are visual
+                  // only; this aria-label is the source of truth.
+                  aria-label={combinedLabel || 'Switch building'}
+                  title={sublineErrorTitle}
                   className="md:h-auto md:p-3 data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground"
                 />
               }
@@ -189,12 +180,17 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
               className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[16rem]"
             >
               {buildings.map((b) => {
-                const sub = resolveSubline(b, spacesForSubline);
+                const sub = resolveSpaceSubline(b, spacesForSubline);
+                const isActive = b.id === active.id;
                 return (
                   <DropdownMenuItem
                     key={b.id}
                     onSelect={() => setBuildingId(b.id)}
                     className="gap-2.5"
+                    // aria-current marks the row that matches the current
+                    // scope so SR users can tell which building is selected
+                    // without relying on visual styling.
+                    aria-current={isActive ? 'true' : undefined}
                   >
                     <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                     <div className="min-w-0 grid flex-1 leading-tight">
