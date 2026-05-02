@@ -667,7 +667,7 @@ The Wave 0 + Wave 1 implementation MUST pass an automated `axe-core` scan plus a
 This is incremental. Nothing breaks on day one.
 
 **Wave 0 — Foundation (mostly invisible UX change)** — ~5 days
-- **Body-shape audit + shim FIRST.** Today some call sites read `error.body` / `error.details` directly. Confirmed consumer: `apps/web/src/components/booking-composer/helpers.ts:72-85` (`extractAlternatives`) reads `error.details.alternatives` from 409 conflict bodies. There may be a small number of others — `grep -rn "error\.\(body\|details\)" apps/web/src --include="*.ts" --include="*.tsx"` is the audit. The filter ships in two phases:
+- **Body-shape audit + shim FIRST.** Today some call sites read `error.body` / `error.details` directly. Confirmed consumer: `apps/web/src/components/booking-composer/helpers.ts:67-83` (`extractAlternatives`) reads `error.details.alternatives` from 409 conflict bodies. There may be a small number of others — `grep -rn "error\.\(body\|details\)" apps/web/src --include="*.ts" --include="*.tsx"` is the audit. The filter ships in two phases:
   - **0a (shim):** the new `AllExceptionsFilter` writes the new wire shape AND preserves any pre-existing top-level keys legacy consumers rely on (`alternatives`, etc.) at the root level for one release. The filter logs whenever a request hits the legacy-shim branch so we can confirm the consumer set is empty before phase 0b.
   - **0b (cutover):** once the audit + shim usage logs confirm zero legacy reads in a 1-week window, drop the shim and ship the clean wire shape.
 - Ship request-id middleware (`apps/api/src/common/middleware/request-id.middleware.ts`): reads `X-Request-Id` from inbound, generates ULID-prefixed `req_<ulid>` if missing, attaches to `req.id`, sets response header.
