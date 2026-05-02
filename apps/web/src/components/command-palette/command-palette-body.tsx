@@ -378,12 +378,17 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
   const onSelectHit = useCallback(
     (hit: SearchHit, openInNewTab = false) => {
       const meta = KIND_META[hit.kind];
-      // Visitor hits resolve via the visitor surface's search-by-name —
-      // see ResultRow for the same conditional. The persons-id route
-      // /admin/persons/${id} is the wrong destination for a visitor.
+      // Visitor hits resolve directly to the visitor detail page — see
+      // ResultRow for the rationale + same conditional. Backend search
+      // RPC supplies `latest_visitor_id` so the persons.id we hold
+      // doesn't have to be the route target.
+      const visitorId =
+        hit.kind === 'visitor' ? (hit.extra?.latest_visitor_id as string | null | undefined) : null;
       const path =
         hit.kind === 'visitor'
-          ? `/desk/visitors?q=${encodeURIComponent(hit.title)}`
+          ? visitorId
+            ? `/desk/visitors/${visitorId}`
+            : `/desk/visitors?q=${encodeURIComponent(hit.title)}`
           : meta.href(hit.id, { scope });
       pushRecent({
         key: `${hit.kind}:${hit.id}`,
@@ -772,14 +777,23 @@ interface ResultRowProps {
 const ResultRow = memo(function ResultRow({ hit, hrefScope, onSelect }: ResultRowProps) {
   const meta = KIND_META[hit.kind];
   const Icon = meta.icon;
-  // Visitor hits are synthetic — KIND_META.visitor.href returns '' because
-  // the visitor's persons.id isn't a useful destination (no /admin/persons
-  // route serves visitor records well). Resolve to a search by name on
-  // the visitor surface so reception lands on a populated /desk/visitors
-  // result list. Other kinds keep the standard id-based href.
+  // Visitor hits route directly to the visitor detail page (full route),
+  // NOT to the embedded /desk/visitors?q=... split-view. The previous
+  // search-URL fallback was bad UX: it landed reception on a building-
+  // filtered table that often didn't contain the matched visitor (visitor
+  // at site B, current building filter on site A → empty table; user
+  // confused). The backend search RPC (migration 00274) returns
+  // `latest_visitor_id` in extra for visitor-typed person hits; we use
+  // that to deep-link to /desk/visitors/<visitor_id> directly. The
+  // search-URL fallback only applies when the LATERAL lookup couldn't
+  // find a visitors row (rare — visitor person without any visit yet).
+  const visitorId =
+    hit.kind === 'visitor' ? (hit.extra?.latest_visitor_id as string | null | undefined) : null;
   const path =
     hit.kind === 'visitor'
-      ? `/desk/visitors?q=${encodeURIComponent(hit.title)}`
+      ? visitorId
+        ? `/desk/visitors/${visitorId}`
+        : `/desk/visitors?q=${encodeURIComponent(hit.title)}`
       : meta.href(hit.id, { scope: hrefScope });
 
   const statusCategory =
