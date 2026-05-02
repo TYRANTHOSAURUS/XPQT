@@ -521,9 +521,10 @@ The `auth.expired` UX problem isn't "user gets redirected to sign-in mid-edit" �
 **Pending-state UX (mandatory).** A request that goes through the silent-refresh path takes longer than a normal request — usually 200ms vs ~1.5s when the refresh fires mid-flight. Without an indicator, the user sees a Save button that "hangs." Rule:
 
 - React Query's `mutation.isPending` is exposed at the call site as today.
-- `apiFetch` exposes a per-call `phase` signal via the `meta` map: `'in_flight' | 'refreshing'`. The phase flips to `'refreshing'` when the silent-retry path is active.
+- `apiFetch` writes per-call `phase ∈ ('in_flight','refreshing')` to a **dedicated Zustand store** (`apps/web/src/lib/errors/api-call-phase-store.ts`) keyed by a per-request id (`apiFetch` generates a ULID per call and threads it through `RequestInit.signal` or a `headers['X-Client-Call-Id']` header so React Query can reach it). React Query mutations don't expose per-call meta updates between phases — that's why this is a side channel and not `mutation.meta`.
+- React Query's `useMutation` exposes the mutation's most recent call id via a `mutateAsync` wrapper that records it; a hook `useMutationStatus(mutation)` joins the mutation to the call-phase store and returns `{ isPending, phase }`.
 - Any button bound to a mutation past **600ms** of pending should re-label to a "<verb>… (signing back in)" form when phase is `'refreshing'`. Below 600ms, no change — the user doesn't notice.
-- The render helpers (`SubmitButton`, `RowActionButton`, etc.) read this from a shared hook (`useMutationStatus(mutation)`) so call sites don't manually wire the label flip.
+- The button primitives (`<Button>` from `apps/web/src/components/ui/button.tsx`) get a new `mutation` prop that wires `useMutationStatus` automatically — call sites pass `<Button mutation={saveWebhook}>Save</Button>` instead of manually flipping the label. **No new component is created**; existing `Button` is extended. (Spec previously named `SubmitButton`/`RowActionButton` as new components; that was wrong — these don't exist as named exports and don't need to be created.)
 
 This is the difference between "weird latency, did it work?" and "ah, it's signing me back in." Cheap to implement, big perceived-quality lift.
 
