@@ -781,11 +781,21 @@ Walk-ups don't go through this form — they go through reception or the kiosk's
 
 ---
 
-## 7. Reception workspace (`/reception/*`)
+## 7. Reception surface inside `/desk/*`
 
-### 7.1 Why a new workspace
+> **Rebuild note (2026-05-02).** The original v1 shipped a standalone
+> `/reception/*` workspace as a peer of `/desk/*`. That decision was
+> reversed in the desk-shell rebuild: receptionists at smaller tenants
+> ARE service-desk operators wearing the reception hat (per
+> `docs/users.md` §9), so the reception surface lives inside the desk
+> shell at `/desk/visitors` as a peer of `/desk/tickets`. The rest of
+> §7 is preserved as the operational reference for the front-desk
+> workflows; substitute "/desk/visitors" for any "/reception/today"
+> mention. The old paths still work as redirects.
 
-Service desk is at `/desk/*`; portal at `/portal/*`; admin at `/admin/*`. Reception has its own job — reception-shift workflows differ from desk/admin. Putting reception inside admin compromises both. The workspace is a new top-level peer, accessed by `visitors.reception`-permission users.
+### 7.1 Why the desk shell hosts reception
+
+Service desk is at `/desk/*`; portal at `/portal/*`; admin at `/admin/*`. Reception's day-to-day is a peer of ticket triage and booking ops — same operator persona at most tenants. We host it inside the desk shell as `/desk/visitors`, accessed by `visitors.reception`-permission users (and by anyone with the `agent` role who has location grants on the relevant building).
 
 ### 7.2 The 9am rush UX (reviewer A5)
 
@@ -853,15 +863,16 @@ Reviewer C2 resolved.
 
 `/reception/daglijst` — on-demand print of today's expected visitors in a paper-friendly layout. Browser-print, A4, multiple visitors per page, reception phone + signature column for paper checkmarks during peak rush. Reviewer 8a in v1 (per UX research finding).
 
-### 7.9 Service desk lens at `/desk/visitors`
+### 7.9 `/desk/visitors` is the canonical surface
 
-A *focused* surface inside the desk shell, NOT a duplicate of `/reception/*`. Shows:
+After the rebuild round (2026-05-02), `/desk/visitors` IS the canonical visitor surface — not a separate "lens". It mirrors `/desk/tickets` shape:
 
-- Visitors whose `visitor_type` is `contractor` AND who have an active service ticket (e.g., contractor visiting to fix the broken AC — both a ticket and a visitor).
-- All visitors currently in `pending_approval` state (so desk can chase the approver).
-- Today's visitor escalations: `email_bounced`, `host_not_yet_acknowledged > 5min`, `unreturned_passes`.
+- Toolbar with autofocused search, view-mode toggle (table/list), filter chip bar (date / status / building / visitor type), and a "+ Invite" button.
+- Resizable list/detail split: click a row to open the visitor's detail panel on the right; right-click to open a context menu with status-aware sub-menus (mark arrived w/ backdate, mark left w/ pass-return decision, mark no-show, copy link, etc).
+- Sidebar named views: Today / Expected / On site / Pending approval / Yesterday's loose ends / All / Recent. Plus an inline calendar for arbitrary days.
+- Search-result overlay floats on top of the bucket list rather than replacing it.
 
-Read + check-in actions; pass actions; full visitor record drill-down. Same data as reception, narrower presentation. Reviewer C14 resolved.
+The data still comes from the same `/reception/*` API endpoints (no general `/visitors` list exists yet) — the page picks the closest backend query per active view and filters client-side. Roadmap item: a server-side `/visitors?date=…&status=…` for full historical browsing.
 
 ---
 

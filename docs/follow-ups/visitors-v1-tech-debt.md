@@ -5,7 +5,75 @@ deferred UX polish; this file tracks intentional tech-debt decisions,
 schema notes that can't be edited in-place, and lessons from the
 post-shipping review pass for future planning runs.
 
+## Major design corrections
+
+### Standalone `/reception/*` workspace removed (2026-05-02)
+
+**What we shipped first:** v1 shipped a separate `/reception/*` top-
+level workspace with its own layout, navigation, and four pages
+(today / passes / yesterday / daglijst), as a peer of `/desk/*` and
+`/portal/*`. The thinking at design time: "reception has a different
+job from desk; putting it inside admin compromises both."
+
+**What was wrong about it:** the persona research (`docs/users.md` §9)
+was already explicit that receptionists at smaller tenants ARE service-
+desk operators wearing the reception hat. Splitting them across two
+shells fragmented the operator's day — they had to context-switch
+between `/reception/today` and `/desk/tickets` for what is functionally
+one job. It also doubled the surface area we had to maintain (two
+nav models, two layouts, two switcher entries) without adding any
+capability the desk shell couldn't host.
+
+**The fix (2026-05-02 rebuild round):** the visitor surface lives
+inside the desk shell at `/desk/visitors` as a peer of
+`/desk/tickets`. Same shape — search-driven toolbar, view-mode toggle
+(table/list), URL-backed filter chips, click-to-open detail panel,
+right-click context menu. The standalone `/reception/*` workspace
+was deleted; old paths redirect to the equivalent `/desk/visitors?view=…`.
+
+**Lesson for future planning runs:**
+1. When the persona doc already calls out role overlap, take it
+   seriously. "Different job" was a design assumption, not a user-
+   research finding — the doc said the opposite.
+2. Adding a top-level workspace is a heavy commit. Prefer adding a
+   peer page within an existing shell when the operator persona
+   overlaps. The "the workflows are different" reasoning needs a
+   higher bar than "it's a different role" — it needs to be a
+   different *day-to-day operator*.
+3. UI consolidation is cheaper than UI fragmentation. Two surfaces
+   that should be one will fight every UX-polish round; one surface
+   that holds two workflows just needs to express both well.
+
+**Where to dig in if you need the history:** the original §7 of the
+spec (`docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md`)
+is preserved with the operational details (rush UX, walk-up flow,
+backdated arrival, pass actions, daglijst). The rebuild note at the
+top of §7 redirects path mentions to the new `/desk/visitors` URL.
+
 ## Intentional v1 debt
+
+### No general `/visitors` list endpoint (server-side history browsing)
+
+**Where:** `apps/web/src/pages/desk/visitors.tsx`. The page picks
+between `/reception/today`, `/reception/yesterday`, `/reception/desk-lens`,
+and `/reception/search` depending on the active sidebar view, and
+filters client-side from there.
+
+**What's missing:** a `GET /visitors?date=YYYY-MM-DD&status=…&building_id=…`
+that returns visitors for arbitrary days, statuses, or cross-building
+queries. Today the "All visitors" and "Recent" views fall back to
+today's data — honest about it via the empty state, but not actually
+historical.
+
+**Why we shipped it like this:** the rebuild round was UI-shape only
+(no backend changes). The reception endpoints are sufficient for the
+day-to-day operator workflow (today, yesterday, desk lens, search);
+historical browsing is a v2 reporting concern.
+
+**v2 plan:** add a single list endpoint that the page can swap in,
+keep the URL filter shape stable, and retire the per-view fan-out
+in `pages/desk/visitors.tsx`. Likely lands alongside the visitor
+analytics report (covered in `docs/booking-platform-roadmap.md`).
 
 ### `rejected` ↔ `denied` vocabulary seam
 
