@@ -23,7 +23,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 
 | # | Decision | Rationale |
 |---|---|---|
-| 1 | Adopt **RFC 9457 Problem Details** as the wire shape for all error responses. | Industry standard, replaces RFC 7807, already what Stripe / Linear / Vercel converged on. Future-proof. |
+| 1 | The wire shape is **RFC 9457-inspired** (`code`, `title`, `detail`, `status`, `fields[]`, `traceId`, plus app-specific extensions for `retryAfter`, version-conflict, bulk results). The literal `type` URI from the RFC is **not** included — nobody consumes it; Stripe / Linear / Vercel ship variants without it; including it implies a phantom dependency on a docs site at `errors.prequest.app/<code>` that doesn't exist. | The contract surface that matters is `code`. The RFC's `type` URI duplicates what `code` already conveys, costs bytes, and signals a docs site we haven't built. |
 | 2 | Every error response carries `code` (stable, machine-readable) + `title` (human outcome) + `detail` (one-line explanation) + optional `fields[]` + always a `traceId`. | Code is the join key for client message lookup + recovery. TraceId is non-negotiable — support uses it. |
 | 3 | A **single global Nest `AllExceptionsFilter`** normalises every thrown thing — `HttpException`, `ZodError`, raw `pg` errors, `PostgrestError`, unknown errors — into the wire shape. Migrating call sites is incremental; the filter handles legacy `BadRequestException(string)` cleanly. **Note:** the repo uses Zod for runtime validation (manually called per controller via `safeParse`); `class-validator` is not installed and there is no `ValidationPipe`. The filter has no `class-validator` branch. | One file, every endpoint benefits day one. Migrate throw sites by traffic, not all-at-once. |
 | 4 | An **`AppError` class** (server) with `code`, `status`, `fields?`, `cause?`, `docsUrl?`. New throw sites use it. Legacy `BadRequestException(string)` is mapped by the filter to `code: 'generic.bad_request'` until migrated. | Coded errors at the source preserve intent; string errors stay supported during migration. |
@@ -46,13 +46,12 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 
 ## 3 · Architecture
 
-### 3.1 Wire shape — RFC 9457
+### 3.1 Wire shape — RFC 9457-inspired
 
 Every non-2xx response from the API has the same body, regardless of route, framework feature, or error origin:
 
 ```jsonc
 {
-  "type": "https://errors.prequest.app/ticket.title_required",  // RFC 9457; opaque URN, not a real fetch
   "code": "ticket.title_required",                              // STABLE machine-readable code; never changes
   "title": "Couldn't create ticket",                            // human outcome, optional override per locale
   "detail": "Title is required.",                               // one-line explanation
