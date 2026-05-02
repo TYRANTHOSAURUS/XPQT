@@ -19,6 +19,14 @@ That's not a missing feature. It's a missing **contract** at three layers (serve
 
 This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboard, Figma — all treat error UX as a designed surface. The platforms FMIS competes with (Eptura, Planon, ServiceNow, Robin) are *worse* at this than us. The platforms FMIS aspires to are dramatically better. Closing that gap is a one-time platform investment, not a feature.
 
+### Scope: this spec governs `apps/web/` only
+
+This spec is the contract for the **operator-side / admin-side / employee-portal web app at `apps/web/`**. It does NOT govern the separate vendor-portal codebase (project memory: `project_vendor_portal_separate_codebase.md`) or the future kiosk/mobile-native apps that may ship as separate projects.
+
+**However, the wire shape (§3.1) IS shared.** Any client that talks to the FMIS API — vendor portal, kiosk, mobile-native, or anything else — receives the same RFC 9457-inspired body and the same `code` registry from `@prequest/shared`. They each ship their own renderer / classifier / messages package tuned to their surface (mobile-first, kiosk-only, etc.); the wire contract is non-negotiable across all clients.
+
+A vendor or future-kiosk engineer reading this spec should: (1) consume `@prequest/shared` for the code union and registered messages they care about, (2) re-use the classifier / renderer concepts described here as a starting point, (3) NOT assume the helpers, hooks, or React-specific renderers in §3 are available in their codebase — those are `apps/web`-specific.
+
 ## 2 · Locked decisions
 
 | # | Decision | Rationale |
