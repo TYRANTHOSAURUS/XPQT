@@ -228,6 +228,21 @@ export function classify(error: unknown, ctx?: ClassifyContext): ClassifiedError
 
 Concretely: `renderError(classified, ctx)` derives `title` from the code-message lookup (§5), then calls `toastError(title, { description: classified.detail, retry: ctx.retry })`. The `actionTitle` parameter the call site passes to `handleMutationError` (§3.5) is what becomes the toast title — and the call site is responsible for writing it in the existing voice ("Couldn't save webhook" not "Save webhook").
 
+#### Voice per surface
+
+The "Couldn't <verb> <thing>" rule applies to **toasts**. Other surfaces have their own voice — applying toast voice to a banner reads as awkward translation ("Couldn't reach Prequest" doesn't fit a persistent connection-status pill). The `messages.<locale>.ts` lookup table is keyed by `(code, surface)` so the same code can render different copy on different surfaces.
+
+| Surface | Voice | Examples |
+|---|---|---|
+| **Toast** | "Couldn't <verb> <thing>." Description = code-resolved detail. Retry/View/Undo per existing toast.ts contract. | "Couldn't save webhook." "Couldn't add visitor." "Webhook saved." (success) |
+| **Banner** | Plain present-state. No verbs about the user's last action. | "You're offline." "Reconnecting…" "Working offline — changes will sync when you reconnect." |
+| **Inline (`<FieldError>`)** | RHF-native. Single short phrase. No subject. | "Required." "Must be at least 32 characters." "Pick one of: low, normal, high, urgent." |
+| **Page** | "We can't <find/show/load> <this thing>." First-person plural; less mechanical than the toast voice. | "We can't find this webhook." "You don't have access to this booking." "Something went wrong on our end." |
+| **Modal** | (Conflict modal deferred to v2.) When shipped: "<Thing> was changed by someone else." | (See §6.3 v1 toast equivalent for now.) |
+| **Silent** | No copy — handler claims it (e.g. auth → redirect). | n/a |
+
+When you add a new code, you specify the toast title and detail; the page surface auto-falls-back to a generic per-class template ("We can't find this <thing>" using the entity name from the code's first dotted segment) unless you override per-surface.
+
 
 ```ts
 // apps/web/src/lib/errors/renderer.tsx
