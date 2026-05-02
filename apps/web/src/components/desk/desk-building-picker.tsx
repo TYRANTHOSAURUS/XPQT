@@ -4,14 +4,16 @@
  * Two visual variants:
  *
  *  - `variant="compact"` — h-9 select trigger sized for a toolbar row.
- *  - `variant="prominent"` — full-width, two-line, button-driven dropdown.
- *    Mirrors the NavUser shape (size="lg" feel: building name on top,
- *    sub-line below). Designed to live as the first sidebar group on the
- *    visitors workspace so the receptionist's currently-selected scope is
- *    always glanceable.
+ *  - `variant="prominent"` — full-width, two-line, NavUser-shaped selector.
+ *    Uses `SidebarMenu` + `SidebarMenuButton size="lg"` so it inherits the
+ *    sidebar theming, focus-visible baseline, and collapsed-rail behaviour
+ *    used by the user menu — keeping reception's "where am I scoped?"
+ *    selector visually peer to the rest of the sidebar.
  *
  * Single-building tenants always see a read-only label (so it's obvious
- * where they're scoped), regardless of variant.
+ * where they're scoped), regardless of variant. The prominent variant
+ * still uses `SidebarMenuButton` (disabled) so the visual rhythm matches
+ * the multi-building case.
  */
 import { Building, ChevronsUpDownIcon } from 'lucide-react';
 import {
@@ -27,10 +29,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from '@/components/ui/sidebar';
 import { useReceptionBuilding } from './desk-building-context';
 import { useSpaces } from '@/api/spaces';
 import { cn } from '@/lib/utils';
-import { useMemo } from 'react';
 import type { Space } from '@/api/spaces/types';
 
 interface Props {
@@ -47,15 +53,26 @@ interface Props {
  *   3. The building's code (e.g. "AMS-HQ")
  *   4. The space type label ("Building" / "Site")
  *
+ * The parent-space lookup needs the full `spaces` list; we accept it as
+ * an arg so the caller can pass `null` while the list is still loading.
+ * Returning `null` in that window prevents the sub-line from flipping
+ * from `code` → parent name once spaces resolve, which would re-shape
+ * the trigger height mid-render.
+ *
  * Concretely answers "where is this in the world" without requiring a
  * schema change. When backends grow a real address column, swap step 1.
  */
-function resolveSubline(b: Space, byId: Map<string, Space>): string {
+function resolveSubline(b: Space, allSpaces: Space[] | null): string | null {
   const attrs = b.attributes as { address?: string; street?: string } | null | undefined;
   if (attrs?.address) return attrs.address;
   if (attrs?.street) return attrs.street;
+  // Lazy parent lookup — only scans `allSpaces` when we actually need
+  // the parent. With at most ~N buildings rendered, this is N lookups
+  // over a list of size M, vs. building an M-entry Map up-front for
+  // every render. M can be 1k–10k tenant-wide; N is typically <10.
   if (b.parent_id) {
-    const parent = byId.get(b.parent_id);
+    if (!allSpaces) return null;
+    const parent = allSpaces.find((s) => s.id === b.parent_id);
     if (parent) return parent.name;
   }
   if (b.code) return b.code;
@@ -64,16 +81,14 @@ function resolveSubline(b: Space, byId: Map<string, Space>): string {
 
 export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
   const { buildingId, buildings, setBuildingId, loading } = useReceptionBuilding();
-  const { data: allSpaces } = useSpaces();
+  const { data: allSpaces, isLoading: spacesLoading } = useSpaces();
   const prominent = variant === 'prominent';
 
-  // Map of every space (including non-buildings) so we can resolve the
-  // immediate parent of a building → its name as a sub-line.
-  const byId = useMemo<Map<string, Space>>(() => {
-    const m = new Map<string, Space>();
-    for (const s of allSpaces ?? []) m.set(s.id, s);
-    return m;
-  }, [allSpaces]);
+  // While allSpaces is still loading, pass `null` so resolveSubline returns
+  // `null` for any building whose subline depends on the parent lookup.
+  // Caller renders an empty subline slot in that window instead of
+  // flipping from code → parent name once the list resolves.
+  const spacesForSubline: Space[] | null = spacesLoading ? null : (allSpaces ?? []);
 
   if (loading) {
     return (
@@ -104,20 +119,32 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
   }
 
   const active = buildings.find((b) => b.id === buildingId) ?? buildings[0];
-  const subline = active ? resolveSubline(active, byId) : '';
+  const subline = active ? resolveSubline(active, spacesForSubline) : null;
 
   if (buildings.length === 1) {
     if (prominent) {
+      // Same SidebarMenuButton shape as the multi-building trigger but
+      // disabled. Keeps visual rhythm consistent — the receptionist sees
+      // the same "scope tile" whether there's one building or many.
       return (
-        <div className="flex w-full items-center gap-2.5 rounded-md border bg-muted/30 px-3 py-2.5">
-          <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <div className="min-w-0 grid flex-1 text-left leading-tight">
-            <span className="truncate text-sm font-medium">{active.name}</span>
-            {subline && (
-              <span className="truncate text-xs text-muted-foreground">{subline}</span>
-            )}
-          </div>
-        </div>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              size="lg"
+              disabled
+              className="md:h-auto md:p-3"
+              aria-label={`Scoped to ${active.name}`}
+            >
+              <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{active.name}</span>
+                {subline && (
+                  <span className="truncate text-xs text-muted-foreground">{subline}</span>
+                )}
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       );
     }
     return (
@@ -129,53 +156,60 @@ export function ReceptionBuildingPicker({ variant = 'compact' }: Props) {
   }
 
   // Multi-building: prominent uses a DropdownMenu with the NavUser shape
-  // (large two-line trigger). Compact stays a Select.
+  // (SidebarMenuButton size="lg" two-line trigger). Compact stays a Select.
   if (prominent) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <button
-              type="button"
-              className={cn(
-                'flex h-auto w-full items-center gap-2.5 rounded-md border bg-background px-3 py-2.5 text-left',
-                'transition-colors hover:bg-accent/40 data-open:bg-accent/40',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              )}
-              aria-label="Switch building"
-            />
-          }
-        >
-          <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <div className="min-w-0 grid flex-1 text-left leading-tight">
-            <span className="truncate text-sm font-medium">{active.name}</span>
-            {subline && (
-              <span className="truncate text-xs text-muted-foreground">{subline}</span>
-            )}
-          </div>
-          <ChevronsUpDownIcon className="ml-auto size-4 shrink-0 text-muted-foreground" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          side="bottom"
-          className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[16rem]"
-        >
-          {buildings.map((b) => {
-            const sub = resolveSubline(b, byId);
-            return (
-              <DropdownMenuItem key={b.id} onSelect={() => setBuildingId(b.id)} className="gap-2.5">
-                <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                <div className="min-w-0 grid flex-1 leading-tight">
-                  <span className="truncate text-sm">{b.name}</span>
-                  {sub && (
-                    <span className="truncate text-xs text-muted-foreground">{sub}</span>
-                  )}
-                </div>
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <SidebarMenuButton
+                  size="lg"
+                  aria-label="Switch building"
+                  className="md:h-auto md:p-3 data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground"
+                />
+              }
+            >
+              <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{active.name}</span>
+                {subline && (
+                  <span className="truncate text-xs text-muted-foreground">{subline}</span>
+                )}
+              </div>
+              <ChevronsUpDownIcon
+                className="ml-auto size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              side="bottom"
+              className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[16rem]"
+            >
+              {buildings.map((b) => {
+                const sub = resolveSubline(b, spacesForSubline);
+                return (
+                  <DropdownMenuItem
+                    key={b.id}
+                    onSelect={() => setBuildingId(b.id)}
+                    className="gap-2.5"
+                  >
+                    <Building className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <div className="min-w-0 grid flex-1 leading-tight">
+                      <span className="truncate text-sm">{b.name}</span>
+                      {sub && (
+                        <span className="truncate text-xs text-muted-foreground">{sub}</span>
+                      )}
+                    </div>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SidebarMenuItem>
+      </SidebarMenu>
     );
   }
 
