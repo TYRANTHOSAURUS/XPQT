@@ -263,6 +263,10 @@ export class BookingNotificationsService {
           .update({
             policy_snapshot: { ...ps, reminder_sent_at: new Date().toISOString() },
           })
+          // Defense-in-depth per the project's #0 invariant: admin-client
+          // writes filter by tenant_id explicitly even though uuid id
+          // collisions are practically impossible.
+          .eq('tenant_id', reservation.tenant_id)
           .eq('id', reservation.id)
           .is('policy_snapshot->>reminder_sent_at', null);
       } catch (err) {

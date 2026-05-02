@@ -253,10 +253,16 @@ function ApprovalEntityCell({ type, id }: { type: string; id: string }) {
  * preview will return when the backend ships replacement reads.
  */
 function BundleEntityCell({ id }: { id: string }) {
+  // Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27)
+  // and `/desk/bookings/:id` is the canonical detail route. The previous
+  // `?scope=bundles&id=…` deeplink was invalid — the desk-bookings list
+  // scope param accepts only `'all'|'pending_approval'|'cancelled'|'today'`
+  // (api/booking-bundles/keys.ts:2) and the detail panel doesn't open from
+  // a query-param pattern.
   return (
     <div className="space-y-1">
       <Link
-        to={`/desk/bookings?scope=bundles&id=${id}`}
+        to={`/desk/bookings/${id}`}
         className="font-medium hover:underline"
       >
         Booking

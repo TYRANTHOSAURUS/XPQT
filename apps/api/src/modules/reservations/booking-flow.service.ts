@@ -463,12 +463,16 @@ export class BookingFlowService {
 
     // Link the master booking back to the series. recurrence_master_id is
     // dropped — the only canonical link is recurrence_series_id on bookings.
+    // Defense-in-depth per the project's #0 invariant: admin-client writes
+    // filter by tenant_id explicitly even though uuid id collisions are
+    // practically impossible.
     await this.supabase.admin
       .from('bookings')
       .update({
         recurrence_series_id: seriesId,
         recurrence_index: 0,
       })
+      .eq('tenant_id', master.tenant_id)
       .eq('id', master.id);
 
     // Materialise the rolling 90-day window. Owned by another slice — see

@@ -1,5 +1,5 @@
 import {
-  BadRequestException, Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param,
+  BadRequestException, Body, Controller, Get, Header, Headers, Param,
   Patch, Post, Query, Req, Res, UnauthorizedException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -430,141 +430,15 @@ export class ReservationController {
   }
 
   // ---- Visitors attached to a reservation ----
-
-  /**
-   * `GET /reservations/:id/visitors` — list visitor records attached to
-   * this reservation. Visibility-gated through the reservation's
-   * predicate; a non-visible reservation 404s rather than returning an
-   * empty list, so we don't leak existence.
-   */
-  @Get(':id/visitors')
-  async listVisitors(@Req() request: Request, @Param('id') id: string) {
-    const authUid = this.getAuthUid(request);
-    // Throws if not visible.
-    await this.service.findOne(id, authUid);
-    const tenantId = TenantContext.current().id;
-
-    const { data, error } = await this.supabase.admin
-      .from('reservation_visitors')
-      .select('visitor_id, attached_at, visitor:visitors(id, person_id, host_person_id, visit_date, status, badge_id, person:persons(first_name, last_name, email))')
-      .eq('reservation_id', id)
-      .eq('tenant_id', tenantId);
-    if (error) throw error;
-
-    type Row = {
-      visitor_id: string;
-      attached_at: string;
-      visitor: {
-        id: string;
-        person_id: string;
-        host_person_id: string;
-        visit_date: string;
-        status: string;
-        badge_id: string | null;
-        person: { first_name: string; last_name: string; email: string | null } | { first_name: string; last_name: string; email: string | null }[] | null;
-      } | { id: string }[] | null;
-    };
-    return ((data ?? []) as Row[]).map((r) => {
-      const v = Array.isArray(r.visitor) ? r.visitor[0] : r.visitor;
-      const p = v && 'person' in v && v.person ? (Array.isArray(v.person) ? v.person[0] : v.person) : null;
-      return {
-        visitor_id: r.visitor_id,
-        attached_at: r.attached_at,
-        visitor: v ? {
-          id: (v as { id: string }).id,
-          person_id: (v as { person_id?: string }).person_id ?? null,
-          host_person_id: (v as { host_person_id?: string }).host_person_id ?? null,
-          visit_date: (v as { visit_date?: string }).visit_date ?? null,
-          status: (v as { status?: string }).status ?? null,
-          badge_id: (v as { badge_id?: string | null }).badge_id ?? null,
-          first_name: p?.first_name ?? null,
-          last_name: p?.last_name ?? null,
-          email: p?.email ?? null,
-        } : null,
-      };
-    });
-  }
-
-  /**
-   * `POST /reservations/:id/visitors` — attach an existing visitor record
-   * (by `visitor_id`). Visitor creation itself goes through the existing
-   * visitors module; this endpoint is the link step. Idempotent on
-   * (reservation_id, visitor_id) primary key.
-   */
-  @Post(':id/visitors')
-  async attachVisitor(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Body() body: { visitor_id: string },
-  ) {
-    const authUid = this.getAuthUid(request);
-    const reservation = await this.service.findOne(id, authUid);
-    const tenantId = TenantContext.current().id;
-    const ctx = await this.visibility.loadContext(authUid, tenantId);
-    this.assertReservationWritable(
-      reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null },
-      ctx,
-    );
-
-    if (!body?.visitor_id) {
-      throw new NotFoundException({ code: 'visitor_required', message: 'visitor_id is required' });
-    }
-
-    // Verify the visitor belongs to this tenant — else the link would
-    // cross tenant boundaries even though RLS would catch the read.
-    const { data: visitorRow, error: visitorErr } = await this.supabase.admin
-      .from('visitors')
-      .select('id')
-      .eq('id', body.visitor_id)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    if (visitorErr) throw visitorErr;
-    if (!visitorRow) {
-      throw new NotFoundException({ code: 'visitor_not_found', message: `Visitor ${body.visitor_id} not found.` });
-    }
-
-    const { error } = await this.supabase.admin
-      .from('reservation_visitors')
-      .upsert({
-        reservation_id: id,
-        visitor_id: body.visitor_id,
-        tenant_id: tenantId,
-        attached_by_user_id: ctx.user_id,
-      }, { onConflict: 'reservation_id,visitor_id' });
-    if (error) throw error;
-
-    return { reservation_id: id, visitor_id: body.visitor_id };
-  }
-
-  /**
-   * `DELETE /reservations/:id/visitors/:visitorId` — unlink. Doesn't
-   * delete the visitor record itself (that has its own lifecycle).
-   */
-  @Delete(':id/visitors/:visitorId')
-  async detachVisitor(
-    @Req() request: Request,
-    @Param('id') id: string,
-    @Param('visitorId') visitorId: string,
-  ) {
-    const authUid = this.getAuthUid(request);
-    const reservation = await this.service.findOne(id, authUid);
-    const tenantId = TenantContext.current().id;
-    const ctx = await this.visibility.loadContext(authUid, tenantId);
-    this.assertReservationWritable(
-      reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null },
-      ctx,
-    );
-
-    const { error } = await this.supabase.admin
-      .from('reservation_visitors')
-      .delete()
-      .eq('reservation_id', id)
-      .eq('visitor_id', visitorId)
-      .eq('tenant_id', tenantId);
-    if (error) throw error;
-
-    return { reservation_id: id, visitor_id: visitorId };
-  }
+  //
+  // The legacy `/reservations/:id/visitors` GET / POST / DELETE endpoints
+  // were removed in the booking-canonicalisation rewrite (2026-05-02,
+  // migration 00280). Visitors now link to their booking via the canonical
+  // `visitors.booking_id` column (00278:41 — renamed from
+  // `visitors.booking_bundle_id`); the `reservation_visitors` junction
+  // table is dropped (00280). Visitor management lives in the visitors
+  // module — see `apps/api/src/modules/visitors/visitors.controller.ts`
+  // for the canonical CRUD surface (`/visitors/*`).
 
   // ---- helpers ----
 

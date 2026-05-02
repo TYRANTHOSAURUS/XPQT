@@ -172,7 +172,7 @@ export class BundleService {
     const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
     const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
 
-    const cleanup = new Cleanup(this.supabase);
+    const cleanup = new Cleanup(this.supabase, tenantId);
     try {
       // Under canonicalisation the booking IS the bundle — no separate
       // `booking_bundles` row to lazy-create. Use the booking's id as the
@@ -1881,7 +1881,13 @@ class Cleanup {
   private assetReservationIds: string[] = [];
   private done = false;
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    // Defense-in-depth per the project's #0 invariant: admin-client writes
+    // filter by tenant_id explicitly even though uuid id collisions are
+    // practically impossible. Caller threads the booking's tenant id.
+    private readonly tenantId: string,
+  ) {}
 
   order(id: string) { this.orderIds.push(id); }
   orderLineItem(id: string) { this.oliIds.push(id); }
@@ -1893,11 +1899,16 @@ class Cleanup {
     if (this.done) return;
     // Reverse-creation order: oli → asset_reservation → orders → approvals.
     // Each step is independent — a failure in step N shouldn't skip step
-    // N+1. Best effort: each branch in its own try/catch.
+    // N+1. Best effort: each branch in its own try/catch. Every write is
+    // tenant-scoped (#0 invariant).
     const failures: string[] = [];
     if (this.oliIds.length > 0) {
       try {
-        await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+        await this.supabase.admin
+          .from('order_line_items')
+          .delete()
+          .eq('tenant_id', this.tenantId)
+          .in('id', this.oliIds);
       } catch (err) {
         failures.push(`oli: ${(err as Error).message}`);
       }
@@ -1909,6 +1920,7 @@ class Cleanup {
         await this.supabase.admin
           .from('asset_reservations')
           .update({ status: 'cancelled' })
+          .eq('tenant_id', this.tenantId)
           .in('id', this.assetReservationIds);
       } catch (err) {
         failures.push(`asset_reservations: ${(err as Error).message}`);
@@ -1916,7 +1928,11 @@ class Cleanup {
     }
     if (this.orderIds.length > 0) {
       try {
-        await this.supabase.admin.from('orders').delete().in('id', this.orderIds);
+        await this.supabase.admin
+          .from('orders')
+          .delete()
+          .eq('tenant_id', this.tenantId)
+          .in('id', this.orderIds);
       } catch (err) {
         failures.push(`orders: ${(err as Error).message}`);
       }
@@ -1939,6 +1955,7 @@ class Cleanup {
             status: 'cancelled',
             comments: 'Auto-voided — service attach rolled back (orphan prevention).',
           })
+          .eq('tenant_id', this.tenantId)
           .in('target_entity_id', approvalTargetIds)
           .eq('status', 'pending');
       } catch (err) {

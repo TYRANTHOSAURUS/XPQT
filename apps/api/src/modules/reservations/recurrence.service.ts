@@ -447,11 +447,10 @@ export class RecurrenceService {
         // Best-effort — a failure here doesn't fail the materialise run;
         // the user still got their occurrence's booking.
         //
-        // BREAKING for OrderService.cloneOrderForOccurrence (separate slice):
-        // it still writes to legacy `booking_bundle_id` / `linked_reservation_id`
-        // columns which were renamed in 00278:108-118. That writer will fail
-        // at runtime until OrdersModule is rewritten; the caller-side
-        // contract here is correct.
+        // OrderService.cloneOrderForOccurrence was rewritten in slice C to
+        // use the canonical `orders.booking_id` / `orders.linked_slot_id`
+        // columns (00278:108-118). The caller-side contract here is correct
+        // and the writer no longer fails at runtime.
         if (this.orders && this.supabase) {
           await this.cloneBundleOrdersToOccurrence({
             masterReservationId: master.id,             // = master booking id
@@ -515,9 +514,10 @@ export class RecurrenceService {
   }): Promise<void> {
     if (!this.supabase || !this.orders) return;
     // Find the master booking's orders. Post-canonicalisation
-    // `orders.booking_id` (00278:109) is the only column that ties an order
-    // to its parent — `linked_reservation_id` was renamed to `linked_slot_id`
-    // (00278:112) and is per-slot, not per-booking. Filter on
+    // `orders.booking_id` (00278:109) is the canonical column tying an
+    // order to its parent booking. `orders.linked_slot_id` (00278:112,
+    // renamed from linked_reservation_id) is per-slot and not used
+    // here — we want every order on the booking. Filter on
     // `booking_id = master.id` (the master booking id, == legacy
     // booking_bundle_id under canonicalisation).
     const { data: orders, error } = await this.supabase.admin
