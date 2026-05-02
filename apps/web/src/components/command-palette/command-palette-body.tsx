@@ -63,6 +63,20 @@ import {
 
 type ResolvedHref = (id: string, ctx: { scope: RouteRoleScope }) => string;
 
+// Stable empty-groups fallback. `data?.groups ?? {}` would create a fresh
+// object literal on every render — the partition memo below treats the
+// fallback as part of its dep set and would recompute unnecessarily. A
+// module-level constant means undefined data → identical reference.
+const EMPTY_GROUPS: Partial<Record<SearchKind, SearchHit[]>> = {};
+
+// Backend types we ever ask the search RPC for. The synthetic 'visitor'
+// kind is render-only — it would be ignored or rejected if we sent it
+// to /search. We keep the user-visible `SearchKind` union with 'visitor'
+// in the search api to label render groups (and to type partition
+// outputs) but downcast at the call site to `BackendSearchKind` when
+// we hit the wire.
+type BackendSearchKind = Exclude<SearchKind, 'visitor'>;
+
 const KIND_META: Record<
   SearchKind,
   { label: string; singular: string; icon: LucideIcon; href: ResolvedHref; listHref?: (q: string) => string }
@@ -83,18 +97,17 @@ const KIND_META: Record<
     listHref: (q) => `/admin/persons?q=${encodeURIComponent(q)}`,
   },
   // Synthetic kind — the search SQL groups visitors under `person`, but
-  // the palette splits them out so they render with the visitor surface
-  // (deep-link to /desk/visitors?q=<title>) and a "Visitors" heading.
-  // The split happens in the rendering loop below; KIND_META.visitor
-  // owns the visitor-specific routing.
+  // the palette splits them out so they render under a "Visitors"
+  // heading. Per-row routing is handled by `resolveHitPath` below
+  // (which is the source of truth for the visitor → URL mapping); the
+  // entry here only owns the icon + label + list-fallback URL.
   visitor: {
     label: 'Visitors',
     singular: 'visitor',
     icon: UserCheck,
-    href: (_id, _ctx) => '',
-    // listHref + per-row href are computed from the title (visitor name)
-    // so reception lands on a populated /desk/visitors search instead of
-    // an opaque visitor-id route they may not have permission for.
+    // Never invoked — resolveHitPath handles visitor routing. Returning
+    // empty stays harmless if a future change accidentally calls it.
+    href: () => '',
     listHref: (q) => `/desk/visitors?q=${encodeURIComponent(q)}`,
   },
   space: {
@@ -226,6 +239,41 @@ function humaniseSubtitle(s: string | null | undefined): string {
     .join(' · ');
 }
 
+/**
+ * Resolve the navigation target for a search hit.
+ *
+ * Kept as a single function so the row click handler and the row's
+ * `data-href` (used for ⌘+Enter open-in-new-tab) stay in lock-step. The
+ * previous duplicate `if (hit.kind === 'visitor') …` branch in two call
+ * sites kept drifting whenever the visitor routing rules changed.
+ *
+ * Visitor routing rationale:
+ *   - The synthetic `visitor` kind is materialised from a `person` hit
+ *     whose `extra.type === 'visitor'`. The hit's `id` is a `persons.id`,
+ *     NOT a `visitors.id`.
+ *   - When the backend's LATERAL lookup found a recent visit row, the
+ *     hit carries `extra.latest_visitor_id` and we deep-link to the
+ *     visitor detail page (the right surface for "find this visitor").
+ *   - When NO visit row exists yet (visitor person without any visits),
+ *     we route to `/admin/persons/<id>` instead. That's the truthful
+ *     target for the row — it's a person record, full stop. The previous
+ *     fallback to `/desk/visitors?q=<name>` lied: it landed reception on
+ *     a building-filtered table that often didn't contain the visitor,
+ *     producing an empty-table mystery.
+ */
+function resolveHitPath(hit: SearchHit, scope: RouteRoleScope): string {
+  if (hit.kind === 'visitor') {
+    const visitorId = hit.extra?.latest_visitor_id;
+    if (typeof visitorId === 'string' && visitorId.length > 0) {
+      return `/desk/visitors/${visitorId}`;
+    }
+    // No visit row yet — `hit.id` is a persons.id. The persons row is
+    // the truthful target for a visitor-typed person without any visit.
+    return `/admin/persons/${hit.id}`;
+  }
+  return KIND_META[hit.kind].href(hit.id, { scope });
+}
+
 const STATUS_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   new: 'default',
   assigned: 'default',
@@ -339,11 +387,19 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
     return roleScoped;
   }, [isPagesOnly, scopeOverride, parsed.scope, scope]);
 
+  // The synthetic `visitor` kind is render-only — the backend doesn't
+  // know about it. Strip it before sending to /search so a stray
+  // ['visitor'] from a future scope override doesn't error the RPC.
+  const backendRequestedTypes = useMemo<BackendSearchKind[] | undefined>(() => {
+    if (!requestedTypes) return undefined;
+    const filtered = requestedTypes.filter(
+      (k): k is BackendSearchKind => k !== 'visitor',
+    );
+    return filtered.length > 0 ? filtered : undefined;
+  }, [requestedTypes]);
+
   const serverQuery = isPagesOnly ? '' : parsed.text;
-  const { data, isFetching, error } = useSearch(
-    serverQuery,
-    requestedTypes && requestedTypes.length > 0 ? requestedTypes : undefined,
-  );
+  const { data, isFetching, error } = useSearch(serverQuery, backendRequestedTypes);
 
   useEffect(() => {
     if (error) {
@@ -376,19 +432,7 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
 
   const onSelectHit = useCallback(
     (hit: SearchHit, openInNewTab = false) => {
-      const meta = KIND_META[hit.kind];
-      // Visitor hits resolve directly to the visitor detail page — see
-      // ResultRow for the rationale + same conditional. Backend search
-      // RPC supplies `latest_visitor_id` so the persons.id we hold
-      // doesn't have to be the route target.
-      const visitorId =
-        hit.kind === 'visitor' ? (hit.extra?.latest_visitor_id as string | null | undefined) : null;
-      const path =
-        hit.kind === 'visitor'
-          ? visitorId
-            ? `/desk/visitors/${visitorId}`
-            : `/desk/visitors?q=${encodeURIComponent(hit.title)}`
-          : meta.href(hit.id, { scope });
+      const path = resolveHitPath(hit, scope);
       pushRecent({
         key: `${hit.kind}:${hit.id}`,
         kind: hit.kind === 'location' ? 'space' : (hit.kind as RecentEntry['kind']),
@@ -463,35 +507,53 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
 
   const trimmed = parsed.text;
   const hasQuery = trimmed.length >= 2 || isPagesOnly;
-  const rawGroups = data?.groups ?? {};
+  // Module-level fallback so undefined data doesn't churn `groups`'
+  // dependency on every render.
+  const rawGroups = data?.groups ?? EMPTY_GROUPS;
 
-  // Partition the backend's `person` group into visitors (extra.type ===
-  // 'visitor') and everyone else. Visitors get their own synthetic kind
-  // group so they surface as visitors in the palette — separate heading,
-  // visitor icon, and per-row href that deep-links to /desk/visitors?q=
-  // instead of /admin/persons. Backend never emits `kind: 'visitor'`;
-  // the split is purely a render-time concern.
+  // Partition the backend's `person` group so visitor-typed persons
+  // ALSO appear under a synthetic 'visitor' heading.
+  //
+  // We surface visitor persons in BOTH groups (visitor + person), not
+  // just the visitor one. Reasoning: a visitor person can also be a
+  // tenant employee or have tickets/bookings under their persons.id —
+  // moving the row exclusively into "Visitors" would hide the persons-
+  // graph context that operators searching by name often need. The
+  // cost is one extra row in a separate group; the gain is operators
+  // get the full picture.
+  //
+  // The visitor copy carries `kind: 'visitor'` so resolveHitPath sends
+  // it to /desk/visitors/<latest_visitor_id> (or /admin/persons/<id>
+  // when no visit row exists). The person copy stays `kind: 'person'`
+  // and routes to /admin/persons/<id> as usual.
   const groups = useMemo<Partial<Record<SearchKind, SearchHit[]>>>(() => {
     const personHits = rawGroups.person;
     if (!personHits || personHits.length === 0) return rawGroups;
     const visitors: SearchHit[] = [];
-    const others: SearchHit[] = [];
     for (const hit of personHits) {
       const t = (hit.extra?.type as string | undefined) ?? '';
       if (t === 'visitor') {
         visitors.push({ ...hit, kind: 'visitor' });
-      } else {
-        others.push(hit);
       }
     }
     if (visitors.length === 0) return rawGroups;
-    return { ...rawGroups, person: others, visitor: visitors };
+    // Person group keeps the original hits (visitors included). Visitor
+    // group holds the duplicated, kind-flipped copies.
+    return { ...rawGroups, visitor: visitors };
   }, [rawGroups]);
 
-  const entityHitCount = useMemo(
-    () => Object.values(groups).reduce((sum, g) => sum + (g?.length ?? 0), 0),
-    [groups],
-  );
+  // Don't double-count: visitor hits are duplicated copies of person
+  // hits, so we sum the person group only (which still contains them)
+  // and add every other group's count. Used downstream to gate the
+  // Pages section ("show only when no entities matched").
+  const entityHitCount = useMemo(() => {
+    let total = 0;
+    for (const [kind, hits] of Object.entries(groups)) {
+      if (kind === 'visitor') continue;
+      total += hits?.length ?? 0;
+    }
+    return total;
+  }, [groups]);
 
   const showPages = !hasQuery || isPagesOnly || entityHitCount === 0;
 

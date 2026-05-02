@@ -81,17 +81,9 @@ export const SEARCH_KIND_LABEL: Record<SearchKind, string> = {
   reservation: 'Bookings',
 };
 
-// Visitors render BEFORE persons so a search hit for "james" surfaces
-// as the visitor first, not as a person row that links to /admin/persons.
-export const SEARCH_KIND_ORDER: SearchKind[] = [
-  'ticket',
-  'visitor',
-  'person',
-  'reservation',
-  'room',
-  'space',
-  'asset',
-  'vendor',
-  'team',
-  'request_type',
-];
+// Render-time order moved to the command palette where it belongs:
+// `RESULT_KIND_ORDER` in components/command-palette/command-palette-body.tsx
+// owns the synthetic-kind ordering (it interleaves the 'visitor' kind
+// the palette materialises from person hits). No other module needs a
+// shared ordering today; if a second consumer appears, lift it back
+// here and have the palette derive its own array from this one.
