@@ -231,24 +231,41 @@ export function BookingComposer({
   const createInvitation = useCreateInvitation();
   const submitting = createBooking.isPending || createMultiRoom.isPending;
 
-  // Walk the spaces tree from a child up to its enclosing site/building.
+  // Walk the spaces tree from a child up to its enclosing building.
   // Used by the visitors flush after a booking lands — visitor invitations
   // need a building_id, but the composer only knows the room. The cache
   // is the same one rendering the picker, so this is a synchronous lookup.
+  //
+  // Preference: BUILDING wins over SITE. The reception today view filters
+  // on exact `building_id` equality, and reception's picker (likewise the
+  // most common user-mental-model) anchors on the building, not the site.
+  // Returning a site when a building exists higher in the chain produces
+  // a visitor whose building_id doesn't match the receptionist's filter
+  // → invisible in /desk/visitors. Walk to the top, remember any building
+  // we passed, only return a site if no building exists in the chain.
+  // Edge case: if the room IS itself the building (rare but possible),
+  // we return the room id — the closure handles that via the same loop.
   const resolveBuildingId = useCallback(
     (spaceId: string | null): string | null => {
       if (!spaceId || !spacesCache) return null;
       const byId = new Map<string, Space>();
       for (const s of spacesCache) byId.set(s.id, s);
       let cursor: Space | undefined = byId.get(spaceId);
+      let fallbackSiteId: string | null = null;
       let depth = 0;
       while (cursor && depth < 10) {
-        if (cursor.type === 'building' || cursor.type === 'site') return cursor.id;
-        if (!cursor.parent_id) return null;
+        if (cursor.type === 'building') return cursor.id;
+        if (cursor.type === 'site' && fallbackSiteId === null) {
+          // Remember the closest site but keep walking — a building
+          // higher up the chain is still preferred, since reception
+          // typically scopes its today view to a building.
+          fallbackSiteId = cursor.id;
+        }
+        if (!cursor.parent_id) break;
         cursor = byId.get(cursor.parent_id);
         depth += 1;
       }
-      return null;
+      return fallbackSiteId;
     },
     [spacesCache],
   );

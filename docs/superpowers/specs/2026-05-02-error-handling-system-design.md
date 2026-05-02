@@ -28,7 +28,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 3 | A **single global Nest `AllExceptionsFilter`** normalises every thrown thing — `HttpException`, `ZodError`, raw `pg` errors, `PostgrestError`, unknown errors — into the wire shape. Migrating call sites is incremental; the filter handles legacy `BadRequestException(string)` cleanly. **Note:** the repo uses Zod for runtime validation (manually called per controller via `safeParse`); `class-validator` is not installed and there is no `ValidationPipe`. The filter has no `class-validator` branch. | One file, every endpoint benefits day one. Migrate throw sites by traffic, not all-at-once. |
 | 4 | An **`AppError` class** (server) with `code`, `status`, `fields?`, `cause?`, `docsUrl?`. New throw sites use it. Legacy `BadRequestException(string)` is mapped by the filter to `code: 'generic.bad_request'` until migrated. | Coded errors at the source preserve intent; string errors stay supported during migration. |
 | 5 | A **client-side `classify()` function** turns any thrown thing (`ApiError`, `Error`, fetch failure, abort) into a `ClassifiedError` with `class` + `code` + `fields?` + `traceId?` + `recovery`. **Classification happens once, at the boundary.** Renderers read the classified shape. | Decouples "what went wrong" from "how it shows up". Without this layer every renderer re-derives the same state. |
-| 6 | **11 error classes**, each mapped to a default surface and recovery. (Matrix in §4.) Classes are exhaustive — every error must classify into exactly one. `unknown` exists as a last-resort bucket for renderer correctness, but landing there is a bug to fix at the classifier. | A taxonomy with a default-OK case isn't a taxonomy. Forcing exhaustiveness drives classifier completeness. |
+| 6 | **10 error classes**, each mapped to a default surface and recovery. (Matrix in §4.) Classes are exhaustive — every error must classify into exactly one. `unknown` exists as a last-resort bucket for renderer correctness, but landing there is a bug to fix at the classifier. **`gone` (410) is collapsed into `not_found` with `reason: 'removed'`** because no endpoint in the API throws 410 today and surfacing it requires a separate server-side discipline (soft-delete-aware endpoints) outside this spec's scope. The `not_found` page template branches on `reason` to show different copy ("Removed" vs "Doesn't exist"); the wire shape supports the distinction without a separate class. | A taxonomy with a default-OK case isn't a taxonomy. Forcing exhaustiveness drives classifier completeness. Don't ship a class without server-side support — it'd just be dead code. |
 | 7 | The **surface for an error is decided by class, not call site**. Toasts are right ~30% of the time; transport errors get a banner, page-level errors replace the page, field errors paint inline. Renderers expose `handle(error, context)` that routes correctly. | Right now every error is a toast. That's why the app feels noisy and useless when things go wrong. |
 | 8 | **Every error has a recovery.** If the design can't name one, the class is wrong. Recovery options are typed: `retry` · `signIn` · `reload` · `goBack` · `pickAlternative` · `askAdmin` · `contactSupport` · `dismiss`. | "Try again" is the floor, not the ceiling. The button labels are the UX. |
 | 9 | **Messages are looked up client-side by `code`. Unregistered codes fail closed — never display the server's `detail` verbatim.** A code that's not in `messages.<locale>.ts` renders as `unknown.server_error` copy + traceId, not as the server's English prose. The code registry lives in a shared workspace package (`packages/shared/error-codes`) so server enum + client message coverage stay in sync; CI fails on drift. | Localisation, ability to rewrite a confusing message without a deploy. **Fail-closed is the security control:** if a server message accidentally embeds a vendor name, SQL fragment, or stack frame, the client never displays it because the code-message lookup is the only path to user-visible copy. The detail field stays in the response (for support / dev tools) but is not rendered. |
@@ -175,8 +175,7 @@ export type ErrorClass =
   | 'transport'        // offline, DNS, timeout, fetch fail
   | 'auth'             // 401, JWT expired
   | 'permission'       // 403, role lacks permission, RLS hide
-  | 'not_found'        // 404, deleted-while-watching
-  | 'gone'             // 410, soft-deleted, revoked
+  | 'not_found'        // 404 + 410 (page-template branches on body.reason: 'missing' | 'removed')
   | 'validation'       // 422 with fields[]
   | 'conflict'         // 409, version conflict
   | 'rate_limit'       // 429
@@ -226,8 +225,7 @@ const SURFACE_BY_CLASS: Record<ErrorClass, Surface> = {
   transport:  'banner',     // offline pill in app shell
   auth:       'silent',     // redirect handler claims it before render
   permission: 'inline',     // page-level if route, toast if action
-  not_found:  'page',       // route errorElement
-  gone:       'page',
+  not_found:  'page',       // 404 + 410; page-template branches on body.reason
   validation: 'inline',     // FieldError per field; never toast
   conflict:   'modal',      // 'Use theirs / Keep mine'
   rate_limit: 'toast',      // with countdown
@@ -340,8 +338,7 @@ This is the contract. Every classifier branch lands one row.
 | `transport` (offline / DNS / timeout) | Banner pill in app shell | `retry` (auto-retry on reconnect) · `dismiss` | React Query `onlineManager` triggers refetch on reconnect. No toast; banner says it. |
 | `auth` (401 expired) | Silent → redirect to sign-in | `signIn` (carries `next=` to current URL with form draft preserved) | Toast is wrong here. Just navigate. AuthProvider already partly handles this. |
 | `permission` (403) | Page if route-level; toast if action-level | `askAdmin` (with admin names if known) · `goBack` | Inline page state for navigation; toast for 'Save failed: missing permission' |
-| `not_found` (404) | Page replacement via `RouteErrorBoundary` | `goBack` · `reload` | Renders 'This was removed' page-level; never toast over a stale page. Hook calls `throwToBoundary()` to promote a query/mutation 404 into the same boundary that catches render errors. |
-| `gone` (410) | Page replacement via `RouteErrorBoundary` | `goBack` | Distinguished from 404 — entity existed, was removed. Different copy. |
+| `not_found` (404 / 410) | Page replacement via `RouteErrorBoundary` | `goBack` · `reload` | Page template branches on `body.reason ∈ ('missing','removed')` — "Doesn't exist" vs "This was removed". Never toast over a stale page. Hook calls `throwToBoundary()` to promote a query/mutation 404 into the same boundary that catches render errors. 410 is supported in the wire shape but no endpoint throws it today; soft-delete-awareness is server-side discipline that ships separately. |
 | `validation` (422) | Inline `<FieldError>` | (no toast; field errors are the recovery) | Submit button disabled until form is valid. |
 | `conflict` (409) | Toast (v1) · Modal (deferred to v2) | `reload` (v1) · `pickAlternative` (v2 only) | v1 surfaces "This was changed by someone else" + Reload. v2 modal with use-theirs/keep-mine deferred until a real surface demands it. Wire fields `serverVersion` / `clientVersion` ship now. |
 | `rate_limit` (429) | Toast with live countdown | `retry` (auto, when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
