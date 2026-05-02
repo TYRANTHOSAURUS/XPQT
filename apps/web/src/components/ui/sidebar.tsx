@@ -25,19 +25,22 @@ import { PanelLeftIcon } from "lucide-react"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+const SIDEBAR_WIDTH = "24rem"
 const SIDEBAR_WIDTH_MOBILE = "20rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
-// Per design spec docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md:
-// the outer sidebar's width is a function of the rail's expanded state. Total
-// = rail width + contextual second pane width. Pane has min-width 280px so it
-// never crushes when the rail is wide.
+// Dual-pane (DeskSidebar only) — see
+// docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md.
+// SidebarProvider only uses these when the consumer opts in via `dualPane`.
+// AdminLayout / PortalLayout / single-pane shells stay on SIDEBAR_WIDTH and
+// are unaffected by the menu redesign.
 const SIDEBAR_RAIL_WIDTH_COMPACT = "48px"   // matches SIDEBAR_WIDTH_ICON visually
 const SIDEBAR_RAIL_WIDTH_EXPANDED = "180px"
 const SIDEBAR_PANE_WIDTH = "320px"
 const SIDEBAR_PANE_MIN_WIDTH = "280px"
 const RAIL_EXPANDED_STORAGE_KEY = "prequest:rail-expanded"
+const RAIL_EXPANDED_COOKIE_NAME = "prequest_rail_expanded"
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -75,6 +78,7 @@ function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  dualPane = false,
   className,
   style,
   children,
@@ -83,6 +87,14 @@ function SidebarProvider({
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /**
+   * Set to `true` only when the sidebar contains the desk-shell dual-pane
+   * shape (icon rail + contextual second pane). When true the outer width
+   * grows with the rail's expanded state. When false the sidebar uses the
+   * original fixed `--sidebar-width` (24rem). Default false so single-pane
+   * shells (AdminLayout, PortalLayout) are unaffected.
+   */
+  dualPane?: boolean
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
@@ -127,20 +139,38 @@ function SidebarProvider({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleSidebar])
 
-  // Rail-expanded state. Persisted per-device in localStorage. Default is
-  // `true` (expanded) so first-time users see labels — see the design spec
-  // for the rationale (role-permissioned navs make icon-only discovery hard).
-  const [railExpanded, _setRailExpanded] = React.useState<boolean>(true)
+  // Rail-expanded state. Persisted per-device. Default is `true` (expanded)
+  // so first-time users see labels — see the design spec for the rationale
+  // (role-permissioned navs make icon-only discovery hard).
+  //
+  // Persistence is dual: cookie (read synchronously on first render to
+  // avoid the 180→48 width flash that pure-localStorage would cause) +
+  // localStorage (canonical, written on every toggle). Cookie is written
+  // alongside; only ever READ on initial render. This approach mirrors the
+  // existing `sidebar_state` cookie used for the offcanvas/icon toggle.
+  const initialRailExpanded = (() => {
+    if (typeof document === "undefined") return true
+    const match = document.cookie.match(
+      new RegExp(`(?:^|; )${RAIL_EXPANDED_COOKIE_NAME}=([^;]*)`),
+    )
+    if (match?.[1] === "false") return false
+    if (match?.[1] === "true") return true
+    return true
+  })()
+  const [railExpanded, _setRailExpanded] = React.useState<boolean>(initialRailExpanded)
   React.useEffect(() => {
-    // Hydrate from localStorage on mount. Wrapped in try/catch because
-    // localStorage can throw in private-browsing modes / SSR.
+    // Backfill from localStorage if the cookie was missing (e.g. user
+    // previously toggled before the cookie write was added). One-shot
+    // reconciliation so the cookie wins next time.
     try {
       const raw = window.localStorage.getItem(RAIL_EXPANDED_STORAGE_KEY)
-      if (raw === "false") _setRailExpanded(false)
-      else if (raw === "true") _setRailExpanded(true)
+      if (raw === "false" && railExpanded) _setRailExpanded(false)
+      else if (raw === "true" && !railExpanded) _setRailExpanded(true)
     } catch {
       // Ignore — keep the default.
     }
+    // Effect runs once on mount; eslint-disable below intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const setRailExpanded = React.useCallback((next: boolean) => {
     _setRailExpanded(next)
@@ -149,6 +179,8 @@ function SidebarProvider({
     } catch {
       // Ignore.
     }
+    // Cookie is what we read synchronously on first render — keep it in sync.
+    document.cookie = `${RAIL_EXPANDED_COOKIE_NAME}=${next}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
   }, [])
   const toggleRailExpanded = React.useCallback(() => {
     setRailExpanded(!railExpanded)
@@ -185,13 +217,15 @@ function SidebarProvider({
     ]
   )
 
-  // Derived widths — see SIDEBAR_RAIL_WIDTH_* constants above. Total grows
-  // when the rail expands so the second contextual pane keeps its width
-  // instead of being crushed.
+  // Derived widths — only when the consumer opted into dual-pane (DeskShell).
+  // Single-pane shells stay on the original SIDEBAR_WIDTH so AdminLayout /
+  // PortalLayout aren't affected by the desk-menu redesign.
   const railWidth = railExpanded
     ? SIDEBAR_RAIL_WIDTH_EXPANDED
     : SIDEBAR_RAIL_WIDTH_COMPACT
-  const sidebarTotalWidth = `calc(${railWidth} + ${SIDEBAR_PANE_WIDTH})`
+  const sidebarTotalWidth = dualPane
+    ? `calc(${railWidth} + ${SIDEBAR_PANE_WIDTH})`
+    : SIDEBAR_WIDTH
 
   return (
     <SidebarContext.Provider value={contextValue}>
@@ -201,6 +235,9 @@ function SidebarProvider({
           {
             "--sidebar-width": sidebarTotalWidth,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+            // Rail-specific vars are only meaningful in dual-pane mode but
+            // it's harmless to set them in single-pane too — the consumer
+            // simply doesn't reference them.
             "--sidebar-rail-width": railWidth,
             "--sidebar-pane-width": SIDEBAR_PANE_WIDTH,
             "--sidebar-pane-min-width": SIDEBAR_PANE_MIN_WIDTH,
@@ -546,9 +583,13 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 
 const sidebarMenuButtonVariants = cva(
   // Active-state treatment is harmonized across rail and contextual second pane:
-  // bg-sidebar-accent fill + a 2px left accent rule in --primary, applied via
-  // inset box-shadow so it doesn't break the row's truncation/overflow.
-  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:shadow-[inset_2px_0_0_var(--primary)] [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+  // bg-sidebar-accent fill + a 2px left accent rule in --sidebar-primary,
+  // applied via inset box-shadow so it doesn't break the row's truncation/
+  // overflow. --sidebar-primary is the brand color in both themes (indigo
+  // in dark, near-black in light) so it reads well against sidebar-accent
+  // — vs --primary which is a near-white text color in dark mode and would
+  // disappear on the accent fill.
+  "peer/menu-button group/menu-button relative flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:shadow-[inset_2px_0_0_var(--sidebar-primary)] [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
   {
     variants: {
       variant: {

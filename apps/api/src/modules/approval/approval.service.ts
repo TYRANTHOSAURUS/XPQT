@@ -130,23 +130,98 @@ export class ApprovalService {
 
   /**
    * Count + urgency snapshot of the caller's pending approvals — used by
-   * the desk-shell rail badge. Re-uses the same query as getPendingForActor;
-   * the result set is naturally bounded (a single approver rarely has more
-   * than a handful of pending items at once). Urgency = any pending approval
-   * older than 24h, per
-   * docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts.
+   * the desk-shell rail badge. Two scoped queries:
+   *
+   *   1. `count: 'exact', head: true` for the total — never materializes
+   *      rows, immune to Supabase's default 1000-row payload cap that
+   *      would silently truncate `getPendingForActor(...).length`.
+   *   2. A bounded `.lte('requested_at', cutoff).limit(1)` to detect
+   *      whether any pending approval is older than 24h — one row is
+   *      enough to set the urgency flag.
+   *
+   * Both queries reuse the same OR-clause shape as getPendingForActor so
+   * delegations and team-memberships are honored identically.
+   *
+   * Spec: docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts
    */
   async getPendingCountForActor(
     actor: ApprovalActor,
   ): Promise<{ count: number; hasUrgency: boolean }> {
-    const items = (await this.getPendingForActor(actor)) ?? [];
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const hasUrgency = items.some((row: { requested_at?: string | null }) => {
-      const requestedAt = row.requested_at;
-      if (!requestedAt) return false;
-      return new Date(requestedAt).getTime() <= cutoff;
-    });
-    return { count: items.length, hasUrgency };
+    const tenant = TenantContext.current();
+    const nowIso = new Date().toISOString();
+    const cutoffIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    // Resolve delegations + team memberships exactly as getPendingForActor.
+    const { data: delegations } = await this.supabase.admin
+      .from('delegations')
+      .select('delegator_user_id')
+      .eq('delegate_user_id', actor.userId)
+      .eq('tenant_id', tenant.id)
+      .eq('active', true)
+      .lte('starts_at', nowIso)
+      .gte('ends_at', nowIso);
+
+    const delegatorUserIds = (delegations ?? [])
+      .map((d) => d.delegator_user_id as string)
+      .filter(Boolean);
+
+    let approverPersonIds: string[] = [actor.personId];
+    if (delegatorUserIds.length > 0) {
+      const { data: delegatorUsers } = await this.supabase.admin
+        .from('users')
+        .select('person_id')
+        .eq('tenant_id', tenant.id)
+        .in('id', delegatorUserIds);
+      const delegatorPersonIds = (delegatorUsers ?? [])
+        .map((u) => u.person_id as string | null)
+        .filter((v): v is string => Boolean(v));
+      if (delegatorPersonIds.length > 0) {
+        approverPersonIds = [...new Set([...approverPersonIds, ...delegatorPersonIds])];
+      }
+    }
+
+    const { data: memberships } = await this.supabase.admin
+      .from('team_members')
+      .select('team_id')
+      .eq('tenant_id', tenant.id)
+      .eq('user_id', actor.userId);
+    const approverTeamIds = (memberships ?? [])
+      .map((m) => m.team_id as string)
+      .filter(Boolean);
+
+    const orClauses: string[] = [
+      `approver_person_id.in.(${approverPersonIds.join(',')})`,
+    ];
+    if (approverTeamIds.length > 0) {
+      orClauses.push(`approver_team_id.in.(${approverTeamIds.join(',')})`);
+    }
+
+    const orExpr = orClauses.join(',');
+
+    // Total count — head:true means no row payload, just the count.
+    const { count, error: countError } = await this.supabase.admin
+      .from('approvals')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'pending')
+      .or(orExpr);
+    if (countError) throw countError;
+
+    // Urgency probe — fetch up to 1 row older than cutoff. Existence is enough.
+    const { data: stale, error: staleError } = await this.supabase.admin
+      .from('approvals')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'pending')
+      .or(orExpr)
+      .lte('requested_at', cutoffIso)
+      .limit(1);
+    if (staleError) throw staleError;
+
+    return {
+      count: count ?? 0,
+      hasUrgency: (stale?.length ?? 0) > 0,
+    };
   }
 
   /**

@@ -1,9 +1,11 @@
 # Main menu (desk shell) redesign — design
 
 **Date:** 2026-05-02
-**Status:** Approved (brainstorm — design lock)
+**Status:** Shipped (commits c93886a → e020ee5 + adversarial-review fixes)
 **Owner:** Frontend
 **Touches:** `apps/web/src/components/desk/desk-sidebar.tsx`, `apps/web/src/components/ui/sidebar.tsx`, `apps/web/src/components/nav-user.tsx`, `apps/web/src/layouts/desk-layout.tsx`, plus a small new helper for permission-aware nav filtering.
+
+> **Spec ↔ shipped reconciliation (post-`/full-review`):** the sections below have been edited to reflect what actually shipped where the implementation diverged. Original drift points: (a) count endpoints are dedicated `/.../count` routes rather than `?count=true` query params, (b) permission gating is role-based today, not granular, (c) localStorage hydration is now backed by a cookie mirror to prevent the 180→48 width flash, (d) realtime invalidation is NOT wired (counts refresh on focus + 30s staleTime only). See "Open follow-ups" at the bottom for the deferred work.
 
 ## Problem
 
@@ -82,32 +84,30 @@ INSIGHTS
 ```
 The unlabeled middle bucket is fine to display alone — the items themselves provide the context.
 
-### Permission-aware filtering
+### Permission-aware filtering (as shipped)
 
-The nav array is filtered before render based on the current user's effective permissions. A new helper, `filterNavForUser(navItems, perms)`, returns only the items the user can access.
+The nav array is filtered before render via `filterNavGroups(groups, canShow)` (`apps/web/src/lib/nav-permissions.ts`). The helper is a pure function with the structural rules below; the predicate is supplied per call site.
 
-Rules:
-- **An item is hidden** if the user has no permission to view its destination route. (e.g. no `tickets:read_any` and no `tickets:read_assigned` → Tickets hidden.)
-- **A group is hidden entirely** if all its items are hidden after filtering.
+Structural rules:
+- **An item is hidden** when the predicate returns false for its `permission` value.
+- **A group is hidden entirely** when all its items are hidden after filtering.
 - **A single-item group still shows its group label** (the label is the orientation cue, not visual decoration).
 - **The unlabeled middle bucket renders even with one item** — the gap above/below is the separator.
 - **Groups always render in fixed order** (`MY QUEUE` → middle → `INSIGHTS`); never reordered based on what's visible.
 
-This keeps every operator's nav coherent, predictable, and immediately understood by their role.
+⚠ **Today the gating is role-based, not granular.** The auth provider currently exposes only `hasRole('admin' | 'agent' | 'employee')` — there's no per-feature permission key surface for the rail to consume. The shipped predicate maps every rail item to `'agent'` (which `hasRole` resolves true for both agent and admin), so every desk operator currently sees every rail item except Settings (admin-only). The promised "reception only sees Visitors" UX requires a granular permission catalog that hasn't shipped yet — captured under "Open follow-ups."
 
-Permission keys used (already in the catalog per `project_permission_catalog_enforcement_shipped`):
-
-| Nav item | Permission gate |
-|---|---|
-| Inbox | `tickets:inbox` (always — every operator gets an inbox) |
-| Approvals | `approvals:read_any` OR `approvals:read_assigned` |
-| Tickets | `tickets:read_any` OR `tickets:read_assigned` |
-| Bookings | `bookings:read_any` OR `bookings:read_assigned` |
-| Scheduler | same as Bookings |
-| Visitors | `visitors:read_any` OR `visitors:read_assigned` |
-| Reports | `reports:read` |
-| Settings (footer) | any `*:admin` permission (hidden for non-admin users) |
-| Portal (footer) | always visible (every operator can drop into the employee portal) |
+| Nav item | Gate today | Granular gate (when permission catalog supports it) |
+|---|---|---|
+| Inbox | `agent` (i.e. all desk operators) | `tickets:inbox` |
+| Approvals | `agent` | `approvals:read_any` OR `approvals:read_assigned` |
+| Tickets | `agent` | `tickets:read_any` OR `tickets:read_assigned` |
+| Bookings | `agent` | `bookings:read_any` OR `bookings:read_assigned` |
+| Scheduler | `agent` | same as Bookings |
+| Visitors | `agent` | `visitors:read_any` OR `visitors:read_assigned` |
+| Reports | `agent` | `reports:read` |
+| Settings (footer) | `admin` (real gate) | any `*:admin` permission |
+| Portal (footer) | always visible | always visible |
 
 ### Counts
 
@@ -121,11 +121,11 @@ Items that get counts: **Inbox, Approvals, Visitors.** Others stay numeric-silen
 
 **Display:** count appears right-aligned in the row, `font-mono tabular-nums text-xs text-muted-foreground`. Uses the `tabular-nums` token already in `index.css` so digit width changes don't jitter.
 
-**Update cadence:**
+**Update cadence (as shipped):**
 - On mount: fresh fetch.
-- On realtime push: count refresh (already wired via `RealtimeStatusStore` for these three modules).
-- On focus return (tab visibility change): refresh (cheap, ~1 RTT).
+- On focus return (tab visibility change): `refetchOnWindowFocus: true`.
 - React Query staleTime: 30s.
+- **Realtime invalidation is NOT wired in v1.** The spec previously claimed counts refreshed on realtime push via `RealtimeStatusStore` — that store only carries connection status (`open | reconnecting | broken`), not entity-change events. Adding a true realtime path requires (a) a channel subscription per counted module, (b) targeted `queryClient.invalidateQueries(navKeys.inboxCount())` calls on relevant events. Captured under "Open follow-ups" below.
 
 **Urgency signal (the dot):** binary red dot rendered to the *right* of the count when something inside the queue is in a "needs attention" state:
 
@@ -203,17 +203,21 @@ The rail already says you're in `Tickets` (active item). The pane should tell yo
 
 The active sub-context is computed from the URL params (`view=`, `scope=`, `date=`).
 
-### State persistence
+### State persistence (as shipped)
 
-The rail's expanded state is persisted per-device in `localStorage` under key `prequest:rail-expanded` (boolean).
+The rail's expanded state is persisted per-device with **dual storage**:
 
-- **First-time users (no key set):** rail starts **expanded**. Label-discovery wins over compactness for first-runs.
-- **Returning users:** load saved value.
-- **Persist on every toggle.**
+- **Cookie** `prequest_rail_expanded` (path=/, max-age=7d) — read SYNCHRONOUSLY on first render so the initial paint width is correct. Without this, the previous "default expanded → hydrate from localStorage on mount" approach caused a 180→48 width flash on every page load for compact-mode users (and full layout reflow with the rail's `transition-[width]`).
+- **localStorage** `prequest:rail-expanded` — canonical, written on every toggle alongside the cookie. Also read in a one-shot effect to backfill the cookie if a user's preference predates the cookie write being added.
 
-Per-device, not per-user-via-backend, because (a) avoids a backend round-trip on every toggle, (b) respects the legitimate "I use the rail expanded on my desk monitor and compact on the laptop" pattern.
+**Defaults:**
+- **First-time users (no cookie or localStorage):** rail starts **expanded**.
+- **Returning users:** read from cookie synchronously, no flicker.
+- **Toggle writes both cookie + localStorage.**
 
-The header `SidebarTrigger` (full sidebar offcanvas/icon toggle) keeps its existing persistence behavior in cookie storage — that's unchanged.
+Per-device, not per-user-via-backend, for v1. Per-user backend persistence would address the "I use it expanded on my desk monitor and compact on the laptop" comment from review (the inverse — the cookie/localStorage IS per-device, which is what the screenshot use-case actually wants); a backend persistence would only help if a user wants the same setting across devices. Captured under "Open follow-ups."
+
+The header `SidebarTrigger` (full sidebar offcanvas/icon toggle) keeps its existing persistence behavior in the `sidebar_state` cookie — unchanged.
 
 ## Component changes — file-by-file
 
@@ -328,6 +332,15 @@ Three lightweight count endpoints (or extensions to existing):
 
 This spec touches no backend services that the existing `pnpm smoke:work-orders` gate covers. The new count endpoints should each have their own service-level test. No new mandatory smoke target needed.
 
-## Open questions
+## Open follow-ups (deferred from v1, surfaced by the post-ship `/full-review`)
 
-None. All twelve consolidated decisions in the brainstorm were resolved before write-up.
+1. **Granular permission catalog for nav items.** Today the rail is gated on role types (`agent` / `admin`) so all desk operators see every rail item. Building the persona-specific UX promised in §IA ("reception only sees Visitors") requires per-feature permission keys (`tickets:read_any`, `visitors:read_any`, etc.) and an auth-provider extension to expose them. Filter scaffolding is in place — the predicate body becomes `userPermissions.has(perm)` once the catalog ships.
+2. **Realtime invalidation of counts.** v1 refreshes on focus + 30s staleTime. To make the badges "feel alive" during sustained activity, wire a per-module realtime channel that calls `queryClient.invalidateQueries(navKeys.inboxCount())` (and the analogous keys) on relevant events. Coordinate with the existing `RealtimeStatusStore` for per-tenant subscription.
+3. **Inbox count perf.** `getInboxCount` currently wraps `getInbox` and counts items — same query cost as opening the Inbox page. Refactor to a fast-path that runs the candidate-id composition without activity hydration; the urgency check needs only `priority` + `inbox_reason` columns.
+4. **Per-user backend persistence of rail expanded.** Today is per-device (cookie + localStorage). A backend persistence would let a user keep the same setting across devices. Low priority — most users do work the same way on the same hardware.
+5. **A11y polish.** Add `aria-label="Inbox, 7 unread"` on counted items, `aria-current="page"` on active rows, ensure the urgency dot has a screen-reader-friendly description (already shipped: `aria-label="needs attention"` on the dot).
+6. **Mobile manual-smoke regression.** v1 smoke covered desktop only. The mobile sheet uses the same `--sidebar-width` CSS var; the dual-pane width math is gated behind `dualPane` on `SidebarProvider` and the desk shell's mobile sheet should pick up the existing `SIDEBAR_WIDTH_MOBILE` (20rem). Verify on a phone/tablet before claiming mobile parity.
+7. **Bookings/Scheduler icons.** `Columns3Icon` reads as a kanban/columns view rather than a timeline scheduler. Pick a more timeline-native icon (`GanttChartIcon`?) when one of the lucide releases ships an obvious match.
+8. **`INSIGHTS` group label** is currently shown for a single item ("Reports"). Defensible per the spec rule "single-item groups still labeled," but reads tautological. Reconsider when a second insights item arrives or if the user wants the label hidden in the meantime.
+9. **Frontend test coverage.** No frontend test framework is configured today (no vitest/RTL). The shipped work was validated via `tsc --noEmit`, `eslint`, `vite build`, and manual smoke. Backend gets full Jest coverage for the modified services. Bootstrapping vitest+RTL is a separate sweep.
+10. **Inbox panel "Unread" Switch** is decorative — pre-existing dead UI carried forward unchanged. Wire it or delete it as part of the next inbox-pass.

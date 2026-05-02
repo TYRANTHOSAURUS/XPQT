@@ -45,7 +45,7 @@ export function DeskLayout() {
     // light — it just reads the cached spaces query — so other desk
     // pages that don't render a building-aware sidebar pay nothing.
     <ReceptionBuildingProvider>
-    <SidebarProvider>
+    <SidebarProvider dualPane>
       <DeskSidebar />
       <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-2 px-6">

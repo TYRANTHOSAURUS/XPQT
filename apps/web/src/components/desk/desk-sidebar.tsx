@@ -324,14 +324,20 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
   const [activeNav, setActiveNav] = React.useState<RailNavItem>(activePage ?? allRailItems[0])
   const [inboxSearch, setInboxSearch] = React.useState("")
 
-  // Permission-aware groups for the current user. Today the gate is coarse
-  // (admin/agent role); when granular permissions ship, swap the predicate
-  // body for `userPermissions.has(item.permission)`.
+  // Permission-aware groups for the current user.
+  //
+  // ⚠ Today the only meaningful gate is on Settings (admin-only, see
+  // `canSeeSettings` below). All RAIL items are tagged `permission: 'agent'`,
+  // and `hasRole('agent')` returns true for both agent and admin (auth
+  // provider line 143) — meaning every desk operator currently sees every
+  // rail item. The `filterNavGroups` machinery is in place so that when
+  // granular per-feature permission keys land (e.g. `tickets:read_any`,
+  // `visitors:read_any`), each item's `permission` swaps to the granular
+  // key and the predicate becomes `userPermissions.has(perm)`. Until then,
+  // the filter is structural scaffolding, not enforcement.
   const visibleGroups = React.useMemo(
     () =>
       filterNavGroups(railGroups, (perm) => {
-        // Both 'admin' and 'agent' items are visible to anyone with the
-        // 'agent' role gate (admin is a superset — see useAuth().hasRole).
         if (perm === "admin") return hasRole("admin")
         return hasRole("agent")
       }),

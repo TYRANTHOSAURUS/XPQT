@@ -297,12 +297,19 @@ export class TicketService {
   }
 
   /**
-   * Count + urgency snapshot for the desk-shell rail badge. Re-uses the
-   * existing inbox composition; cheap enough since the inbox is bounded
-   * (≤ 100 items by design). Urgency is set when any item is an @-mention
-   * OR has priority='critical'.
+   * Count + urgency snapshot for the desk-shell rail badge. Wraps
+   * `getInbox` and counts the result. Note: this re-runs the full inbox
+   * composition (mention scan + 3 parallel ticket queries + activity
+   * hydration). It is NOT a cheap COUNT(*) query — the activity
+   * hydration is unused for count purposes but the bounded result set
+   * (≤100) keeps the worst case manageable.
    *
-   * Spec: docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts
+   * TODO(perf): split out a fast-path that returns just `count + urgency`
+   * without composing activities or sorting. Track in
+   * docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Open
+   * follow-ups when raised.
+   *
+   * Urgency is true when any item is an @-mention OR has priority='critical'.
    */
   async getInboxCount(accessToken?: string): Promise<{ count: number; hasUrgency: boolean }> {
     const { items } = await this.getInbox(accessToken, 100);
