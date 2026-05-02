@@ -73,7 +73,7 @@ function capturedFromPending(p: PendingVisitor): CapturedVisitorValues {
     phone: p.phone,
     company: p.company,
     visitor_type_id: p.visitor_type_id,
-    co_host_person_ids: p.co_host_person_ids,
+    co_host_persons: p.co_host_persons,
     notes_for_visitor: p.notes_for_visitor,
     notes_for_reception: p.notes_for_reception,
   };

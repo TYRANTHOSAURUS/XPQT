@@ -22,7 +22,7 @@
  * pointing at the missing list endpoint — we explicitly opt for honesty
  * over implying server-side history works.
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   Inbox,
@@ -433,22 +433,35 @@ function DeskVisitorsInner() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [assignPassRow, setAssignPassRow] = useState<RowT | null>(null);
   const [searchInput, setSearchInput] = useState(raw.q);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const setView = (v: ViewMode) => {
     setViewState(v);
     window.localStorage.setItem(VIEW_STORAGE_KEY, v);
   };
 
+  // Focus the search field on first mount only when nothing else has
+  // taken focus. Avoids stealing focus from the sidebar / detail panel
+  // when the page mounts inside the desk shell.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (document.activeElement === document.body) {
+      searchInputRef.current?.focus();
+    }
+  }, []);
+
   // Mirror the URL ?q= → local input so back/forward sync.
   useEffect(() => setSearchInput(raw.q), [raw.q]);
-  // Push debounced changes back to the URL.
+  // Push debounced changes back to the URL. `patch` is stable (useCallback
+  // in use-visitor-filters); depending on the whole `filters` object would
+  // re-fire on every parent render because the literal is reconstructed.
   useEffect(() => {
     if (searchInput === raw.q) return;
     const handle = window.setTimeout(() => {
-      filters.patch({ q: searchInput || null });
+      patch({ q: searchInput || null });
     }, 200);
     return () => window.clearTimeout(handle);
-  }, [searchInput, raw.q, filters]);
+  }, [searchInput, raw.q, patch]);
 
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const isSearching = debouncedSearch.trim().length > 0;
@@ -578,11 +591,14 @@ function DeskVisitorsInner() {
         <div className="relative max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
+            ref={searchInputRef}
             placeholder="Search visitors, hosts, companies…"
             className="pl-9"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Search visitors"
           />
           {/* Search results overlay — anchored to the input. The bucket
               list stays visible behind it (fix point from slice 7). */}

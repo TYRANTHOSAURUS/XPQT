@@ -20,7 +20,10 @@ export interface PendingVisitor {
   phone?: string;
   company?: string;
   visitor_type_id: string;
-  co_host_person_ids?: string[];
+  /** Co-hosts persisted as id+label pairs so a re-edit shows human names
+   *  rather than raw UUIDs. The composer's flush step maps these to ids
+   *  before POSTing to the backend. */
+  co_host_persons?: Array<{ id: string; label: string }>;
   notes_for_visitor?: string;
   notes_for_reception?: string;
 }

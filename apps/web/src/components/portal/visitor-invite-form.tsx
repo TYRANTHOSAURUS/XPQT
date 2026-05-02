@@ -87,7 +87,11 @@ export interface VisitorInviteFormDefaults {
 
 /** Captured-only payload the composer's queue keeps locally before flushing
  *  to the backend after the booking lands. Mirrors the standalone request
- *  shape minus the booking-derived fields (filled in by the wrapper). */
+ *  shape minus the booking-derived fields (filled in by the wrapper).
+ *
+ *  Co-hosts carry both id + label so a re-opened draft renders human names
+ *  instead of bare UUIDs (the picker only resolves labels at selection
+ *  time; without persisting them we'd have to re-fetch each one). */
 export interface CapturedVisitorValues {
   first_name: string;
   last_name?: string;
@@ -95,7 +99,7 @@ export interface CapturedVisitorValues {
   phone?: string;
   company?: string;
   visitor_type_id: string;
-  co_host_person_ids?: string[];
+  co_host_persons?: Array<{ id: string; label: string }>;
   notes_for_visitor?: string;
   notes_for_reception?: string;
 }
@@ -240,7 +244,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
   );
   const meetingRoomId = defaults?.meeting_room_id ?? '';
   const [coHosts, setCoHosts] = useState<Array<{ id: string; label: string }>>(
-    initial?.co_host_person_ids?.map((id) => ({ id, label: id })) ?? [],
+    initial?.co_host_persons ?? [],
   );
   const [coHostDraft, setCoHostDraft] = useState<string>('');
   const [coHostDraftPerson, setCoHostDraftPerson] = useState<Person | null>(null);
@@ -319,7 +323,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       phone: phone.trim() || undefined,
       company: company.trim() || undefined,
       visitor_type_id: visitorTypeId,
-      co_host_person_ids: coHostIds.length > 0 ? coHostIds : undefined,
+      co_host_persons: coHosts.length > 0 ? coHosts : undefined,
       notes_for_visitor: notesForVisitor.trim() || undefined,
       notes_for_reception: notesForReception.trim() || undefined,
     };
@@ -341,8 +345,11 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       return;
     }
 
+    const { co_host_persons: _drop, ...capturedForApi } = captured;
+    void _drop;
     const payload: CreateInvitationPayload = {
-      ...captured,
+      ...capturedForApi,
+      co_host_person_ids: coHostIds.length > 0 ? coHostIds : undefined,
       expected_at: finalExpectedAt,
       expected_until: finalExpectedUntil || undefined,
       building_id: finalBuildingId,
@@ -402,31 +409,41 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       )}
 
       <FieldGroup>
-        {/* The 80% case — name, email, when. Everything else folds. */}
-        <Field>
-          <FieldLabel htmlFor="visitor-name">Visitor name</FieldLabel>
-          <div className="flex gap-2">
-            <Input
-              id="visitor-name"
-              placeholder="First"
-              autoComplete="off"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              onBlur={() => setTouched((t) => ({ ...t, first_name: true }))}
-              aria-invalid={!!errors.first_name && touched.first_name}
-            />
-            <Input
-              aria-label="Last name"
-              placeholder="Last"
-              autoComplete="off"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-            />
+        {/* The 80% case — name, email, when. Everything else folds.
+         *
+         *  Two fully-labeled Field rows side-by-side instead of one Field
+         *  with two inputs in a div — every input gets its own clickable
+         *  label, fixing the "last name has no label" a11y miss. */}
+        <FieldSet>
+          <FieldLegend variant="label">Visitor name</FieldLegend>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="visitor-first-name">First name</FieldLabel>
+              <Input
+                id="visitor-first-name"
+                placeholder="e.g. Jane…"
+                autoComplete="off"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                onBlur={() => setTouched((t) => ({ ...t, first_name: true }))}
+                aria-invalid={!!errors.first_name && touched.first_name}
+              />
+              {touched.first_name && errors.first_name && (
+                <FieldError>{errors.first_name}</FieldError>
+              )}
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="visitor-last-name">Last name</FieldLabel>
+              <Input
+                id="visitor-last-name"
+                placeholder="e.g. Smith…"
+                autoComplete="off"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+              />
+            </Field>
           </div>
-          {touched.first_name && errors.first_name && (
-            <FieldError>{errors.first_name}</FieldError>
-          )}
-        </Field>
+        </FieldSet>
 
         <Field>
           <FieldLabel htmlFor="visitor-email">Email</FieldLabel>
@@ -435,6 +452,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             type="email"
             inputMode="email"
             autoComplete="off"
+            spellCheck={false}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             onBlur={() => setTouched((t) => ({ ...t, email: true }))}
@@ -505,6 +523,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
                     type="tel"
                     inputMode="tel"
                     autoComplete="off"
+                    spellCheck={false}
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                   />

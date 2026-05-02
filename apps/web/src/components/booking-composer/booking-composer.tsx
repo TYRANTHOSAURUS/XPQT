@@ -549,7 +549,10 @@ export function BookingComposer({
                 meeting_room_id: effectiveState.spaceId ?? undefined,
                 booking_bundle_id: bookingBundleId ?? undefined,
                 reservation_id: reservationId,
-                co_host_person_ids: v.co_host_person_ids,
+                co_host_person_ids:
+                  v.co_host_persons && v.co_host_persons.length > 0
+                    ? v.co_host_persons.map((c) => c.id)
+                    : undefined,
                 notes_for_visitor: v.notes_for_visitor,
                 notes_for_reception: v.notes_for_reception,
               });

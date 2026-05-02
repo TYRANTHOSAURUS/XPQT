@@ -32,6 +32,7 @@ import {
   useMarkNoShow,
 } from '@/api/visitors/reception';
 import { useSpaces } from '@/api/spaces';
+import { usePerson, personFullName } from '@/api/persons';
 import { toastError, toastSuccess } from '@/lib/toast';
 import {
   formatFullTimestamp,
@@ -61,6 +62,7 @@ export function VisitorDetail({
 }: VisitorDetailProps) {
   const { data: visitor, isLoading, isError } = useVisitorDetail(visitorId);
   const { data: spaces } = useSpaces();
+  const { data: primaryHost } = usePerson(visitor?.primary_host_person_id ?? null);
 
   const markArrived = useMarkArrived(buildingId);
   const markCheckedOut = useMarkCheckedOut(buildingId);
@@ -315,12 +317,13 @@ export function VisitorDetail({
         <Section title="Hosts">
           <DetailRow icon={UsersIcon} label="Primary host" value={
             visitor.primary_host_person_id ? (
-              <span className="text-foreground tabular-nums">
-                {/* The detail endpoint surfaces only the id; the list
-                 *  carries the formatted name. We render the id as a
-                 *  fallback rather than firing an extra request. */}
-                On record
-              </span>
+              primaryHost ? (
+                <span className="text-foreground">
+                  {personFullName(primaryHost) || primaryHost.email || '—'}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )
             ) : (
               <span className="italic text-muted-foreground">No host</span>
             )
