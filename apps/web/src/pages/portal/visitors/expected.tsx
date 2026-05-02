@@ -117,7 +117,7 @@ export function PortalVisitorsExpectedPage() {
 
       {isError && !isLoading && (
         <p role="alert" className="text-sm text-destructive">
-          Couldn't load your visitors. Try refreshing.
+          Couldn’t load your visitors. Try refreshing.
         </p>
       )}
 
@@ -127,7 +127,7 @@ export function PortalVisitorsExpectedPage() {
           <div>
             <h2 className="text-base font-medium">No upcoming visitors</h2>
             <p className="text-sm text-muted-foreground">
-              Invite someone and they'll show up here.
+              Invite someone and they’ll show up here.
             </p>
           </div>
           <Link

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/sonner';
 import { Spinner } from '@/components/ui/spinner';
@@ -158,6 +158,26 @@ function RouteFallback() {
   );
 }
 
+/**
+ * Redirect helper that preserves the inbound URL's query params while
+ * applying the redirect target's preset. The target's params win on
+ * conflict (so `?view=today` stays today even if the inbound link had a
+ * different `view`), but everything else (`?building=…`, `?q=…`, etc.)
+ * passes through. Used to keep `/reception/*` deep-links useful after the
+ * desk-shell rebuild.
+ */
+function ReceptionRedirect({ to }: { to: string }) {
+  const loc = useLocation();
+  const incoming = new URLSearchParams(loc.search);
+  const [pathname, targetSearch = ''] = to.split('?');
+  const targetParams = new URLSearchParams(targetSearch);
+  for (const [k, v] of incoming) {
+    if (!targetParams.has(k)) targetParams.set(k, v);
+  }
+  const qs = targetParams.toString();
+  return <Navigate to={qs ? `${pathname}?${qs}` : pathname} replace />;
+}
+
 export function App() {
   return (
     <BrandingProvider>
@@ -233,11 +253,11 @@ export function App() {
                     the reception hat (per docs/users.md §9), so the
                     front-desk surface lives under /desk/visitors as a
                     peer of /desk/tickets. Old bookmarks redirect. */}
-                <Route path="/reception" element={<Navigate to="/desk/visitors?view=today" replace />} />
-                <Route path="/reception/today" element={<Navigate to="/desk/visitors?view=today" replace />} />
-                <Route path="/reception/passes" element={<Navigate to="/desk/visitors?view=arrived" replace />} />
-                <Route path="/reception/yesterday" element={<Navigate to="/desk/visitors?view=loose_ends" replace />} />
-                <Route path="/reception/daglijst" element={<Navigate to="/desk/visitors?view=today" replace />} />
+                <Route path="/reception" element={<ReceptionRedirect to="/desk/visitors?view=today" />} />
+                <Route path="/reception/today" element={<ReceptionRedirect to="/desk/visitors?view=today" />} />
+                <Route path="/reception/passes" element={<ReceptionRedirect to="/desk/visitors?view=arrived" />} />
+                <Route path="/reception/yesterday" element={<ReceptionRedirect to="/desk/visitors?view=loose_ends" />} />
+                <Route path="/reception/daglijst" element={<ReceptionRedirect to="/desk/visitors?view=today" />} />
 
                 {/* Service Desk — requires auth + agent role */}
                 <Route

@@ -87,7 +87,7 @@ export function VisitorDetail({
       <div className="flex h-full flex-col">
         <DetailHeader title="Visitor" onClose={onClose} />
         <div className="px-6 py-8 text-sm text-muted-foreground">
-          Couldn't load this visitor. Try refreshing.
+          Couldn’t load this visitor. Try refreshing.
         </div>
       </div>
     );

@@ -559,7 +559,7 @@ function DeskVisitorsInner() {
         <Inbox className="mx-auto size-10 text-muted-foreground" aria-hidden />
         <h2 className="mt-3 text-lg font-medium">No buildings in scope</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          You don't have visitor desk access at any building. Ask an admin to
+          You don’t have visitor desk access at any building. Ask an admin to
           extend your location grants.
         </p>
       </div>
@@ -681,7 +681,7 @@ function DeskVisitorsInner() {
 
       {isError && !isLoading && (
         <div className="mx-6 mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          Couldn't load visitors. Refresh to retry.
+          Couldn’t load visitors. Refresh to retry.
         </div>
       )}
 
