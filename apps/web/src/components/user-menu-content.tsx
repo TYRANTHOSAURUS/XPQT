@@ -16,12 +16,12 @@ import {
   BellIcon,
   FileTextIcon,
   HeadsetIcon,
+  KeyboardIcon,
   LifeBuoyIcon,
   LogOutIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
-  SettingsIcon,
   ShieldIcon,
   SunIcon,
   UserIcon,
@@ -115,9 +115,17 @@ export function UserMenuContent({ side = 'bottom', align = 'end', className }: P
           <BellIcon />
           Notifications
         </DropdownMenuItem>
+        {/*
+         * Platform Settings lives in the rail footer (cross-shell jump to
+         * /admin), not here — see
+         * docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md
+         * §"Avatar menu". A disabled "Keyboard shortcuts" placeholder lives
+         * here instead, ready to wire up when the G+T-style two-key
+         * shortcut system ships (deferred polish item).
+         */}
         <DropdownMenuItem disabled>
-          <SettingsIcon />
-          Settings
+          <KeyboardIcon />
+          Keyboard shortcuts
         </DropdownMenuItem>
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
