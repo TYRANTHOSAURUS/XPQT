@@ -582,7 +582,14 @@ The animation itself (smooth revert, not a flicker) is the **caller's** responsi
 
 ### 6.5 Internationalization
 
-`messages.nl.ts` ships in v1 alongside `messages.en.ts`. Codes that don't exist in the active locale fall back to English, then to the server `detail`, then to a generic `"Something went wrong"`. Untranslated codes show up in dev console; CI fails if any code in `codes.ts` is missing from `messages.en.ts`.
+`messages.nl.ts` ships in v1 alongside `messages.en.ts`. Codes that don't exist in the active locale fall back to English, then to the generic `unknown.server_error` copy (per fail-closed). The server `detail` is **never** rendered to a user (decision #9). Untranslated codes show up in dev console; CI fails if any code in `@prequest/shared` is missing from `messages.en.ts` and warns (not fails) when `messages.nl.ts` lacks coverage.
+
+**Translation discipline (mandatory).** Dutch translations are the responsibility of the engineer adding the code — they cannot be hand-waved to "translate later." Two rules:
+
+1. **Translate the *operational consequence*, not the English copy.** `routing.no_match` should not be "Kon ticket niet versturen" (literal: "Couldn't send ticket"); it should be "Kon geen team vinden voor dit ticket" (operational: "Couldn't find a team for this ticket"). The receptionist or facilities admin reading the message needs to know what happened, not what the original English said.
+2. **Native-NL review is required before merge.** The engineer drafts a Dutch message; a native Dutch speaker on the team reviews. Until a designated native reviewer exists on the team, the rule is: any Dutch message merged unreviewed must include a `// TODO(translation): native NL review pending` comment so the linter can flag it. CI lint warns on these comments older than 14 days.
+
+Adding new locales beyond `en` + `nl` is a separate decision; the registry supports `messages.<locale>.ts` arbitrarily but the spec only mandates en + nl for v1.
 
 ## 7 · Migration plan
 
