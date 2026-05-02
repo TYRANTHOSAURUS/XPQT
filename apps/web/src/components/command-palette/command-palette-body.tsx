@@ -20,6 +20,7 @@ import {
   Ticket,
   Trash2,
   User,
+  UserCheck,
   Users,
   type LucideIcon,
 } from 'lucide-react';
@@ -82,6 +83,21 @@ const KIND_META: Record<
     href: (id) => `/admin/persons/${id}`,
     listHref: (q) => `/admin/persons?q=${encodeURIComponent(q)}`,
   },
+  // Synthetic kind — the search SQL groups visitors under `person`, but
+  // the palette splits them out so they render with the visitor surface
+  // (deep-link to /desk/visitors?q=<title>) and a "Visitors" heading.
+  // The split happens in the rendering loop below; KIND_META.visitor
+  // owns the visitor-specific routing.
+  visitor: {
+    label: 'Visitors',
+    singular: 'visitor',
+    icon: UserCheck,
+    href: (_id, _ctx) => '',
+    // listHref + per-row href are computed from the title (visitor name)
+    // so reception lands on a populated /desk/visitors search instead of
+    // an opaque visitor-id route they may not have permission for.
+    listHref: (q) => `/desk/visitors?q=${encodeURIComponent(q)}`,
+  },
   space: {
     label: 'Locations',
     singular: 'location',
@@ -142,8 +158,12 @@ const KIND_META: Record<
 
 const PER_TYPE_LIMIT = 4;
 
+// Visitors render before persons so a "james doe" search lands on the
+// visitor surface, not the /admin/persons row. The synthetic 'visitor'
+// kind is materialised in the body below by partitioning person hits.
 const RESULT_KIND_ORDER: SearchKind[] = [
   'ticket',
+  'visitor',
   'person',
   'reservation',
   'room',
@@ -358,7 +378,13 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
   const onSelectHit = useCallback(
     (hit: SearchHit, openInNewTab = false) => {
       const meta = KIND_META[hit.kind];
-      const path = meta.href(hit.id, { scope });
+      // Visitor hits resolve via the visitor surface's search-by-name —
+      // see ResultRow for the same conditional. The persons-id route
+      // /admin/persons/${id} is the wrong destination for a visitor.
+      const path =
+        hit.kind === 'visitor'
+          ? `/desk/visitors?q=${encodeURIComponent(hit.title)}`
+          : meta.href(hit.id, { scope });
       pushRecent({
         key: `${hit.kind}:${hit.id}`,
         kind: hit.kind === 'location' ? 'space' : (hit.kind as RecentEntry['kind']),
@@ -433,7 +459,31 @@ export function CommandPaletteBody({ open, onOpenChange }: CommandPaletteBodyPro
 
   const trimmed = parsed.text;
   const hasQuery = trimmed.length >= 2 || isPagesOnly;
-  const groups = data?.groups ?? {};
+  const rawGroups = data?.groups ?? {};
+
+  // Partition the backend's `person` group into visitors (extra.type ===
+  // 'visitor') and everyone else. Visitors get their own synthetic kind
+  // group so they surface as visitors in the palette — separate heading,
+  // visitor icon, and per-row href that deep-links to /desk/visitors?q=
+  // instead of /admin/persons. Backend never emits `kind: 'visitor'`;
+  // the split is purely a render-time concern.
+  const groups = useMemo<Partial<Record<SearchKind, SearchHit[]>>>(() => {
+    const personHits = rawGroups.person;
+    if (!personHits || personHits.length === 0) return rawGroups;
+    const visitors: SearchHit[] = [];
+    const others: SearchHit[] = [];
+    for (const hit of personHits) {
+      const t = (hit.extra?.type as string | undefined) ?? '';
+      if (t === 'visitor') {
+        visitors.push({ ...hit, kind: 'visitor' });
+      } else {
+        others.push(hit);
+      }
+    }
+    if (visitors.length === 0) return rawGroups;
+    return { ...rawGroups, person: others, visitor: visitors };
+  }, [rawGroups]);
+
   const entityHitCount = useMemo(
     () => Object.values(groups).reduce((sum, g) => sum + (g?.length ?? 0), 0),
     [groups],
@@ -722,7 +772,15 @@ interface ResultRowProps {
 const ResultRow = memo(function ResultRow({ hit, hrefScope, onSelect }: ResultRowProps) {
   const meta = KIND_META[hit.kind];
   const Icon = meta.icon;
-  const path = meta.href(hit.id, { scope: hrefScope });
+  // Visitor hits are synthetic — KIND_META.visitor.href returns '' because
+  // the visitor's persons.id isn't a useful destination (no /admin/persons
+  // route serves visitor records well). Resolve to a search by name on
+  // the visitor surface so reception lands on a populated /desk/visitors
+  // result list. Other kinds keep the standard id-based href.
+  const path =
+    hit.kind === 'visitor'
+      ? `/desk/visitors?q=${encodeURIComponent(hit.title)}`
+      : meta.href(hit.id, { scope: hrefScope });
 
   const statusCategory =
     hit.kind === 'ticket' && hit.extra && typeof hit.extra.status_category === 'string'

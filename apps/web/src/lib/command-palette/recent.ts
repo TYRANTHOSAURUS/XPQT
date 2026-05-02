@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 export interface RecentEntry {
   /** Stable identifier — `${kind}:${id}` for entities, `route:${path}` for nav. */
   key: string;
-  kind: 'ticket' | 'person' | 'space' | 'room' | 'asset' | 'vendor' | 'team' | 'request_type' | 'route';
+  kind: 'ticket' | 'person' | 'visitor' | 'space' | 'room' | 'asset' | 'vendor' | 'team' | 'request_type' | 'route';
   id: string;
   title: string;
   subtitle?: string | null;

@@ -5,6 +5,12 @@ import { searchKeys } from './keys';
 export type SearchKind =
   | 'ticket'
   | 'person'
+  // Synthetic — the backend's `/search` endpoint returns `kind: 'person'`
+  // for visitor-typed persons (extra.type === 'visitor'). The command
+  // palette splits person hits into a separate `visitor` group so they
+  // surface as visitors and link to `/desk/visitors?q=…` instead of the
+  // generic /admin/persons row. Backend never emits this kind directly.
+  | 'visitor'
   | 'space'
   | 'room'
   | 'location'
@@ -64,6 +70,7 @@ export function useSearch(q: string, types?: SearchKind[], limit?: number) {
 export const SEARCH_KIND_LABEL: Record<SearchKind, string> = {
   ticket: 'Tickets',
   person: 'People',
+  visitor: 'Visitors',
   space: 'Locations',
   room: 'Rooms',
   location: 'Locations',
@@ -74,8 +81,11 @@ export const SEARCH_KIND_LABEL: Record<SearchKind, string> = {
   reservation: 'Bookings',
 };
 
+// Visitors render BEFORE persons so a search hit for "james" surfaces
+// as the visitor first, not as a person row that links to /admin/persons.
 export const SEARCH_KIND_ORDER: SearchKind[] = [
   'ticket',
+  'visitor',
   'person',
   'reservation',
   'room',
