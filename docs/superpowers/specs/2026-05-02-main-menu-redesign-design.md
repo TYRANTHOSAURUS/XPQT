@@ -18,7 +18,7 @@ The desk shell (`DeskSidebar`, used by `/desk/*`) has three concrete failures, l
 1. Both panes (icon-rail + contextual second pane) usable at their max width *simultaneously* — fix the width math, no more either/or.
 2. Permission-aware grouped IA: section labels where they earn their existence, hidden groups when permissions remove all items in a section, single-item groups still labeled (so a reception-only user sees `MY QUEUE → ...` rather than a flat orphan).
 3. Live-feeling nav: counts on the items where a count is actionable; binary urgency dot when something inside breaches.
-4. Quieter chrome, louder destinations: Settings demoted into the avatar menu; redundant Search row removed; bottom toggle re-affordanced.
+4. Quieter chrome, louder destinations: redundant Search row removed; bottom toggle re-affordanced; avatar gains a popover for user-scoped actions (theme, sign-out, etc.). Platform Settings stays as a rail footer destination — it's frequent admin work, not rare configuration.
 5. Visual consistency between rail and second-pane (active state, seam, header dedup).
 6. No regressions on mobile (sheet/offcanvas behavior unchanged).
 
@@ -106,6 +106,8 @@ Permission keys used (already in the catalog per `project_permission_catalog_enf
 | Scheduler | same as Bookings |
 | Visitors | `visitors:read_any` OR `visitors:read_assigned` |
 | Reports | `reports:read` |
+| Settings (footer) | any `*:admin` permission (hidden for non-admin users) |
+| Portal (footer) | always visible (every operator can drop into the employee portal) |
 
 ### Counts
 
@@ -152,26 +154,25 @@ Removes the misleading "open/close panel" affordance — nothing opens or closes
 
 The `SearchIcon` row at the top of the rail (currently `desk-sidebar.tsx:313-327`) is **deleted**. It calls the same `paletteOpen()` as ⌘K, and the topbar `SearchTrigger` (in `desk-layout.tsx:78`) is always visible. Three entrypoints to one modal — drop the loudest one inside the rail.
 
-### Settings demoted into avatar menu
+### Avatar menu (user-scoped only — Platform Settings stays in the rail)
 
-The standalone `Settings` nav item in the rail footer (currently `desk-sidebar.tsx:361-370`) is **deleted**. Its destination route survives — the entry-point moves.
+**Platform Settings is NOT demoted.** The current rail footer item navigates to `/admin` — the admin shell with users, roles, request types, organizations, webhooks, etc. For admins and admin-permissioned service-desk operators this is a frequent operational destination, not rare configuration. Treat it the same as `Portal`: a top-level cross-shell jump.
 
-The `NavUser` component at the bottom of the rail becomes a popover trigger. Click → popover anchored to the avatar with these items:
+Both `Portal` and `Settings` stay as rail footer items. `Settings` is permission-gated — hidden for users without any `*:admin` permission so reception/non-admin operators don't see a useless icon. (Current code shows it to everyone; clicking 401s. The fix is to hide it when not authorized, consistent with the new permission-aware filtering rule for the main nav.)
+
+The `NavUser` component at the bottom of the rail still becomes a popover trigger — but only for **user-scoped** items, not for Platform Settings:
 
 ```
 [avatar + name + email at top]
 ─────────────
 Profile
-Preferences
 Theme              [Light · Dark · System]
 Keyboard shortcuts
 ─────────────
 Sign out
 ```
 
-This is the universal pattern (Linear, Notion, Slack, Vercel) — settings is configuration, not a daily destination.
-
-`Portal` stays as a top-level rail item. It's a real cross-shell jump (different app surface), not configuration.
+Note: no "Preferences" / "Settings" label inside the popover — every item is specific. That avoids any visual collision with the rail's `Settings` (Platform) item.
 
 ### Active state harmonization
 
@@ -226,7 +227,7 @@ The header `SidebarTrigger` (full sidebar offcanvas/icon toggle) keeps its exist
 ### `apps/web/src/components/desk/desk-sidebar.tsx`
 
 - Remove the Search row (lines 313–327).
-- Remove the standalone Settings nav item from the footer (lines 361–370).
+- Keep the standalone Settings nav item in the footer (lines 361–370) — but wrap it in the new permission gate so it's hidden for users with zero `*:admin` permissions.
 - Remove the bottom rail-toggle wrapper/state (lines 372–384) — toggle moves into the SidebarProvider context (still rendered by `DeskSidebar` near the bottom but pulls state from context).
 - Replace `PanelLeftOpen/Close` icons with `MenuIcon`/`LayoutGridIcon`; update tooltip strings.
 - Replace flat `navItems.map` with grouped `<SidebarGroup>`s wrapping the four sections (`MY QUEUE`, unlabeled middle, `INSIGHTS`).
@@ -238,7 +239,7 @@ The header `SidebarTrigger` (full sidebar offcanvas/icon toggle) keeps its exist
 ### `apps/web/src/components/nav-user.tsx`
 
 - Convert from a passive nav row into a `Popover` trigger.
-- Build out the popover content per spec (Profile · Preferences · Theme triad · Keyboard shortcuts · Sign out).
+- Build out the popover content per spec (Profile · Theme triad · Keyboard shortcuts · Sign out). **No Platform Settings entry** — that stays in the rail footer.
 - The Theme triad is a small inline 3-button segment using the existing `useTheme` hook.
 
 ### `apps/web/src/lib/nav-permissions.ts` (new)
