@@ -261,6 +261,11 @@ When you add a new code, you specify the toast title and detail; the page surfac
 
 type Surface = 'toast' | 'inline' | 'page' | 'banner' | 'modal' | 'silent';
 type CallSite = 'route_load' | 'mutation' | 'realtime' | 'render';
+//                                          ^^^^^^^^^^   ^^^^^^^^
+//   `'realtime'` — passed by the realtime hooks when a Supabase channel
+//   callback throws (so the renderer routes to the realtime banner /
+//   status dot, not an action-class toast).
+//   `'render'` — passed by `RouteErrorBoundary.componentDidCatch`.
 
 // Surface = f(class, callSite). Most rows ignore callSite; two need it.
 function surfaceFor(cls: ErrorClass, callSite: CallSite): Surface {
@@ -272,7 +277,7 @@ function surfaceFor(cls: ErrorClass, callSite: CallSite): Surface {
     case 'validation': return 'inline';                                            // FieldError per field; never toast
     case 'conflict':   return 'toast';                                             // v1; modal deferred to v2
     case 'rate_limit': return 'toast';                                             // with countdown
-    case 'server':     return 'toast';                                             // with traceId + report dialog
+    case 'server':     return 'toast';                                             // with traceId chip + copy-to-clipboard fallback
     case 'realtime':   return 'banner';                                            // status pill, escalates to banner
     case 'render':     return 'page';                                              // ErrorBoundary
     case 'unknown':    return 'toast';
@@ -416,7 +421,7 @@ This is the contract. Every classifier branch lands one row. **Surface = `f(clas
 | `permission` (403) | Page (`route_load`) · Toast (`mutation`) | `askAdmin` (with admin names if known) · `goBack` | Page state for navigation; toast for 'Save failed: missing permission'. `requestAccess` (self-serve ticket creation) is deferred to a follow-up spec — see decision #8. |
 | `not_found` (404 / 410 / RLS-hidden) | Page (`route_load`) · Toast (`mutation`) | `goBack` · `reload` | Page template branches on `body.reason ∈ ('missing','removed','hidden')`. Server returns `'hidden'` for RLS-blocked rows (security: never leak tenant existence via 403 vs 404 — see decision #6.1). Page renders the same copy for `'missing'` and `'hidden'`; the difference is only relevant in audit logs. Toast for "Couldn't add — webhook was deleted." 410 is supported in the wire shape but no endpoint throws it today. |
 | `validation` (422) | Inline `<FieldError>` | (no toast; field errors are the recovery) | Submit button disabled until form is valid. |
-| `conflict` (409) | Toast (v1) · Modal (deferred to v2) | `copyDraft` · `reload` (v1) · `pickAlternative` (v2 only) | v1 surfaces "This was changed by someone else" with `[Copy my changes]` + `[Reload]`. Copy serializes the form draft to clipboard before reload destroys edits. v2 modal with use-theirs/keep-mine deferred until a real surface demands it. Wire fields `serverVersion` / `clientVersion` ship now. |
+| `conflict` (409) | Toast | `copyDraft` (when caller supplies `serialize`) · `reload` | v1 surfaces "This was changed by someone else" with `[Copy my changes]` (offered only when the caller supplies a `serialize` callback — approver toggles, view-mode rows, and similar non-draft surfaces omit it) + `[Reload]`. Copy serializes the form draft to clipboard before reload destroys edits. v2 will introduce the use-theirs/keep-mine modal once a surface demands it; wire fields `serverVersion` / `clientVersion` ship now so the upgrade lands without breaking the contract. |
 | `rate_limit` (429) | Toast with live countdown | `wait` (disabled button shows "Try in 47s"; auto-fires when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
 | `server` (5xx) | Toast | `retry` · `contactSupport` (with traceId pre-filled) | TraceId is small text in toast, click to copy. |
 | `realtime` (ws drop) | Status-bar dot → banner if >30s | `retry` (auto-reconnect with backoff) | Distinct from `transport` because realtime can drop while HTTP works. |
@@ -654,7 +659,7 @@ This is incremental. Nothing breaks on day one.
 **Wave 2 — Page-level surfaces** — ~5 days
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
 - Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
-- Ship 404-with-`reason` / 403 / 5xx page templates, all wrapped in `SettingsPageShell` + `SettingsPageHeader` (width `default`) for back-nav uniformity. 404 page branches on `body.reason ∈ ('missing','removed')`.
+- Ship 404-with-`reason` / 403 / 5xx page templates, all wrapped in `SettingsPageShell` + `SettingsPageHeader` (width `default`) for back-nav uniformity. 404 page branches on `body.reason ∈ ('missing','removed','hidden')` — `'hidden'` renders the same copy as `'missing'` (security control per decision #6.1; the distinction is server-side-only).
 - Migrate top-traffic queries to call `throwToBoundary()` for page-class errors.
 - **Visible result:** broken pages now show real page state instead of stale content + toast.
 
@@ -666,7 +671,7 @@ This is incremental. Nothing breaks on day one.
 - Optimistic-rollback animation recipe (caller composes; documented).
 - Render-error boundary per route (already shipped in Wave 2 — this is the polish pass).
 - 401 refresh-loop bail rule.
-- (Polish, not strictly required) Form-draft preservation on hard sign-out.
+- Form-draft preservation polish — non-RHF `getDraftSnapshot()` registry, kiosk localStorage TTL purge job, and the v1 form-draft preservation paths are already shipped earlier (Wave 1). This Wave-3 line refers to **the cross-surface coordination** (notifying the user about discarded drafts on rehydrate, animating draft restoration, telemetry on rehydrate hits/misses).
 - **Visible result:** every error has an actionable next step; the platform feels "smart" when things go wrong.
 
 **Wave 4 — Backfill + Dutch** — ~3 days, can run in parallel with Wave 3

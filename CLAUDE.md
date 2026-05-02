@@ -180,6 +180,7 @@ Every feature that throws, fetches, mutates, or renders must follow [`docs/super
 - **Every error response carries a `traceId`.** Surface it on `server`-class toasts (small monospace, copy-on-click) and pre-fill it into the contact-support recovery. Do not invent a new trace mechanism — `apiFetch` already stamps it onto `ApiError`.
 - **Bulk operations use the wire shape's `results[]` + `partialSuccess`.** Surface partial-success as `"7 of 10 deleted — 3 failed [Show me]"`, never as a single binary toast.
 - **Never invent a new error class or surface.** The 11 classes (`transport · auth · permission · not_found · validation · conflict · rate_limit · server · realtime · render · unknown`) in §3.3 of the spec are exhaustive; the surface is decided by `(class, callSite)` per §3.4. If the situation doesn't fit, the fix is to update the spec — don't ship a one-off.
+- **Realtime status UI is the inline page-header dot, not the avatar corner.** The `RealtimeStatusStore` + `useRealtimeStatus()` hook drive a 6×6 colored dot adjacent to the page title on realtime-aware pages (desk scheduler, booking lists, reception today, etc.). Hidden in `'open'` state for the first 30s, amber on `'reconnecting'`, red + writes-disabled on `'broken'`. Never put the dot in `app shell`/avatar corner — the operator's eye is on the page content, not the chrome.
 
 When the spec is silent on something you need: read the spec first to confirm it's actually silent (vs. you skimmed), then propose an addition in the same PR. Don't bypass.
 
