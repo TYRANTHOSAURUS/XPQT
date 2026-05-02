@@ -64,16 +64,19 @@ import { VisitorListRow } from '@/components/desk/visitor-list-row';
 import { VisitorContextMenu } from '@/components/desk/visitor-context-menu';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
 import { AssignPassDialog } from '@/components/desk/visitor-assign-pass-dialog';
+import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { VisitorInviteForm } from '@/components/portal/visitor-invite-form';
 import {
   formatPrimaryHost,
   formatReceptionRowName,
+  useMarkArrived,
   useReceptionSearch,
   useReceptionToday,
   useReceptionYesterday,
   type ReceptionTodayView,
   type ReceptionVisitorRow as RowT,
 } from '@/api/visitors/reception';
+import { toastCreated, toastError, toastSaved } from '@/lib/toast';
 import { useDeskLens } from '@/api/visitors/admin';
 import {
   useVisitorFilters,
@@ -83,7 +86,6 @@ import {
 } from '@/pages/desk/use-visitor-filters';
 import { VisitorFilterBar } from '@/components/desk/visitor-filter-bar';
 import { formatTimeShort } from '@/lib/format';
-import { toastCreated } from '@/lib/toast';
 
 type ViewMode = 'table' | 'list';
 const VIEW_STORAGE_KEY = 'visitors:view';
@@ -116,6 +118,9 @@ interface VisitorTableRowProps {
   onSelect: (id: string) => void;
   onToggleCheck: (id: string) => void;
   onAssignPass: (row: RowT) => void;
+  /** See VisitorListRow — Enter on a focused row resolves to a status-
+   *  aware primary action. Cmd/Ctrl+Enter still opens the detail panel. */
+  onPrimaryAction: (row: RowT) => void;
 }
 
 const VisitorTableRow = memo(function VisitorTableRow({
@@ -126,6 +131,7 @@ const VisitorTableRow = memo(function VisitorTableRow({
   onSelect,
   onToggleCheck,
   onAssignPass,
+  onPrimaryAction,
 }: VisitorTableRowProps) {
   const time = row.expected_at ? formatTimeShort(row.expected_at) : null;
   const host = formatPrimaryHost(row);
@@ -142,8 +148,9 @@ const VisitorTableRow = memo(function VisitorTableRow({
         <TableRow
           {...triggerProps}
           data-selected={selected ? 'true' : undefined}
+          tabIndex={0}
           className={cn(
-            'cursor-pointer transition-colors',
+            'cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
             selected
               ? 'bg-primary/10 hover:bg-primary/15'
               : menuOpen
@@ -152,6 +159,21 @@ const VisitorTableRow = memo(function VisitorTableRow({
           )}
           style={selected ? { boxShadow: 'inset 2px 0 0 var(--primary)' } : undefined}
           onClick={() => onSelect(row.visitor_id)}
+          onKeyDown={(e) => {
+            // Cmd/Ctrl+Enter → always open detail; Enter alone → status-
+            // aware primary action; Space → open detail (parity with
+            // click). See VisitorListRow for the canonical mapping.
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              onSelect(row.visitor_id);
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              onPrimaryAction(row);
+            } else if (e.key === ' ') {
+              e.preventDefault();
+              onSelect(row.visitor_id);
+            }
+          }}
         >
           <TableCell className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
             <Checkbox
@@ -202,6 +224,7 @@ function VisitorTable({
   selectedIds,
   setSelectedIds,
   onAssignPass,
+  onPrimaryAction,
   emptyText,
 }: {
   rows: RowT[];
@@ -212,6 +235,7 @@ function VisitorTable({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onAssignPass: (row: RowT) => void;
+  onPrimaryAction: (row: RowT) => void;
   emptyText: string;
 }) {
   const onSelect = useCallback((id: string) => setSelectedId(id), [setSelectedId]);
@@ -307,6 +331,7 @@ function VisitorTable({
               onSelect={onSelect}
               onToggleCheck={toggleSelect}
               onAssignPass={onAssignPass}
+              onPrimaryAction={onPrimaryAction}
             />
           ))}
         </TableBody>
@@ -324,6 +349,7 @@ function VisitorList({
   selectedIds,
   setSelectedIds,
   onAssignPass,
+  onPrimaryAction,
   emptyText,
 }: {
   rows: RowT[];
@@ -334,6 +360,7 @@ function VisitorList({
   selectedIds: Set<string>;
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onAssignPass: (row: RowT) => void;
+  onPrimaryAction: (row: RowT) => void;
   emptyText: string;
 }) {
   const onSelect = useCallback((id: string) => setSelectedId(id), [setSelectedId]);
@@ -415,6 +442,7 @@ function VisitorList({
                   menuOpen={menuOpen}
                   onSelect={onSelect}
                   onToggleCheck={toggleSelect}
+                  onPrimaryAction={onPrimaryAction}
                 />
               </div>
             )}
@@ -438,8 +466,43 @@ function DeskVisitorsInner() {
   const [view, setViewState] = useState<ViewMode>(readStoredView);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [assignPassRow, setAssignPassRow] = useState<RowT | null>(null);
+  const [checkoutRow, setCheckoutRow] = useState<RowT | null>(null);
   const [searchInput, setSearchInput] = useState(raw.q);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const markArrived = useMarkArrived(buildingId);
+
+  /** Status-aware primary action triggered by Enter on a focused row.
+   *  Expected → mark arrived. On-site → open the checkout dialog.
+   *  Otherwise fall back to opening the detail panel. */
+  const handlePrimaryAction = useCallback(
+    (row: RowT) => {
+      if (row.status === 'expected' || row.status === 'pending_approval') {
+        markArrived.mutate(
+          { visitorId: row.visitor_id },
+          {
+            // Silent at the rush — multiple Enter presses in quick
+            // succession would stack toasts. The optimistic move from
+            // expected → arrived is the visible feedback.
+            onSuccess: () => toastSaved('visitor', { silent: true }),
+            onError: (err) =>
+              toastError("Couldn't mark arrived", {
+                error: err,
+                retry: () => handlePrimaryAction(row),
+              }),
+          },
+        );
+        return;
+      }
+      if (row.status === 'arrived' || row.status === 'in_meeting') {
+        setCheckoutRow(row);
+        return;
+      }
+      // Closed / cancelled / no-show — Enter falls back to "open detail".
+      setSelectedId(row.visitor_id);
+    },
+    [markArrived],
+  );
 
   const setView = (v: ViewMode) => {
     setViewState(v);
@@ -728,6 +791,7 @@ function DeskVisitorsInner() {
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             onAssignPass={onAssignPass}
+            onPrimaryAction={handlePrimaryAction}
             emptyText={emptyTextFor(activeView)}
           />
         ) : (
@@ -740,6 +804,7 @@ function DeskVisitorsInner() {
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             onAssignPass={onAssignPass}
+            onPrimaryAction={handlePrimaryAction}
             emptyText={emptyTextFor(activeView)}
           />
         )}
@@ -796,6 +861,17 @@ function DeskVisitorsInner() {
           buildingId={buildingId}
           visitorId={assignPassRow.visitor_id}
           visitorLabel={formatReceptionRowName(assignPassRow)}
+        />
+      )}
+
+      {checkoutRow && (
+        <CheckoutDialog
+          open
+          onOpenChange={(open) => !open && setCheckoutRow(null)}
+          buildingId={buildingId}
+          visitorId={checkoutRow.visitor_id}
+          visitorLabel={formatReceptionRowName(checkoutRow)}
+          hasPass={Boolean(checkoutRow.pass_number)}
         />
       )}
 
