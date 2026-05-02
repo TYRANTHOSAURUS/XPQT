@@ -491,7 +491,9 @@ Out-of-scope for v1: file inputs (warn the user to re-attach), drag-and-drop ord
 
 **Refresh-loop bail rule (mandatory).** A dead refresh token surfaces a 401 on every subsequent request. If the AuthProvider re-attempts to read the session after the redirect (or if a third-party tab races the sign-in), the user can land in a tight 401 → redirect → 401 loop with the URL never settling.
 
-The rule: `apiFetch` tracks consecutive `auth.expired` 401s in a single rolling 10-second window via a module-scoped counter (`Map<sessionId, { count, firstAt }>`). On the **3rd** consecutive `auth.expired` within 10s:
+The rule: `apiFetch` tracks consecutive `auth.expired` 401s in a single rolling 10-second window via a module-scoped counter (`Map<sessionId, { count, firstAt }>`). **The silent-retry path (above) does NOT increment the counter on the initial 401** — it only increments when the *retry's* response is also a 401, and only when the Supabase client reports the same session both before and after the retry (i.e. no refresh actually happened, so the token is genuinely dead). This avoids double-counting one user-facing call. Initial 401s that successfully retry do not contribute to the counter.
+
+On the **3rd** consecutive `auth.expired` within 10s (where each strike is a request that the silent-retry path could not rescue):
 
 1. Hard-clear the Supabase session (`supabase.auth.signOut({ scope: 'local' })`).
 2. Clear all React Query caches.
