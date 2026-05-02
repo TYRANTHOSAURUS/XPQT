@@ -178,7 +178,7 @@ Every feature that throws, fetches, mutates, or renders must follow [`docs/super
 - **Client: page-level errors replace the page** via `RouteErrorBoundary` + `throwToBoundary()`. Toasting "Not found" while leaving a broken detail page on screen is the failure mode this rule exists to prevent.
 - **Every error response carries a `traceId`.** Surface it on `server`-class toasts (small monospace, copy-on-click) and pre-fill it into the contact-support recovery. Do not invent a new trace mechanism — `apiFetch` already stamps it onto `ApiError`.
 - **Bulk operations use the wire shape's `results[]` + `partialSuccess`.** Surface partial-success as `"7 of 10 deleted — 3 failed [Show me]"`, never as a single binary toast.
-- **Never invent a new error class or surface.** The 10 classes in §3.3 of the spec are exhaustive; the surface is decided by `(class, callSite)` per §3.4. If the situation doesn't fit, the fix is to update the spec — don't ship a one-off.
+- **Never invent a new error class or surface.** The 11 classes (`transport · auth · permission · not_found · validation · conflict · rate_limit · server · realtime · render · unknown`) in §3.3 of the spec are exhaustive; the surface is decided by `(class, callSite)` per §3.4. If the situation doesn't fit, the fix is to update the spec — don't ship a one-off.
 
 When the spec is silent on something you need: read the spec first to confirm it's actually silent (vs. you skimmed), then propose an addition in the same PR. Don't bypass.
 
