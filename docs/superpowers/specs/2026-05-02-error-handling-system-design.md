@@ -391,7 +391,19 @@ const mutation = useMutation({
 
 That's the single new API surface. The voice rule (`actionTitle = "Couldn't <verb> <thing>"`) is preserved because the helpers feed into the existing `toastError` from `apps/web/src/lib/toast.ts` (see §3.4 below). The wrapper-hook idea is explicitly rejected.
 
-A matching `handleQueryError` helper exists for read paths and is thinner — most read errors surface via the route ErrorBoundary (page-class) or React Query's normal error state (inline-class). Pages that want a toast fallback for transient query errors call `handleQueryError(error, { actionTitle })` from a `useEffect` keyed on `error`.
+A matching `handleQueryError` helper exists for read paths and is thinner — most read errors surface via the route ErrorBoundary (page-class) or React Query's normal error state (inline-class). Pages that want a toast fallback for transient query errors call `handleQueryError(error, { actionTitle, callSite: 'mutation' })` from a `useEffect` keyed on `error`.
+
+#### Page-load query routing convention
+
+The mechanism that promotes a page-load query's error to the route boundary (instead of a toast) is the boundary-context. The `RouteErrorBoundary` exposes a `throwToBoundary(error: ApiError)` function via React context. The convention:
+
+- A page's **primary** queries (the ones whose failure means the page can't render meaningfully) wrap their query in `usePageQuery(...)` — a thin shadcn-style helper that calls `useQuery(...)` and, on error with class ∈ `('not_found','permission','server','gone')`, calls `throwToBoundary(error)` from the boundary context. The boundary catches it the same way it catches a render error.
+- A page's **secondary** queries (sidebar lists, autocomplete sources, prefetch) call `useQuery(...)` normally and pass the error to `handleQueryError(error, { callSite: 'mutation', actionTitle: "Couldn't load <thing>" })` from a `useEffect`. These don't fail the page; they toast.
+
+The distinction is made by the call site, not inferred — there's no implicit "first query in the file." A page that has 3 primary queries calls `usePageQuery` 3 times.
+
+This is also why `callSite` is `'mutation'` for query toasts in helper signatures: from the renderer's perspective, "an action on this page failed" is the same surface whether it was a mutation or a sidebar query.
+
 
 ## 4 · The error class × surface × recovery matrix
 
