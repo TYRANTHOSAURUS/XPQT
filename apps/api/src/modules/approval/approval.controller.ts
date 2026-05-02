@@ -6,6 +6,26 @@ import { ApprovalService, CreateApprovalDto, RespondDto } from './approval.servi
 export class ApprovalController {
   constructor(private readonly approvalService: ApprovalService) {}
 
+  /**
+   * Count + urgency for the desk-shell rail badge on Approvals. Auth-derived
+   * (no `:personId` param) so the rail badge doesn't have to know the
+   * caller's person id. Declared BEFORE `@Get('pending/:personId')` so Nest's
+   * route table matches `pending/me/count` here rather than treating "me" as
+   * a personId.
+   */
+  @Get('pending/me/count')
+  async getMyPendingCount(@Req() request: Request) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
+    if (!actor) {
+      // No linked person → an empty queue rather than 403; the caller is a
+      // valid auth user but simply has nothing to approve.
+      return { count: 0, hasUrgency: false };
+    }
+    return this.approvalService.getPendingCountForActor(actor);
+  }
+
   @Get('pending/:personId')
   async getPending(@Req() request: Request, @Param('personId') personId: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;

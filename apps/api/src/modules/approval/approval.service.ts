@@ -129,6 +129,27 @@ export class ApprovalService {
   }
 
   /**
+   * Count + urgency snapshot of the caller's pending approvals — used by
+   * the desk-shell rail badge. Re-uses the same query as getPendingForActor;
+   * the result set is naturally bounded (a single approver rarely has more
+   * than a handful of pending items at once). Urgency = any pending approval
+   * older than 24h, per
+   * docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts.
+   */
+  async getPendingCountForActor(
+    actor: ApprovalActor,
+  ): Promise<{ count: number; hasUrgency: boolean }> {
+    const items = (await this.getPendingForActor(actor)) ?? [];
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const hasUrgency = items.some((row: { requested_at?: string | null }) => {
+      const requestedAt = row.requested_at;
+      if (!requestedAt) return false;
+      return new Date(requestedAt).getTime() <= cutoff;
+    });
+    return { count: items.length, hasUrgency };
+  }
+
+  /**
    * Get all approvals for a specific target entity (e.g., all approvals for a ticket).
    */
   async getForEntity(entityType: string, entityId: string) {

@@ -202,6 +202,53 @@ export class ReceptionService {
   }
 
   /**
+   * Lightweight count + urgency for the desk-shell rail badge on Visitors.
+   * Counts visitors who are expected today OR currently arriving in this
+   * building (the operator's "current attention" set). Urgency = any expected
+   * visitor whose `expected_at + 15min` has passed without check-in (no-show
+   * risk).
+   *
+   * Spec: docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts
+   */
+  async todayCount(
+    tenantId: string,
+    buildingId: string,
+    userId: string,
+  ): Promise<{ count: number; hasUrgency: boolean }> {
+    this.assertTenant(tenantId);
+    const now = new Date();
+    const dayStart = startOfDay(now).toISOString();
+    const dayEnd = endOfDay(now).toISOString();
+    const urgencyCutoff = new Date(now.getTime() - 15 * 60_000).toISOString();
+
+    const sql = `
+      with visible as (
+        select visitor_visibility_ids as id from public.visitor_visibility_ids($1, $2)
+      )
+      select
+        count(*)::int                                                         as count,
+        bool_or(v.status = 'expected' and v.expected_at <= $5)                as has_urgency
+      from public.visitors v
+      where v.tenant_id = $2
+        and v.building_id = $3
+        and v.id in (select id from visible)
+        and (
+          (v.status = 'arrived') or
+          (v.status = 'expected' and v.expected_at >= $4 and v.expected_at <= $6)
+        )
+    `;
+
+    const row = await this.db.queryOne<{ count: number; has_urgency: boolean | null }>(
+      sql,
+      [userId, tenantId, buildingId, dayStart, urgencyCutoff, dayEnd],
+    );
+    return {
+      count: row?.count ?? 0,
+      hasUrgency: row?.has_urgency ?? false,
+    };
+  }
+
+  /**
    * Search today's visitors by name / company / host name. Uses pg_trgm
    * `similarity()` with a 0.2 threshold — low enough to match "marl" →
    * "Marleen", high enough to filter noise. Falls back to ILIKE

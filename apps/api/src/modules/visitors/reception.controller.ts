@@ -65,6 +65,22 @@ export class ReceptionController {
     return this.reception.today(tenant.id, buildingId, actor.user_id);
   }
 
+  /**
+   * Count + urgency for the desk-shell rail badge on Visitors. Per-building
+   * (uses the same building_id query param as `today()`).
+   */
+  @Get('today/count')
+  async todayCount(
+    @Req() req: Request,
+    @Query('building_id') buildingId?: string,
+  ) {
+    await this.permissions.requirePermission(req, 'visitors.reception');
+    if (!buildingId) throw new BadRequestException('building_id is required');
+    const tenant = TenantContext.current();
+    const actor = await this.resolveActor(req);
+    return this.reception.todayCount(tenant.id, buildingId, actor.user_id);
+  }
+
   @Get('search')
   async search(
     @Req() req: Request,

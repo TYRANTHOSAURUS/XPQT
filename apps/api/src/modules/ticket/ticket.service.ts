@@ -296,6 +296,24 @@ export class TicketService {
     };
   }
 
+  /**
+   * Count + urgency snapshot for the desk-shell rail badge. Re-uses the
+   * existing inbox composition; cheap enough since the inbox is bounded
+   * (≤ 100 items by design). Urgency is set when any item is an @-mention
+   * OR has priority='critical'.
+   *
+   * Spec: docs/superpowers/specs/2026-05-02-main-menu-redesign-design.md §Counts
+   */
+  async getInboxCount(accessToken?: string): Promise<{ count: number; hasUrgency: boolean }> {
+    const { items } = await this.getInbox(accessToken, 100);
+    const hasUrgency = items.some(
+      (item) =>
+        item.priority === 'critical' ||
+        item.inbox_reason === 'mentioned',
+    );
+    return { count: items.length, hasUrgency };
+  }
+
   async getInbox(accessToken?: string, limit = 50) {
     const actor = await this.resolveInboxActor(accessToken);
     if (!actor?.personId) {

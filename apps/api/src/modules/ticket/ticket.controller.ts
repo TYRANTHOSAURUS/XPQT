@@ -45,6 +45,17 @@ export class TicketController {
     );
   }
 
+  /**
+   * Count + urgency for the desk-shell rail badge on Inbox. Cheap call —
+   * see TicketService.getInboxCount.
+   */
+  @Get('inbox/count')
+  async getInboxCount(@Req() request: Request) {
+    return this.ticketService.getInboxCount(
+      this.extractAccessToken(request.headers.authorization),
+    );
+  }
+
   @Get()
   async list(
     @Req() request: Request,
