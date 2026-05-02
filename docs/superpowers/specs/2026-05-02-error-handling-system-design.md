@@ -31,7 +31,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 6 | **11 error classes**, each mapped to a default surface and recovery. (Matrix in §4.) Classes are exhaustive — every error must classify into exactly one. `unknown` exists as a last-resort bucket for renderer correctness, but landing there is a bug to fix at the classifier. | A taxonomy with a default-OK case isn't a taxonomy. Forcing exhaustiveness drives classifier completeness. |
 | 7 | The **surface for an error is decided by class, not call site**. Toasts are right ~30% of the time; transport errors get a banner, page-level errors replace the page, field errors paint inline. Renderers expose `handle(error, context)` that routes correctly. | Right now every error is a toast. That's why the app feels noisy and useless when things go wrong. |
 | 8 | **Every error has a recovery.** If the design can't name one, the class is wrong. Recovery options are typed: `retry` · `signIn` · `reload` · `goBack` · `pickAlternative` · `askAdmin` · `contactSupport` · `dismiss`. | "Try again" is the floor, not the ceiling. The button labels are the UX. |
-| 9 | **Messages are looked up client-side by `code`, not read from the server's `title`/`detail`.** Server message is fallback only. Lookup table is per-locale; Dutch first-class. | Localisation, ability to rewrite a confusing message without a deploy, ability to gracefully handle codes the client doesn't know yet. |
+| 9 | **Messages are looked up client-side by `code`. Unregistered codes fail closed — never display the server's `detail` verbatim.** A code that's not in `messages.<locale>.ts` renders as `unknown.server_error` copy + traceId, not as the server's English prose. The code registry lives in a shared workspace package (`packages/shared/error-codes`) so server enum + client message coverage stay in sync; CI fails on drift. | Localisation, ability to rewrite a confusing message without a deploy. **Fail-closed is the security control:** if a server message accidentally embeds a vendor name, SQL fragment, or stack frame, the client never displays it because the code-message lookup is the only path to user-visible copy. The detail field stays in the response (for support / dev tools) but is not rendered. |
 | 10 | **TraceId everywhere.** Generate at request boundary (`X-Request-Id`), echo in every error response and every server log line, surface subtly on every user-visible error (copy-on-click). Frontend captures it on every `ApiError`. | Highest-leverage single change. Support resolution drops from 30 min to 30 sec. |
 | 11 | **Field-level errors never toast.** When `fields[]` is present, the form's mutation hook stuffs them into RHF state and the toast either suppresses or becomes a generic "Some fields need attention." | The current setup turns Zod errors (via `formatZodError`) into a single comma-joined string — unusable as toast text and impossible to map to specific form fields. |
 | 12 | **Optimistic-update rollback is animated and explained.** The `useMutation` `onError` rollback path adds a one-line toast "We undid that change because: <reason from code>". Silent reverts are banned. | Most apps fail here; it's a high-leverage polish moment. |
@@ -352,7 +352,19 @@ This is the contract. Every classifier branch lands one row.
 
 ## 5 · Code taxonomy — the registry
 
-Codes are domain-namespaced. Every code is registered in `apps/web/src/lib/errors/messages.<locale>.ts` and the server's `apps/api/src/common/errors/codes.ts`. The two are **not** a single shared file — server owns the wire, client owns the message.
+Codes are domain-namespaced. The **single source of truth** is the workspace package `packages/shared/error-codes` (already a viable home — `packages/shared` exists and exports types consumed by both apps). The package exports:
+
+- `ErrorCode` — a TypeScript string-literal union of every registered code.
+- `ERROR_CODE_DOMAINS` — `Record<string, string>` mapping code → domain (`'ticket' | 'permission' | …`) for ESLint partition rules.
+- A runtime `Set<string>` for the filter to validate that any code it emits is registered.
+
+The server reads `ErrorCode` from this package when constructing `AppError`. The client reads it as the key set for `messages.<locale>.ts`. Adding a code = one PR that updates the shared package + adds messages in `messages.en.ts` + (Wave 4+) `messages.nl.ts`. CI guard:
+
+- Build fails if the server emits a code that isn't in the shared `Set`.
+- Build fails if `messages.en.ts` is missing any code from `ErrorCode`.
+- Build warns (not fails) if `messages.nl.ts` is missing any code (Dutch lags English by design — translate within a sprint).
+
+**No fall-through to server `detail`.** The renderer never displays the server's `title`/`detail` verbatim. If a code isn't registered (which the CI guard makes nearly impossible), the renderer shows `unknown.server_error` copy + traceId. This is the leak-prevention control for decision #13: even if a server error string accidentally embeds a vendor name, SQL, or stack, the user never sees it.
 
 Initial code set (not exhaustive — extend as the migration ships):
 
