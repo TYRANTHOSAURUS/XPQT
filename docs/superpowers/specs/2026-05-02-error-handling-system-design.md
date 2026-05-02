@@ -282,24 +282,38 @@ Instead, ship **composable helpers** that the caller invokes from inside their o
 
 ```ts
 // apps/web/src/lib/errors/handle-mutation-error.ts
+export type CallSite = 'route_load' | 'mutation' | 'realtime' | 'render';
+
 export function handleMutationError(
   error: unknown,
   context: {
-    actionTitle: string;                                          // 'Couldn't save webhook' (voice rule applies)
+    actionTitle: string;                                          // 'Couldn't save webhook' (voice rule applies for toast surfaces)
+    callSite?: CallSite;                                          // default 'mutation'; pass 'route_load' for queries that block a page
     retry?: () => void;                                           // re-run, if mutation is re-runnable
     setFormError?: (field: string, error: FieldError) => void;    // RHF setError, for validation
-    onConflict?: 'modal' | 'silent_revert' | 'throw_to_boundary'; // default 'modal' once shipped
+    onConflict?: 'toast' | 'silent_revert' | 'throw_to_boundary'; // default 'toast' (v1); v2 will add 'modal'
     rollbackExplain?: string;                                     // appended to optimistic-rollback toast if set
+    formDraftKey?: string;                                        // serialise RHF draft to sessionStorage on auth.expired
   },
 ): void;
 
 // apps/web/src/lib/errors/mutation-options.ts
 export function withErrorHandling<TVars>(
-  context: HandleMutationErrorContext,
+  context: Omit<Parameters<typeof handleMutationError>[1], never>,
 ): { onError: (error: unknown, vars: TVars, ctx: unknown) => void };
 //   ↑ returns an `onError` the caller spreads into mutationOptions when they
 //     don't have their own onError. For callers with their own onError, they
 //     call handleMutationError(error, { ... }) directly inside it.
+
+// apps/web/src/lib/errors/handle-query-error.ts
+export function handleQueryError(
+  error: unknown,
+  context: {
+    callSite: CallSite;                                           // explicit; queries differ — page-load vs sidebar
+    actionTitle?: string;                                         // 'Couldn't load webhooks' (only used on toast surfaces)
+    retry?: () => void;
+  },
+): void;
 ```
 
 Three usage shapes — caller picks the one that fits:
