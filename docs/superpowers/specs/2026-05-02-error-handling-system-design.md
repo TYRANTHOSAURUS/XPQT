@@ -488,7 +488,16 @@ The `auth.expired` UX problem isn't "user gets redirected to sign-in mid-edit" �
 - The access token expires *during* the request (server reads it as expired before responding).
 - The mutation gets a 401 even though the user is "still signed in" client-side — Supabase has by now silently refreshed the access token in another listener.
 
-**v1 behaviour for this case:** when `apiFetch` sees a 401 and the Supabase client reports a *different* (newer) session than the one used for the request, retry the request once with the new token transparently, no UX. Implement at the `apiFetch` boundary so every call site benefits.
+**v1 behaviour for this case:** when `apiFetch` sees a 401 and the Supabase client reports a *different* (newer) session than the one used for the request, retry the request once with the new token transparently. Implement at the `apiFetch` boundary so every call site benefits.
+
+**Pending-state UX (mandatory).** A request that goes through the silent-refresh path takes longer than a normal request — usually 200ms vs ~1.5s when the refresh fires mid-flight. Without an indicator, the user sees a Save button that "hangs." Rule:
+
+- React Query's `mutation.isPending` is exposed at the call site as today.
+- `apiFetch` exposes a per-call `phase` signal via the `meta` map: `'in_flight' | 'refreshing'`. The phase flips to `'refreshing'` when the silent-retry path is active.
+- Any button bound to a mutation past **600ms** of pending should re-label to a "<verb>… (signing back in)" form when phase is `'refreshing'`. Below 600ms, no change — the user doesn't notice.
+- The render helpers (`SubmitButton`, `RowActionButton`, etc.) read this from a shared hook (`useMutationStatus(mutation)`) so call sites don't manually wire the label flip.
+
+This is the difference between "weird latency, did it work?" and "ah, it's signing me back in." Cheap to implement, big perceived-quality lift.
 
 **Hard 401 (refresh token dead) — fallback path:**
 1. Serialise the current form state (RHF `getValues()`) to `sessionStorage` keyed by route + form id. **This is v1, not polish, for the visitor + ticket forms** — see "Form-draft preservation v1 scope" below.
