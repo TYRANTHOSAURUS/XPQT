@@ -430,4 +430,21 @@ describe('InvitationService.create', () => {
     expect(v.primary_host_person_id).toBe(ACTOR_PERSON_ID);
     expect(v.host_person_id).toBe(ACTOR_PERSON_ID);
   });
+
+  it('writes visit_date derived from expected_at to satisfy legacy NOT NULL', async () => {
+    // Regression: migration 00015 made `visit_date` (DATE) NOT NULL. The v1
+    // rebuild moved to `expected_at` (TIMESTAMPTZ) but never dropped the
+    // legacy column, so any insert that omits `visit_date` 500s with
+    // `null value in column "visit_date" violates not-null constraint`.
+    // Both POST /visitors/invitations (this path) and the booking-composer
+    // flush (same path, populated by booking-composer.tsx) hit it.
+    // The fix derives `visit_date` from expected_at::date and includes it
+    // in the insert payload — kept in sync so the privacy adapter's
+    // `coalesce(expected_at::date, visit_date)` filter is consistent.
+    const ctx = makeService();
+    await ctx.svc.create(baseDto(), ACTOR);
+    const v = ctx.getInsertedVisitor()!;
+    // expected_at = 2026-05-02T09:00:00.000Z → date = 2026-05-02 (UTC).
+    expect(v.visit_date).toBe('2026-05-02');
+  });
 });

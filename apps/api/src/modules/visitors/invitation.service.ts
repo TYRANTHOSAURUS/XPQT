@@ -104,6 +104,15 @@ export class InvitationService {
     // 5. INSERT visitors row directly. Slice 1's CHECK constraints
     // validate the status enum + the logged_after_arrived invariant
     // (logged_at is null on insert; satisfied trivially).
+    //
+    // `visit_date` is the legacy NOT NULL DATE column from migration
+    // 00015. The v1 rebuild moved the source-of-truth to `expected_at`
+    // (timestamptz) but never made visit_date nullable / default-derived,
+    // so we MUST populate it here. The privacy-compliance adapter reads
+    // `coalesce(expected_at::date, visit_date)` so consistency is the
+    // contract — not a different value. Compute from the same ISO so
+    // they always match.
+    const visitDate = isoToVisitDate(dto.expected_at);
     const { data: visitorRow, error: insertError } = await this.supabase.admin
       .from('visitors')
       .insert({
@@ -120,6 +129,7 @@ export class InvitationService {
         company: dto.company ?? null,
         expected_at: dto.expected_at,
         expected_until: expectedUntil,
+        visit_date: visitDate,                      // derived from expected_at; legacy NOT NULL
         building_id: dto.building_id,
         meeting_room_id: dto.meeting_room_id ?? null,
         booking_bundle_id: dto.booking_bundle_id ?? null,
@@ -358,4 +368,25 @@ export class InvitationService {
   private defaultExpectedUntil(expectedAt: string, offsetMinutes: number): string {
     return new Date(new Date(expectedAt).getTime() + offsetMinutes * 60 * 1000).toISOString();
   }
+}
+
+/**
+ * Derive a `YYYY-MM-DD` DATE string from an ISO 8601 timestamp using the
+ * UTC calendar day. Postgres accepts this directly into a DATE column.
+ *
+ * UTC was chosen over local time because the API server has no client
+ * timezone context — using server-local time on a UTC server vs. a CET
+ * server would silently shift the date. The privacy adapter compares
+ * `expected_at::date` (Postgres' UTC default) with this column, so UTC
+ * here keeps both sides aligned.
+ */
+function isoToVisitDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    // Should be unreachable — zod schema guards this — but fall back to
+    // today UTC rather than insert NULL into a NOT NULL column.
+    const now = new Date();
+    return now.toISOString().slice(0, 10);
+  }
+  return d.toISOString().slice(0, 10);
 }

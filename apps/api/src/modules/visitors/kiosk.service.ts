@@ -526,6 +526,12 @@ export class KioskService {
       Date.now() + offsetMinutes * 60 * 1000,
     ).toISOString();
 
+    // `visit_date` is the legacy NOT NULL DATE column (00015). v1 made
+    // expected_at canonical but never dropped/defaulted visit_date — we
+    // derive it from expected_at so the privacy adapter's
+    // `coalesce(expected_at::date, visit_date)` stays consistent.
+    const visitDate = new Date(expectedAt).toISOString().slice(0, 10);
+
     const { data: visitorRow, error: insertError } = await this.supabase.admin
       .from('visitors')
       .insert({
@@ -542,6 +548,7 @@ export class KioskService {
         company: dto.company ?? null,
         expected_at: expectedAt,
         expected_until: expectedUntil,
+        visit_date: visitDate,
         building_id: kioskContext.buildingId,
       })
       .select()
