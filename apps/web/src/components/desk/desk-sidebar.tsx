@@ -417,11 +417,11 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
               )}
               <SidebarGroup>
                 {group.label !== null && railExpanded && (
-                  <SidebarGroupLabel className="px-3 uppercase tracking-wide">
+                  <SidebarGroupLabel className="px-2 uppercase tracking-wide">
                     {group.label}
                   </SidebarGroupLabel>
                 )}
-                <SidebarGroupContent className={railExpanded ? "px-2" : "px-1.5 md:px-0"}>
+                <SidebarGroupContent className={railExpanded ? "px-1.5" : "px-1.5 md:px-0"}>
                   <SidebarMenu>
                     {(group.items as RailNavItem[]).map((item) => {
                       const slot = item.countSlot ? countByItem[item.countSlot] : undefined
@@ -437,7 +437,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                               setOpen(true)
                             }}
                             isActive={activeNav?.id === item.id}
-                            className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                            className={railExpanded ? "px-2" : "px-2.5 md:px-2"}
                           >
                             <item.icon className="shrink-0" />
                             {railExpanded && <span>{item.title}</span>}
@@ -474,7 +474,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
               <SidebarMenuButton
                 tooltip={{ children: "Employee Portal", hidden: railExpanded }}
                 onClick={() => navigate("/portal")}
-                className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                className={railExpanded ? "px-2" : "px-2.5 md:px-2"}
               >
                 <LayoutDashboardIcon className="shrink-0" />
                 {railExpanded && <span>Portal</span>}
@@ -485,7 +485,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                 <SidebarMenuButton
                   tooltip={{ children: "Platform Settings", hidden: railExpanded }}
                   onClick={() => navigate("/admin")}
-                  className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                  className={railExpanded ? "px-2" : "px-2.5 md:px-2"}
                 >
                   <SettingsIcon className="shrink-0" />
                   {railExpanded && <span>Settings</span>}
@@ -502,7 +502,7 @@ export function DeskSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) 
                   hidden: railExpanded,
                 }}
                 onClick={toggleRailExpanded}
-                className={railExpanded ? "px-3" : "px-2.5 md:px-2"}
+                className={railExpanded ? "px-2" : "px-2.5 md:px-2"}
               >
                 {railExpanded ? (
                   <LayoutGridIcon className="shrink-0" />

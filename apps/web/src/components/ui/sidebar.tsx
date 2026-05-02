@@ -582,14 +582,14 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  // Active-state treatment is harmonized across rail and contextual second pane:
-  // bg-sidebar-accent fill + a 2px left accent rule in --sidebar-primary,
-  // applied via inset box-shadow so it doesn't break the row's truncation/
-  // overflow. --sidebar-primary is the brand color in both themes (indigo
-  // in dark, near-black in light) so it reads well against sidebar-accent
-  // — vs --primary which is a near-white text color in dark mode and would
-  // disappear on the accent fill.
-  "peer/menu-button group/menu-button relative flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:shadow-[inset_2px_0_0_var(--sidebar-primary)] [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+  // Active-state treatment is harmonized across rail and contextual second
+  // pane: bg-sidebar-accent fill + font-medium + accent-foreground. The
+  // earlier inset 2px rule in --sidebar-primary was removed — the indigo
+  // bar fought the rounded-md corner radius and read as visual noise.
+  // Harmonization is preserved automatically because both panes use the
+  // same SidebarMenuButton component. `relative` is kept so the urgency
+  // dot (positioned absolute in compact rail mode) anchors correctly.
+  "peer/menu-button group/menu-button relative flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
   {
     variants: {
       variant: {
