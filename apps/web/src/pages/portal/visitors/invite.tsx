@@ -15,9 +15,16 @@ import {
 } from '@/components/ui/settings-page';
 import { VisitorInviteForm } from '@/components/portal/visitor-invite-form';
 import { toastCreated } from '@/lib/toast';
+import { usePortal } from '@/providers/portal-provider';
 
 export function PortalVisitorInvitePage() {
   const navigate = useNavigate();
+  const { data } = usePortal();
+  // Seed the building from the host's default location so the form
+  // shows their normal site as the building without making them pick.
+  // Falls back to undefined → the form picks the first authorized
+  // building.
+  const defaultBuildingId = data?.default_location?.id;
 
   return (
     <SettingsPageShell width="default">
@@ -28,9 +35,13 @@ export function PortalVisitorInvitePage() {
       />
       <VisitorInviteForm
         mode="standalone"
-        onSuccess={() => {
-          toastCreated('Visitor invitation', {
-            onView: () => navigate('/portal/visitors/expected'),
+        defaults={{ building_id: defaultBuildingId }}
+        onSuccess={(visitorId) => {
+          toastCreated('visitor invitation', {
+            // The desk surface is the new canonical detail view; portal
+            // hosts can also stay on /portal/visitors/expected to find
+            // the visitor in their own list.
+            onView: () => navigate(`/desk/visitors?id=${visitorId}`),
           });
           navigate('/portal/visitors/expected');
         }}
