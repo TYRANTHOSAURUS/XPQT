@@ -22,15 +22,18 @@
  * pointing at the missing list endpoint — we explicitly opt for honesty
  * over implying server-side history works.
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
+  ChevronDown,
+  ChevronRight,
   Inbox,
   KeyRound,
   LayoutList,
   Plus,
   Search,
   Table as TableIcon,
+  UserPlus,
   X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -44,6 +47,12 @@ import {
 } from '@/components/ui/command';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Table,
   TableBody,
@@ -65,6 +74,7 @@ import { VisitorContextMenu } from '@/components/desk/visitor-context-menu';
 import { VisitorDetail } from '@/components/desk/visitor-detail';
 import { AssignPassDialog } from '@/components/desk/visitor-assign-pass-dialog';
 import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
+import { WalkupForm } from '@/components/desk/visitor-walkup-form';
 import { VisitorInviteForm } from '@/components/portal/visitor-invite-form';
 import {
   formatPrimaryHost,
@@ -108,6 +118,90 @@ function flattenToday(today: ReceptionTodayView | undefined): RowT[] {
     ...today.in_meeting,
     ...today.checked_out_today,
   ];
+}
+
+/** A named slice of the today view, preserving the receptionist's
+ *  mental model. Each bucket is rendered as a heading TR + its rows
+ *  so the table stays a single continuous body. */
+interface VisitorBucket {
+  id: string;
+  title: string;
+  description?: string;
+  rows: RowT[];
+  /** When true, the bucket starts collapsed. Receptionists open it on
+   *  demand — the today view stays focused on what's happening *now*. */
+  collapsedByDefault?: boolean;
+}
+
+const ARRIVAL_RECENT_MIN = 30; // "currently arriving" window in minutes.
+
+function buildTodayBuckets(rows: RowT[], now: Date): VisitorBucket[] {
+  const recentMs = ARRIVAL_RECENT_MIN * 60_000;
+  const nowMs = now.getTime();
+  const arriving: RowT[] = [];
+  const expectedSoon: RowT[] = [];
+  const expectedLater: RowT[] = [];
+  const onSite: RowT[] = [];
+  const closed: RowT[] = [];
+
+  for (const row of rows) {
+    if (row.status === 'checked_out' || row.status === 'cancelled' || row.status === 'no_show') {
+      closed.push(row);
+      continue;
+    }
+    if (row.status === 'arrived') {
+      const at = row.arrived_at ? new Date(row.arrived_at).getTime() : null;
+      if (at !== null && nowMs - at < recentMs) {
+        arriving.push(row);
+      } else {
+        onSite.push(row);
+      }
+      continue;
+    }
+    if (row.status === 'in_meeting') {
+      onSite.push(row);
+      continue;
+    }
+    if (row.status === 'expected' || row.status === 'pending_approval') {
+      const at = row.expected_at ? new Date(row.expected_at).getTime() : null;
+      if (at !== null && at - nowMs < recentMs) {
+        expectedSoon.push(row);
+      } else {
+        expectedLater.push(row);
+      }
+      continue;
+    }
+  }
+
+  return [
+    {
+      id: 'arriving',
+      title: 'Currently arriving',
+      description: 'Within the last 30 minutes',
+      rows: arriving,
+    },
+    {
+      id: 'expected_soon',
+      title: 'Expected next 30 min',
+      rows: expectedSoon,
+    },
+    {
+      id: 'expected_later',
+      title: 'Expected later today',
+      rows: expectedLater,
+    },
+    {
+      id: 'on_site',
+      title: 'On site',
+      rows: onSite,
+    },
+    {
+      id: 'closed',
+      title: 'Checked out today',
+      rows: closed,
+      collapsedByDefault: true,
+    },
+  ].filter((b) => b.rows.length > 0);
 }
 
 interface VisitorTableRowProps {
@@ -225,6 +319,7 @@ function VisitorTable({
   setSelectedIds,
   onAssignPass,
   onPrimaryAction,
+  buckets,
   emptyText,
 }: {
   rows: RowT[];
@@ -236,8 +331,22 @@ function VisitorTable({
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onAssignPass: (row: RowT) => void;
   onPrimaryAction: (row: RowT) => void;
+  /** When provided (today view), render rows grouped by bucket with a
+   *  heading TR per group. Otherwise render rows flat. */
+  buckets?: VisitorBucket[];
   emptyText: string;
 }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    return new Set((buckets ?? []).filter((b) => b.collapsedByDefault).map((b) => b.id));
+  });
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const onSelect = useCallback((id: string) => setSelectedId(id), [setSelectedId]);
   const toggleSelect = useCallback(
     (id: string) => {
@@ -321,19 +430,71 @@ function VisitorTable({
               </TableCell>
             </TableRow>
           )}
-          {rows.map((row) => (
-            <VisitorTableRow
-              key={row.visitor_id}
-              row={row}
-              buildingId={buildingId}
-              selected={selectedId === row.visitor_id}
-              checked={selectedIds.has(row.visitor_id)}
-              onSelect={onSelect}
-              onToggleCheck={toggleSelect}
-              onAssignPass={onAssignPass}
-              onPrimaryAction={onPrimaryAction}
-            />
-          ))}
+          {!loading && buckets ? (
+            buckets.map((bucket) => {
+              const isCollapsed = collapsed.has(bucket.id);
+              return (
+                <Fragment key={bucket.id}>
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={6} className="px-3 py-2 bg-muted/20 border-b">
+                      <button
+                        type="button"
+                        onClick={() => toggleCollapse(bucket.id)}
+                        className="flex w-full items-baseline gap-3 text-left"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            'size-3 text-muted-foreground transition-transform',
+                            !isCollapsed && 'rotate-90',
+                          )}
+                          aria-hidden
+                        />
+                        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          {bucket.title}
+                        </span>
+                        {bucket.description && (
+                          <span className="text-xs text-muted-foreground/70">
+                            {bucket.description}
+                          </span>
+                        )}
+                        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                          {bucket.rows.length}
+                        </span>
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                  {!isCollapsed &&
+                    bucket.rows.map((row) => (
+                      <VisitorTableRow
+                        key={row.visitor_id}
+                        row={row}
+                        buildingId={buildingId}
+                        selected={selectedId === row.visitor_id}
+                        checked={selectedIds.has(row.visitor_id)}
+                        onSelect={onSelect}
+                        onToggleCheck={toggleSelect}
+                        onAssignPass={onAssignPass}
+                        onPrimaryAction={onPrimaryAction}
+                      />
+                    ))}
+                </Fragment>
+              );
+            })
+          ) : (
+            rows.map((row) => (
+              <VisitorTableRow
+                key={row.visitor_id}
+                row={row}
+                buildingId={buildingId}
+                selected={selectedId === row.visitor_id}
+                checked={selectedIds.has(row.visitor_id)}
+                onSelect={onSelect}
+                onToggleCheck={toggleSelect}
+                onAssignPass={onAssignPass}
+                onPrimaryAction={onPrimaryAction}
+              />
+            ))
+          )}
         </TableBody>
       </Table>
     </div>
@@ -350,6 +511,7 @@ function VisitorList({
   setSelectedIds,
   onAssignPass,
   onPrimaryAction,
+  buckets,
   emptyText,
 }: {
   rows: RowT[];
@@ -361,8 +523,20 @@ function VisitorList({
   setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onAssignPass: (row: RowT) => void;
   onPrimaryAction: (row: RowT) => void;
+  buckets?: VisitorBucket[];
   emptyText: string;
 }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    return new Set((buckets ?? []).filter((b) => b.collapsedByDefault).map((b) => b.id));
+  });
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const onSelect = useCallback((id: string) => setSelectedId(id), [setSelectedId]);
   const toggleSelect = useCallback(
     (id: string) => {
@@ -425,29 +599,87 @@ function VisitorList({
       )}
 
       <div className="divide-y">
-        {rows.map((row) => (
-          <VisitorContextMenu
-            key={row.visitor_id}
-            row={row}
-            buildingId={buildingId}
-            onOpenDetail={onSelect}
-            onAssignPass={onAssignPass}
-          >
-            {(triggerProps, { open: menuOpen }) => (
-              <div {...triggerProps}>
-                <VisitorListRow
-                  row={row}
-                  selected={selectedId === row.visitor_id}
-                  checked={selectedIds.has(row.visitor_id)}
-                  menuOpen={menuOpen}
-                  onSelect={onSelect}
-                  onToggleCheck={toggleSelect}
-                  onPrimaryAction={onPrimaryAction}
-                />
-              </div>
-            )}
-          </VisitorContextMenu>
-        ))}
+        {!loading && buckets ? (
+          buckets.map((bucket) => {
+            const isCollapsed = collapsed.has(bucket.id);
+            return (
+              <Fragment key={bucket.id}>
+                <button
+                  type="button"
+                  onClick={() => toggleCollapse(bucket.id)}
+                  className="flex w-full items-baseline gap-3 bg-muted/20 px-3 py-2 text-left transition-colors hover:bg-muted/30"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'size-3 text-muted-foreground transition-transform',
+                      !isCollapsed && 'rotate-90',
+                    )}
+                    aria-hidden
+                  />
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {bucket.title}
+                  </span>
+                  {bucket.description && (
+                    <span className="text-xs text-muted-foreground/70">
+                      {bucket.description}
+                    </span>
+                  )}
+                  <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                    {bucket.rows.length}
+                  </span>
+                </button>
+                {!isCollapsed &&
+                  bucket.rows.map((row) => (
+                    <VisitorContextMenu
+                      key={row.visitor_id}
+                      row={row}
+                      buildingId={buildingId}
+                      onOpenDetail={onSelect}
+                      onAssignPass={onAssignPass}
+                    >
+                      {(triggerProps, { open: menuOpen }) => (
+                        <div {...triggerProps}>
+                          <VisitorListRow
+                            row={row}
+                            selected={selectedId === row.visitor_id}
+                            checked={selectedIds.has(row.visitor_id)}
+                            menuOpen={menuOpen}
+                            onSelect={onSelect}
+                            onToggleCheck={toggleSelect}
+                            onPrimaryAction={onPrimaryAction}
+                          />
+                        </div>
+                      )}
+                    </VisitorContextMenu>
+                  ))}
+              </Fragment>
+            );
+          })
+        ) : (
+          rows.map((row) => (
+            <VisitorContextMenu
+              key={row.visitor_id}
+              row={row}
+              buildingId={buildingId}
+              onOpenDetail={onSelect}
+              onAssignPass={onAssignPass}
+            >
+              {(triggerProps, { open: menuOpen }) => (
+                <div {...triggerProps}>
+                  <VisitorListRow
+                    row={row}
+                    selected={selectedId === row.visitor_id}
+                    checked={selectedIds.has(row.visitor_id)}
+                    menuOpen={menuOpen}
+                    onSelect={onSelect}
+                    onToggleCheck={toggleSelect}
+                    onPrimaryAction={onPrimaryAction}
+                  />
+                </div>
+              )}
+            </VisitorContextMenu>
+          ))
+        )}
       </div>
     </div>
   );
@@ -465,6 +697,7 @@ function DeskVisitorsInner() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setViewState] = useState<ViewMode>(readStoredView);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [walkupOpen, setWalkupOpen] = useState(false);
   const [assignPassRow, setAssignPassRow] = useState<RowT | null>(null);
   const [checkoutRow, setCheckoutRow] = useState<RowT | null>(null);
   const [searchInput, setSearchInput] = useState(raw.q);
@@ -619,6 +852,15 @@ function DeskVisitorsInner() {
     return rows;
   }, [sourceRows, raw.status, raw.date, raw.visitorType, raw.host]);
 
+  // The today preset renders bucketed sections (Currently arriving /
+  // Expected next 30 min / Expected later today / On site / Checked out)
+  // so the receptionist's mental model of *what's happening now* maps
+  // 1:1 to the screen. Other views stay flat.
+  const todayBuckets = useMemo<VisitorBucket[] | undefined>(() => {
+    if (activeView !== 'today') return undefined;
+    return buildTodayBuckets(filteredRows, new Date());
+  }, [activeView, filteredRows]);
+
   const isLoading =
     (activeView === 'pending_approval' ? deskLens.isLoading : false) ||
     (activeView === 'loose_ends' ? yesterday.isLoading : false) ||
@@ -760,9 +1002,45 @@ function DeskVisitorsInner() {
                 <LayoutList className="size-4" />
               </ToggleGroupItem>
             </ToggleGroup>
-            <Button size="sm" onClick={() => setInviteOpen(true)}>
-              <Plus className="size-4" /> Invite
-            </Button>
+            {/* Split button — primary verb is Invite (most-used at most
+             *  tenants); chevron pulls up the walk-up surface so the
+             *  rush-time alternative is one click away. The walk-up
+             *  form is rendered inline above the table (NOT a modal)
+             *  so reception can batch-enter without losing the today
+             *  view. */}
+            <div className="inline-flex">
+              <Button
+                size="sm"
+                className="rounded-r-none"
+                onClick={() => setInviteOpen(true)}
+              >
+                <Plus className="size-4" /> Invite
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      size="sm"
+                      className="rounded-l-none border-l border-primary-foreground/20 px-1.5"
+                      aria-label="More add actions"
+                    />
+                  }
+                >
+                  <ChevronDown className="size-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => setWalkupOpen(true)}
+                    disabled={!buildingId}
+                  >
+                    <UserPlus /> Add walk-up
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setInviteOpen(true)}>
+                    <Plus /> Invite a visitor
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         )}
       </div>
@@ -773,6 +1051,12 @@ function DeskVisitorsInner() {
         activeCount={activeCount}
         onClearAll={clearAll}
       />
+
+      {walkupOpen && buildingId && (
+        <div className="mx-6 mb-3">
+          <WalkupForm buildingId={buildingId} onClose={() => setWalkupOpen(false)} />
+        </div>
+      )}
 
       {isError && !isLoading && (
         <div className="mx-6 mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -792,6 +1076,7 @@ function DeskVisitorsInner() {
             setSelectedIds={setSelectedIds}
             onAssignPass={onAssignPass}
             onPrimaryAction={handlePrimaryAction}
+            buckets={todayBuckets}
             emptyText={emptyTextFor(activeView)}
           />
         ) : (
@@ -805,6 +1090,7 @@ function DeskVisitorsInner() {
             setSelectedIds={setSelectedIds}
             onAssignPass={onAssignPass}
             onPrimaryAction={handlePrimaryAction}
+            buckets={todayBuckets}
             emptyText={emptyTextFor(activeView)}
           />
         )}
