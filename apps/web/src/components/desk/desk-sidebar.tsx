@@ -641,11 +641,17 @@ function BookingsSidebarPanel() {
     return (v as BookingsScope) ?? "pending_approval"
   }, [location.pathname, location.search])
 
+  // Pane header shows the active scope, not the section name — the rail
+  // already says "Bookings". Scope labels are sourced from the in-file
+  // bookingsScopes table to avoid duplication.
+  const activeScopeLabel =
+    bookingsScopes.find((s) => s.id === activeScope)?.label ?? "Bookings"
+
   return (
     <>
       <SidebarHeader className="gap-3.5 border-b p-4">
         <div className="flex items-center justify-between">
-          <div className="text-base font-medium text-foreground">Bookings</div>
+          <div className="text-base font-medium text-foreground">{activeScopeLabel}</div>
           <button
             onClick={() => navigate("/desk/scheduler")}
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -697,10 +703,16 @@ function TicketsSidebarPanel() {
     return params.get("view")
   }, [location.pathname, location.search])
 
+  // Pane header shows the active sub-context, not the section name —
+  // the rail already says "Tickets". Falls back to "Views" when no
+  // preset is active so the pane never reads as a duplicate of the rail.
+  const headerLabel =
+    (activeView && (viewLabels as Record<string, string | undefined>)[activeView]) ?? "Views"
+
   return (
     <>
       <SidebarHeader className="gap-3.5 border-b p-4">
-        <div className="text-base font-medium text-foreground">Tickets</div>
+        <div className="text-base font-medium text-foreground">{headerLabel}</div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -785,10 +797,17 @@ function VisitorsSidebarPanel() {
     navigate(`/desk/visitors?${params.toString()}`)
   }
 
+  // Pane header shows the active view, not the section name — the rail
+  // already says "Visitors". Falls back to "Today" (the default view) when
+  // no view query param is present.
+  const activeViewLabel =
+    (activeView && visitorViewPresets[activeView as VisitorViewId]?.label) ??
+    visitorViewPresets.today.label
+
   return (
     <>
       <SidebarHeader className="gap-3.5 border-b p-4">
-        <div className="text-base font-medium text-foreground">Visitors</div>
+        <div className="text-base font-medium text-foreground">{activeViewLabel}</div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
