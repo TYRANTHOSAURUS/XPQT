@@ -436,13 +436,14 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
       )}
 
       <FieldGroup>
-        {/* The 80% case — name, email, when. Everything else folds.
+        {/* The 80% case — visitor details, contact details, when.
+         *  Everything else folds behind "More options".
          *
          *  Two fully-labeled Field rows side-by-side instead of one Field
          *  with two inputs in a div — every input gets its own clickable
          *  label, fixing the "last name has no label" a11y miss. */}
         <FieldSet>
-          <FieldLegend variant="label">Visitor name</FieldLegend>
+          <FieldLegend variant="label">Visitor details</FieldLegend>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="visitor-first-name">First name</FieldLabel>
@@ -472,21 +473,43 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
           </div>
         </FieldSet>
 
-        <Field>
-          <FieldLabel htmlFor="visitor-email">Email</FieldLabel>
-          <Input
-            id="visitor-email"
-            type="email"
-            inputMode="email"
-            autoComplete="off"
-            spellCheck={false}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            onBlur={() => setTouched((t) => ({ ...t, email: true }))}
-            aria-invalid={!!errors.email && touched.email}
-          />
-          {touched.email && errors.email && <FieldError>{errors.email}</FieldError>}
-        </Field>
+        {/* Contact details — email + phone side-by-side, both visible by
+            default. Phone is optional but living next to email (instead
+            of buried under More options) lets a host capture both at once
+            in the 30-second flow. */}
+        <FieldSet>
+          <FieldLegend variant="label">Contact details</FieldLegend>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="visitor-email">Email</FieldLabel>
+              <Input
+                id="visitor-email"
+                type="email"
+                inputMode="email"
+                autoComplete="off"
+                spellCheck={false}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                aria-invalid={!!errors.email && touched.email}
+              />
+              {touched.email && errors.email && <FieldError>{errors.email}</FieldError>}
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="visitor-phone">Phone</FieldLabel>
+              <Input
+                id="visitor-phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                spellCheck={false}
+                placeholder="Optional"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </Field>
+          </div>
+        </FieldSet>
 
         {mode === 'standalone' && (
           <Field>
@@ -541,34 +564,17 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
             <FieldSeparator className="my-4" />
             <FieldGroup>
               <FieldSet>
-                <FieldLegend>Contact</FieldLegend>
-                <Field>
-                  <FieldLabel htmlFor="visitor-phone">Phone</FieldLabel>
-                  <Input
-                    id="visitor-phone"
-                    type="tel"
-                    inputMode="tel"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                  />
-                </Field>
+                <FieldLegend>Visit</FieldLegend>
                 <Field>
                   <FieldLabel htmlFor="visitor-company">Company</FieldLabel>
                   <Input
                     id="visitor-company"
                     autoComplete="off"
+                    placeholder="Optional"
                     value={company}
                     onChange={(e) => setCompany(e.target.value)}
                   />
                 </Field>
-              </FieldSet>
-
-              <FieldSeparator />
-
-              <FieldSet>
-                <FieldLegend>Visit</FieldLegend>
                 <Field>
                   <FieldLabel htmlFor="visitor-type">Visitor type</FieldLabel>
                   <Select
