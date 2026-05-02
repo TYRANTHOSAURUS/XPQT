@@ -40,7 +40,7 @@ This is also a **competitive** problem. Linear, Stripe Dashboard, Vercel Dashboa
 | 15 | **Error boundary at the route level**, not the app root. Catches render-time errors, classifies as `class: 'render'`, shows a minimal fallback with reload + report. Sentry-style report dialog gated to power users (settings flag). | App-root boundaries lose all context. Per-route boundaries let other regions stay alive. |
 | 16 | **Realtime / sync drops are status-bar UI, not toasts.** A subtle dot in the app shell shows connection state; only escalate to a banner if disconnected >30s; only toast if unrecoverable. | Realtime flaps. Toasting every flap is hostile. |
 | 17 | **Rate-limit errors carry `retryAfter` seconds** and the renderer shows a live countdown ("Try in 47s"). 429s without `retryAfter` are a server bug. | "Too many requests" with no countdown is information-free. |
-| 18 | **Stale / version conflicts ship with `serverVersion` and `clientVersion` in the body.** Renderer surfaces "Someone else just changed this" with `[Use theirs] [Keep mine] [Show diff]` — actual conflict resolution, not a generic "Reload". | Linear / Notion / Figma all do this. It's a tier-1 differentiator for a multi-user product. |
+| 18 | **Stale / version conflicts ship with `serverVersion` and `clientVersion` in the body** so a future modal has the data it needs. **v1 surface is a toast** ("This was changed by someone else — Reload"); the Use-theirs/Keep-mine/Show-diff modal is **deferred to v2**. | XPQT is a workflow tool, not a real-time collaborative document. The surfaces with genuine concurrent-edit pressure (workflow definitions, routing rules) are narrow and admin-only. Shipping the modal as tier-1 is gold-plating; ship the wire fields now and revisit the modal when a real surface demands it. |
 | 19 | **TraceId infrastructure is greenfield in this codebase and ships as part of Wave 0.** Today there is no request-id middleware, `req.id` is not populated (NestJS/Express don't set it), and structured logs do not carry a traceId. Wave 0 builds: (a) a request-id Nest middleware (`req.id = req.headers['x-request-id'] ?? newUlid()`), (b) `X-Request-Id` response header, (c) traceId injection into the existing logger (no new logging *system*; minimal changes to the existing Logger to include traceId on every log line), (d) traceId propagation into `ApiError` from the response header. **Out of scope:** Sentry / external log aggregator / centralized observability platform — those remain a separate decision. | Resist scope creep on observability tooling, but be honest that the traceId glue this spec relies on is new code, not "already exists." |
 | 20 | **Ship behind a feature flag for the renderer**, not the filter. The filter normalises silently; the new toast/page renderers can be toggled per surface during rollout to validate they aren't more noisy than the old behaviour. | Filter is server-side and harmless to turn on. UX changes need supervised rollout. |
 
@@ -246,7 +246,8 @@ export class RouteErrorBoundary extends React.Component  // class component (com
                                   <Props, State> { ... } // exposes a context: { throwToBoundary(error) } so query/mutation hooks
                                                          // can promote a page-class error (not_found / forbidden / gone)
                                                          // to the same boundary that catches render errors.
-export function ConflictModal(props): JSX.Element;      // 'Use theirs / Keep mine / Show diff'
+// ConflictModal — deferred to v2. The wire shape (§3.1) ships
+// serverVersion + clientVersion now so v2 can land without contract change.
 export function RateLimitToast(props): JSX.Element;     // live countdown via useNow
 ```
 
@@ -342,7 +343,7 @@ This is the contract. Every classifier branch lands one row.
 | `not_found` (404) | Page replacement via `RouteErrorBoundary` | `goBack` · `reload` | Renders 'This was removed' page-level; never toast over a stale page. Hook calls `throwToBoundary()` to promote a query/mutation 404 into the same boundary that catches render errors. |
 | `gone` (410) | Page replacement via `RouteErrorBoundary` | `goBack` | Distinguished from 404 — entity existed, was removed. Different copy. |
 | `validation` (422) | Inline `<FieldError>` | (no toast; field errors are the recovery) | Submit button disabled until form is valid. |
-| `conflict` (409) | Modal | `pickAlternative` (use theirs/keep mine/show diff) · `reload` | Tier-1 multi-user differentiator. |
+| `conflict` (409) | Toast (v1) · Modal (deferred to v2) | `reload` (v1) · `pickAlternative` (v2 only) | v1 surfaces "This was changed by someone else" + Reload. v2 modal with use-theirs/keep-mine deferred until a real surface demands it. Wire fields `serverVersion` / `clientVersion` ship now. |
 | `rate_limit` (429) | Toast with live countdown | `retry` (auto, when timer expires) · `dismiss` | If `retryAfter` missing, that's a server bug — log it. |
 | `server` (5xx) | Toast | `retry` · `contactSupport` (with traceId pre-filled) | TraceId is small text in toast, click to copy. |
 | `realtime` (ws drop) | Status-bar dot → banner if >30s | `retry` (auto-reconnect with backoff) | Distinct from `transport` because realtime can drop while HTTP works. |
@@ -424,15 +425,14 @@ If a mutation fails with `auth.expired`, before redirecting:
 
 This is one of the biggest "I love this app" details in Linear / Stripe — never lose the user's typing.
 
-### 6.3 Stale conflict resolution
+### 6.3 Stale conflict resolution (v1)
 
 When a mutation hits `409 conflict` with `serverVersion` + `clientVersion`:
-1. Renderer fetches the server's current state via the same query.
-2. Modal shows three actions:
-   - **Use theirs** — overwrite local with server, discard local edits.
-   - **Keep mine** — re-issue the mutation with `If-Match: <new serverVersion>` (forced).
-   - **Show diff** — side-by-side field-level diff for non-trivial conflicts.
-3. The mutation hook handles all three without the call site knowing.
+1. Renderer surfaces a toast: `"<Thing> was changed by someone else"` (e.g. "This webhook was changed by someone else"), with action `[Reload]`.
+2. Reload re-fetches the server state via React Query's `invalidateQueries` for the relevant key.
+3. The user re-applies their edits manually.
+
+**Deferred to v2** — the modal with `[Use theirs] [Keep mine] [Show diff]` and forced `If-Match` re-submit. The wire shape (§3.1) ships `serverVersion` + `clientVersion` now so v2 can land without breaking the contract. The trigger to revisit: a concrete admin surface with measured concurrent-edit collisions (e.g. routing rules) where the toast-then-redo flow is shown to be high-friction.
 
 ### 6.4 Optimistic rollback animation
 
@@ -474,7 +474,6 @@ This is incremental. Nothing breaks on day one.
 - Ship `RouteErrorBoundary` (class component) + `throwToBoundary` context bridge.
 - Wrap each top-level route element with the boundary (single edit per route in `App.tsx`).
 - Ship 404 / 403 / 410 / 5xx page templates.
-- Ship `ConflictModal`.
 - Migrate top-traffic queries to call `throwToBoundary()` for page-class errors.
 - **Visible result:** broken pages now show real page state instead of stale content + toast.
 
