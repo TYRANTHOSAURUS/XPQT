@@ -77,8 +77,12 @@ function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
     applyWaitingStateTransition: jest.fn(),
   };
   const visibility = {
-    loadContext: jest.fn(),
-    assertCanPlan: jest.fn(),
+    loadContext: jest.fn().mockResolvedValue({
+      user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
+      team_ids: [], role_assignments: [], vendor_id: null,
+      has_read_all: false, has_write_all: true,
+    }),
+    assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
   const svc = new WorkOrderService(
@@ -94,7 +98,7 @@ function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
     setPlan: jest.spyOn(svc, 'setPlan').mockResolvedValue(makeRow({ planned_start_at: '2026-05-04T13:00:00.000Z' })),
     updateStatus: jest.spyOn(svc, 'updateStatus').mockResolvedValue(makeRow({ status: 'in_progress', status_category: 'in_progress' })),
     updatePriority: jest.spyOn(svc, 'updatePriority').mockResolvedValue(makeRow({ priority: 'high' })),
-    updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow({ assigned_user_id: 'u9' })),
+    updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow({ assigned_user_id: '99999999-9999-9999-9999-999999999999' })),
     updateMetadata: jest.spyOn(svc, 'updateMetadata').mockResolvedValue(makeRow({ title: 'updated' })),
   };
 
@@ -174,12 +178,12 @@ describe('WorkOrderService.update (orchestrator)', () => {
 
   it('dispatches assignment-only call to updateAssignment with only the supplied keys', async () => {
     const { svc, spies } = makeSvc();
-    await svc.update('wo1', { assigned_user_id: 'u9' }, SYSTEM_ACTOR);
+    await svc.update('wo1', { assigned_user_id: '99999999-9999-9999-9999-999999999999' }, SYSTEM_ACTOR);
 
     expect(spies.updateAssignment).toHaveBeenCalledTimes(1);
     expect(spies.updateAssignment).toHaveBeenCalledWith(
       'wo1',
-      { assigned_user_id: 'u9' },
+      { assigned_user_id: '99999999-9999-9999-9999-999999999999' },
       SYSTEM_ACTOR,
     );
     expect(spies.updatePriority).not.toHaveBeenCalled();
@@ -189,13 +193,13 @@ describe('WorkOrderService.update (orchestrator)', () => {
     const { svc, spies } = makeSvc();
     await svc.update(
       'wo1',
-      { assigned_team_id: null, assigned_user_id: 'u9' },
+      { assigned_team_id: null, assigned_user_id: '99999999-9999-9999-9999-999999999999' },
       SYSTEM_ACTOR,
     );
 
     expect(spies.updateAssignment).toHaveBeenCalledWith(
       'wo1',
-      { assigned_team_id: null, assigned_user_id: 'u9' },
+      { assigned_team_id: null, assigned_user_id: '99999999-9999-9999-9999-999999999999' },
       SYSTEM_ACTOR,
     );
   });
@@ -206,7 +210,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
         status: 'in_progress',
         status_category: 'in_progress',
         priority: 'high',
-        assigned_user_id: 'u9',
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
       }),
     );
     const row = await svc.update(
@@ -215,7 +219,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
         status_category: 'in_progress',
         status: 'in_progress',
         priority: 'high',
-        assigned_user_id: 'u9',
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
       },
       SYSTEM_ACTOR,
     );
@@ -241,7 +245,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
     expect(refetchCalls[0]).toEqual({ table: 'work_orders', id: 'wo1', tenant: TENANT });
     expect(row.status_category).toBe('in_progress');
     expect(row.priority).toBe('high');
-    expect(row.assigned_user_id).toBe('u9');
+    expect(row.assigned_user_id).toBe('99999999-9999-9999-9999-999999999999');
   });
 
   it('rejects an empty DTO', async () => {
@@ -408,7 +412,82 @@ describe('WorkOrderService.update (orchestrator)', () => {
     ).rejects.toThrow(/tickets\.change_priority permission required/);
   });
 
+  // ── partial-commit prevention via preflight ────────────────────────
+
+  it('preflight rejects ENTIRE multi-field update when one field fails validation — no per-field method runs', async () => {
+    // The scenario this slice exists to prevent: a multi-field PATCH
+    // with priority + assignment + an invalid title would have
+    // committed priority + assignment then 400'd on the title. With
+    // preflight, the empty title rejects upfront and NO per-field
+    // method runs.
+    const { svc, spies } = makeSvc();
+
+    await expect(
+      svc.update(
+        'wo1',
+        {
+          priority: 'high',
+          assigned_user_id: '99999999-9999-9999-9999-999999999999',
+          title: '   ', // whitespace-only — fails preflight
+        },
+        SYSTEM_ACTOR, // SYSTEM_ACTOR bypasses permission/visibility but
+                      // NOT the format/validation checks
+      ),
+    ).rejects.toThrow(/title must be a non-empty string/);
+
+    // Critical assertion: NONE of the per-field methods were dispatched.
+    // Pre-fix, priority + assignment would have committed before the
+    // title rejection.
+    expect(spies.updateSla).not.toHaveBeenCalled();
+    expect(spies.setPlan).not.toHaveBeenCalled();
+    expect(spies.updateStatus).not.toHaveBeenCalled();
+    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(spies.updateAssignment).not.toHaveBeenCalled();
+    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('preflight rejects on malformed assignee uuid before any write — no per-field method runs', async () => {
+    const { svc, spies } = makeSvc();
+
+    await expect(
+      svc.update(
+        'wo1',
+        {
+          priority: 'high',
+          assigned_team_id: 'not-a-uuid',
+        },
+        SYSTEM_ACTOR,
+      ),
+    ).rejects.toThrow(/assigned_team_id is not a valid uuid/);
+
+    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(spies.updateAssignment).not.toHaveBeenCalled();
+  });
+
+  it('preflight rejects on invalid priority before any write — no per-field method runs', async () => {
+    const { svc, spies } = makeSvc();
+
+    await expect(
+      svc.update(
+        'wo1',
+        {
+          priority: 'super-urgent' as 'low' | 'medium' | 'high' | 'critical',
+          title: 'new title',
+        },
+        SYSTEM_ACTOR,
+      ),
+    ).rejects.toThrow(/priority must be one of/);
+
+    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  });
+
   it('propagates a Forbidden from the assignment branch (tickets.assign denied)', async () => {
+    // Forbidden propagation from a per-field method. SYSTEM_ACTOR is used
+    // here so the orchestrator's preflight bypasses (no permission check
+    // upfront) and the dispatched mock spy runs and throws — exercising
+    // the propagation path that the test name describes. Without this
+    // bypass the preflight would 403 first, never reaching the spy.
     const { svc, spies } = makeSvc();
     spies.updateAssignment.mockReset().mockRejectedValue(
       new (require('@nestjs/common').ForbiddenException)(
@@ -417,7 +496,11 @@ describe('WorkOrderService.update (orchestrator)', () => {
     );
 
     await expect(
-      svc.update('wo1', { assigned_user_id: 'u9' }, 'auth-uid-no-assign'),
+      svc.update(
+        'wo1',
+        { assigned_user_id: '99999999-9999-9999-9999-999999999999' },
+        SYSTEM_ACTOR,
+      ),
     ).rejects.toThrow(/tickets\.assign permission required/);
   });
 });
