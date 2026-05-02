@@ -449,6 +449,17 @@ The `auth.expired` UX problem isn't "user gets redirected to sign-in mid-edit" �
 2. Redirect to sign-in with `?next=<current_url>`.
 3. (Polish, deferred) Form-draft preservation via `sessionStorage` keyed by route + form id, rehydrated post-sign-in. This is genuinely a "love this app" detail in Linear / Stripe, but it fires approximately never given Supabase's silent refresh, so demote to a polish item — ship the redirect first, add the draft preservation when there's user demand.
 
+**Refresh-loop bail rule (mandatory).** A dead refresh token surfaces a 401 on every subsequent request. If the AuthProvider re-attempts to read the session after the redirect (or if a third-party tab races the sign-in), the user can land in a tight 401 → redirect → 401 loop with the URL never settling.
+
+The rule: `apiFetch` tracks consecutive `auth.expired` 401s in a single rolling 10-second window via a module-scoped counter (`Map<sessionId, { count, firstAt }>`). On the **3rd** consecutive `auth.expired` within 10s:
+
+1. Hard-clear the Supabase session (`supabase.auth.signOut({ scope: 'local' })`).
+2. Clear all React Query caches.
+3. Replace history with `/sign-in?error=session_lost` (no `next=`; the next URL itself may be the trigger).
+4. The sign-in page renders an explicit "Your session ended unexpectedly. Sign in again." banner — distinct from the normal sign-in copy — so the user knows what happened.
+
+The counter resets on any 2xx response or after 10 seconds idle.
+
 ### 6.3 Stale conflict resolution (v1)
 
 When a mutation hits `409 conflict` with `serverVersion` + `clientVersion`:
