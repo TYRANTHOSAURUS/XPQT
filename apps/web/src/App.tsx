@@ -149,6 +149,7 @@ const AdminVisitorTypeDetailPage = lazyNamed(() => import('@/pages/admin/visitor
 const AdminVisitorPoolsPage = lazyNamed(() => import('@/pages/admin/visitors/pools'), 'AdminVisitorPoolsPage');
 const AdminVisitorPoolDetailPage = lazyNamed(() => import('@/pages/admin/visitors/pools/detail'), 'AdminVisitorPoolDetailPage');
 const DeskVisitorsPage = lazyNamed(() => import('@/pages/desk/visitors'), 'DeskVisitorsPage');
+const DeskVisitorDetailPage = lazyNamed(() => import('@/pages/desk/visitor-detail-page'), 'DeskVisitorDetailPage');
 
 function RouteFallback() {
   return (
@@ -277,6 +278,7 @@ export function App() {
                   <Route path="tickets/:id" element={<TicketDetailPage />} />
                   <Route path="approvals" element={<ApprovalsPage />} />
                   <Route path="visitors" element={<DeskVisitorsPage />} />
+                  <Route path="visitors/:id" element={<DeskVisitorDetailPage />} />
                   <Route path="reports" element={<ReportsLayout />}>
                     <Route index element={<Navigate to="/desk/reports/overview" replace />} />
                     <Route path="overview" element={<OverviewReport />} />

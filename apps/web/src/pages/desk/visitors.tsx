@@ -23,6 +23,7 @@
  * over implying server-side history works.
  */
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   ChevronDown,
@@ -685,6 +686,7 @@ function VisitorList({
 }
 
 function DeskVisitorsInner() {
+  const navigate = useNavigate();
   const { buildingId, buildings, loading: buildingsLoading } = useReceptionBuilding();
   const filters = useVisitorFilters();
   const { raw, patch, activeCount, clearAll } = filters;
@@ -1114,6 +1116,10 @@ function DeskVisitorsInner() {
                   visitorId={selectedId}
                   buildingId={buildingId}
                   onClose={() => setSelectedId(null)}
+                  onExpand={() => {
+                    const fromView = activeView ? `?from=${encodeURIComponent(activeView)}` : '';
+                    navigate(`/desk/visitors/${selectedId}${fromView}`);
+                  }}
                   onAssignPass={() => {
                     const found = filteredRows.find((r) => r.visitor_id === selectedId) ?? null;
                     if (found) setAssignPassRow(found);
