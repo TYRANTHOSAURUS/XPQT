@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
@@ -21,6 +21,12 @@ import { HostRow } from './left-pane/host-row';
 import { VisitorsRow } from './left-pane/visitors-row';
 import { spacesListOptions, type Space } from '@/api/spaces';
 import { deriveBuildingId } from './derive-building-id';
+import { useMealWindows } from '@/api/meal-windows';
+import { AddinStack } from './right-pane/addin-stack';
+import { RoomCard } from './right-pane/room-card';
+import { CateringCard } from './right-pane/catering-card';
+import { AvCard } from './right-pane/av-card';
+import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestions';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -57,6 +63,34 @@ export function BookingComposerModal({
   });
 
   const { data: spacesCache } = useQuery(spacesListOptions());
+
+  const pickedRoom = useMemo(() => {
+    if (!composer.draft.spaceId || !spacesCache) return null;
+    const s = (spacesCache as Space[]).find((sp) => sp.id === composer.draft.spaceId);
+    return s
+      ? { space_id: s.id, name: s.name, capacity: s.capacity ?? null }
+      : null;
+  }, [composer.draft.spaceId, spacesCache]);
+
+  const roomFacts: SuggestionRoomFacts | null = pickedRoom
+    ? {
+        space_id: pickedRoom.space_id,
+        name: pickedRoom.name,
+        // Phase 5 ships with these signals OFF — the API contract for
+        // surfacing them on Space is a follow-up. The suggestion engine
+        // is shape-stable; flipping these on later just lights up
+        // the chips.
+        has_av_equipment: false,
+        has_catering_vendor: false,
+        needs_visitor_pre_registration: false,
+      }
+    : null;
+
+  const { data: mealWindows } = useMealWindows();
+  const suggestions = useMemo(
+    () => getSuggestions(composer.draft, roomFacts, mealWindows ?? []),
+    [composer.draft, roomFacts, mealWindows],
+  );
 
   // Re-seed on open so cancelled sessions don't leak state.
   useEffect(() => {
@@ -108,7 +142,7 @@ export function BookingComposerModal({
                 value={composer.draft.title}
                 onChange={composer.setTitle}
                 hostFirstName={hostFirstName}
-                roomName={null /* Phase 5 wires roomName from the right-pane room card */}
+                roomName={pickedRoom?.name ?? null}
               />
               <TimeRow
                 startAt={composer.draft.startAt}
@@ -160,8 +194,49 @@ export function BookingComposerModal({
                 'sm:w-[360px] sm:flex-none',
               )}
             >
-              {/* Phase 5 fills this. */}
-              <p className="text-xs text-muted-foreground">Add-ins</p>
+              <AddinStack>
+                {({ expanded, setExpanded }) => (
+                  <>
+                    <RoomCard
+                      spaceId={composer.draft.spaceId}
+                      roomName={pickedRoom?.name ?? null}
+                      capacity={pickedRoom?.capacity ?? null}
+                      attendeeCount={composer.draft.attendeeCount}
+                      expanded={expanded === 'room'}
+                      onToggle={(o) => setExpanded(o ? 'room' : null)}
+                      onChange={composer.setRoom}
+                    />
+                    <CateringCard
+                      spaceId={composer.draft.spaceId}
+                      startAt={composer.draft.startAt}
+                      endAt={composer.draft.endAt}
+                      attendeeCount={composer.draft.attendeeCount}
+                      selections={composer.draft.services}
+                      onSelectionsChange={composer.setServices}
+                      expanded={expanded === 'catering'}
+                      onToggle={(o) => setExpanded(o ? 'catering' : null)}
+                      suggested={suggestions.some((s) => s.target === 'catering')}
+                      suggestionReason={
+                        suggestions.find((s) => s.target === 'catering')?.reason
+                      }
+                    />
+                    <AvCard
+                      spaceId={composer.draft.spaceId}
+                      startAt={composer.draft.startAt}
+                      endAt={composer.draft.endAt}
+                      attendeeCount={composer.draft.attendeeCount}
+                      selections={composer.draft.services}
+                      onSelectionsChange={composer.setServices}
+                      expanded={expanded === 'av_equipment'}
+                      onToggle={(o) => setExpanded(o ? 'av_equipment' : null)}
+                      suggested={suggestions.some((s) => s.target === 'av_equipment')}
+                      suggestionReason={
+                        suggestions.find((s) => s.target === 'av_equipment')?.reason
+                      }
+                    />
+                  </>
+                )}
+              </AddinStack>
             </aside>
           </div>
         </DialogContent>
