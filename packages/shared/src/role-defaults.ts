@@ -170,6 +170,11 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     reason:
       'Tenant-wide visitor visibility override. Bypasses building-scope and host visibility (the 3-tier visibility model). Tenant Admin holds this via *.*; other roles must be granted explicitly per security posture (per spec §13.1).',
   },
+  {
+    key: 'rooms.read_all',
+    reason:
+      'Bypass-scope visibility override for bookings/bundles, mirroring tickets.read_all. Tenant Admin holds via *.*; other roles must be granted explicitly. Same posture as the existing tickets/visitors read_all overrides.',
+  },
 ];
 
 /**

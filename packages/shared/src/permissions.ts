@@ -334,6 +334,14 @@ export const PERMISSION_CATALOG = {
         danger: true,
       },
     },
+    overrides: {
+      read_all: {
+        label: 'See all bookings',
+        description:
+          'Bypass scope — view every booking and bundle in the tenant regardless of building/host scope. Used by bundle/orders visibility and operator surfaces.',
+        danger: true,
+      },
+    },
   },
   reports: {
     label: 'Reports',

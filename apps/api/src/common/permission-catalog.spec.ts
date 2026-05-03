@@ -192,16 +192,115 @@ describe('permission catalog coverage', () => {
   });
 
   /**
-   * Pinned ceiling: LEGACY_UNGRANTED_KEYS must monotonically shrink as new
-   * role templates absorb its members. If you find yourself raising this
-   * number, stop — you're adding to legacy debt instead of granting the new
-   * permission to a role or putting it in EXPLICITLY_NO_DEFAULT_ROLE.
+   * Snapshot the exact LEGACY_UNGRANTED_KEYS list. Any add/remove shows up
+   * as a snapshot diff in the PR — adding a key requires a deliberate
+   * `--update-snapshot` action that's reviewable in the diff, not a silent
+   * edit of a magic number. Removals are welcome (a future role template
+   * absorbed the key); additions are the failure mode this guards against.
    *
-   * Lowering the number is fine and welcome — that means a key was actually
-   * granted to a role and removed from the debt list.
+   * If you're tempted to update the snapshot to add a new key, stop —
+   * you're meant to grant the new permission to a role or list it in
+   * EXPLICITLY_NO_DEFAULT_ROLE with a reason. LEGACY_UNGRANTED_KEYS is
+   * frozen pre-existing tech debt; it should only ever shrink.
+   *
+   * The earlier `INITIAL_CEILING <= 90` check was decorative: any agent
+   * could raise the constant in the same edit. The snapshot makes the
+   * delta explicit.
    */
-  it('LEGACY_UNGRANTED_KEYS does not grow beyond its initial ceiling', () => {
-    const INITIAL_CEILING = 90;
-    expect(LEGACY_UNGRANTED_KEYS.length).toBeLessThanOrEqual(INITIAL_CEILING);
+  it('LEGACY_UNGRANTED_KEYS exact membership matches the frozen snapshot', () => {
+    expect([...LEGACY_UNGRANTED_KEYS].sort()).toMatchInlineSnapshot(`
+[
+  "criteria_sets.create",
+  "criteria_sets.delete",
+  "criteria_sets.duplicate",
+  "criteria_sets.preview",
+  "criteria_sets.update",
+  "notifications.manage_templates",
+  "notifications.send_test",
+  "notifications.update",
+  "organisations.create",
+  "organisations.delete",
+  "organisations.import",
+  "organisations.manage_grants",
+  "organisations.manage_memberships",
+  "organisations.update",
+  "people.create",
+  "people.deactivate",
+  "people.delete",
+  "people.export",
+  "people.import",
+  "people.invite",
+  "people.merge",
+  "reports.create",
+  "reports.delete",
+  "reports.schedule",
+  "reports.share",
+  "reports.subscribe",
+  "reports.update",
+  "request_types.archive",
+  "request_types.create",
+  "request_types.delete",
+  "request_types.duplicate",
+  "request_types.publish",
+  "request_types.reorder",
+  "request_types.update",
+  "roles.assign",
+  "roles.create",
+  "roles.delete",
+  "roles.duplicate",
+  "roles.export",
+  "roles.update",
+  "routing.create",
+  "routing.delete",
+  "routing.publish",
+  "routing.rollback",
+  "routing.simulate",
+  "routing.update",
+  "service_catalog.archive",
+  "service_catalog.create",
+  "service_catalog.delete",
+  "service_catalog.feature",
+  "service_catalog.publish",
+  "service_catalog.update",
+  "settings.export",
+  "settings.update",
+  "sla.create",
+  "sla.delete",
+  "sla.duplicate",
+  "sla.override",
+  "sla.pause",
+  "sla.resume",
+  "sla.update",
+  "spaces.archive",
+  "spaces.create",
+  "spaces.delete",
+  "spaces.import",
+  "spaces.manage_grants",
+  "spaces.update",
+  "tags.create",
+  "tags.delete",
+  "tags.merge",
+  "tags.update",
+  "users.create",
+  "users.delete",
+  "users.reset_password",
+  "users.suspend",
+  "users.update",
+  "vendors.create",
+  "vendors.deactivate",
+  "vendors.delete",
+  "vendors.import",
+  "vendors.manage_contacts",
+  "vendors.update",
+  "workflows.archive",
+  "workflows.create",
+  "workflows.delete",
+  "workflows.duplicate",
+  "workflows.publish",
+  "workflows.rollback",
+  "workflows.test",
+  "workflows.update",
+]
+`);
   });
 });
