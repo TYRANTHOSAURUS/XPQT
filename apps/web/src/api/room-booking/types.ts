@@ -200,19 +200,16 @@ export interface Reservation {
   source: ReservationSource;
   booked_by_user_id: string | null;
   cost_amount_snapshot: string | null;
-  /** ALWAYS null post-rewrite (column dropped; multi-room atomicity is
-   *  now expressed via shared `booking_id` on slots). Group siblings are
-   *  now discovered by querying slots that share the booking id, not by
-   *  this column. */
-  multi_room_group_id: string | null;
+  // `multi_room_group_id` and `booking_bundle_id` were dropped from this
+  // type by slice H3 (migration 00286). The first was always null
+  // post-canonicalization (00277 dropped multi_room_groups — group
+  // siblings are now discovered by querying slots that share the booking
+  // id); the second was an alias for `id` (the booking IS the bundle).
+  // No reader consumed them; deletion was confirmed safe via grep.
   calendar_event_id: string | null;
   calendar_provider: CalendarProvider | null;
   calendar_etag: string | null;
   calendar_last_synced_at: string | null;
-  /** Post-rewrite this is ALWAYS equal to `id` (the booking IS the
-   *  bundle). Field kept so existing UI that branched on truthiness
-   *  still compiles; new code should treat it as a synonym for `id`. */
-  booking_bundle_id: string | null;
   created_at: string;
   updated_at: string;
   /** Root-first parent trail of the booked space. */
