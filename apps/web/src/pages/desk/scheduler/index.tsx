@@ -18,6 +18,7 @@ import { useDragMove, type MoveState } from './hooks/use-drag-move';
 import { SchedulerToolbar } from './components/scheduler-toolbar';
 import { SchedulerGrid } from './components/scheduler-grid';
 import { SchedulerCreatePopover } from './components/scheduler-create-popover';
+import { QuickBookPopover } from '@/components/booking-composer-v2/quick-book-popover';
 import { SchedulerEventPopover } from './components/scheduler-event-popover';
 import { SchedulerOverrideDialog } from './components/scheduler-override-dialog';
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
@@ -223,6 +224,14 @@ export function DeskSchedulerPage() {
     endAtIso: string;
   } | null>(null);
 
+  const [quickBookPayload, setQuickBookPayload] = useState<{
+    room: SchedulerRoom;
+    startAtIso: string;
+    endAtIso: string;
+    anchorEl: HTMLElement | null;
+  } | null>(null);
+  const [quickBookOpen, setQuickBookOpen] = useState(false);
+
   const dragCreate = useDragCreate({
     columnsPerDay: win.columnsPerDay,
     numDays: win.dates.length,
@@ -239,8 +248,13 @@ export function DeskSchedulerPage() {
         setOverridePayload({ startAtIso, endAtIso });
         setOverrideOpen(true);
       } else {
-        setCreatePayload({ room, startAtIso, endAtIso });
-        setCreateDialogOpen(true);
+        setQuickBookPayload({
+          room,
+          startAtIso,
+          endAtIso,
+          anchorEl: range.rowEl ?? null,
+        });
+        setQuickBookOpen(true);
       }
     },
   });
@@ -685,6 +699,49 @@ export function DeskSchedulerPage() {
         currentUserPersonId={requesterPersonId}
         toolbarBookForPersonId={win.state.bookForPersonId}
       />
+
+      {quickBookPayload && (
+        <QuickBookPopover
+          open={quickBookOpen}
+          onOpenChange={(o) => {
+            setQuickBookOpen(o);
+            if (!o) setQuickBookPayload(null);
+          }}
+          anchorEl={quickBookPayload.anchorEl}
+          room={{
+            space_id: quickBookPayload.room.space_id,
+            name: quickBookPayload.room.name,
+            has_av_equipment: false,
+            has_catering_vendor: false,
+            needs_visitor_pre_registration: false,
+          }}
+          startAtIso={quickBookPayload.startAtIso}
+          endAtIso={quickBookPayload.endAtIso}
+          hostFirstName={person?.first_name ?? null}
+          onBook={async (draft) => {
+            // TEMPORARY in Phase 2: hand off to the existing dialog
+            // until Phase 6 wires Book directly to POST /reservations.
+            setQuickBookOpen(false);
+            setCreatePayload({
+              room: quickBookPayload.room,
+              startAtIso: draft.startAt ?? quickBookPayload.startAtIso,
+              endAtIso: draft.endAt ?? quickBookPayload.endAtIso,
+            });
+            setCreateDialogOpen(true);
+          }}
+          onAdvanced={(draft) => {
+            // TEMPORARY in Phase 2: opens the existing centered dialog
+            // until Phase 3 ships <BookingComposerModal>.
+            setQuickBookOpen(false);
+            setCreatePayload({
+              room: quickBookPayload.room,
+              startAtIso: draft.startAt ?? quickBookPayload.startAtIso,
+              endAtIso: draft.endAt ?? quickBookPayload.endAtIso,
+            });
+            setCreateDialogOpen(true);
+          }}
+        />
+      )}
 
       <SchedulerEventPopover
         open={eventDialogOpen}
