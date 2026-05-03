@@ -13,6 +13,7 @@ import { type BookingDraft } from './booking-draft';
 import type { ComposerMode, ComposerEntrySource } from '../booking-composer/state';
 import { cn } from '@/lib/utils';
 import { TitleInput } from './left-pane/title-input';
+import { TimeRow } from './left-pane/time-row';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -99,6 +100,11 @@ export function BookingComposerModal({
                 onChange={composer.setTitle}
                 hostFirstName={hostFirstName}
                 roomName={null /* Phase 5 wires roomName from the right-pane room card */}
+              />
+              <TimeRow
+                startAt={composer.draft.startAt}
+                endAt={composer.draft.endAt}
+                onChange={composer.setTime}
               />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
