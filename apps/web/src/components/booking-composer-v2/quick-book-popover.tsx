@@ -23,7 +23,8 @@ import { cn } from '@/lib/utils';
 import { useMealWindows } from '@/api/meal-windows';
 import { useCreateBooking } from '@/api/room-booking';
 import { buildBookingPayload } from '@/components/booking-composer/submit';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastCreated, toastError } from '@/lib/toast';
+import { useNavigate } from 'react-router-dom';
 import {
   defaultTitle,
   draftFromComposerSeed,
@@ -88,6 +89,7 @@ export function QuickBookPopover({
   onAdvanced,
 }: QuickBookPopoverProps) {
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
 
   const initialMinutes = useMemo(() => {
     const s = new Date(startAtIso).getTime();
@@ -180,9 +182,15 @@ export function QuickBookPopover({
     const titled = { ...payload, title: draft.title || undefined };
     try {
       const result = await createBooking.mutateAsync(titled);
-      toastSuccess('Booked');
-      onOpenChange(false);
       const reservationId = (result as { id?: string }).id;
+      // /full-review C5 fix — CLAUDE.md mandate: every entity-create
+      // toast goes through toastCreated(<entity>, { onView }).
+      toastCreated('Booking', {
+        onView: reservationId
+          ? () => navigate(`/desk/bookings/${reservationId}`)
+          : undefined,
+      });
+      onOpenChange(false);
       if (reservationId) onBooked?.(reservationId);
     } catch (err) {
       toastError("Couldn't book the room", {

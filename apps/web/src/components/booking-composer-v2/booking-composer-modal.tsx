@@ -32,7 +32,9 @@ import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestio
 import { useCreateBooking } from '@/api/room-booking';
 import { useCreateInvitation } from '@/api/visitors';
 import { buildBookingPayload } from '@/components/booking-composer/submit';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastCreated, toastError } from '@/lib/toast';
+import { useNavigate } from 'react-router-dom';
+import { defaultTitle as defaultTitleFor } from './booking-draft';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -58,11 +60,13 @@ export function BookingComposerModal({
   open,
   onOpenChange,
   mode,
+  entrySource,
   callerPersonId,
   hostFirstName,
   initialDraft,
   onBooked,
 }: BookingComposerModalProps) {
+  const navigate = useNavigate();
   const composer = useBookingDraft({
     seed: initialDraft
       ? { ...initialDraft }
@@ -147,17 +151,26 @@ export function BookingComposerModal({
     const payload = buildBookingPayload({
       state: adapter,
       mode,
-      entrySource: 'desk-list',
+      // /full-review C2 fix — was hardcoded 'desk-list' which mis-attributed
+      // every portal booking. Use the caller's entry-source; default to
+      // 'desk-list' only when the caller didn't supply one.
+      entrySource: entrySource ?? 'desk-list',
       callerPersonId,
     });
     if (!payload) return;
 
-    // Attach title + description from the draft. `BookingPayload` carries
-    // these optional fields (added alongside this task); the backend
-    // already accepts them (dto/types.ts:277).
+    // Attach title + description from the draft. /full-review C1 fix —
+    // when the user leaves the title blank, send the placeholder string
+    // (the WYSIWYG contract from spec §53-69), so we never persist a
+    // null title that renders as "Maple Room" elsewhere. Matches the
+    // popover's behavior at quick-book-popover.tsx:130.
+    const placeholderTitle = defaultTitleFor({
+      hostFirstName,
+      roomName: pickedRoom?.name ?? null,
+    });
     const titled = {
       ...payload,
-      title: composer.draft.title || undefined,
+      title: composer.draft.title?.trim() || placeholderTitle,
       description: composer.draft.description || undefined,
     };
 
@@ -170,11 +183,21 @@ export function BookingComposerModal({
       // CreateInvitationPayload in 00278:38.
       const bookingId = result.id;
 
+      // /full-review C4 fix — visitors-flush is a bulk op. Run all
+      // invites in parallel via Promise.allSettled, tally failures,
+      // and surface a partial-success toast per CLAUDE.md
+      // "Bulk operations use ... partialSuccess" rule. Per-visitor
+      // toastError is gone — it interleaved with the success toast and
+      // disappeared on close.
+      let visitorFailures: { name: string; error: unknown }[] = [];
+      let visitorTotal = 0;
       if (composer.draft.visitors.length > 0) {
         const buildingId = deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId);
-        for (const v of composer.draft.visitors) {
-          try {
-            await createInvitation.mutateAsync({
+        const visitors = composer.draft.visitors;
+        visitorTotal = visitors.length;
+        const results = await Promise.allSettled(
+          visitors.map((v) =>
+            createInvitation.mutateAsync({
               first_name: v.first_name,
               last_name: v.last_name,
               email: v.email,
@@ -185,17 +208,36 @@ export function BookingComposerModal({
               expected_until: composer.draft.endAt ?? undefined,
               building_id: buildingId ?? '',
               meeting_room_id: composer.draft.spaceId ?? undefined,
-              // Send the canonical field (00278:41). Legacy alias
-              // `booking_bundle_id` also accepted by backend for now.
+              // Canonical link (00278:41).
               booking_id: bookingId,
-            });
-          } catch (err) {
-            toastError(`Couldn't invite ${v.first_name}`, { error: err });
-          }
-        }
+            }),
+          ),
+        );
+        visitorFailures = results
+          .map((r, i) => (r.status === 'rejected'
+            ? { name: visitors[i].first_name, error: r.reason }
+            : null))
+          .filter((x): x is { name: string; error: unknown } => x !== null);
       }
 
-      toastSuccess('Booked');
+      // /full-review C5 fix — CLAUDE.md mandate: every entity-create
+      // toast goes through `toastCreated(<entity>, { onView })`.
+      // Partial-success on visitor flush is surfaced as a separate
+      // warning toast (CLAUDE.md "partialSuccess" rule); the booking
+      // itself is still a clean create.
+      toastCreated('Booking', {
+        onView: () => navigate(`/desk/bookings/${bookingId}`),
+      });
+      if (visitorFailures.length > 0) {
+        const ok = visitorTotal - visitorFailures.length;
+        toastError(
+          `${ok} of ${visitorTotal} visitors invited — ${visitorFailures.length} failed`,
+          {
+            error: visitorFailures[0].error,
+            retry: () => navigate(`/desk/bookings/${bookingId}`),
+          },
+        );
+      }
       onOpenChange(false);
       onBooked?.(bookingId);
     } catch (err) {
