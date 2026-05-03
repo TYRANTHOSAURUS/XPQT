@@ -695,13 +695,14 @@ export class ReservationService {
     // Slice 4: emit bundle-cascade events for any visitors linked to the
     // booking. Resolved via `visitors.booking_id` (00278:41 — column
     // renamed from booking_bundle_id). Under canonicalisation the booking
-    // IS the bundle, so r.booking_bundle_id (== r.id) is the right key.
+    // IS the bundle, so r.id IS the bundle id (the legacy
+    // r.booking_bundle_id alias was retired by H6 / 00288).
     const movedTime = patch.start_at && patch.start_at !== r.start_at;
     const changedRoom = patch.space_id && patch.space_id !== r.space_id;
-    if ((movedTime || changedRoom) && r.booking_bundle_id && this.bundleEventBus) {
+    if ((movedTime || changedRoom) && r.id && this.bundleEventBus) {
       await this.emitVisitorCascadeForBundle({
         tenantId,
-        bundleId: r.booking_bundle_id,
+        bundleId: r.id,
         oldStartAt: movedTime ? r.start_at : null,
         newStartAt: movedTime ? (updated.start_at ?? patch.start_at!) : null,
         oldSpaceId: changedRoom ? r.space_id : null,

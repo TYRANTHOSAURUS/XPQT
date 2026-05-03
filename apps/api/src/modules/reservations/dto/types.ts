@@ -226,7 +226,12 @@ export interface Reservation {
   calendar_provider: CalendarProvider | null;
   calendar_etag: string | null;
   calendar_last_synced_at: string | null;
-  booking_bundle_id: string | null;
+  // booking_bundle_id was dropped here by slice H6 (migration 00288).
+  // Post-canonicalization the booking IS the bundle (00277:27) — there
+  // is no separate id to expose. Readers that need the booking id should
+  // use Reservation.id directly. The reservation-projection.ts at line
+  // 121 stopped emitting the field in the same commit; the scheduler_data
+  // RPC stopped in slice H3 (00286).
   created_at: string;
   updated_at: string;
   /** Root-first parent trail of the space, populated by `findOne` via the
@@ -264,7 +269,8 @@ export interface CreateReservationInput {
   recurrence_master_id?: string;            // legacy field (no longer used post-canonicalisation; recurrence_series_id is the only link)
   source?: ReservationSource;
   multi_room_group_id?: string;             // legacy field (no longer used post-canonicalisation)
-  booking_bundle_id?: string;               // legacy field — bookings ARE the canonical entity now
+  // booking_bundle_id input dropped by slice H6 (migration 00288) — the
+  // booking IS the bundle, so callers should pass nothing here.
   /**
    * Optional service lines (catering / AV / setup) attached at booking time.
    * Triggers `BundleService.attachServicesToReservation` after the

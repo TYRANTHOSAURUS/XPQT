@@ -118,7 +118,9 @@ export function slotAndBookingToReservation(
     calendar_provider: booking.calendar_provider,
     calendar_etag: booking.calendar_etag,
     calendar_last_synced_at: booking.calendar_last_synced_at,
-    booking_bundle_id: booking.id,                 // booking IS the bundle (00277:27)
+    // booking_bundle_id field dropped here by slice H6 (00288); the
+    // projection no longer emits it. Readers should use Reservation.id
+    // directly — the booking IS the bundle (00277:27).
     created_at: booking.created_at,
     updated_at: booking.updated_at,
   };

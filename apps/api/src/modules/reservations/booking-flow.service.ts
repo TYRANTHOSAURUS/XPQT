@@ -861,12 +861,9 @@ function bookingToLegacyReservation(
     calendar_provider: booking.calendar_provider,
     calendar_etag: booking.calendar_etag,
     calendar_last_synced_at: booking.calendar_last_synced_at,
-    // Legacy `booking_bundle_id`. Under canonicalisation the booking IS
-    // the bundle, so the "bundle id" effectively equals the booking id.
-    // Setting to booking.id keeps any consumer that only checked
-    // truthiness (e.g. recurrence cloning fan-out) working without
-    // creating a phantom row reference.
-    booking_bundle_id: booking.id,
+    // booking_bundle_id was dropped from the Reservation projection by
+    // slice H6 (00288). The booking IS the bundle (00277:27); readers
+    // that need the bundle id should use Reservation.id directly.
     created_at: booking.created_at,
     updated_at: booking.updated_at,
   };

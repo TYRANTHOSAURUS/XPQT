@@ -83,7 +83,7 @@ function withTenant<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('TicketService.createBookingOriginWorkOrder', () => {
-  it('inserts a work_orders row with parent_kind=booking_bundle and parent_ticket_id=null', async () => {
+  it('inserts a work_orders row with parent_kind=booking and parent_ticket_id=null', async () => {
     const { service, inserts } = makeTicketService();
 
     await withTenant(() =>
@@ -98,9 +98,10 @@ describe('TicketService.createBookingOriginWorkOrder', () => {
     expect(inserts).toHaveLength(1);
     const row = inserts[0].payload;
     // Step 1c.4: parent_kind replaces ticket_kind as the discriminator.
-    // 'booking_bundle' is a discriminator label (not a column ref); 00278:81
-    // notes the literal string is harmless to keep until H6 retires it.
-    expect(row.parent_kind).toBe('booking_bundle');
+    // Post-H6 (migration 00288) the canonical label is 'booking' — the
+    // legacy 'booking_bundle' discriminator was retired in the same slice
+    // that dropped the dto/types.ts:229 booking_bundle_id field.
+    expect(row.parent_kind).toBe('booking');
     expect(row.parent_ticket_id).toBeNull();
     // Column was renamed booking_bundle_id -> booking_id in 00278:87.
     // ticket.service.ts:1813 writes args.booking_bundle_id into row.booking_id.

@@ -27,6 +27,13 @@ export interface TicketRequestType {
 export interface TicketDetail {
   id: string;
   ticket_kind: 'case' | 'work_order';
+  // Per-tenant monotonic counter that drives the user-facing TKT-####
+  // / WO-#### references. Allocated by tickets_assign_module_number()
+  // on insert. This is NOT the dropped reservations.module_number
+  // (00280) — that legacy column is gone for bookings; tickets keeps
+  // the counter because the human-readable ref is load-bearing across
+  // list rows, detail headers, command palette, email subjects, etc.
+  // (formatTicketRef in lib/format-ref.ts).
   module_number: number;
   parent_ticket_id: string | null;
   title: string;

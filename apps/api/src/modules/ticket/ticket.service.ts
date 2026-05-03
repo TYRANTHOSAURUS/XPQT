@@ -1801,14 +1801,13 @@ export class TicketService {
     const tenant = TenantContext.current();
 
     // Step 1c.4 cutover: write to public.work_orders directly. ticket_kind
-    // is gone (work_orders is single-kind); parent_kind='booking_bundle'
-    // remains as a discriminator label (00278:81 — the literal string is
-    // not a column reference, harmless to keep). The actual FK column is
-    // `booking_id` post-rename (00278:87). Reverse shadow trigger keeps
-    // tickets in sync.
+    // is gone (work_orders is single-kind); the canonical parent_kind
+    // discriminator is 'booking' post-canonicalization (00288 tightened
+    // the CHECK from the legacy 'booking_bundle' label). The FK column is
+    // `booking_id` (00278:87). Reverse shadow trigger keeps tickets in sync.
     const insertRow: Record<string, unknown> = {
       tenant_id: tenant.id,
-      parent_kind: 'booking_bundle',
+      parent_kind: 'booking',
       parent_ticket_id: null, // booking-origin has no parent case
       booking_id: args.booking_bundle_id,
       linked_order_line_item_id: args.linked_order_line_item_id,
