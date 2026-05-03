@@ -946,7 +946,7 @@ Any change to these requires a doc update:
 
 ## 25. Booking-origin work orders (Wave 2 Slice 2 — 2026-04-29)
 
-A second create-path for work orders, parallel to `DispatchService.dispatch`. These work orders DO NOT have a parent case — their "parent" is a `booking_bundles` row + an `order_line_items` row, linked via `tickets.booking_bundle_id` and `tickets.linked_order_line_item_id` (00145). Used when an order line's service rule sets `requires_internal_setup=true` and the system needs to spawn an internal facilities task alongside the vendor delivery.
+A second create-path for work orders, parallel to `DispatchService.dispatch`. These work orders DO NOT have a parent case — their "parent" is a `bookings` row + an `order_line_items` row, linked via `work_orders.booking_id` and `work_orders.linked_order_line_item_id` (00145; column renamed from `booking_bundle_id` in 00278:87). Used when an order line's service rule sets `requires_internal_setup=true` and the system needs to spawn an internal facilities task alongside the vendor delivery.
 
 ### Trigger
 
@@ -961,8 +961,8 @@ This is **not** the `routing_rules` engine — it's flat config. Use the routing
 ### Create path
 
 `TicketService.createBookingOriginWorkOrder()` inserts a `tickets` row with:
-- `ticket_kind='work_order'`, `parent_ticket_id=null`
-- `booking_bundle_id` + `linked_order_line_item_id` (the canonical parents)
+- `parent_kind='booking'`, `parent_ticket_id=null` (00288 tightened the discriminator from the legacy `'booking_bundle'` label; the writer at `ticket.service.ts:1810` was flipped in the same commit)
+- `booking_id` + `linked_order_line_item_id` (the canonical parents — column renamed from `booking_bundle_id` in 00278:87)
 - `assigned_team_id` from the matrix
 - `sla_resolution_due_at = service_window_start − lead_time` (set DIRECTLY, not via `sla_policies` — the deadline is service-window-anchored, not creation-anchored)
 - `source_channel='system'`, `interaction_mode='internal'`, `status_category='assigned'` if a team came back from the matrix.
@@ -996,13 +996,13 @@ Naming pattern: `{originSurface}.{outcome}` where originSurface is `bundle` (bun
 - `*.setup_work_order_create_failed` — matrix returned a team but the ticket insert threw. Severity high.
 - `*.setup_deferred_pending_approval` — at least one line on the bundle/order is in approval-required state, so the trigger was skipped pending the approval grant. The TriggerArgs are persisted on `order_line_items.pending_setup_trigger_args` (00197) and re-fired by `BundleService.onApprovalDecided` once approval lands; see "Approval interlock" below.
 
-Emitted by `BundleService.onApprovalDecided` on the `booking_bundle` entity:
+Emitted by `BundleService.onApprovalDecided` on the `booking` entity (00288 dropped the legacy `'booking_bundle'` `target_entity_type` value; the dispatcher at `approval.service.ts:440` branches on `target_entity_type === 'booking'`):
 
 - `bundle.deferred_setup_fired_on_approval` — approval granted; deferred trigger re-fired for the listed OLIs. Payload: bundle_id, oli_ids, order_ids.
 - `bundle.deferred_setup_dropped_on_rejection` — approval rejected; persisted args cleared without firing. Payload: bundle_id, oli_ids, order_ids.
 - `bundle.approval_{approved|rejected}_no_deferred_setup` — approval resolved but no lines on the bundle had `requires_internal_setup`. Marker so the audit timeline shows the approval was observed.
 - `bundle.approval_{approved|rejected}_setup_persist_was_lost` — HIGH severity. Claim returned nothing AND `*.setup_deferral_persist_failed` exists for this bundle: setup was supposed to defer but the create-time persist failed. Distinguished from the "no_deferred_setup" marker so the timeline doesn't lie.
-- `bundle.approval_{approved|rejected}_no_orders` — defensive: approval target was a `booking_bundle` but no orders linked. Should never happen in normal flow.
+- `bundle.approval_{approved|rejected}_no_orders` — defensive: approval target was a `booking` but no orders linked. Should never happen in normal flow.
 - `bundle.deferred_setup_closed_after_concurrent_cancel` — MEDIUM severity. Cancel/approve race detected: after `triggerMany` fired, the OLI was already cancelled; the just-created work order was closed by the defensive close.
 - `bundle.deferred_setup_close_lookup_failed` / `bundle.deferred_setup_close_failed` — HIGH severity. The defensive close path's stale-OLI lookup or tickets-close update returned an error. Surfaces what would otherwise be a silent best-effort skip on the orphan-cleanup hot path.
 
@@ -1014,7 +1014,7 @@ When a service rule on a line emits `effect=require_approval` (or `allow_overrid
 
 - All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
 - The `TriggerArgs` snapshot is persisted on `order_line_items.pending_setup_trigger_args` (00197) at deferral time. If the persist write fails, both creators emit a HIGH-severity `*.setup_deferral_persist_failed` event INSTEAD of the normal `*.setup_deferred_pending_approval` marker — otherwise the audit trail would show "deferred" while approval-grant later silently does nothing.
-- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved. Resolution rules (`booking_bundle` target type):
+- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved. Resolution rules (`booking` target type):
   - Any rejection ends the approval immediately.
   - Otherwise: every approval row on the same `target_entity_id` must be `approved` or `expired` (explicitly enumerated; `pending`/`rejected`/any future status block). Bundle approvals are typically upserted by `ApprovalRoutingService.assemble` as independent single-step rows (one per unique approver) with `parallel_group=null` / `chain=null`, but the same target can also receive parallel/chain approvals via the generic API. Always requiring "every row resolved" handles all topologies — single-step, parallel, chain, and mixed — uniformly. `expired` rows count as resolved because `BundleCascadeService.rescopeApprovalsAfterLineCancel` expires approvals whose scope is emptied by a line cancel; treating `expired` as blocking would deadlock the bundle.
 - Args are claimed atomically via `claim_deferred_setup_trigger_args(p_tenant_id, p_order_ids)` (00198). The RPC uses `SELECT FOR UPDATE` so two callers cannot both fire the trigger for the same OLI even when granting truly concurrently across multiple API instances. Returns one row per claimed OLI with the OLD args value.
@@ -1029,7 +1029,7 @@ When a service rule on a line emits `effect=require_approval` (or `allow_overrid
 Two fields are deliberately NULL even when the caller has values for them:
 
 - **`requester_person_id`** — booking-origin work orders are operational tasks, not help requests. The originating user (Marleen who placed the catering order) sees the bundle/booking in her bookings list, NOT the internal setup ticket. If we set requester_person_id, the my-requests query (which drops the parent filter for requester views) would include these in her portal — wrong surface, wrong audience. Bundle.requester_person_id already captures originator identity for audit.
-- **`parent_ticket_id`** — there is no parent case (per §25 above). To prevent these from polluting the desk's top-level case queue (which filters `parent_ticket_id IS NULL`), `TicketService.list()` ALSO filters `booking_bundle_id IS NULL` whenever the parent-null filter is applied. Booking-origin work orders are reachable via `ticket_kind='work_order'`, by drilling into a bundle, or by their assigned-team queue — they just don't appear in the default cases queue.
+- **`parent_ticket_id`** — there is no parent case (per §25 above). To prevent these from polluting the desk's top-level case queue (which filters `parent_ticket_id IS NULL`), `TicketService.list()` ALSO filters `booking_id IS NULL` whenever the parent-null filter is applied (column renamed from `booking_bundle_id` in 00278:87). Booking-origin work orders are reachable as `work_orders` rows, by drilling into a booking, or by their assigned-team queue — they just don't appear in the default cases queue.
 
 Visibility for these tickets falls to the assignee path: `assigned_team_id` matches → team members see it; `tickets.read_all` permission → admins see it. Vendors are not assigned to booking-origin work orders today (they're internal-setup work).
 
@@ -1042,5 +1042,5 @@ Any change to these requires updating this section:
 - `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts` (cancel cascade for `linked_order_line_item_id`)
 - `apps/api/src/modules/orders/order.service.ts:createStandaloneOrder`
 - `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
-- `apps/api/src/modules/approval/approval.service.ts:handleBookingBundleApprovalDecided` (dispatch to bundle service)
+- `apps/api/src/modules/approval/approval.service.ts:handleBookingApprovalDecided` (dispatch to bundle service; renamed from `handleBookingBundleApprovalDecided` when the canonical `'booking'` `target_entity_type` was introduced — see G2 spec refresh)
 - Migrations changing `service_rules`, `location_service_routing`, `resolve_setup_routing`, or `order_line_items.pending_setup_trigger_args`
