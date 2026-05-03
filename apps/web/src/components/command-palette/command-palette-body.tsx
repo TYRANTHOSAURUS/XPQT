@@ -265,6 +265,29 @@ function resolveHitPath(hit: SearchHit, scope: RouteRoleScope): string {
   if (hit.kind === 'visitor') {
     const visitorId = hit.extra?.latest_visitor_id;
     if (typeof visitorId === 'string' && visitorId.length > 0) {
+      // Carry the visitor's building forward so the desk layout's
+      // ReceptionBuildingProvider snaps to the correct building when
+      // the detail page mounts. Without this hint the provider falls
+      // back to the user's last-picked building (sticky in localStorage),
+      // and the surrounding sidebar / list view ends up on the wrong
+      // building — operator hits Back from the detail and sees an empty
+      // list.
+      //
+      // Param name `reception_building`, NOT `building`, because the visitor
+      // list page treats `?building=` as a *filter chip* (use-visitor-filters
+      // surfaces it in the toolbar). If the palette wrote `?building=`,
+      // buildBackTo on the detail page would round-trip it through to the
+      // list and smuggle a filter the user never set. `reception_building`
+      // is read by the provider for context-snap only, never round-tripped,
+      // never displayed as a chip.
+      //
+      // `latest_visitor_building_id` comes from migration 00282; null for
+      // walk-ups without a building → skip the param and fall back to the
+      // user's last-picked context.
+      const buildingId = hit.extra?.latest_visitor_building_id;
+      if (typeof buildingId === 'string' && buildingId.length > 0) {
+        return `/desk/visitors/${visitorId}?reception_building=${encodeURIComponent(buildingId)}`;
+      }
       return `/desk/visitors/${visitorId}`;
     }
     // No visit row yet — `hit.id` is a persons.id. The persons row is
@@ -832,24 +855,12 @@ interface ResultRowProps {
 const ResultRow = memo(function ResultRow({ hit, hrefScope, onSelect }: ResultRowProps) {
   const meta = KIND_META[hit.kind];
   const Icon = meta.icon;
-  // Visitor hits route directly to the visitor detail page (full route),
-  // NOT to the embedded /desk/visitors?q=... split-view. The previous
-  // search-URL fallback was bad UX: it landed reception on a building-
-  // filtered table that often didn't contain the matched visitor (visitor
-  // at site B, current building filter on site A → empty table; user
-  // confused). The backend search RPC (migration 00274) returns
-  // `latest_visitor_id` in extra for visitor-typed person hits; we use
-  // that to deep-link to /desk/visitors/<visitor_id> directly. The
-  // search-URL fallback only applies when the LATERAL lookup couldn't
-  // find a visitors row (rare — visitor person without any visit yet).
-  const visitorId =
-    hit.kind === 'visitor' ? (hit.extra?.latest_visitor_id as string | null | undefined) : null;
-  const path =
-    hit.kind === 'visitor'
-      ? visitorId
-        ? `/desk/visitors/${visitorId}`
-        : `/desk/visitors?q=${encodeURIComponent(hit.title)}`
-      : meta.href(hit.id, { scope: hrefScope });
+  // `data-href` must match what the row click handler navigates to — the
+  // pair is read by ⌘+Enter / middle-click open-in-new-tab. Both go
+  // through resolveHitPath so visitor routing rules stay in lock-step
+  // (deep-link to /desk/visitors/<id>?building=<id> when a visit exists,
+  // /admin/persons/<id> when it doesn't).
+  const path = resolveHitPath(hit, hrefScope);
 
   const statusCategory =
     hit.kind === 'ticket' && hit.extra && typeof hit.extra.status_category === 'string'

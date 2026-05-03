@@ -57,6 +57,7 @@ import {
 import { useSpaces } from '@/api/spaces';
 import { usePerson, personFullName } from '@/api/persons';
 import { useReservationDetail } from '@/api/room-booking';
+import { useReceptionBuilding } from '@/components/desk/desk-building-context';
 import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSuccess } from '@/lib/toast';
 import {
@@ -87,6 +88,11 @@ export function VisitorDetail({
   const { data: visitor, isLoading, isError } = useVisitorDetail(visitorId);
   const { data: spaces } = useSpaces();
   const { data: primaryHost } = usePerson(visitor?.primary_host_person_id ?? null);
+  // Reception's currently-selected building. Used only to detect a mismatch
+  // with the visitor's building_id and surface a banner — does NOT drive
+  // mutations or queries here (the visitor's actual building_id is the
+  // source of truth for those).
+  const { buildingId: receptionBuildingId } = useReceptionBuilding();
 
   const markArrived = useMarkArrived(buildingId);
   const markCheckedOut = useMarkCheckedOut(buildingId);
@@ -98,6 +104,18 @@ export function VisitorDetail({
     if (!visitor?.building_id) return null;
     return (spaces ?? []).find((s) => s.id === visitor.building_id)?.name ?? null;
   }, [spaces, visitor?.building_id]);
+
+  // Cross-building hint. Fires when the operator landed on a visitor whose
+  // building isn't their currently-selected reception context — typically a
+  // command-palette deep-link to a visitor at a building they don't have
+  // access to (provider drops the URL hint silently in that case) or a
+  // visitor that was rescheduled to a different building since the search.
+  // Tells the user why their surrounding sidebar / list looks "wrong"
+  // instead of leaving them to puzzle it out.
+  const isCrossBuilding =
+    !!visitor?.building_id &&
+    !!receptionBuildingId &&
+    visitor.building_id !== receptionBuildingId;
 
   const meetingRoomName = useMemo(() => {
     if (!visitor?.meeting_room_id) return null;
@@ -167,6 +185,17 @@ export function VisitorDetail({
        *  actions (currently empty for visitors; left wired so future
        *  cancel/resend/etc. can land here without re-shaping the bar). */}
       <DetailToolbar onClose={onClose} onExpand={onExpand} />
+
+      {isCrossBuilding && (
+        <div
+          role="status"
+          className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <Building2 className="mr-1.5 inline-block size-3.5 -translate-y-px" aria-hidden />
+          This visitor is at <strong className="font-semibold">{buildingName ?? 'another building'}</strong>
+          {' '}— your reception view is scoped to a different building.
+        </div>
+      )}
 
       <div className="flex-1 overflow-auto">
         {/* Hero: title + company + status pill. The id chip mirrors the

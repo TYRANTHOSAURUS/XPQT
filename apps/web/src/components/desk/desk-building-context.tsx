@@ -61,10 +61,14 @@ export function ReceptionBuildingProvider({ children }: { children: ReactNode })
     [spaces],
   );
 
-  // Read URL param `building` first.
+  // Read URL param. `reception_building` (one-shot context-snap from the
+  // command palette deep-link) takes priority over `building` (the filter-
+  // chip / picker key on the visitor list). Both unify into a single hint
+  // for the provider; the visitor filter bar reads only `building` so the
+  // palette flow can't smuggle a spurious filter chip via Back navigation.
   const urlBuilding = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return params.get('building');
+    return params.get('reception_building') ?? params.get('building');
   }, [location.search]);
 
   // Resolve effective building id with priority: URL → localStorage → first.
