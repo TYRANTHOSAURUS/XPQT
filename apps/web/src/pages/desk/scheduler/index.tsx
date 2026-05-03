@@ -17,10 +17,10 @@ import { useDragResize, type ResizeState } from './hooks/use-drag-resize';
 import { useDragMove, type MoveState } from './hooks/use-drag-move';
 import { SchedulerToolbar } from './components/scheduler-toolbar';
 import { SchedulerGrid } from './components/scheduler-grid';
-import { SchedulerCreatePopover } from './components/scheduler-create-popover';
 import { QuickBookPopover } from '@/components/booking-composer-v2/quick-book-popover';
 import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
 import type { BookingDraft } from '@/components/booking-composer-v2/booking-draft';
+import { draftFromComposerSeed } from '@/components/booking-composer-v2/booking-draft';
 import { SchedulerEventPopover } from './components/scheduler-event-popover';
 import { SchedulerOverrideDialog } from './components/scheduler-override-dialog';
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
@@ -219,13 +219,6 @@ export function DeskSchedulerPage() {
   const cellToIso = win.cellToIso;
 
   // ── Drag-create ────────────────────────────────────────────────────
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [createPayload, setCreatePayload] = useState<{
-    room: SchedulerRoom;
-    startAtIso: string;
-    endAtIso: string;
-  } | null>(null);
-
   const [quickBookPayload, setQuickBookPayload] = useState<{
     room: SchedulerRoom;
     startAtIso: string;
@@ -483,8 +476,15 @@ export function DeskSchedulerPage() {
   const onBookFromInspector = useCallback(
     (room: SchedulerRoom) => {
       const { startAtIso, endAtIso } = computeDefaultBookingWindow();
-      setCreatePayload({ room, startAtIso, endAtIso });
-      setCreateDialogOpen(true);
+      setComposerModalSeed(
+        draftFromComposerSeed({
+          spaceId: room.space_id,
+          startAt: startAtIso,
+          endAt: endAtIso,
+          attendeeCount: room.min_attendees && room.min_attendees > 0 ? room.min_attendees : 2,
+        }),
+      );
+      setComposerModalOpen(true);
     },
     [computeDefaultBookingWindow],
   );
@@ -691,19 +691,6 @@ export function DeskSchedulerPage() {
           />
         )}
       </div>
-
-      <SchedulerCreatePopover
-        open={createDialogOpen}
-        onOpenChange={(o) => {
-          setCreateDialogOpen(o);
-          if (!o) setCreatePayload(null);
-        }}
-        room={createPayload?.room ?? null}
-        startAtIso={createPayload?.startAtIso ?? ''}
-        endAtIso={createPayload?.endAtIso ?? ''}
-        currentUserPersonId={requesterPersonId}
-        toolbarBookForPersonId={win.state.bookForPersonId}
-      />
 
       <BookingComposerModal
         open={composerModalOpen}
