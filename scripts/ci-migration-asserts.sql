@@ -143,7 +143,7 @@ begin
         'persons', 'users', 'teams', 'team_members', 'vendors',
         'spaces', 'space_groups', 'space_group_members',
         'request_types', 'routing_rules', 'routing_decisions',
-        'reservations', 'booking_bundles', 'orders', 'order_line_items',
+        'bookings', 'booking_slots', 'orders', 'order_line_items',
         'sla_timers', 'sla_policies',
         'workflow_definitions', 'workflow_instances',
         'org_nodes', 'person_org_memberships'
@@ -240,100 +240,25 @@ begin
   raise notice 'A10 OK: 00241..00244 renumbered migrations applied';
 
   -- ===========================================================
-  -- A11. bundle_is_visible_to_user is in parity with TS service.
+  -- A11. RETIRED — booking visibility predicate.
   -- ===========================================================
-  -- Migration 00245 brought the SQL helper up to match
-  -- BundleVisibilityService.assertVisible by adding two paths the SQL
-  -- side previously missed: approver + work-order-assignee. Without
-  -- this, future RLS policies / view predicates / a `bundle_visible_ids`
-  -- RPC built on the SQL helper would silently under-grant access
-  -- vs. what the TS layer permits today.
+  -- The original A11 exercised public.bundle_is_visible_to_user(uuid,uuid,uuid)
+  -- against public.booking_bundles + public.work_orders. Both the function
+  -- (00148, 00245) and the booking_bundles table were dropped by the
+  -- 2026-05-02 booking-canonicalization rewrite (migration 00276 + 00279).
+  -- The canonical replacement entity is public.bookings (00277); a parity
+  -- visibility predicate has not been re-introduced because TicketVisibility
+  -- handles WO-side visibility today and booking visibility lives entirely
+  -- in TS service code (see docs/visibility.md).
   --
-  -- Behavioral fixture-based test (codex round 1 feedback: a string-match
-  -- on pg_get_functiondef is brittle — false-fails on harmless refactors
-  -- like dropping the public. qualifier, false-passes if the strings
-  -- survive in comments). Insert a synthetic bundle + approval + WO in a
-  -- savepoint, exercise both new paths, roll back. Cleanly verifies
-  -- behavior; fails loudly if either path regresses.
-  if not exists (
-    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname='public' and p.proname='bundle_is_visible_to_user'
-  ) then
-    raise exception 'A11: public.bundle_is_visible_to_user() function is missing.';
-  end if;
-
-  declare
-    v_tenant uuid;
-    v_user uuid;
-    v_person uuid;
-    v_other_person uuid;
-    v_bundle uuid := gen_random_uuid();
-    v_wo uuid := gen_random_uuid();
-    v_location uuid;
-    v_path boolean;
-  begin
-    -- Pick any user with a person_id; treat them as the "test subject" who
-    -- needs visibility via the new paths. Pick a different person as the
-    -- bundle requester so participant path doesn't shortcut the test.
-    select u.tenant_id, u.id, u.person_id into v_tenant, v_user, v_person
-      from public.users u where u.person_id is not null
-     order by u.id limit 1;
-    select p.id into v_other_person from public.persons p
-      where p.tenant_id = v_tenant and p.id != v_person limit 1;
-    select s.id into v_location from public.spaces s
-      where s.tenant_id = v_tenant limit 1;
-
-    if v_user is null or v_other_person is null or v_location is null then
-      -- A fresh DB without enough seed data — skip the behavioral check
-      -- but at least confirm function signature exists.
-      raise notice 'A11 OK (function-exists only): seed missing test fixtures (user/person/location)';
-    else
-      -- ROLLBACK TO SAVEPOINT is not legal inside a PL/pgSQL DO block, so we
-      -- clean up explicitly via DELETE in both the success and failure
-      -- exception paths. The fixture rows have generated UUIDs scoped to
-      -- v_bundle / v_wo, so cleanup is precise.
-      begin
-        insert into public.booking_bundles
-          (id, tenant_id, bundle_type, requester_person_id, host_person_id,
-           location_id, start_at, end_at, source, policy_snapshot)
-        values
-          (v_bundle, v_tenant, 'meeting', v_other_person, null, v_location,
-           now(), now() + interval '1 hour', 'desk', '{}'::jsonb);
-
-        -- Approver path: target_entity_type='booking_bundle' MUST grant.
-        insert into public.approvals
-          (id, tenant_id, target_entity_id, target_entity_type, approver_person_id, status)
-        values (gen_random_uuid(), v_tenant, v_bundle, 'booking_bundle', v_person, 'pending');
-        v_path := public.bundle_is_visible_to_user(v_bundle, v_user, v_tenant);
-        if not v_path then
-          raise exception 'A11: approver path FAILED — function returned false for a person with a pending approval row.';
-        end if;
-
-        -- Work-order assignee path: assigned_user_id MUST grant.
-        delete from public.approvals where target_entity_id = v_bundle;
-        insert into public.work_orders
-          (id, tenant_id, title, booking_bundle_id, assigned_user_id, module_number)
-        values (v_wo, v_tenant, 'a11-fixture-wo', v_bundle, v_user, 999999);
-        v_path := public.bundle_is_visible_to_user(v_bundle, v_user, v_tenant);
-        if not v_path then
-          raise exception 'A11: WO-assignee path FAILED — function returned false for an assigned work order.';
-        end if;
-
-        -- Cleanup on success.
-        delete from public.work_orders where id = v_wo;
-        delete from public.approvals where target_entity_id = v_bundle;
-        delete from public.booking_bundles where id = v_bundle;
-        raise notice 'A11 OK: bundle_is_visible_to_user grants via approver + WO-assignee paths (behavioral)';
-      exception when others then
-        -- Cleanup on failure (best-effort; rollback the test fixtures
-        -- regardless of why the assertion failed). Then re-raise.
-        delete from public.work_orders where id = v_wo;
-        delete from public.approvals where target_entity_id = v_bundle;
-        delete from public.booking_bundles where id = v_bundle;
-        raise;
-      end;
-    end if;
-  end;
+  -- TODO: when a SQL `booking_visible_ids(user_id, tenant_id)` predicate
+  -- ships (analog to public.ticket_visibility_ids — see A7), restore an
+  -- A11 behavioral check against it: insert a synthetic bookings row +
+  -- pending approval and assert the predicate grants via the approver
+  -- path; insert a WO assigned to a user and assert the predicate grants
+  -- via the WO-assignee path. Match the cleanup-on-success/failure shape
+  -- of the original block. Until then this slot stays vacant.
+  raise notice 'A11 SKIP: bundle visibility predicate retired (booking_bundles dropped by 00276; canonical replacement TBD)';
 
   -- ===========================================================
   -- A12. service_role has full DML on every tenant-scoped writable BASE TABLE.
