@@ -162,41 +162,34 @@ export class ReportingService {
     return groups;
   }
 
-  // Bookings overview reports — RPCs dropped in 00279 because they
-  // aggregated over the legacy `reservations` table that the
-  // booking-canonicalization rewrite (2026-05-02) replaced with
-  // `bookings` + `booking_slots` (00277). The reports module needs a
-  // rewrite against the new schema in a follow-up slice; until then
-  // these endpoints return a 503 so the `/desk/reports/bookings/*`
-  // surface degrades cleanly instead of bubbling a Postgres
-  // "function does not exist" error.
+  // Bookings overview reports — back online against the canonical
+  // `bookings` + `booking_slots` schema (00277). RPCs were dropped in
+  // 00279 during the booking-canonicalization rewrite and rebuilt in
+  // 00289 as a faithful retarget of the originals (00155 + 00156).
   // Spec: docs/superpowers/specs/2026-04-27-bookings-overview-report-design.md
   async getBookingsOverview(params: BookingReportParams) {
-    return this.unavailableBookingReport('room_booking_report_overview', params);
+    return this.callBookingReport('room_booking_report_overview', params);
   }
 
   async getBookingsUtilization(params: BookingReportParams) {
-    return this.unavailableBookingReport('room_booking_utilization_report', params);
+    return this.callBookingReport('room_booking_utilization_report', params);
   }
 
   async getBookingsNoShows(params: BookingReportParams) {
-    return this.unavailableBookingReport('room_booking_no_shows_report', params);
+    return this.callBookingReport('room_booking_no_shows_report', params);
   }
 
   async getBookingsServices(params: BookingReportParams) {
-    return this.unavailableBookingReport('room_booking_services_report', params);
+    return this.callBookingReport('room_booking_services_report', params);
   }
 
   async getBookingsDemand(params: BookingReportParams) {
-    return this.unavailableBookingReport('room_booking_demand_report', params);
+    return this.callBookingReport('room_booking_demand_report', params);
   }
 
-  private async unavailableBookingReport(
-    rpc: string,
-    params: BookingReportParams,
-  ): Promise<never> {
-    // Validate inputs first so admin error logs still show shape problems
-    // (better signal than "report unavailable" alone).
+  private async callBookingReport(rpc: string, params: BookingReportParams) {
+    // Validate inputs first — cheaper than a roundtrip and gives admins
+    // a clear shape error instead of a Postgres SQLSTATE.
     const fromDate = this.parseDate(params.from, 'from');
     const toDate = this.parseDate(params.to, 'to');
     if (fromDate > toDate) {
@@ -206,10 +199,23 @@ export class ReportingService {
     if (days > 365) {
       throw new BadRequestException('window too large (max 365 days)');
     }
-    this.validateTimezone(params.tz);
-    throw new BadRequestException(
-      `Report '${rpc}' is temporarily unavailable while the bookings reports are migrated to the canonical bookings/booking_slots schema.`,
-    );
+    const tz = this.validateTimezone(params.tz);
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin.rpc(rpc, {
+      p_tenant_id: tenant.id,
+      p_from: params.from,
+      p_to: params.to,
+      p_building_id: params.buildingId,
+      p_tz: tz,
+    });
+    if (error) {
+      // Preserve the underlying message so frontend toasts surface a
+      // useful diagnostic (e.g. "from > to" raised by the RPC's own
+      // validation if the API layer somehow lets it through).
+      throw new BadRequestException(error.message);
+    }
+    return data;
   }
 
   private parseDate(value: string, label: string): Date {
