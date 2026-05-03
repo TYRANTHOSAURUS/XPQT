@@ -60,7 +60,9 @@ export function useRealtimeAvailability(
         // load-bearing. The eslint-disable is dead because @typescript-eslint
         // isn't loaded in the web app's flat config (eslint.config.js).
         'postgres_changes' as any,
-        { event: '*', schema: 'public', table: 'reservations' },
+        // Post-canonicalisation (00276–00281): space_id lives on booking_slots,
+        // not bookings. Subscribe to slot changes; row.space_id below stays valid.
+        { event: '*', schema: 'public', table: 'booking_slots' },
         (payload: { new?: Record<string, unknown>; old?: Record<string, unknown> }) => {
           const row = payload.new ?? payload.old ?? {};
           const spaceId = row.space_id as string | undefined;
