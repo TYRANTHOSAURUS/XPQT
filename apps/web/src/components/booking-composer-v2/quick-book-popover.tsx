@@ -34,6 +34,8 @@ export interface QuickBookPopoverProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The DOM element the popover anchors to (e.g. the scheduler tile).
+   *  Forwarded to base-ui's Popover.Positioner anchor prop so the
+   *  popover renders next to the clicked tile rather than the trigger.
    *  null is supported for tests; the popover then renders at the
    *  default anchor position. */
   anchorEl: HTMLElement | null;
@@ -57,15 +59,11 @@ export interface QuickBookPopoverProps {
  *
  * Spec: docs/superpowers/specs/2026-05-02-create-booking-modal-redesign.md §Quick-book popover.
  *
- * Note: This component uses `@base-ui/react/popover` which does not have
- * a `PopoverAnchor` with `virtualRef`. Positional anchoring to `anchorEl`
- * is a runtime concern (handled at call site via CSS / portal positioning);
- * the popover renders correctly via the controlled `open` prop.
  */
 export function QuickBookPopover({
   open,
   onOpenChange,
-  anchorEl: _anchorEl,
+  anchorEl,
   room,
   startAtIso,
   endAtIso,
@@ -157,6 +155,7 @@ export function QuickBookPopover({
         // 360×~220 per spec.
         side="bottom"
         align="start"
+        anchor={anchorEl ?? undefined}
         className="w-[360px] gap-3 p-3"
         onKeyDown={onKeyDown}
       >
