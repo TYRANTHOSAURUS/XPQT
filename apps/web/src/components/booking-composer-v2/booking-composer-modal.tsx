@@ -14,6 +14,7 @@ import type { ComposerMode, ComposerEntrySource } from '../booking-composer/stat
 import { cn } from '@/lib/utils';
 import { TitleInput } from './left-pane/title-input';
 import { TimeRow } from './left-pane/time-row';
+import { RepeatRow } from './left-pane/repeat-row';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -105,6 +106,10 @@ export function BookingComposerModal({
                 startAt={composer.draft.startAt}
                 endAt={composer.draft.endAt}
                 onChange={composer.setTime}
+              />
+              <RepeatRow
+                rule={composer.draft.recurrence}
+                onChange={composer.setRepeat}
               />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
