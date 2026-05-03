@@ -19,6 +19,8 @@ import { SchedulerToolbar } from './components/scheduler-toolbar';
 import { SchedulerGrid } from './components/scheduler-grid';
 import { SchedulerCreatePopover } from './components/scheduler-create-popover';
 import { QuickBookPopover } from '@/components/booking-composer-v2/quick-book-popover';
+import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
+import type { BookingDraft } from '@/components/booking-composer-v2/booking-draft';
 import { SchedulerEventPopover } from './components/scheduler-event-popover';
 import { SchedulerOverrideDialog } from './components/scheduler-override-dialog';
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
@@ -231,6 +233,9 @@ export function DeskSchedulerPage() {
     anchorEl: HTMLElement | null;
   } | null>(null);
   const [quickBookOpen, setQuickBookOpen] = useState(false);
+
+  const [composerModalOpen, setComposerModalOpen] = useState(false);
+  const [composerModalSeed, setComposerModalSeed] = useState<BookingDraft | null>(null);
 
   const dragCreate = useDragCreate({
     columnsPerDay: win.columnsPerDay,
@@ -700,6 +705,22 @@ export function DeskSchedulerPage() {
         toolbarBookForPersonId={win.state.bookForPersonId}
       />
 
+      <BookingComposerModal
+        open={composerModalOpen}
+        onOpenChange={(o) => {
+          setComposerModalOpen(o);
+          if (!o) setComposerModalSeed(null);
+        }}
+        mode="operator"
+        entrySource="desk-scheduler"
+        callerPersonId={requesterPersonId}
+        hostFirstName={person?.first_name ?? null}
+        initialDraft={composerModalSeed ?? undefined}
+        onBooked={() => {
+          setComposerModalOpen(false);
+        }}
+      />
+
       {quickBookPayload && (
         <QuickBookPopover
           open={quickBookOpen}
@@ -730,15 +751,9 @@ export function DeskSchedulerPage() {
             setCreateDialogOpen(true);
           }}
           onAdvanced={(draft) => {
-            // TEMPORARY in Phase 2: opens the existing centered dialog
-            // until Phase 3 ships <BookingComposerModal>.
             setQuickBookOpen(false);
-            setCreatePayload({
-              room: quickBookPayload.room,
-              startAtIso: draft.startAt ?? quickBookPayload.startAtIso,
-              endAtIso: draft.endAt ?? quickBookPayload.endAtIso,
-            });
-            setCreateDialogOpen(true);
+            setComposerModalSeed(draft);
+            setComposerModalOpen(true);
           }}
         />
       )}
