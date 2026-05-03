@@ -197,3 +197,25 @@ Mobile is a first-class consideration — `docs/users.md` says many requesters b
 ## Open questions
 
 None at this point — design is locked. Implementation may surface small choices (exact meal-window default values, exact pane ratio at narrower viewports, AV equipment signal source); resolve inline at implementation time and update this doc if the answer is non-trivial.
+
+## Implementation status (2026-05-03)
+
+Shipped (autonomous run on `main`, ~30 commits between `635e5f9` and `99173cc`):
+
+- **Phase 1** — `tenant_meal_windows` migration (00283, on remote) + API loader (`MealWindowsService`, `GET /tenants/current/meal-windows`) + `useMealWindows` hook + `BookingDraft` + `validateDraft` + `defaultTitle` + `getSuggestions` (pure, 8 tests) + `useBookingDraft` + `deriveBuildingId`.
+- **Phase 2** — `<QuickBookPopover>` (with mobile bottom-sheet variant added in Phase 6.6) wired to scheduler drag-create. `PopoverContent` extended additively to forward an `anchor` prop to base-ui's `Positioner` for tile-anchoring.
+- **Phase 3** — `<BookingComposerModal>` shell (two-pane, max-h `min(85vh, 680px)`, spring-open at `var(--ease-spring)` 380ms, backdrop slow-fade at `var(--ease-smooth)` 240ms). `DialogContent` extended additively with a `disablePortal` prop to prevent double-overlay nesting when the caller provides its own `<DialogOverlay>`.
+- **Phase 4** — Left pane: `TitleInput` (live placeholder), `TimeRow` (Calendar + 15-min mono slots in popovers), `RepeatRow` (popover wrapping legacy `RecurrenceField`), `DescriptionRow`, `HostRow` (operator-mode "Booking for"), `VisitorsRow` (delegates to legacy `<VisitorsSection>` which already renders chips with name + email + Remove control).
+- **Phase 5** — Right pane: `AddinStack` (single-expand) + `AddinCard` (`grid-template-rows: 0fr→1fr`, `Suggested` chip + tooltip) + `RoomCard` (wraps `RoomPickerInline`) + `CateringCard` + `AvCard` (both wrap `ServicePickerBody` filtered by service_type) + `getSuggestions` wired in the modal.
+- **Phase 6** — Submit handler + visitors flush + footer (`BookingPayload` extended with `title` + `description` since the canonical `bookings` schema accepts them); Advanced ↗ escalates from popover to modal; popover Book posts directly via `useCreateBooking`; `/desk/bookings`, portal `/book-room`, and the scheduler room-inspector "Book" button all migrated to `<BookingComposerModal>`. Mobile responsive: popover → bottom Sheet, modal → full-bleed (`rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,680px)]`). Legacy `<BookingComposer>` and `<SchedulerCreatePopover>` files deleted; everything else under `booking-composer/` (state.ts, submit.ts, helpers.ts, sections/, service-picker-sheet.tsx) is reused by v2.
+
+Verification: 40/40 web vitest tests pass · 1146/1170 api jest tests pass (3 skipped + 21 todo, all pre-existing) · web lint clean (23 pre-existing warnings, none from this work) · web + api builds clean. Live smoke (`pnpm smoke:work-orders`) deferred to a manual check — no work-order code changed in this redesign.
+
+Notes / accepted deltas:
+
+- `Space.has_av_equipment` / `has_catering_vendor` / `needs_visitor_pre_registration` ship gated `false` in Phase 5 — when the API contract widens to expose them, the suggestion engine starts firing without a redesign.
+- The room-inspector "Book" button no longer enforces `fixedRoom` — the v2 modal's `RoomCard` lets the operator swap rooms (small accepted UX delta vs. the legacy `<SchedulerCreatePopover>`).
+- Conflict-strike on the time-slot popover wired in a follow-up once the lightweight conflict-check API is exposed.
+- Admin UI for editing tenant meal windows is a follow-up; v1 ships seed defaults only (Lunch 11:30–13:30, Dinner 17:00–19:00).
+- Multi-room atomic bookings — out of scope for this redesign. Re-introduce by adding back the legacy `additional-rooms-field` plumbing if needed.
+- Visitors v2 smart entity recognition (the `<VisitorOrAttendeePicker>` swap) is deferred.

@@ -1,3 +1,12 @@
+> **Note (2026-05-03):** The `<AddVisitorToBookingDialog>` surface defined in
+> this spec inherits the polish from the create-booking modal redesign that
+> landed on `main`
+> ([`2026-05-02-create-booking-modal-redesign.md`](2026-05-02-create-booking-modal-redesign.md)).
+> Specifically: shadcn Field primitives mandatory, `var(--ease-snap)` /
+> `var(--ease-smooth)` motion tokens, hairlines over shadows, 4px vertical
+> grid. When this spec is implemented, follow the same shape as
+> `apps/web/src/components/booking-composer-v2/left-pane/visitors-row.tsx`.
+
 # Visitors on booking detail — design
 
 **Date:** 2026-05-02
