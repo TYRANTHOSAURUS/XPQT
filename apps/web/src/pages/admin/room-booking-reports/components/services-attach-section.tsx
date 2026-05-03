@@ -14,12 +14,19 @@ const TYPE_LABELS: Record<string, string> = {
 export function ServicesAttachSection({
   rate,
   breakdown,
+  totalBookings,
 }: {
   rate: number;
   breakdown: Record<string, number>;
+  /**
+   * Number of bookings-with-services in the window (the matching denominator
+   * for the per-bucket counts in `breakdown`). A booking with both catering
+   * and AV appears in BOTH buckets — so summing the breakdown values can
+   * exceed this; per-bucket pct is `n / totalBookings`, not `n / sum`.
+   */
+  totalBookings: number;
 }) {
   const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((sum, [, n]) => sum + n, 0);
 
   return (
     <Card>
@@ -27,6 +34,7 @@ export function ServicesAttachSection({
         <CardTitle>Services attach</CardTitle>
         <CardDescription>
           What share of bookings come with linked services (catering, AV, etc.).
+          Bookings with multiple kinds of service appear in every matching row.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -50,7 +58,7 @@ export function ServicesAttachSection({
                     <span className="tabular-nums">
                       {formatCount(n)}
                       <span className="ml-1 text-xs text-muted-foreground">
-                        ({total > 0 ? pct(n / total) : '—'})
+                        ({totalBookings > 0 ? pct(n / totalBookings) : '—'})
                       </span>
                     </span>
                   </li>

@@ -802,7 +802,7 @@ function bookingToLegacyReservation(
     check_in_required: boolean;
     check_in_grace_minutes: number;
   },
-  _slotId: string | null,
+  slotId: string | null,
   appliedRuleIds: string[],
   source: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception',
   slotType: 'room' | 'desk' | 'asset' | 'parking',
@@ -818,6 +818,10 @@ function bookingToLegacyReservation(
 
   return {
     id: booking.id,
+    // /full-review I2 fix — surface the per-slot id so multi-room
+    // consumers can address a specific room. `''` only when the caller
+    // has no slot id yet (rare; create_booking always returns one).
+    slot_id: slotId ?? '',
     tenant_id: booking.tenant_id,
     // The legacy `reservation_type` is `'room' | 'desk' | 'parking' | 'other'`;
     // the new slot_type is `'room' | 'desk' | 'asset' | 'parking'`. Map

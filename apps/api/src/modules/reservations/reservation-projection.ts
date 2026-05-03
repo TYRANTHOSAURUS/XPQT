@@ -75,6 +75,7 @@ export function slotAndBookingToReservation(
 ): Reservation {
   return {
     id: booking.id,                                // BREAKING — was reservations.id
+    slot_id: slot.id,                              // canonical booking_slots.id (NEW; post-/full-review I2 fix)
     tenant_id: booking.tenant_id,
     // 00277:122 enumerates room/desk/asset/parking; legacy ReservationType
     // included 'other' which we map back from 'asset' so consumers checking

@@ -162,6 +162,7 @@ function ReportBody({
         <ServicesAttachSection
           rate={data.kpis.services_attach_rate}
           breakdown={data.services_breakdown}
+          totalBookings={data.services_breakdown_total_bookings}
         />
       </div>
     </div>

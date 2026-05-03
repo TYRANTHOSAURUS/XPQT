@@ -77,7 +77,13 @@ export interface BookingsOverviewResponse {
   no_show_watchlist: NoShowWatchlistRow[];
   lead_time_buckets: { same_day: number; lt_24h: number; lt_7d: number; ge_7d: number };
   duration_buckets: { le_30m: number; le_1h: number; le_2h: number; gt_2h: number };
+  // Multi-set per-booking distribution: a booking with both catering AND
+  // AV is counted ONCE in each of those two buckets (the booking has both
+  // kinds of service). Use `services_breakdown_total_bookings` as the
+  // denominator for percentages — summing the breakdown values WILL
+  // exceed it on tenants with mixed-service bundles.
   services_breakdown: Record<string, number>;
+  services_breakdown_total_bookings: number;
 }
 
 // ===== Utilization =====

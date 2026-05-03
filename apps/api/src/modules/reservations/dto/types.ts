@@ -187,7 +187,21 @@ export interface BookingWithSlots {
  * any new code. Removed once all consumers migrate.
  */
 export interface Reservation {
+  /**
+   * BREAKING POST-CANONICALIZATION: this is now a `bookings.id`, not a
+   * `reservations.id` (the old reservations table is gone). Multi-room
+   * bookings produce N rows of this projection that all share the same
+   * `id` — disambiguate via `slot_id` below if you need the per-slot row.
+   */
   id: string;
+  /**
+   * The underlying `booking_slots.id` for this projection row. Always
+   * non-null post-canonicalization (every projection row is built from
+   * exactly one slot). Use this when you need to address a specific room
+   * in a multi-room booking; otherwise `id` (= booking id) is the right
+   * key for booking-level operations.
+   */
+  slot_id: string;
   tenant_id: string;
   reservation_type: ReservationType;
   space_id: string;

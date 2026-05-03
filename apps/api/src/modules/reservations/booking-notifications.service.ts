@@ -53,7 +53,7 @@ export class BookingNotificationsService {
       await this.notifications.send({
         notification_type: 'reservation_created',
         recipient_person_id: reservation.requester_person_id,
-        related_entity_type: 'reservation',
+        related_entity_type: 'booking',
         related_entity_id: reservation.id,
         subject,
         body,
@@ -81,7 +81,7 @@ export class BookingNotificationsService {
       await this.notifications.send({
         notification_type: 'reservation_cancelled',
         recipient_person_id: reservation.requester_person_id,
-        related_entity_type: 'reservation',
+        related_entity_type: 'booking',
         related_entity_id: reservation.id,
         subject,
         body,
@@ -111,7 +111,7 @@ export class BookingNotificationsService {
       await this.notifications.send({
         notification_type: 'reservation_released',
         recipient_person_id: reservation.requester_person_id,
-        related_entity_type: 'reservation',
+        related_entity_type: 'booking',
         related_entity_id: reservation.id,
         subject,
         body,
@@ -142,7 +142,7 @@ export class BookingNotificationsService {
         if (a.type === 'team') {
           await this.notifications.sendToTeam(a.id, {
             notification_type: 'reservation_approval_requested',
-            related_entity_type: 'reservation',
+            related_entity_type: 'booking',
             related_entity_id: reservation.id,
             subject,
             body,
@@ -151,7 +151,7 @@ export class BookingNotificationsService {
           await this.notifications.send({
             notification_type: 'reservation_approval_requested',
             recipient_person_id: a.id,
-            related_entity_type: 'reservation',
+            related_entity_type: 'booking',
             related_entity_id: reservation.id,
             subject,
             body,
@@ -190,7 +190,7 @@ export class BookingNotificationsService {
         notification_type:
           decision === 'approved' ? 'reservation_approved' : 'reservation_rejected',
         recipient_person_id: reservation.requester_person_id,
-        related_entity_type: 'reservation',
+        related_entity_type: 'booking',
         related_entity_id: reservation.id,
         subject,
         body,
@@ -287,7 +287,7 @@ export class BookingNotificationsService {
     await this.notifications.send({
       notification_type: 'reservation_check_in_reminder',
       recipient_person_id: reservation.requester_person_id,
-      related_entity_type: 'reservation',
+      related_entity_type: 'booking',
       related_entity_id: reservation.id,
       subject,
       body,
