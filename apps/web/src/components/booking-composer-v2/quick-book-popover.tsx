@@ -12,6 +12,14 @@ import {
   FieldLabel,
 } from '@/components/ui/field';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { cn } from '@/lib/utils';
 import { useMealWindows } from '@/api/meal-windows';
 import { useCreateBooking } from '@/api/room-booking';
 import { buildBookingPayload } from '@/components/booking-composer/submit';
@@ -79,6 +87,8 @@ export function QuickBookPopover({
   onBooked,
   onAdvanced,
 }: QuickBookPopoverProps) {
+  const isMobile = useIsMobile();
+
   const initialMinutes = useMemo(() => {
     const s = new Date(startAtIso).getTime();
     const e = new Date(endAtIso).getTime();
@@ -197,6 +207,92 @@ export function QuickBookPopover({
     }
   };
 
+  const renderBody = () => (
+    <>
+      <FieldGroup>
+        <Field>
+          <FieldLabel htmlFor="qbp-title" className="sr-only">
+            Title
+          </FieldLabel>
+          <Input
+            id="qbp-title"
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={placeholder}
+            className="h-9 text-sm font-medium"
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="qbp-duration" className="text-xs text-muted-foreground">
+            Duration
+          </FieldLabel>
+          <ToggleGroup
+            id="qbp-duration"
+            value={[chip]}
+            onValueChange={(v: string[]) => {
+              const next = v[0];
+              if (next) setChip(next);
+            }}
+            variant="outline"
+            className="h-8 w-full justify-start"
+          >
+            {DURATION_CHIPS.map((c) => (
+              <ToggleGroupItem
+                key={c.value}
+                value={c.value}
+                className="h-8 px-3 text-xs tabular-nums"
+              >
+                {c.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </Field>
+        {hint && (
+          <FieldDescription className="text-[12px]">{hint}</FieldDescription>
+        )}
+      </FieldGroup>
+      <div className={cn('flex items-center gap-2 pt-1', isMobile ? 'justify-end' : 'justify-between')}>
+        {!isMobile && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-xs text-muted-foreground"
+            onClick={handleAdvanced}
+          >
+            Advanced ↗
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => { void handleBook(); }}
+          disabled={createBooking.isPending}
+          className="min-w-[5rem]"
+        >
+          {createBooking.isPending ? 'Booking…' : 'Book'}
+        </Button>
+      </div>
+    </>
+  );
+
+  if (isMobile) {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          side="bottom"
+          className="rounded-t-xl p-3"
+        >
+          <SheetHeader>
+            <SheetTitle className="sr-only">Quick book</SheetTitle>
+          </SheetHeader>
+          <div onKeyDown={onKeyDown}>{renderBody()}</div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverContent
@@ -207,69 +303,7 @@ export function QuickBookPopover({
         className="w-[360px] gap-3 p-3"
         onKeyDown={onKeyDown}
       >
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="qbp-title" className="sr-only">
-              Title
-            </FieldLabel>
-            <Input
-              id="qbp-title"
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={placeholder}
-              className="h-9 text-sm font-medium"
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="qbp-duration" className="text-xs text-muted-foreground">
-              Duration
-            </FieldLabel>
-            <ToggleGroup
-              id="qbp-duration"
-              value={[chip]}
-              onValueChange={(v: string[]) => {
-                const next = v[0];
-                if (next) setChip(next);
-              }}
-              variant="outline"
-              className="h-8 w-full justify-start"
-            >
-              {DURATION_CHIPS.map((c) => (
-                <ToggleGroupItem
-                  key={c.value}
-                  value={c.value}
-                  className="h-8 px-3 text-xs tabular-nums"
-                >
-                  {c.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </Field>
-          {hint && (
-            <FieldDescription className="text-[12px]">{hint}</FieldDescription>
-          )}
-        </FieldGroup>
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="text-xs text-muted-foreground"
-            onClick={handleAdvanced}
-          >
-            Advanced ↗
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => { void handleBook(); }}
-            disabled={createBooking.isPending}
-            className="min-w-[5rem]"
-          >
-            {createBooking.isPending ? 'Booking…' : 'Book'}
-          </Button>
-        </div>
+        {renderBody()}
       </PopoverContent>
     </Popover>
   );
