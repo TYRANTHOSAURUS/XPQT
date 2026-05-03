@@ -157,7 +157,20 @@ export interface BookingSlot {
  * documented at the top of this file.
  */
 export interface Reservation {
+  /**
+   * BREAKING POST-CANONICALIZATION: this is now a `bookings.id`, not the
+   * legacy `reservations.id`. Multi-room bookings produce N projection
+   * rows that all share the same `id` — disambiguate via `slot_id`.
+   */
   id: string;
+  /**
+   * The underlying `booking_slots.id` for this projection row. Always
+   * non-null post-canonicalization. Use this when you need to address a
+   * specific room in a multi-room booking; otherwise `id` (= booking id)
+   * is the right key for booking-level operations. Mirrors the API
+   * Reservation interface (apps/api/src/modules/reservations/dto/types.ts).
+   */
+  slot_id: string;
   tenant_id: string;
   // `module_number` is intentionally omitted post-canonicalisation (2026-05-02).
   // The legacy `reservations.module_number` column lived on the dropped
@@ -285,6 +298,10 @@ export interface BookingPayload {
   host_person_id?: string | null;
   start_at: string;
   end_at: string;
+  /** Optional booking title. Maps to `bookings.title` (00277:32). */
+  title?: string | null;
+  /** Optional booking description. Maps to `bookings.description` (00277:33). */
+  description?: string | null;
   attendee_count?: number;
   attendee_person_ids?: string[];
   recurrence_rule?: RecurrenceRule;

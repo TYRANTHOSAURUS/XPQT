@@ -9,8 +9,10 @@ import {
   DialogPortal,
   DialogOverlay,
 } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Loader2 } from 'lucide-react';
 import { useBookingDraft } from './use-booking-draft';
-import { type BookingDraft } from './booking-draft';
+import { type BookingDraft, validateDraft } from './booking-draft';
 import type { ComposerMode, ComposerEntrySource } from '../booking-composer/state';
 import { cn } from '@/lib/utils';
 import { TitleInput } from './left-pane/title-input';
@@ -27,6 +29,10 @@ import { RoomCard } from './right-pane/room-card';
 import { CateringCard } from './right-pane/catering-card';
 import { AvCard } from './right-pane/av-card';
 import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestions';
+import { useCreateBooking } from '@/api/room-booking';
+import { useCreateInvitation } from '@/api/visitors';
+import { buildBookingPayload } from '@/components/booking-composer/submit';
+import { toastError, toastSuccess } from '@/lib/toast';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -55,6 +61,7 @@ export function BookingComposerModal({
   callerPersonId,
   hostFirstName,
   initialDraft,
+  onBooked,
 }: BookingComposerModalProps) {
   const composer = useBookingDraft({
     seed: initialDraft
@@ -105,6 +112,100 @@ export function BookingComposerModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const createBooking = useCreateBooking();
+  const createInvitation = useCreateInvitation();
+  const validation = validateDraft(composer.draft, mode);
+  const submitting = createBooking.isPending;
+
+  const handleSubmit = async () => {
+    if (validation) return;
+
+    // Build a ComposerState-compatible adapter from the BookingDraft.
+    // BookingDraft is intentionally field-compatible (see booking-draft.ts)
+    // with ComposerState except: `description` → `notes`, `errors` absent,
+    // `additionalSpaceIds` absent. Supply the gaps here.
+    const adapter = {
+      spaceId: composer.draft.spaceId!,
+      additionalSpaceIds: [] as string[],
+      startAt: composer.draft.startAt!,
+      endAt: composer.draft.endAt!,
+      attendeeCount: composer.draft.attendeeCount,
+      attendeePersonIds: composer.draft.attendeePersonIds,
+      requesterPersonId: composer.draft.requesterPersonId,
+      hostPersonId: composer.draft.hostPersonId,
+      costCenterId: composer.draft.costCenterId,
+      recurrence: composer.draft.recurrence,
+      services: composer.draft.services,
+      visitors: composer.draft.visitors,
+      templateId: composer.draft.templateId,
+      // BookingDraft uses `description`; ComposerState calls the same
+      // field `notes` — map it here.
+      notes: composer.draft.description,
+      errors: {} as Record<string, string>,
+    };
+
+    const payload = buildBookingPayload({
+      state: adapter,
+      mode,
+      entrySource: 'desk-list',
+      callerPersonId,
+    });
+    if (!payload) return;
+
+    // Attach title + description from the draft. `BookingPayload` carries
+    // these optional fields (added alongside this task); the backend
+    // already accepts them (dto/types.ts:277).
+    const titled = {
+      ...payload,
+      title: composer.draft.title || undefined,
+      description: composer.draft.description || undefined,
+    };
+
+    try {
+      const result = await createBooking.mutateAsync(titled);
+      // Post-canonicalisation (00277): the booking IS the bundle.
+      // `result.id` is the canonical booking id to pass to visitors.
+      // `booking_bundle_id` was dropped from the Reservation type in
+      // slice H3 (migration 00286); `reservation_id` was dropped from
+      // CreateInvitationPayload in 00278:38.
+      const bookingId = result.id;
+
+      if (composer.draft.visitors.length > 0) {
+        const buildingId = deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId);
+        for (const v of composer.draft.visitors) {
+          try {
+            await createInvitation.mutateAsync({
+              first_name: v.first_name,
+              last_name: v.last_name,
+              email: v.email,
+              phone: v.phone,
+              company: v.company,
+              visitor_type_id: v.visitor_type_id,
+              expected_at: composer.draft.startAt!,
+              expected_until: composer.draft.endAt ?? undefined,
+              building_id: buildingId ?? '',
+              meeting_room_id: composer.draft.spaceId ?? undefined,
+              // Send the canonical field (00278:41). Legacy alias
+              // `booking_bundle_id` also accepted by backend for now.
+              booking_id: bookingId,
+            });
+          } catch (err) {
+            toastError(`Couldn't invite ${v.first_name}`, { error: err });
+          }
+        }
+      }
+
+      toastSuccess('Booked');
+      onOpenChange(false);
+      onBooked?.(bookingId);
+    } catch (err) {
+      toastError("Couldn't book the room", {
+        error: err,
+        retry: () => void handleSubmit(),
+      });
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPortal>
@@ -119,7 +220,7 @@ export function BookingComposerModal({
           disablePortal
           showCloseButton={false}
           className={cn(
-            'w-[880px] max-w-[calc(100vw-2rem)] gap-0 p-0',
+            'flex flex-col w-[880px] max-w-[calc(100vw-2rem)] gap-0 p-0',
             'h-auto max-h-[min(85vh,680px)]',
             'rounded-xl overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
@@ -132,7 +233,7 @@ export function BookingComposerModal({
               Configure a room booking. Title, time, and add-ins.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex h-full min-h-[480px] flex-col sm:flex-row">
+          <div className="flex flex-1 min-h-[480px] flex-col sm:flex-row">
             {/* Left pane — 520px on desktop. */}
             <div
               data-testid="booking-composer-left-pane"
@@ -239,6 +340,38 @@ export function BookingComposerModal({
               </AddinStack>
             </aside>
           </div>
+          <footer className="flex items-center justify-end gap-2 border-t border-border/60 bg-background/85 px-5 py-3 backdrop-blur-md">
+            {validation && (
+              <span className="mr-auto text-xs text-amber-700 dark:text-amber-300">
+                {validation}
+              </span>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void handleSubmit()}
+              disabled={Boolean(validation) || submitting}
+              className="min-w-[6rem]"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="mr-1 size-3.5 animate-spin" />
+                  Booking…
+                </>
+              ) : (
+                'Book'
+              )}
+            </Button>
+          </footer>
         </DialogContent>
       </DialogPortal>
     </Dialog>
