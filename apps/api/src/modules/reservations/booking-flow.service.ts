@@ -836,7 +836,8 @@ function bookingToLegacyReservation(
     // Booking row when rewritten.
     recurrence_rule: null,
     recurrence_series_id: booking.recurrence_series_id,
-    recurrence_master_id: null,                 // dropped in canonical schema
+    // recurrence_master_id field dropped from the projection — the
+    // canonical series link is recurrence_series_id (one direction).
     recurrence_index: booking.recurrence_index,
     recurrence_overridden: booking.recurrence_overridden,
     recurrence_skipped: booking.recurrence_skipped,
@@ -856,7 +857,8 @@ function bookingToLegacyReservation(
     source,
     booked_by_user_id: booking.booked_by_user_id,
     cost_amount_snapshot: booking.cost_amount_snapshot,
-    multi_room_group_id: null,                  // dropped in canonical schema
+    // multi_room_group_id field dropped from the projection — multi-room
+    // atomicity is expressed via shared booking_id on slots.
     calendar_event_id: booking.calendar_event_id,
     calendar_provider: booking.calendar_provider,
     calendar_etag: booking.calendar_etag,

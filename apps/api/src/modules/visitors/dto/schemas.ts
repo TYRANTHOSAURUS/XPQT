@@ -39,11 +39,9 @@ export const CreateInvitationSchema = z.object({
   building_id: uuidString(),
   meeting_room_id: uuidString().optional(),
   // Post-canonicalisation (2026-05-02): canonical link is `booking_id`.
-  // The legacy `booking_bundle_id` stays accepted as an alias for callers
-  // that haven't migrated; the service prefers `booking_id` when both
-  // are present. `reservation_id` is gone (column dropped 00278:38).
+  // The legacy `booking_bundle_id` and `reservation_id` aliases were
+  // dropped — verified zero callers still passing them.
   booking_id: uuidString().optional(),
-  booking_bundle_id: uuidString().optional(),
   co_host_person_ids: z.array(uuidString()).max(20).optional(),
   notes_for_visitor: z.string().max(2000).optional(),
   notes_for_reception: z.string().max(2000).optional(),

@@ -1841,16 +1841,15 @@ export class TicketService {
 
     const ticketId = (data as { id: string }).id;
 
-    // System event for audit + activity feed.
-    // Carry both `booking_bundle_id` (legacy key kept for audit-consumer
-    // continuity — historical events use this name) AND the canonical
-    // `booking_id` (00278:87) so new dashboards/queries can read either.
+    // System event for audit + activity feed. The legacy `booking_bundle_id`
+    // alias was dropped post-canonicalization (verified via grep: zero
+    // consumers of metadata.booking_bundle_id across apps/api + apps/web).
+    // The canonical key is `booking_id` (00278:87).
     await this.addActivity(ticketId, {
       activity_type: 'system_event',
       visibility: 'system',
       metadata: {
         event: 'booking_origin_work_order_created',
-        booking_bundle_id: args.booking_bundle_id,
         booking_id: args.booking_bundle_id,
         linked_order_line_item_id: args.linked_order_line_item_id,
         ...(args.audit_metadata ?? {}),
@@ -1859,7 +1858,6 @@ export class TicketService {
 
     await this.logDomainEvent(ticketId, 'booking_origin_work_order_created', {
       ticket_id: ticketId,
-      booking_bundle_id: args.booking_bundle_id,
       booking_id: args.booking_bundle_id,
       linked_order_line_item_id: args.linked_order_line_item_id,
       ...(args.audit_metadata ?? {}),

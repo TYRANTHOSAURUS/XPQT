@@ -204,7 +204,9 @@ describe('TicketService.createBookingOriginWorkOrder', () => {
     });
     expect(sysEvent).toBeDefined();
     const md = sysEvent?.metadata as Record<string, unknown>;
-    expect(md.booking_bundle_id).toBe('bundle-XYZ');
+    // Canonical key: `booking_id` (00278:87). The legacy `booking_bundle_id`
+    // metadata alias was dropped — zero consumers in apps/api + apps/web.
+    expect(md.booking_id).toBe('bundle-XYZ');
     expect(md.linked_order_line_item_id).toBe('line-XYZ');
   });
 });

@@ -13,12 +13,12 @@
 //
 // BREAKING SEMANTICS (carried by the legacy Reservation shape post-rewrite):
 //   - `Reservation.id` is now a `bookings.id` (was `reservations.id`).
-//   - `Reservation.booking_bundle_id` is ALWAYS equal to `Reservation.id`
-//     (the booking IS the bundle now — no separate booking_bundles row).
-//   - `Reservation.multi_room_group_id` is ALWAYS null (column dropped;
-//     multi-room atomicity now lives in shared `booking_id` on slots).
-//   - `Reservation.recurrence_master_id` is ALWAYS null (column dropped;
-//     the only canonical link is `recurrence_series_id`).
+//   - `Reservation.booking_bundle_id`, `multi_room_group_id`, and
+//     `recurrence_master_id` were DROPPED from this projection. Under
+//     canonicalization the booking IS the bundle (use `id` for the
+//     bundle id); multi-room atomicity is expressed via shared
+//     `booking_id` on slots (`BookingSlot.booking_id`); the recurrence
+//     series link is one-directional via `Booking.recurrence_series_id`.
 
 export type ReservationStatus =
   | 'draft'
@@ -179,10 +179,9 @@ export interface Reservation {
   status: ReservationStatus;
   recurrence_rule: RecurrenceRule | null;
   recurrence_series_id: string | null;
-  /** ALWAYS null post-rewrite (column dropped). Field kept on the
-   *  legacy shape so existing readers compile; the only canonical
-   *  series link is `recurrence_series_id`. */
-  recurrence_master_id: string | null;
+  // recurrence_master_id field dropped — the canonical series link is
+  // recurrence_series_id (one direction). Both projections (api
+  // reservation-projection.ts + booking-flow.service.ts) stopped emitting it.
   recurrence_index: number | null;
   recurrence_overridden: boolean;
   recurrence_skipped: boolean;

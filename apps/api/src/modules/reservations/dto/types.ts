@@ -200,7 +200,10 @@ export interface Reservation {
   status: ReservationStatus;
   recurrence_rule: RecurrenceRule | null;
   recurrence_series_id: string | null;
-  recurrence_master_id: string | null;
+  // recurrence_master_id was dropped here (post-canonicalization).
+  // The series link is one-direction now: bookings reference the
+  // series via recurrence_series_id; there is no reverse "master row"
+  // pointer. Verified zero readers in apps/api + apps/web.
   recurrence_index: number | null;
   recurrence_overridden: boolean;
   recurrence_skipped: boolean;
@@ -221,7 +224,10 @@ export interface Reservation {
   source: ReservationSource;
   booked_by_user_id: string | null;
   cost_amount_snapshot: string | null; // numeric → string to preserve precision
-  multi_room_group_id: string | null;
+  // multi_room_group_id was dropped here (post-canonicalization).
+  // Multi-room atomicity is now expressed via shared `booking_id` on
+  // slots — `BookingSlot.booking_id` (00277:152). Verified zero
+  // readers in apps/api + apps/web.
   calendar_event_id: string | null;
   calendar_provider: CalendarProvider | null;
   calendar_etag: string | null;
@@ -266,9 +272,11 @@ export interface CreateReservationInput {
   recurrence_rule?: RecurrenceRule;         // creates a series if present
   recurrence_series_id?: string;            // when materialising
   recurrence_index?: number;
-  recurrence_master_id?: string;            // legacy field (no longer used post-canonicalisation; recurrence_series_id is the only link)
+  // recurrence_master_id input dropped — recurrence_series_id is the
+  // canonical link (00277).
   source?: ReservationSource;
-  multi_room_group_id?: string;             // legacy field (no longer used post-canonicalisation)
+  // multi_room_group_id input dropped — multi-room atomicity uses
+  // shared booking_id on slots now.
   // booking_bundle_id input dropped by slice H6 (migration 00288) — the
   // booking IS the bundle, so callers should pass nothing here.
   /**
