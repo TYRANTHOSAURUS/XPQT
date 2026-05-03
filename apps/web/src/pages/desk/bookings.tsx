@@ -7,23 +7,15 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
-import {
   ToggleGroup, ToggleGroupItem,
 } from '@/components/ui/toggle-group';
 import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
 import { useAuth } from '@/providers/auth-provider';
-import { useIsMobile } from '@/hooks/use-mobile';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
-import { BookingComposer } from '@/components/booking-composer/booking-composer';
+import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
 import { LateChangesWidget } from '@/components/desk/late-changes-widget';
 import { cn } from '@/lib/utils';
 
@@ -142,7 +134,6 @@ export function DeskBookingsPage() {
     allItems.find((r) => r.id === selectedId)?.space_name ?? null;
 
   const { person } = useAuth();
-  const isMobile = useIsMobile();
   const [composerOpen, setComposerOpen] = useState(false);
 
   const list = (
@@ -292,39 +283,16 @@ export function DeskBookingsPage() {
     </div>
   );
 
-  const composerSheet = (
-    <Sheet open={composerOpen} onOpenChange={setComposerOpen}>
-      <SheetContent
-        side={isMobile ? 'bottom' : 'right'}
-        className={cn(
-          'flex flex-col gap-0 p-0 sm:max-w-2xl',
-          isMobile && 'h-[90dvh] rounded-t-xl',
-        )}
-      >
-        <SheetHeader className="border-b px-5 py-4">
-          <SheetTitle>New booking</SheetTitle>
-          <SheetDescription>
-            Pick a person to book on behalf of, set the time and services,
-            then submit. Same flow you'd run on the scheduler — without the
-            calendar grid.
-          </SheetDescription>
-        </SheetHeader>
-        <div className="flex-1 overflow-y-auto px-5 py-5">
-          {person && (
-            <BookingComposer
-              open={composerOpen}
-              onOpenChange={setComposerOpen}
-              mode="operator"
-              entrySource="desk-list"
-              callerPersonId={person.id}
-              onBooked={() => {
-                setComposerOpen(false);
-              }}
-            />
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
+  const composerModal = (
+    <BookingComposerModal
+      open={composerOpen}
+      onOpenChange={setComposerOpen}
+      mode="operator"
+      entrySource="desk-list"
+      callerPersonId={person?.id ?? ''}
+      hostFirstName={person?.first_name ?? null}
+      onBooked={() => setComposerOpen(false)}
+    />
   );
 
   return (
@@ -350,7 +318,7 @@ export function DeskBookingsPage() {
           </Panel>
         )}
       </Group>
-      {composerSheet}
+      {composerModal}
     </>
   );
 }
