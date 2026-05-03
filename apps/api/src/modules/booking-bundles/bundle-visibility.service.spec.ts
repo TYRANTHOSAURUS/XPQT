@@ -149,16 +149,17 @@ describe('BundleVisibilityService.assertVisible', () => {
     expect(deps.supabase.admin.from).not.toHaveBeenCalled();
   });
 
-  it('grants approver via approvals.target_entity_type=booking_bundle match', async () => {
+  it('grants approver via approvals.target_entity_type=booking match', async () => {
     const deps = makeDeps({ approvalRows: [{ id: 'approval-1' }] });
     const svc = new BundleVisibilityService(deps.supabase as never);
 
     await expect(svc.assertVisible(SAMPLE_BUNDLE, makeCtx())).resolves.toBeUndefined();
 
     // Exactly one approvals query, with the defensive type filter present.
+    // Post-canonicalisation (00278:171-172): target_entity_type is now 'booking'.
     expect(deps.log.tablesAccessed).toEqual(['approvals']);
     expect(deps.log.eqCalls).toContainEqual({
-      table: 'approvals', col: 'target_entity_type', val: 'booking_bundle',
+      table: 'approvals', col: 'target_entity_type', val: 'booking',
     });
     expect(deps.log.eqCalls).toContainEqual({
       table: 'approvals', col: 'tenant_id', val: TENANT,
@@ -172,15 +173,16 @@ describe('BundleVisibilityService.assertVisible', () => {
   });
 
   // ─── codex-driven test ──────────────────────────────────────────────
-  // The defensive .eq('target_entity_type', 'booking_bundle') filter exists
+  // The defensive .eq('target_entity_type', 'booking') filter exists
   // because approvals.target_entity_id is shared across multiple entity
-  // types (ticket / booking_bundle / order). A theoretical UUID collision
-  // — or a tenant whose ticket and bundle UUID spaces overlap due to a
-  // restore/import — would otherwise grant cross-entity bundle access.
+  // types (ticket / booking / order / visitor_invite — see 00278:171-172
+  // CHECK constraint). A theoretical UUID collision — or a tenant whose
+  // ticket and booking UUID spaces overlap due to a restore/import —
+  // would otherwise grant cross-entity bundle access.
   //
   // We model that here by returning EMPTY rows from the mock (i.e. the
   // approvals query, with the type filter applied, finds nothing — exactly
-  // as Postgres would when the only match has a non-bundle entity type)
+  // as Postgres would when the only match has a non-booking entity type)
   // and asserting the service falls through to the WO check + then throws.
   it('does NOT grant approver when target_entity_type is wrong (defensive filter holds)', async () => {
     // No approval rows match the bundle filter; no WO rows either.
@@ -194,7 +196,7 @@ describe('BundleVisibilityService.assertVisible', () => {
     // The defensive filter MUST have been applied. If a future refactor drops
     // it, this assertion fails and the leak is caught at unit-test time.
     expect(deps.log.eqCalls).toContainEqual({
-      table: 'approvals', col: 'target_entity_type', val: 'booking_bundle',
+      table: 'approvals', col: 'target_entity_type', val: 'booking',
     });
 
     // Fell through to WO check — proving the empty approvals result didn't
@@ -210,8 +212,9 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     // Approvals checked first (and missed), then work_orders matched.
     expect(deps.log.tablesAccessed).toEqual(['approvals', 'work_orders']);
+    // Column rename per 00278:87: work_orders.booking_bundle_id → booking_id.
     expect(deps.log.eqCalls).toContainEqual({
-      table: 'work_orders', col: 'booking_bundle_id', val: BUNDLE,
+      table: 'work_orders', col: 'booking_id', val: BUNDLE,
     });
     expect(deps.log.eqCalls).toContainEqual({
       table: 'work_orders', col: 'assigned_user_id', val: USER,

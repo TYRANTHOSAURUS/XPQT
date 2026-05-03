@@ -3,13 +3,20 @@ import type { GraphEvent } from '../outlook-sync.adapter';
 
 /**
  * The reconciler does three kinds of diffs:
- *   - external event with no Prequest reservation → webhook_miss_recovered
- *   - reservation whose external_event_id is no longer in Outlook → orphan_internal
- *   - reservation + external event with mismatched times → recurrence_drift
+ *   - external event with no Prequest booking slot → webhook_miss_recovered
+ *   - booking slot whose external_event_id is no longer in Outlook → orphan_internal
+ *   - booking slot + external event with mismatched times → recurrence_drift
  *
  * We unit-test the dispatch logic by stubbing the supabase client and
  * verifying which conflict_types get inserted. The Graph fetch is stubbed
  * to short-circuit; a deeper integration test would use a Graph mock.
+ *
+ * Post-canonicalisation (2026-05-02, migrations 00276–00278): the legacy
+ * `reservations` table is dropped. `loadReservations` now queries
+ * `booking_slots` and embeds the parent `bookings` row to read
+ * `calendar_event_id` (see reconciler.service.ts:193-219). The mock
+ * mirrors that shape — rows expose `bookings: { calendar_event_id }`
+ * which the service maps into `external_event_id`.
  */
 describe('ReconcilerService.reconcileSpace', () => {
   function buildSvc(opts: {
@@ -20,14 +27,24 @@ describe('ReconcilerService.reconcileSpace', () => {
     const supabase = {
       admin: {
         from: (table: string) => {
-          if (table === 'reservations') {
+          if (table === 'booking_slots') {
+            // Service select shape (reconciler.service.ts:195):
+            //   'id, start_at, end_at, status, bookings!inner(calendar_event_id)'
+            // Chain: select → eq(tenant) → eq(space) → gte(start) → lte(start) → in(status)
+            const rows = opts.reservations.map((r) => ({
+              id: r.id,
+              start_at: r.start_at,
+              end_at: r.end_at,
+              status: 'confirmed',
+              bookings: { calendar_event_id: r.external_event_id },
+            }));
             return chainOf({
               select: () => ({
                 eq: () => ({
                   eq: () => ({
                     gte: () => ({
                       lte: () => ({
-                        in: async () => ({ data: opts.reservations.map((r) => ({ ...r, status: 'confirmed' })), error: null }),
+                        in: async () => ({ data: rows, error: null }),
                       }),
                     }),
                   }),

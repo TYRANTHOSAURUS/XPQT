@@ -1,58 +1,87 @@
 import { RecurrenceService } from './recurrence.service';
-import type { Reservation } from './dto/types';
+import type { Booking, BookingSlot } from './dto/types';
 
 describe('RecurrenceService.materialize', () => {
-  function makeMaster(): Reservation {
+  // Booking-canonicalisation rewrite (2026-05-02): the master is now read as
+  // a `booking_slots` row joined with its parent `bookings` row (see
+  // recurrence.service.ts:327-339 + reservation-projection.ts:55-65). The
+  // legacy single-row `reservations` read no longer exists.
+
+  function makeMasterBooking(): Booking {
     return {
       id: 'MASTER',
       tenant_id: 'T',
-      space_id: 'S',
-      reservation_type: 'room',
+      title: null,
+      description: null,
       requester_person_id: 'P',
       host_person_id: null,
+      booked_by_user_id: 'U',
+      location_id: 'S',
       start_at: '2026-05-01T09:00:00Z',
       end_at: '2026-05-01T10:00:00Z',
-      attendee_count: 2,
-      attendee_person_ids: [],
+      timezone: 'UTC',
       status: 'confirmed',
-      recurrence_rule: null,
-      recurrence_series_id: 'SER',
-      recurrence_master_id: 'MASTER',
-      recurrence_index: 0,
-      recurrence_overridden: false,
-      recurrence_skipped: false,
-      linked_order_id: null,
-      approval_id: null,
-      setup_buffer_minutes: 0,
-      teardown_buffer_minutes: 0,
-      effective_start_at: '2026-05-01T09:00:00Z',
-      effective_end_at: '2026-05-01T10:00:00Z',
-      check_in_required: false,
-      check_in_grace_minutes: 15,
-      checked_in_at: null,
-      released_at: null,
-      cancellation_grace_until: null,
+      source: 'portal',
+      cost_center_id: null,
+      cost_amount_snapshot: null,
       policy_snapshot: {},
       applied_rule_ids: [],
-      source: 'portal',
-      booked_by_user_id: 'U',
-      cost_amount_snapshot: null,
-      multi_room_group_id: null,
+      config_release_id: null,
       calendar_event_id: null,
       calendar_provider: null,
       calendar_etag: null,
       calendar_last_synced_at: null,
-      booking_bundle_id: null,
+      // recurrence_series_id mirrors the series being materialised so
+      // recurrence.service.ts:390 finds the row when scanning existing indices.
+      recurrence_series_id: 'SER',
+      recurrence_index: 0,
+      recurrence_overridden: false,
+      recurrence_skipped: false,
+      template_id: null,
       created_at: '2026-05-01T09:00:00Z',
       updated_at: '2026-05-01T09:00:00Z',
     };
   }
 
+  function makeMasterSlotEmbed(booking: Booking): BookingSlot & {
+    bookings: Booking;
+  } {
+    // The shape returned by the SLOT_WITH_BOOKING_SELECT embed
+    // (reservation-projection.ts:131-143). Slot fields live at the top level;
+    // the parent booking is nested under `bookings`.
+    return {
+      id: 'MASTER-SLOT',
+      tenant_id: 'T',
+      booking_id: booking.id,
+      slot_type: 'room',
+      space_id: 'S',
+      start_at: booking.start_at,
+      end_at: booking.end_at,
+      setup_buffer_minutes: 0,
+      teardown_buffer_minutes: 0,
+      effective_start_at: booking.start_at,
+      effective_end_at: booking.end_at,
+      attendee_count: 2,
+      attendee_person_ids: [],
+      status: booking.status,
+      check_in_required: false,
+      check_in_grace_minutes: 15,
+      checked_in_at: null,
+      released_at: null,
+      cancellation_grace_until: null,
+      display_order: 0,
+      created_at: booking.created_at,
+      updated_at: booking.updated_at,
+      bookings: booking,
+    };
+  }
+
   function makeSupabase(opts: {
     series: Record<string, unknown>;
-    master: Reservation;
+    masterBooking: Booking;
     existing: Array<{ recurrence_index: number | null }>;
   }) {
+    const masterSlotEmbed = makeMasterSlotEmbed(opts.masterBooking);
     return {
       admin: {
         from: (table: string) => {
@@ -60,7 +89,8 @@ describe('RecurrenceService.materialize', () => {
             return {
               select: () => ({
                 eq: () => ({
-                  maybeSingle: () => Promise.resolve({ data: opts.series, error: null }),
+                  maybeSingle: () =>
+                    Promise.resolve({ data: opts.series, error: null }),
                 }),
               }),
               update: () => ({
@@ -68,19 +98,33 @@ describe('RecurrenceService.materialize', () => {
               }),
             };
           }
-          if (table === 'reservations') {
+          // Master booking projection — recurrence.service.ts:328-333.
+          // Chain shape: .from('booking_slots').select(...).eq('booking_id', X)
+          //   .order(...).limit(1).maybeSingle()
+          if (table === 'booking_slots') {
             return {
               select: () => ({
-                eq: (_k: string, v: string) => {
-                  if (v === 'MASTER') {
-                    return {
-                      maybeSingle: () => Promise.resolve({ data: opts.master, error: null }),
-                    };
-                  }
-                  return {
-                    eq: () => Promise.resolve({ data: opts.existing, error: null }),
-                  };
-                },
+                eq: () => ({
+                  order: () => ({
+                    limit: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({ data: masterSlotEmbed, error: null }),
+                    }),
+                  }),
+                }),
+              }),
+            };
+          }
+          // Existing-indices scan — recurrence.service.ts:386-390.
+          // Chain shape: .from('bookings').select('recurrence_index')
+          //   .eq('tenant_id', T).eq('recurrence_series_id', SER)
+          if (table === 'bookings') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  eq: () =>
+                    Promise.resolve({ data: opts.existing, error: null }),
+                }),
               }),
             };
           }
@@ -100,7 +144,9 @@ describe('RecurrenceService.materialize', () => {
   }
 
   it('creates occurrences via bookingFlow + skips conflicts on 23P01', async () => {
-    const master = makeMaster();
+    const masterBooking = makeMasterBooking();
+    // Series row shape — recurrence.service.ts:302-314.
+    // `parent_booking_id` replaced legacy `parent_reservation_id` (00278:179-181).
     const series = {
       id: 'SER',
       tenant_id: 'T',
@@ -110,18 +156,18 @@ describe('RecurrenceService.materialize', () => {
       max_occurrences: 365,
       holiday_calendar_id: null,
       materialized_through: '2026-05-01T00:00:00Z',
-      parent_reservation_id: 'MASTER',
+      parent_booking_id: 'MASTER',
     };
 
     const supabase = makeSupabase({
       series,
-      master,
-      existing: [{ recurrence_index: 0 }],   // master is already on disk at index 0
+      masterBooking,
+      existing: [{ recurrence_index: 0 }], // master is already on disk at index 0
     });
 
     let createCalls = 0;
     const bookingFlow = {
-      create: jest.fn(async (input: any) => {
+      create: jest.fn(async (input: { start_at: string; end_at: string }) => {
         createCalls += 1;
         // Simulate conflict on the 3rd materialised occurrence.
         if (createCalls === 3) {
@@ -130,7 +176,14 @@ describe('RecurrenceService.materialize', () => {
             message: 'reservations_no_overlap',
           });
         }
-        return { ...master, id: `OCC-${createCalls}`, start_at: input.start_at };
+        // BookingFlowService.create returns a `Reservation` (legacy projection)
+        // — see booking-flow.service.ts:90. recurrence.service.ts:435,464 only
+        // reads `id`, `start_at`, `end_at` off the result.
+        return {
+          id: `OCC-${createCalls}`,
+          start_at: input.start_at,
+          end_at: input.end_at,
+        };
       }),
     };
     const conflict = {

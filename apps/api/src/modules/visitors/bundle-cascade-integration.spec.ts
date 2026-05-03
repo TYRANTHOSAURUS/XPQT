@@ -44,13 +44,16 @@ function buildHarness(opts: {
   visitor: VisitorState;
   visitorIdsForBundle?: string[];
   bundleLines?: Array<{ id: string; fulfillment_status: string | null; linked_asset_reservation_id: string | null; linked_ticket_id: string | null; order_id: string }>;
-  reservation?: {
+  // Slot-level fixture for the booking the cascade operates on.
+  // Post-canonicalisation the booking IS the bundle (00277:27); the
+  // primary slot drives findByIdOrThrow's projection
+  // (reservation.service.ts:161, reservation-projection.ts:55-65).
+  // BUNDLE here is the booking id (= bundle id under canonicalisation).
+  slot?: {
     id: string;
-    tenant_id: string;
     space_id: string;
     start_at: string;
     end_at: string;
-    booking_bundle_id: string | null;
   };
 }) {
   const transitionCalls: Array<{ visitor_id: string; to: VisitorStatus }> = [];
@@ -94,9 +97,12 @@ function buildHarness(opts: {
       return { rows: [], rowCount: 0 };
     }),
     queryOne: jest.fn(async (_sql: string, _params: unknown[] = []) => null),
-    queryMany: jest.fn(async (sql: string, params: unknown[] = []) => {
+    queryMany: jest.fn(async (sql: string, _params: unknown[] = []) => {
       const t = sql.trim().toLowerCase();
-      if (t.includes('booking_bundle_id = $2')) {
+      // Adapter resolves linked visitors via visitors.booking_id (00278:41 —
+      // booking_bundle_id was renamed to booking_id; reservation_id was
+      // dropped entirely in 00280). See bundle-cascade.adapter.ts:317-321.
+      if (t.includes('booking_id = $2')) {
         return (opts.visitorIdsForBundle ?? [opts.visitor.id]).map((id) => ({ id }));
       }
       return [];
@@ -116,30 +122,90 @@ function buildHarness(opts: {
   };
 
   // === SupabaseService mock for the cascade-cancel + reservation-edit paths ===
-  // Minimal chain that satisfies the cancel cascade + reservation editOne.
-  const reservation = opts.reservation ?? {
-    id: RES,
-    tenant_id: TENANT,
+  //
+  // Post-canonicalisation (00276-00281): `reservations` + `booking_bundles`
+  // are gone. Reads/writes target `bookings` (00277:27) + `booking_slots`
+  // (00277:116). The booking IS the bundle, so BUNDLE here is the booking
+  // id and the projection (reservation-projection.ts:121) sets
+  // r.booking_bundle_id = booking.id.
+  const slotFixture = opts.slot ?? {
+    id: 'slot1111-1111-4111-8111-slotslotslot',
     space_id: SPACE_OLD,
     start_at: '2026-05-01T10:00:00.000Z',
     end_at: '2026-05-01T11:00:00.000Z',
-    booking_bundle_id: BUNDLE,
-    attendee_count: 5,
-    attendee_person_ids: [],
-    host_person_id: null,
-    recurrence_series_id: null,
-    multi_room_group_id: null,
-    requester_person_id: PERSON,
-    source: 'portal',
-    status: 'confirmed',
   };
 
-  let lastUpdatedReservation: Record<string, unknown> = { ...reservation };
+  // Mutable slot + booking rows so editOne's update → re-read flow returns
+  // the patched values to the cascade emit step.
+  let slotRow: Record<string, unknown> = {
+    id: slotFixture.id,
+    tenant_id: TENANT,
+    booking_id: BUNDLE,
+    slot_type: 'room',
+    space_id: slotFixture.space_id,
+    start_at: slotFixture.start_at,
+    end_at: slotFixture.end_at,
+    setup_buffer_minutes: 0,
+    teardown_buffer_minutes: 0,
+    effective_start_at: slotFixture.start_at,
+    effective_end_at: slotFixture.end_at,
+    attendee_count: 5,
+    attendee_person_ids: [],
+    status: 'confirmed',
+    check_in_required: false,
+    check_in_grace_minutes: 0,
+    checked_in_at: null,
+    released_at: null,
+    cancellation_grace_until: null,
+    display_order: 0,
+    created_at: '2026-04-30T09:00:00.000Z',
+    updated_at: '2026-04-30T09:00:00.000Z',
+  };
+  let bookingRow: Record<string, unknown> = {
+    id: BUNDLE,
+    tenant_id: TENANT,
+    title: null,
+    description: null,
+    requester_person_id: PERSON,
+    host_person_id: null,
+    booked_by_user_id: null,
+    location_id: slotFixture.space_id,
+    start_at: slotFixture.start_at,
+    end_at: slotFixture.end_at,
+    timezone: 'UTC',
+    status: 'confirmed',
+    source: 'portal',
+    cost_center_id: null,
+    cost_amount_snapshot: null,
+    policy_snapshot: {},
+    applied_rule_ids: [],
+    config_release_id: null,
+    calendar_event_id: null,
+    calendar_provider: null,
+    calendar_etag: null,
+    calendar_last_synced_at: null,
+    recurrence_series_id: null,
+    recurrence_index: null,
+    recurrence_overridden: false,
+    recurrence_skipped: false,
+    template_id: null,
+    created_at: '2026-04-30T09:00:00.000Z',
+    updated_at: '2026-04-30T09:00:00.000Z',
+  };
+
+  // Build a slot+booking embed shape for SLOT_WITH_BOOKING_SELECT
+  // (reservation-projection.ts:131-143). PostgREST returns the parent under
+  // the `bookings` key when using the !inner embed.
+  const buildSlotEmbed = () => ({ ...slotRow, bookings: { ...bookingRow } });
 
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'booking_bundles') {
+        // ── bookings ─────────────────────────────────────────────────────
+        // loadBundle (cascade) selects id/requester/host/location.
+        // editOne updates booking-level fields (location_id/start_at/end_at/...).
+        // cancelBundleImpl updates status='cancelled' on the booking row.
+        if (table === 'bookings') {
           return {
             select: () => ({
               eq: () => ({
@@ -150,16 +216,78 @@ function buildHarness(opts: {
                         id: BUNDLE,
                         requester_person_id: PERSON,
                         host_person_id: null,
-                        location_id: SPACE_OLD,
-                        primary_reservation_id: RES,
+                        location_id: bookingRow.location_id,
                       },
                       error: null,
                     }),
                 }),
               }),
             }),
+            update: (patch: Record<string, unknown>) => {
+              bookingRow = { ...bookingRow, ...patch };
+              const chain: Record<string, (...args: unknown[]) => unknown> = {};
+              chain.eq = () => chain;
+              chain.in = () => chain;
+              chain.select = () => Promise.resolve({ data: [], error: null });
+              (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
+                resolve({ data: null, error: null });
+              return chain;
+            },
           };
         }
+        // ── booking_slots ────────────────────────────────────────────────
+        // findByIdOrThrow uses SLOT_WITH_BOOKING_SELECT (slot + bookings embed).
+        // editOne also reads `select('id')` to find the primary slot id, then
+        // updates the slot patch.
+        // cancelBundleImpl flips slot.status to 'cancelled'.
+        if (table === 'booking_slots') {
+          return {
+            select: (cols?: string) => {
+              // Primary-slot id-only read.
+              if (cols && cols.trim() === 'id') {
+                return {
+                  eq: () => ({
+                    eq: () => ({
+                      order: () => ({
+                        limit: () => ({
+                          maybeSingle: () =>
+                            Promise.resolve({ data: { id: slotRow.id }, error: null }),
+                        }),
+                      }),
+                    }),
+                  }),
+                };
+              }
+              // Embed read for findByIdOrThrow.
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    order: () => ({
+                      order: () => ({
+                        limit: () => ({
+                          maybeSingle: () =>
+                            Promise.resolve({ data: buildSlotEmbed(), error: null }),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              };
+            },
+            update: (patch: Record<string, unknown>) => {
+              slotRow = { ...slotRow, ...patch };
+              const chain: Record<string, (...args: unknown[]) => unknown> = {};
+              chain.eq = () => chain;
+              chain.in = () => chain;
+              chain.select = () => Promise.resolve({ data: [], error: null });
+              (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
+                resolve({ data: null, error: null });
+              return chain;
+            },
+          };
+        }
+        // ── orders ───────────────────────────────────────────────────────
+        // orderIdsForBundle (cascade) selects id by booking_id (00278:109).
         if (table === 'orders') {
           return {
             select: (cols?: string) => {
@@ -173,13 +301,14 @@ function buildHarness(opts: {
               return {
                 eq: () => ({
                   eq: () => ({
-                    maybeSingle: () => Promise.resolve({ data: { booking_bundle_id: BUNDLE }, error: null }),
+                    maybeSingle: () => Promise.resolve({ data: { booking_id: BUNDLE }, error: null }),
                   }),
                 }),
               };
             },
           };
         }
+        // ── order_line_items ─────────────────────────────────────────────
         if (table === 'order_line_items') {
           return {
             select: (cols?: string) => {
@@ -210,38 +339,24 @@ function buildHarness(opts: {
             },
           };
         }
-        if (table === 'reservations') {
+        // ── work_orders / asset_reservations / approvals ────────────────
+        // Cascade-cancel writes: work_orders.update (cascade.service:302),
+        // asset_reservations.update (286), approvals.select+update (584-596).
+        if (
+          table === 'work_orders' ||
+          table === 'asset_reservations' ||
+          table === 'approvals'
+        ) {
           return {
-            select: () => ({
-              eq: () => ({
-                eq: () => ({
-                  maybeSingle: () => Promise.resolve({ data: { ...lastUpdatedReservation }, error: null }),
-                }),
-              }),
-            }),
-            update: (patch: Record<string, unknown>) => {
-              lastUpdatedReservation = { ...lastUpdatedReservation, ...patch };
+            select: () => {
+              // approvals.select('id').eq.eq.eq → array result.
               const chain: Record<string, (...args: unknown[]) => unknown> = {};
               chain.eq = () => chain;
               chain.in = () => chain;
-              chain.select = () => ({
-                single: () => Promise.resolve({ data: { ...lastUpdatedReservation }, error: null }),
-              });
+              (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
+                resolve({ data: [], error: null });
               return chain;
             },
-          };
-        }
-        if (table === 'asset_reservations' || table === 'tickets' || table === 'approvals') {
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () => ({
-                  eq: () => ({
-                    in: () => Promise.resolve({ data: [], error: null }),
-                  }),
-                }),
-              }),
-            }),
             update: () => {
               const chain: Record<string, (...args: unknown[]) => unknown> = {};
               chain.eq = () => chain;
@@ -253,6 +368,9 @@ function buildHarness(opts: {
             },
           };
         }
+        // ── visitors ─────────────────────────────────────────────────────
+        // emitVisitorCascadeForBundle (reservation.service:732-736) reads
+        // visitors.booking_id → ids, post column-rename (00278:41).
         if (table === 'visitors') {
           return {
             select: () => ({

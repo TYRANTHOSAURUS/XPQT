@@ -98,9 +98,13 @@ describe('TicketService.createBookingOriginWorkOrder', () => {
     expect(inserts).toHaveLength(1);
     const row = inserts[0].payload;
     // Step 1c.4: parent_kind replaces ticket_kind as the discriminator.
+    // 'booking_bundle' is a discriminator label (not a column ref); 00278:81
+    // notes the literal string is harmless to keep until H6 retires it.
     expect(row.parent_kind).toBe('booking_bundle');
     expect(row.parent_ticket_id).toBeNull();
-    expect(row.booking_bundle_id).toBe('bundle-1');
+    // Column was renamed booking_bundle_id -> booking_id in 00278:87.
+    // ticket.service.ts:1813 writes args.booking_bundle_id into row.booking_id.
+    expect(row.booking_id).toBe('bundle-1');
     expect(row.linked_order_line_item_id).toBe('oli-1');
     expect(row.assigned_team_id).toBe('team-facilities');
   });

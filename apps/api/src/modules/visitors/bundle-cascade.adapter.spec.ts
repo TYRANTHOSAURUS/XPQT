@@ -101,7 +101,10 @@ function makeHarness(opts: FakeOpts = {}) {
     queryMany: jest.fn(async (sql: string, params?: unknown[]) => {
       sqlCalls.push({ sql, params });
       const trimmed = sql.trim().toLowerCase();
-      if (trimmed.includes('booking_bundle_id = $2')) {
+      // adapter (bundle-cascade.adapter.ts:320) selects on booking_id after
+      // the canonicalization rename visitors.booking_bundle_id -> booking_id
+      // (supabase/migrations/00278_retarget_sibling_tables.sql:41).
+      if (trimmed.includes('booking_id = $2')) {
         const bundle = params?.[1] as string;
         return (opts.visitorsForBundle?.[bundle] ?? []).map((id) => ({ id }));
       }

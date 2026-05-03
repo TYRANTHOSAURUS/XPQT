@@ -143,7 +143,14 @@ describe('ApprovalService.getPendingForActor', () => {
 });
 
 /**
- * Multi-approver gate for `target_entity_type='booking_bundle'`.
+ * Multi-approver gate for `target_entity_type='booking'`.
+ *
+ * Post-canonicalisation (2026-05-02, migrations 00276–00281): the booking IS
+ * the bundle (00277:27). The dispatcher branch in respond() now matches
+ * `target_entity_type === 'booking'` (approval.service.ts:440) and calls the
+ * merged `handleBookingApprovalDecided` (approval.service.ts:529). The
+ * 'reservation' / 'booking_bundle' rows are backfilled to 'booking' by
+ * 00278:163-165, so this single branch covers old + new data uniformly.
  *
  * Bug context: ApprovalRoutingService creates one row per unique approver
  * with no parallel_group / no chain. Treating "no group, no chain" as
@@ -155,7 +162,7 @@ describe('ApprovalService.getPendingForActor', () => {
  * which checks every row on the target. Tests below verify both the helper
  * and the wired-in handler.
  */
-describe('ApprovalService — booking_bundle multi-approver resolution', () => {
+describe('ApprovalService — booking multi-approver resolution', () => {
   afterEach(() => jest.restoreAllMocks());
 
   function makeBundleService(opts: {
@@ -163,21 +170,81 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
   }): {
     svc: ApprovalService;
     bundleSpy: jest.Mock;
+    notificationSpy: jest.Mock;
   } {
+    // The merged handler now writes to booking_slots + bookings (per-slot +
+    // booking-level status mirror — 00277:142-144 / 00277:49-51) before
+    // dispatching downstream. We fake each `from(table)` chain with the
+    // exact terminal shape the service awaits:
+    //   - approvals: .select().eq().eq() → rowsForTarget
+    //   - booking_slots (update): .update().eq().eq().eq().select('id')
+    //       → returns one row so the early-return at 584 isn't taken
+    //   - bookings (update): .update().eq().eq().eq().select().maybeSingle()
+    //       → returns one row for the same reason
+    //   - booking_slots (re-read): .select(SLOT_WITH_BOOKING_SELECT).eq()
+    //       .eq().order().limit().maybeSingle() → null so the notification
+    //       branch short-circuits cleanly (the projection re-read isn't
+    //       what we're testing here; bundleSpy is)
     const supabase = {
       admin: {
         from(table: string) {
-          if (table !== 'approvals') {
+          if (table === 'approvals') {
+            // .select('status').eq('tenant_id').eq('target_entity_id')
             return {
-              select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }),
+              select: () => ({
+                eq: () => ({
+                  eq: () => Promise.resolve({ data: opts.rowsForTarget, error: null }),
+                }),
+              }),
             };
           }
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () => Promise.resolve({ data: opts.rowsForTarget, error: null }),
+          if (table === 'booking_slots') {
+            // Two distinct chains land on this table:
+            //   1. update(...).eq().eq().eq().select('id')  — terminal Promise
+            //   2. select(SLOT_WITH_BOOKING_SELECT).eq().eq().order().limit().maybeSingle()
+            return {
+              update: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      select: () => Promise.resolve({ data: [{ id: 'slot-1' }], error: null }),
+                    }),
+                  }),
+                }),
               }),
-            }),
+              select: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    order: () => ({
+                      limit: () => ({
+                        maybeSingle: () => Promise.resolve({ data: null, error: null }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === 'bookings') {
+            // update(...).eq('id').eq('tenant_id').eq('status').select('id').maybeSingle()
+            return {
+              update: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      select: () => ({
+                        maybeSingle: () =>
+                          Promise.resolve({ data: { id: 'bundle-1' }, error: null }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            };
+          }
+          // Fallback for any other table the handler might touch.
+          return {
+            select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }),
           };
         },
       },
@@ -186,14 +253,15 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 'T' } as never);
 
     const bundleSpy = jest.fn().mockResolvedValue(undefined);
+    const notificationSpy = jest.fn().mockResolvedValue(undefined);
     const svc = new ApprovalService(
       supabase as never,
       { onApprovalDecision: jest.fn() } as never,
-      { onApprovalDecided: jest.fn() } as never,
+      { onApprovalDecided: notificationSpy } as never,
       { onApprovalDecided: bundleSpy } as never,
       { onApprovalDecided: jest.fn() } as never,
     );
-    return { svc, bundleSpy };
+    return { svc, bundleSpy, notificationSpy };
   }
 
   it('areAllTargetApprovalsApproved returns false when any peer is still pending', async () => {
@@ -253,7 +321,7 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
   });
 
   it('areAllTargetApprovalsApproved blocks when any row is rejected (defensive)', async () => {
-    // The rejection branch in handleBookingBundleApprovalDecided fires
+    // The rejection branch in handleBookingApprovalDecided fires
     // before this helper is reached, but if a stale rejected row somehow
     // survives, the helper must not yield a false 'approved'.
     const { svc } = makeBundleService({
@@ -269,7 +337,7 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     expect(ok).toBe(false);
   });
 
-  it('handleBookingBundleApprovalDecided does NOT call BundleService when peers are pending', async () => {
+  it('handleBookingApprovalDecided does NOT call BundleService when peers are pending', async () => {
     const { svc, bundleSpy } = makeBundleService({
       rowsForTarget: [
         { status: 'approved' },
@@ -278,11 +346,17 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     });
 
     await (svc as unknown as {
-      handleBookingBundleApprovalDecided: (
-        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+      handleBookingApprovalDecided: (
+        approval: {
+          id: string;
+          target_entity_id: string;
+          parallel_group: string | null;
+          approval_chain_id: string | null;
+          comments?: string | null;
+        },
         dto: { status: 'approved' | 'rejected' },
       ) => Promise<void>;
-    }).handleBookingBundleApprovalDecided(
+    }).handleBookingApprovalDecided(
       {
         id: 'apr-1',
         target_entity_id: 'bundle-1',
@@ -295,7 +369,7 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     expect(bundleSpy).not.toHaveBeenCalled();
   });
 
-  it('handleBookingBundleApprovalDecided calls BundleService once all peers are approved', async () => {
+  it('handleBookingApprovalDecided calls BundleService once all peers are approved', async () => {
     const { svc, bundleSpy } = makeBundleService({
       rowsForTarget: [
         { status: 'approved' },
@@ -304,11 +378,17 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     });
 
     await (svc as unknown as {
-      handleBookingBundleApprovalDecided: (
-        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+      handleBookingApprovalDecided: (
+        approval: {
+          id: string;
+          target_entity_id: string;
+          parallel_group: string | null;
+          approval_chain_id: string | null;
+          comments?: string | null;
+        },
         dto: { status: 'approved' | 'rejected' },
       ) => Promise<void>;
-    }).handleBookingBundleApprovalDecided(
+    }).handleBookingApprovalDecided(
       {
         id: 'apr-1',
         target_entity_id: 'bundle-1',
@@ -321,10 +401,10 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     expect(bundleSpy).toHaveBeenCalledWith('bundle-1', 'approved');
   });
 
-  it('handleBookingBundleApprovalDecided fires immediately on rejection — no peer wait', async () => {
-    // Even with peers still pending, a rejection ends the bundle approval
-    // immediately. Persisted args are cleared by BundleService so a later
-    // peer-grant cannot accidentally re-fire.
+  it('handleBookingApprovalDecided fires immediately on rejection — no peer wait', async () => {
+    // Even with peers still pending, a rejection ends the booking approval
+    // immediately (approval.service.ts:537-538). Persisted args are cleared
+    // by BundleService so a later peer-grant cannot accidentally re-fire.
     const { svc, bundleSpy } = makeBundleService({
       rowsForTarget: [
         { status: 'rejected' },
@@ -333,11 +413,17 @@ describe('ApprovalService — booking_bundle multi-approver resolution', () => {
     });
 
     await (svc as unknown as {
-      handleBookingBundleApprovalDecided: (
-        approval: { id: string; target_entity_id: string; parallel_group: string | null; approval_chain_id: string | null },
+      handleBookingApprovalDecided: (
+        approval: {
+          id: string;
+          target_entity_id: string;
+          parallel_group: string | null;
+          approval_chain_id: string | null;
+          comments?: string | null;
+        },
         dto: { status: 'approved' | 'rejected' },
       ) => Promise<void>;
-    }).handleBookingBundleApprovalDecided(
+    }).handleBookingApprovalDecided(
       {
         id: 'apr-1',
         target_entity_id: 'bundle-1',

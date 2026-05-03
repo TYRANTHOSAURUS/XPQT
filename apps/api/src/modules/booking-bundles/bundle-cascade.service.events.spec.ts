@@ -37,15 +37,18 @@ interface LineRow {
 
 interface OrderRow {
   id: string;
-  booking_bundle_id: string | null;
+  // Post-canonicalisation (00278:109): orders.booking_bundle_id → booking_id.
+  booking_id: string | null;
 }
 
 interface BundleRow {
+  // Post-canonicalisation: the booking IS the bundle (00277:27).
+  // loadBundle reads from `bookings` and selects id/requester/host/location.
+  // primary_reservation_id was dropped — slots resolve via booking_slots.booking_id.
   id: string;
   requester_person_id: string;
   host_person_id: string | null;
   location_id: string;
-  primary_reservation_id: string | null;
 }
 
 function makeService(opts: {
@@ -90,7 +93,8 @@ function makeService(opts: {
             if (table === 'orders') {
               return Promise.resolve({ data: opts.order ?? null, error: null });
             }
-            if (table === 'booking_bundles') {
+            // Canonical: loadBundle reads from `bookings` (00277:27).
+            if (table === 'bookings') {
               return Promise.resolve({ data: opts.bundle ?? null, error: null });
             }
             return Promise.resolve({ data: null, error: null });
@@ -153,7 +157,7 @@ function makeService(opts: {
               };
               return chain;
             }
-            // orders.select('id').eq('booking_bundle_id', X).eq('linked_reservation_id', Y)
+            // orders.select('id').eq('booking_id', X) — used by orderIdsForBundle (00278:109).
             if (table === 'orders' && cols === 'id') {
               const filters: Array<{ kind: string; col: string; val: unknown }> = [];
               const chain: Record<string, (...args: unknown[]) => unknown> = {};
@@ -200,13 +204,12 @@ describe('BundleCascadeService — slice 4 event emission', () => {
           order_id: ORDER,
           policy_snapshot: { service_type: 'catering' },
         },
-        order: { id: ORDER, booking_bundle_id: BUNDLE },
+        order: { id: ORDER, booking_id: BUNDLE },
         bundle: {
           id: BUNDLE,
           requester_person_id: 'p1',
           host_person_id: null,
           location_id: 'l1',
-          primary_reservation_id: null,
         },
         // The lineKindForOli helper looks up policy_snapshot on the same id.
         policySnapshot: { service_type: 'catering' },
@@ -268,13 +271,12 @@ describe('BundleCascadeService — slice 4 event emission', () => {
           linked_ticket_id: null,
           order_id: ORDER,
         },
-        order: { id: ORDER, booking_bundle_id: BUNDLE },
+        order: { id: ORDER, booking_id: BUNDLE },
         bundle: {
           id: BUNDLE,
           requester_person_id: 'p1',
           host_person_id: null,
           location_id: 'l1',
-          primary_reservation_id: null,
         },
       });
       try {
@@ -306,7 +308,6 @@ describe('BundleCascadeService — slice 4 event emission', () => {
           requester_person_id: 'p1',
           host_person_id: null,
           location_id: 'l1',
-          primary_reservation_id: null,
         },
         bundleLines: [
           {
@@ -346,7 +347,6 @@ describe('BundleCascadeService — slice 4 event emission', () => {
           requester_person_id: 'p1',
           host_person_id: null,
           location_id: 'l1',
-          primary_reservation_id: null,
         },
         bundleLines: [
           {
@@ -385,7 +385,6 @@ describe('BundleCascadeService — slice 4 event emission', () => {
           requester_person_id: 'p1',
           host_person_id: null,
           location_id: 'l1',
-          primary_reservation_id: null,
         },
         bundleLines: [
           {

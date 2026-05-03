@@ -10,8 +10,8 @@
  *     snapshot.
  *   - No emit when the patch doesn't change the start time (quantity-only,
  *     notes-only, etc.).
- *   - No emit when the line isn't bundle-attached (orders.booking_bundle_id
- *     is null) — visitor cascade has nothing to react to.
+ *   - No emit when the line isn't bundle-attached (orders.booking_id
+ *     is null per 00278:109) — visitor cascade has nothing to react to.
  *   - The emit fires AFTER the UPDATE returns; a failed UPDATE doesn't emit.
  */
 
@@ -109,6 +109,8 @@ function makeService(opts: {
           };
         }
         if (table === 'orders') {
+          // bundleIdForOrder reads `orders.booking_id` (column renamed
+          // from `booking_bundle_id` in 00278:109; service:1691).
           return {
             select: () => ({
               eq: () => ({
@@ -116,8 +118,8 @@ function makeService(opts: {
                   maybeSingle: () =>
                     Promise.resolve({
                       data: opts.bundleId === undefined
-                        ? { booking_bundle_id: BUNDLE_ID }
-                        : { booking_bundle_id: opts.bundleId },
+                        ? { booking_id: BUNDLE_ID }
+                        : { booking_id: opts.bundleId },
                       error: null,
                     }),
                 }),
@@ -125,15 +127,15 @@ function makeService(opts: {
             }),
           };
         }
-        if (table === 'tickets') {
-          // window-shift cascade lookup — empty
+        if (table === 'work_orders') {
+          // window-shift SLA-cascade lookup (service:738) reads
+          // work_orders directly post-cutover; tickets is no longer
+          // touched here. Return empty so the cascade no-ops.
           return {
             select: () => ({
               eq: () => ({
                 eq: () => ({
-                  eq: () => ({
-                    in: () => Promise.resolve({ data: [], error: null }),
-                  }),
+                  in: () => Promise.resolve({ data: [], error: null }),
                 }),
               }),
             }),

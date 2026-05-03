@@ -1,6 +1,17 @@
 /**
  * Slice 4 — verify ReservationService.editOne fans out per-visitor
- * BundleEvents when a bundle-linked reservation moves time / changes room.
+ * BundleEvents when a booking-attached slot moves time / changes room.
+ *
+ * Booking-canonicalisation rewrite (2026-05-02):
+ *   - `reservations` was dropped; reads/writes go through `booking_slots`
+ *     joined to `bookings` (reservation.service.ts:163-175).
+ *   - `visitors.booking_bundle_id` was renamed to `visitors.booking_id`
+ *     (00278:41 retarget). The cascade lookup now keys on `booking_id`
+ *     (reservation.service.ts:732-736).
+ *   - Under canonicalisation the booking IS the bundle, so the legacy
+ *     `Reservation.booking_bundle_id` field equals `bookings.id`
+ *     (reservation-projection.ts:34, 121). The `bundle_id` carried on
+ *     emitted events therefore equals the booking id.
  *
  * The visitor cascade adapter (in VisitorsModule) consumes these events and
  * translates them into the right per-visitor action (cancel / email / host
@@ -13,10 +24,9 @@
  *   - editOne with space_id change emits one bundle.line.room_changed per
  *     visitor.
  *   - editOne with both fields changed emits BOTH events per visitor.
- *   - editOne on a non-bundle reservation emits nothing.
- *   - editOne on a bundle with zero visitors emits nothing.
+ *   - editOne on a booking with zero visitors emits nothing.
  *   - cross-tenant: events carry the current TenantContext id, not the row's.
- *   - A failed UPDATE doesn't emit (early throw before the emit block).
+ *   - A no-op edit (same value) doesn't emit.
  */
 
 import { ReservationService } from './reservation.service';
@@ -24,8 +34,12 @@ import { BundleEventBus, type BundleEvent } from '../booking-bundles/bundle-even
 import { TenantContext } from '../../common/tenant-context';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
-const RES_ID = 'rrrrrrrr-1111-4111-8111-rrrrrrrrrrrr';
-const BUNDLE_ID = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
+// Under canonicalisation BOOKING_ID is the id editOne receives; the
+// returned Reservation projection has booking_bundle_id === booking.id
+// (reservation-projection.ts:121), so emitted events carry this same id
+// as `bundle_id`.
+const BOOKING_ID = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
+const PRIMARY_SLOT_ID = 'sssssss1-1111-4111-8111-ssssssssssss';
 const SPACE_OLD = 'ssssss11-1111-4111-8111-ssssssssssss';
 const SPACE_NEW = 'ssssss22-2222-4222-8222-ssssssssssss';
 const V1 = 'v1111111-1111-4111-8111-vvvvvvvvvvvv';
@@ -33,71 +47,179 @@ const V2 = 'v2222222-2222-4222-8222-vvvvvvvvvvvv';
 const USER_ID = 'uuuuuuuu-1111-4111-8111-uuuuuuuuuuuu';
 const PERSON_ID = 'pppppppp-1111-4111-8111-pppppppppppp';
 
-const baseReservation = {
-  id: RES_ID,
+// Base data is split into a "slot" half and a "booking" half so the mock
+// can return the PostgREST embed shape that `slotWithBookingToReservation`
+// (reservation-projection.ts:55) consumes.
+const baseSlot = {
+  id: PRIMARY_SLOT_ID,
   tenant_id: TENANT,
+  booking_id: BOOKING_ID,
+  slot_type: 'room',
   space_id: SPACE_OLD,
   start_at: '2026-05-01T10:00:00.000Z',
   end_at: '2026-05-01T11:00:00.000Z',
   attendee_count: 5,
   attendee_person_ids: [],
-  host_person_id: null,
-  recurrence_series_id: null,
-  recurrence_overridden: false,
-  booking_bundle_id: BUNDLE_ID,
-  multi_room_group_id: null,
-  source: 'portal',
   status: 'confirmed',
+  setup_buffer_minutes: 0,
+  teardown_buffer_minutes: 0,
+  effective_start_at: '2026-05-01T10:00:00.000Z',
+  effective_end_at: '2026-05-01T11:00:00.000Z',
+  check_in_required: false,
+  check_in_grace_minutes: null,
+  checked_in_at: null,
+  released_at: null,
+  cancellation_grace_until: null,
+  display_order: 0,
+};
+
+const baseBooking = {
+  id: BOOKING_ID,
+  tenant_id: TENANT,
+  title: 'Test booking',
+  description: null,
   requester_person_id: PERSON_ID,
+  host_person_id: null,
+  booked_by_user_id: USER_ID,
+  location_id: SPACE_OLD,
+  start_at: '2026-05-01T10:00:00.000Z',
+  end_at: '2026-05-01T11:00:00.000Z',
+  timezone: 'UTC',
+  status: 'confirmed',
+  source: 'portal',
+  cost_center_id: null,
+  cost_amount_snapshot: null,
+  policy_snapshot: null,
+  applied_rule_ids: null,
+  config_release_id: null,
+  calendar_event_id: null,
+  calendar_provider: null,
+  calendar_etag: null,
+  calendar_last_synced_at: null,
+  recurrence_series_id: null,
+  recurrence_index: null,
+  recurrence_overridden: false,
+  recurrence_skipped: false,
+  template_id: null,
+  created_at: '2026-05-01T09:00:00.000Z',
+  updated_at: '2026-05-01T09:00:00.000Z',
 };
 
 function makeService(opts: {
-  reservation?: typeof baseReservation;
   visitorIds?: string[];
   visitorLookupError?: { message: string };
   updateError?: { message: string } | null;
-  updatedRes?: Partial<typeof baseReservation>;
-  bundleAttached?: boolean;
+  // Patch applied to the slot half of the embed AFTER the update returns.
+  updatedSlot?: Partial<typeof baseSlot>;
+  // Patch applied to the booking half of the embed AFTER the update returns.
+  updatedBooking?: Partial<typeof baseBooking>;
 }) {
-  const reservation = opts.reservation ?? baseReservation;
-  const finalReservation = {
-    ...reservation,
-    booking_bundle_id: opts.bundleAttached === false ? null : reservation.booking_bundle_id,
-  };
   const visitorIds = opts.visitorIds ?? [V1, V2];
+
+  // Mutable state — `findByIdOrThrow` is called twice (once before update,
+  // once after). The post-update read should reflect the patch.
+  let postUpdate = false;
+
+  const buildSlotEmbed = () => ({
+    ...baseSlot,
+    ...(postUpdate ? (opts.updatedSlot ?? {}) : {}),
+    bookings: {
+      ...baseBooking,
+      ...(postUpdate ? (opts.updatedBooking ?? {}) : {}),
+    },
+  });
 
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
-        if (table === 'reservations') {
+        if (table === 'booking_slots') {
           return {
-            select: () => ({
-              eq: () => ({
+            // Two select shapes are used:
+            //  - SLOT_WITH_BOOKING_SELECT (full embed) → findByIdOrThrow.
+            //  - select('id') → primary-slot lookup in editOne.
+            select: (cols?: string) => {
+              const isPrimarySlotLookup = cols === 'id';
+              return {
                 eq: () => ({
-                  maybeSingle: () =>
-                    Promise.resolve({ data: finalReservation, error: null }),
+                  eq: () => ({
+                    order: () => {
+                      if (isPrimarySlotLookup) {
+                        return {
+                          limit: () => ({
+                            maybeSingle: () =>
+                              Promise.resolve({
+                                data: { id: PRIMARY_SLOT_ID },
+                                error: null,
+                              }),
+                          }),
+                        };
+                      }
+                      // findByIdOrThrow chains .order().order().limit().maybeSingle()
+                      return {
+                        order: () => ({
+                          limit: () => ({
+                            maybeSingle: () =>
+                              Promise.resolve({
+                                data: buildSlotEmbed(),
+                                error: null,
+                              }),
+                          }),
+                        }),
+                      };
+                    },
+                  }),
                 }),
-              }),
-            }),
+              };
+            },
             update: () => {
-              const chain: Record<string, (...args: unknown[]) => unknown> = {};
-              chain.eq = () => chain;
-              chain.select = () => ({
-                single: () => {
-                  if (opts.updateError) {
-                    return Promise.resolve({ data: null, error: opts.updateError });
-                  }
-                  return Promise.resolve({
-                    data: { ...finalReservation, ...(opts.updatedRes ?? {}) },
-                    error: null,
-                  });
-                },
-              });
-              return chain;
+              // The slot update is awaited directly (no .select().single());
+              // it returns { error }. The service chains
+              // `.update(p).eq('tenant_id', X).eq('id', Y)` so the chain
+              // must remain `.eq()`-able and ALSO be awaitable as the
+              // terminal statement (PostgREST builders are thenable).
+              const buildChain = () => {
+                const chain: {
+                  eq: (...args: unknown[]) => typeof chain;
+                  then: (resolve: (v: { error: unknown }) => unknown) => Promise<unknown>;
+                } = {
+                  eq: () => chain,
+                  then: (resolve) => {
+                    if (opts.updateError) {
+                      return Promise.resolve({ error: opts.updateError }).then(resolve);
+                    }
+                    postUpdate = true;
+                    return Promise.resolve({ error: null }).then(resolve);
+                  },
+                };
+                return chain;
+              };
+              return buildChain();
+            },
+          };
+        }
+        if (table === 'bookings') {
+          return {
+            update: () => {
+              const buildChain = () => {
+                const chain: {
+                  eq: (...args: unknown[]) => typeof chain;
+                  then: (resolve: (v: { error: unknown }) => unknown) => Promise<unknown>;
+                } = {
+                  eq: () => chain,
+                  then: (resolve) => {
+                    postUpdate = true;
+                    return Promise.resolve({ error: null }).then(resolve);
+                  },
+                };
+                return chain;
+              };
+              return buildChain();
             },
           };
         }
         if (table === 'visitors') {
+          // reservation.service.ts:732-736 — `.from('visitors').select('id')
+          //   .eq('tenant_id', X).eq('booking_id', Y)` (no further chaining).
           return {
             select: () => ({
               eq: () => ({
@@ -161,12 +283,13 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
   it('emits bundle.line.moved per visitor when start_at changes', async () => {
     const newStart = '2026-05-01T14:00:00.000Z';
     const { svc, captured, unsubscribe } = makeService({
-      updatedRes: { start_at: newStart },
+      updatedSlot: { start_at: newStart },
+      updatedBooking: { start_at: newStart },
     });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
       );
 
       // One per visitor.
@@ -176,10 +299,13 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
       expect(ids).toEqual(new Set([V1, V2]));
       for (const evt of moved) {
         expect(evt.tenant_id).toBe(TENANT);
-        expect(evt.bundle_id).toBe(BUNDLE_ID);
+        // Under canonicalisation the booking IS the bundle
+        // (reservation-projection.ts:121), so `bundle_id` on the event
+        // equals the booking id passed to editOne.
+        expect(evt.bundle_id).toBe(BOOKING_ID);
         if (evt.kind === 'bundle.line.moved') {
           expect(evt.line_kind).toBe('visitor');
-          expect(evt.old_expected_at).toBe(baseReservation.start_at);
+          expect(evt.old_expected_at).toBe(baseSlot.start_at);
           expect(evt.new_expected_at).toBe(newStart);
         }
       }
@@ -192,16 +318,18 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
 
   it('emits bundle.line.room_changed per visitor when space_id changes', async () => {
     const { svc, captured, unsubscribe } = makeService({
-      updatedRes: { space_id: SPACE_NEW },
+      updatedSlot: { space_id: SPACE_NEW },
+      updatedBooking: { location_id: SPACE_NEW },
     });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { space_id: SPACE_NEW }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { space_id: SPACE_NEW }),
       );
       const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
       expect(roomChanges).toHaveLength(2);
       for (const evt of roomChanges) {
+        expect(evt.bundle_id).toBe(BOOKING_ID);
         if (evt.kind === 'bundle.line.room_changed') {
           expect(evt.line_kind).toBe('visitor');
           expect(evt.old_room_id).toBe(SPACE_OLD);
@@ -217,12 +345,13 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
   it('emits BOTH moved + room_changed when start_at AND space_id change', async () => {
     const newStart = '2026-05-01T14:00:00.000Z';
     const { svc, captured, unsubscribe } = makeService({
-      updatedRes: { start_at: newStart, space_id: SPACE_NEW },
+      updatedSlot: { start_at: newStart, space_id: SPACE_NEW },
+      updatedBooking: { start_at: newStart, location_id: SPACE_NEW },
     });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: newStart, space_id: SPACE_NEW }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart, space_id: SPACE_NEW }),
       );
       // 2 visitors × 2 events each = 4 emissions.
       expect(captured).toHaveLength(4);
@@ -233,33 +362,17 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     }
   });
 
-  it('does not emit when reservation has no bundle', async () => {
-    const newStart = '2026-05-01T14:00:00.000Z';
-    const { svc, captured, unsubscribe } = makeService({
-      bundleAttached: false,
-      updatedRes: { start_at: newStart, booking_bundle_id: null },
-    });
-    try {
-      await TenantContext.run(
-        { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: newStart }),
-      );
-      expect(captured).toHaveLength(0);
-    } finally {
-      unsubscribe();
-    }
-  });
-
   it('does not emit when bundle has zero visitors', async () => {
     const newStart = '2026-05-01T14:00:00.000Z';
     const { svc, captured, unsubscribe } = makeService({
       visitorIds: [],
-      updatedRes: { start_at: newStart },
+      updatedSlot: { start_at: newStart },
+      updatedBooking: { start_at: newStart },
     });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
       );
       expect(captured).toHaveLength(0);
     } finally {
@@ -271,12 +384,13 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     const newStart = '2026-05-01T14:00:00.000Z';
     const OTHER_TENANT = '99999999-9999-4999-8999-999999999999';
     const { svc, captured, unsubscribe } = makeService({
-      updatedRes: { start_at: newStart },
+      updatedSlot: { start_at: newStart },
+      updatedBooking: { start_at: newStart },
     });
     try {
       await TenantContext.run(
         { id: OTHER_TENANT, slug: 'other', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
       );
       expect(captured.length).toBeGreaterThan(0);
       for (const evt of captured) {
@@ -290,10 +404,11 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
   it('does not emit when no field actually changed', async () => {
     const { svc, captured, unsubscribe } = makeService({});
     try {
-      // Patch the same value back — no `next` keys, returns the loaded row.
+      // Patch the same value back — the editOne early-returns at
+      // reservation.service.ts:653-655 because no patch keys are populated.
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(RES_ID, ACTOR, { start_at: baseReservation.start_at }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: baseSlot.start_at }),
       );
       expect(captured).toHaveLength(0);
     } finally {
