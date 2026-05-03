@@ -182,7 +182,7 @@ create policy tenant_meal_windows_read
   on public.tenant_meal_windows
   for select
   to authenticated
-  using (tenant_id::text = current_setting('app.tenant_id', true));
+  using (tenant_id = public.current_tenant_id());
 
 revoke all on public.tenant_meal_windows from anon, authenticated, public;
 grant select on public.tenant_meal_windows to authenticated;
