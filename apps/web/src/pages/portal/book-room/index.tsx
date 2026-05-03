@@ -20,14 +20,8 @@ import { BundleTemplatePicker } from './components/bundle-template-picker';
 import { FloorPlanPicker } from './components/floor-plan-picker';
 import { RealtimeAvailabilityPill } from './components/realtime-availability-pill';
 import { BookingProgressiveActions } from './components/booking-progressive-actions';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { BookingComposer } from '@/components/booking-composer/booking-composer';
+import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
+import { draftFromComposerSeed } from '@/components/booking-composer-v2/booking-draft';
 import { templateServicesToPickerSelections } from '@/components/booking-composer/state';
 import type { BundleTemplate } from '@/api/bundle-templates';
 import { usePickerState } from './hooks/use-picker-state';
@@ -197,12 +191,8 @@ export function BookRoomPage() {
         }}
       />
 
-      {/* Unified BookingComposer for both single-room and multi-room.
-          The legacy BookingConfirmDialog has been retired — composer
-          now covers every case it did (services, recurrence, multi-
-          room, approval-route, conflict-alternatives, template seed). */}
       {pendingPrimary && requesterPersonId && (
-        <Dialog
+        <BookingComposerModal
           open={Boolean(pendingPrimary)}
           onOpenChange={(o) => {
             if (!o) {
@@ -210,66 +200,33 @@ export function BookRoomPage() {
               setPendingExtras([]);
             }
           }}
-        >
-          <DialogContent className="max-w-2xl max-h-[85vh] overflow-x-hidden overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>
-                {pendingPrimary.rule_outcome?.effect === 'require_approval'
-                  ? 'Request approval to book'
-                  : pendingExtras.length > 0
-                    ? `Confirm booking — ${pendingExtras.length + 1} rooms`
-                    : 'Confirm booking'}
-              </DialogTitle>
-              <DialogDescription>
-                {pendingPrimary.name}
-                {pendingExtras.length > 0
-                  ? ` and ${pendingExtras.length} more`
-                  : ''}
-              </DialogDescription>
-            </DialogHeader>
-            <BookingComposer
-              open={Boolean(pendingPrimary)}
-              onOpenChange={(o) => {
-                if (!o) {
-                  setPendingPrimary(null);
-                  setPendingExtras([]);
-                }
-              }}
-              mode="self"
-              entrySource="portal"
-              callerPersonId={requesterPersonId}
-              fixedRoom={pendingPrimary}
-              initial={{
-                startAt: startAtIso,
-                endAt: endAtIso,
-                attendeeCount: state.attendeeCount,
-                additionalSpaceIds: pendingExtras.map((r) => r.space_id),
-                templateId: activeTemplate?.id ?? null,
-                costCenterId: activeTemplate?.payload?.default_cost_center_id ?? null,
-                services: activeTemplate?.payload?.services
-                  ? templateServicesToPickerSelections(
-                      activeTemplate.payload.services,
-                      state.attendeeCount,
-                    )
-                  : undefined,
-              }}
-              onBooked={(reservationId) => {
-                // Land the user on /me/bookings/{id} so they see exactly
-                // what happened — especially critical for pending_approval
-                // bookings, where the booking exists but isn't confirmed
-                // yet. Without this, the dialog just closes and the user
-                // is left on the picker with no clear feedback that their
-                // booking is in flight. The toast alone is too transient
-                // to be the only signal something happened.
-                if (reservationId) {
-                  navigate(`/portal/me/bookings/${reservationId}`);
-                } else {
-                  navigate('/portal/me/bookings');
-                }
-              }}
-            />
-          </DialogContent>
-        </Dialog>
+          mode="self"
+          entrySource="portal"
+          callerPersonId={requesterPersonId}
+          hostFirstName={person?.first_name ?? null}
+          initialDraft={draftFromComposerSeed({
+            spaceId: pendingPrimary.space_id,
+            startAt: startAtIso,
+            endAt: endAtIso,
+            attendeeCount: state.attendeeCount,
+            templateId: activeTemplate?.id ?? null,
+            costCenterId: activeTemplate?.payload?.default_cost_center_id ?? null,
+            services: activeTemplate?.payload?.services
+              ? templateServicesToPickerSelections(
+                  activeTemplate.payload.services,
+                  state.attendeeCount,
+                )
+              : undefined,
+            hostPersonId: requesterPersonId,
+          })}
+          onBooked={(reservationId) => {
+            if (reservationId) {
+              navigate(`/portal/me/bookings/${reservationId}`);
+            } else {
+              navigate('/portal/me/bookings');
+            }
+          }}
+        />
       )}
     </PortalPage>
   );
