@@ -289,7 +289,7 @@ export class CalendarSyncService {
     let query = this.supabase.admin
       .from('room_calendar_conflicts')
       .select(
-        `id, space_id, detected_at, conflict_type, reservation_id, external_event_id,
+        `id, space_id, detected_at, conflict_type, slot_id, external_event_id,
          external_event_payload, resolution_status, resolution_action, resolved_at, resolved_by,
          space:spaces(name)`,
       )
@@ -305,7 +305,7 @@ export class CalendarSyncService {
       space_name: ((row.space as { name?: string } | null)?.name) ?? null,
       detected_at: row.detected_at as string,
       conflict_type: row.conflict_type as ConflictView['conflict_type'],
-      reservation_id: (row.reservation_id as string | null) ?? null,
+      slot_id: (row.slot_id as string | null) ?? null,
       external_event_id: (row.external_event_id as string | null) ?? null,
       external_event_payload:
         (row.external_event_payload as Record<string, unknown> | null) ?? null,
@@ -334,7 +334,7 @@ export class CalendarSyncService {
     }
     const { data: conflict, error: cErr } = await this.supabase.admin
       .from('room_calendar_conflicts')
-      .select('id, space_id, external_event_id, reservation_id, resolution_status')
+      .select('id, space_id, external_event_id, slot_id, resolution_status')
       .eq('id', conflictId)
       .eq('tenant_id', tenant.id)
       .single();
@@ -380,7 +380,7 @@ export class CalendarSyncService {
       })
       .eq('id', conflictId)
       .select(
-        `id, space_id, detected_at, conflict_type, reservation_id, external_event_id,
+        `id, space_id, detected_at, conflict_type, slot_id, external_event_id,
          external_event_payload, resolution_status, resolution_action, resolved_at, resolved_by,
          space:spaces(name)`,
       )
@@ -399,7 +399,7 @@ export class CalendarSyncService {
       space_name: ((updated.space as { name?: string } | null)?.name) ?? null,
       detected_at: updated.detected_at as string,
       conflict_type: updated.conflict_type as ConflictView['conflict_type'],
-      reservation_id: (updated.reservation_id as string | null) ?? null,
+      slot_id: (updated.slot_id as string | null) ?? null,
       external_event_id: (updated.external_event_id as string | null) ?? null,
       external_event_payload:
         (updated.external_event_payload as Record<string, unknown> | null) ?? null,

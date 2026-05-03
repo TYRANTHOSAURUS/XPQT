@@ -134,7 +134,7 @@ export class ReconcilerService {
           tenant_id: space.tenant_id,
           space_id: space.id,
           conflict_type: 'recurrence_drift',
-          reservation_id: matched.id,
+          slot_id: matched.id,
           external_event_id: ev.id,
           external_event_payload: ev as unknown as Record<string, unknown>,
         });
@@ -150,7 +150,7 @@ export class ReconcilerService {
         tenant_id: space.tenant_id,
         space_id: space.id,
         conflict_type: 'orphan_internal',
-        reservation_id: r.id,
+        slot_id: r.id,
         external_event_id: r.external_event_id,
         external_event_payload: null,
       });
@@ -260,7 +260,7 @@ export class ReconcilerService {
     tenant_id: string;
     space_id: string;
     conflict_type: string;
-    reservation_id?: string;
+    slot_id?: string;
     external_event_id: string | null;
     external_event_payload: Record<string, unknown> | null;
   }) {
@@ -280,7 +280,7 @@ export class ReconcilerService {
       tenant_id: row.tenant_id,
       space_id: row.space_id,
       conflict_type: row.conflict_type,
-      reservation_id: row.reservation_id ?? null,
+      slot_id: row.slot_id ?? null,
       external_event_id: row.external_event_id,
       external_event_payload: row.external_event_payload,
       resolution_status: 'open',

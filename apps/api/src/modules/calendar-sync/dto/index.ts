@@ -54,7 +54,7 @@ export interface ConflictView {
     | 'orphan_external'
     | 'orphan_internal'
     | 'webhook_miss_recovered';
-  reservation_id: string | null;
+  slot_id: string | null;
   external_event_id: string | null;
   external_event_payload: Record<string, unknown> | null;
   resolution_status: 'open' | 'auto_resolved' | 'admin_resolved' | 'wont_fix';
