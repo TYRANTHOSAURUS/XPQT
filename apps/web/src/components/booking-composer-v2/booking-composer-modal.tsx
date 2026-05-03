@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
   DialogContent,
@@ -17,6 +18,9 @@ import { TimeRow } from './left-pane/time-row';
 import { RepeatRow } from './left-pane/repeat-row';
 import { DescriptionRow } from './left-pane/description-row';
 import { HostRow } from './left-pane/host-row';
+import { VisitorsRow } from './left-pane/visitors-row';
+import { spacesListOptions, type Space } from '@/api/spaces';
+import { deriveBuildingId } from './derive-building-id';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -51,6 +55,8 @@ export function BookingComposerModal({
       ? { ...initialDraft }
       : { hostPersonId: callerPersonId, requesterPersonId: callerPersonId },
   });
+
+  const { data: spacesCache } = useQuery(spacesListOptions());
 
   // Re-seed on open so cancelled sessions don't leak state.
   useEffect(() => {
@@ -123,6 +129,27 @@ export function BookingComposerModal({
                 onRequesterChange={composer.setRequester}
                 hostPersonId={composer.draft.hostPersonId}
                 onHostChange={composer.setHost}
+              />
+              <VisitorsRow
+                visitors={composer.draft.visitors}
+                bookingDefaults={{
+                  expected_at: composer.draft.startAt ?? undefined,
+                  expected_until: composer.draft.endAt ?? undefined,
+                  building_id:
+                    deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId) || undefined,
+                  meeting_room_id: composer.draft.spaceId ?? undefined,
+                }}
+                disabled={!composer.draft.spaceId || !composer.draft.startAt}
+                disabledReason={
+                  !composer.draft.spaceId
+                    ? 'Pick a room first — visitors are anchored to a building.'
+                    : !composer.draft.startAt
+                      ? 'Pick a start time first.'
+                      : undefined
+                }
+                onAdd={composer.addVisitor}
+                onUpdate={composer.updateVisitor}
+                onRemove={composer.removeVisitor}
               />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
