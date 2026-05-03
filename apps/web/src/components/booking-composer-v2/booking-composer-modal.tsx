@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { TitleInput } from './left-pane/title-input';
 import { TimeRow } from './left-pane/time-row';
 import { RepeatRow } from './left-pane/repeat-row';
+import { DescriptionRow } from './left-pane/description-row';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -110,6 +111,10 @@ export function BookingComposerModal({
               <RepeatRow
                 rule={composer.draft.recurrence}
                 onChange={composer.setRepeat}
+              />
+              <DescriptionRow
+                value={composer.draft.description}
+                onChange={composer.setDescription}
               />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
