@@ -5,6 +5,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogPortal,
+  DialogOverlay,
 } from '@/components/ui/dialog';
 import { useBookingDraft } from './use-booking-draft';
 import { type BookingDraft } from './booking-draft';
@@ -60,46 +62,58 @@ export function BookingComposerModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className={cn(
-          'w-[880px] max-w-[calc(100vw-2rem)] gap-0 p-0',
-          'h-auto max-h-[min(85vh,680px)]',
-          'rounded-xl overflow-hidden',
-          'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
-        )}
-      >
-        <DialogHeader className="sr-only">
-          <DialogTitle>New booking</DialogTitle>
-          <DialogDescription>
-            Configure a room booking. Title, time, and add-ins.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex h-full min-h-[480px] flex-col sm:flex-row">
-          {/* Left pane — 520px on desktop. */}
-          <div
-            data-testid="booking-composer-left-pane"
-            className="flex flex-1 flex-col gap-4 overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
-          >
-            {/* Phase 4 fills this. */}
-            <p className="text-sm text-muted-foreground">
-              {mode === 'operator'
-                ? `Booking for someone (${hostFirstName ?? '—'})`
-                : `Booking as ${hostFirstName ?? '—'}`}
-            </p>
+      <DialogPortal>
+        <DialogOverlay
+          className={cn(
+            // Spec: backdrop fades over 240ms ease-smooth (slower than modal).
+            'data-open:duration-[240ms] data-closed:duration-[240ms]',
+            'data-open:ease-[var(--ease-smooth)] data-closed:ease-[var(--ease-smooth)]',
+          )}
+        />
+        <DialogContent
+          disablePortal
+          showCloseButton={false}
+          className={cn(
+            'w-[880px] max-w-[calc(100vw-2rem)] gap-0 p-0',
+            'h-auto max-h-[min(85vh,680px)]',
+            'rounded-xl overflow-hidden',
+            'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
+            'data-open:zoom-in-[0.96]',
+          )}
+        >
+          <DialogHeader className="sr-only">
+            <DialogTitle>New booking</DialogTitle>
+            <DialogDescription>
+              Configure a room booking. Title, time, and add-ins.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex h-full min-h-[480px] flex-col sm:flex-row">
+            {/* Left pane — 520px on desktop. */}
+            <div
+              data-testid="booking-composer-left-pane"
+              className="flex flex-1 flex-col gap-4 overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
+            >
+              {/* Phase 4 fills this. */}
+              <p className="text-sm text-muted-foreground">
+                {mode === 'operator'
+                  ? `Booking for someone (${hostFirstName ?? '—'})`
+                  : `Booking as ${hostFirstName ?? '—'}`}
+              </p>
+            </div>
+            {/* Right pane — 360px on desktop, hairline border. */}
+            <aside
+              data-testid="booking-composer-right-pane"
+              className={cn(
+                'm-2 flex flex-col gap-2 overflow-y-auto rounded-md border border-border/60 p-3',
+                'sm:w-[360px] sm:flex-none',
+              )}
+            >
+              {/* Phase 5 fills this. */}
+              <p className="text-xs text-muted-foreground">Add-ins</p>
+            </aside>
           </div>
-          {/* Right pane — 360px on desktop, hairline border. */}
-          <aside
-            data-testid="booking-composer-right-pane"
-            className={cn(
-              'm-2 flex flex-col gap-2 overflow-y-auto rounded-md border border-border/60 p-3',
-              'sm:w-[360px] sm:flex-none',
-            )}
-          >
-            {/* Phase 5 fills this. */}
-            <p className="text-xs text-muted-foreground">Add-ins</p>
-          </aside>
-        </div>
-      </DialogContent>
+        </DialogContent>
+      </DialogPortal>
     </Dialog>
   );
 }
