@@ -16,6 +16,7 @@ import { TitleInput } from './left-pane/title-input';
 import { TimeRow } from './left-pane/time-row';
 import { RepeatRow } from './left-pane/repeat-row';
 import { DescriptionRow } from './left-pane/description-row';
+import { HostRow } from './left-pane/host-row';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -40,7 +41,7 @@ export interface BookingComposerModalProps {
 export function BookingComposerModal({
   open,
   onOpenChange,
-  mode: _mode,
+  mode,
   callerPersonId,
   hostFirstName,
   initialDraft,
@@ -115,6 +116,13 @@ export function BookingComposerModal({
               <DescriptionRow
                 value={composer.draft.description}
                 onChange={composer.setDescription}
+              />
+              <HostRow
+                mode={mode}
+                requesterPersonId={composer.draft.requesterPersonId}
+                onRequesterChange={composer.setRequester}
+                hostPersonId={composer.draft.hostPersonId}
+                onHostChange={composer.setHost}
               />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
