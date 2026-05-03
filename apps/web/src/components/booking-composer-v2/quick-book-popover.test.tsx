@@ -26,7 +26,9 @@ describe('QuickBookPopover', () => {
         startAtIso="2026-05-07T10:00:00.000Z"
         endAtIso="2026-05-07T10:30:00.000Z"
         hostFirstName="Alex"
-        onBook={vi.fn()}
+        mode="self"
+        callerPersonId="p1"
+        onBooked={vi.fn()}
         onAdvanced={vi.fn()}
       />,
     );
@@ -52,7 +54,9 @@ describe('QuickBookPopover', () => {
         startAtIso="2026-05-07T10:00:00.000Z"
         endAtIso="2026-05-07T10:30:00.000Z"
         hostFirstName="Alex"
-        onBook={vi.fn()}
+        mode="self"
+        callerPersonId="p1"
+        onBooked={vi.fn()}
         onAdvanced={onAdvanced}
       />,
     );

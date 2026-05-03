@@ -739,16 +739,10 @@ export function DeskSchedulerPage() {
           startAtIso={quickBookPayload.startAtIso}
           endAtIso={quickBookPayload.endAtIso}
           hostFirstName={person?.first_name ?? null}
-          onBook={async (draft) => {
-            // TEMPORARY in Phase 2: hand off to the existing dialog
-            // until Phase 6 wires Book directly to POST /reservations.
-            setQuickBookOpen(false);
-            setCreatePayload({
-              room: quickBookPayload.room,
-              startAtIso: draft.startAt ?? quickBookPayload.startAtIso,
-              endAtIso: draft.endAt ?? quickBookPayload.endAtIso,
-            });
-            setCreateDialogOpen(true);
+          mode="operator"
+          callerPersonId={requesterPersonId}
+          onBooked={() => {
+            // Realtime subscription on booking_slots refreshes the scheduler.
           }}
           onAdvanced={(draft) => {
             setQuickBookOpen(false);
