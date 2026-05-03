@@ -12,6 +12,7 @@ import { useBookingDraft } from './use-booking-draft';
 import { type BookingDraft } from './booking-draft';
 import type { ComposerMode, ComposerEntrySource } from '../booking-composer/state';
 import { cn } from '@/lib/utils';
+import { TitleInput } from './left-pane/title-input';
 
 export interface BookingComposerModalProps {
   open: boolean;
@@ -36,7 +37,7 @@ export interface BookingComposerModalProps {
 export function BookingComposerModal({
   open,
   onOpenChange,
-  mode,
+  mode: _mode,
   callerPersonId,
   hostFirstName,
   initialDraft,
@@ -93,12 +94,12 @@ export function BookingComposerModal({
               data-testid="booking-composer-left-pane"
               className="flex flex-1 flex-col gap-4 overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
             >
-              {/* Phase 4 fills this. */}
-              <p className="text-sm text-muted-foreground">
-                {mode === 'operator'
-                  ? `Booking for someone (${hostFirstName ?? '—'})`
-                  : `Booking as ${hostFirstName ?? '—'}`}
-              </p>
+              <TitleInput
+                value={composer.draft.title}
+                onChange={composer.setTitle}
+                hostFirstName={hostFirstName}
+                roomName={null /* Phase 5 wires roomName from the right-pane room card */}
+              />
             </div>
             {/* Right pane — 360px on desktop, hairline border. */}
             <aside
