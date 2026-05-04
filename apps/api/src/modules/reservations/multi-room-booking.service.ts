@@ -1,5 +1,6 @@
 import {
-  ConflictException, Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException,
+  ConflictException, Inject, Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -12,6 +13,11 @@ import {
   slotWithBookingToReservation,
   type SlotWithBookingEmbed,
 } from './reservation-projection';
+import {
+  BOOKING_TX_BOUNDARY,
+  type BookingTransactionBoundary,
+} from './booking-transaction-boundary';
+import { BookingCompensationService } from './booking-compensation.service';
 import type { ActorContext, Reservation, PolicySnapshot } from './dto/types';
 
 /**
@@ -47,6 +53,13 @@ export class MultiRoomBookingService {
     private readonly ruleResolver: RuleResolverService,
     private readonly bundle: BundleService,
     private readonly bundleCascade: BundleCascadeService,
+    /** Phase 1.3 — wraps `attachServicesToBooking` so a failure rolls back
+     *  the booking via `delete_booking_with_guard` (00292). Optional only
+     *  to keep older multi-room specs constructible without the new
+     *  collaborators; the create path enforces presence when services
+     *  are non-empty. */
+    @Optional() @Inject(BOOKING_TX_BOUNDARY) private readonly txBoundary?: BookingTransactionBoundary,
+    @Optional() private readonly compensation?: BookingCompensationService,
   ) {}
 
   async createGroup(
@@ -259,41 +272,50 @@ export class MultiRoomBookingService {
 
     // 4. Service attach (catering / AV) — primary slot only. Anchor on
     //    the booking id (the bundle, post-canonicalisation).
+    //
+    //    Phase 1.3: identical pattern to BookingFlowService.create. Wrap the
+    //    attach in `txBoundary.runWithCompensation` so a failure rolls back
+    //    the booking + slots atomically via `delete_booking_with_guard`
+    //    (00292). Per blocker map (docs/follow-ups/phase-1-3-blocker-map.md):
+    //    only recurrence_series can block compensation, and multi-room
+    //    create doesn't materialise series, so partial_failure should be
+    //    rare in practice — but the boundary still surfaces it for safety.
+    //
+    //    The legacy `bundleCascade.cancelOrdersForReservation` cleanup is
+    //    no longer needed at this layer: the compensation RPC deletes the
+    //    booking which cascades order rows via 00278:116 (SET NULL —
+    //    Cleanup inside BundleService.attachServicesToBooking already
+    //    ran on its own throw path before re-raising to us, so orders
+    //    are already gone; the SET NULL is harmless).
     if (input.services && input.services.length > 0) {
-      try {
-        await this.bundle.attachServicesToBooking({
-          booking_id: bookingId,
-          requester_person_id: input.requester_person_id,
-          bundle: input.bundle
-            ? {
-                bundle_type: input.bundle.bundle_type,
-                cost_center_id: input.bundle.cost_center_id ?? null,
-                template_id: input.bundle.template_id ?? null,
-                source: bookingSource,
-              }
-            : { source: bookingSource },
-          services: input.services,
-        });
-      } catch (err) {
-        // Service attach failed AFTER the booking + slots landed. The
-        // booking is technically usable as room-only; surface the error
-        // so the user can retry attach without re-booking.
-        // Log + audit + cascade-cancel orders the bundle service may have
-        // partially created (its own Cleanup rolls back what it inserted),
-        // then surface the original error.
-        this.log.warn(
-          `multi-room service attach failed for booking ${bookingId}: ${(err as Error).message}`,
+      if (!this.txBoundary || !this.compensation) {
+        throw new Error(
+          'BookingTransactionBoundary + BookingCompensationService not injected — ' +
+            'multi-room cannot atomically attach services. Wire both into ReservationsModule.providers.',
         );
-        try {
-          await this.bundleCascade.cancelOrdersForReservation({
-            reservation_id: bookingId,
-            reason: 'multi_room_service_attach_failed',
-          });
-        } catch (cleanupErr) {
-          this.log.warn(`bundle cascade cleanup failed: ${(cleanupErr as Error).message}`);
-        }
-        throw err;
       }
+      // AttachServicesArgs shape verified at bundle.service.ts:58 (Phase 1.3
+      // Read first #6): { booking_id, requester_person_id, bundle?, services }.
+      const bundle = this.bundle;
+      const compensation = this.compensation;
+      await this.txBoundary.runWithCompensation(
+        bookingId,
+        () =>
+          bundle.attachServicesToBooking({
+            booking_id: bookingId,
+            requester_person_id: input.requester_person_id,
+            bundle: input.bundle
+              ? {
+                  bundle_type: input.bundle.bundle_type,
+                  cost_center_id: input.bundle.cost_center_id ?? null,
+                  template_id: input.bundle.template_id ?? null,
+                  source: bookingSource,
+                }
+              : { source: bookingSource },
+            services: input.services!,
+          }),
+        (id) => compensation.deleteBooking(id),
+      );
     }
 
     // 5. Read the slots back through the booking for the response shape.

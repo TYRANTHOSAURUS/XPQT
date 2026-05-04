@@ -18,6 +18,11 @@ import { RankingService } from './ranking.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
 import { BookingNotificationsService } from './booking-notifications.service';
+import {
+  BOOKING_TX_BOUNDARY,
+  InProcessBookingTransactionBoundary,
+} from './booking-transaction-boundary';
+import { BookingCompensationService } from './booking-compensation.service';
 import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { NotificationModule } from '../notification/notification.module';
@@ -51,6 +56,14 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
+    // Phase 1.3 — atomic compensation primitives. The boundary is provided
+    // via the BOOKING_TX_BOUNDARY token so Phase 6 can swap the in-process
+    // impl for a durable-outbox runner without touching call sites.
+    BookingCompensationService,
+    {
+      provide: BOOKING_TX_BOUNDARY,
+      useClass: InProcessBookingTransactionBoundary,
+    },
   ],
   controllers: [ReservationController],
   exports: [
@@ -65,6 +78,8 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
+    BookingCompensationService,
+    BOOKING_TX_BOUNDARY,
   ],
 })
 export class ReservationsModule implements OnModuleInit {

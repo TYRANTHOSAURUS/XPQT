@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException,
   Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -10,6 +10,11 @@ import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
 import { ListBookableRoomsService } from './list-bookable-rooms.service';
+import {
+  BOOKING_TX_BOUNDARY,
+  type BookingTransactionBoundary,
+} from './booking-transaction-boundary';
+import { BookingCompensationService } from './booking-compensation.service';
 import type {
   ActorContext, Booking, CreateReservationInput, PolicySnapshot,
   RecurrenceScope, Reservation,
@@ -58,6 +63,13 @@ export class BookingFlowService {
      *  the whole reservation. Optional to keep specs that mock booking-flow
      *  without needing the full picker pipeline. */
     @Optional() private readonly picker?: ListBookableRoomsService,
+    /** Phase 1.3 — wraps `attachServicesToBooking` so a failure rolls back
+     *  the booking via `delete_booking_with_guard` (00292). Optional only
+     *  to keep older booking-flow specs (no service attach) constructible
+     *  without the new collaborators; the create path enforces presence
+     *  when services are non-empty. */
+    @Optional() @Inject(BOOKING_TX_BOUNDARY) private readonly txBoundary?: BookingTransactionBoundary,
+    @Optional() private readonly compensation?: BookingCompensationService,
   ) {}
 
   /**
@@ -354,6 +366,16 @@ export class BookingFlowService {
     //   the materialiser still sees the booking before fan-out).
     //   Fail loudly if BundleService isn't wired; silent drop = the
     //   "disappearing services" bug.
+    //
+    //   Phase 1.3: this attach is the second of two writes (after the
+    //   `create_booking` RPC). It's a sequence of supabase-js calls, not
+    //   atomic. If it fails, the booking already exists. We wrap the call
+    //   in `txBoundary.runWithCompensation` so a failure invokes
+    //   `delete_booking_with_guard` (00292) to roll back the booking
+    //   atomically. Per blocker map (docs/follow-ups/phase-1-3-blocker-map.md),
+    //   only recurrence_series can block compensation; if that happens the
+    //   boundary throws BadRequestException(booking.partial_failure) with
+    //   booking_id + blocked_by[] for manual recovery.
     if (input.services && input.services.length > 0) {
       this.log.log(
         `[booking-flow] services=${input.services.length} bundle_present=${!!input.bundle} for booking ${booking.id}`,
@@ -364,31 +386,35 @@ export class BookingFlowService {
             'Wire BookingBundlesModule into ReservationsModule.imports.',
         );
       }
-      try {
-        await this.bundle.attachServicesToBooking({
-          booking_id: booking.id,
-          requester_person_id: booking.requester_person_id,
-          bundle: input.bundle
-            ? {
-                bundle_type: input.bundle.bundle_type,
-                cost_center_id: input.bundle.cost_center_id ?? null,
-                template_id: input.bundle.template_id ?? null,
-                source: bookingSource,
-              }
-            : { source: bookingSource },
-          services: input.services,
-        });
-      } catch (err) {
-        // The bundle service throws structured exceptions for asset
-        // conflict / rule deny — surface them up. The booking has already
-        // landed; for v1 we leave the room-only booking in place and
-        // surface the bundle error so the user can retry attaching
-        // services without rebooking.
-        this.log.warn(
-          `bundle attach failed for booking ${booking.id}: ${(err as Error).message}`,
+      if (!this.txBoundary || !this.compensation) {
+        // Phase 1.3 wiring missing — refuse to attach silently.
+        throw new Error(
+          'BookingTransactionBoundary + BookingCompensationService not injected — ' +
+            'booking-flow cannot atomically attach services. Wire both into ReservationsModule.providers.',
         );
-        throw err;
       }
+      // AttachServicesArgs shape verified at bundle.service.ts:58 (Phase 1.3
+      // Read first #6): { booking_id, requester_person_id, bundle?, services }.
+      const bundle = this.bundle;
+      const compensation = this.compensation;
+      await this.txBoundary.runWithCompensation(
+        booking.id,
+        () =>
+          bundle.attachServicesToBooking({
+            booking_id: booking.id,
+            requester_person_id: booking.requester_person_id,
+            bundle: input.bundle
+              ? {
+                  bundle_type: input.bundle.bundle_type,
+                  cost_center_id: input.bundle.cost_center_id ?? null,
+                  template_id: input.bundle.template_id ?? null,
+                  source: bookingSource,
+                }
+              : { source: bookingSource },
+            services: input.services!,
+          }),
+        (id) => compensation.deleteBooking(id),
+      );
       // No need to refresh booking_bundle_id — under canonicalisation the
       // booking IS the bundle (no separate booking_bundles row). Orders
       // link to the booking directly via orders.booking_id (00278:109).

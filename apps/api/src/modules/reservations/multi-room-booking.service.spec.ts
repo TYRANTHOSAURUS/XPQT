@@ -1,5 +1,6 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { MultiRoomBookingService } from './multi-room-booking.service';
+import { InProcessBookingTransactionBoundary } from './booking-transaction-boundary';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext } from './dto/types';
 
@@ -333,12 +334,15 @@ describe('MultiRoomBookingService.createGroup', () => {
     });
     const bundle = makeBundle();
     const cascade = makeBundleCascade();
+    const compensation = { deleteBooking: jest.fn() };
     const svc = new MultiRoomBookingService(
       supabase as never,
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       bundle as never,
       cascade as never,
+      new InProcessBookingTransactionBoundary(),
+      compensation as never,
     );
 
     await TenantContext.run(TENANT, () =>
@@ -360,14 +364,19 @@ describe('MultiRoomBookingService.createGroup', () => {
     expect(call.booking_id).toBe(BOOKING_ID);
     expect(call.services).toHaveLength(1);
     expect(call.bundle.bundle_type).toBe('meeting');
+    // Phase 1.3: happy path doesn't invoke compensation; the legacy cascade
+    // cleanup is no longer at this layer (it's owned by Cleanup inside
+    // BundleService.attachServicesToBooking and by the compensation RPC).
+    expect(compensation.deleteBooking).not.toHaveBeenCalled();
     expect(cascade.cancelOrdersForReservation).not.toHaveBeenCalled();
   });
 
-  it('cleans up via cascade and rethrows when service attach fails post-booking', async () => {
-    // Booking + slots landed; service attach exploded. The booking is
-    // technically room-only-usable, but we surface the error so the user
-    // can retry attach. Cascade is best-effort cleanup of any partial
-    // orders the bundle service may have inserted.
+  it('rolls back the booking and re-throws original error when service attach fails (Phase 1.3)', async () => {
+    // Booking + slots landed via create_booking RPC; service attach then
+    // exploded. Phase 1.3 wraps the attach in a compensation boundary that
+    // calls delete_booking_with_guard (00292) to atomically roll back. With
+    // a 'rolled_back' outcome, the original error is re-thrown unchanged
+    // (no longer the legacy "leave booking + cascade cleanup" behavior).
     const supabase = makeSupabase({
       spaces: [{ id: 'S1' }, { id: 'S2' }],
     });
@@ -377,12 +386,17 @@ describe('MultiRoomBookingService.createGroup', () => {
       }),
     };
     const cascade = makeBundleCascade();
+    const compensation = {
+      deleteBooking: jest.fn(async (id: string) => ({ kind: 'rolled_back' as const, bookingId: id })),
+    };
     const svc = new MultiRoomBookingService(
       supabase as never,
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       bundle as never,
       cascade as never,
+      new InProcessBookingTransactionBoundary(),
+      compensation as never,
     );
 
     await expect(
@@ -400,10 +414,61 @@ describe('MultiRoomBookingService.createGroup', () => {
       ),
     ).rejects.toThrow(/catalog_item_not_found/);
 
-    expect(cascade.cancelOrdersForReservation).toHaveBeenCalledTimes(1);
-    expect(cascade.cancelOrdersForReservation).toHaveBeenCalledWith({
-      reservation_id: BOOKING_ID,
-      reason: 'multi_room_service_attach_failed',
+    expect(compensation.deleteBooking).toHaveBeenCalledTimes(1);
+    expect(compensation.deleteBooking).toHaveBeenCalledWith(BOOKING_ID);
+    // Legacy cascade is no longer invoked at this layer.
+    expect(cascade.cancelOrdersForReservation).not.toHaveBeenCalled();
+  });
+
+  it('throws BadRequestException(booking.partial_failure) when compensation reports a blocker (Phase 1.3)', async () => {
+    const supabase = makeSupabase({
+      spaces: [{ id: 'S1' }, { id: 'S2' }],
+    });
+    const bundle = {
+      attachServicesToBooking: jest.fn(async () => {
+        throw new Error('catalog_item_not_found');
+      }),
+    };
+    const compensation = {
+      deleteBooking: jest.fn(async (id: string) => ({
+        kind: 'partial_failure' as const,
+        bookingId: id,
+        blockedBy: ['recurrence_series'],
+      })),
+    };
+    const svc = new MultiRoomBookingService(
+      supabase as never,
+      makeConflictGuard() as never,
+      makeRuleResolver() as never,
+      bundle as never,
+      makeBundleCascade() as never,
+      new InProcessBookingTransactionBoundary(),
+      compensation as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.createGroup(
+          {
+            space_ids: ['S1', 'S2'],
+            requester_person_id: 'P',
+            start_at: '2026-05-01T09:00:00Z',
+            end_at: '2026-05-01T10:00:00Z',
+            services: [{ catalog_item_id: 'C1', quantity: 4 }],
+          },
+          makeActor(),
+        ),
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'booking.partial_failure',
+      booking_id: BOOKING_ID,
+      blocked_by: ['recurrence_series'],
     });
   });
 
