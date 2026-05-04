@@ -26,13 +26,13 @@ export function SummaryView({
   headerCopy = "We'll update suggestions as you build the booking.",
 }: SummaryViewProps) {
   return (
-    <div className="bg-background">
-      <p className="text-xs text-muted-foreground px-3 pt-3 pb-2">{headerCopy}</p>
-      <div className="divide-y divide-border/60">
-        <div>{times}</div>
-        <div>{room}</div>
-        <div>{catering}</div>
-        <div>{av}</div>
+    <div>
+      <p className="text-xs text-muted-foreground px-4 pt-3 pb-2">{headerCopy}</p>
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        <div className="rounded-lg border border-border/60 bg-background overflow-hidden">{times}</div>
+        <div className="rounded-lg border border-border/60 bg-background overflow-hidden">{room}</div>
+        <div className="rounded-lg border border-border/60 bg-background overflow-hidden">{catering}</div>
+        <div className="rounded-lg border border-border/60 bg-background overflow-hidden">{av}</div>
       </div>
     </div>
   );
