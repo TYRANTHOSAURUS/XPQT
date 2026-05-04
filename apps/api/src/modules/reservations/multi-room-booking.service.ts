@@ -201,14 +201,19 @@ export class MultiRoomBookingService {
 
     // 2. Coerce source. The legacy ReservationSource admits 'auto' for
     //    calendar-sync / system actors; the new bookings.source CHECK
-    //    rejects it (00277:56-58). Map 'auto' → 'calendar_sync' to
-    //    preserve provenance. System actors (recurrence/cron) hit this
-    //    too via actor.user_id.startsWith('system:').
+    //    rejects it (00277:56-58).
+    //
+    //    /full-review v3 closure Nit (2026-05-04) — split coercion by
+    //    actor: system:recurrence → 'recurrence' (provenance accurate
+    //    after 00295), other system actors → 'calendar_sync', humans
+    //    → input.source ?? 'portal'.
     const rawSource = actor.user_id.startsWith('system:')
       ? 'auto'
       : input.source ?? 'portal';
-    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' =
-      rawSource === 'auto' ? 'calendar_sync' : rawSource;
+    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
+      rawSource === 'auto'
+        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
+        : rawSource;
 
     const status: 'pending_approval' | 'confirmed' = anyRequireApproval ? 'pending_approval' : 'confirmed';
     const policySnapshot: PolicySnapshot = {

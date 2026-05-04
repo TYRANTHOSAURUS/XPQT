@@ -185,12 +185,20 @@ export class BookingFlowService {
     //
     //    Source-narrowing: the legacy `ReservationSource` admits 'auto' for
     //    calendar-sync polling, but the new `bookings.source` CHECK constraint
-    //    does not (00277:56-58, FIX#2). We coerce 'auto' → 'calendar_sync' to
-    //    preserve provenance; today the only path that emits 'auto' is the
-    //    calendar-sync poller (calendar_sync is the closer fit).
+    //    does not (00277:56-58, FIX#2).
+    //
+    //    /full-review v3 closure Nit (2026-05-04) — split the 'auto'
+    //    coercion target by caller. Pre-fix every 'auto' became
+    //    'calendar_sync', mislabelling system-recurrence occurrences as
+    //    Outlook/Google sync events. Now: system-recurrence actors
+    //    (user_id starting with 'system:recurrence') get 'recurrence';
+    //    everything else still falls back to 'calendar_sync'. The
+    //    'recurrence' value lives on bookings.source per migration 00295.
     const rawSource = input.source ?? 'portal';
-    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' =
-      rawSource === 'auto' ? 'calendar_sync' : rawSource;
+    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
+      rawSource === 'auto'
+        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
+        : rawSource;
 
     // Map legacy reservation_type 'other' → 'asset' (the new schema's
     // closest analogue; 00277:122 lists room/desk/asset/parking only).

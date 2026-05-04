@@ -25,12 +25,18 @@ export type BookingStatus =
 // BookingFlowService.create:280 strips 'auto' before promoting to bundle;
 // the new RPC enforces that at the DB CHECK constraint, so 'auto' must
 // never reach the booking layer.
+//
+// /full-review v3 closure Nit (2026-05-04) — `'recurrence'` added so
+// system-recurrence bookings can be distinguished from external
+// calendar-sync events. Pre-fix both landed as 'calendar_sync' which
+// muddied audit trails. Migration 00295 widens the DB CHECK to match.
 export type BookingSource =
   | 'portal'
   | 'desk'
   | 'api'
   | 'calendar_sync'
-  | 'reception';
+  | 'reception'
+  | 'recurrence';
 
 // 'parking' is on the new schema; 'other' is dropped (the new check
 // constraint accepts only room/desk/asset/parking — 00277:122).
