@@ -347,8 +347,10 @@ export function BookingComposerModal({
           disablePortal
           showCloseButton={false}
           className={cn(
-            'flex flex-col w-[1152px] max-w-[calc(100vw-2rem)] sm:max-w-[1152px] gap-0 p-0',
-            'h-auto rounded-none max-h-screen sm:rounded-xl sm:min-h-[720px] sm:max-h-[min(90vh,880px)]',
+            'flex flex-col gap-0 p-0',
+            'w-screen h-screen rounded-none max-w-none max-h-none',
+            'sm:w-[min(calc(100vw-6rem),1600px)] sm:h-[min(calc(100vh-6rem),960px)]',
+            'sm:rounded-xl',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
             'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
@@ -389,14 +391,14 @@ export function BookingComposerModal({
               <X className="size-4" aria-hidden />
             </Button>
           </DialogHeader>
-          <div className="flex flex-1 min-h-[480px] flex-col sm:flex-row">
+          <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
             {/* Left pane — 520px on desktop. Outer div owns the scroll +
                 sizing; the inner <FieldGroup> owns the form rhythm per
                 CLAUDE.md form-composition rule (gap-5, no hand-rolled
                 gap-4 between fields). */}
             <div
               data-testid="booking-composer-left-pane"
-              className="flex flex-1 flex-col overflow-y-auto p-5 sm:w-[640px] sm:flex-none"
+              className="flex min-h-0 flex-1 flex-col overflow-y-auto p-5"
             >
               <FieldGroup>
                 <TitleInput
@@ -457,7 +459,7 @@ export function BookingComposerModal({
               data-testid="booking-composer-right-pane"
               className={cn(
                 'flex min-h-0 flex-col overflow-hidden border-t border-border/60 bg-muted/30',
-                'sm:flex-1 sm:border-t-0 sm:border-l',
+                'sm:w-[384px] sm:flex-none sm:border-t-0 sm:border-l',
               )}
             >
               <RightPanel
