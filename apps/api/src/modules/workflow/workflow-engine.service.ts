@@ -1,6 +1,7 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { validateAssigneesInTenant } from '../../common/tenant-validation';
 import { DispatchService } from '../ticket/dispatch.service';
 
 interface WorkflowNode {
@@ -148,6 +149,24 @@ export class WorkflowEngineService {
         const teamId = node.config.team_id as string | undefined;
         const userId = node.config.user_id as string | undefined;
         if (!ctx?.dryRun) {
+          // Plan A.2 / Commit 7 / gap map §MEDIUM workflow-engine.service.ts:148-154.
+          // node.config is user-defined JSONB stored on the workflow definition;
+          // the workflow itself is tenant-scoped, but a malformed / forged
+          // / imported definition could carry a foreign-tenant uuid that
+          // would land on the tickets row blind. Validate before write —
+          // skipForSystemActor: false because a workflow execution doesn't
+          // have an actor concept; the engine is the system, but the
+          // node.config came from user-authored data, so we DO validate.
+          if (tenant && (teamId || userId)) {
+            await validateAssigneesInTenant(
+              this.supabase,
+              {
+                assigned_team_id: teamId,
+                assigned_user_id: userId,
+              },
+              tenant.id,
+            );
+          }
           const updates: Record<string, unknown> = {};
           if (teamId) updates.assigned_team_id = teamId;
           if (userId) updates.assigned_user_id = userId;

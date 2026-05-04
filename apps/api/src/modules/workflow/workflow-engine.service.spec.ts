@@ -139,6 +139,105 @@ describe('WorkflowEngineService.create_child_tasks', () => {
   });
 });
 
+describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validation', () => {
+  // Plan A.2 / Commit 7 / gap map §MEDIUM workflow-engine.service.ts:148-154.
+  // node.config.team_id / user_id are user-defined JSONB on the workflow
+  // definition. A foreign-tenant uuid would land on tickets.assigned_*
+  // blind without this validation.
+  beforeEach(() => {
+    jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 't1', subdomain: 't1' } as never);
+  });
+
+  function makeAssignDeps(rowsByTable: Record<string, Array<{ id: string; tenant_id: string }>>) {
+    const updates: Array<Record<string, unknown>> = [];
+    const supabase = {
+      admin: {
+        from: jest.fn((table: string) => {
+          // assertTenantOwned probe path on teams / users.
+          if (rowsByTable[table]) {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                const match = rowsByTable[table].find((r) => {
+                  for (const [c, v] of Object.entries(filters)) if ((r as Record<string, unknown>)[c] !== v) return false;
+                  return true;
+                });
+                return { data: match ?? null, error: null };
+              },
+            };
+            return { select: () => chain };
+          }
+          if (table === 'tickets') {
+            return {
+              update: (patch: Record<string, unknown>) => ({
+                eq: () => {
+                  updates.push(patch);
+                  return Promise.resolve({ error: null });
+                },
+              }),
+            } as unknown;
+          }
+          return {} as unknown;
+        }),
+      },
+    };
+    return { supabase, updates };
+  }
+
+  it('rejects an assign node with a cross-tenant team_id', async () => {
+    const FOREIGN_TEAM = '00000000-0000-4000-8000-0000000fffff';
+    const { supabase, updates } = makeAssignDeps({
+      teams: [{ id: FOREIGN_TEAM, tenant_id: 'other-tenant' }],
+    });
+    const dispatchService = { dispatch: jest.fn() };
+    const engine = new WorkflowEngineService(supabase as never, dispatchService as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = { id: 'n1', type: 'assign', config: { team_id: FOREIGN_TEAM } };
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as Error).message).toEqual(
+      expect.stringContaining('assigned_team_id'),
+    );
+    // No tickets.update should have fired.
+    expect(updates).toEqual([]);
+  });
+
+  it('lets an assign node through when team_id IS in tenant', async () => {
+    const VALID_TEAM = '00000000-0000-4000-8000-00000000aaaa';
+    const { supabase, updates } = makeAssignDeps({
+      teams: [{ id: VALID_TEAM, tenant_id: 't1' }],
+    });
+    const dispatchService = { dispatch: jest.fn() };
+    const engine = new WorkflowEngineService(supabase as never, dispatchService as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = { id: 'n1', type: 'assign', config: { team_id: VALID_TEAM } };
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      assigned_team_id: VALID_TEAM,
+      status_category: 'assigned',
+    });
+  });
+});
+
 describe('WorkflowEngineService.cancelInstanceForTicket', () => {
   it('cancels active/waiting instances and returns their ids', async () => {
     const captured: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];

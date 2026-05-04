@@ -30,12 +30,15 @@ const BUNDLE = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
 // reservations.id ≠ booking.id. Post-rewrite (00277:27) the booking IS
 // the bundle, so we pass BUNDLE to editOne. The C2 url-mismatch gate
 // in editSlot rejects callers that drift from this identity.
-const ORDER = 'oooooooo-1111-4111-8111-oooooooooooo';
-const SPACE_OLD = 'ssss1111-1111-4111-8111-ssssssssssss';
-const SPACE_NEW = 'ssss2222-2222-4222-8222-ssssssssssss';
-const VISITOR = 'vvvvvvvv-1111-4111-8111-vvvvvvvvvvvv';
-const USER = 'uuuuuuuu-1111-4111-8111-uuuuuuuuuuuu';
-const PERSON = 'pppppppp-1111-4111-8111-pppppppppppp';
+// Plan A.2 / Commit 7: replaced non-hex placeholder constants (`o`, `s`,
+// `v`, `u`, `p`) with valid hex surrogates so the assertTenantOwned uuid
+// regex on the editOne space pre-flight (Commit 6) accepts SPACE_NEW.
+const ORDER = 'eeeeeeee-1111-4111-8111-eeeeeeeeeeee';
+const SPACE_OLD = 'aaaa1111-1111-4111-8111-aaaaaaaaaaaa';
+const SPACE_NEW = 'aaaa2222-2222-4222-8222-aaaaaaaaaaaa';
+const VISITOR = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
+const USER = 'cccccccc-1111-4111-8111-cccccccccccc';
+const PERSON = 'dddddddd-1111-4111-8111-dddddddddddd';
 
 interface VisitorState {
   id: string;
@@ -266,6 +269,34 @@ function buildHarness(opts: {
               return chain;
             },
           };
+        }
+        // ── spaces ───────────────────────────────────────────────────────
+        // Plan A.2 / Commit 6: editOne does a TS-layer pre-flight on
+        // patch.space_id via assertTenantOwned (activeOnly + reservableOnly).
+        // Mock supports the .eq().eq().eq().eq().maybeSingle() chain and
+        // returns success for the SPACE_NEW under TENANT.
+        if (table === 'spaces') {
+          const filters: Record<string, unknown> = {};
+          const chain: Record<string, unknown> = {
+            eq: (col: string, val: unknown) => {
+              filters[col] = val;
+              return chain;
+            },
+            maybeSingle: () => {
+              if (
+                filters.tenant_id === TENANT &&
+                filters.active === true &&
+                filters.reservable === true
+              ) {
+                return Promise.resolve({
+                  data: { id: filters.id as string },
+                  error: null,
+                });
+              }
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
+          return { select: () => chain };
         }
         // ── booking_slots ────────────────────────────────────────────────
         // findByIdOrThrow uses SLOT_WITH_BOOKING_SELECT (slot + bookings embed).

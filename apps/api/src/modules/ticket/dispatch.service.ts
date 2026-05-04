@@ -181,7 +181,7 @@ export class DispatchService {
     }
 
     // Resolve child SLA based on (now finalised) assignees + dto override.
-    const resolvedSlaId = await this.resolveChildSla(dto, row);
+    const resolvedSlaId = await this.resolveChildSla(dto, row, actorAuthUid);
     row.sla_id = resolvedSlaId;
 
     const { data: inserted, error } = await this.supabase.admin
@@ -234,6 +234,7 @@ export class DispatchService {
   private async resolveChildSla(
     dto: DispatchDto,
     row: Record<string, unknown>,
+    actorAuthUid: string = SYSTEM_ACTOR,
   ): Promise<string | null> {
     if (dto.sla_id !== undefined) return dto.sla_id; // explicit (string | null)
 
@@ -248,7 +249,29 @@ export class DispatchService {
         locationId: (row.location_id as string | null) ?? null,
         assetId: (row.asset_id as string | null) ?? null,
       });
-      if (override?.executor_sla_policy_id) return override.executor_sla_policy_id;
+      if (override?.executor_sla_policy_id) {
+        // Plan A.2 / Commit 7 / gap map §MEDIUM dispatch.service.ts:199.
+        // The scope-override resolver IS tenant-scoped today (its loader
+        // filters by tenantId — see scope-override-resolver.service.ts),
+        // but defense-in-depth here means a future change to the resolver
+        // can't silently re-introduce a cross-tenant FK write. Cheap
+        // round-trip; only fires when an override is found. Skipped for
+        // system actor — the dispatch entry-point already validates dto-
+        // sourced ids and the resolver itself is part of the system trust
+        // boundary; this guard is for future relaxation, not today's
+        // hot path.
+        await assertTenantOwned(
+          this.supabase,
+          'sla_policies',
+          override.executor_sla_policy_id,
+          tenantId,
+          {
+            entityName: 'override executor SLA policy',
+            skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
+          },
+        );
+        return override.executor_sla_policy_id;
+      }
     }
 
     const vendorId = row.assigned_vendor_id as string | null;

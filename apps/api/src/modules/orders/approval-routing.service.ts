@@ -232,6 +232,12 @@ export class ApprovalRoutingService {
     if (target.kind === 'derived') {
       if (target.expr === 'cost_center.default_approver') {
         if (!ctx.cost_center_id) return [];
+        // Plan A.2 / Commit 7 / gap map §MEDIUM approval-routing.service.ts:236.
+        // VERIFIED 2026-05-04: cost_centers lookup IS tenant-scoped via
+        // .eq('tenant_id', tenant.id) below, so the derived-approver
+        // expression cannot resolve to a foreign-tenant default approver.
+        // Comment retained as a tripwire — if future refactoring drops
+        // the tenant_id filter, the gap map entry should reopen.
         const { data, error } = await this.supabase.admin
           .from('cost_centers')
           .select('default_approver_person_id')
