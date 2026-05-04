@@ -248,22 +248,79 @@ export class WorkOrderService {
     }
 
     if (hasPlan) {
-      const plannedStartAt = present('planned_start_at')
+      // Phase 1.1 — preserve plan fields on partial update.
+      //
+      // Bug fixed: when the dto only carried `planned_duration_minutes`
+      // (start absent) and no SLA branch had run, `last` was null, so
+      // `last?.planned_start_at ?? null` resolved to null and was passed
+      // to `setPlan`. setPlan's "duration without a start makes no sense"
+      // invariant then forced finalDuration = null too — the row's plan
+      // was silently cleared. Mirror the per-field controller here by
+      // reading the current row before merging.
+      let currentPlan: {
+        planned_start_at: string | null;
+        planned_duration_minutes: number | null;
+      };
+      if (last) {
+        currentPlan = {
+          planned_start_at: last.planned_start_at ?? null,
+          planned_duration_minutes: last.planned_duration_minutes ?? null,
+        };
+      } else {
+        const tenant = TenantContext.current();
+        const { data: cur, error: curErr } = await this.supabase.admin
+          .from('work_orders')
+          .select('planned_start_at, planned_duration_minutes')
+          .eq('id', workOrderId)
+          .eq('tenant_id', tenant.id)
+          .maybeSingle();
+        if (curErr) throw curErr;
+        if (!cur) {
+          throw new NotFoundException(`Work order ${workOrderId} not found`);
+        }
+        const curRow = cur as {
+          planned_start_at: string | null;
+          planned_duration_minutes: number | null;
+        };
+        currentPlan = {
+          planned_start_at: curRow.planned_start_at ?? null,
+          planned_duration_minutes: curRow.planned_duration_minutes ?? null,
+        };
+      }
+
+      // For each plan field: present-in-dto wins (including explicit null);
+      // otherwise carry the current value forward.
+      const finalStart = present('planned_start_at')
         ? (dto.planned_start_at ?? null)
-        : null;
-      // Mirror the per-field controller: when only duration is supplied
-      // without start, we still need a current-row read. Pull from `last`
-      // (refreshed if SLA branch ran) or load fresh.
-      const plannedDuration = present('planned_duration_minutes')
-        ? (dto.planned_duration_minutes ?? null)
-        : null;
-      // If start wasn't explicitly provided but duration was, preserve the
-      // current start. Otherwise the server would clear the plan when the
-      // caller only meant to bump duration.
-      const startToWrite = present('planned_start_at')
-        ? plannedStartAt
-        : (last?.planned_start_at ?? null);
-      last = await this.setPlan(workOrderId, startToWrite, plannedDuration, actorAuthUid);
+        : currentPlan.planned_start_at;
+      // Duration merge has one wrinkle: an explicit start=null patch (with no
+      // duration in the dto) is the established "clear plan" gesture. The
+      // matching setPlan invariant collapses duration to null when start is
+      // null, but the orchestrator's validation below would 400 if we carried
+      // the old duration forward. Honour the clear-start gesture by NOT
+      // carrying the old duration when start is being explicitly cleared.
+      let finalDuration: number | null;
+      if (present('planned_duration_minutes')) {
+        finalDuration = dto.planned_duration_minutes ?? null;
+      } else if (present('planned_start_at') && finalStart === null) {
+        finalDuration = null;
+      } else {
+        finalDuration = currentPlan.planned_duration_minutes;
+      }
+
+      // Reject duration-without-start at the orchestrator boundary so the
+      // caller gets a structured 400 (`work_order.plan_invalid`) instead of
+      // the silent collapse setPlan would do downstream. This covers both:
+      //   1. duration-only patch when current start is null
+      //   2. simultaneous { start: null, duration: N } patch
+      if (finalDuration !== null && finalStart === null) {
+        throw new BadRequestException({
+          code: 'work_order.plan_invalid',
+          message: 'planned_duration_minutes requires planned_start_at',
+        });
+      }
+
+      last = await this.setPlan(workOrderId, finalStart, finalDuration, actorAuthUid);
       dispatched.push('plan');
     }
 

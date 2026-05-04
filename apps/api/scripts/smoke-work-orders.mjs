@@ -180,6 +180,144 @@ async function runWorkOrderMutations(headers, probe) {
     body: { planned_start_at: new Date(Date.now() + 86400000).toISOString() },
   });
 
+  // ── Phase 1.1 plan-merge regression probes ───────────────────────────
+  // Locks in: WorkOrderService.update merges plan-branch fields against the
+  // current row instead of nulling absent fields. Pre-fix, a duration-only
+  // patch silently cleared the existing planned_start_at; this set of
+  // probes makes that regression visible end-to-end.
+
+  // 1. Both fields together — fast-path baseline.
+  const plan1Start = new Date(Date.now() + 2 * 86400000).toISOString();
+  const plan1Result = await probe('WO: plan set start+duration', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_start_at: plan1Start, planned_duration_minutes: 60 },
+  });
+  if (plan1Result.ok) {
+    const after = await readWO(headers);
+    if (
+      after.planned_start_at &&
+      Date.parse(after.planned_start_at) === Date.parse(plan1Start) &&
+      after.planned_duration_minutes === 60
+    ) {
+      results.pass += 1;
+      console.log('  ✓ WO: plan set start+duration (post-read)');
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: plan set start+duration (post-read)');
+      console.log(
+        `  ✗ WO: plan set start+duration (post-read) → start=${after.planned_start_at} dur=${after.planned_duration_minutes}`,
+      );
+    }
+  }
+
+  // 2. Duration-only patch must preserve start. The bug fixed in Phase 1.1.
+  const plan2Result = await probe('WO: plan patch duration only preserves start', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_duration_minutes: 90 },
+  });
+  if (plan2Result.ok) {
+    const after = await readWO(headers);
+    if (
+      after.planned_start_at &&
+      Date.parse(after.planned_start_at) === Date.parse(plan1Start) &&
+      after.planned_duration_minutes === 90
+    ) {
+      results.pass += 1;
+      console.log('  ✓ WO: plan patch duration only preserves start (post-read)');
+    } else {
+      results.fail += 1;
+      results.failed.push(
+        'WO: plan patch duration only preserves start (post-read)',
+      );
+      console.log(
+        `  ✗ WO: plan patch duration only preserves start (post-read) → start=${after.planned_start_at} dur=${after.planned_duration_minutes}`,
+      );
+    }
+  }
+
+  // 3. Start-only patch must preserve duration.
+  const plan3Start = new Date(Date.now() + 3 * 86400000).toISOString();
+  const plan3Result = await probe('WO: plan patch start only preserves duration', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_start_at: plan3Start },
+  });
+  if (plan3Result.ok) {
+    const after = await readWO(headers);
+    if (
+      after.planned_start_at &&
+      Date.parse(after.planned_start_at) === Date.parse(plan3Start) &&
+      after.planned_duration_minutes === 90
+    ) {
+      results.pass += 1;
+      console.log('  ✓ WO: plan patch start only preserves duration (post-read)');
+    } else {
+      results.fail += 1;
+      results.failed.push(
+        'WO: plan patch start only preserves duration (post-read)',
+      );
+      console.log(
+        `  ✗ WO: plan patch start only preserves duration (post-read) → start=${after.planned_start_at} dur=${after.planned_duration_minutes}`,
+      );
+    }
+  }
+
+  // 4. start=null clears both fields (existing setPlan invariant, exposed
+  // through the orchestrator merge).
+  const plan4Result = await probe('WO: plan patch null start clears both', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_start_at: null },
+  });
+  if (plan4Result.ok) {
+    const after = await readWO(headers);
+    if (after.planned_start_at === null && after.planned_duration_minutes === null) {
+      results.pass += 1;
+      console.log('  ✓ WO: plan patch null start clears both (post-read)');
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: plan patch null start clears both (post-read)');
+      console.log(
+        `  ✗ WO: plan patch null start clears both (post-read) → start=${after.planned_start_at} dur=${after.planned_duration_minutes}`,
+      );
+    }
+  }
+
+  // 5. Duration without start → 400 work_order.plan_invalid. Probe runs
+  // immediately after the null-start probe so the WO row has start=null
+  // and duration-without-start is genuinely invalid (not just a no-op).
+  const plan5Result = await probe('WO: duration without start rejected', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_duration_minutes: 90 },
+    expect: 'badrequest',
+  });
+  if (plan5Result.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(plan5Result.body);
+    } catch {
+      // ignore; we'll fail the code-check below
+    }
+    if (parsed && parsed.code === 'work_order.plan_invalid') {
+      results.pass += 1;
+      console.log('  ✓ WO: duration without start rejected (code check)');
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: duration without start rejected (code check)');
+      console.log(
+        `  ✗ WO: duration without start rejected (code check) → code=${parsed?.code}`,
+      );
+    }
+  }
+
+  // Restore a sensible plan so subsequent probes / manual inspection
+  // aren't left with a cleared row.
+  await probe('WO: restore plan (cleanup)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+    },
+  });
+
   // sla: clear (null is XOR-different from any current sla_id)
   await probe('WO: sla_id = null', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
