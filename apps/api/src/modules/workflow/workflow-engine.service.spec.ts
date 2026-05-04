@@ -401,6 +401,273 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
   });
 });
 
+describe('WorkflowEngineService.executeNode (update_ticket) — Plan A.4 / Commit 4 (C3)', () => {
+  // node.config.fields is user-authored JSONB. Pre-A.4 it was written
+  // verbatim onto tickets — no allowlist, no FK validation, no tenant
+  // filter. Refactor: split fields into safe-scalar / FK-validated /
+  // forbidden, throw on forbidden, validate FKs, and add explicit
+  // .eq('tenant_id', ...) on the UPDATE.
+  beforeEach(() => {
+    jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 't1', subdomain: 't1' } as never);
+  });
+
+  function makeUpdateDeps(rowsByTable: Record<string, Array<{ id: string; tenant_id: string }>>) {
+    const updateCalls: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];
+    const supabase = {
+      admin: {
+        from: jest.fn((table: string) => {
+          if (rowsByTable[table]) {
+            // assertTenantOwned + validateAssigneesInTenant probe paths.
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                const match = rowsByTable[table].find((r) => {
+                  for (const [c, v] of Object.entries(filters)) {
+                    if ((r as Record<string, unknown>)[c] !== v) return false;
+                  }
+                  return true;
+                });
+                return { data: match ?? null, error: null };
+              },
+            };
+            return { select: () => chain };
+          }
+          if (table === 'tickets') {
+            return {
+              update: (patch: Record<string, unknown>) => {
+                const fs: Record<string, unknown> = {};
+                // Make the chain promise-thenable; capture in then() so
+                // the test sees BOTH .eq() calls (id + tenant_id).
+                const eqChain: Record<string, unknown> & PromiseLike<unknown> = {
+                  eq: (col: string, val: unknown) => {
+                    fs[col] = val;
+                    return eqChain;
+                  },
+                  then: (onFulfilled?: (v: unknown) => unknown) => {
+                    updateCalls.push({ patch, filters: { ...fs } });
+                    return Promise.resolve({ error: null }).then(onFulfilled);
+                  },
+                } as Record<string, unknown> & PromiseLike<unknown>;
+                return eqChain;
+              },
+            } as unknown;
+          }
+          return {} as unknown;
+        }),
+      },
+    };
+    return { supabase, updateCalls };
+  }
+
+  it('writes safe scalar fields verbatim (priority + status_category + tags)', async () => {
+    const { supabase, updateCalls } = makeUpdateDeps({});
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: {
+        fields: {
+          priority: 'high',
+          status_category: 'in_progress',
+          tags: ['urgent', 'after-hours'],
+        },
+      },
+    };
+
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].patch).toEqual({
+      priority: 'high',
+      status_category: 'in_progress',
+      tags: ['urgent', 'after-hours'],
+    });
+    // Defense-in-depth: explicit tenant filter.
+    expect(updateCalls[0].filters).toMatchObject({ id: 'ticket-1', tenant_id: 't1' });
+  });
+
+  it('throws workflow.update_ticket_field_not_allowed on tenant_id mutation attempt', async () => {
+    const { supabase, updateCalls } = makeUpdateDeps({});
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: { fields: { tenant_id: 'attacker-tenant', priority: 'high' } },
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as { response?: { code?: string; forbidden_fields?: string[] } }).response).toMatchObject({
+      code: 'workflow.update_ticket_field_not_allowed',
+      forbidden_fields: ['tenant_id'],
+    });
+    // Critically: nothing should have hit tickets.update.
+    expect(updateCalls).toEqual([]);
+  });
+
+  it('throws on unknown field (catches workflow-author typos)', async () => {
+    const { supabase, updateCalls } = makeUpdateDeps({});
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: { fields: { priorty: 'high' } }, // typo
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as { response?: { forbidden_fields?: string[] } }).response?.forbidden_fields).toEqual([
+      'priorty',
+    ]);
+    expect(updateCalls).toEqual([]);
+  });
+
+  it('rejects cross-tenant FK in allowlisted FK field (assigned_team_id)', async () => {
+    const FOREIGN_TEAM = '00000000-0000-4000-8000-0000000fffff';
+    const { supabase, updateCalls } = makeUpdateDeps({
+      teams: [{ id: FOREIGN_TEAM, tenant_id: 'other-tenant' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: { fields: { assigned_team_id: FOREIGN_TEAM, priority: 'high' } },
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as Error).message).toEqual(
+      expect.stringContaining('assigned_team_id'),
+    );
+    expect(updateCalls).toEqual([]);
+  });
+
+  it('rejects cross-tenant sla_id (FK validation via assertTenantOwned)', async () => {
+    const FOREIGN_SLA = '00000000-0000-4000-8000-0000000fffff';
+    const { supabase, updateCalls } = makeUpdateDeps({
+      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: { fields: { sla_id: FOREIGN_SLA } },
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+      'reference.not_in_tenant',
+    );
+    expect(updateCalls).toEqual([]);
+  });
+
+  it('writes in-tenant FK + safe scalar in one update (mixed allowlisted)', async () => {
+    const VALID_TEAM = '00000000-0000-4000-8000-00000000aaaa';
+    const VALID_SLA = '00000000-0000-4000-8000-00000000bbbb';
+    const { supabase, updateCalls } = makeUpdateDeps({
+      teams: [{ id: VALID_TEAM, tenant_id: 't1' }],
+      sla_policies: [{ id: VALID_SLA, tenant_id: 't1' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: {
+        fields: {
+          assigned_team_id: VALID_TEAM,
+          sla_id: VALID_SLA,
+          priority: 'high',
+          status_category: 'assigned',
+        },
+      },
+    };
+
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].patch).toMatchObject({
+      assigned_team_id: VALID_TEAM,
+      sla_id: VALID_SLA,
+      priority: 'high',
+      status_category: 'assigned',
+    });
+    expect(updateCalls[0].filters).toMatchObject({ id: 'ticket-1', tenant_id: 't1' });
+  });
+
+  it('allows null FK clearing (assigned_team_id: null) without tenant lookup', async () => {
+    const { supabase, updateCalls } = makeUpdateDeps({});
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'update_ticket',
+      config: { fields: { assigned_team_id: null } },
+    };
+
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].patch).toEqual({ assigned_team_id: null });
+  });
+});
+
 describe('WorkflowEngineService.cancelInstanceForTicket', () => {
   it('cancels active/waiting instances and returns their ids', async () => {
     const captured: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];

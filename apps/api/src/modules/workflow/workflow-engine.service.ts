@@ -1,8 +1,88 @@
-import { Inject, Injectable, forwardRef } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, validateAssigneesInTenant } from '../../common/tenant-validation';
 import { DispatchService } from '../ticket/dispatch.service';
+
+// Plan A.4 / Commit 4 (C3) — workflow `update_ticket` node allowlist.
+// node.config.fields was previously written directly to tickets with no
+// allowlist, no FK validation, no tenant filter. A forged or imported
+// workflow definition could carry:
+//   - tenant_id mutation (cross-tenant takeover)
+//   - cross-tenant FK refs (assigned_team_id from another tenant)
+//   - a payload that overwrites system-managed columns (created_at,
+//     updated_at, sla_*_at)
+// The allowlist below splits the surface into:
+//   1. Safe scalar fields — written verbatim. Schema CHECK constraints
+//      and column types catch invalid values; tenant isolation is not
+//      a concern (these aren't FKs).
+//   2. FK fields — written through assertTenantOwned to prove tenant
+//      ownership of the referenced row.
+// Anything outside both lists throws workflow.update_ticket_field_not_allowed
+// rather than being silently dropped — silent drop hides workflow
+// definition bugs and the failure surfaces only in production when the
+// admin notices the ticket didn't change as expected.
+//
+// Doc-drift trigger: this allowlist is the contract for what a workflow
+// can write. When tickets gains a new column, decide whether it's safe
+// scalar / FK / forbidden, and update both this list AND
+// docs/assignments-routing-fulfillment.md (§Routing decision write path).
+
+/** Fields a workflow `update_ticket` node may write directly. */
+const UPDATE_TICKET_SAFE_SCALAR_FIELDS = new Set<string>([
+  // Status + workflow state
+  'status',
+  'status_category',
+  'waiting_reason',
+  // Priority signals
+  'priority',
+  'impact',
+  'urgency',
+  // Mode + content
+  'interaction_mode',
+  'title',
+  'description',
+  'tags',
+  'source_channel',
+  // Operational scalars
+  'cost',
+  'satisfaction_rating',
+  'satisfaction_comment',
+  'form_data',
+  // Closure / cancellation reasons (string only — actor ids are FKs and
+  // forbidden; system actor sets those via dedicated paths).
+  'close_reason',
+  'cancelled_reason',
+  'reclassified_reason',
+  // Plan window (operator-side only; never surfaced to requesters).
+  'planned_start_at',
+  'planned_duration_minutes',
+]);
+
+/**
+ * FK fields a workflow `update_ticket` node may write — but each value
+ * MUST be validated against the calling tenant before the UPDATE fires.
+ * Map: ticket-column -> { table, entityName, kind: 'assignee' | 'asset' | 'space' | 'rt' | 'sla' | 'person' | 'ticket' | 'wf' }.
+ * The validator itself uses assertTenantOwned (or
+ * validateAssigneesInTenant for the assigned_* trio).
+ */
+const UPDATE_TICKET_FK_FIELDS: Record<
+  string,
+  { table: string; entityName: string }
+> = {
+  ticket_type_id: { table: 'request_types', entityName: 'request type' },
+  parent_ticket_id: { table: 'tickets', entityName: 'parent ticket' },
+  requester_person_id: { table: 'persons', entityName: 'requester' },
+  requested_for_person_id: { table: 'persons', entityName: 'requested-for' },
+  location_id: { table: 'spaces', entityName: 'location' },
+  asset_id: { table: 'assets', entityName: 'asset' },
+  workflow_id: { table: 'workflow_definitions', entityName: 'workflow' },
+  sla_id: { table: 'sla_policies', entityName: 'SLA policy' },
+  // assigned_* go through validateAssigneesInTenant (3 tables in one call).
+  assigned_team_id: { table: 'teams', entityName: 'team' },
+  assigned_user_id: { table: 'users', entityName: 'user' },
+  assigned_vendor_id: { table: 'vendors', entityName: 'vendor' },
+};
 
 interface WorkflowNode {
   id: string;
@@ -179,8 +259,92 @@ export class WorkflowEngineService {
 
       case 'update_ticket': {
         const fields = node.config.fields as Record<string, unknown> | undefined;
-        if (!ctx?.dryRun && fields) {
-          await this.supabase.admin.from('tickets').update(fields).eq('id', ticketId);
+        if (!ctx?.dryRun && fields && tenant) {
+          // Plan A.4 / Commit 4 (C3) — see allowlists at the top of this
+          // file. node.config.fields is user-authored JSONB on the
+          // workflow definition; treat as untrusted at execution time.
+          //
+          // 1. Bucket the incoming keys.
+          const safe: Record<string, unknown> = {};
+          const fkUpdates: Record<string, unknown> = {};
+          const forbidden: string[] = [];
+          for (const [k, v] of Object.entries(fields)) {
+            if (UPDATE_TICKET_SAFE_SCALAR_FIELDS.has(k)) {
+              safe[k] = v;
+            } else if (k in UPDATE_TICKET_FK_FIELDS) {
+              fkUpdates[k] = v;
+            } else {
+              forbidden.push(k);
+            }
+          }
+
+          // 2. Reject any forbidden fields up-front. Throwing (vs. silent
+          // drop) surfaces workflow definition bugs at execution time
+          // instead of letting them rot. Critically: `tenant_id`, `id`,
+          // `created_at`, `updated_at`, `created_by`, `updated_by`, all
+          // sla_* computed columns, and the unknown 'foo' workflow-author
+          // typo all land here.
+          if (forbidden.length > 0) {
+            throw new BadRequestException({
+              code: 'workflow.update_ticket_field_not_allowed',
+              message: `workflow update_ticket node attempted to write disallowed field(s): ${forbidden.join(', ')}`,
+              forbidden_fields: forbidden,
+            });
+          }
+
+          // 3. Validate each FK against the tenant BEFORE the UPDATE.
+          //    null / undefined values are valid (clear the FK).
+          //    Assignees go through the trio validator; everything else
+          //    through assertTenantOwned.
+          const assigneeDiff: {
+            assigned_team_id?: unknown;
+            assigned_user_id?: unknown;
+            assigned_vendor_id?: unknown;
+          } = {};
+          for (const [field, value] of Object.entries(fkUpdates)) {
+            if (value === null || value === undefined) continue;
+            if (
+              field === 'assigned_team_id' ||
+              field === 'assigned_user_id' ||
+              field === 'assigned_vendor_id'
+            ) {
+              (assigneeDiff as Record<string, unknown>)[field] = value;
+              continue;
+            }
+            const fk = UPDATE_TICKET_FK_FIELDS[field];
+            if (typeof value !== 'string') {
+              throw new BadRequestException({
+                code: 'reference.invalid_uuid',
+                message: `${fk.entityName} reference must be a string uuid`,
+                reference_table: fk.table,
+              });
+            }
+            await assertTenantOwned(
+              this.supabase,
+              fk.table,
+              value,
+              tenant.id,
+              { entityName: fk.entityName },
+            );
+          }
+          if (
+            assigneeDiff.assigned_team_id !== undefined ||
+            assigneeDiff.assigned_user_id !== undefined ||
+            assigneeDiff.assigned_vendor_id !== undefined
+          ) {
+            await validateAssigneesInTenant(this.supabase, assigneeDiff, tenant.id);
+          }
+
+          // 4. UPDATE with explicit tenant filter — defense-in-depth even
+          // though every FK was validated. supabase.admin bypasses RLS.
+          const allUpdates = { ...safe, ...fkUpdates };
+          if (Object.keys(allUpdates).length > 0) {
+            await this.supabase.admin
+              .from('tickets')
+              .update(allUpdates)
+              .eq('id', ticketId)
+              .eq('tenant_id', tenant.id);
+          }
         }
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
         break;
