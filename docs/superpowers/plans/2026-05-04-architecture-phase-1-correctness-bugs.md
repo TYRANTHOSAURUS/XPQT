@@ -84,8 +84,9 @@ For `WorkOrderService.update(workOrderId, dto, actor)`:
 
 1. Before the plan branch runs (or at the head of the plan branch when `last` is null), load `{ planned_start_at, planned_duration_minutes }` for the work order using the SAME tenant-scoped query pattern other methods in the file use.
 2. For each plan field, write `presentInDto ? dto.value : current.value`. Both fields are nullable; `undefined` means "not present in dto," `null` means "explicit clear."
-3. Validate: if final `duration !== null && start === null`, throw `BadRequestException` with `code: 'work_order.plan_invalid'`.
-4. Call `setPlan(workOrderId, finalStart, finalDuration, actorAuthUid)` — preserve its existing semantics.
+3. **Clear-plan invariant**: if the merged `final_start` is null AND the dto did NOT explicitly set `planned_duration_minutes`, force `final_duration = null` too. Without this, the merge carries forward the previous duration and step 4's validation false-positives on the established "clear plan" gesture (`{ planned_start_at: null }`). This invariant matches `setPlan`'s own behavior at the bottom of the call ("duration without a start is meaningless").
+4. Validate: if final `duration !== null && start === null`, throw `BadRequestException` with `code: 'work_order.plan_invalid'`.
+5. Call `setPlan(workOrderId, finalStart, finalDuration, actorAuthUid)` — preserve its existing semantics.
 
 ### Tests (TDD)
 
