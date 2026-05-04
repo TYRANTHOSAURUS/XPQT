@@ -838,7 +838,7 @@ function bookingToLegacyReservation(
   },
   slotId: string | null,
   appliedRuleIds: string[],
-  source: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception',
+  source: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence',
   slotType: 'room' | 'desk' | 'asset' | 'parking',
 ): Reservation {
   // Compute effective window the same way the slot trigger does so
