@@ -156,6 +156,102 @@ describe('SlaService.applyWaitingStateTransition', () => {
   });
 });
 
+describe('SlaService.startTimers — Plan A.2 tenant filter', () => {
+  // Plan A.2 / gap map §sla.service.ts:65-71. The pre-fix policy load
+  // hit `from('sla_policies').select('*').eq('id', slaPolicyId).single()`
+  // — no tenant filter. A foreign-tenant slaPolicyId planted on a
+  // work_order or case (e.g. via the dispatch path before the same
+  // commit added validation) would resolve to the wrong tenant's
+  // pause_on_waiting_reasons + business_hours_calendar + escalation
+  // thresholds, then start timers off the wrong policy. Closes the
+  // create-side gap that mirrors applyWaitingStateTransition's already-
+  // closed gap.
+  function makeStartTimersDeps(rowsByTenant: Record<string, { id: string; tenant_id: string; response_time_minutes: number | null; resolution_time_minutes: number | null }>) {
+    const lookups: Array<Record<string, unknown>> = [];
+    const supabase = {
+      admin: {
+        from: (table: string) => {
+          if (table === 'sla_policies') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                lookups.push({ ...filters });
+                const key = `${filters.id}|${filters.tenant_id}`;
+                const row = rowsByTenant[key];
+                return { data: row ?? null, error: null };
+              },
+              single: async () => {
+                lookups.push({ ...filters });
+                const key = `${filters.id}|${filters.tenant_id}`;
+                const row = rowsByTenant[key];
+                return { data: row ?? null, error: null };
+              },
+            };
+            return { select: () => chain };
+          }
+          if (table === 'sla_timers') {
+            return { insert: () => Promise.resolve({ error: null }) };
+          }
+          if (table === 'tickets' || table === 'work_orders' || table === 'business_hours_calendars') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({ data: null, error: null }),
+              single: async () => ({ data: null, error: null }),
+              select: () => chain,
+            };
+            return {
+              update: () => chain,
+              select: () => chain,
+            };
+          }
+          return {} as unknown;
+        },
+      },
+    };
+    return { supabase, lookups };
+  }
+
+  it('does NOT load a cross-tenant policy when starting timers', async () => {
+    // Same uuid present in BOTH tenants with different settings. The legacy
+    // call resolved by id alone and would have returned the FIRST hit; with
+    // the tenant filter, only the t2 policy is reachable.
+    const { supabase, lookups } = makeStartTimersDeps({
+      'sla-x|t1': { id: 'sla-x', tenant_id: 't1', response_time_minutes: 60, resolution_time_minutes: 240 },
+      // Intentional: 't2|sla-x' is missing — caller is t2 but only t1 has the
+      // policy. With the new filter, startTimers must NOT find it.
+    });
+    const businessHours = { addBusinessMinutes: jest.fn() };
+    const notifications = {};
+    const svc = new SlaService(supabase as any, businessHours as any, notifications as any);
+    await svc.startTimers('wo1', 't2', 'sla-x');
+
+    // Single lookup, scoped to t2 → policy not found → early return, no
+    // calendar lookup, no business-hours calc.
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0]).toEqual({ id: 'sla-x', tenant_id: 't2' });
+    expect(businessHours.addBusinessMinutes).not.toHaveBeenCalled();
+  });
+
+  it('loads the in-tenant policy when present', async () => {
+    const { supabase, lookups } = makeStartTimersDeps({
+      'sla-x|t1': { id: 'sla-x', tenant_id: 't1', response_time_minutes: null, resolution_time_minutes: null },
+    });
+    const businessHours = { addBusinessMinutes: jest.fn() };
+    const notifications = {};
+    const svc = new SlaService(supabase as any, businessHours as any, notifications as any);
+    await svc.startTimers('wo1', 't1', 'sla-x');
+    expect(lookups[0]).toEqual({ id: 'sla-x', tenant_id: 't1' });
+  });
+});
+
 describe('SlaService.stopTimers', () => {
   it('updates active timers with stopped_at and stopped_reason, scoped to ticket + tenant', async () => {
     const captured: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];

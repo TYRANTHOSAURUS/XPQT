@@ -51,9 +51,14 @@ function makeDeps(parent: ParentRow) {
           } as unknown;
         }
         if (table === 'request_types') {
+          // Plan A.2: loadRequestTypeConfig now chains .eq('id').eq('tenant_id').
+          const single = { data: { domain: 'av' }, error: null };
           return {
             select: () => ({
-              eq: () => ({ maybeSingle: async () => ({ data: { domain: 'av' }, error: null }) }),
+              eq: () => ({
+                eq: () => ({ maybeSingle: async () => single }),
+                maybeSingle: async () => single,
+              }),
             }),
           } as unknown;
         }

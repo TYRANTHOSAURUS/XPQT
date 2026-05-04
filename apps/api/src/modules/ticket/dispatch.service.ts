@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import {
+  assertTenantOwned,
+  validateAssigneesInTenant,
+} from '../../common/tenant-validation';
 import { RoutingService } from '../routing/routing.service';
 import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
 import { SlaService } from '../sla/sla.service';
@@ -70,6 +74,54 @@ export class DispatchService {
     const locationId = dto.location_id ?? (parent.location_id as string | null);
     const assetId = dto.asset_id ?? (parent.asset_id as string | null);
     const priority = dto.priority ?? ((parent.priority as string | null) ?? 'medium');
+
+    // Plan A.2 — gap map §dispatch.service.ts:69,97-99,186. The dispatched
+    // row will write ticket_type_id + assigned_*_id + sla_id as FKs to
+    // tenant-owned tables; FKs prove existence globally but NOT tenant
+    // ownership. Validate every uuid that came from `dto` BEFORE the row
+    // insert at line 87 (and BEFORE resolveChildSla returns dto.sla_id).
+    //
+    // ticket_type_id only when it came from the DTO — when inherited from
+    // parent it was already tenant-loaded by getById's visibility check.
+    if (dto.ticket_type_id !== undefined && dto.ticket_type_id !== null) {
+      await assertTenantOwned(
+        this.supabase,
+        'request_types',
+        dto.ticket_type_id,
+        tenant.id,
+        {
+          entityName: 'request type',
+          skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
+        },
+      );
+    }
+    // Assignees: assigned_team_id / assigned_user_id / assigned_vendor_id.
+    // Mirror of TicketService.update + WorkOrderService.updateMetadata.
+    await validateAssigneesInTenant(
+      this.supabase,
+      {
+        assigned_team_id: dto.assigned_team_id,
+        assigned_user_id: dto.assigned_user_id,
+        assigned_vendor_id: dto.assigned_vendor_id,
+      },
+      tenant.id,
+      { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
+    );
+    // Explicit dto.sla_id — null is "No SLA" (valid); a string must be a
+    // policy in this tenant. resolveChildSla will return this value blind
+    // at line 186 below if we don't validate here first.
+    if (typeof dto.sla_id === 'string') {
+      await assertTenantOwned(
+        this.supabase,
+        'sla_policies',
+        dto.sla_id,
+        tenant.id,
+        {
+          entityName: 'SLA policy',
+          skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
+        },
+      );
+    }
 
     // Load request type for routing domain only (NOT for SLA — child SLAs are independent).
     const rtCfg = ticketTypeId
@@ -247,12 +299,21 @@ export class DispatchService {
     return null;
   }
 
-  // Consolidated single request-type loader — domain only (SLA resolved separately via resolveChildSla)
+  // Consolidated single request-type loader — domain only (SLA resolved
+  // separately via resolveChildSla). Tenant-filtered as defense-in-depth:
+  // a foreign-tenant id passed via dto.ticket_type_id is rejected by the
+  // assertTenantOwned check above, but inherited values from
+  // parent.ticket_type_id were already trust-anchored to the parent's
+  // tenant (visibility loadContext + getById). Filtering here too means
+  // even if a future caller bypasses dispatch() (or the parent has been
+  // mutated mid-call), the loader can't leak a foreign-tenant config.
   private async loadRequestTypeConfig(id: string): Promise<{ domain: string | null }> {
+    const tenantId = TenantContext.current().id;
     const { data } = await this.supabase.admin
       .from('request_types')
       .select('domain')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     const d = data as { domain: string | null } | null;
     return { domain: d?.domain ?? null };

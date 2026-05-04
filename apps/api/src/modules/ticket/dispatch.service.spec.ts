@@ -72,10 +72,16 @@ function makeDeps(
           } as unknown;
         }
         if (table === 'request_types') {
+          // Plan A.2: loadRequestTypeConfig now chains .eq('id').eq('tenant_id').
+          // Mock supports both single-eq and double-eq call shapes for forward compat.
+          const single = { data: { domain: 'fm', sla_policy_id: 'sla-1' }, error: null };
           return {
             select: () => ({
               eq: () => ({
-                maybeSingle: async () => ({ data: { domain: 'fm', sla_policy_id: 'sla-1' }, error: null }),
+                eq: () => ({
+                  maybeSingle: async () => single,
+                }),
+                maybeSingle: async () => single,
               }),
             }),
           } as unknown;

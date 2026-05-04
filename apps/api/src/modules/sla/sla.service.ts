@@ -60,13 +60,23 @@ export class SlaService {
   /**
    * Start SLA timers when a ticket is created.
    * Called by the ticket service after ticket creation.
+   *
+   * Plan A.2 / gap map §sla.service.ts:65-71. The policy load MUST be
+   * tenant-scoped. Without the tenant filter a caller passing a
+   * cross-tenant slaPolicyId would resolve the policy globally (FK
+   * exists, supabase.admin bypasses RLS), then create timers and
+   * mirror response/resolution due dates from the wrong tenant's
+   * escalation thresholds + business-hours calendar. The mirror is
+   * already partially closed at applyWaitingStateTransition (line 270);
+   * this closes the equivalent gap on the create path.
    */
   async startTimers(ticketId: string, tenantId: string, slaPolicyId: string) {
     const { data: policy, error: policyError } = await this.supabase.admin
       .from('sla_policies')
       .select('*')
       .eq('id', slaPolicyId)
-      .single();
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
 
     if (policyError || !policy) return;
 
