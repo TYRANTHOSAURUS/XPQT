@@ -60,13 +60,19 @@ export class OutboxHandlerRegistry implements OnModuleInit {
       }
 
       const key = this.key(meta.eventType, meta.version);
-      if (this.handlers.has(key)) {
+      const existing = this.handlers.get(key);
+      if (existing) {
         // Two providers claim the same (eventType, version) — refuse to
         // pick a winner silently. The dispatch path can't be ambiguous.
-        this.log.error(
-          `outbox handler conflict: ${key} registered more than once; ignoring duplicate`,
+        // Codex v3 review I4: log+skip leaves boot in a discovery-order
+        // state. Throwing here fails Nest boot (onModuleInit propagates),
+        // which is the correct behavior — a duplicate handler registration
+        // is an authoring bug, not something the worker should paper over.
+        const existingClass = (existing as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
+        const newClass = (instance as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
+        throw new Error(
+          `Duplicate OutboxHandler registration: ${key}. Found: ${existingClass}, attempted: ${newClass}.`,
         );
-        continue;
       }
       this.handlers.set(key, instance);
       registered++;

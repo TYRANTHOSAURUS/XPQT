@@ -14,7 +14,7 @@ import { OutboxHandlerRegistry } from '../outbox-handler.registry';
  *   - Lookup is keyed by `(eventType, version)`.
  *   - Mismatched version returns null (worker treats as no_handler_registered).
  *   - Missing handler returns null.
- *   - Conflict detection — duplicate registration logs and ignores the second.
+ *   - Conflict detection — duplicate registration throws (fails Nest boot).
  *   - Wrappers without metatype, without instance, or without handle() are
  *     skipped without throwing.
  */
@@ -141,7 +141,10 @@ describe('OutboxHandlerRegistry', () => {
     expect(reg.size()).toBe(0);
   });
 
-  it('refuses to silently overwrite on duplicate (eventType, version) registration', () => {
+  it('throws on duplicate (eventType, version) registration to fail Nest boot', () => {
+    // Codex v3 review I4 — log+skip leaves boot in a discovery-order state.
+    // The dispatch path cannot be ambiguous; an authoring bug must crash boot
+    // so it's caught in CI / staging, not silently ignored in prod.
     const first = new BookingHandlerV1();
     const second = new BookingHandlerV1();
     const reg = makeRegistry([
@@ -150,11 +153,10 @@ describe('OutboxHandlerRegistry', () => {
       // metadata. Same metadata → conflict.
       { metatype: BookingHandlerV1, instance: second },
     ]);
-    reg.onModuleInit();
 
-    // First registration wins; second is ignored.
-    expect(reg.get('booking.create_attempted', 1)).toBe(first);
-    expect(reg.size()).toBe(1);
+    expect(() => reg.onModuleInit()).toThrow(
+      /Duplicate OutboxHandler registration: booking\.create_attempted@v1\. Found: BookingHandlerV1, attempted: BookingHandlerV1\./,
+    );
   });
 
   it('emits a stable startup log line for deploy verification (spec §10.1)', () => {
