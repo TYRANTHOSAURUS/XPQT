@@ -262,7 +262,7 @@ export function BookingComposerModal({
           disablePortal
           showCloseButton={false}
           className={cn(
-            'flex flex-col w-[880px] max-w-[calc(100vw-2rem)] gap-0 p-0',
+            'flex flex-col w-[880px] max-w-[calc(100vw-2rem)] sm:max-w-[880px] gap-0 p-0',
             'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,680px)]',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
