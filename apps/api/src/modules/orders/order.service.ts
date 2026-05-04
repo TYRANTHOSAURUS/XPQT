@@ -1124,6 +1124,55 @@ export class OrderService {
     bundle_id: string;
     args: CreateStandaloneOrderArgs;
   }): Promise<{ id: string }> {
+    // Plan A.4 / Commit 10 (I6) / round-4 codex flag order.service.ts:1122-1146.
+    // The private createOrder is called from 6 internal call sites
+    // (line 777 + 826 + 957 + 1029 + 1054 + 1062 in this file). A.2's
+    // cloneOrderForOccurrence fix at line 153 closed only the recurrence
+    // path; the standalone-order path was untouched. Validate at the
+    // entry of createOrder itself — single point covers every caller —
+    // for booking_id, requester_person_id, delivery_space_id, and
+    // cost_center_id.
+    //
+    // requester_person_id uses personState='active' (mirror of the
+    // tighter check applied to watchers) to reject deactivated /
+    // anonymized / off-boarded persons. The other person gates in this
+    // codebase that opt into the same filter are watchers; we extend
+    // it here because requester is a stronger signal (the order is
+    // booked on their behalf — adding a departed person is the same
+    // bug-class as adding them as a watcher).
+    await assertTenantOwned(
+      this.supabase,
+      'bookings',
+      args.bundle_id,
+      args.tenantId,
+      { entityName: 'booking' },
+    );
+    await assertTenantOwned(
+      this.supabase,
+      'persons',
+      args.args.requester_person_id,
+      args.tenantId,
+      { entityName: 'requester', personState: 'active' },
+    );
+    if (args.args.delivery_space_id) {
+      await assertTenantOwned(
+        this.supabase,
+        'spaces',
+        args.args.delivery_space_id,
+        args.tenantId,
+        { entityName: 'delivery space' },
+      );
+    }
+    if (args.args.cost_center_id) {
+      await assertTenantOwned(
+        this.supabase,
+        'cost_centers',
+        args.args.cost_center_id,
+        args.tenantId,
+        { entityName: 'cost center' },
+      );
+    }
+
     // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
     // bundle_id is the booking id under canonicalisation.
     const { data, error } = await this.supabase.admin
