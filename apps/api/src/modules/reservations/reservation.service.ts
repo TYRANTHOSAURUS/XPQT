@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional,
+  BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -711,6 +711,180 @@ export class ReservationService {
     }
 
     return updated;
+  }
+
+  /**
+   * Phase 1.4 — Bug #2: slot-targeted edit path.
+   *
+   * The desk scheduler PATCHed `/reservations/:id` with `id = booking.id`,
+   * which routed to `editOne` and only ever touched the booking's PRIMARY
+   * slot (lowest `display_order`). Dragging a non-primary slot of a
+   * multi-room booking silently moved the primary instead — the bug this
+   * method exists to fix.
+   *
+   * `editSlot` accepts an explicit slot id (the user-clicked row) plus its
+   * declared parent booking id (URL contract), then runs the patch through
+   * the `edit_booking_slot` RPC (00291). The RPC updates ONE slot AND
+   * recomputes the parent booking's `start_at = MIN(slots)`, `end_at =
+   * MAX(slots)`, plus mirrors `bookings.location_id = patch.space_id` only
+   * when the edited slot is the booking's PRIMARY (lowest display_order,
+   * ties by created_at ascending — NOT just `display_order = 0`).
+   *
+   * URL contract honesty (codex 2026-05-04): we assert
+   * `slot.booking_id === bookingId` here at the SERVICE layer rather than
+   * at the controller, so the controller stays a thin wrapper and a
+   * single round-trip handles the not-found / url-mismatch / write paths.
+   *
+   * Errors:
+   *   - `booking_slot.not_found` (404) — slot id doesn't exist for this tenant.
+   *   - `booking_slot.url_mismatch` (400) — slot exists but its booking_id ≠
+   *     `bookingId`. Defends against forged ids and stale frontend state.
+   *   - `booking.edit_forbidden` (403) — caller passes visibility but not
+   *     `canEdit` (read-only operator).
+   *   - `booking.slot_conflict` (409) — GiST exclusion (`23P01`); another
+   *     active slot already covers the requested window on the target space.
+   *   - `booking.slot_update_failed` (400) — any other RPC failure.
+   *
+   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
+   * level edit path for fields that aren't slot geometry (host_person_id,
+   * attendee_count). Frontend callers are expected to use:
+   *   - `useEditBooking` for booking-level edits
+   *   - `useEditBookingSlot` for slot-geometry edits (drag/resize/move)
+   */
+  async editSlot(
+    bookingId: string,
+    slotId: string,
+    actor: ActorContext,
+    patch: { space_id?: string; start_at?: string; end_at?: string },
+  ): Promise<Reservation> {
+    const tenantId = TenantContext.current().id;
+
+    // Pre-flight: resolve the slot's parent booking_id under tenant scope.
+    // Two failure modes here, both must be detected BEFORE we hit the RPC
+    // so we don't pollute the audit trail or risk side-effects on a
+    // mismatched id:
+    //   (a) slot row missing → booking_slot.not_found
+    //   (b) slot exists, parent booking_id ≠ URL bookingId → booking_slot.url_mismatch
+    const { data: slotRow, error: slotErr } = await this.supabase.admin
+      .from('booking_slots')
+      .select('booking_id')
+      .eq('tenant_id', tenantId)
+      .eq('id', slotId)
+      .maybeSingle();
+    if (slotErr) {
+      throw new BadRequestException({
+        code: 'booking.slot_update_failed',
+        message: (slotErr as { message?: string }).message ?? 'Slot pre-flight failed.',
+      });
+    }
+    if (!slotRow) {
+      throw new NotFoundException({
+        code: 'booking_slot.not_found',
+        message: 'Slot not found.',
+      });
+    }
+    const slotBookingId = (slotRow as { booking_id: string }).booking_id;
+    if (slotBookingId !== bookingId) {
+      throw new BadRequestException({
+        code: 'booking_slot.url_mismatch',
+        message: 'slotId does not belong to bookingId.',
+      });
+    }
+
+    // Auth: same shape as editOne (reservation.service.ts:613-616).
+    // findByIdOrThrow loads the booking via SLOT_WITH_BOOKING_SELECT and
+    // throws NotFoundException('booking_not_found') if the parent is gone
+    // for this tenant.
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    const reservation = await this.findByIdOrThrow(bookingId, tenantId);
+    this.visibility.assertVisible(reservation, ctx);
+    if (!this.visibility.canEdit(reservation, ctx)) {
+      throw new ForbiddenException({
+        code: 'booking.edit_forbidden',
+        message: 'You do not have permission to edit this booking.',
+      });
+    }
+
+    // Build the trimmed RPC patch — only the geometry keys are honored
+    // server-side; unrelated keys are stripped here so we don't widen the
+    // RPC's contract by accident.
+    const rpcPatch: Record<string, unknown> = {};
+    if (patch.space_id !== undefined) rpcPatch.space_id = patch.space_id;
+    if (patch.start_at !== undefined) rpcPatch.start_at = patch.start_at;
+    if (patch.end_at !== undefined) rpcPatch.end_at = patch.end_at;
+
+    const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking_slot', {
+      p_slot_id: slotId,
+      p_patch: rpcPatch,
+      p_tenant_id: tenantId,
+    });
+    if (rpcErr) {
+      // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
+      if (this.conflict.isExclusionViolation(rpcErr)) {
+        throw new ConflictException({
+          code: 'booking.slot_conflict',
+          message: 'Slot conflicts with another booking.',
+        });
+      }
+      // Slot-not-found from inside the RPC (defense in depth — should be
+      // caught by the pre-flight above, but if a race deletes the slot
+      // between pre-flight and RPC, surface it cleanly).
+      const errMsg = (rpcErr as { message?: string }).message ?? '';
+      if (errMsg.includes('booking_slot.not_found')) {
+        throw new NotFoundException({
+          code: 'booking_slot.not_found',
+          message: 'Slot not found.',
+        });
+      }
+      throw new BadRequestException({
+        code: 'booking.slot_update_failed',
+        message: errMsg || 'Slot update failed.',
+      });
+    }
+
+    // Project the post-RPC slot via the same path findOne uses. Reading
+    // back the booking embed (rather than trusting the RPC's return jsonb
+    // verbatim) keeps the projection logic in ONE place
+    // (slotWithBookingToReservation) and means any future column
+    // additions land in both paths automatically.
+    const updated = await this.findByIdOrThrowAtSlot(slotId, tenantId);
+
+    // Best-effort audit. Mirrors the audit shape editOne uses.
+    try {
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'booking.slot_updated',
+        entity_type: 'booking_slot',
+        entity_id: slotId,
+        details: {
+          booking_id: bookingId,
+          slot_id: slotId,
+          patch: rpcPatch,
+        },
+      });
+    } catch { /* best-effort */ }
+
+    return updated;
+  }
+
+  /**
+   * Slot-pinned variant of `findByIdOrThrow`. The booking-id read picks
+   * the PRIMARY slot for the legacy projection; here we pick the SPECIFIC
+   * slot the caller mutated so the response reflects that slot's
+   * geometry. Same projection helper, different `eq` filter.
+   */
+  private async findByIdOrThrowAtSlot(slotId: string, tenantId: string): Promise<Reservation> {
+    const { data, error } = await this.supabase.admin
+      .from('booking_slots')
+      .select(SLOT_WITH_BOOKING_SELECT)
+      .eq('tenant_id', tenantId)
+      .eq('id', slotId)
+      .order('display_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) throw new NotFoundException('booking_slot_not_found');
+    return slotWithBookingToReservation(data as unknown as SlotWithBookingEmbed);
   }
 
   /**
