@@ -106,12 +106,22 @@ export function QuickBookPopover({
   const [title, setTitle] = useState('');
   const [chip, setChip] = useState<string>(initialChip);
 
-  // Reset when the popover re-opens for a new tile.
+  // /full-review v1 I7 fix — open-edge reset only.
+  //
+  // The prior pattern depended on `[open, initialChip]` and re-fired
+  // whenever `initialChip` recomputed mid-open. `initialChip` derives
+  // from startAtIso/endAtIso, so any parent re-render that produced new
+  // start/end values (e.g. tile drag-resize while the popover was open)
+  // wiped the user's chip pick. Fixed by depending only on `[open]`,
+  // mirroring the modal's open-edge re-seed pattern (booking-composer-
+  // modal.tsx:139-152).
   useEffect(() => {
     if (!open) return;
     setTitle('');
     setChip(initialChip);
-  }, [open, initialChip]);
+    // intentionally only on open edge — see comment above
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const placeholder = defaultTitle({
     hostFirstName,
