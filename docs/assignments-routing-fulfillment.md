@@ -1082,3 +1082,69 @@ Any change to these requires updating §26:
 - `apps/api/src/modules/reservations/reservation-projection.ts` (the `booking_id` field, the `slot_id` field)
 - `apps/web/src/api/room-booking/mutations.ts` (`useEditBookingSlot`, `useEditBooking`)
 - Any migration that adds or alters `edit_booking_slot`, `bookings.location_id`, `bookings.start_at`/`end_at`, or `booking_slots.display_order`.
+
+## §27 — Booking compensation contract (Phase 1.3)
+
+`BookingFlowService.create` and `MultiRoomBookingService.createGroup` perform two writes from the application's perspective:
+
+1. **`create_booking` RPC** (00277:236-334) — atomic; one booking + N slot rows in one Postgres transaction. The `booking_slots_no_overlap` GiST exclusion (00277:211-217) fires inside the same transaction so concurrent races surface as `SQLSTATE 23P01`.
+2. **`BundleService.attachServicesToBooking`** — sequential supabase-js calls (orders + line items + asset reservations + approvals + audit). Not atomic at the DB layer; uses a `Cleanup` helper to roll back what *it* inserted, but the booking from step 1 is outside that scope.
+
+Before Phase 1.3, a step-2 failure left the booking persisted while the user got a 4xx response — silently still reserving the room. Phase 1.3 fixes this by wrapping step 2 in a compensation boundary.
+
+### Compensation boundary
+
+`BookingTransactionBoundary` (interface) + `InProcessBookingTransactionBoundary` (default impl) at `apps/api/src/modules/reservations/booking-transaction-boundary.ts`. Provided via the DI token `BOOKING_TX_BOUNDARY`. Phase 6 will swap the impl for an outbox-driven one without touching call sites.
+
+```
+runWithCompensation(bookingId, operation, compensate) → Promise<T>
+```
+
+On `operation` throw:
+1. Calls `compensate(bookingId)` (typically `BookingCompensationService.deleteBooking`).
+2. If outcome is `'rolled_back'` → re-throws the **original** operation error so callers see the same exception they would without compensation (e.g. `catalog_item_not_found`).
+3. If outcome is `'partial_failure'` → throws `BadRequestException({ code: 'booking.partial_failure', booking_id, blocked_by, original_error })` so operators can manually finish the rollback.
+
+### `delete_booking_with_guard` RPC (migration 00292)
+
+`SECURITY INVOKER`, explicit `p_tenant_id` (matches `create_booking` and `edit_booking_slot` conventions). One transaction:
+
+1. `SELECT … FOR UPDATE` on the booking row to serialize concurrent inserts that reference this `booking_id`.
+2. **Blocker check.** Per [`docs/follow-ups/phase-1-3-blocker-map.md`](follow-ups/phase-1-3-blocker-map.md), only one table is a true blocker: `recurrence_series.parent_booking_id` has `ON DELETE NO ACTION` (00278:184). If a row exists, return `{ kind: 'partial_failure', blocked_by: ['recurrence_series'] }` and abort.
+3. **No explicit unhook/delete needed for other tables.** Per blocker map decisions:
+   - `asset_reservations` — Cleanup soft-cancels (`status = 'cancelled'`) and leaves `booking_id`; `SET NULL` cascade (00278:140) is harmless. Audit + GiST tombstone discipline.
+   - `approvals` (booking target) — Cleanup deliberately leaves them (bundle.service.ts:1940-1945); historical artifact post-delete is acceptable.
+   - `audit_events` / `audit_outbox` — append-only, no FK; orphans are expected.
+   - `work_orders` — created only after `cleanup.commit()` succeeds (bundle.service.ts:375-456); never present at compensation time.
+   - `orders` / `order_line_items` — Cleanup deletes them on attach failure (bundle.service.ts:1907-1938); the `SET NULL` FK on the now-empty rows is a no-op.
+4. `DELETE FROM bookings WHERE id = p_booking_id`. Cascades:
+   - `booking_slots` — `ON DELETE CASCADE` (00277:119)
+   - `visitors` — `ON DELETE CASCADE` (00278:45)
+5. Returns `{ kind: 'rolled_back' }`.
+
+### When compensation runs (and when it doesn't)
+
+- **ONLY** when `input.services?.length > 0` at the call site. Empty/undefined services → no compensation, no boundary call. The boundary is bypassed entirely; there's nothing to roll back.
+- After step 1 succeeds AND step 2 fails. If step 1 fails, no booking exists → no compensation needed.
+- Operates only on the booking it just created in the same request. It is **not** a generic "delete a booking" admin path — production callers should not invoke `BookingCompensationService.deleteBooking` for any booking they didn't just create.
+
+### User-visible error codes
+
+| Error code | When | Surface |
+|---|---|---|
+| Original operation error (e.g. `catalog_item_not_found`) | `operation` threw, compensation rolled the booking back | `BadRequestException` / `ConflictException` per the original throw |
+| `booking.partial_failure` | `operation` threw, compensation found a `recurrence_series` blocker | `BadRequestException` with `booking_id`, `blocked_by[]`, `original_error` |
+| `booking.compensation_failed` | `operation` threw, compensation RPC itself blew up | `BadRequestException` with `booking_id`, `original_error`, `rpc_error` — booking may persist; manual recovery required |
+
+### Trigger additions for §27
+
+Any change to these requires updating §27:
+
+- `apps/api/src/modules/reservations/booking-transaction-boundary.ts`
+- `apps/api/src/modules/reservations/booking-compensation.service.ts`
+- `apps/api/src/modules/reservations/booking-flow.service.ts` (the boundary call site)
+- `apps/api/src/modules/reservations/multi-room-booking.service.ts` (the boundary call site)
+- `apps/api/src/modules/reservations/reservations.module.ts` (provider registration)
+- `apps/api/src/modules/booking-bundles/bundle.service.ts` (if `attachServicesToBooking`'s write set or its `Cleanup` behavior changes — that invalidates the blocker map)
+- Any migration that adds, alters, or drops `delete_booking_with_guard`.
+- Any migration that changes the FK ON DELETE clauses on `bookings.id`-referencing tables (visitors, tickets, work_orders, orders, asset_reservations, recurrence_series, booking_slots) — that invalidates the blocker map. Update [`docs/follow-ups/phase-1-3-blocker-map.md`](follow-ups/phase-1-3-blocker-map.md) in the same PR.
