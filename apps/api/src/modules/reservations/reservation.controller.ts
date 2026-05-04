@@ -258,6 +258,12 @@ export class ReservationController {
         floor_id: dto.floor_id,
         must_have_amenities: dto.must_have_amenities,
         requester_id: dto.requester_id,
+        // 00296 — pass through server-side search + payload caps when
+        // the frontend supplies them. Pre-fix all three were undefined
+        // and the RPC's defaults applied.
+        search: dto.search,
+        reservation_limit: dto.reservation_limit,
+        room_limit: dto.room_limit,
       },
       actor,
     );

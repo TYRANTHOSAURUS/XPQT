@@ -62,17 +62,22 @@ export function useSchedulerData(args: {
     floor_id: args.floorId,
     must_have_amenities: args.amenities.length > 0 ? args.amenities : undefined,
     requester_id: args.bookForPersonId,
+    // 00296 — push room-name search server-side. Pre-fix the API
+    // returned every reservable room in scope and the React Query
+    // selector below filtered by name; on busy tenants that meant the
+    // RPC scanned every slot in the window for rooms the operator was
+    // about to drop on the floor anyway. Server-side search shrinks
+    // the candidate set BEFORE the slot scan.
+    search: args.search.trim() || undefined,
   });
 
-  // Filter on room type + name search client-side (the API has no
-  // dedicated filters for these in v1). Then sort by the user's chosen
-  // axis. The API returns rooms in a name-first default order, so the
-  // identity sort case is a no-op.
+  // Filter on room type + status client-side. Status is computed from
+  // rule_outcome (server-evaluated for booking-for) and isn't a SQL
+  // predicate; type filter is an amenity match that's cheap to do here
+  // since the candidate set is already shrunk by the server-side search.
   const rooms = useMemo<SchedulerRoom[]>(() => {
     const all = query.data?.rooms ?? [];
-    const term = args.search.trim().toLowerCase();
     const filtered = all.filter((r) => {
-      if (term && !r.name.toLowerCase().includes(term)) return false;
       if (args.roomTypeFilter) {
         const typeMatchesAmenity = (r.amenities ?? []).includes(args.roomTypeFilter);
         if (!typeMatchesAmenity) return false;
@@ -105,7 +110,11 @@ export function useSchedulerData(args: {
         break;
     }
     return sorted;
-  }, [query.data, args.search, args.roomTypeFilter, args.sort, args.statusView]);
+    // args.search is intentionally NOT in this dep list — it's part of
+    // the query input (00296 server-side filter), so the room set
+    // already reflects it. Including it would re-sort on every keystroke
+    // for no reason.
+  }, [query.data, args.roomTypeFilter, args.sort, args.statusView]);
 
   const totalUnfiltered = query.data?.rooms?.length ?? 0;
 
@@ -129,11 +138,29 @@ export function useSchedulerData(args: {
     return map;
   }, [query.data, rooms]);
 
+  // 00296 — pagination metadata. `roomsTotal` is the full count BEFORE
+  // p_room_limit cap (so the toolbar can say "showing first 200 of N"
+  // when truncation hits). `reservationsTruncated` is the more
+  // operationally-relevant signal: if the slot payload was bounded, the
+  // grid is incomplete and the operator should refine the time window
+  // or filters.
+  const roomsTotal = query.data?.rooms_total ?? totalUnfiltered;
+  const roomsTruncated = query.data?.rooms_truncated ?? false;
+  const reservationsTotal =
+    query.data?.reservations_total ?? query.data?.reservations?.length ?? 0;
+  const reservationsTruncated = query.data?.reservations_truncated ?? false;
+  const reservationsNextCursor = query.data?.reservations_next_cursor ?? null;
+
   return {
     rooms,
     spaceIds,
     reservationsBySpaceId,
     totalUnfiltered,
+    roomsTotal,
+    roomsTruncated,
+    reservationsTotal,
+    reservationsTruncated,
+    reservationsNextCursor,
     isLoading: query.isPending,
     isFetching: query.isFetching,
     isError: query.isError,

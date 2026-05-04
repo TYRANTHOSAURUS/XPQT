@@ -122,4 +122,15 @@ export interface SchedulerDataInput {
   floor_id?: string | null;
   must_have_amenities?: string[];
   requester_id?: string | null;
+  /**
+   * 00296 — server-side room-name filter. Pre-fix the search ran in
+   * the React Query selector, AFTER the full room set returned (see
+   * use-scheduler-data.ts:73-79). Pushing it into the RPC reduces the
+   * candidate set BEFORE the slot scan.
+   */
+  search?: string;
+  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
+  reservation_limit?: number;
+  /** Cap on rooms payload (default 200). */
+  room_limit?: number;
 }

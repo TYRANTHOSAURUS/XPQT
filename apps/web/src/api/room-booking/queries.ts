@@ -235,6 +235,20 @@ export function useSchedulerReservations(input: SchedulerWindowInput) {
 interface SchedulerDataResponse {
   rooms: SchedulerRoom[];
   reservations: Reservation[];
+  /**
+   * 00296 — pagination metadata. Pre-fix the API silently scanned every
+   * matching slot regardless of count (jsonb_agg ... LIMIT N where the
+   * LIMIT was a no-op against the single-row aggregate scalar). The new
+   * RPC bounds the input set inside a CTE and surfaces total / truncated
+   * / next_cursor so the UI can warn operators when truncation is hit.
+   * Old responses without these keys default to 0 / false / null at the
+   * call site.
+   */
+  rooms_total?: number;
+  rooms_truncated?: boolean;
+  reservations_total?: number;
+  reservations_truncated?: boolean;
+  reservations_next_cursor?: string | null;
 }
 
 /**
@@ -291,6 +305,14 @@ export function schedulerDataOptions(input: SchedulerDataInput) {
         ? [...input.must_have_amenities].sort()
         : undefined,
     requester_id: input.requester_id ?? null,
+    // 00296 — search/limits are part of the cache identity. Different
+    // search terms are different cells; different limits are different
+    // payload sizes (cache key MUST distinguish a 2000-row vs 200-row
+    // result so they don't fight over the same key).
+    search:
+      input.search && input.search.trim().length > 0 ? input.search.trim() : undefined,
+    reservation_limit: input.reservation_limit,
+    room_limit: input.room_limit,
   };
   const cacheKey = JSON.stringify(stable);
   // `cacheKey` is a JSON serialisation of `stable`, which is already in
@@ -314,6 +336,9 @@ export function schedulerDataOptions(input: SchedulerDataInput) {
           floor_id: stable.floor_id ?? undefined,
           must_have_amenities: stable.must_have_amenities,
           requester_id: stable.requester_id ?? undefined,
+          search: stable.search,
+          reservation_limit: stable.reservation_limit,
+          room_limit: stable.room_limit,
         }),
         etag: previous ? previousEtag ?? null : null,
         onNotModified: () => previous!,

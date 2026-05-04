@@ -32,6 +32,34 @@ export interface SchedulerDataInput {
   must_have_amenities?: string[];
   /** When set, rules are evaluated for this requester (booking-for mode in the toolbar). */
   requester_id?: string;
+  /**
+   * Server-side room-name filter. Pre-fix the search term filtered the
+   * room set in the React Query selector (use-scheduler-data.ts:73-79);
+   * pushing it into the SQL function reduces the candidate set BEFORE
+   * the slot scan, which compounds with the row-level reservation
+   * pagination in 00296. Empty string / undefined = no filter.
+   */
+  search?: string;
+  /** Cap on reservations payload. Default 2000. Truncation surfaces via the response shape. */
+  reservation_limit?: number;
+  /** Cap on rooms payload. Default 200. */
+  room_limit?: number;
+}
+
+/**
+ * 00296 — pagination metadata returned alongside the data. The pre-fix
+ * 00286 RPC silently scanned every matching slot via a `LIMIT N` placed
+ * AFTER the `jsonb_agg(...)` (a no-op against a single-row aggregate
+ * scalar). The new RPC bounds the input set inside a CTE; these fields
+ * tell the frontend whether the bound was hit so the operator can be
+ * told to refine.
+ */
+export interface SchedulerDataPaginationMeta {
+  rooms_total: number;
+  rooms_truncated: boolean;
+  reservations_total: number;
+  reservations_truncated: boolean;
+  reservations_next_cursor: string | null;
 }
 
 /**
@@ -228,7 +256,10 @@ export class ListBookableRoomsService {
   async loadSchedulerData(
     input: SchedulerDataInput,
     actor: ActorContext,
-  ): Promise<{ rooms: SchedulerRoom[]; reservations: Reservation[] }> {
+  ): Promise<{
+    rooms: SchedulerRoom[];
+    reservations: Reservation[];
+  } & SchedulerDataPaginationMeta> {
     const tenantId = TenantContext.current().id;
     const t0 = process.hrtime.bigint();
 
@@ -243,7 +274,18 @@ export class ListBookableRoomsService {
       keywords: string[] | null;
       parent_chain: { id: string; name: string; type: string }[];
     };
-    type RpcResult = { rooms: RpcRoom[]; reservations: Reservation[] };
+    // 00296 result shape: data + pagination meta in one jsonb. The legacy
+    // shape (rooms + reservations only) was widened — older callers
+    // ignore the new keys; new callers consume them.
+    type RpcResult = {
+      rooms: RpcRoom[];
+      reservations: Reservation[];
+      rooms_total?: number;
+      rooms_truncated?: boolean;
+      reservations_total?: number;
+      reservations_truncated?: boolean;
+      reservations_next_cursor?: string | null;
+    };
 
     const wantsRules = Boolean(input.requester_id);
 
@@ -252,6 +294,11 @@ export class ListBookableRoomsService {
     // pool) — bypasses Supabase REST entirely, so the round-trip is
     // ~5–15 ms instead of ~80–110 ms. Rule resolver still talks to
     // Supabase REST for now; migrating it is incremental.
+    //
+    // 00296 — adds p_search (room-name filter) plus p_reservation_limit
+    // and p_room_limit. The defaults match the pre-fix RPC's effective
+    // behaviour (2000 / 200) so callers that don't pass them keep the
+    // same payload size.
     const [rpcResult, ruleOutcomes] = await Promise.all([
       this.db.rpc<RpcResult>('scheduler_data', {
         p_tenant_id: tenantId,
@@ -265,10 +312,22 @@ export class ListBookableRoomsService {
           input.must_have_amenities && input.must_have_amenities.length > 0
             ? input.must_have_amenities
             : null,
+        p_search:
+          input.search && input.search.trim().length > 0 ? input.search.trim() : null,
+        p_reservation_limit: input.reservation_limit ?? 2000,
+        p_room_limit: input.room_limit ?? 200,
       }),
       wantsRules ? this.deferredRuleResolveBulk(input) : Promise.resolve(null),
     ]);
-    const result = rpcResult ?? { rooms: [], reservations: [] };
+    const result = rpcResult ?? {
+      rooms: [],
+      reservations: [],
+      rooms_total: 0,
+      rooms_truncated: false,
+      reservations_total: 0,
+      reservations_truncated: false,
+      reservations_next_cursor: null,
+    };
 
     const rooms: SchedulerRoom[] = [];
     for (const r of result.rooms) {
@@ -302,11 +361,20 @@ export class ListBookableRoomsService {
     }
 
     const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
-    const tag = `scheduler-data tenant=${tenantId} returned=${rooms.length} reservations=${result.reservations.length} rules=${wantsRules ? 'on' : 'off'} elapsed_ms=${elapsedMs.toFixed(1)}`;
+    const truncated = result.reservations_truncated || result.rooms_truncated;
+    const tag = `scheduler-data tenant=${tenantId} returned=${rooms.length} reservations=${result.reservations.length}/${result.reservations_total ?? '?'} rooms_total=${result.rooms_total ?? '?'}${truncated ? ' truncated' : ''} rules=${wantsRules ? 'on' : 'off'} elapsed_ms=${elapsedMs.toFixed(1)}`;
     if (elapsedMs > 250) this.log.warn(tag);
     else this.log.log(tag);
 
-    return { rooms, reservations: result.reservations };
+    return {
+      rooms,
+      reservations: result.reservations,
+      rooms_total: result.rooms_total ?? rooms.length,
+      rooms_truncated: result.rooms_truncated ?? false,
+      reservations_total: result.reservations_total ?? result.reservations.length,
+      reservations_truncated: result.reservations_truncated ?? false,
+      reservations_next_cursor: result.reservations_next_cursor ?? null,
+    };
   }
 
   /**

@@ -167,4 +167,15 @@ export interface SchedulerDataDto {
   must_have_amenities?: string[];
   /** When set, rules are evaluated for this requester (booking-for mode). */
   requester_id?: string;
+  /**
+   * 00296 — server-side room-name filter. Pre-fix the search ran in the
+   * React Query selector, AFTER the full room set returned. Pushing it
+   * into the SQL function reduces the candidate set BEFORE the slot
+   * scan, which compounds with the row-level reservation pagination.
+   */
+  search?: string;
+  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
+  reservation_limit?: number;
+  /** Cap on rooms payload (default 200). */
+  room_limit?: number;
 }

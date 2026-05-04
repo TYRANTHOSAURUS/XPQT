@@ -138,6 +138,14 @@ export function DeskSchedulerPage() {
       must_have_amenities:
         win.state.amenities.length > 0 ? win.state.amenities : undefined,
       requester_id: win.state.bookForPersonId,
+      // 00296 — keep prefetch + visible cache key aligned. The prefetch
+      // is for the same scope (building/floor/amenities/requester) at
+      // the adjacent window; if `search` is part of the visible cache
+      // key it must be part of the prefetch key too — otherwise the
+      // user types a search term, paints, hits "next →", and we still
+      // re-fetch because the adjacent cell was prefetched without the
+      // term and is a stale cache miss.
+      search: win.state.search.trim() || undefined,
     },
     nextInput: {
       start_at: win.adjacentWindows.next.startAtIso,
@@ -148,6 +156,7 @@ export function DeskSchedulerPage() {
       must_have_amenities:
         win.state.amenities.length > 0 ? win.state.amenities : undefined,
       requester_id: win.state.bookForPersonId,
+      search: win.state.search.trim() || undefined,
     },
   });
 
@@ -663,6 +672,37 @@ export function DeskSchedulerPage() {
             totalCount={data.totalUnfiltered}
             onClearFilters={onClearFilters}
           />
+
+          {/* 00296 — truncation banner. The new RPC bounds the
+              reservation payload at the row level (pre-fix the LIMIT
+              after jsonb_agg was a no-op and the function silently
+              scanned every matching slot). When the bound is hit, the
+              grid is incomplete and the operator must refine the
+              window or filters. We surface this loudly because the
+              alternative is a grid that LOOKS correct but is missing
+              events. */}
+          {(data.reservationsTruncated || data.roomsTruncated) && (
+            <div className="border-b border-amber-300/60 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/40 dark:text-amber-100">
+              {data.reservationsTruncated && (
+                <span>
+                  Showing first {data.reservationsBySpaceId.size > 0
+                    ? Array.from(data.reservationsBySpaceId.values()).reduce(
+                        (n, list) => n + list.length,
+                        0,
+                      )
+                    : '—'}{' '}
+                  of {data.reservationsTotal} bookings in this window. Refine the
+                  date range or filters to see the rest.
+                </span>
+              )}
+              {data.roomsTruncated && (
+                <span className={data.reservationsTruncated ? ' ml-2' : ''}>
+                  Showing first {data.rooms.length} of {data.roomsTotal} rooms.
+                  Use building / floor filters or search to narrow the list.
+                </span>
+              )}
+            </div>
+          )}
 
           {data.isError ? (
             <div className="flex flex-1 items-center justify-center text-sm text-destructive">
