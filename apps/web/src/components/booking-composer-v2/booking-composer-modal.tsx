@@ -347,8 +347,8 @@ export function BookingComposerModal({
           disablePortal
           showCloseButton={false}
           className={cn(
-            'flex flex-col w-[1024px] max-w-[calc(100vw-2rem)] sm:max-w-[1024px] gap-0 p-0',
-            'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,720px)]',
+            'flex flex-col w-[1152px] max-w-[calc(100vw-2rem)] sm:max-w-[1152px] gap-0 p-0',
+            'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(90vh,820px)]',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
             'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
@@ -400,7 +400,7 @@ export function BookingComposerModal({
                 gap-4 between fields). */}
             <div
               data-testid="booking-composer-left-pane"
-              className="flex flex-1 flex-col overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
+              className="flex flex-1 flex-col overflow-y-auto p-5 sm:w-[640px] sm:flex-none"
             >
               <FieldGroup>
                 <TitleInput
