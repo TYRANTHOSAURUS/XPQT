@@ -355,3 +355,295 @@ describe('ReservationService.editSlot', () => {
     expect(supabase.calls.rpc).toHaveLength(0);
   });
 });
+
+// /full-review v3 closure C2 regression — editOne(geometry) MUST go
+// through the edit_booking_slot RPC, not write the slot row directly
+// and mirror booking.start_at = patch.start_at literally.
+//
+// Pre-fix behaviour:
+//   editOne would UPDATE booking_slots[primary] SET start_at=X
+//   and UPDATE bookings SET start_at=X.
+// For multi-slot bookings that's wrong: bookings.start_at MUST be
+// MIN(booking_slots.start_at). The 00291 RPC enforces that mirror
+// inside the same transaction; the C2 fix routes editOne's geometry
+// keys through editSlot(...) so the RPC owns the mirror recompute.
+//
+// Test verifies: a multi-slot booking edited via editOne with a
+// start_at causes supabase.rpc('edit_booking_slot', ...) to be called,
+// AND no direct booking_slots.update for geometry columns happens, AND
+// no direct bookings.update for start_at/end_at happens.
+describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => {
+  const TENANT = { id: 'T-c2', slug: 't', tier: 'standard' as const };
+  const BOOKING_ID = 'B-c2';
+  const PRIMARY_SLOT = 'slot-primary-c2';
+
+  function makeActor() {
+    return {
+      user_id: 'U',
+      person_id: 'P',
+      is_service_desk: false,
+      has_override_rules: false,
+    };
+  }
+
+  function makeSlotEmbed(overrides: { start_at?: string; end_at?: string; space_id?: string } = {}) {
+    return {
+      id: PRIMARY_SLOT,
+      tenant_id: TENANT.id,
+      booking_id: BOOKING_ID,
+      slot_type: 'room',
+      space_id: overrides.space_id ?? 'space-orig',
+      start_at: overrides.start_at ?? '2026-05-01T09:00:00Z',
+      end_at: overrides.end_at ?? '2026-05-01T10:00:00Z',
+      setup_buffer_minutes: 0,
+      teardown_buffer_minutes: 0,
+      effective_start_at: overrides.start_at ?? '2026-05-01T09:00:00Z',
+      effective_end_at: overrides.end_at ?? '2026-05-01T10:00:00Z',
+      attendee_count: 4,
+      attendee_person_ids: [],
+      status: 'confirmed',
+      check_in_required: false,
+      check_in_grace_minutes: 15,
+      checked_in_at: null,
+      released_at: null,
+      cancellation_grace_until: null,
+      display_order: 0,
+      created_at: '2026-05-01T08:00:00Z',
+      updated_at: '2026-05-01T08:00:00Z',
+      bookings: {
+        id: BOOKING_ID,
+        tenant_id: TENANT.id,
+        title: null,
+        description: null,
+        requester_person_id: 'P',
+        host_person_id: null,
+        booked_by_user_id: 'U',
+        location_id: overrides.space_id ?? 'space-orig',
+        // Critical: this is what distinguishes the C2 fix. Pre-fix,
+        // editOne wrote bookings.start_at = patch.start_at literally.
+        // Post-fix, the RPC computes MIN over slots; for a multi-slot
+        // booking with a slot at T0 (10:00) and another at T1 (08:00),
+        // editing the T0 slot forward to T2 (12:00) leaves
+        // bookings.start_at = T1 (08:00, MIN), NOT T2.
+        // We don't simulate two slots here — we just assert the RPC
+        // path is taken. The MIN-over-slots invariant is owned by the
+        // RPC (00291 + 00293) and verified at the SQL layer.
+        start_at: overrides.start_at ?? '2026-05-01T09:00:00Z',
+        end_at: overrides.end_at ?? '2026-05-01T10:00:00Z',
+        timezone: 'UTC',
+        status: 'confirmed',
+        source: 'desk',
+        cost_center_id: null,
+        cost_amount_snapshot: null,
+        policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+        applied_rule_ids: [],
+        config_release_id: null,
+        calendar_event_id: null,
+        calendar_provider: null,
+        calendar_etag: null,
+        calendar_last_synced_at: null,
+        recurrence_series_id: null,
+        recurrence_index: null,
+        recurrence_overridden: false,
+        recurrence_skipped: false,
+        template_id: null,
+        created_at: '2026-05-01T08:00:00Z',
+        updated_at: '2026-05-01T08:00:00Z',
+      },
+    };
+  }
+
+  function makeSupabase(opts?: { rpcResponse?: { data: unknown; error: unknown }; postRpcEmbed?: ReturnType<typeof makeSlotEmbed> }) {
+    const calls = {
+      rpc: [] as Array<{ fn: string; args: unknown }>,
+      bookingSlotsUpdate: [] as Array<unknown>,
+      bookingsUpdate: [] as Array<unknown>,
+    };
+    const initialEmbed = makeSlotEmbed();
+    let currentEmbed: ReturnType<typeof makeSlotEmbed> = initialEmbed;
+    const rpcResponse = opts?.rpcResponse ?? {
+      data: { slot: { id: PRIMARY_SLOT }, booking: null },
+      error: null,
+    };
+
+    const admin = {
+      rpc: (fn: string, args: unknown) => {
+        calls.rpc.push({ fn, args });
+        if (fn === 'edit_booking_slot' && opts?.postRpcEmbed) {
+          currentEmbed = opts.postRpcEmbed;
+        }
+        return Promise.resolve(rpcResponse);
+      },
+      from: (table: string) => {
+        if (table === 'booking_slots') {
+          let hasOrder = false;
+          const chain: any = {
+            select: () => chain,
+            eq: () => chain,
+            order: () => {
+              hasOrder = true;
+              return chain;
+            },
+            limit: () => chain,
+            // Slot pre-flight in editSlot: .eq().eq().maybeSingle() (no order).
+            // Projection reads: .order().order().limit().maybeSingle().
+            maybeSingle: () =>
+              hasOrder
+                ? Promise.resolve({ data: currentEmbed, error: null })
+                : Promise.resolve({ data: { booking_id: BOOKING_ID }, error: null }),
+            update: (patch: unknown) => {
+              calls.bookingSlotsUpdate.push(patch);
+              const updateChain: any = {
+                eq: () => updateChain,
+                then: (resolve: (v: { error: unknown }) => unknown) =>
+                  Promise.resolve({ error: null }).then(resolve),
+              };
+              return updateChain;
+            },
+          };
+          return chain;
+        }
+        if (table === 'bookings') {
+          return {
+            update: (patch: unknown) => {
+              calls.bookingsUpdate.push(patch);
+              const chain: any = {
+                eq: () => chain,
+                then: (resolve: (v: { error: unknown }) => unknown) =>
+                  Promise.resolve({ error: null }).then(resolve),
+              };
+              return chain;
+            },
+          };
+        }
+        if (table === 'audit_events') {
+          return { insert: () => Promise.resolve({ data: null, error: null }) };
+        }
+        if (table === 'visitors') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        return {};
+      },
+    };
+    return { admin, calls };
+  }
+
+  function makeVisibility() {
+    return {
+      loadContextByUserId: jest.fn(async () => ({
+        user_id: 'U', person_id: 'P', tenant_id: TENANT.id,
+        has_read_all: false, has_write_all: true, has_admin: false,
+      })),
+      assertVisible: jest.fn(() => undefined),
+      canEdit: jest.fn(() => true),
+    };
+  }
+
+  function makeConflictGuard() {
+    return {
+      isExclusionViolation: (err: unknown) => {
+        if (!err || typeof err !== 'object') return false;
+        return (err as { code?: string }).code === '23P01';
+      },
+    };
+  }
+
+  it('editOne with start_at delegates to edit_booking_slot RPC (no direct slot/booking write of geometry)', async () => {
+    const newStart = '2026-05-01T11:00:00Z';
+    const supabase = makeSupabase({
+      postRpcEmbed: makeSlotEmbed({ start_at: newStart }),
+    });
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+    );
+
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(BOOKING_ID, makeActor(), { start_at: newStart }),
+    );
+
+    // RPC must have fired with the geometry patch.
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot');
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0].args).toMatchObject({
+      p_slot_id: PRIMARY_SLOT,
+      p_patch: { start_at: newStart },
+      p_tenant_id: TENANT.id,
+    });
+
+    // No direct booking_slots.update with geometry keys (those are now
+    // owned by the RPC). Slot meta-only updates would be a separate
+    // .update() — none expected for this patch shape.
+    for (const patch of supabase.calls.bookingSlotsUpdate) {
+      const p = patch as Record<string, unknown>;
+      expect(p).not.toHaveProperty('start_at');
+      expect(p).not.toHaveProperty('end_at');
+      expect(p).not.toHaveProperty('space_id');
+    }
+
+    // No direct bookings.update writing start_at/end_at/location_id —
+    // the RPC's mirror recompute is the only path that touches those.
+    for (const patch of supabase.calls.bookingsUpdate) {
+      const p = patch as Record<string, unknown>;
+      expect(p).not.toHaveProperty('start_at');
+      expect(p).not.toHaveProperty('end_at');
+      expect(p).not.toHaveProperty('location_id');
+    }
+  });
+
+  it('editOne with space_id delegates to RPC (multi-slot mirror correctness)', async () => {
+    const newSpace = 'space-new';
+    const supabase = makeSupabase({
+      postRpcEmbed: makeSlotEmbed({ space_id: newSpace }),
+    });
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+    );
+
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(BOOKING_ID, makeActor(), { space_id: newSpace }),
+    );
+
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot');
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0].args).toMatchObject({
+      p_patch: { space_id: newSpace },
+    });
+  });
+
+  it('editOne with attendee_count only — meta path, no RPC', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+    );
+
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(BOOKING_ID, makeActor(), { attendee_count: 8 }),
+    );
+
+    // No RPC call — meta-only path doesn't touch geometry.
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    // The slot meta update DOES happen (legacy path stays).
+    expect(supabase.calls.bookingSlotsUpdate.some((p) => {
+      const obj = p as Record<string, unknown>;
+      return obj.attendee_count === 8;
+    })).toBe(true);
+  });
+});

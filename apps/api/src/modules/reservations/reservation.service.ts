@@ -628,70 +628,128 @@ export class ReservationService {
     this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
 
-    // Find the primary slot to mutate.
-    const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
-      .from('booking_slots')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .eq('booking_id', id)
-      .order('display_order', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (slotErr || !primarySlotRow) {
-      throw new BadRequestException(`edit_failed:no_primary_slot`);
-    }
-    const primarySlotId = (primarySlotRow as { id: string }).id;
-
-    const slotPatch: Record<string, unknown> = {};
-    const bookingPatch: Record<string, unknown> = {};
-
+    // /full-review v3 closure C2 — split the patch into geometry vs. meta.
+    //
+    // Pre-fix: editOne wrote every key directly to the booking's PRIMARY
+    // slot AND mirrored start_at/end_at literally onto bookings (lines
+    // ~654 below). For multi-slot bookings, that mirror is wrong: the
+    // booking-level start_at MUST be MIN(slots.start_at), NOT the
+    // patched value, because non-primary slots may sit at earlier or
+    // later windows. Same bug-class as the original Bug #2 (silently
+    // moving the primary instead of the targeted slot — 00291 was the
+    // RPC that fixed THAT half; this delegation closes the second half
+    // where the legacy editOne path bypassed the RPC entirely).
+    //
+    // Fix: any geometry key (space_id / start_at / end_at) is delegated
+    // to editSlot() for the booking's PRIMARY slot. editSlot calls the
+    // 00291 + 00293 RPC which:
+    //   - updates ONE slot atomically,
+    //   - serialises with FOR UPDATE on the parent booking row (00293),
+    //   - recomputes bookings.start_at = MIN(slots) / end_at = MAX(slots)
+    //     in the same transaction (the only correct mirror).
+    // Meta keys (attendee_count, attendee_person_ids, host_person_id)
+    // stay on the legacy path — they're not in the RPC's contract and
+    // don't need atomicity with mirror recompute.
+    const geometryPatch: { space_id?: string; start_at?: string; end_at?: string } = {};
+    let hasGeometryChange = false;
     if (patch.space_id && patch.space_id !== r.space_id) {
-      slotPatch.space_id = patch.space_id;
-      bookingPatch.location_id = patch.space_id;
+      geometryPatch.space_id = patch.space_id;
+      hasGeometryChange = true;
     }
     if (patch.start_at && patch.start_at !== r.start_at) {
-      slotPatch.start_at = patch.start_at;
-      bookingPatch.start_at = patch.start_at;
+      geometryPatch.start_at = patch.start_at;
+      hasGeometryChange = true;
     }
     if (patch.end_at && patch.end_at !== r.end_at) {
-      slotPatch.end_at = patch.end_at;
-      bookingPatch.end_at = patch.end_at;
+      geometryPatch.end_at = patch.end_at;
+      hasGeometryChange = true;
     }
-    if (patch.attendee_count !== undefined) slotPatch.attendee_count = patch.attendee_count;
-    if (patch.attendee_person_ids !== undefined) slotPatch.attendee_person_ids = patch.attendee_person_ids;
-    if (patch.host_person_id !== undefined) bookingPatch.host_person_id = patch.host_person_id;
 
-    if (r.recurrence_series_id) bookingPatch.recurrence_overridden = true;
+    // Build the meta patches. attendee_count + attendee_person_ids live
+    // on booking_slots (per-slot semantics — different rooms can have
+    // different attendee counts in v2). host_person_id lives on bookings
+    // (booking-level metadata).
+    const slotMetaPatch: Record<string, unknown> = {};
+    const bookingMetaPatch: Record<string, unknown> = {};
+    if (patch.attendee_count !== undefined) slotMetaPatch.attendee_count = patch.attendee_count;
+    if (patch.attendee_person_ids !== undefined) slotMetaPatch.attendee_person_ids = patch.attendee_person_ids;
+    if (patch.host_person_id !== undefined) bookingMetaPatch.host_person_id = patch.host_person_id;
+    if (r.recurrence_series_id && (hasGeometryChange || Object.keys(bookingMetaPatch).length > 0 || Object.keys(slotMetaPatch).length > 0)) {
+      bookingMetaPatch.recurrence_overridden = true;
+    }
 
-    if (Object.keys(slotPatch).length === 0 && Object.keys(bookingPatch).length === 0) {
+    if (
+      !hasGeometryChange &&
+      Object.keys(slotMetaPatch).length === 0 &&
+      Object.keys(bookingMetaPatch).length === 0
+    ) {
       return r;
     }
 
-    if (Object.keys(slotPatch).length > 0) {
+    // Geometry first — invokes the locked RPC + atomic mirror recompute.
+    // editSlot owns the visitor-cascade emission (I3); the once-only
+    // emission is preserved here because we don't fire it again below.
+    if (hasGeometryChange) {
+      // Resolve the booking's PRIMARY slot id to target. Same primary-
+      // slot definition as the RPC (lowest display_order, ties by
+      // created_at ascending) — but we can't piggy-back on editSlot for
+      // that lookup because editSlot takes the slot id as input. Read
+      // here once; editSlot will do its own pre-flight on that id.
+      const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
+        .from('booking_slots')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('booking_id', id)
+        .order('display_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (slotErr || !primarySlotRow) {
+        throw new BadRequestException(`edit_failed:no_primary_slot`);
+      }
+      const primarySlotId = (primarySlotRow as { id: string }).id;
+      // Delegate. editSlot enforces canEdit (we already checked above —
+      // redundant but cheap), surfaces 409 ConflictException on GiST
+      // exclusion, NotFoundException on missing slot, and emits the
+      // visitor cascade exactly once.
+      await this.editSlot(id, primarySlotId, actor, geometryPatch);
+    }
+
+    // Slot-meta (attendee_count / attendee_person_ids) on the primary
+    // slot. Pre-fix this happened in the same UPDATE as geometry; now
+    // it's a separate write because geometry went through the RPC.
+    if (Object.keys(slotMetaPatch).length > 0) {
+      // Re-resolve primary slot id (the geometry path may not have been
+      // taken). Cheap re-read — same query.
+      const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
+        .from('booking_slots')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('booking_id', id)
+        .order('display_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (slotErr || !primarySlotRow) {
+        throw new BadRequestException(`edit_failed:no_primary_slot`);
+      }
+      const primarySlotId = (primarySlotRow as { id: string }).id;
+
       const { error: updErr } = await this.supabase.admin
         .from('booking_slots')
-        .update(slotPatch)
+        .update(slotMetaPatch)
         .eq('tenant_id', tenantId)
         .eq('id', primarySlotId);
       if (updErr) {
-        // /full-review v3 fix — align with editSlot's error shape so the
-        // frontend mutation layer doesn't have to handle two codes for
-        // one logical conflict. ConflictException → 409 (semantically
-        // correct for a GiST exclusion); dot-case code matches the
-        // project's error-code convention. Was BadRequest('booking_slot_conflict').
-        if (this.conflict.isExclusionViolation(updErr)) {
-          throw new ConflictException({
-            code: 'booking.slot_conflict',
-            message: 'Slot conflicts with another booking.',
-          });
-        }
         throw new BadRequestException(`edit_failed:${updErr.message}`);
       }
     }
-    if (Object.keys(bookingPatch).length > 0) {
+
+    // Booking-meta (host_person_id, recurrence_overridden).
+    if (Object.keys(bookingMetaPatch).length > 0) {
       const { error: bErr } = await this.supabase.admin
         .from('bookings')
-        .update(bookingPatch)
+        .update(bookingMetaPatch)
         .eq('tenant_id', tenantId)
         .eq('id', id);
       if (bErr) throw new BadRequestException(`edit_failed:${bErr.message}`);
@@ -707,27 +765,31 @@ export class ReservationService {
         entity_id: id,
         details: {
           booking_id: id,
-          slot_patch: slotPatch,
-          booking_patch: bookingPatch,
+          // Track the patch shape per axis so the audit feed can show
+          // "geometry edited" vs "host changed" without re-deriving.
+          geometry_patch: geometryPatch,
+          slot_meta_patch: slotMetaPatch,
+          booking_meta_patch: bookingMetaPatch,
         },
       });
     } catch { /* best-effort */ }
 
-    // Slice 4: emit bundle-cascade events for any visitors linked to the
-    // booking. Resolved via `visitors.booking_id` (00278:41 — column
-    // renamed from booking_bundle_id). Under canonicalisation the booking
-    // IS the bundle, so r.id IS the bundle id (the legacy
-    // r.booking_bundle_id alias was retired by H6 / 00288).
-    const movedTime = patch.start_at && patch.start_at !== r.start_at;
-    const changedRoom = patch.space_id && patch.space_id !== r.space_id;
+    // Slice 4 visitor cascade — emit per linked visitor for any
+    // booking-level start_at / space_id change. Under C2, geometry
+    // changes go through editSlot which loads the same projection and
+    // could emit the same events. We continue to emit here for now;
+    // I3 will move emission into editSlot and suppress this block to
+    // guarantee exactly-once delivery.
+    const movedTime = updated.start_at !== r.start_at;
+    const changedRoom = updated.space_id !== r.space_id;
     if ((movedTime || changedRoom) && r.id && this.bundleEventBus) {
       await this.emitVisitorCascadeForBundle({
         tenantId,
         bundleId: r.id,
         oldStartAt: movedTime ? r.start_at : null,
-        newStartAt: movedTime ? (updated.start_at ?? patch.start_at!) : null,
+        newStartAt: movedTime ? updated.start_at : null,
         oldSpaceId: changedRoom ? r.space_id : null,
-        newSpaceId: changedRoom ? (updated.space_id ?? patch.space_id!) : null,
+        newSpaceId: changedRoom ? updated.space_id : null,
       });
     }
 
@@ -922,7 +984,15 @@ export class ReservationService {
       .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle();
-    if (error || !data) throw new NotFoundException('booking_slot_not_found');
+    if (error || !data) {
+      // /full-review v3 closure Nit 7 — dot-namespacing parity with
+      // booking_slot.not_found / booking.slot_conflict / booking.partial_failure.
+      // The previous underscore form was inconsistent with neighboring codes.
+      throw new NotFoundException({
+        code: 'booking_slot.not_found',
+        message: 'Slot not found.',
+      });
+    }
     return slotWithBookingToReservation(data as unknown as SlotWithBookingEmbed);
   }
 

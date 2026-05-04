@@ -131,20 +131,67 @@ function makeService(opts: {
 
   const supabase = {
     admin: {
+      // C2 closure: editOne now delegates geometry to editSlot, which
+      // calls the edit_booking_slot RPC instead of writing the slot row
+      // directly. The RPC is the atomicity primitive (00291 + 00293
+      // lock); on success we mark postUpdate=true so the post-RPC
+      // findByIdOrThrowAtSlot read returns the new geometry.
+      rpc: jest.fn((fn: string, _args: unknown) => {
+        if (fn === 'edit_booking_slot') {
+          if (opts.updateError) {
+            return Promise.resolve({ data: null, error: opts.updateError });
+          }
+          postUpdate = true;
+          return Promise.resolve({
+            data: { slot: buildSlotEmbed(), booking: null },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      }),
       from: jest.fn((table: string) => {
         if (table === 'booking_slots') {
           return {
-            // Two select shapes are used:
-            //  - SLOT_WITH_BOOKING_SELECT (full embed) → findByIdOrThrow.
-            //  - select('id') → primary-slot lookup in editOne.
+            // Three select shapes are used:
+            //  - SLOT_WITH_BOOKING_SELECT (full embed) → findByIdOrThrow
+            //    (booking-id-keyed) and findByIdOrThrowAtSlot (slot-id-keyed).
+            //  - select('id') → primary-slot lookup in editOne / editSlot pre-resolution.
+            //  - select('booking_id') → editSlot's pre-flight (URL-mismatch + not-found gate).
             select: (cols?: string) => {
               const isPrimarySlotLookup = cols === 'id';
+              const isBookingIdLookup = cols === 'booking_id';
+              if (isBookingIdLookup) {
+                // editSlot pre-flight: .eq('tenant_id').eq('id').maybeSingle()
+                return {
+                  eq: () => ({
+                    eq: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({
+                          data: { booking_id: BOOKING_ID },
+                          error: null,
+                        }),
+                    }),
+                  }),
+                };
+              }
               return {
                 eq: () => ({
                   eq: () => ({
                     order: () => {
                       if (isPrimarySlotLookup) {
+                        // editOne: .order().order().limit().maybeSingle() — primary-slot lookup.
                         return {
+                          order: () => ({
+                            limit: () => ({
+                              maybeSingle: () =>
+                                Promise.resolve({
+                                  data: { id: PRIMARY_SLOT_ID },
+                                  error: null,
+                                }),
+                            }),
+                          }),
+                          // Backward-compat: the legacy .order().limit() (no second order)
+                          // shape is still used by the cancel/restore paths.
                           limit: () => ({
                             maybeSingle: () =>
                               Promise.resolve({
@@ -154,7 +201,8 @@ function makeService(opts: {
                           }),
                         };
                       }
-                      // findByIdOrThrow chains .order().order().limit().maybeSingle()
+                      // findByIdOrThrow / findByIdOrThrowAtSlot chain:
+                      // .order().order().limit().maybeSingle()
                       return {
                         order: () => ({
                           limit: () => ({
@@ -172,11 +220,8 @@ function makeService(opts: {
               };
             },
             update: () => {
-              // The slot update is awaited directly (no .select().single());
-              // it returns { error }. The service chains
-              // `.update(p).eq('tenant_id', X).eq('id', Y)` so the chain
-              // must remain `.eq()`-able and ALSO be awaitable as the
-              // terminal statement (PostgREST builders are thenable).
+              // Slot meta-only update path (attendee_count/attendee_person_ids).
+              // Geometry no longer flows through here under C2 — those go via RPC.
               const buildChain = () => {
                 const chain: {
                   eq: (...args: unknown[]) => typeof chain;
