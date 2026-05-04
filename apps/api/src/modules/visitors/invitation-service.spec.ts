@@ -31,6 +31,18 @@ const CO_HOST_PERSON_ID = '88888888-8888-4888-8888-888888888888';
 interface FakeOptions {
   /** Spaces in the inviter's authorized closure. Defaults to [BUILDING_ID]. */
   authorizedSpaces?: string[];
+  /**
+   * Plan A.4 / Commit 9 (I5) — list of in-tenant space uuids that
+   * pass the new assertTenantOwned check on dto.meeting_room_id.
+   * Defaults to a permissive set; tests for the rejection case
+   * pass [] to simulate "no such space in this tenant".
+   */
+  tenantOwnedSpaceIds?: string[];
+  /**
+   * Plan A.4 / Commit 9 (I5) — list of in-tenant booking uuids that
+   * pass the new assertTenantOwned check on dto.booking_id.
+   */
+  tenantOwnedBookingIds?: string[];
   /** Visitor types this tenant has, keyed by id. */
   visitorTypes?: Record<
     string,
@@ -231,6 +243,52 @@ function makeService(opts: FakeOptions = {}) {
                 return Promise.resolve({ data: row, error: null });
               },
             };
+          case 'spaces':
+            // Plan A.4 / Commit 9 (I5) — assertTenantOwned probe path.
+            // .select('id').eq('id', X).eq('tenant_id', T).maybeSingle().
+            return {
+              select: () => {
+                const filters: Record<string, unknown> = {};
+                const chain: Record<string, unknown> = {
+                  eq: (col: string, val: unknown) => {
+                    filters[col] = val;
+                    return chain;
+                  },
+                  maybeSingle: async () => {
+                    const id = filters.id as string;
+                    const allowed = opts.tenantOwnedSpaceIds;
+                    if (!id) return { data: null, error: null };
+                    if (allowed) {
+                      return { data: allowed.includes(id) ? { id } : null, error: null };
+                    }
+                    return { data: { id }, error: null };
+                  },
+                };
+                return chain;
+              },
+            };
+          case 'bookings':
+            return {
+              select: () => {
+                const filters: Record<string, unknown> = {};
+                const chain: Record<string, unknown> = {
+                  eq: (col: string, val: unknown) => {
+                    filters[col] = val;
+                    return chain;
+                  },
+                  maybeSingle: async () => {
+                    const id = filters.id as string;
+                    const allowed = opts.tenantOwnedBookingIds;
+                    if (!id) return { data: null, error: null };
+                    if (allowed) {
+                      return { data: allowed.includes(id) ? { id } : null, error: null };
+                    }
+                    return { data: { id }, error: null };
+                  },
+                };
+                return chain;
+              },
+            };
           default:
             return term({ data: null, error: null });
         }
@@ -407,6 +465,76 @@ describe('InvitationService.create', () => {
     });
     // No visitor_hosts row should have been written when validation fails.
     expect(ctx.insertedHostsRows).toEqual([]);
+  });
+
+  // Plan A.4 / Commit 9 (I5) — meeting_room_id + booking_id pre-flight.
+  describe('Plan A.4 / Commit 9 (I5) — meeting_room_id + booking_id tenant validation', () => {
+    const FOREIGN_SPACE = '00000000-0000-4000-8000-0000000fffff';
+    const FOREIGN_BOOKING = '00000000-0000-4000-8000-0000000feeee';
+
+    it('rejects when meeting_room_id is cross-tenant', async () => {
+      const ctx = makeService({
+        // No spaces in this tenant — the pre-flight rejects.
+        tenantOwnedSpaceIds: [],
+      });
+      let caught: unknown = null;
+      try {
+        await ctx.svc.create(
+          { ...baseDto(), meeting_room_id: FOREIGN_SPACE },
+          ACTOR,
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeTruthy();
+      expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
+        code: 'reference.not_in_tenant',
+        reference_table: 'spaces',
+        reference_id: FOREIGN_SPACE,
+      });
+      // No visitor row should have been written.
+      expect(ctx.getInsertedVisitor()).toBeUndefined();
+    });
+
+    it('rejects when booking_id is cross-tenant', async () => {
+      const ctx = makeService({
+        tenantOwnedBookingIds: [],
+      });
+      let caught: unknown = null;
+      try {
+        await ctx.svc.create(
+          { ...baseDto(), booking_id: FOREIGN_BOOKING },
+          ACTOR,
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeTruthy();
+      expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
+        code: 'reference.not_in_tenant',
+        reference_table: 'bookings',
+        reference_id: FOREIGN_BOOKING,
+      });
+      expect(ctx.getInsertedVisitor()).toBeUndefined();
+    });
+
+    it('passes when both meeting_room_id and booking_id are in-tenant', async () => {
+      const VALID_SPACE = '00000000-0000-4000-8000-00000000ccc1';
+      const VALID_BOOKING = '00000000-0000-4000-8000-00000000ddd1';
+      const ctx = makeService({
+        tenantOwnedSpaceIds: [VALID_SPACE],
+        tenantOwnedBookingIds: [VALID_BOOKING],
+      });
+      const result = await ctx.svc.create(
+        { ...baseDto(), meeting_room_id: VALID_SPACE, booking_id: VALID_BOOKING },
+        ACTOR,
+      );
+      expect(result.visitor_id).toBe(VISITOR_ID);
+      expect(ctx.getInsertedVisitor()).toMatchObject({
+        meeting_room_id: VALID_SPACE,
+        booking_id: VALID_BOOKING,
+      });
+    });
   });
 
   it('dedup ON: existing persons row reused (no new persons.create)', async () => {

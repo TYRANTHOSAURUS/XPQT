@@ -2,7 +2,7 @@ import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nest
 import { createHash, randomBytes } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { assertTenantOwnedAll } from '../../common/tenant-validation';
+import { assertTenantOwned, assertTenantOwnedAll } from '../../common/tenant-validation';
 import { PersonService } from '../person/person.service';
 import type { CreateInvitationDto } from './dto/create-invitation.dto';
 
@@ -80,6 +80,39 @@ export class InvitationService {
 
     // 1. Cross-building scope check.
     await this.assertBuildingInScope(actor.person_id, dto.building_id);
+
+    // Plan A.4 / Commit 9 (I5) / round-4 codex flag invitation.service.ts:140-142.
+    // dto.meeting_room_id (FK to spaces) and dto.booking_id (FK to
+    // bookings) are written into the visitors row at lines 141-142
+    // below. Both FKs prove global existence only; supabase.admin
+    // bypasses RLS so a foreign-tenant uuid would land on the visitors
+    // row blind, leaking the cross-tenant reference into reception
+    // workflows + lobby panel + audit trail. Validate before insert.
+    //
+    // building_id is already validated by assertBuildingInScope (above)
+    // — that gate enforces actor authorization, but it doesn't enforce
+    // tenant — duplicate the tenant check here for defense-in-depth?
+    // No: the scope-closure helper resolves spaces via the actor's
+    // own person_org_memberships, which are tenant-scoped at the source.
+    // Adding another assertTenantOwned here would be redundant.
+    if (dto.meeting_room_id) {
+      await assertTenantOwned(
+        this.supabase,
+        'spaces',
+        dto.meeting_room_id,
+        tenant.id,
+        { entityName: 'meeting room' },
+      );
+    }
+    if (dto.booking_id) {
+      await assertTenantOwned(
+        this.supabase,
+        'bookings',
+        dto.booking_id,
+        tenant.id,
+        { entityName: 'booking' },
+      );
+    }
 
     // 2. Visitor type lookup.
     const visitorType = await this.loadVisitorType(dto.visitor_type_id);
