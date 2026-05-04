@@ -1,7 +1,7 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { validateAssigneesInTenant } from '../../common/tenant-validation';
+import { assertTenantOwned, validateAssigneesInTenant } from '../../common/tenant-validation';
 import { DispatchService } from '../ticket/dispatch.service';
 
 interface WorkflowNode {
@@ -282,12 +282,44 @@ export class WorkflowEngineService {
           return;
         }
         if (tenant) {
+          // Plan A.4 / Commit 3 (C2) — workflow approval-node tenant validation.
+          // node.config.approver_person_id + approver_team_id come from
+          // user-authored workflow JSONB (workflow-engine.service.ts:284-292).
+          // The approvals table FK on approver_person_id → persons(id) and
+          // approver_team_id → teams(id) only proves global existence;
+          // supabase.admin bypasses RLS. A forged / imported definition
+          // could carry a foreign-tenant uuid that would land in the
+          // approvals row blind, granting visibility + a pending approval
+          // routed to the wrong tenant. Validate before insert.
+          // null/undefined values are valid (some approver fields are
+          // unset by design — e.g. team-only or person-only approval
+          // shapes).
+          const approverPersonId = node.config.approver_person_id as string | undefined;
+          const approverTeamId = node.config.approver_team_id as string | undefined;
+          if (approverPersonId) {
+            await assertTenantOwned(
+              this.supabase,
+              'persons',
+              approverPersonId,
+              tenant.id,
+              { entityName: 'approver person' },
+            );
+          }
+          if (approverTeamId) {
+            await assertTenantOwned(
+              this.supabase,
+              'teams',
+              approverTeamId,
+              tenant.id,
+              { entityName: 'approver team' },
+            );
+          }
           await this.supabase.admin.from('approvals').insert({
             tenant_id: tenant.id,
             target_entity_type: 'ticket',
             target_entity_id: ticketId,
-            approver_person_id: node.config.approver_person_id as string | undefined,
-            approver_team_id: node.config.approver_team_id as string | undefined,
+            approver_person_id: approverPersonId,
+            approver_team_id: approverTeamId,
             status: 'pending',
           });
         }

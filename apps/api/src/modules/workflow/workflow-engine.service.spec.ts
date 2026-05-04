@@ -238,6 +238,169 @@ describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validat
   });
 });
 
+describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (C2)', () => {
+  // node.config.approver_person_id + approver_team_id come from user-
+  // authored workflow JSONB. A forged / imported definition could carry
+  // a foreign-tenant uuid that lands in the approvals row blind. Validate
+  // before insert.
+  beforeEach(() => {
+    jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 't1', subdomain: 't1' } as never);
+  });
+
+  function makeApprovalDeps(rowsByTable: Record<string, Array<{ id: string; tenant_id: string }>>) {
+    const inserts: Array<Record<string, unknown>> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    const supabase = {
+      admin: {
+        from: jest.fn((table: string) => {
+          if (rowsByTable[table]) {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                const match = rowsByTable[table].find((r) => {
+                  for (const [c, v] of Object.entries(filters)) {
+                    if ((r as Record<string, unknown>)[c] !== v) return false;
+                  }
+                  return true;
+                });
+                return { data: match ?? null, error: null };
+              },
+            };
+            return { select: () => chain };
+          }
+          if (table === 'approvals') {
+            return {
+              insert: (row: Record<string, unknown>) => {
+                inserts.push(row);
+                return Promise.resolve({ error: null });
+              },
+            } as unknown;
+          }
+          if (table === 'workflow_instances') {
+            return {
+              update: (patch: Record<string, unknown>) => ({
+                eq: () => {
+                  updates.push(patch);
+                  return Promise.resolve({ error: null });
+                },
+              }),
+            } as unknown;
+          }
+          return {} as unknown;
+        }),
+      },
+    };
+    return { supabase, inserts, updates };
+  }
+
+  it('rejects an approval node with a cross-tenant approver_person_id', async () => {
+    const FOREIGN_PERSON = '00000000-0000-4000-8000-0000000fffff';
+    const { supabase, inserts } = makeApprovalDeps({
+      persons: [{ id: FOREIGN_PERSON, tenant_id: 'other-tenant' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'approval',
+      config: { approver_person_id: FOREIGN_PERSON },
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+      'reference.not_in_tenant',
+    );
+    // No approvals row should have been inserted.
+    expect(inserts).toEqual([]);
+  });
+
+  it('rejects an approval node with a cross-tenant approver_team_id', async () => {
+    const FOREIGN_TEAM = '00000000-0000-4000-8000-0000000fffff';
+    const { supabase, inserts } = makeApprovalDeps({
+      teams: [{ id: FOREIGN_TEAM, tenant_id: 'other-tenant' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'approval',
+      config: { approver_team_id: FOREIGN_TEAM },
+    };
+
+    let caught: unknown = null;
+    try {
+      await (engine as unknown as {
+        executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+      }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+      'reference.not_in_tenant',
+    );
+    expect(inserts).toEqual([]);
+  });
+
+  it('lets an approval node through when both approvers are in-tenant', async () => {
+    const VALID_PERSON = '00000000-0000-4000-8000-00000000aaaa';
+    const VALID_TEAM = '00000000-0000-4000-8000-00000000bbbb';
+    const { supabase, inserts } = makeApprovalDeps({
+      persons: [{ id: VALID_PERSON, tenant_id: 't1' }],
+      teams: [{ id: VALID_TEAM, tenant_id: 't1' }],
+    });
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    const node = {
+      id: 'n1',
+      type: 'approval',
+      config: { approver_person_id: VALID_PERSON, approver_team_id: VALID_TEAM },
+    };
+
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]).toMatchObject({
+      target_entity_id: 'ticket-1',
+      approver_person_id: VALID_PERSON,
+      approver_team_id: VALID_TEAM,
+      status: 'pending',
+    });
+  });
+
+  it('skips validation for null/undefined approver fields (some shapes are unset)', async () => {
+    const { supabase, inserts } = makeApprovalDeps({});
+    const engine = new WorkflowEngineService(supabase as never, { dispatch: jest.fn() } as never);
+    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+
+    // No approver_person_id / approver_team_id set — should still insert.
+    const node = { id: 'n1', type: 'approval', config: {} };
+
+    await (engine as unknown as {
+      executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
+    }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
+
+    expect(inserts).toHaveLength(1);
+  });
+});
+
 describe('WorkflowEngineService.cancelInstanceForTicket', () => {
   it('cancels active/waiting instances and returns their ids', async () => {
     const captured: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];
