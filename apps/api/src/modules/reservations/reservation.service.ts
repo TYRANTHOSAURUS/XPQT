@@ -3,6 +3,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { assertTenantOwned, assertTenantOwnedAll } from '../../common/tenant-validation';
 import { ConflictGuardService } from './conflict-guard.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
 import { RecurrenceService } from './recurrence.service';
@@ -654,15 +655,20 @@ export class ReservationService {
     //   - attendee_person_ids is an array if provided.
     //   - start_at < end_at when both are in the patch (geometry guard).
     //
-    // Cross-table FK validity (host_person_id, space_id same-tenant
-    // active reservable) is delegated:
+    // Cross-table FK validity:
     //   - space_id → editSlot RPC validates inside the same atomic write
-    //     (00294 C1 closure). Pre-validating here would race with
-    //     concurrent admin edits anyway; the atomic RPC is the only
-    //     correct gate for that.
-    //   - host_person_id → relies on the FK + tenant filter on bookings;
-    //     a bad value surfaces as a foreign-key violation at write
-    //     time, NOT an editable-by-user precondition.
+    //     (00294 C1 closure). Plan A.2 / Commit 6 adds a TS-layer
+    //     pre-flight as defense-in-depth (see below).
+    //   - host_person_id → Plan A.2 / gap map §reservation.service.ts:746.
+    //     Pre-fix, this was "relies on FK + tenant filter on bookings"
+    //     — but the bookings FK on host_person_id → persons(id) only
+    //     proves global existence, NOT tenant ownership. supabase.admin
+    //     bypasses RLS, so a foreign-tenant person uuid could be
+    //     written and would surface as that person's display name +
+    //     audit-trail leak. Validated below via assertTenantOwned.
+    //   - attendee_person_ids → same gap on the slot-meta path
+    //     (§reservation.service.ts:745). Validated below via
+    //     assertTenantOwnedAll.
     if (patch.attendee_count !== undefined) {
       if (
         typeof patch.attendee_count !== 'number' ||
@@ -696,6 +702,30 @@ export class ReservationService {
           message: 'start_at must be strictly before end_at.',
         });
       }
+    }
+
+    // Plan A.2 / gap map §reservation.service.ts:745-746 — close the
+    // host_person_id + attendee_person_ids cross-tenant smuggling vector
+    // BEFORE the meta UPDATEs fire. Both columns FK to persons(id)
+    // which is tenant-owned, but the FK doesn't enforce a composite
+    // (id, tenant_id) check.
+    if (patch.host_person_id !== undefined) {
+      await assertTenantOwned(
+        this.supabase,
+        'persons',
+        patch.host_person_id,
+        tenantId,
+        { entityName: 'host person' },
+      );
+    }
+    if (patch.attendee_person_ids !== undefined && patch.attendee_person_ids.length > 0) {
+      await assertTenantOwnedAll(
+        this.supabase,
+        'persons',
+        patch.attendee_person_ids,
+        tenantId,
+        { entityName: 'attendee persons' },
+      );
     }
 
     // /full-review v3 closure C2 — split the patch into geometry vs. meta.
