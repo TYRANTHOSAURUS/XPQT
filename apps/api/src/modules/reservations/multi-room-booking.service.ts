@@ -5,7 +5,6 @@ import {
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleService } from '../booking-bundles/bundle.service';
-import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { ConflictGuardService } from './conflict-guard.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
 import {
@@ -52,7 +51,13 @@ export class MultiRoomBookingService {
     private readonly conflict: ConflictGuardService,
     private readonly ruleResolver: RuleResolverService,
     private readonly bundle: BundleService,
-    private readonly bundleCascade: BundleCascadeService,
+    // /full-review v3 — `bundleCascade` parameter REMOVED. ec6daf7
+    // ("atomic service attachment via compensation boundary") moved the
+    // legacy `bundleCascade.cancelOrdersForReservation` cleanup onto the
+    // txBoundary path; the field was held for DI signature compatibility
+    // but never read post-refactor. Removed to clear `TS6138` and avoid
+    // a phantom dependency. The 7 existing spec call sites are updated
+    // to drop the corresponding constructor argument in the same commit.
     /** Phase 1.3 — wraps `attachServicesToBooking` so a failure rolls back
      *  the booking via `delete_booking_with_guard` (00292). Optional only
      *  to keep older multi-room specs constructible without the new

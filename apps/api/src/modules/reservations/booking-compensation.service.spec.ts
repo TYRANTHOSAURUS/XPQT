@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { InternalServerErrorException } from '@nestjs/common';
 import { BookingCompensationService } from './booking-compensation.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -79,15 +79,19 @@ describe('BookingCompensationService', () => {
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    // /full-review v3 fix — the compensation RPC failing is server-class
+    // (booking persists in unknown state, user can't fix via input changes)
+    // per CLAUDE.md error-handling spec §3.3. Was BadRequestException (400);
+    // now InternalServerErrorException (500). Code unchanged.
+    expect(caught).toBeInstanceOf(InternalServerErrorException);
+    expect((caught as InternalServerErrorException).getResponse()).toMatchObject({
       code: 'booking.compensation_failed',
       booking_id: BOOKING_ID,
       rpc_error: 'connection lost',
     });
   });
 
-  it('surfaces a malformed RPC payload as BadRequestException(booking.compensation_failed)', async () => {
+  it('surfaces a malformed RPC payload as InternalServerErrorException(booking.compensation_failed)', async () => {
     // Defensive — guards against future RPC drift returning {} or null.
     const supabase = makeSupabase({
       rpcResponse: { data: null, error: null },
@@ -101,8 +105,11 @@ describe('BookingCompensationService', () => {
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    // /full-review v3 fix — same severity promotion as the connection-lost
+    // path above. Malformed payload from the compensation RPC is server-
+    // class data corruption.
+    expect(caught).toBeInstanceOf(InternalServerErrorException);
+    expect((caught as InternalServerErrorException).getResponse()).toMatchObject({
       code: 'booking.compensation_failed',
       booking_id: BOOKING_ID,
     });

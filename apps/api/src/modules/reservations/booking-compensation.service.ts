@@ -1,7 +1,16 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { CompensationOutcome } from './booking-transaction-boundary';
+
+/**
+ * /full-review v3 audit-event types — emitted to `audit_events` so ops
+ * have a discoverable surface for orphaned bookings. Naming matches the
+ * `event_type` convention used by ReservationService's audit pipeline
+ * (booking.<verb>) so compensation events sort with their siblings.
+ */
+const AUDIT_COMPENSATION_FAILED = 'booking.compensation_failed';
+const AUDIT_COMPENSATION_PARTIAL = 'booking.compensation_partial_failure';
 
 /**
  * Phase 1.3 — thin wrapper over the `delete_booking_with_guard` RPC
@@ -57,7 +66,17 @@ export class BookingCompensationService {
       this.log.error(
         `delete_booking_with_guard RPC failed for booking ${bookingId}: ${error.message}`,
       );
-      throw new BadRequestException({
+      // /full-review v3 fix — emit audit BEFORE throwing so ops have a
+      // discoverable signal for the orphan. The thrown 500 is the
+      // user-visible response; the audit row is for operators.
+      await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_FAILED, {
+        rpc_error: error.message,
+      });
+      // InternalServerError (500), not 400. The compensation RPC
+      // failing is server-class: the booking persists in an unknown
+      // post-attach state, the user can't fix it via input changes,
+      // ops needs a 500 + traceId per CLAUDE.md error-handling spec §3.3.
+      throw new InternalServerErrorException({
         code: 'booking.compensation_failed',
         message: 'Compensation RPC failed.',
         booking_id: bookingId,
@@ -79,7 +98,11 @@ export class BookingCompensationService {
           data,
         )}`,
       );
-      throw new BadRequestException({
+      await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_FAILED, {
+        rpc_error: 'malformed_payload',
+        rpc_data: data,
+      });
+      throw new InternalServerErrorException({
         code: 'booking.compensation_failed',
         message: 'Compensation RPC returned no/malformed outcome.',
         booking_id: bookingId,
@@ -87,13 +110,57 @@ export class BookingCompensationService {
     }
 
     if (parsed.kind === 'rolled_back') {
+      // Clean rollback — no audit needed; the booking is gone, recovery
+      // already happened. Original-operation error is the user-visible signal.
       return { kind: 'rolled_back', bookingId };
     }
 
+    // partial_failure — booking still alive, blockers prevent safe deletion.
+    // Emit an audit_events row BEFORE returning so the operator who sees
+    // the 400 (raised by the boundary) has a discoverable surface to triage.
+    const blockedBy = Array.isArray(parsed.blocked_by) ? parsed.blocked_by : [];
+    await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_PARTIAL, {
+      blocked_by: blockedBy,
+    });
     return {
       kind: 'partial_failure',
       bookingId,
-      blockedBy: Array.isArray(parsed.blocked_by) ? parsed.blocked_by : [],
+      blockedBy,
     };
+  }
+
+  /**
+   * Best-effort audit emit. We're either about to throw a 500 (the user
+   * sees an error regardless) or about to return a partial_failure
+   * outcome (the boundary will throw 400). Either way, a failed audit
+   * insert must NOT mask the underlying compensation problem — log and
+   * proceed.
+   */
+  private async tryAudit(
+    tenantId: string,
+    bookingId: string,
+    eventType: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const { error } = await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: eventType,
+        entity_type: 'booking',
+        entity_id: bookingId,
+        details,
+      });
+      if (error) {
+        this.log.error(
+          `audit_events insert failed for ${eventType} on booking ${bookingId}: ${error.message}`,
+        );
+      }
+    } catch (err) {
+      this.log.error(
+        `audit_events insert threw for ${eventType} on booking ${bookingId}: ${
+          (err as Error).message
+        }`,
+      );
+    }
   }
 }

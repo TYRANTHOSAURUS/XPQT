@@ -192,6 +192,14 @@ export interface Reservation {
    * `reservations.id` (the old reservations table is gone). Multi-room
    * bookings produce N rows of this projection that all share the same
    * `id` — disambiguate via `slot_id` below if you need the per-slot row.
+   *
+   * @deprecated /full-review v3 — exact synonym of `booking_id` below.
+   * The duplication is a Phase-1.2-era footgun; new code must read
+   * `booking_id` (for booking-level grouping) or `slot_id` (for
+   * per-slot operations) so the intent is explicit. Removed in
+   * Phase 8's "canonical naming cleanup" slice — until then, this
+   * `@deprecated` marker exists so TS surfaces every site that still
+   * reads `.id` and forces a deliberate migration.
    */
   id: string;
   /**

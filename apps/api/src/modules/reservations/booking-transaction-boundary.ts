@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 
 /**
  * Phase 1.3 — Bug #1: Atomic Booking + Service via RPC + Boundary.
@@ -90,17 +96,24 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
       try {
         outcome = await compensate(bookingId);
       } catch (compErr) {
-        // The compensation RPC itself blew up. We can't roll back; surface
-        // the compensation failure as a server error so the original
-        // operation's exception isn't masked. The booking is in an
-        // unknown state — the manual smoke runbook documents the recovery
-        // path (docs/follow-ups/phase-1-booking-smoke.md).
+        // The compensation RPC itself blew up. We can't roll back; the
+        // booking persists, services may or may not exist, the operator
+        // has no automatic recovery path.
+        //
+        // /full-review v3 fix — promoted from BadRequestException (400)
+        // to InternalServerErrorException (500) per CLAUDE.md error-
+        // handling spec §3.3-3.4: this is server-class data corruption
+        // (booking exists in an unknown post-attach state), not user
+        // input. The audit_events row is written by the compensate
+        // callback's owner (BookingCompensationService) BEFORE the
+        // throw bubbles, so ops still have a discoverable signal even
+        // when the boundary rethrows server-class.
         this.log.error(
           `compensation RPC failed for booking ${bookingId}: ${
             (compErr as Error).message
           }; original error: ${(originalErr as Error).message}`,
         );
-        throw new BadRequestException({
+        throw new InternalServerErrorException({
           code: 'booking.compensation_failed',
           message: 'Service attach failed; rollback failed; booking may persist.',
           booking_id: bookingId,
@@ -125,6 +138,8 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
       // (recurrence_series, today) prevents safe deletion. Surface
       // booking_id + blocked_by[] so operators can manually finish
       // rollback (e.g. cancel the series, retry compensation).
+      // Audit_events row is written by BookingCompensationService
+      // before this outcome is returned (/full-review v3 fix).
       this.log.warn(
         `booking ${bookingId} partial_failure on compensation: blocked_by=${outcome.blockedBy.join(
           ',',
@@ -141,6 +156,7 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
       });
     }
   }
+
 }
 
 /**

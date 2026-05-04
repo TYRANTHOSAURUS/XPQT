@@ -674,8 +674,16 @@ export class ReservationService {
         .eq('tenant_id', tenantId)
         .eq('id', primarySlotId);
       if (updErr) {
+        // /full-review v3 fix — align with editSlot's error shape so the
+        // frontend mutation layer doesn't have to handle two codes for
+        // one logical conflict. ConflictException → 409 (semantically
+        // correct for a GiST exclusion); dot-case code matches the
+        // project's error-code convention. Was BadRequest('booking_slot_conflict').
         if (this.conflict.isExclusionViolation(updErr)) {
-          throw new BadRequestException('booking_slot_conflict');
+          throw new ConflictException({
+            code: 'booking.slot_conflict',
+            message: 'Slot conflicts with another booking.',
+          });
         }
         throw new BadRequestException(`edit_failed:${updErr.message}`);
       }
@@ -862,9 +870,16 @@ export class ReservationService {
     // additions land in both paths automatically.
     const updated = await this.findByIdOrThrowAtSlot(slotId, tenantId);
 
-    // Best-effort audit. Mirrors the audit shape editOne uses.
+    // /full-review v3 fix — was a silent `try { } catch { /* best-effort */ }`.
+    // GDPR Wave 0 Sprint 1 mandates an audit trail for booking-state
+    // transitions; if RLS regresses or the row insert errors, ops MUST see
+    // it. Slot-edit is a NEW event type that the audit pipeline hasn't
+    // been verified against — silent drop is the worst failure mode here.
+    // Promoted to log.error on insert error + caught-throw still logged;
+    // the user response is unchanged (audit drop doesn't fail the edit
+    // since the slot mutation has already committed).
     try {
-      await this.supabase.admin.from('audit_events').insert({
+      const { error: auditErr } = await this.supabase.admin.from('audit_events').insert({
         tenant_id: tenantId,
         event_type: 'booking.slot_updated',
         entity_type: 'booking_slot',
@@ -875,7 +890,18 @@ export class ReservationService {
           patch: rpcPatch,
         },
       });
-    } catch { /* best-effort */ }
+      if (auditErr) {
+        this.log.error(
+          `audit_events insert failed for booking.slot_updated (booking=${bookingId} slot=${slotId}): ${auditErr.message}`,
+        );
+      }
+    } catch (auditCatchErr) {
+      this.log.error(
+        `audit_events insert threw for booking.slot_updated (booking=${bookingId} slot=${slotId}): ${
+          (auditCatchErr as Error).message
+        }`,
+      );
+    }
 
     return updated;
   }

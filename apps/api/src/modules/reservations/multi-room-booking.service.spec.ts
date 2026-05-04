@@ -227,13 +227,11 @@ describe('MultiRoomBookingService.createGroup', () => {
     const conflict = makeConflictGuard();
     const ruleResolver = makeRuleResolver();
     const bundle = makeBundle();
-    const cascade = makeBundleCascade();
     const svc = new MultiRoomBookingService(
       supabase as never,
       conflict as never,
       ruleResolver as never,
       bundle as never,
-      cascade as never,
     );
 
     const result = await TenantContext.run(TENANT, () =>
@@ -274,7 +272,6 @@ describe('MultiRoomBookingService.createGroup', () => {
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       makeBundle() as never,
-      makeBundleCascade() as never,
     );
     await expect(
       TenantContext.run(TENANT, () =>
@@ -304,7 +301,6 @@ describe('MultiRoomBookingService.createGroup', () => {
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       makeBundle() as never,
-      makeBundleCascade() as never,
     );
 
     await expect(
@@ -333,14 +329,12 @@ describe('MultiRoomBookingService.createGroup', () => {
       spaces: [{ id: 'S1' }, { id: 'S2' }],
     });
     const bundle = makeBundle();
-    const cascade = makeBundleCascade();
     const compensation = { deleteBooking: jest.fn() };
     const svc = new MultiRoomBookingService(
       supabase as never,
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       bundle as never,
-      cascade as never,
       new InProcessBookingTransactionBoundary(),
       compensation as never,
     );
@@ -368,7 +362,10 @@ describe('MultiRoomBookingService.createGroup', () => {
     // cleanup is no longer at this layer (it's owned by Cleanup inside
     // BundleService.attachServicesToBooking and by the compensation RPC).
     expect(compensation.deleteBooking).not.toHaveBeenCalled();
-    expect(cascade.cancelOrdersForReservation).not.toHaveBeenCalled();
+    // /full-review v3 — the cascade-not-invoked assertion was removed
+    // along with `bundleCascade` from the service constructor; the
+    // `cascade.cancelOrdersForReservation` stub is no longer reachable
+    // from this layer, so asserting it wasn't called is trivially true.
   });
 
   it('rolls back the booking and re-throws original error when service attach fails (Phase 1.3)', async () => {
@@ -385,7 +382,6 @@ describe('MultiRoomBookingService.createGroup', () => {
         throw new Error('catalog_item_not_found');
       }),
     };
-    const cascade = makeBundleCascade();
     const compensation = {
       deleteBooking: jest.fn(async (id: string) => ({ kind: 'rolled_back' as const, bookingId: id })),
     };
@@ -394,7 +390,6 @@ describe('MultiRoomBookingService.createGroup', () => {
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       bundle as never,
-      cascade as never,
       new InProcessBookingTransactionBoundary(),
       compensation as never,
     );
@@ -416,8 +411,8 @@ describe('MultiRoomBookingService.createGroup', () => {
 
     expect(compensation.deleteBooking).toHaveBeenCalledTimes(1);
     expect(compensation.deleteBooking).toHaveBeenCalledWith(BOOKING_ID);
-    // Legacy cascade is no longer invoked at this layer.
-    expect(cascade.cancelOrdersForReservation).not.toHaveBeenCalled();
+    // /full-review v3 — see same-named comment in earlier test; cascade
+    // is no longer wired into the service so the assertion is moot.
   });
 
   it('throws BadRequestException(booking.partial_failure) when compensation reports a blocker (Phase 1.3)', async () => {
@@ -441,7 +436,6 @@ describe('MultiRoomBookingService.createGroup', () => {
       makeConflictGuard() as never,
       makeRuleResolver() as never,
       bundle as never,
-      makeBundleCascade() as never,
       new InProcessBookingTransactionBoundary(),
       compensation as never,
     );
@@ -481,7 +475,6 @@ describe('MultiRoomBookingService.createGroup', () => {
       makeConflictGuard() as never,
       makeRuleResolver({ final: 'require_approval' }) as never,
       makeBundle() as never,
-      makeBundleCascade() as never,
     );
 
     await TenantContext.run(TENANT, () =>
