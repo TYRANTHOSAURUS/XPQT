@@ -47,6 +47,7 @@ import { DailyListModule } from './modules/daily-list/daily-list.module';
 import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module';
 import { VisitorsModule } from './modules/visitors/visitors.module';
 import { MailModule } from './common/mail/mail.module';
+import { OutboxModule } from './modules/outbox/outbox.module';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { MailModule } from './common/mail/mail.module';
     VendorPortalModule,
     VisitorsModule,
     MailModule,
+    OutboxModule,
   ],
   controllers: [HealthController],
   providers: [
