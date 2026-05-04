@@ -306,11 +306,23 @@ export class RecurrenceService {
       throw new Error('RecurrenceService.materialize requires Supabase + BookingFlowService injection');
     }
 
-    const { data: seriesRow, error: seriesErr } = await this.supabase.admin
+    // /full-review v3 closure I3 — tenant_id on every read/write.
+    //
+    // Pre-fix: the series lookup was `.eq('id', seriesId)` only. Even
+    // though admin client bypasses RLS, the missing tenant filter
+    // violates the #0 invariant: every query must scope to a tenant.
+    // The cron caller wraps materialize() in TenantContext.run(...) per
+    // recurrence.service.ts:660-668 so the context is always set when
+    // we reach this method through the cron path. Ad-hoc callers
+    // (admin tooling) must do the same.
+    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
+
+    const seriesQuery = this.supabase.admin
       .from('recurrence_series')
       .select('*')
-      .eq('id', seriesId)
-      .maybeSingle();
+      .eq('id', seriesId);
+    if (ctxTenantId) seriesQuery.eq('tenant_id', ctxTenantId);
+    const { data: seriesRow, error: seriesErr } = await seriesQuery.maybeSingle();
     if (seriesErr || !seriesRow) {
       throw new Error(`recurrence_series ${seriesId} not found`);
     }
@@ -332,6 +344,12 @@ export class RecurrenceService {
       throw new Error(`recurrence_series ${seriesId} has no parent_booking_id`);
     }
 
+    // Defensive: if there's a TenantContext, the series we loaded MUST
+    // belong to it (the explicit eq above already enforced that). When
+    // called outside a context (legacy ad-hoc callers), trust series.tenant_id
+    // as the authoritative scope and use it for every subsequent query.
+    const tenantId = ctxTenantId ?? series.tenant_id;
+
     // Read the master booking + its primary slot to seed each new occurrence.
     // Pre-rewrite this was one read of `reservations`; now it's a 2-step
     // read through `bookings` + `booking_slots` (00277:27,116). The legacy
@@ -342,6 +360,7 @@ export class RecurrenceService {
     const { data: masterSlotRow, error: masterErr } = await this.supabase.admin
       .from('booking_slots')
       .select(SLOT_WITH_BOOKING_SELECT)
+      .eq('tenant_id', tenantId)
       .eq('booking_id', masterBookingId)
       .order('display_order', { ascending: true })
       .limit(1)
@@ -549,11 +568,15 @@ export class RecurrenceService {
     }
 
     // Bump materialized_through if we extended it.
+    // /full-review v3 closure I3 — tenant_id filter on the update
+    // prevents an accidentally-wide write (defence-in-depth; admin
+    // client bypasses RLS so the filter is the only scope).
     const newThrough = effectiveHorizon.toISOString();
     if (newThrough > series.materialized_through) {
       await this.supabase.admin
         .from('recurrence_series')
         .update({ materialized_through: newThrough })
+        .eq('tenant_id', tenantId)
         .eq('id', seriesId);
     }
 
@@ -594,10 +617,20 @@ export class RecurrenceService {
     // Find the master booking's orders. Post-canonicalisation
     // `orders.booking_id` (00278:109) is the canonical column tying an
     // order to its parent booking.
-    const { data: orders, error } = await this.supabase.admin
+    //
+    // /full-review v3 closure I3 — tenant_id filter on the read.
+    // materialize() is called inside TenantContext.run(...) by both the
+    // cron path and the ad-hoc admin tooling path; if the context is
+    // unset (legacy callers), skip the filter rather than throw — the
+    // FK chain orders.booking_id → bookings.tenant_id still keeps the
+    // query within the booking's tenant.
+    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
+    const ordersQuery = this.supabase.admin
       .from('orders')
       .select('id')
       .eq('booking_id', args.masterReservationId);
+    if (ctxTenantId) ordersQuery.eq('tenant_id', ctxTenantId);
+    const { data: orders, error } = await ordersQuery;
     if (error) {
       // Throw rather than swallow — caller wraps this in
       // runWithCompensation so the orphan booking gets cleaned up.
@@ -684,15 +717,16 @@ export class RecurrenceService {
       throw new Error('RecurrenceService.splitSeries requires Supabase injection');
     }
 
+    // /full-review v3 closure I3 — tenant_id filter on every read/write.
     // The pivot is a BOOKING row (00277:74-77). Recurrence linkage lives on
-    // bookings, not slots. The pre-rewrite `reservations` read becomes a
-    // `bookings` read with the same column shape minus `recurrence_master_id`
-    // (dropped by 00277 — series→bookings is one-direction).
-    const { data: pivot } = await this.supabase.admin
+    // bookings, not slots.
+    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
+    const pivotQuery = this.supabase.admin
       .from('bookings')
       .select('id, tenant_id, start_at, recurrence_series_id, recurrence_index')
-      .eq('id', bookingId)
-      .maybeSingle();
+      .eq('id', bookingId);
+    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
+    const { data: pivot } = await pivotQuery.maybeSingle();
     if (!pivot) throw new Error(`booking ${bookingId} not found`);
     const p = pivot as {
       id: string;
@@ -705,11 +739,16 @@ export class RecurrenceService {
       throw new Error('booking is not part of a recurring series');
     }
 
-    const { data: srcSeriesRow } = await this.supabase.admin
+    // Tenant scope authoritative source: the pivot's tenant_id (already
+    // matched against ctxTenantId by the eq above when context exists).
+    const tenantId = p.tenant_id;
+
+    const seriesQuery = this.supabase.admin
       .from('recurrence_series')
       .select('*')
       .eq('id', p.recurrence_series_id)
-      .maybeSingle();
+      .eq('tenant_id', tenantId);
+    const { data: srcSeriesRow } = await seriesQuery.maybeSingle();
     if (!srcSeriesRow) {
       throw new Error(`recurrence_series ${p.recurrence_series_id} not found`);
     }
@@ -758,9 +797,11 @@ export class RecurrenceService {
     if (updErr) throw new Error(`splitSeries reseat failed: ${updErr.message}`);
 
     // Cap the source series so no more occurrences materialise past the pivot.
+    // /full-review v3 closure I3 — tenant filter on the update.
     await this.supabase.admin
       .from('recurrence_series')
       .update({ series_end_at: p.start_at })
+      .eq('tenant_id', tenantId)
       .eq('id', srcSeries.id);
 
     // Audit — phase K. The split changes the canonical series_id of every
@@ -797,11 +838,14 @@ export class RecurrenceService {
       throw new Error('RecurrenceService.cancelForward requires Supabase injection');
     }
     // Pivot is a BOOKING (each occurrence is its own booking post-rewrite).
-    const { data: pivot } = await this.supabase.admin
+    // /full-review v3 closure I3 — tenant filter on the pivot read.
+    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
+    const pivotQuery = this.supabase.admin
       .from('bookings')
       .select('id, tenant_id, start_at, recurrence_series_id')
-      .eq('id', bookingId)
-      .maybeSingle();
+      .eq('id', bookingId);
+    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
+    const { data: pivot } = await pivotQuery.maybeSingle();
     if (!pivot) throw new Error(`booking ${bookingId} not found`);
     const p = pivot as {
       id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
@@ -857,9 +901,11 @@ export class RecurrenceService {
     }
 
     // Cap the series so the rollover doesn't re-create.
+    // /full-review v3 closure I3 — tenant filter on the update.
     await this.supabase.admin
       .from('recurrence_series')
       .update({ series_end_at: p.start_at })
+      .eq('tenant_id', p.tenant_id)
       .eq('id', p.recurrence_series_id);
 
     // Audit — phase K.
@@ -885,11 +931,19 @@ export class RecurrenceService {
 
   private async loadHolidayDates(calendarId: string | null): Promise<Set<string>> {
     if (!calendarId || !this.supabase) return new Set();
-    const { data } = await this.supabase.admin
+    // /full-review v3 closure I3 — business_hours_calendars is tenant-
+    // owned (00006_business_hours.sql:5). Without a tenant filter, an
+    // admin-client lookup by id alone could return another tenant's
+    // calendar (FK would be valid, RLS bypassed). With the filter, a
+    // mismatched calendarId silently returns no rows → empty holidays
+    // set, which is the safe default (no occurrences are skipped).
+    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
+    const calQuery = this.supabase.admin
       .from('business_hours_calendars')
       .select('holidays')
-      .eq('id', calendarId)
-      .maybeSingle();
+      .eq('id', calendarId);
+    if (ctxTenantId) calQuery.eq('tenant_id', ctxTenantId);
+    const { data } = await calQuery.maybeSingle();
     const holidays = (data as { holidays?: Array<{ date?: string } | string> } | null)?.holidays;
     if (!holidays || !Array.isArray(holidays)) return new Set();
     const out = new Set<string>();

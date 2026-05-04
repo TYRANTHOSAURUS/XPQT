@@ -86,29 +86,40 @@ describe('RecurrenceService.materialize', () => {
       admin: {
         from: (table: string) => {
           if (table === 'recurrence_series') {
+            // I3 added an optional second .eq('tenant_id') on the
+            // lookup chain when TenantContext is set. The materialize()
+            // call site uses currentOrNull() so the test can run with
+            // or without TenantContext.run(). Idempotent .eq() supports
+            // both shapes.
+            const lookupChain: any = {
+              eq: () => lookupChain,
+              maybeSingle: () =>
+                Promise.resolve({ data: opts.series, error: null }),
+            };
+            const updateChain: any = {
+              eq: () => updateChain,
+              then: (r: (v: { error: unknown }) => unknown) =>
+                Promise.resolve({ error: null }).then(r),
+            };
             return {
-              select: () => ({
-                eq: () => ({
-                  maybeSingle: () =>
-                    Promise.resolve({ data: opts.series, error: null }),
-                }),
-              }),
-              update: () => ({
-                eq: () => Promise.resolve({ data: null, error: null }),
-              }),
+              select: () => ({ eq: () => lookupChain }),
+              update: () => updateChain,
             };
           }
           // Master booking projection — recurrence.service.ts:328-333.
           // Chain shape: .from('booking_slots').select(...).eq('booking_id', X)
           //   .order(...).limit(1).maybeSingle()
           if (table === 'booking_slots') {
+            // I3 added a tenant_id eq before the booking_id eq.
             return {
               select: () => ({
                 eq: () => ({
-                  order: () => ({
-                    limit: () => ({
-                      maybeSingle: () =>
-                        Promise.resolve({ data: masterSlotEmbed, error: null }),
+                  eq: () => ({
+                    order: () => ({
+                      limit: () => ({
+                        maybeSingle: () =>
+                          Promise.resolve({ data: masterSlotEmbed, error: null }),
+                      }),
                     }),
                   }),
                 }),
@@ -129,13 +140,12 @@ describe('RecurrenceService.materialize', () => {
             };
           }
           if (table === 'business_hours_calendars') {
-            return {
-              select: () => ({
-                eq: () => ({
-                  maybeSingle: () => Promise.resolve({ data: null, error: null }),
-                }),
-              }),
+            // I3: optional .eq('tenant_id') after .eq('id').
+            const calChain: any = {
+              eq: () => calChain,
+              maybeSingle: () => Promise.resolve({ data: null, error: null }),
             };
+            return { select: () => ({ eq: () => calChain }) };
           }
           return {};
         },
@@ -253,18 +263,34 @@ describe('RecurrenceService.materialize — clone wraps in compensation boundary
       admin: {
         from: (table: string) => {
           if (table === 'recurrence_series') {
+            // I3: optional second .eq('tenant_id') on lookup. Idempotent
+            // chain accepts both shapes.
+            const lookupChain: any = {
+              eq: () => lookupChain,
+              maybeSingle: () =>
+                Promise.resolve({ data: opts.series, error: null }),
+            };
+            const updateChain: any = {
+              eq: () => updateChain,
+              then: (r: (v: { error: unknown }) => unknown) =>
+                Promise.resolve({ error: null }).then(r),
+            };
             return {
-              select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: opts.series, error: null }) }) }),
-              update: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }),
+              select: () => ({ eq: () => lookupChain }),
+              update: () => updateChain,
             };
           }
           if (table === 'booking_slots') {
+            // I3: tenant_id eq added before booking_id eq.
             return {
               select: () => ({
                 eq: () => ({
-                  order: () => ({
-                    limit: () => ({
-                      maybeSingle: () => Promise.resolve({ data: masterSlotEmbed, error: null }),
+                  eq: () => ({
+                    order: () => ({
+                      limit: () => ({
+                        maybeSingle: () =>
+                          Promise.resolve({ data: masterSlotEmbed, error: null }),
+                      }),
                     }),
                   }),
                 }),
@@ -277,15 +303,22 @@ describe('RecurrenceService.materialize — clone wraps in compensation boundary
             };
           }
           if (table === 'business_hours_calendars') {
-            return { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }) };
+            // I3: optional .eq('tenant_id') after .eq('id').
+            const calChain: any = {
+              eq: () => calChain,
+              maybeSingle: () => Promise.resolve({ data: null, error: null }),
+            };
+            return { select: () => ({ eq: () => calChain }) };
           }
           if (table === 'orders') {
             // Master orders for cloneBundleOrdersToOccurrence.
-            return {
-              select: () => ({
-                eq: () => Promise.resolve({ data: opts.masterOrders, error: null }),
-              }),
+            // I3: optional .eq('tenant_id') after .eq('booking_id').
+            const ordersChain: any = {
+              eq: () => ordersChain,
+              then: (r: (v: { data: unknown; error: unknown }) => unknown) =>
+                Promise.resolve({ data: opts.masterOrders, error: null }).then(r),
             };
+            return { select: () => ordersChain };
           }
           return {};
         },
