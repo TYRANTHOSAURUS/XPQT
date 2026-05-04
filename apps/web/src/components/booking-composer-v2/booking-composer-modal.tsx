@@ -355,33 +355,29 @@ export function BookingComposerModal({
             'data-open:zoom-in-[0.96]',
           )}
         >
-          {/* Visible header. base-ui's DialogTitle already renders an
-              <h2>; we just feed it the heading content. The dialog
-              primitive's accessible name resolves to "New booking" or
-              "New booking for <person>" depending on mode.
-              <DialogDescription> stays sr-only — the body of the modal
-              IS the description; no need to repeat. */}
-          <DialogHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b border-border/60 px-5 py-3">
-            <DialogTitle className="flex min-w-0 items-center gap-1 text-lg font-semibold">
-              {mode === 'operator' ? (
-                <>
-                  <span className="shrink-0">New booking for</span>
-                  <PersonPicker
-                    value={composer.draft.requesterPersonId}
-                    onChange={(id) => composer.setRequester(id || null)}
-                    excludeId={null}
-                    placeholder="someone…"
-                    clearLabel={null}
-                    triggerClassName="h-auto px-2 py-1 text-lg font-semibold hover:bg-muted/50"
-                  />
-                </>
-              ) : (
-                <span>New booking</span>
-              )}
-            </DialogTitle>
+          {/* Header chrome — quiet by design. The bold body title
+              ("Thomas's Meeting Room 1.10 booking") is the hierarchical
+              anchor; this row carries the requester chip + close. */}
+          <DialogHeader className="flex-row items-center justify-between gap-3 space-y-0 border-b border-border/60 px-4 py-2">
+            <DialogTitle className="sr-only">New booking</DialogTitle>
             <DialogDescription className="sr-only">
               Configure a room booking. Title, time, and add-ins.
             </DialogDescription>
+            {mode === 'operator' ? (
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="shrink-0 text-xs text-muted-foreground">Requester:</span>
+                <PersonPicker
+                  value={composer.draft.requesterPersonId}
+                  onChange={(id) => composer.setRequester(id || null)}
+                  excludeId={null}
+                  placeholder="someone…"
+                  clearLabel={null}
+                  triggerClassName="h-8 gap-2 rounded-md border border-border/60 bg-background px-2.5 text-sm font-normal hover:bg-muted/50"
+                />
+              </div>
+            ) : (
+              <span aria-hidden />
+            )}
             <Button
               type="button"
               variant="ghost"
