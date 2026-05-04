@@ -461,3 +461,84 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     }
   });
 });
+
+// /full-review v3 closure I3 — editSlot itself emits the visitor cascade.
+//
+// Before I3 / C2: editOne emitted; editSlot was silent. Operators editing
+// a non-primary slot via the slot endpoint moved visitors without firing
+// the bundle.line.moved / room_changed events. With C2 routing editOne
+// through editSlot, the cascade emission now lives in editSlot — and
+// crucially, fires EXACTLY ONCE per geometry edit, not twice via the
+// editOne → editSlot delegation chain.
+describe('ReservationService.editSlot — visitor cascade emission (I3)', () => {
+  it('emits bundle.line.moved exactly once per visitor when start_at changes', async () => {
+    const newStart = '2026-05-01T14:00:00.000Z';
+    const { svc, captured, unsubscribe } = makeService({
+      updatedSlot: { start_at: newStart },
+      updatedBooking: { start_at: newStart },
+    });
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, { start_at: newStart }),
+      );
+      const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
+      // Exactly one per visitor — guards against the double-fire that
+      // would happen if both editOne AND editSlot emitted.
+      expect(moved).toHaveLength(2);
+      const lineIds = new Set(
+        moved.map((e) => (e.kind === 'bundle.line.moved' ? e.line_id : '')),
+      );
+      expect(lineIds).toEqual(new Set([V1, V2]));
+      for (const evt of moved) {
+        if (evt.kind === 'bundle.line.moved') {
+          expect(evt.bundle_id).toBe(BOOKING_ID);
+          expect(evt.line_kind).toBe('visitor');
+          expect(evt.old_expected_at).toBe(baseSlot.start_at);
+          expect(evt.new_expected_at).toBe(newStart);
+        }
+      }
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits bundle.line.room_changed when space_id changes (primary slot path)', async () => {
+    const { svc, captured, unsubscribe } = makeService({
+      updatedSlot: { space_id: SPACE_NEW },
+      updatedBooking: { location_id: SPACE_NEW },
+    });
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, { space_id: SPACE_NEW }),
+      );
+      const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
+      expect(roomChanges).toHaveLength(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('does not double-fire — editOne → editSlot path emits exactly once per visitor', async () => {
+    // C2 + I3 interaction guard: editOne now delegates geometry to
+    // editSlot. If both ever emitted independently, this would 2x.
+    const newStart = '2026-05-01T14:00:00.000Z';
+    const { svc, captured, unsubscribe } = makeService({
+      updatedSlot: { start_at: newStart },
+      updatedBooking: { start_at: newStart },
+    });
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
+      );
+      const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
+      // 2 visitors × 1 event = 2. NOT 4 (which would be 2 visitors × 2
+      // emit calls — once from editOne, once from editSlot).
+      expect(moved).toHaveLength(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+});

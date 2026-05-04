@@ -774,24 +774,14 @@ export class ReservationService {
       });
     } catch { /* best-effort */ }
 
-    // Slice 4 visitor cascade — emit per linked visitor for any
-    // booking-level start_at / space_id change. Under C2, geometry
-    // changes go through editSlot which loads the same projection and
-    // could emit the same events. We continue to emit here for now;
-    // I3 will move emission into editSlot and suppress this block to
-    // guarantee exactly-once delivery.
-    const movedTime = updated.start_at !== r.start_at;
-    const changedRoom = updated.space_id !== r.space_id;
-    if ((movedTime || changedRoom) && r.id && this.bundleEventBus) {
-      await this.emitVisitorCascadeForBundle({
-        tenantId,
-        bundleId: r.id,
-        oldStartAt: movedTime ? r.start_at : null,
-        newStartAt: movedTime ? updated.start_at : null,
-        oldSpaceId: changedRoom ? r.space_id : null,
-        newSpaceId: changedRoom ? updated.space_id : null,
-      });
-    }
+    // Visitor cascade emission (Slice 4) was originally fired from this
+    // method. /full-review v3 closure I3 moved it to editSlot so the
+    // slot-targeted endpoint emits too — and so geometry edits via
+    // editOne (which now delegates to editSlot under C2) don't
+    // double-fire. The cascade for any geometry change is owned by
+    // editSlot. This block is intentionally empty: meta-only edits
+    // (host_person_id, attendee_count) don't move visitors and don't
+    // need a cascade.
 
     return updated;
   }
@@ -963,6 +953,41 @@ export class ReservationService {
           (auditCatchErr as Error).message
         }`,
       );
+    }
+
+    // /full-review v3 closure I3 — emit visitor cascade on geometry change.
+    //
+    // Pre-fix: editOne emitted bundle.line.moved / bundle.line.room_changed
+    // for visitors linked to the booking, but editSlot — the slot-targeted
+    // equivalent — silently skipped it. Operators editing a non-primary
+    // slot via this endpoint moved visitors without firing the cascade
+    // (no host alert / email / cancel decision).
+    //
+    // Decision: editSlot is the canonical write path for geometry post-C2.
+    // editOne now delegates to it, so the cascade emission belongs HERE,
+    // exactly once per geometry edit. editOne's emission was simultaneously
+    // removed under this commit to prevent the editOne→editSlot path from
+    // double-firing.
+    //
+    // Compare pre-RPC `reservation` (loaded above for auth) vs post-RPC
+    // `updated`. The fields that drive the cascade are booking-level:
+    //   - start_at: bookings.start_at = MIN(slots.start_at). Changes when
+    //     the edited slot is primary OR when this edit lowers/raises MIN.
+    //   - space_id: bookings.location_id mirrors the primary slot's space.
+    //     Changes only when primary slot's space_id changed.
+    // We diff on the projection's flattened start_at / space_id so the
+    // emitter doesn't have to know which slot was primary — just compare.
+    const movedTime = updated.start_at !== reservation.start_at;
+    const changedRoom = updated.space_id !== reservation.space_id;
+    if ((movedTime || changedRoom) && reservation.id && this.bundleEventBus) {
+      await this.emitVisitorCascadeForBundle({
+        tenantId,
+        bundleId: reservation.id,
+        oldStartAt: movedTime ? reservation.start_at : null,
+        newStartAt: movedTime ? updated.start_at : null,
+        oldSpaceId: changedRoom ? reservation.space_id : null,
+        newSpaceId: changedRoom ? updated.space_id : null,
+      });
     }
 
     return updated;
