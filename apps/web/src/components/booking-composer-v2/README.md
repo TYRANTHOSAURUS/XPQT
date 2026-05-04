@@ -10,7 +10,10 @@ two-tier flow:
 - `<BookingComposerModal>` — full two-pane modal (880×680, max-h
   `min(85vh, 680px)`, spring-open + slow-fade backdrop). Left pane =
   title / time / repeat / description / host / visitors. Right pane =
-  room + catering + AV add-in cards with `Suggested` chips driven by
+  `<RightPanel>` view-state machine: a default `<SummaryView>` (times +
+  room + catering + AV summary cards) slides over to a per-domain picker
+  (room picker / catering catalog / AV catalog) and back. `Suggested`
+  chips on the catering + AV summary cards are driven by
   `getSuggestions`.
 
 Spec: [`docs/superpowers/specs/2026-05-02-create-booking-modal-redesign.md`](../../../../../docs/superpowers/specs/2026-05-02-create-booking-modal-redesign.md).
@@ -34,16 +37,20 @@ Plan: [`docs/superpowers/plans/2026-05-02-create-booking-modal-redesign.md`](../
   `repeat-row` (popover wrapping legacy `RecurrenceField`), `description-row`,
   `host-row` (with operator-mode "Booking for"), `visitors-row` (delegates
   to legacy `VisitorsSection`).
-- `right-pane/` — `addin-stack` (single-expand semantics), `addin-card`
-  (`grid-template-rows: 0fr→1fr` inline-expand + `Suggested` chip),
-  `room-card`, `catering-card`, `av-card`.
+- `right-pane/` — `right-panel` (the summary↔picker view-state machine,
+  slide animation), `summary-view` (vertical stack of summary cards),
+  `summary-card` (shared empty/filled primitive with `Suggested` chip),
+  `times-summary-card`, `room-summary-card`, `catering-summary-card`,
+  `av-summary-card`.
 
 ## Reuses from the old composer (still alive)
 
 - `service-picker-sheet.tsx` — `ServicePickerBody` is the catalog browser
-  used inside the catering + AV cards.
+  embedded directly inside the right pane's `picker:catering` and
+  `picker:av` slots.
 - `sections/recurrence-field.tsx` — used inside `RepeatRow`.
-- `sections/room-picker-inline.tsx` — used inside `RoomCard`.
+- `sections/room-picker-inline.tsx` — used inside the right pane's
+  `picker:room` slot.
 - `sections/visitors-section.tsx` — wrapped (with chip presentation
   skipped per VisitorsSection's existing list rendering) by `VisitorsRow`.
 - `state.ts` — `PendingVisitor`, `ComposerMode`, `ComposerEntrySource` type
@@ -55,10 +62,10 @@ Plan: [`docs/superpowers/plans/2026-05-02-create-booking-modal-redesign.md`](../
 
 ## Tests
 
-`pnpm --filter @prequest/web test` runs the vitest suite (40 tests / 9 files
-at the time of writing). Pure functions (`booking-draft`,
-`contextual-suggestions`, `use-booking-draft`, `derive-building-id`) have
-unit tests; components (`quick-book-popover`, `addin-card`, `visitors-row`,
+`pnpm --filter @prequest/web test` runs the vitest suite. Pure functions
+(`booking-draft`, `contextual-suggestions`, `use-booking-draft`,
+`derive-building-id`) have unit tests; components (`quick-book-popover`,
+`right-panel`, `summary-card` + per-domain summary cards, `visitors-row`,
 `booking-composer-modal` shell) have RTL tests.
 
 ## Entry points

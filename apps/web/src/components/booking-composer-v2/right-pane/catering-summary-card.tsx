@@ -16,7 +16,7 @@ export interface CateringSummaryCardProps {
 
 /**
  * Compute the running total for catering-only selections. Mirrors the
- * legacy `CateringCard` math exactly so the right-pane redesign doesn't
+ * legacy add-in card's math exactly so the right-pane redesign doesn't
  * silently change pricing semantics:
  *
  * - `unit === 'per_person'` → unit_price × quantity × max(1, attendees)

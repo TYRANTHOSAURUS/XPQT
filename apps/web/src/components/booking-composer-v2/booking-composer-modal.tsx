@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
@@ -24,10 +24,14 @@ import { VisitorsRow } from './left-pane/visitors-row';
 import { spacesListOptions, type Space } from '@/api/spaces';
 import { deriveBuildingId } from './derive-building-id';
 import { useMealWindows } from '@/api/meal-windows';
-import { AddinStack } from './right-pane/addin-stack';
-import { RoomCard } from './right-pane/room-card';
-import { CateringCard } from './right-pane/catering-card';
-import { AvCard } from './right-pane/av-card';
+import { RightPanel, type RightPanelView } from './right-pane/right-panel';
+import { SummaryView } from './right-pane/summary-view';
+import { TimesSummaryCard } from './right-pane/times-summary-card';
+import { RoomSummaryCard } from './right-pane/room-summary-card';
+import { CateringSummaryCard } from './right-pane/catering-summary-card';
+import { AvSummaryCard } from './right-pane/av-summary-card';
+import { RoomPickerInline } from '../booking-composer/sections/room-picker-inline';
+import { ServicePickerBody } from '../booking-composer/service-picker-sheet';
 import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestions';
 import { useCreateBooking } from '@/api/room-booking';
 import { useCreateInvitation } from '@/api/visitors';
@@ -127,6 +131,10 @@ export function BookingComposerModal({
     [composer.draft, roomFacts, mealWindows],
   );
 
+  // Right-pane view-state machine. The `<RightPanel>` slides between the
+  // summary and per-domain pickers (Phase B/C of the summary↔picker pivot).
+  const [panelView, setPanelView] = useState<RightPanelView>('summary');
+
   // Re-seed on open so cancelled sessions don't leak state.
   useEffect(() => {
     if (open) {
@@ -135,6 +143,9 @@ export function BookingComposerModal({
           ? { ...initialDraft }
           : { hostPersonId: callerPersonId, requesterPersonId: callerPersonId },
       );
+      // Always start on the summary view; cancel→reopen shouldn't strand
+      // the user in a picker that no longer matches the seeded draft.
+      setPanelView('summary');
     }
     // intentionally only on open edge
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -372,57 +383,147 @@ export function BookingComposerModal({
                 onRemove={composer.removeVisitor}
               />
             </div>
-            {/* Right pane — 360px on desktop, hairline border. */}
+            {/* Right pane — 360px on desktop. Hairline divider on the
+                left edge desktop, top edge mobile (matches the
+                table-inspector-layout pattern). The pane itself owns no
+                padding — RightPanel + summary cards control their own
+                spacing so the slide animation between summary and picker
+                is gap-free. */}
             <aside
               data-testid="booking-composer-right-pane"
               className={cn(
-                'm-2 flex flex-col gap-2 overflow-y-auto rounded-md border border-border/60 p-3',
-                'sm:w-[360px] sm:flex-none',
+                'flex flex-col overflow-y-auto border-t border-border/60',
+                'sm:w-[360px] sm:flex-none sm:border-t-0 sm:border-l',
               )}
             >
-              <AddinStack>
-                {({ expanded, setExpanded }) => (
-                  <>
-                    <RoomCard
-                      spaceId={composer.draft.spaceId}
-                      roomName={pickedRoom?.name ?? null}
-                      capacity={pickedRoom?.capacity ?? null}
+              <RightPanel
+                view={panelView}
+                onViewChange={setPanelView}
+                pickerTitles={{
+                  room: 'Pick a room',
+                  catering: 'Add catering',
+                  av: 'Add AV equipment',
+                }}
+                summary={
+                  <SummaryView
+                    times={
+                      <TimesSummaryCard
+                        startAt={composer.draft.startAt}
+                        endAt={composer.draft.endAt}
+                        onPick={() => {
+                          // No `picker:time` view — times are edited inline
+                          // on the left pane. Focus the From-side TimeRow
+                          // button (data-focus-target attribute set in
+                          // time-row.tsx); fall back to scrollIntoView so a
+                          // missing target still nudges the eye.
+                          const target = document.querySelector<HTMLElement>(
+                            '[data-focus-target="time-row"]',
+                          );
+                          if (target) {
+                            target.focus();
+                            target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                          }
+                        }}
+                      />
+                    }
+                    room={
+                      <RoomSummaryCard
+                        spaceId={composer.draft.spaceId}
+                        roomName={pickedRoom?.name ?? null}
+                        capacity={pickedRoom?.capacity ?? null}
+                        // Conflict-check API is not yet wired into v2;
+                        // pass null so no Available/Unavailable pill renders.
+                        available={null}
+                        onPick={() => setPanelView('picker:room')}
+                        onRemove={() => composer.setRoom(null)}
+                      />
+                    }
+                    catering={
+                      <CateringSummaryCard
+                        selections={composer.draft.services}
+                        attendeeCount={composer.draft.attendeeCount}
+                        onPick={() => setPanelView('picker:catering')}
+                        onClearAll={() =>
+                          composer.setServices(
+                            composer.draft.services.filter(
+                              (s) => s.service_type !== 'catering',
+                            ),
+                          )
+                        }
+                        suggested={suggestions.some((s) => s.target === 'catering')}
+                        suggestionReason={
+                          suggestions.find((s) => s.target === 'catering')?.reason
+                        }
+                      />
+                    }
+                    av={
+                      <AvSummaryCard
+                        selections={composer.draft.services}
+                        attendeeCount={composer.draft.attendeeCount}
+                        onPick={() => setPanelView('picker:av')}
+                        onClearAll={() =>
+                          composer.setServices(
+                            composer.draft.services.filter(
+                              (s) => s.service_type !== 'av_equipment',
+                            ),
+                          )
+                        }
+                        suggested={suggestions.some((s) => s.target === 'av_equipment')}
+                        suggestionReason={
+                          suggestions.find((s) => s.target === 'av_equipment')?.reason
+                        }
+                      />
+                    }
+                  />
+                }
+                picker={{
+                  room: (
+                    <div className="p-3">
+                      <RoomPickerInline
+                        value={composer.draft.spaceId}
+                        attendeeCount={composer.draft.attendeeCount}
+                        excludeIds={[]}
+                        onChange={(id) => {
+                          composer.setRoom(id);
+                          // Single-select picker: pop back to summary on
+                          // selection — there's nothing else to do here.
+                          setPanelView('summary');
+                        }}
+                      />
+                    </div>
+                  ),
+                  catering: (
+                    <ServicePickerBody
+                      deliverySpaceId={composer.draft.spaceId}
+                      onDate={composer.draft.startAt}
                       attendeeCount={composer.draft.attendeeCount}
-                      expanded={expanded === 'room'}
-                      onToggle={(o) => setExpanded(o ? 'room' : null)}
-                      onChange={composer.setRoom}
-                    />
-                    <CateringCard
-                      spaceId={composer.draft.spaceId}
-                      startAt={composer.draft.startAt}
-                      endAt={composer.draft.endAt}
-                      attendeeCount={composer.draft.attendeeCount}
+                      bookingStartAt={composer.draft.startAt}
+                      bookingEndAt={composer.draft.endAt}
                       selections={composer.draft.services}
                       onSelectionsChange={composer.setServices}
-                      expanded={expanded === 'catering'}
-                      onToggle={(o) => setExpanded(o ? 'catering' : null)}
-                      suggested={suggestions.some((s) => s.target === 'catering')}
-                      suggestionReason={
-                        suggestions.find((s) => s.target === 'catering')?.reason
-                      }
+                      initialServiceType="catering"
+                      // Multi-select cart — body has no "Done" callback; the
+                      // user clicks Back in <RightPanel> when finished. Keep
+                      // the body's own padding in line with the summary
+                      // cards via px-3.
+                      className="px-3 pb-3"
                     />
-                    <AvCard
-                      spaceId={composer.draft.spaceId}
-                      startAt={composer.draft.startAt}
-                      endAt={composer.draft.endAt}
+                  ),
+                  av: (
+                    <ServicePickerBody
+                      deliverySpaceId={composer.draft.spaceId}
+                      onDate={composer.draft.startAt}
                       attendeeCount={composer.draft.attendeeCount}
+                      bookingStartAt={composer.draft.startAt}
+                      bookingEndAt={composer.draft.endAt}
                       selections={composer.draft.services}
                       onSelectionsChange={composer.setServices}
-                      expanded={expanded === 'av_equipment'}
-                      onToggle={(o) => setExpanded(o ? 'av_equipment' : null)}
-                      suggested={suggestions.some((s) => s.target === 'av_equipment')}
-                      suggestionReason={
-                        suggestions.find((s) => s.target === 'av_equipment')?.reason
-                      }
+                      initialServiceType="av_equipment"
+                      className="px-3 pb-3"
                     />
-                  </>
-                )}
-              </AddinStack>
+                  ),
+                }}
+              />
             </aside>
           </div>
           <footer className="flex items-center justify-end gap-2 border-t border-border/60 bg-background/85 px-5 py-3 backdrop-blur-md">

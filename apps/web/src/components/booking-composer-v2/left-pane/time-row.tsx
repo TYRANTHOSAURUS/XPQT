@@ -124,6 +124,7 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
           onCalendarSelect={onPickDay}
           slots={slots}
           onPickSlot={onPickStartSlot}
+          focusTarget="time-row"
         />
         <span className="text-xs text-muted-foreground">→</span>
         <TimeButton
@@ -148,6 +149,12 @@ interface TimeButtonProps {
   onCalendarSelect: (date: Date | undefined) => void;
   slots: string[];
   onPickSlot: (iso: string) => void;
+  /**
+   * Optional `data-focus-target` attribute. The right-pane Times summary
+   * card's "Change" action focuses `[data-focus-target="time-row"]` to
+   * jump back here from the summary view.
+   */
+  focusTarget?: string;
 }
 
 function TimeButton({
@@ -158,6 +165,7 @@ function TimeButton({
   onCalendarSelect,
   slots,
   onPickSlot,
+  focusTarget,
 }: TimeButtonProps) {
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -168,6 +176,7 @@ function TimeButton({
             variant="outline"
             size="sm"
             className="h-9 justify-start gap-1.5 px-3 font-normal tabular-nums"
+            data-focus-target={focusTarget}
           />
         }
       >

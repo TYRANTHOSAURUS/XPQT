@@ -67,8 +67,9 @@ function durationMinutes(startAt: string, endAt: string): number {
  *
  * Output:
  *  - `Suggestion[]`: zero or more chip recommendations. The right-pane
- *    `<AddinCard>` matches its `target` and renders the "Suggested"
- *    chip + tooltip when present.
+ *    `<SummaryCard>` (via `<CateringSummaryCard>` / `<AvSummaryCard>`)
+ *    matches its `target` and renders the "Suggested" chip + tooltip
+ *    when present.
  */
 export function getSuggestions(
   draft: BookingDraft,

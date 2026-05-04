@@ -24,8 +24,8 @@ export interface SummaryCardProps {
  *   the caller-supplied `summary` ReactNode and an inline action row with
  *   `[Change]` and (optionally) `[Remove]` buttons.
  *
- * The Suggested chip styling matches the existing AddinCard so the visual
- * treatment stays consistent through the redesign.
+ * The Suggested chip styling carries over from the legacy add-in card so
+ * the visual treatment stays consistent through the redesign.
  */
 export function SummaryCard({
   icon: Icon,
