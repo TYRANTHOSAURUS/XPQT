@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
+import { Maximize2 } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
@@ -51,18 +52,57 @@ function formatDay(iso: string | null): string {
   return DAY_FORMAT.format(d);
 }
 
+/** Compare two ISO timestamps by HH:MM-of-local-day for slot `aria-selected`. */
+function isSameLocalSlot(a: string | null, b: string): boolean {
+  if (!a) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return false;
+  return (
+    da.getHours() === db.getHours() &&
+    da.getMinutes() === db.getMinutes() &&
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+/** Short timezone abbreviation (e.g. "CET", "PST", "GMT+2") from the
+ *  resolved Intl format. Falls back to an empty string if the runtime
+ *  doesn't expose `timeZoneName` on the parts. */
+function shortTimezone(): string {
+  try {
+    const fmt = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      timeZoneName: 'short',
+    });
+    const parts = fmt.formatToParts(new Date());
+    const tz = parts.find((p) => p.type === 'timeZoneName');
+    return tz?.value ?? '';
+  } catch {
+    return '';
+  }
+}
+
 /**
- * From/To controls for the left pane. Each is a button styled like
- * `Wed, May 7 · 2:00 PM`; click → popover with calendar (left) + 15-min
- * slot list (right). Slots are rendered in `font-mono tabular-nums` per
- * spec polish micros.
+ * From/To controls for the left pane. Robin-style inline-visible
+ * dropdown trio:
+ *
+ *   [date▾] [time▾] → [date▾] [time▾] · TZ  [advanced]
+ *
+ * Each segment is its own popover trigger:
+ *  - Date dropdown opens a `<Calendar>`
+ *  - Time dropdown opens a 15-minute slot list
+ *  - The timezone label is passive (short tz name)
+ *  - The Advanced button opens the legacy combined calendar+slot popover
+ *    anchored to the From side
  *
  * Conflict-strike (red strike on conflicting slots) is wired in Phase 6
  * when the conflict-check API is integrated; in this task we render
  * slots without conflict markers.
  */
 export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
-  const [openSide, setOpenSide] = useState<'start' | 'end' | null>(null);
+  const tzLabel = useMemo(() => shortTimezone(), []);
 
   const startDate = useMemo(
     () => (startAt ? new Date(startAt) : new Date()),
@@ -73,114 +113,272 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
     [endAt, startDate],
   );
 
-  const dayForPopover = openSide === 'end' ? endDate : startDate;
-  const slots = useMemo(() => generateSlotsForDay(dayForPopover), [dayForPopover]);
+  /** Apply a calendar-day pick to the start side, preserving the current
+   *  time-of-day and the start↔end duration. */
+  const onPickStartDay = (date: Date | undefined) => {
+    if (!date) return;
+    const next = new Date(date);
+    const src = startAt ? new Date(startAt) : new Date();
+    next.setHours(src.getHours(), src.getMinutes(), 0, 0);
+    const dur =
+      startAt && endAt
+        ? new Date(endAt).getTime() - new Date(startAt).getTime()
+        : 60 * 60_000;
+    onChange(next.toISOString(), new Date(next.getTime() + dur).toISOString());
+  };
 
+  /** Apply a calendar-day pick to the end side, preserving end's
+   *  time-of-day. Start is unchanged. */
+  const onPickEndDay = (date: Date | undefined) => {
+    if (!date) return;
+    const next = new Date(date);
+    const src = endAt ? new Date(endAt) : new Date();
+    next.setHours(src.getHours(), src.getMinutes(), 0, 0);
+    onChange(startAt, next.toISOString());
+  };
+
+  /** Apply a 15-minute slot pick to the start side. Pushes end forward to
+   *  preserve duration (or +1h fallback when end was null). */
   const onPickStartSlot = (iso: string) => {
     let newEnd = endAt;
     if (startAt && endAt) {
       const dur = new Date(endAt).getTime() - new Date(startAt).getTime();
-      newEnd = new Date(new Date(iso).getTime() + Math.max(15 * 60_000, dur)).toISOString();
+      newEnd = new Date(
+        new Date(iso).getTime() + Math.max(15 * 60_000, dur),
+      ).toISOString();
     } else {
       newEnd = new Date(new Date(iso).getTime() + 60 * 60_000).toISOString();
     }
     onChange(iso, newEnd);
-    setOpenSide(null);
   };
 
+  /** Apply a 15-minute slot pick to the end side. Start is unchanged. */
   const onPickEndSlot = (iso: string) => {
     onChange(startAt, iso);
-    setOpenSide(null);
-  };
-
-  const onPickDay = (date: Date | undefined) => {
-    if (!date) return;
-    if (openSide === 'start') {
-      const next = new Date(date);
-      const src = startAt ? new Date(startAt) : new Date();
-      next.setHours(src.getHours(), src.getMinutes(), 0, 0);
-      const dur =
-        startAt && endAt
-          ? new Date(endAt).getTime() - new Date(startAt).getTime()
-          : 60 * 60_000;
-      onChange(next.toISOString(), new Date(next.getTime() + dur).toISOString());
-    } else if (openSide === 'end') {
-      const next = new Date(date);
-      const src = endAt ? new Date(endAt) : new Date();
-      next.setHours(src.getHours(), src.getMinutes(), 0, 0);
-      onChange(startAt, next.toISOString());
-    }
   };
 
   return (
     <Field>
       <FieldLabel className="text-xs text-muted-foreground">When</FieldLabel>
-      <div className="flex items-center gap-2">
-        <TimeButton
-          label={`${formatDay(startAt)} · ${formatTime(startAt)}`}
-          open={openSide === 'start'}
-          onOpenChange={(o) => setOpenSide(o ? 'start' : null)}
-          calendarSelected={startDate}
-          onCalendarSelect={onPickDay}
-          slots={slots}
-          onPickSlot={onPickStartSlot}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <DatePopover
+          side="start"
+          value={startAt}
+          dateContext={startDate}
+          onPick={onPickStartDay}
           focusTarget="time-row"
         />
-        <span className="text-xs text-muted-foreground">→</span>
-        <TimeButton
-          label={`${formatDay(endAt)} · ${formatTime(endAt)}`}
-          open={openSide === 'end'}
-          onOpenChange={(o) => setOpenSide(o ? 'end' : null)}
-          calendarSelected={endDate}
-          onCalendarSelect={onPickDay}
-          slots={slots}
-          onPickSlot={onPickEndSlot}
+        <TimePopover
+          side="start"
+          value={startAt}
+          dateContext={startDate}
+          onPick={onPickStartSlot}
+        />
+        <span className="px-1 text-xs text-muted-foreground" aria-hidden>
+          →
+        </span>
+        <DatePopover
+          side="end"
+          value={endAt}
+          dateContext={endDate}
+          onPick={onPickEndDay}
+        />
+        <TimePopover
+          side="end"
+          value={endAt}
+          dateContext={endDate}
+          onPick={onPickEndSlot}
+        />
+        {tzLabel ? (
+          <span
+            className="ml-1 text-xs text-muted-foreground tabular-nums"
+            aria-label={`Timezone ${tzLabel}`}
+          >
+            {tzLabel}
+          </span>
+        ) : null}
+        <AdvancedPicker
+          startAt={startAt}
+          endAt={endAt}
+          startDate={startDate}
+          onPickDay={onPickStartDay}
+          onPickSlot={onPickStartSlot}
         />
       </div>
     </Field>
   );
 }
 
-interface TimeButtonProps {
-  label: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  calendarSelected: Date;
-  onCalendarSelect: (date: Date | undefined) => void;
-  slots: string[];
-  onPickSlot: (iso: string) => void;
-  /**
-   * Optional `data-focus-target` attribute. The right-pane Times summary
-   * card's "Change" action focuses `[data-focus-target="time-row"]` to
-   * jump back here from the summary view.
-   */
+interface DatePopoverProps {
+  side: 'start' | 'end';
+  value: string | null;
+  dateContext: Date;
+  onPick: (date: Date | undefined) => void;
+  /** Optional `data-focus-target` attribute. The right-pane Times summary
+   *  card's "Change" action focuses `[data-focus-target="time-row"]` to
+   *  jump back here from the summary view. */
   focusTarget?: string;
 }
 
-function TimeButton({
-  label,
-  open,
-  onOpenChange,
-  calendarSelected,
-  onCalendarSelect,
-  slots,
-  onPickSlot,
+function DatePopover({
+  side,
+  value,
+  dateContext,
+  onPick,
   focusTarget,
-}: TimeButtonProps) {
+}: DatePopoverProps) {
+  const [open, setOpen] = useState(false);
+  const label = formatDay(value);
+  const sideLabel = side === 'start' ? 'Start date' : 'End date';
+
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="h-9 justify-start gap-1.5 px-3 font-normal tabular-nums"
+            className="h-7 justify-start gap-1 px-2 text-xs font-normal"
+            aria-label={`${sideLabel}: ${label}`}
             data-focus-target={focusTarget}
           />
         }
       >
-        {label}
+        <span>{label}</span>
+        <span className="text-muted-foreground" aria-hidden>
+          ▾
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align="start" side="bottom" className="w-auto p-0">
+        <Calendar
+          mode="single"
+          selected={dateContext}
+          onSelect={(date) => {
+            onPick(date);
+            if (date) setOpen(false);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+interface TimePopoverProps {
+  side: 'start' | 'end';
+  value: string | null;
+  dateContext: Date;
+  onPick: (iso: string) => void;
+}
+
+function TimePopover({ side, value, dateContext, onPick }: TimePopoverProps) {
+  const [open, setOpen] = useState(false);
+  const label = formatTime(value);
+  const sideLabel = side === 'start' ? 'Start time' : 'End time';
+  const listboxId = useId();
+  const slots = useMemo(() => generateSlotsForDay(dateContext), [dateContext]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 justify-start gap-1 px-2 text-xs font-normal tabular-nums"
+            aria-label={`${sideLabel}: ${label}`}
+            aria-controls={open ? listboxId : undefined}
+          />
+        }
+      >
+        <span>{label}</span>
+        <span className="text-muted-foreground" aria-hidden>
+          ▾
+        </span>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        className="w-auto p-1.5"
+      >
+        <div
+          id={listboxId}
+          className="flex max-h-[280px] w-[140px] flex-col gap-0.5 overflow-y-auto pr-1"
+          role="listbox"
+          aria-label={`${sideLabel} slots`}
+        >
+          {slots.map((iso) => {
+            const selected = isSameLocalSlot(value, iso);
+            return (
+              <button
+                key={iso}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => {
+                  onPick(iso);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex h-7 w-full items-center justify-start rounded-md px-2',
+                  'font-mono text-[12px] tabular-nums text-foreground/80',
+                  'transition-colors hover:bg-accent/50 hover:text-foreground',
+                  '[transition-duration:100ms] [transition-timing-function:var(--ease-snap)]',
+                  selected && 'bg-accent text-foreground',
+                )}
+              >
+                {TIME_FORMAT.format(new Date(iso))}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+interface AdvancedPickerProps {
+  startAt: string | null;
+  endAt: string | null;
+  startDate: Date;
+  onPickDay: (date: Date | undefined) => void;
+  onPickSlot: (iso: string) => void;
+}
+
+/**
+ * Combined calendar + slot list, anchored to the From side. Same shape as
+ * the legacy single-button popover this task replaces — kept available
+ * for users who want to see the full month + slot list at once.
+ */
+function AdvancedPicker({
+  startAt,
+  endAt,
+  startDate,
+  onPickDay,
+  onPickSlot,
+}: AdvancedPickerProps) {
+  const [open, setOpen] = useState(false);
+  const slots = useMemo(() => generateSlotsForDay(startDate), [startDate]);
+  const summaryLabel =
+    startAt && endAt
+      ? `${formatDay(startAt)} · ${formatTime(startAt)} – ${formatTime(endAt)}`
+      : 'Pick start date and time';
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="ml-0.5 size-7 shrink-0"
+            aria-label={`Advanced time picker: ${summaryLabel}`}
+          />
+        }
+      >
+        <Maximize2 className="size-3.5" aria-hidden />
       </PopoverTrigger>
       <PopoverContent
         align="start"
@@ -189,31 +387,40 @@ function TimeButton({
       >
         <Calendar
           mode="single"
-          selected={calendarSelected}
-          onSelect={onCalendarSelect}
+          selected={startDate}
+          onSelect={(date) => {
+            onPickDay(date);
+          }}
         />
         <div
           className="flex max-h-[280px] w-[140px] flex-col gap-0.5 overflow-y-auto pr-1"
           role="listbox"
-          aria-label="Time slots"
+          aria-label="Start time slots"
         >
-          {slots.map((iso) => (
-            <button
-              key={iso}
-              type="button"
-              role="option"
-              aria-selected={false}
-              onClick={() => onPickSlot(iso)}
-              className={cn(
-                'flex h-7 w-full items-center justify-start rounded-md px-2',
-                'font-mono text-[12px] tabular-nums text-foreground/80',
-                'transition-colors hover:bg-accent/50 hover:text-foreground',
-                '[transition-duration:100ms] [transition-timing-function:var(--ease-snap)]',
-              )}
-            >
-              {TIME_FORMAT.format(new Date(iso))}
-            </button>
-          ))}
+          {slots.map((iso) => {
+            const selected = isSameLocalSlot(startAt, iso);
+            return (
+              <button
+                key={iso}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => {
+                  onPickSlot(iso);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex h-7 w-full items-center justify-start rounded-md px-2',
+                  'font-mono text-[12px] tabular-nums text-foreground/80',
+                  'transition-colors hover:bg-accent/50 hover:text-foreground',
+                  '[transition-duration:100ms] [transition-timing-function:var(--ease-snap)]',
+                  selected && 'bg-accent text-foreground',
+                )}
+              >
+                {TIME_FORMAT.format(new Date(iso))}
+              </button>
+            );
+          })}
         </div>
       </PopoverContent>
     </Popover>
