@@ -32,6 +32,11 @@ function makeDeps(rowsByTable: RowsByTable) {
   // dispatch service's own table reads. Returns null for any uuid not in
   // the configured rowsByTable for the current tenant.
   const captures: Array<{ table: string; filters: Record<string, unknown> }> = [];
+  // Plan A.4 / Commit 8 (I4) — track work_orders inserts so the
+  // rejection cases can assert the row insert NEVER fires. Pre-A.4
+  // these tests only asserted the throw — leaving open the bug-class
+  // where the validator throws but the row had already been written.
+  const insertCalls: Array<{ table: string; row: Record<string, unknown> }> = [];
 
   function buildSelectChain(table: string, _cols: string) {
     const filters: Record<string, unknown> = {};
@@ -75,11 +80,14 @@ function makeDeps(rowsByTable: RowsByTable) {
     admin: {
       from: (table: string) => ({
         select: (cols: string) => buildSelectChain(table, cols),
-        insert: () => ({
-          select: () => ({
-            single: async () => ({ data: { id: 'child-1' }, error: null }),
-          }),
-        }),
+        insert: (row: Record<string, unknown>) => {
+          insertCalls.push({ table, row });
+          return {
+            select: () => ({
+              single: async () => ({ data: { id: 'child-1', ...row }, error: null }),
+            }),
+          };
+        },
       }),
     },
   };
@@ -125,7 +133,7 @@ function makeDeps(rowsByTable: RowsByTable) {
     deriveEffectiveLocation: jest.fn().mockResolvedValue(null),
   };
 
-  return { supabase, ticketService, routingService, slaService, visibilityService, scopeOverrides, captures };
+  return { supabase, ticketService, routingService, slaService, visibilityService, scopeOverrides, captures, insertCalls };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>) {
@@ -161,6 +169,10 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
         reference_id: FOREIGN_UUID,
       }),
     });
+    // Plan A.4 / Commit 8 (I4): the rejected validation must NOT have
+    // reached the work_orders insert. Pre-A.4 only the throw was
+    // asserted; nothing pinned that the row write was actually skipped.
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('rejects dispatch with a cross-tenant assigned_user_id', async () => {
@@ -175,6 +187,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_user_id'),
     });
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('rejects dispatch with a cross-tenant assigned_team_id', async () => {
@@ -186,6 +199,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_team_id'),
     });
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('rejects dispatch with a cross-tenant assigned_vendor_id', async () => {
@@ -197,6 +211,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_vendor_id'),
     });
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('rejects dispatch with a cross-tenant explicit dto.sla_id', async () => {
@@ -219,6 +234,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
         reference_id: FOREIGN_UUID,
       }),
     });
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('rejects dispatch with a malformed ticket_type_id uuid', async () => {
@@ -228,6 +244,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       response: expect.objectContaining({ code: 'reference.invalid_uuid' }),
     });
+    expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
 
   it('accepts a fully in-tenant DTO and reaches the row insert', async () => {
@@ -262,6 +279,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
           reference_id: FOREIGN_UUID,
         }),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('rejects dispatch with a cross-tenant DTO asset_id', async () => {
@@ -277,6 +295,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
           reference_id: FOREIGN_UUID,
         }),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('does NOT pre-flight when DTO omits location_id (inherits from parent)', async () => {
@@ -312,6 +331,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
           reference_id: FOREIGN_UUID,
         }),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('rejects system-actor dispatch with cross-tenant assigned_team_id', async () => {
@@ -323,6 +343,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
         message: expect.stringContaining('assigned_team_id'),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('rejects system-actor dispatch with cross-tenant assigned_user_id', async () => {
@@ -334,6 +355,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
         message: expect.stringContaining('assigned_user_id'),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('rejects system-actor dispatch with cross-tenant assigned_vendor_id', async () => {
@@ -345,6 +367,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
         message: expect.stringContaining('assigned_vendor_id'),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('rejects system-actor dispatch with cross-tenant explicit dto.sla_id', async () => {
@@ -360,6 +383,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
           reference_id: FOREIGN_UUID,
         }),
       });
+      expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
     });
 
     it('still passes system-actor dispatch when refs are in-tenant', async () => {
