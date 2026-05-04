@@ -711,10 +711,42 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
   });
 
   it('editOne with space_id delegates to RPC (multi-slot mirror correctness)', async () => {
-    const newSpace = 'space-new';
+    // Plan A.2 / Commit 6: editOne now does a TS-layer pre-flight that
+    // requires a real uuid (assertTenantOwned rejects malformed strings
+    // with reference.invalid_uuid). Use a real uuid here; the supabase
+    // mock returns null for the spaces lookup by default — extend it to
+    // return an active+reservable row for the new space so the
+    // assertTenantOwned probe passes and we proceed to the RPC.
+    const newSpace = '00000000-0000-4000-8000-00000000eeee';
     const supabase = makeSupabase({
       postRpcEmbed: makeSlotEmbed({ space_id: newSpace }),
     });
+    // Patch in spaces support — the existing mock doesn't model spaces.
+    const baseFrom = supabase.admin.from;
+    supabase.admin.from = (table: string) => {
+      if (table === 'spaces') {
+        const filters: Record<string, unknown> = {};
+        const chain: Record<string, unknown> = {
+          eq: (col: string, val: unknown) => {
+            filters[col] = val;
+            return chain;
+          },
+          maybeSingle: async () => {
+            if (
+              filters.id === newSpace &&
+              filters.tenant_id === TENANT.id &&
+              filters.active === true &&
+              filters.reservable === true
+            ) {
+              return { data: { id: newSpace }, error: null };
+            }
+            return { data: null, error: null };
+          },
+        };
+        return { select: () => chain };
+      }
+      return baseFrom(table);
+    };
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
     const svc = new ReservationService(

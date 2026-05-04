@@ -252,8 +252,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     expect(supabase.rpcCalls).toEqual([]);
   });
 
-  // Re-enabled in Commit 6 once the space_id pre-flight lands.
-  it.skip('rejects edit with a cross-tenant space_id BEFORE the editSlot RPC fires (Commit 6)', async () => {
+  it('rejects edit with a cross-tenant space_id BEFORE the editSlot RPC fires (Commit 6)', async () => {
     // No spaces row for FOREIGN under tenant t1 → assertTenantOwned rejects.
     const supabase = makeSupabase({
       spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }],

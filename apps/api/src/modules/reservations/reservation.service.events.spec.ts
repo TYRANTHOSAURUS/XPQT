@@ -39,13 +39,17 @@ const TENANT = '11111111-1111-4111-8111-111111111111';
 // (reservation-projection.ts:121), so emitted events carry this same id
 // as `bundle_id`.
 const BOOKING_ID = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
-const PRIMARY_SLOT_ID = 'sssssss1-1111-4111-8111-ssssssssssss';
-const SPACE_OLD = 'ssssss11-1111-4111-8111-ssssssssssss';
-const SPACE_NEW = 'ssssss22-2222-4222-8222-ssssssssssss';
-const V1 = 'v1111111-1111-4111-8111-vvvvvvvvvvvv';
-const V2 = 'v2222222-2222-4222-8222-vvvvvvvvvvvv';
-const USER_ID = 'uuuuuuuu-1111-4111-8111-uuuuuuuuuuuu';
-const PERSON_ID = 'pppppppp-1111-4111-8111-pppppppppppp';
+// Plan A.2 / Commit 6: editOne adds a TS-layer space pre-flight using
+// assertTenantOwned, which strictly validates uuid format. Replaced
+// non-hex placeholder strings (`s`, `v`, `u`, `p`) with valid hex
+// surrogates so the regex accepts them.
+const PRIMARY_SLOT_ID = 'aaaaaaa1-1111-4111-8111-aaaaaaaaaaaa';
+const SPACE_OLD = 'aaaaaa11-1111-4111-8111-aaaaaaaaaaaa';
+const SPACE_NEW = 'aaaaaa22-2222-4222-8222-aaaaaaaaaaaa';
+const V1 = 'b1111111-1111-4111-8111-bbbbbbbbbbbb';
+const V2 = 'b2222222-2222-4222-8222-bbbbbbbbbbbb';
+const USER_ID = 'cccccccc-1111-4111-8111-cccccccccccc';
+const PERSON_ID = 'dddddddd-1111-4111-8111-dddddddddddd';
 
 // Base data is split into a "slot" half and a "booking" half so the mock
 // can return the PostgREST embed shape that `slotWithBookingToReservation`
@@ -280,6 +284,33 @@ function makeService(opts: {
               }),
             }),
           };
+        }
+        if (table === 'spaces') {
+          // Plan A.2 / Commit 6: editOne pre-flight calls
+          // assertTenantOwned('spaces', patch.space_id, ..., {activeOnly, reservableOnly}).
+          // Return a positive match for SPACE_NEW under TENANT — the only
+          // space_id this spec ever passes into editOne.
+          const filters: Record<string, unknown> = {};
+          const chain: Record<string, unknown> = {
+            eq: (col: string, val: unknown) => {
+              filters[col] = val;
+              return chain;
+            },
+            maybeSingle: () => {
+              if (
+                filters.tenant_id === TENANT &&
+                filters.active === true &&
+                filters.reservable === true
+              ) {
+                return Promise.resolve({
+                  data: { id: filters.id as string },
+                  error: null,
+                });
+              }
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
+          return { select: () => chain };
         }
         if (table === 'audit_events') {
           return { insert: () => Promise.resolve({ data: null, error: null }) };

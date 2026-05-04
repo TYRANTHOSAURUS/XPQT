@@ -727,6 +727,30 @@ export class ReservationService {
         { entityName: 'attendee persons' },
       );
     }
+    // Plan A.2 / Commit 6 / gap map §HIGH reservation-edits without
+    // space-id validation. The atomic edit_booking_slot RPC validates
+    // (id, tenant_id, active, reservable) inside the same transaction
+    // (migration 00294). This TS pre-flight is defense-in-depth:
+    //   1. Surfaces a friendlier reference.not_in_tenant 400 BEFORE the
+    //      RPC fires — better operator UX than waiting for the P0001
+    //      'space.invalid_or_cross_tenant' from inside the RPC.
+    //   2. Protects any future code path that might bypass the RPC
+    //      (the meta-only legacy path here doesn't hit the RPC at all
+    //      when space_id is absent — but if a regression sneaks
+    //      space_id back into a non-RPC path, this catches it).
+    if (patch.space_id !== undefined && patch.space_id !== null) {
+      await assertTenantOwned(
+        this.supabase,
+        'spaces',
+        patch.space_id,
+        tenantId,
+        {
+          activeOnly: true,
+          reservableOnly: true,
+          entityName: 'space',
+        },
+      );
+    }
 
     // /full-review v3 closure C2 — split the patch into geometry vs. meta.
     //
