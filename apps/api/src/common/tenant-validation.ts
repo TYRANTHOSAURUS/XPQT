@@ -5,6 +5,177 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * Cap for `assertTenantOwnedAll` — same rationale as `MAX_WATCHER_IDS_PER_QUERY`
+ * (URL ceiling on PostgREST `.in()` filter). 200 uuids ≈ 7,400 chars.
+ */
+const MAX_TENANT_OWNED_IDS_PER_QUERY = 200;
+
+/**
+ * Assert that `id` exists in `table` AND belongs to `tenantId`. Use BEFORE
+ * any INSERT/UPDATE that references `id` as an FK to a tenant-owned table.
+ *
+ * The DB-level FK only proves global existence; it does NOT prove tenant
+ * ownership. Without this guard, a caller can pass any uuid that exists
+ * in `table` (e.g. a row owned by a different tenant) and the FK check
+ * passes — leaking the cross-tenant reference into the calling tenant's
+ * row + audit trail.
+ *
+ * Pattern model: migration 00294 (edit_booking_slot_validate_space)
+ * which moved the same `(id, tenant_id, [active, reservable])` probe into
+ * the RPC. This is the TS-layer equivalent for code paths that don't go
+ * through an RPC.
+ *
+ * Options:
+ *   - `activeOnly: true`     — additionally require `active = true`
+ *   - `reservableOnly: true` — additionally require `reservable = true`
+ *   - `entityName`           — friendlier error message ("space" vs "spaces")
+ *   - `skipForSystemActor`   — bypass for `__system__` actor (resolver paths)
+ *
+ * Throws:
+ *   - `BadRequestException({ code: 'reference.invalid_uuid' })` for malformed input
+ *   - `BadRequestException({ code: 'reference.not_in_tenant' })` if missing
+ *   - `BadRequestException({ code: 'reference.lookup_failed' })` on driver error
+ */
+export async function assertTenantOwned(
+  supabase: SupabaseService,
+  table: string,
+  id: string,
+  tenantId: string,
+  options: {
+    activeOnly?: boolean;
+    reservableOnly?: boolean;
+    entityName?: string;
+    skipForSystemActor?: boolean;
+  } = {},
+): Promise<void> {
+  if (options.skipForSystemActor) return;
+
+  const entity = options.entityName ?? table;
+
+  if (typeof id !== 'string') {
+    throw new BadRequestException({
+      code: 'reference.invalid_uuid',
+      message: `${entity} reference must be a string uuid`,
+      reference_table: table,
+    });
+  }
+  if (!UUID_RE.test(id)) {
+    throw new BadRequestException({
+      code: 'reference.invalid_uuid',
+      message: `${entity} reference is not a valid uuid: ${id}`,
+      reference_table: table,
+      reference_id: id,
+    });
+  }
+
+  let q = supabase.admin
+    .from(table)
+    .select('id')
+    .eq('id', id)
+    .eq('tenant_id', tenantId);
+  if (options.activeOnly) q = q.eq('active', true);
+  if (options.reservableOnly) q = q.eq('reservable', true);
+
+  const { data, error } = await q.maybeSingle();
+  if (error) {
+    throw new BadRequestException({
+      code: 'reference.lookup_failed',
+      message: `${entity} reference lookup failed: ${error.message}`,
+      reference_table: table,
+      reference_id: id,
+    });
+  }
+  if (!data) {
+    throw new BadRequestException({
+      code: 'reference.not_in_tenant',
+      message: `${entity} ${id} is not accessible in this tenant`,
+      reference_table: table,
+      reference_id: id,
+    });
+  }
+}
+
+/**
+ * Array variant of `assertTenantOwned`. Loads every input id in a single
+ * SELECT and asserts each one is present in the tenant. Returns the
+ * deduplicated set so callers can use it as the canonical write input.
+ *
+ * Caps the array length so a malicious bulk write doesn't blow the
+ * PostgREST URL ceiling (same reasoning as
+ * `validateWatcherIdsInTenant`). Pre-filters malformed uuids to surface
+ * a clean 400 instead of a Postgres 22P02 cast leak.
+ */
+export async function assertTenantOwnedAll(
+  supabase: SupabaseService,
+  table: string,
+  ids: readonly string[] | null | undefined,
+  tenantId: string,
+  options: {
+    entityName?: string;
+    skipForSystemActor?: boolean;
+  } = {},
+): Promise<string[]> {
+  if (options.skipForSystemActor) return [];
+  if (!ids || ids.length === 0) return [];
+
+  const entity = options.entityName ?? table;
+
+  if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) {
+    throw new BadRequestException({
+      code: 'reference.invalid_uuid',
+      message: `${entity} references must be an array of string uuids`,
+      reference_table: table,
+    });
+  }
+
+  const unique = [...new Set(ids)];
+
+  if (unique.length > MAX_TENANT_OWNED_IDS_PER_QUERY) {
+    throw new BadRequestException({
+      code: 'reference.too_many',
+      message: `${entity} references array too large (${unique.length}); maximum is ${MAX_TENANT_OWNED_IDS_PER_QUERY}`,
+      reference_table: table,
+    });
+  }
+
+  const malformed = unique.filter((x) => !UUID_RE.test(x));
+  if (malformed.length > 0) {
+    const sample = malformed.slice(0, 5).join(', ');
+    throw new BadRequestException({
+      code: 'reference.invalid_uuid',
+      message: `${entity} references contain ${malformed.length} malformed uuid(s): ${sample}${malformed.length > 5 ? ', ...' : ''}`,
+      reference_table: table,
+    });
+  }
+
+  const { data, error } = await supabase.admin
+    .from(table)
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .in('id', unique);
+  if (error) {
+    throw new BadRequestException({
+      code: 'reference.lookup_failed',
+      message: `${entity} reference lookup failed: ${error.message}`,
+      reference_table: table,
+    });
+  }
+
+  const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    const sample = missing.slice(0, 5).join(', ');
+    throw new BadRequestException({
+      code: 'reference.not_in_tenant',
+      message: `${entity} references contain ${missing.length} id(s) not accessible in this tenant: ${sample}${missing.length > 5 ? ', ...' : ''}`,
+      reference_table: table,
+      missing_ids: missing,
+    });
+  }
+  return unique;
+}
+
+/**
  * Cap on the number of uuids passed to `.in()` in a single SELECT. PostgREST
  * encodes the IN-list into the URL as `id=in.(<comma-separated>)`, and the
  * Supabase platform proxy enforces a URL ceiling well below the absolute
