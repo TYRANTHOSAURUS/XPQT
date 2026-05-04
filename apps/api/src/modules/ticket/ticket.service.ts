@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, ForbiddenException,
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
+  assertTenantOwned,
   validateAssigneesInTenant,
   validateWatcherIdsInTenant,
 } from '../../common/tenant-validation';
@@ -943,6 +944,26 @@ export class TicketService {
       );
     }
 
+    // Plan A.2 / Commit 4 / gap map §ticket.service.ts:951-953 — defense
+    // in depth on dto.sla_id. The rejection below makes the validation
+    // unreachable today (every dto.sla_id !== undefined path throws), but
+    // if a future change relaxes that gate (e.g. allow desk admins to
+    // re-attach a parent SLA), the validation here ensures we don't
+    // reintroduce the cross-tenant smuggling vector. Cheap (string
+    // typecheck + a single SELECT) and structurally correct.
+    if (typeof dto.sla_id === 'string') {
+      await assertTenantOwned(
+        this.supabase,
+        'sla_policies',
+        dto.sla_id,
+        tenant.id,
+        {
+          entityName: 'SLA policy',
+          skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
+        },
+      );
+    }
+
     // Get current state for change tracking
     const current = await this.getById(id, SYSTEM_ACTOR);
 
@@ -1244,6 +1265,25 @@ export class TicketService {
         if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
         else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
         else if (result.target.kind === 'vendor') nextTarget = { kind: 'vendor', id: result.target.vendor_id };
+      }
+
+      // Plan A.2 / Commit 4 / gap map analogue of work-order rerunAssignmentResolver.
+      // Routing definitions are tenant-scoped, but the resolver result is
+      // a structured payload — if a routing-table compromise, rule import,
+      // or test-time override returned a foreign uuid, we'd write it
+      // blind to the tickets row. Validate before propagating into
+      // `updates` below.
+      if (nextTarget) {
+        await validateAssigneesInTenant(
+          this.supabase,
+          nextTarget.kind === 'team'
+            ? { assigned_team_id: nextTarget.id }
+            : nextTarget.kind === 'user'
+              ? { assigned_user_id: nextTarget.id }
+              : { assigned_vendor_id: nextTarget.id },
+          tenant.id,
+          { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
+        );
       }
       chosenBy = 'rerun_resolver';
       strategy = result.strategy;
