@@ -31,14 +31,14 @@ Two acceptable mechanisms:
 
 ## 2. Schema
 
-### 2.1 `outbox_events`
+### 2.1 `outbox.events`
 
 Single table with `event_type` discriminator. Mirrors the `audit_outbox` pattern (migration `00161_gdpr_audit_outbox.sql:12-50`) but with idempotency, backoff, dead-letter, event versioning, and lease-payload integrity bolted on.
 
 ```sql
 -- supabase/migrations/00XXX_domain_outbox.sql
 
-create table if not exists public.outbox_events (
+create table if not exists outbox.events (
   id                  uuid        primary key default gen_random_uuid(),
   tenant_id           uuid        not null references public.tenants(id) on delete cascade,
 
@@ -78,49 +78,49 @@ create table if not exists public.outbox_events (
 -- per tenant in v2). C2: v1's lead-with-tenant_id index forced a full scan
 -- across all tenant prefixes for every drain.
 create index if not exists idx_outbox_events_drainable
-  on public.outbox_events (available_at, enqueued_at)
+  on outbox.events (available_at, enqueued_at)
   where processed_at is null and claim_token is null and dead_lettered_at is null;
 
 -- Optional: per-tenant drain support for future per-tenant workers / fairness.
 -- Justified because tenant-scoped admin queries ("show pending events for tenant X")
 -- and any future per-tenant worker pool will benefit. Not used by the default drain.
 create index if not exists idx_outbox_events_per_tenant_pending
-  on public.outbox_events (tenant_id, available_at)
+  on outbox.events (tenant_id, available_at)
   where processed_at is null;
 
 -- Stale-claim sweep
 create index if not exists idx_outbox_events_stale_claim
-  on public.outbox_events (claimed_at)
+  on outbox.events (claimed_at)
   where processed_at is null and claimed_at is not null;
 
 -- Cleanup index
 create index if not exists idx_outbox_events_processed
-  on public.outbox_events (processed_at)
+  on outbox.events (processed_at)
   where processed_at is not null;
 
-alter table public.outbox_events enable row level security;
+alter table outbox.events enable row level security;
 
-drop policy if exists tenant_isolation on public.outbox_events;
-create policy tenant_isolation on public.outbox_events
+drop policy if exists tenant_isolation on outbox.events;
+create policy tenant_isolation on outbox.events
   using (tenant_id = public.current_tenant_id());
 
-comment on table public.outbox_events is
+comment on table outbox.events is
   'Durable outbox for domain events. Producers MUST insert via outbox.emit() helper or row-triggers, inside the business write transaction. Worker drains asynchronously; at-least-once + idempotent handlers.';
-comment on column public.outbox_events.idempotency_key is
+comment on column outbox.events.idempotency_key is
   'Tenant-scoped (see unique constraint with tenant_id). Format: <event_type>:<aggregate_id>[:<discriminator>].';
-comment on column public.outbox_events.payload_hash is
+comment on column outbox.events.payload_hash is
   'md5 of canonical payload. Same idempotency_key + same payload_hash = idempotent silent success; same key + different hash = explicit error from outbox.emit().';
-comment on column public.outbox_events.available_at is
+comment on column outbox.events.available_at is
   'Lease/backoff. The worker only claims rows where available_at <= now(). Watchdog events set this 30s in the future; success-path consumers mark the event processed before the lease expires.';
 ```
 
-### 2.2 `outbox_events_dead_letter`
+### 2.2 `outbox.events_dead_letter`
 
-Same shape as v1 (separate table, write-once, narrow main table). Carry forward v1's `outbox_events_dead_letter` definition and add `event_version` + `payload_hash` + `(tenant_id, idempotency_key)` unique to match v3's `outbox_events`. Dead-lettering is implemented via a same-transaction copy + flag-set (see §4.2.3); the row stays visible in `outbox_events` (with `dead_lettered_at` set so the drain index excludes it) so admin tooling has a single SELECT path.
+Same shape as v1 (separate table, write-once, narrow main table). Carry forward v1's `outbox_events_dead_letter` definition and add `event_version` + `payload_hash` + `(tenant_id, idempotency_key)` unique to match v3's `outbox.events`. Dead-lettering is implemented via a same-transaction copy + flag-set (see §4.2.3); the row stays visible in `outbox.events` (with `dead_lettered_at` set so the drain index excludes it) so admin tooling has a single SELECT path.
 
 ### 2.3 The `outbox.emit(...)` SQL helper (the canonical producer entry point)
 
-The only way an event lands in `outbox_events`. Triggers and RPC bodies call it directly; TS calls a thin PostgREST wrapper (`outbox_emit_via_rpc`).
+The only way an event lands in `outbox.events`. Triggers and RPC bodies call it directly; TS calls a thin PostgREST wrapper (`outbox_emit_via_rpc`).
 
 ```sql
 create schema if not exists outbox;
@@ -144,7 +144,7 @@ begin
   -- silent idempotent success; same key + different payload = explicit error.
   -- The DO UPDATE ... WHERE all-fields-match form returns the existing id
   -- only when classification + payload_hash all match.
-  insert into public.outbox_events
+  insert into outbox.events
     (tenant_id, event_type, event_version, aggregate_type, aggregate_id,
      payload, payload_hash, idempotency_key, available_at)
   values
@@ -152,24 +152,24 @@ begin
      v_payload, v_hash, p_idempotency_key, coalesce(p_available_at, now()))
   on conflict (tenant_id, idempotency_key) do update
      set payload_hash = excluded.payload_hash   -- no-op; we just need the WHERE
-   where outbox_events.event_type     = excluded.event_type
-     and outbox_events.event_version  = excluded.event_version
-     and outbox_events.aggregate_type = excluded.aggregate_type
-     and outbox_events.aggregate_id   = excluded.aggregate_id
-     and outbox_events.payload_hash   = excluded.payload_hash
+   where outbox.events.event_type     = excluded.event_type
+     and outbox.events.event_version  = excluded.event_version
+     and outbox.events.aggregate_type = excluded.aggregate_type
+     and outbox.events.aggregate_id   = excluded.aggregate_id
+     and outbox.events.payload_hash   = excluded.payload_hash
   returning id into v_id;
 
   -- WHERE failed => no RETURNING row. Detect a true collision and raise; else
   -- (same payload re-emit) fetch the existing id for caller observability.
   if v_id is null then
-    perform 1 from public.outbox_events
+    perform 1 from outbox.events
      where tenant_id = p_tenant_id and idempotency_key = p_idempotency_key
        and payload_hash <> v_hash;
     if found then
       raise exception 'outbox.emit: idempotency key collision for tenant=% key=%',
         p_tenant_id, p_idempotency_key using errcode = '23505';
     end if;
-    select id into v_id from public.outbox_events
+    select id into v_id from outbox.events
      where tenant_id = p_tenant_id and idempotency_key = p_idempotency_key;
   end if;
   return v_id;
@@ -202,7 +202,7 @@ begin
 
   -- Idempotent: re-calling on an already-consumed event is a no-op (returns false).
   -- WHERE also excludes dead-lettered rows; consuming a dead-letter is a bug.
-  update public.outbox_events
+  update outbox.events
      set processed_at     = coalesce(processed_at, now()),
          processed_reason = case when processed_at is null then p_reason else processed_reason end,
          claim_token      = null
@@ -221,34 +221,40 @@ create or replace function public.outbox_mark_consumed_via_rpc(
 $$;
 ```
 
-### 2.6 SQL grants (I2 fold)
+### 2.6 SQL grants (I2 fold + codex v3 I3 follow-up)
 
-`outbox_events` is reachable only via the helper functions; no role (including `authenticated`) gets direct DML except the worker (`service_role` only).
+`outbox.events` is reachable only via the helper functions; no role (including `authenticated`) gets direct DML except the worker (`service_role` only). **Codex v3 review (I3)** found the original grant of `execute on outbox.emit(...) to authenticated` was misleading: `authenticated` could call the function but the underlying INSERT against `outbox.events` would fail because no DML grant exists on the table for that role. Fix: revoke EXECUTE on both helpers from `authenticated`. The helpers are now service_role-only; if a real user-emit case appears later, add an `outbox.emit_as_user(...)` SECURITY DEFINER wrapper that validates the caller's tenant context.
 
 ```sql
+-- 00299_outbox_foundation.sql
 revoke all on schema outbox from public;
 grant  usage on schema outbox to service_role, authenticated;
 
 revoke all on function outbox.emit(uuid, text, text, uuid, jsonb, text, int, timestamptz) from public;
-grant  execute on function outbox.emit(uuid, text, text, uuid, jsonb, text, int, timestamptz) to service_role, authenticated;
+grant  execute on function outbox.emit(uuid, text, text, uuid, jsonb, text, int, timestamptz) to service_role;
 
 revoke all on function outbox.mark_consumed(text, uuid, text) from public;
-grant  execute on function outbox.mark_consumed(text, uuid, text) to service_role, authenticated;
+grant  execute on function outbox.mark_consumed(text, uuid, text) to service_role;
 
 revoke all on function public.outbox_emit_via_rpc(uuid, text, text, uuid, jsonb, text, int) from public;
 grant  execute on function public.outbox_emit_via_rpc(uuid, text, text, uuid, jsonb, text, int) to service_role;
 revoke all on function public.outbox_mark_consumed_via_rpc(uuid, text, text) from public;
 grant  execute on function public.outbox_mark_consumed_via_rpc(uuid, text, text) to service_role;
 
+-- 00301_outbox_emit_revoke_authenticated.sql (codex v3 I3 follow-up)
+revoke execute on function outbox.emit(uuid, text, text, uuid, jsonb, text, int, timestamptz) from authenticated;
+revoke execute on function outbox.mark_consumed(text, uuid, text) from authenticated;
+
 -- Worker is the only direct-table caller (drain CTE is hot-path SQL we keep unmediated).
-revoke all on table public.outbox_events from public;
-grant  select, update on table public.outbox_events to service_role;
--- Authenticated has NO direct access — must go through outbox.emit. RLS would
--- block cross-tenant reads anyway; removing GRANT is a stronger structural
--- defense (table not reachable via PostgREST under auth tokens).
+revoke all on table outbox.events from public;
+grant  select, update on table outbox.events to service_role;
+-- Authenticated has NO direct access — must go through outbox.emit (which is
+-- itself service_role-only as of 00301). RLS would block cross-tenant reads
+-- anyway; removing GRANT is a stronger structural defense (table not reachable
+-- via PostgREST under auth tokens).
 ```
 
-`outbox_events_dead_letter` and `outbox_shadow_results` get the same grants pattern (service_role read+update; nothing for authenticated). `outbox.emit` runs SECURITY INVOKER, so when called from another SECURITY INVOKER function (`create_booking`) the caller's tenant context is preserved; service-role callers pass `p_tenant_id` explicitly.
+`outbox.events_dead_letter` and `outbox_shadow_results` get the same grants pattern (service_role read+update; nothing for authenticated). `outbox.emit` runs SECURITY INVOKER, so when called from another SECURITY INVOKER function (`create_booking`) the caller's tenant context is preserved; service-role callers pass `p_tenant_id` explicitly.
 
 ---
 
@@ -346,7 +352,7 @@ export interface OutboxEventInput {
 const claimToken = randomUUID();
 const claimed = await this.db.query<{ id: string; event_type: string; tenant_id: string }>(
   `with cte as (
-     select id from public.outbox_events
+     select id from outbox.events
       where processed_at is null
         and dead_lettered_at is null
         and claim_token is null
@@ -356,7 +362,7 @@ const claimed = await this.db.query<{ id: string; event_type: string; tenant_id:
       limit $1
       for update skip locked
    )
-   update public.outbox_events o
+   update outbox.events o
       set claim_token = $2, claimed_at = now()
      from cte
     where o.id = cte.id
@@ -373,7 +379,7 @@ Every claimed event passes through exactly one of four transitions; the worker M
 
 **(1) Success** — handler returned cleanly:
 ```sql
-update public.outbox_events
+update outbox.events
    set processed_at = now(), processed_reason = 'handler_ok',
        claim_token = null, last_error = null, attempts = attempts + 1
  where id = $1 and claim_token = $2;
@@ -382,24 +388,24 @@ update public.outbox_events
 
 **(2) Retry** — handler threw a transient error and `attempts + 1 < max`:
 ```sql
-update public.outbox_events
+update outbox.events
    set claim_token = null, last_error = $3, attempts = attempts + 1,
        available_at = now() + $4::interval   -- backoff per §4.4
  where id = $1 and claim_token = $2;
 ```
 
-**(3) Dead-letter** — handler threw and `attempts + 1 >= max`, OR handler threw `DeadLetterError`. Single transaction: copy to `outbox_events_dead_letter`, set `dead_lettered_at` on the live row so the drain index excludes it. The live row stays visible so admin tooling has a single SELECT path; the DL table is for archival + alert hooks.
+**(3) Dead-letter** — handler threw and `attempts + 1 >= max`, OR handler threw `DeadLetterError`. Single transaction: copy to `outbox.events_dead_letter`, set `dead_lettered_at` on the live row so the drain index excludes it. The live row stays visible so admin tooling has a single SELECT path; the DL table is for archival + alert hooks.
 ```sql
 begin;
-  insert into public.outbox_events_dead_letter
+  insert into outbox.events_dead_letter
     (id, tenant_id, event_type, event_version, aggregate_type, aggregate_id,
      payload, payload_hash, idempotency_key, enqueued_at, attempts,
      last_error, dead_lettered_at, dead_letter_reason)
   select id, tenant_id, event_type, event_version, aggregate_type, aggregate_id,
          payload, payload_hash, idempotency_key, enqueued_at, attempts + 1,
          $3, now(), $4   -- 'max_attempts' | 'dead_letter_error' | 'tenant_not_found' | 'no_handler_registered'
-    from public.outbox_events where id = $1;
-  update public.outbox_events
+    from outbox.events where id = $1;
+  update outbox.events
      set claim_token = null, attempts = attempts + 1, last_error = $3, dead_lettered_at = now()
    where id = $1 and claim_token = $2;
 commit;
@@ -407,7 +413,7 @@ commit;
 
 **(4) Stale-claim recovery** — separate `@Cron(EVERY_MINUTE)` job; does NOT increment `attempts` (the v2 I2 fold; v3 keeps it):
 ```sql
-update public.outbox_events
+update outbox.events
    set claim_token = null, claimed_at = null
  where claimed_at < now() - interval '5 minutes'
    and processed_at is null and dead_lettered_at is null;
@@ -476,7 +482,7 @@ create table if not exists public.outbox_shadow_results (
   event_type      text        not null,
   event_version   int         not null,
   aggregate_id    uuid        not null,
-  outbox_event_id uuid        references public.outbox_events(id),
+  outbox_event_id uuid        references outbox.events(id),
 
   -- What the existing inline path actually did (computed by the boundary).
   -- Shape: { kind: 'rolled_back'|'partial_failure'|'no_compensation_needed',
@@ -738,11 +744,11 @@ v1 said "three commits in order." That conflated VCS state with deployment state
    - **Verification before advancing**: every worker pod's startup log line `[OutboxHandlerRegistry] registered foo.bar@v1, foo.bar@v2` appears at least once in the deploy window. Concretely, the dashboard query is `SELECT pod_id, MAX(timestamp) FROM logs WHERE message LIKE 'registered foo.bar@v2%' GROUP BY pod_id` — must list every pod from `kubectl get pods -l app=outbox-worker`.
 
 2. **Deploy 2 — Switch producers to emit v2.** The migration that changes the producer (RPC body, trigger, or fire-and-forget call site) ships. New events flow with `event_version = 2`. In-flight `v1` events still drain via `v1` handler.
-   - **Verification before advancing**: monitor the histogram `select event_version, count(*) from outbox_events where enqueued_at > now() - interval '1 hour' group by event_version` — must show `version=2` only for new events for at least 24 hours.
-   - **Drain query**: `select count(*) from outbox_events where event_version = 1 and processed_at is null and dead_lettered_at is null` — must reach 0 and stay 0 for 24 hours.
+   - **Verification before advancing**: monitor the histogram `select event_version, count(*) from outbox.events where enqueued_at > now() - interval '1 hour' group by event_version` — must show `version=2` only for new events for at least 24 hours.
+   - **Drain query**: `select count(*) from outbox.events where event_version = 1 and processed_at is null and dead_lettered_at is null` — must reach 0 and stay 0 for 24 hours.
 
 3. **Deploy 3 — Remove v1 handler from code.** Now safe; no v1 events are enqueued and no v1 events remain unprocessed.
-   - **Verification post-deploy**: `select count(*) from outbox_events_dead_letter where event_type = 'foo.bar' and event_version = 1 and dead_lettered_at > <deploy-3-time>` — must remain 0. Any non-zero value means an in-flight v1 event was claimed AFTER deploy 3 and dead-lettered because no handler was registered. (We expect 0 due to the deploy-2 drain check; this is belt-and-braces.)
+   - **Verification post-deploy**: `select count(*) from outbox.events_dead_letter where event_type = 'foo.bar' and event_version = 1 and dead_lettered_at > <deploy-3-time>` — must remain 0. Any non-zero value means an in-flight v1 event was claimed AFTER deploy 3 and dead-lettered because no handler was registered. (We expect 0 due to the deploy-2 drain check; this is belt-and-braces.)
 
 ### 10.2 Rules carried over from v2
 
@@ -810,7 +816,7 @@ Lease is 30s; success path normally <1s. If `attachServicesToBooking` is degener
 ## 14. File locations
 
 ### Schema
-- `supabase/migrations/00XXX_domain_outbox.sql` — `outbox_events`, `outbox_events_dead_letter`, `outbox_shadow_results`, `outbox.emit()` + `outbox.mark_consumed()` helpers, `outbox_emit_via_rpc` + `outbox_mark_consumed_via_rpc` PostgREST wrappers, GRANTs (§2.6).
+- `supabase/migrations/00XXX_domain_outbox.sql` — `outbox.events`, `outbox.events_dead_letter`, `outbox_shadow_results`, `outbox.emit()` + `outbox.mark_consumed()` helpers, `outbox_emit_via_rpc` + `outbox_mark_consumed_via_rpc` PostgREST wrappers, GRANTs (§2.6).
 - `supabase/migrations/00XXX_bookings_services_attached_at.sql` — adds `bookings.services_attached_at` + `mark_services_attached` RPC (§7.3).
 - `supabase/migrations/00XXX_create_booking_emits_lease.sql` — REPLACEs `create_booking` (00277) to add `outbox.emit` for `booking.create_attempted` with 30s lease + `p_expected_services_count` parameter.
 
