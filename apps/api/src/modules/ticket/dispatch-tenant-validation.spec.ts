@@ -247,16 +247,89 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).resolves.toBeTruthy();
   });
 
-  it('skips validation for SYSTEM_ACTOR (resolver / cron paths)', async () => {
-    // Even with a foreign uuid in the DTO, system actor passes — the resolver
-    // sometimes synthesises ids from sources we trust; gate is `skipForSystemActor`.
-    const deps = makeDeps({});
-    const svc = makeService(deps);
-    const dto: DispatchDto = {
-      title: 'do x',
-      ticket_type_id: FOREIGN_UUID,
-      assigned_user_id: FOREIGN_UUID,
-    };
-    await expect(svc.dispatch(PARENT_ID, dto, '__system__')).resolves.toBeTruthy();
+  // Plan A.4 / Commit 2 (C1) — system actor MUST validate FK refs.
+  // Pre-A.4 the tests asserted the bypass; the bypass was wrong.
+  // Workflow create_child_tasks (workflow-engine.service.ts:267) calls
+  // dispatch with '__system__' and passes node.config-sourced uuids; if
+  // the workflow definition is forged or imported, the system actor was
+  // the path that wrote the cross-tenant FK. Validation now fires for
+  // both actors uniformly.
+  describe('Plan A.4 / Commit 2 (C1) — system actor validates FK refs', () => {
+    it('rejects system-actor dispatch with cross-tenant ticket_type_id', async () => {
+      const deps = makeDeps({
+        request_types: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', ticket_type_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'reference.not_in_tenant',
+          reference_table: 'request_types',
+          reference_id: FOREIGN_UUID,
+        }),
+      });
+    });
+
+    it('rejects system-actor dispatch with cross-tenant assigned_team_id', async () => {
+      const deps = makeDeps({
+        teams: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', assigned_team_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
+        message: expect.stringContaining('assigned_team_id'),
+      });
+    });
+
+    it('rejects system-actor dispatch with cross-tenant assigned_user_id', async () => {
+      const deps = makeDeps({
+        users: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', assigned_user_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
+        message: expect.stringContaining('assigned_user_id'),
+      });
+    });
+
+    it('rejects system-actor dispatch with cross-tenant assigned_vendor_id', async () => {
+      const deps = makeDeps({
+        vendors: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', assigned_vendor_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
+        message: expect.stringContaining('assigned_vendor_id'),
+      });
+    });
+
+    it('rejects system-actor dispatch with cross-tenant explicit dto.sla_id', async () => {
+      const deps = makeDeps({
+        sla_policies: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', sla_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'reference.not_in_tenant',
+          reference_table: 'sla_policies',
+          reference_id: FOREIGN_UUID,
+        }),
+      });
+    });
+
+    it('still passes system-actor dispatch when refs are in-tenant', async () => {
+      const deps = makeDeps({
+        request_types: [{ id: VALID_UUID_A, tenant_id: TENANT.id, domain: 'fm' }],
+        teams: [{ id: VALID_UUID_B, tenant_id: TENANT.id }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = {
+        title: 'do x',
+        ticket_type_id: VALID_UUID_A,
+        assigned_team_id: VALID_UUID_B,
+      };
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).resolves.toBeTruthy();
+    });
   });
 });

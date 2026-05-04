@@ -132,15 +132,17 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
     });
   });
 
-  it('does NOT validate the override sla_policy_id for SYSTEM_ACTOR (resolver trust boundary)', async () => {
-    // Same shape as above, but with the system actor. The override
-    // probe is skipped — we trust system-driven dispatches because
-    // every other id on the row was already validated at the entry
-    // point. This pins the existing behavior of dispatch-scope-override.spec.ts
-    // so refactoring doesn't accidentally cause a tenant lookup with a
-    // mocked-non-uuid like 'sla-executor'.
+  // Plan A.4 / Commit 2 (C1) — system actor MUST validate FK refs.
+  // Pre-A.4 the override-SLA probe was bypassed when actorAuthUid ===
+  // SYSTEM_ACTOR. That bypass was wrong: scope overrides are user-
+  // authored config, not pre-trusted system data; workflow-driven
+  // create_child_tasks dispatches as `__system__` and would write the
+  // foreign uuid blind. The test below now asserts the symmetric
+  // rejection.
+  it('rejects override sla_policy_id for SYSTEM_ACTOR too (data-integrity, not visibility)', async () => {
     const deps = makeSupabase({
       request_types: [{ id: VALID_RT, tenant_id: TENANT.id, domain: 'fm' }],
+      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }],
     });
 
     const ticketService = {
@@ -175,7 +177,6 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
 
     const scopeOverrides = {
       resolve: jest.fn().mockResolvedValue({
-        // Intentionally a foreign uuid — system actor must not validate.
         executor_sla_policy_id: FOREIGN_SLA,
         precedence: 'exact_space',
       }),
@@ -197,6 +198,12 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
       scopeOverrides as never,
     );
 
-    await expect(svc.dispatch(PARENT_ID, { title: 'x' }, '__system__')).resolves.toBeTruthy();
+    await expect(svc.dispatch(PARENT_ID, { title: 'x' }, '__system__')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'reference.not_in_tenant',
+        reference_table: 'sla_policies',
+        reference_id: FOREIGN_SLA,
+      }),
+    });
   });
 });

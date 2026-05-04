@@ -9,6 +9,28 @@
  */
 import { DispatchService, DispatchDto } from './dispatch.service';
 
+// Plan A.4 / Commit 2 — system actor must validate FK refs. Convert short
+// ids to v4-shaped uuids so assertTenantOwned passes; mock seeds a known set.
+const UUID_PREFIX = '00000000-0000-4000-8000-';
+function uuidFor(short: string): string {
+  const hex = Buffer.from(short).toString('hex').slice(0, 12).padEnd(12, '0');
+  return UUID_PREFIX + hex;
+}
+const UUID = {
+  parent: uuidFor('parent1'),
+  rt: uuidFor('rt1'),
+  asset: uuidFor('asset1'),
+  vendorX: uuidFor('vendorX'),
+  person: uuidFor('person1'),
+  locFloor3: uuidFor('locFlr3'),
+  locA: uuidFor('locA'),
+  assetProjector7: uuidFor('asProj7'),
+  slaExecutor: uuidFor('slaExec'),
+  slaExecAsset: uuidFor('slaXAst'),
+  dtoSla: uuidFor('dtoSla'),
+};
+const KNOWN_IDS = new Set(Object.values(UUID));
+
 type ParentRow = {
   id: string; tenant_id: string; ticket_type_id: string | null;
   location_id: string | null; asset_id: string | null;
@@ -18,10 +40,10 @@ type ParentRow = {
 
 function makeParent(over: Partial<ParentRow> = {}): ParentRow {
   return {
-    id: 'parent-1', tenant_id: 't1', ticket_type_id: 'rt-1',
-    location_id: null, asset_id: 'asset-1', priority: 'medium',
+    id: UUID.parent, tenant_id: 't1', ticket_type_id: UUID.rt,
+    location_id: null, asset_id: UUID.asset, priority: 'medium',
     title: 'Fix projector', ticket_kind: 'case', status_category: 'assigned',
-    requester_person_id: 'person-1', ...over,
+    requester_person_id: UUID.person, ...over,
   };
 }
 
@@ -62,13 +84,28 @@ function makeDeps(parent: ParentRow) {
             }),
           } as unknown;
         }
-        // vendors / teams / users — no defaults configured. If any of these
-        // run, it means the scope-override step did NOT short-circuit.
+        // vendors / teams / users / sla_policies / spaces / assets —
+        // no defaults configured. If any of these run for SLA-resolution,
+        // it means the scope-override step did NOT short-circuit. The
+        // assertTenantOwned validator-shape (`select('id')`) is recognised
+        // so a known uuid in the test fixture passes.
         return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
-              maybeSingle: async () => ({ data: null, error: null }),
+          select: (cols: string) => ({
+            eq: (_col: string, id: string) => ({
+              eq: () => ({
+                maybeSingle: async () => {
+                  if (cols === 'id') {
+                    return { data: KNOWN_IDS.has(id) ? { id } : null, error: null };
+                  }
+                  return { data: null, error: null };
+                },
+              }),
+              maybeSingle: async () => {
+                if (cols === 'id') {
+                  return { data: KNOWN_IDS.has(id) ? { id } : null, error: null };
+                }
+                return { data: null, error: null };
+              },
             }),
           }),
         } as unknown;
@@ -77,7 +114,7 @@ function makeDeps(parent: ParentRow) {
   };
   const routingService = {
     evaluate: jest.fn().mockResolvedValue({
-      target: { kind: 'vendor', vendor_id: 'vendor-X' },
+      target: { kind: 'vendor', vendor_id: UUID.vendorX },
       chosen_by: 'request_type_default',
       rule_id: null, rule_name: null, strategy: 'fixed', trace: [],
     }),
@@ -100,12 +137,12 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
   });
 
   it('applies executor_sla_policy_id from a scope override on a location-backed child', async () => {
-    const parent = makeParent({ location_id: 'loc-floor3', asset_id: null });
+    const parent = makeParent({ location_id: UUID.locFloor3, asset_id: null });
     const deps = makeDeps(parent);
     const scopeOverrides = {
       resolve: jest.fn().mockImplementation(async (_t, _rt, intake) => {
-        expect(intake).toEqual({ locationId: 'loc-floor3', assetId: null });
-        return { executor_sla_policy_id: 'sla-executor', precedence: 'exact_space' };
+        expect(intake).toEqual({ locationId: UUID.locFloor3, assetId: null });
+        return { executor_sla_policy_id: UUID.slaExecutor, precedence: 'exact_space' };
       }),
       resolveForLocation: jest.fn().mockResolvedValue(null),
       deriveEffectiveLocation: jest.fn().mockResolvedValue(null),
@@ -117,11 +154,11 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
     const dto: DispatchDto = { title: 'Swap cable' };
     await svc.dispatch(parent.id, dto, '__system__');
     expect(scopeOverrides.resolve).toHaveBeenCalled();
-    expect(deps.inserted[0].sla_id).toBe('sla-executor');
+    expect(deps.inserted[0].sla_id).toBe(UUID.slaExecutor);
   });
 
   it('applies executor_sla_policy_id from a scope override on an asset-only child (no location)', async () => {
-    const parent = makeParent({ location_id: null, asset_id: 'asset-projector-7' });
+    const parent = makeParent({ location_id: null, asset_id: UUID.assetProjector7 });
     const deps = makeDeps(parent);
     // The scope-override stub verifies it received assetId so the service's
     // deriveEffectiveLocation path is what unlocks the override — not any
@@ -129,8 +166,8 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
     // location_id, this assertion fails.
     const scopeOverrides = {
       resolve: jest.fn().mockImplementation(async (_t, _rt, intake) => {
-        expect(intake).toEqual({ locationId: null, assetId: 'asset-projector-7' });
-        return { executor_sla_policy_id: 'sla-exec-asset', precedence: 'ancestor_space' };
+        expect(intake).toEqual({ locationId: null, assetId: UUID.assetProjector7 });
+        return { executor_sla_policy_id: UUID.slaExecAsset, precedence: 'ancestor_space' };
       }),
       resolveForLocation: jest.fn().mockResolvedValue(null),
       deriveEffectiveLocation: jest.fn().mockResolvedValue(null),
@@ -141,11 +178,11 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
     );
     await svc.dispatch(parent.id, { title: 'Onsite fix' }, '__system__');
     expect(scopeOverrides.resolve).toHaveBeenCalled();
-    expect(deps.inserted[0].sla_id).toBe('sla-exec-asset');
+    expect(deps.inserted[0].sla_id).toBe(UUID.slaExecAsset);
   });
 
   it('falls through to vendor/team defaults when the override has no executor_sla_policy_id', async () => {
-    const parent = makeParent({ location_id: 'loc-a', asset_id: null });
+    const parent = makeParent({ location_id: UUID.locA, asset_id: null });
     const deps = makeDeps(parent);
     const scopeOverrides = {
       resolve: jest.fn().mockResolvedValue({ executor_sla_policy_id: null }),
@@ -175,8 +212,8 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
       deps.supabase as never, deps.ticketService as never, deps.routingService as never,
       deps.slaService as never, deps.visibility as never, scopeOverrides as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', sla_id: 'dto-sla' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', sla_id: UUID.dtoSla }, '__system__');
     expect(scopeOverrides.resolve).not.toHaveBeenCalled();
-    expect(deps.inserted[0].sla_id).toBe('dto-sla');
+    expect(deps.inserted[0].sla_id).toBe(UUID.dtoSla);
   });
 });

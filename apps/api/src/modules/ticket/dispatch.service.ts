@@ -81,6 +81,18 @@ export class DispatchService {
     // ownership. Validate every uuid that came from `dto` BEFORE the row
     // insert at line 87 (and BEFORE resolveChildSla returns dto.sla_id).
     //
+    // Plan A.4 / Commit 2 (C1) — system actor MUST validate FK refs.
+    // The pre-A.4 code passed `skipForSystemActor: actorAuthUid ===
+    // SYSTEM_ACTOR` on these calls. That was wrong: system actor should
+    // bypass visibility/permission gates (the workflow engine + cron jobs
+    // legitimately operate on rows they couldn't otherwise see), but it
+    // must NEVER bypass data-integrity validation. Workflow node configs,
+    // routing config, and templates are user-authored JSONB — a forged or
+    // malformed definition can carry a foreign-tenant uuid and the system
+    // actor would write it blind. The dispatch path is the primary
+    // entry-point for create_child_tasks; this is the right place to
+    // enforce. (Round-4 codex flag: dispatch.service.ts:94, 108, 121, 270.)
+    //
     // ticket_type_id only when it came from the DTO — when inherited from
     // parent it was already tenant-loaded by getById's visibility check.
     if (dto.ticket_type_id !== undefined && dto.ticket_type_id !== null) {
@@ -89,10 +101,7 @@ export class DispatchService {
         'request_types',
         dto.ticket_type_id,
         tenant.id,
-        {
-          entityName: 'request type',
-          skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
-        },
+        { entityName: 'request type' },
       );
     }
     // Assignees: assigned_team_id / assigned_user_id / assigned_vendor_id.
@@ -105,7 +114,6 @@ export class DispatchService {
         assigned_vendor_id: dto.assigned_vendor_id,
       },
       tenant.id,
-      { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
     );
     // Explicit dto.sla_id — null is "No SLA" (valid); a string must be a
     // policy in this tenant. resolveChildSla will return this value blind
@@ -116,10 +124,7 @@ export class DispatchService {
         'sla_policies',
         dto.sla_id,
         tenant.id,
-        {
-          entityName: 'SLA policy',
-          skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
-        },
+        { entityName: 'SLA policy' },
       );
     }
 
@@ -181,7 +186,10 @@ export class DispatchService {
     }
 
     // Resolve child SLA based on (now finalised) assignees + dto override.
-    const resolvedSlaId = await this.resolveChildSla(dto, row, actorAuthUid);
+    // Plan A.4 / Commit 2 (C1) — actorAuthUid no longer threaded; the
+    // override-SLA validator now runs unconditionally (no system-actor
+    // bypass).
+    const resolvedSlaId = await this.resolveChildSla(dto, row);
     row.sla_id = resolvedSlaId;
 
     const { data: inserted, error } = await this.supabase.admin
@@ -234,7 +242,6 @@ export class DispatchService {
   private async resolveChildSla(
     dto: DispatchDto,
     row: Record<string, unknown>,
-    actorAuthUid: string = SYSTEM_ACTOR,
   ): Promise<string | null> {
     if (dto.sla_id !== undefined) return dto.sla_id; // explicit (string | null)
 
@@ -255,20 +262,21 @@ export class DispatchService {
         // filters by tenantId — see scope-override-resolver.service.ts),
         // but defense-in-depth here means a future change to the resolver
         // can't silently re-introduce a cross-tenant FK write. Cheap
-        // round-trip; only fires when an override is found. Skipped for
-        // system actor — the dispatch entry-point already validates dto-
-        // sourced ids and the resolver itself is part of the system trust
-        // boundary; this guard is for future relaxation, not today's
-        // hot path.
+        // round-trip; only fires when an override is found.
+        //
+        // Plan A.4 / Commit 2 (C1) — drop skipForSystemActor. Scope
+        // overrides are user-authored config, not pre-trusted system
+        // data — system-actor execution paths (create_child_tasks +
+        // post-create automation) MUST validate the FK ref. The defense-
+        // in-depth guard exists exactly for the system path that bypasses
+        // dto-level validation; skipping it for system actor was the
+        // bug-class round-4 codex flagged.
         await assertTenantOwned(
           this.supabase,
           'sla_policies',
           override.executor_sla_policy_id,
           tenantId,
-          {
-            entityName: 'override executor SLA policy',
-            skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
-          },
+          { entityName: 'override executor SLA policy' },
         );
         return override.executor_sla_policy_id;
       }
