@@ -50,6 +50,10 @@ this round (C1, I2) follow the same shape.
 | `booking.invalid_attendee_count`      | validation  | `reservation.service.ts editOne (I2 preflight)`              | 400 |
 | `booking.invalid_attendee_person_ids` | validation  | `reservation.service.ts editOne (I2 preflight)`              | 400 |
 | `booking.invalid_window`              | validation  | `reservation.service.ts editOne (I2 preflight)`              | 400 |
+| `reference.not_in_tenant`             | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwned* (Plan A.2)` | 400 |
+| `reference.lookup_failed`             | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwned* (Plan A.2)` | 400 |
+| `reference.invalid_uuid`              | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwned* (Plan A.2)` | 400 |
+| `reference.too_many`                  | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwnedAll (Plan A.2)` | 400 |
 
 ## Phase 1 codes still using legacy snake_case (renamed in Phase 7)
 
