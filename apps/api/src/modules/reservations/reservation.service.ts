@@ -878,6 +878,25 @@ export class ReservationService {
       });
     }
 
+    // /full-review v3 closure I1 — load TARGET slot's pre-state for the
+    // visitor cascade comparison.
+    //
+    // Pre-fix: the cascade compared `reservation` (PRIMARY slot
+    // projection, loaded above for auth) vs `updated` (TARGET slot
+    // projection, loaded after the RPC). For non-primary slot edits,
+    // `reservation.start_at` and `reservation.space_id` were the
+    // PRIMARY's values, NOT the target's — so the diff fired wrong /
+    // missed events (visitors at slot B got reported with slot A's old
+    // time/room, or no event at all when slot A happened to match the
+    // post-RPC target state by coincidence).
+    //
+    // Fix: load the target slot's pre-state via findByIdOrThrowAtSlot
+    // (the slot-pinned projection variant). Compare target-old vs
+    // target-new at line ~990. The booking-level `reservation` stays
+    // for auth (ctx + canEdit) — we just don't use its start_at /
+    // space_id for the cascade diff anymore.
+    const targetSlotPre = await this.findByIdOrThrowAtSlot(slotId, tenantId);
+
     // Build the trimmed RPC patch — only the geometry keys are honored
     // server-side; unrelated keys are stripped here so we don't widen the
     // RPC's contract by accident.
@@ -984,29 +1003,37 @@ export class ReservationService {
     // slot via this endpoint moved visitors without firing the cascade
     // (no host alert / email / cancel decision).
     //
+    // /full-review v3 closure I1 — compare TARGET slot's pre/post, not
+    // primary's pre. `targetSlotPre` (loaded ~890 above) is the slot-
+    // pinned projection of the slot we just edited; `updated` is the
+    // post-RPC slot-pinned projection. Both project through
+    // findByIdOrThrowAtSlot so .start_at / .space_id on each are the
+    // TARGET slot's values — never the primary's. Pre-fix this read
+    // `reservation` (booking-level / primary-slot projection), which
+    // for non-primary edits made the diff fire wrong/missing events.
+    //
     // Decision: editSlot is the canonical write path for geometry post-C2.
     // editOne now delegates to it, so the cascade emission belongs HERE,
-    // exactly once per geometry edit. editOne's emission was simultaneously
-    // removed under this commit to prevent the editOne→editSlot path from
-    // double-firing.
+    // exactly once per geometry edit.
     //
-    // Compare pre-RPC `reservation` (loaded above for auth) vs post-RPC
-    // `updated`. The fields that drive the cascade are booking-level:
-    //   - start_at: bookings.start_at = MIN(slots.start_at). Changes when
-    //     the edited slot is primary OR when this edit lowers/raises MIN.
-    //   - space_id: bookings.location_id mirrors the primary slot's space.
-    //     Changes only when primary slot's space_id changed.
-    // We diff on the projection's flattened start_at / space_id so the
-    // emitter doesn't have to know which slot was primary — just compare.
-    const movedTime = updated.start_at !== reservation.start_at;
-    const changedRoom = updated.space_id !== reservation.space_id;
+    // The fields that drive the cascade come from the SLOT (per-resource):
+    //   - start_at: when the edited slot's start changes, that slot's
+    //     visitors need a move event. (For primary edits this also
+    //     coincides with bookings.start_at changing — same decision.)
+    //   - space_id: when the edited slot's space changes, that slot's
+    //     visitors need a room-change event.
+    // The slot-pinned projection's `start_at` is `booking_slots.start_at`
+    // and `space_id` is `booking_slots.space_id` (see
+    // reservation-projection.ts:94 + the SLOT_WITH_BOOKING_SELECT shape).
+    const movedTime = updated.start_at !== targetSlotPre.start_at;
+    const changedRoom = updated.space_id !== targetSlotPre.space_id;
     if ((movedTime || changedRoom) && reservation.id && this.bundleEventBus) {
       await this.emitVisitorCascadeForBundle({
         tenantId,
         bundleId: reservation.id,
-        oldStartAt: movedTime ? reservation.start_at : null,
+        oldStartAt: movedTime ? targetSlotPre.start_at : null,
         newStartAt: movedTime ? updated.start_at : null,
-        oldSpaceId: changedRoom ? reservation.space_id : null,
+        oldSpaceId: changedRoom ? targetSlotPre.space_id : null,
         newSpaceId: changedRoom ? updated.space_id : null,
       });
     }

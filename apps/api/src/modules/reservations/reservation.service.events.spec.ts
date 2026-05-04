@@ -542,3 +542,323 @@ describe('ReservationService.editSlot — visitor cascade emission (I3)', () => 
     }
   });
 });
+
+// /full-review v3 closure I1 — cascade compares TARGET slot's pre/post
+// state, NOT the primary slot's pre vs the target slot's post.
+//
+// Pre-fix: editSlot loaded `reservation = findByIdOrThrow(bookingId)`
+// for auth — that projection picks the booking's PRIMARY slot. Then
+// the post-RPC `updated = findByIdOrThrowAtSlot(slotId)` projection
+// is the TARGET slot. The cascade diffed `updated` vs `reservation`,
+// i.e. target-new vs PRIMARY-old. For non-primary edits, the "old"
+// fields came from the wrong slot.
+//
+// Multi-room booking with 3 slots:
+//   slot A (primary, display_order=0) — 09:00-10:00 in room R_A
+//   slot B (display_order=1)          — 11:00-12:00 in room R_B
+//   slot C (display_order=2)          — 13:00-14:00 in room R_C
+// Operator edits slot B from 11:00 → 15:00. Pre-fix the cascade
+// would emit `old_expected_at = 09:00` (slot A's start, the primary),
+// not `11:00` (slot B's actual prior start).
+//
+// Post-fix: the cascade reads `targetSlotPre.start_at = 11:00` (slot B)
+// → emits old_expected_at=11:00, new=15:00. Slot A's primary status is
+// irrelevant.
+describe('ReservationService.editSlot — I1 target-slot cascade', () => {
+  // Distinct slot ids + per-slot baseline state so the mock can return
+  // different "pre" rows depending on which slot id is being projected.
+  const PRIMARY = 'sssssss1-1111-4111-8111-ssssssssssss'; // = PRIMARY_SLOT_ID
+  const SLOT_B = 'sssssss2-2222-4222-8222-ssssssssssss'; // non-primary
+  const ROOM_A = 'aaaaaa11-1111-4111-8111-aaaaaaaaaaaa';
+  const ROOM_B = 'bbbbbb22-2222-4222-8222-bbbbbbbbbbbb';
+  const ROOM_NEW = 'cccccc33-3333-4333-8333-cccccccccccc';
+
+  // Distinct primary + non-primary slot embeds so we can prove the
+  // cascade reads from TARGET, not PRIMARY.
+  const slotA = {
+    ...baseSlot,
+    id: PRIMARY,
+    space_id: ROOM_A,
+    start_at: '2026-05-01T09:00:00.000Z',
+    end_at: '2026-05-01T10:00:00.000Z',
+    effective_start_at: '2026-05-01T09:00:00.000Z',
+    effective_end_at: '2026-05-01T10:00:00.000Z',
+    display_order: 0,
+  };
+  const slotBPre = {
+    ...baseSlot,
+    id: SLOT_B,
+    space_id: ROOM_B,
+    start_at: '2026-05-01T11:00:00.000Z',
+    end_at: '2026-05-01T12:00:00.000Z',
+    effective_start_at: '2026-05-01T11:00:00.000Z',
+    effective_end_at: '2026-05-01T12:00:00.000Z',
+    display_order: 1,
+  };
+
+  /**
+   * Mock that returns slot A as the primary lookup, slot A's embed for
+   * findByIdOrThrow(bookingId), and slot B's embed for
+   * findByIdOrThrowAtSlot(slotId). After the RPC, the slot B post-state
+   * is mutated (start_at + space_id) and returned by subsequent
+   * findByIdOrThrowAtSlot reads.
+   *
+   * The two findByIdOrThrowAtSlot reads (one before RPC for I1 pre-state,
+   * one after for the projection) need to return different shapes —
+   * `pre` returns slot B's prior state, `post` returns slot B with the
+   * patch applied.
+   */
+  function makeNonPrimaryService(opts: {
+    visitorIds?: string[];
+    targetPatch: { start_at?: string; space_id?: string };
+  }) {
+    const visitorIds = opts.visitorIds ?? [V1, V2];
+    let projectionsServed = 0;
+
+    const buildSlotEmbed = (slot: typeof baseSlot, patch?: typeof opts.targetPatch) => ({
+      ...slot,
+      ...(patch ?? {}),
+      bookings: {
+        ...baseBooking,
+        // booking-level mirror: in real life MIN/MAX over slots would
+        // shift; for the test only the slot-level fields drive the
+        // cascade after I1.
+      },
+    });
+
+    const supabase = {
+      admin: {
+        rpc: jest.fn((fn: string) => {
+          if (fn === 'edit_booking_slot') {
+            return Promise.resolve({
+              data: {
+                slot: buildSlotEmbed(slotBPre, opts.targetPatch),
+                booking: null,
+              },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }),
+        from: jest.fn((table: string) => {
+          if (table === 'booking_slots') {
+            return {
+              select: (cols?: string) => {
+                if (cols === 'booking_id') {
+                  // editSlot's pre-flight: returns the slot's parent
+                  // booking_id under tenant filter.
+                  return {
+                    eq: () => ({
+                      eq: () => ({
+                        maybeSingle: () =>
+                          Promise.resolve({
+                            data: { booking_id: BOOKING_ID },
+                            error: null,
+                          }),
+                      }),
+                    }),
+                  };
+                }
+                if (cols === 'id') {
+                  // Primary-slot lookup (used by editOne's delegation
+                  // path). Returns slot A's id since that's primary.
+                  return {
+                    eq: () => ({
+                      eq: () => ({
+                        order: () => ({
+                          order: () => ({
+                            limit: () => ({
+                              maybeSingle: () =>
+                                Promise.resolve({
+                                  data: { id: PRIMARY },
+                                  error: null,
+                                }),
+                            }),
+                          }),
+                        }),
+                      }),
+                    }),
+                  };
+                }
+                // SLOT_WITH_BOOKING_SELECT projection.
+                //
+                // Two callers in editSlot:
+                //   1. findByIdOrThrow(bookingId) — keys on tenant_id +
+                //      booking_id, picks PRIMARY (slot A) via .order().
+                //   2. findByIdOrThrowAtSlot(slotId) — keys on tenant_id +
+                //      id (the slot id). Pre-fix used once after RPC; I1
+                //      now also calls it BEFORE the RPC for pre-state.
+                //
+                // Both chains end in .order().order().limit().maybeSingle().
+                // We disambiguate by the eq column passed.
+                let lastEq: string | undefined;
+                const chain: any = {
+                  eq: (col: string) => {
+                    lastEq = col;
+                    return {
+                      eq: (col2: string) => {
+                        // Two paths converge here. Track the second eq
+                        // to pick the right embed:
+                        //   booking_id keying  → return primary (slot A)
+                        //   id keying          → return target (slot B)
+                        const slotKeyCol = col2 === 'id' ? 'id' : col;
+                        const isPrimaryLookup = slotKeyCol === 'booking_id';
+                        const isSlotIdLookup = slotKeyCol === 'id' || lastEq === 'id';
+                        return {
+                          order: () => ({
+                            order: () => ({
+                              limit: () => ({
+                                maybeSingle: () => {
+                                  projectionsServed += 1;
+                                  if (isPrimaryLookup) {
+                                    return Promise.resolve({
+                                      data: buildSlotEmbed(slotA),
+                                      error: null,
+                                    });
+                                  }
+                                  if (isSlotIdLookup) {
+                                    // First slot-id projection = pre-RPC
+                                    // (I1 pre-state). Subsequent ones =
+                                    // post-RPC. Track via projectionsServed.
+                                    // Pre-state: slotBPre untouched.
+                                    // Post-state: slotBPre + targetPatch.
+                                    const isPostRpc = projectionsServed > 2;
+                                    return Promise.resolve({
+                                      data: isPostRpc
+                                        ? buildSlotEmbed(slotBPre, opts.targetPatch)
+                                        : buildSlotEmbed(slotBPre),
+                                      error: null,
+                                    });
+                                  }
+                                  return Promise.resolve({
+                                    data: buildSlotEmbed(slotA),
+                                    error: null,
+                                  });
+                                },
+                              }),
+                            }),
+                          }),
+                        };
+                      },
+                    };
+                  },
+                };
+                return chain;
+              },
+              update: () => ({
+                eq: () => ({
+                  eq: () => Promise.resolve({ error: null }),
+                  then: (r: (v: { error: unknown }) => unknown) =>
+                    Promise.resolve({ error: null }).then(r),
+                }),
+              }),
+            };
+          }
+          if (table === 'visitors') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  eq: () =>
+                    Promise.resolve({
+                      data: visitorIds.map((id) => ({ id })),
+                      error: null,
+                    }),
+                }),
+              }),
+            };
+          }
+          if (table === 'audit_events') {
+            return { insert: () => Promise.resolve({ data: null, error: null }) };
+          }
+          if (table === 'bookings') {
+            return {
+              update: () => ({
+                eq: () => Promise.resolve({ error: null }),
+                then: (r: (v: { error: unknown }) => unknown) =>
+                  Promise.resolve({ error: null }).then(r),
+              }),
+            };
+          }
+          return {};
+        }),
+      },
+    };
+
+    const conflict = { isExclusionViolation: () => false };
+    const visibility = {
+      loadContextByUserId: jest.fn(async () => ({})),
+      assertVisible: () => {},
+      canEdit: () => true,
+    };
+
+    const eventBus = new BundleEventBus();
+    const captured: BundleEvent[] = [];
+    const sub = eventBus.events$.subscribe((e) => captured.push(e));
+
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined,
+      undefined,
+      undefined,
+      eventBus,
+    );
+
+    return { svc, captured, unsubscribe: () => sub.unsubscribe() };
+  }
+
+  it('non-primary slot edit reports TARGET slot pre-state (not primary slot pre-state) in cascade', async () => {
+    const newStart = '2026-05-01T15:00:00.000Z';
+    const { svc, captured, unsubscribe } = makeNonPrimaryService({
+      targetPatch: { start_at: newStart },
+    });
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, { start_at: newStart }),
+      );
+
+      const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
+      expect(moved.length).toBeGreaterThan(0);
+      for (const evt of moved) {
+        if (evt.kind === 'bundle.line.moved') {
+          // The fix: old_expected_at MUST equal slot B's prior start
+          // (11:00), NOT slot A's (09:00). Pre-fix this would have been
+          // 09:00 because the cascade compared against the PRIMARY's
+          // pre-state.
+          expect(evt.old_expected_at).toBe(slotBPre.start_at);
+          expect(evt.old_expected_at).not.toBe(slotA.start_at);
+          expect(evt.new_expected_at).toBe(newStart);
+        }
+      }
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('non-primary slot space change reports TARGET slot prior room (not primary slot room)', async () => {
+    const { svc, captured, unsubscribe } = makeNonPrimaryService({
+      targetPatch: { space_id: ROOM_NEW },
+    });
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, { space_id: ROOM_NEW }),
+      );
+      const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
+      expect(roomChanges.length).toBeGreaterThan(0);
+      for (const evt of roomChanges) {
+        if (evt.kind === 'bundle.line.room_changed') {
+          // old_room_id MUST be slot B's pre-RPC space (ROOM_B), not
+          // slot A's (ROOM_A).
+          expect(evt.old_room_id).toBe(ROOM_B);
+          expect(evt.old_room_id).not.toBe(ROOM_A);
+          expect(evt.new_room_id).toBe(ROOM_NEW);
+        }
+      }
+    } finally {
+      unsubscribe();
+    }
+  });
+});
