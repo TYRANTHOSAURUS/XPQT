@@ -810,6 +810,21 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
               }),
             };
           }
+          if (table === 'spaces') {
+            // Plan A.4 / Commit 7 (I3) — editSlot pre-flight on
+            // patch.space_id. Returns positive match for any uuid we
+            // pass in this spec (room ids are baked-in canonical uuids).
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: () =>
+                Promise.resolve({ data: { id: filters.id }, error: null }),
+            };
+            return { select: () => chain };
+          }
           return {};
         }),
       },

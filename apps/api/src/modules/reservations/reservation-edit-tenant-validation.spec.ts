@@ -277,3 +277,103 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     expect(supabase.rpcCalls).toEqual([]);
   });
 });
+
+// Plan A.4 / Commit 7 (I3) — editSlot pre-flight, mirror of editOne
+// Commit 6 above. editOne and editSlot both target the
+// edit_booking_slot RPC; editOne had the pre-flight, editSlot didn't.
+// This test pins the symmetric defense.
+describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
+  const SLOT_ID = 'S-1';
+
+  beforeEach(() => {
+    jest
+      .spyOn(
+        ReservationService.prototype as unknown as { findByIdOrThrow: (...a: unknown[]) => unknown },
+        'findByIdOrThrow',
+      )
+      .mockResolvedValue({
+        id: BOOKING_ID,
+        slot_id: SLOT_ID,
+        tenant_id: TENANT.id,
+        space_id: VALID_SPACE,
+        start_at: '2026-05-01T09:00:00Z',
+        end_at: '2026-05-01T10:00:00Z',
+        host_person_id: null,
+        attendee_count: 4,
+        attendee_person_ids: [],
+        status: 'confirmed',
+        recurrence_series_id: null,
+      } as never);
+    // editSlot also calls findByIdOrThrowAtSlot for the visitor-cascade
+    // pre-state. Stub it the same way.
+    jest
+      .spyOn(
+        ReservationService.prototype as unknown as { findByIdOrThrowAtSlot: (...a: unknown[]) => unknown },
+        'findByIdOrThrowAtSlot',
+      )
+      .mockResolvedValue({
+        id: BOOKING_ID,
+        slot_id: SLOT_ID,
+        tenant_id: TENANT.id,
+        space_id: VALID_SPACE,
+        start_at: '2026-05-01T09:00:00Z',
+        end_at: '2026-05-01T10:00:00Z',
+      } as never);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('rejects editSlot with a cross-tenant space_id BEFORE the RPC fires', async () => {
+    // booking_slots returns a slot whose parent_booking_id matches; spaces
+    // table only has VALID_SPACE under t1 (NOT the FOREIGN id), so
+    // assertTenantOwned rejects with reference.not_in_tenant. The RPC must
+    // NEVER fire.
+    const supabase = makeSupabase(
+      {
+        spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }],
+      },
+      { primarySlot: { booking_id: BOOKING_ID } },
+    );
+    const svc = makeService(supabase);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), { space_id: FOREIGN }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'reference.not_in_tenant',
+      reference_table: 'spaces',
+      reference_id: FOREIGN,
+    });
+    // The whole point — pre-flight rejected BEFORE the atomic RPC.
+    expect(supabase.rpcCalls).toEqual([]);
+  });
+
+  it('lets editSlot through when space_id IS in tenant + active + reservable', async () => {
+    const VALID_SPACE_2 = '00000000-0000-4000-8000-00000000ccc2';
+    const supabase = makeSupabase(
+      {
+        spaces: [
+          { id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true },
+          { id: VALID_SPACE_2, tenant_id: TENANT.id, active: true, reservable: true },
+        ],
+      },
+      { primarySlot: { booking_id: BOOKING_ID } },
+    );
+    const svc = makeService(supabase);
+
+    // RPC returns no error; the validator passes; the call goes through.
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), { space_id: VALID_SPACE_2 }),
+    );
+    expect(supabase.rpcCalls).toHaveLength(1);
+    expect((supabase.rpcCalls[0].args as { p_patch: { space_id: string } }).p_patch.space_id).toBe(VALID_SPACE_2);
+  });
+});

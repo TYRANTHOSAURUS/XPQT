@@ -27,6 +27,19 @@ describe('ReservationService.editSlot', () => {
   const SLOT_PRIMARY = 'slot-primary';
   const SLOT_B = 'slot-b';
 
+  // Plan A.4 / Commit 7 (I3) — editSlot now runs assertTenantOwned on
+  // patch.space_id BEFORE the RPC. Convert short ids to v4-uuids so the
+  // pre-flight passes (or fails as the test intends) without short-
+  // circuiting on UUID_RE.test.
+  const UUID_PREFIX = '00000000-0000-4000-8000-';
+  function uuidFor(short: string): string {
+    const hex = Buffer.from(short).toString('hex').slice(0, 12).padEnd(12, '0');
+    return UUID_PREFIX + hex;
+  }
+  const SPACE_ORIGINAL = uuidFor('spOrig');
+  const SPACE_VALID = uuidFor('spValid');
+  const SPACE_FOREIGN = uuidFor('spFrgn');
+
   function makeActor(overrides: Partial<ActorContext> = {}): ActorContext {
     return {
       user_id: 'U',
@@ -43,7 +56,7 @@ describe('ReservationService.editSlot', () => {
       tenant_id: TENANT.id,
       booking_id: BOOKING_ID,
       slot_type: 'room' as const,
-      space_id: 'space-original',
+      space_id: SPACE_ORIGINAL,
       start_at: '2026-05-01T09:00:00Z',
       end_at: '2026-05-01T10:00:00Z',
       setup_buffer_minutes: 0,
@@ -75,7 +88,7 @@ describe('ReservationService.editSlot', () => {
       requester_person_id: 'P',
       host_person_id: null,
       booked_by_user_id: 'U',
-      location_id: 'space-original',
+      location_id: SPACE_ORIGINAL,
       start_at: '2026-05-01T09:00:00Z',
       end_at: '2026-05-01T10:00:00Z',
       timezone: 'UTC',
@@ -119,6 +132,10 @@ describe('ReservationService.editSlot', () => {
     slotPreflight?: { booking_id: string } | null;
     rpcResponse?: { data: unknown; error: unknown };
     projectionRow?: ReturnType<typeof makeSlotRow> & { bookings: ReturnType<typeof makeBookingRow> };
+    // Plan A.4 / Commit 7 — list of in-tenant space uuids for the new
+    // assertTenantOwned pre-flight on editSlot (default: SPACE_ORIGINAL +
+    // SPACE_VALID; tests opt out by passing []).
+    knownTenantSpaces?: string[];
   }) {
     const calls = {
       rpc: [] as Array<{ fn: string; args: unknown }>,
@@ -134,6 +151,7 @@ describe('ReservationService.editSlot', () => {
       data: { slot: makeSlotRow({ id: SLOT_B }), booking: makeBookingRow() },
       error: null,
     };
+    const knownSpaces = new Set(opts?.knownTenantSpaces ?? [SPACE_ORIGINAL, SPACE_VALID]);
 
     const admin = {
       rpc: (fn: string, args: unknown) => {
@@ -141,6 +159,28 @@ describe('ReservationService.editSlot', () => {
         return Promise.resolve(rpcResponse);
       },
       from: (table: string) => {
+        if (table === 'spaces') {
+          // Plan A.4 / Commit 7 — assertTenantOwned probe path.
+          // .select('id').eq('id', X).eq('tenant_id', T).eq('active', true)
+          // .eq('reservable', true).maybeSingle().
+          const filters: Record<string, unknown> = {};
+          const chain: Record<string, unknown> = {
+            select: () => chain,
+            eq: (col: string, val: unknown) => {
+              filters[col] = val;
+              return chain;
+            },
+            maybeSingle: async () => {
+              const id = filters.id as string;
+              const tenantId = filters.tenant_id as string;
+              if (id && tenantId === TENANT.id && knownSpaces.has(id)) {
+                return { data: { id }, error: null };
+              }
+              return { data: null, error: null };
+            },
+          };
+          return chain;
+        }
         if (table === 'booking_slots') {
           // The slot pre-flight is `.select('booking_id').eq('tenant_id', T)
           // .eq('id', slotId).maybeSingle()` — exactly two .eq() calls then
@@ -345,6 +385,12 @@ describe('ReservationService.editSlot', () => {
   // and raises P0001 with hint 'space.invalid_or_cross_tenant'. The TS
   // service maps this to BadRequestException(booking.slot_space_invalid).
   it('maps cross-tenant space_id (P0001 / space.invalid_or_cross_tenant) to BadRequestException(booking.slot_space_invalid)', async () => {
+    // Plan A.4 / Commit 7 added a TS-layer pre-flight that catches the
+    // cross-tenant case before the RPC fires. This test still pins the
+    // RPC-side mapping behavior (race window where space becomes
+    // cross-tenant between pre-flight + RPC, or admin bypass paths).
+    // Use SPACE_VALID so the pre-flight passes, then have the RPC raise
+    // P0001 to exercise the mapping.
     const supabase = makeSupabase({
       rpcResponse: {
         data: null,
@@ -363,7 +409,7 @@ describe('ReservationService.editSlot', () => {
     try {
       await TenantContext.run(TENANT, () =>
         svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
-          space_id: 'space-from-other-tenant',
+          space_id: SPACE_VALID,
         }),
       );
     } catch (e) {
@@ -380,6 +426,7 @@ describe('ReservationService.editSlot', () => {
     // "wrong tenant" from "inactive" from "non-reservable" (correctly:
     // the caller has no need-to-know, and same UI fix in all cases). All
     // three surface as the same BadRequestException(slot_space_invalid).
+    // Pre-flight uses SPACE_VALID so we test the RPC-side mapping.
     const supabase = makeSupabase({
       rpcResponse: {
         data: null,
@@ -398,7 +445,7 @@ describe('ReservationService.editSlot', () => {
     try {
       await TenantContext.run(TENANT, () =>
         svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
-          space_id: 'space-inactive-or-non-reservable',
+          space_id: SPACE_VALID,
         }),
       );
     } catch (e) {
@@ -414,7 +461,7 @@ describe('ReservationService.editSlot', () => {
     // Confirm the existing happy path still works post-C1. RPC returns
     // success → no mapping branch fires → editSlot returns the
     // projected Reservation as before.
-    const newSpace = 'space-valid';
+    const newSpace = SPACE_VALID;
     const supabase = makeSupabase({
       projectionRow: {
         ...makeSlotRow({ id: SLOT_B, space_id: newSpace }),

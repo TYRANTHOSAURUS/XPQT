@@ -1021,6 +1021,31 @@ export class ReservationService {
     // space_id for the cascade diff anymore.
     const targetSlotPre = await this.findByIdOrThrowAtSlot(slotId, tenantId);
 
+    // Plan A.4 / Commit 7 (I3) / round-4 codex flag
+    // reservation.service.ts:1027-1036. editOne already runs an
+    // assertTenantOwned pre-flight on patch.space_id (commit ec055f1,
+    // line 741 above). editSlot didn't, even though both routes hit the
+    // same edit_booking_slot RPC and the RPC validates internally
+    // (migration 00294). Add the symmetric pre-flight here:
+    //   1. Surfaces a friendlier reference.not_in_tenant 400 BEFORE the
+    //      RPC fires — better operator UX than waiting for the P0001
+    //      'space.invalid_or_cross_tenant' from inside the RPC.
+    //   2. Protects any future code path that might bypass the RPC.
+    //   3. Mirrors editOne so a regression in either route is uniform.
+    if (patch.space_id !== undefined && patch.space_id !== null) {
+      await assertTenantOwned(
+        this.supabase,
+        'spaces',
+        patch.space_id,
+        tenantId,
+        {
+          activeOnly: true,
+          reservableOnly: true,
+          entityName: 'space',
+        },
+      );
+    }
+
     // Build the trimmed RPC patch — only the geometry keys are honored
     // server-side; unrelated keys are stripped here so we don't widen the
     // RPC's contract by accident.
