@@ -628,6 +628,76 @@ export class ReservationService {
     this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
 
+    // /full-review v3 closure I2 — preflight ALL validation before any
+    // write. Pre-fix: editOne wrote geometry first (via editSlot RPC),
+    // then slot-meta (UPDATE booking_slots), then booking-meta (UPDATE
+    // bookings). A combined patch like `{ start_at: VALID, attendee_count: -1 }`
+    // would commit the geometry write through the RPC, then fail the
+    // slot-meta validation downstream — recreating the partial-write
+    // class Phase 1 was eliminating.
+    //
+    // Preflight runs BEFORE any write, so validation rejections leave
+    // every table untouched. The cleaner long-term fix is to move all
+    // writes into a single RPC (deferred to Phase 2 — that's a real
+    // refactor); for now this preflight closes the validation-failure
+    // window, which is the dominant cause of partial writes in this
+    // path. The narrow remaining window (RPC succeeds, then a network /
+    // RLS / driver error on the meta UPDATEs) survives — it's the same
+    // class as any two-write sequence and is documented at the meta-
+    // write call sites.
+    //
+    // Validations enforced here:
+    //   - attendee_count >= 0 (sentinel -1 was the codex-cited example;
+    //     negative counts have no meaning and the DB CHECK on slots
+    //     would reject them anyway, but only at write time).
+    //   - attendee_count is an integer (no fractional people).
+    //   - attendee_person_ids is an array if provided.
+    //   - start_at < end_at when both are in the patch (geometry guard).
+    //
+    // Cross-table FK validity (host_person_id, space_id same-tenant
+    // active reservable) is delegated:
+    //   - space_id → editSlot RPC validates inside the same atomic write
+    //     (00294 C1 closure). Pre-validating here would race with
+    //     concurrent admin edits anyway; the atomic RPC is the only
+    //     correct gate for that.
+    //   - host_person_id → relies on the FK + tenant filter on bookings;
+    //     a bad value surfaces as a foreign-key violation at write
+    //     time, NOT an editable-by-user precondition.
+    if (patch.attendee_count !== undefined) {
+      if (
+        typeof patch.attendee_count !== 'number' ||
+        !Number.isInteger(patch.attendee_count) ||
+        patch.attendee_count < 0
+      ) {
+        throw new BadRequestException({
+          code: 'booking.invalid_attendee_count',
+          message: 'attendee_count must be a non-negative integer.',
+        });
+      }
+    }
+    if (patch.attendee_person_ids !== undefined && !Array.isArray(patch.attendee_person_ids)) {
+      throw new BadRequestException({
+        code: 'booking.invalid_attendee_person_ids',
+        message: 'attendee_person_ids must be an array of person ids.',
+      });
+    }
+    if (patch.start_at !== undefined && patch.end_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      const e = new Date(patch.end_at).getTime();
+      if (!Number.isFinite(s) || !Number.isFinite(e)) {
+        throw new BadRequestException({
+          code: 'booking.invalid_window',
+          message: 'start_at and end_at must be ISO timestamps.',
+        });
+      }
+      if (s >= e) {
+        throw new BadRequestException({
+          code: 'booking.invalid_window',
+          message: 'start_at must be strictly before end_at.',
+        });
+      }
+    }
+
     // /full-review v3 closure C2 — split the patch into geometry vs. meta.
     //
     // Pre-fix: editOne wrote every key directly to the booking's PRIMARY

@@ -734,6 +734,82 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     });
   });
 
+  // /full-review v3 closure I2 — preflight all validation before any write.
+  //
+  // Pre-fix order: geometry (RPC) → slot-meta (UPDATE booking_slots) →
+  // booking-meta (UPDATE bookings). A combined patch with a valid
+  // geometry key + an invalid meta key would commit the geometry RPC,
+  // then fail meta validation downstream. Result: the slot moved but
+  // attendee_count never updated — partial state.
+  //
+  // Post-fix: validation runs FIRST, before any write. -1 attendee_count
+  // throws BadRequestException(booking.invalid_attendee_count) before
+  // the RPC fires. No slot or booking row is mutated.
+  it('I2 — combined patch with invalid attendee_count rejects BEFORE any write (RPC + UPDATEs do not fire)', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(BOOKING_ID, makeActor(), {
+          start_at: '2026-05-01T11:00:00Z', // valid, would succeed alone
+          attendee_count: -1,                // invalid, sentinel
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'booking.invalid_attendee_count',
+    });
+
+    // Critical: NEITHER geometry NOR meta committed. The pre-fix bug
+    // was a half-applied write — geometry through the RPC, meta failed.
+    // Assert no edit_booking_slot RPC, no booking_slots UPDATE, no
+    // bookings UPDATE.
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    expect(supabase.calls.bookingSlotsUpdate).toHaveLength(0);
+    expect(supabase.calls.bookingsUpdate).toHaveLength(0);
+  });
+
+  it('I2 — invalid window (start_at >= end_at) rejects before any write', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(BOOKING_ID, makeActor(), {
+          start_at: '2026-05-01T12:00:00Z',
+          end_at:   '2026-05-01T11:00:00Z', // ends before it starts
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'booking.invalid_window',
+    });
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    expect(supabase.calls.bookingSlotsUpdate).toHaveLength(0);
+    expect(supabase.calls.bookingsUpdate).toHaveLength(0);
+  });
+
   it('editOne with attendee_count only — meta path, no RPC', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility();
