@@ -1073,6 +1073,16 @@ GiST exclusion (`booking_slots_no_overlap`, 00277:211-217) propagates as `SQLSTA
 
 Any list endpoint that orders by `booking_slots.id` MUST cursor by it too. Mixing "order by slot id" with a cursor that encodes "booking id" is the pagination identity collision Phase 1.2 fixes — one endpoint, one identity. If a list reads from `booking_slots`, the projection should expose both `id` (= `bookings.id`) AND `slot_id` (= `booking_slots.id`) AND `booking_id` (= `bookings.id`, named explicitly for grouping/dedup); cursors and React keys then pick the matching field at the right layer.
 
+### Per-slot pagination trade-off (`GET /reservations`)
+
+`GET /reservations` (the "my bookings" + operator list endpoint, served by `ReservationService.listMine` / `listForOperator`) returns **one row per slot**, not one row per booking. A multi-room booking with N slots surfaces N rows, all sharing the same `booking_id` but each carrying a distinct `slot_id`. The frontend list views (e.g. `apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx`) dedup client-side by `booking_id`, keeping the first slot encountered (= primary, lowest `display_order`).
+
+**Consequence: pagination boundaries don't align with booking cards.** With `limit=20`, a multi-room-heavy account may see fewer than 20 cards rendered (e.g. 12 cards from 20 rows if average is 1.7 slots per booking). The client doesn't fetch additional pages to compensate — it shows what it has plus a "Next page" CTA that fetches the next 20 rows.
+
+**Why we accept this for Phase 1:** the alternative (server-side dedup via `DISTINCT ON (booking_id)` or a CTE with `ROW_NUMBER()`) requires a substantially heavier query plan and breaks the cursor-identity rule above. /full-review v3 §3 strategic decision: defer server-side booking-grain pagination to Phase 2.
+
+**Phase 2 follow-up:** [`docs/follow-ups/phase-2-list-split.md`](follow-ups/phase-2-list-split.md) tracks the migration to two endpoints — one per booking (header view), one per slot (calendar / scheduler view) — with explicit pagination semantics on each.
+
 ### Trigger additions for §26
 
 Any change to these requires updating §26:
