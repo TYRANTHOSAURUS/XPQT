@@ -39,13 +39,37 @@ export interface BookingDraft {
   templateId: string | null;
 }
 
+/**
+ * Round a time UP to the next 15-minute boundary. If we're already on
+ * a boundary, advance to the next slot — otherwise a freshly-opened
+ * modal at exactly :00 / :15 / :30 / :45 would seed a "now" start that
+ * scrolls into the past as the user types.
+ */
+export function nextQuarterHour(now = new Date()): Date {
+  const d = new Date(now);
+  d.setSeconds(0, 0);
+  const remainder = d.getMinutes() % 15;
+  if (remainder !== 0) {
+    d.setMinutes(d.getMinutes() + (15 - remainder));
+  } else {
+    // already on a 15-min boundary; bump to next slot to avoid past times
+    d.setMinutes(d.getMinutes() + 15);
+  }
+  return d;
+}
+
 export function emptyDraft(): BookingDraft {
+  // Seed a sensible default time so TimesSummaryCard opens filled. The
+  // prior null/null seed forced every fresh draft into the empty-state
+  // branch, which was a discoverability dead-end on the redesign.
+  const start = nextQuarterHour();
+  const end = new Date(start.getTime() + 60 * 60_000);
   return {
     title: '',
     description: '',
     spaceId: null,
-    startAt: null,
-    endAt: null,
+    startAt: start.toISOString(),
+    endAt: end.toISOString(),
     hostPersonId: null,
     requesterPersonId: null,
     attendeeCount: 1,

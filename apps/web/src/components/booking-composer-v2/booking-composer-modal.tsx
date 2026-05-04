@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
   DialogOverlay,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { FieldGroup } from '@/components/ui/field';
 import { Loader2 } from 'lucide-react';
 import { useBookingDraft } from './use-booking-draft';
 import { type BookingDraft, validateDraft } from './booking-draft';
@@ -126,9 +127,20 @@ export function BookingComposerModal({
     : null;
 
   const { data: mealWindows } = useMealWindows();
+  // Narrow deps to fields getSuggestions actually inspects (startAt,
+  // endAt, visitors.length on the draft, plus the room facts and meal
+  // windows). Keeps unrelated mutations like `attendeeCount` typing or
+  // title edits from re-running the suggestion engine on every keystroke.
   const suggestions = useMemo(
     () => getSuggestions(composer.draft, roomFacts, mealWindows ?? []),
-    [composer.draft, roomFacts, mealWindows],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- composer.draft narrowed by design
+    [
+      composer.draft.startAt,
+      composer.draft.endAt,
+      composer.draft.visitors.length,
+      roomFacts,
+      mealWindows,
+    ],
   );
 
   // Right-pane view-state machine. The `<RightPanel>` slides between the
@@ -156,7 +168,11 @@ export function BookingComposerModal({
   const validation = validateDraft(composer.draft, mode);
   const submitting = createBooking.isPending;
 
-  const handleSubmit = async () => {
+  // Wrapped in useCallback so the retry callback we hand to toastError
+  // closes over a stable reference. The prior plain-arrow recreated on
+  // every render, meaning any toast that survived a re-render carried
+  // a stale closure on its retry button.
+  const handleSubmit = useCallback(async () => {
     if (validation) return;
 
     // Build a ComposerState-compatible adapter from the BookingDraft.
@@ -300,7 +316,21 @@ export function BookingComposerModal({
         retry: () => void handleSubmit(),
       });
     }
-  };
+  }, [
+    validation,
+    composer.draft,
+    mode,
+    entrySource,
+    callerPersonId,
+    hostFirstName,
+    pickedRoom,
+    spacesCache,
+    createBooking,
+    createInvitation,
+    navigate,
+    onBooked,
+    onOpenChange,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -320,6 +350,7 @@ export function BookingComposerModal({
             'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,680px)]',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
+            'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
             'data-open:zoom-in-[0.96]',
           )}
         >
@@ -330,58 +361,63 @@ export function BookingComposerModal({
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-1 min-h-[480px] flex-col sm:flex-row">
-            {/* Left pane — 520px on desktop. */}
+            {/* Left pane — 520px on desktop. Outer div owns the scroll +
+                sizing; the inner <FieldGroup> owns the form rhythm per
+                CLAUDE.md form-composition rule (gap-5, no hand-rolled
+                gap-4 between fields). */}
             <div
               data-testid="booking-composer-left-pane"
-              className="flex flex-1 flex-col gap-4 overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
+              className="flex flex-1 flex-col overflow-y-auto p-5 sm:w-[520px] sm:flex-none"
             >
-              <TitleInput
-                value={composer.draft.title}
-                onChange={composer.setTitle}
-                hostFirstName={hostFirstName}
-                roomName={pickedRoom?.name ?? null}
-              />
-              <TimeRow
-                startAt={composer.draft.startAt}
-                endAt={composer.draft.endAt}
-                onChange={composer.setTime}
-              />
-              <RepeatRow
-                rule={composer.draft.recurrence}
-                onChange={composer.setRepeat}
-              />
-              <DescriptionRow
-                value={composer.draft.description}
-                onChange={composer.setDescription}
-              />
-              <HostRow
-                mode={mode}
-                requesterPersonId={composer.draft.requesterPersonId}
-                onRequesterChange={composer.setRequester}
-                hostPersonId={composer.draft.hostPersonId}
-                onHostChange={composer.setHost}
-              />
-              <VisitorsRow
-                visitors={composer.draft.visitors}
-                bookingDefaults={{
-                  expected_at: composer.draft.startAt ?? undefined,
-                  expected_until: composer.draft.endAt ?? undefined,
-                  building_id:
-                    deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId) || undefined,
-                  meeting_room_id: composer.draft.spaceId ?? undefined,
-                }}
-                disabled={!composer.draft.spaceId || !composer.draft.startAt}
-                disabledReason={
-                  !composer.draft.spaceId
-                    ? 'Pick a room first — visitors are anchored to a building.'
-                    : !composer.draft.startAt
-                      ? 'Pick a start time first.'
-                      : undefined
-                }
-                onAdd={composer.addVisitor}
-                onUpdate={composer.updateVisitor}
-                onRemove={composer.removeVisitor}
-              />
+              <FieldGroup>
+                <TitleInput
+                  value={composer.draft.title}
+                  onChange={composer.setTitle}
+                  hostFirstName={hostFirstName}
+                  roomName={pickedRoom?.name ?? null}
+                />
+                <TimeRow
+                  startAt={composer.draft.startAt}
+                  endAt={composer.draft.endAt}
+                  onChange={composer.setTime}
+                />
+                <RepeatRow
+                  rule={composer.draft.recurrence}
+                  onChange={composer.setRepeat}
+                />
+                <DescriptionRow
+                  value={composer.draft.description}
+                  onChange={composer.setDescription}
+                />
+                <HostRow
+                  mode={mode}
+                  requesterPersonId={composer.draft.requesterPersonId}
+                  onRequesterChange={composer.setRequester}
+                  hostPersonId={composer.draft.hostPersonId}
+                  onHostChange={composer.setHost}
+                />
+                <VisitorsRow
+                  visitors={composer.draft.visitors}
+                  bookingDefaults={{
+                    expected_at: composer.draft.startAt ?? undefined,
+                    expected_until: composer.draft.endAt ?? undefined,
+                    building_id:
+                      deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId) || undefined,
+                    meeting_room_id: composer.draft.spaceId ?? undefined,
+                  }}
+                  disabled={!composer.draft.spaceId || !composer.draft.startAt}
+                  disabledReason={
+                    !composer.draft.spaceId
+                      ? 'Pick a room first — visitors are anchored to a building.'
+                      : !composer.draft.startAt
+                        ? 'Pick a start time first.'
+                        : undefined
+                  }
+                  onAdd={composer.addVisitor}
+                  onUpdate={composer.updateVisitor}
+                  onRemove={composer.removeVisitor}
+                />
+              </FieldGroup>
             </div>
             {/* Right pane — 360px on desktop. Hairline divider on the
                 left edge desktop, top edge mobile (matches the
@@ -528,7 +564,11 @@ export function BookingComposerModal({
           </div>
           <footer className="flex items-center justify-end gap-2 border-t border-border/60 bg-background/85 px-5 py-3 backdrop-blur-md">
             {validation && (
-              <span className="mr-auto text-xs text-amber-700 dark:text-amber-300">
+              <span
+                role="status"
+                aria-live="polite"
+                className="mr-auto text-xs text-amber-700 dark:text-amber-300"
+              >
                 {validation}
               </span>
             )}

@@ -11,8 +11,17 @@ describe('emptyDraft', () => {
   it('returns a stable shape with sensible defaults', () => {
     const d = emptyDraft();
     expect(d.spaceId).toBeNull();
-    expect(d.startAt).toBeNull();
-    expect(d.endAt).toBeNull();
+    // Phase D.1: seeds a future 15-min-aligned start + 1h end so the
+    // TimesSummaryCard opens filled instead of in the empty branch.
+    expect(d.startAt).not.toBeNull();
+    expect(d.endAt).not.toBeNull();
+    const start = new Date(d.startAt!);
+    const end = new Date(d.endAt!);
+    expect(start.getMinutes() % 15).toBe(0);
+    expect(start.getSeconds()).toBe(0);
+    expect(start.getMilliseconds()).toBe(0);
+    expect(end.getTime() - start.getTime()).toBe(60 * 60_000);
+    expect(start.getTime()).toBeGreaterThan(Date.now() - 1000);
     expect(d.title).toBe('');
     expect(d.attendeeCount).toBe(1);
     expect(d.visitors).toEqual([]);
@@ -51,7 +60,7 @@ describe('validateDraft', () => {
   });
 
   it('requires time', () => {
-    const d = { ...emptyDraft(), spaceId: 'room-1' };
+    const d = { ...emptyDraft(), spaceId: 'room-1', startAt: null, endAt: null };
     expect(validateDraft(d, 'self')).toBe('Pick a date and time.');
   });
 
