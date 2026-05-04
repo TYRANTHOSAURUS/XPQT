@@ -902,11 +902,32 @@ export class ReservationService {
       // Slot-not-found from inside the RPC (defense in depth — should be
       // caught by the pre-flight above, but if a race deletes the slot
       // between pre-flight and RPC, surface it cleanly).
-      const errMsg = (rpcErr as { message?: string }).message ?? '';
+      const errRecord = rpcErr as { message?: string; hint?: string; details?: string };
+      const errMsg = errRecord.message ?? '';
       if (errMsg.includes('booking_slot.not_found')) {
         throw new NotFoundException({
           code: 'booking_slot.not_found',
           message: 'Slot not found.',
+        });
+      }
+      // /full-review v3 closure C1 — cross-tenant / inactive / non-reservable
+      // space target. The 00294 RPC raises P0001 with hint
+      // 'space.invalid_or_cross_tenant' when the patched space_id fails the
+      // (id, tenant_id, active, reservable) probe. Without this map, the
+      // RPC's structured rejection drops to a generic slot_update_failed
+      // 400 and the client can't tell a permissions/data problem from a
+      // schema mismatch. Match on hint OR the raw 'space_invalid' message
+      // (PostgREST surfaces both depending on driver shape).
+      const errHint = errRecord.hint ?? '';
+      const errDetails = errRecord.details ?? '';
+      if (
+        errHint.includes('space.invalid_or_cross_tenant') ||
+        errMsg.includes('space_invalid') ||
+        errDetails.includes('space.invalid_or_cross_tenant')
+      ) {
+        throw new BadRequestException({
+          code: 'booking.slot_space_invalid',
+          message: 'Target space is invalid or in a different tenant.',
         });
       }
       throw new BadRequestException({

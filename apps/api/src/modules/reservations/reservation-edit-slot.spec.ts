@@ -332,6 +332,116 @@ describe('ReservationService.editSlot', () => {
     expect(supabase.calls.rpc).toHaveLength(0);
   });
 
+  // /full-review v3 closure C1 — cross-tenant space-id validation.
+  //
+  // Pre-fix: editSlot forwarded patch.space_id straight to the RPC, and
+  // the RPC's UPDATE booking_slots SET space_id = ... only had the FK
+  // constraint to prove the space existed. A space_id from a different
+  // tenant satisfied the FK, so the row landed and the booking's
+  // location_id (when primary) mirrored a foreign tenant's space —
+  // tenant isolation breach.
+  //
+  // Post-fix (00294): RPC validates (id, tenant_id, active, reservable)
+  // and raises P0001 with hint 'space.invalid_or_cross_tenant'. The TS
+  // service maps this to BadRequestException(booking.slot_space_invalid).
+  it('maps cross-tenant space_id (P0001 / space.invalid_or_cross_tenant) to BadRequestException(booking.slot_space_invalid)', async () => {
+    const supabase = makeSupabase({
+      rpcResponse: {
+        data: null,
+        error: {
+          code: 'P0001',
+          message: 'space_invalid',
+          hint: 'space.invalid_or_cross_tenant',
+        },
+      },
+    });
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = buildService(supabase, visibility, conflict);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+          space_id: 'space-from-other-tenant',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'booking.slot_space_invalid',
+    });
+  });
+
+  it('maps inactive/non-reservable space_id (same P0001) to booking.slot_space_invalid', async () => {
+    // The RPC's validation block is one branch — it doesn't differentiate
+    // "wrong tenant" from "inactive" from "non-reservable" (correctly:
+    // the caller has no need-to-know, and same UI fix in all cases). All
+    // three surface as the same BadRequestException(slot_space_invalid).
+    const supabase = makeSupabase({
+      rpcResponse: {
+        data: null,
+        error: {
+          code: 'P0001',
+          message: 'space_invalid',
+          hint: 'space.invalid_or_cross_tenant',
+        },
+      },
+    });
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const svc = buildService(supabase, visibility, conflict);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+          space_id: 'space-inactive-or-non-reservable',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect((caught as BadRequestException).getResponse()).toMatchObject({
+      code: 'booking.slot_space_invalid',
+    });
+  });
+
+  it('happy path: valid same-tenant active reservable space_id passes through (no error mapping fires)', async () => {
+    // Confirm the existing happy path still works post-C1. RPC returns
+    // success → no mapping branch fires → editSlot returns the
+    // projected Reservation as before.
+    const newSpace = 'space-valid';
+    const supabase = makeSupabase({
+      projectionRow: {
+        ...makeSlotRow({ id: SLOT_B, space_id: newSpace }),
+        bookings: makeBookingRow({ location_id: newSpace }),
+      },
+    });
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const svc = buildService(supabase, visibility, conflict);
+
+    const result = await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        space_id: newSpace,
+      }),
+    );
+
+    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking_slot');
+    expect(rpcCall).toBeDefined();
+    expect(rpcCall!.args).toMatchObject({
+      p_slot_id: SLOT_B,
+      p_patch: { space_id: newSpace },
+      p_tenant_id: TENANT.id,
+    });
+    expect(result.id).toBe(BOOKING_ID);
+    expect(result.space_id).toBe(newSpace);
+  });
+
   it('throws ForbiddenException(booking.edit_forbidden) when canEdit returns false', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility({ canEdit: false });
