@@ -127,6 +127,32 @@ export class DispatchService {
         { entityName: 'SLA policy' },
       );
     }
+    // Plan A.4 / Commit 5 (I1) / round-4 codex flag dispatch.service.ts:73-75,144-145.
+    // location_id + asset_id are written to work_orders.location_id and
+    // work_orders.asset_id below (lines 144-145 in the row insert). Both
+    // FK to tenant-owned tables. Inherited values from the parent are
+    // already tenant-loaded via getById's visibility check; only DTO-
+    // sourced ids need pre-flight here. Keep the DTO check tight:
+    // dto.location_id !== undefined means the caller explicitly set it
+    // (vs. omitted, which falls back to parent.location_id).
+    if (dto.location_id !== undefined && dto.location_id !== null) {
+      await assertTenantOwned(
+        this.supabase,
+        'spaces',
+        dto.location_id,
+        tenant.id,
+        { entityName: 'location' },
+      );
+    }
+    if (dto.asset_id !== undefined && dto.asset_id !== null) {
+      await assertTenantOwned(
+        this.supabase,
+        'assets',
+        dto.asset_id,
+        tenant.id,
+        { entityName: 'asset' },
+      );
+    }
 
     // Load request type for routing domain only (NOT for SLA — child SLAs are independent).
     const rtCfg = ticketTypeId

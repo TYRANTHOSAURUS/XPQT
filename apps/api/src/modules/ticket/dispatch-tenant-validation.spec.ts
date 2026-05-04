@@ -247,6 +247,50 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).resolves.toBeTruthy();
   });
 
+  // Plan A.4 / Commit 5 (I1) — DTO location_id + asset_id pre-flight.
+  describe('Plan A.4 / Commit 5 (I1) — dispatch DTO location_id + asset_id', () => {
+    it('rejects dispatch with a cross-tenant DTO location_id', async () => {
+      const deps = makeDeps({
+        spaces: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', location_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'reference.not_in_tenant',
+          reference_table: 'spaces',
+          reference_id: FOREIGN_UUID,
+        }),
+      });
+    });
+
+    it('rejects dispatch with a cross-tenant DTO asset_id', async () => {
+      const deps = makeDeps({
+        assets: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }],
+      });
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x', asset_id: FOREIGN_UUID };
+      await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'reference.not_in_tenant',
+          reference_table: 'assets',
+          reference_id: FOREIGN_UUID,
+        }),
+      });
+    });
+
+    it('does NOT pre-flight when DTO omits location_id (inherits from parent)', async () => {
+      // Empty rowsByTable — if the validator fired with the parent's
+      // location_id, it would not find a tenant-owned row and reject.
+      // The point: inherited values were tenant-loaded via getById; we
+      // skip the redundant pre-flight to keep the hot path lean.
+      const deps = makeDeps({});
+      const svc = makeService(deps);
+      const dto: DispatchDto = { title: 'do x' };
+      await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).resolves.toBeTruthy();
+    });
+  });
+
   // Plan A.4 / Commit 2 (C1) — system actor MUST validate FK refs.
   // Pre-A.4 the tests asserted the bypass; the bypass was wrong.
   // Workflow create_child_tasks (workflow-engine.service.ts:267) calls
