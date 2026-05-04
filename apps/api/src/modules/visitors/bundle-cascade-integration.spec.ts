@@ -26,7 +26,10 @@ import type { VisitorStatus } from './dto/transition-status.dto';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const BUNDLE = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
-const RES = 'rrrrrrrr-1111-4111-8111-rrrrrrrrrrrr';
+// Pre-canonicalisation: a separate `RES` constant existed because
+// reservations.id ≠ booking.id. Post-rewrite (00277:27) the booking IS
+// the bundle, so we pass BUNDLE to editOne. The C2 url-mismatch gate
+// in editSlot rejects callers that drift from this identity.
 const ORDER = 'oooooooo-1111-4111-8111-oooooooooooo';
 const SPACE_OLD = 'ssss1111-1111-4111-8111-ssssssssssss';
 const SPACE_NEW = 'ssss2222-2222-4222-8222-ssssssssssss';
@@ -200,6 +203,35 @@ function buildHarness(opts: {
 
   const supabase = {
     admin: {
+      // C2 closure: editOne now delegates geometry to editSlot which
+      // calls the edit_booking_slot RPC (00291 + 00293). The RPC
+      // updates one slot AND recomputes booking-level start_at/end_at/
+      // location_id mirrors atomically. Mock applies the patch to
+      // slotRow + bookingRow so post-RPC reads reflect the new state.
+      rpc: jest.fn((fn: string, args: { p_patch?: Record<string, unknown> }) => {
+        if (fn === 'edit_booking_slot') {
+          const patch = args.p_patch ?? {};
+          if (patch.start_at !== undefined) {
+            slotRow = { ...slotRow, start_at: patch.start_at as string };
+            bookingRow = { ...bookingRow, start_at: patch.start_at as string };
+          }
+          if (patch.end_at !== undefined) {
+            slotRow = { ...slotRow, end_at: patch.end_at as string };
+            bookingRow = { ...bookingRow, end_at: patch.end_at as string };
+          }
+          if (patch.space_id !== undefined) {
+            slotRow = { ...slotRow, space_id: patch.space_id as string };
+            // location_id mirrors only when the edited slot is primary.
+            // The single-slot test fixture is always primary.
+            bookingRow = { ...bookingRow, location_id: patch.space_id as string };
+          }
+          return Promise.resolve({
+            data: { slot: slotRow, booking: bookingRow },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      }),
       from: jest.fn((table: string) => {
         // ── bookings ─────────────────────────────────────────────────────
         // loadBundle (cascade) selects id/requester/host/location.
@@ -237,28 +269,47 @@ function buildHarness(opts: {
         }
         // ── booking_slots ────────────────────────────────────────────────
         // findByIdOrThrow uses SLOT_WITH_BOOKING_SELECT (slot + bookings embed).
-        // editOne also reads `select('id')` to find the primary slot id, then
-        // updates the slot patch.
-        // cancelBundleImpl flips slot.status to 'cancelled'.
+        // editOne reads `select('id')` to find the primary slot id, then
+        // delegates geometry to editSlot which uses `select('booking_id')`
+        // for its pre-flight gate (URL-mismatch + not-found) and calls the
+        // edit_booking_slot RPC. cancelBundleImpl flips slot.status to
+        // 'cancelled'.
         if (table === 'booking_slots') {
           return {
             select: (cols?: string) => {
-              // Primary-slot id-only read.
+              // editSlot pre-flight: .select('booking_id').eq().eq().maybeSingle().
+              if (cols && cols.trim() === 'booking_id') {
+                return {
+                  eq: () => ({
+                    eq: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({ data: { booking_id: slotRow.booking_id }, error: null }),
+                    }),
+                  }),
+                };
+              }
+              // Primary-slot id-only read. C2 added a second .order(created_at)
+              // for tie-breaking — accept BOTH the legacy single-order and
+              // the new double-order chain so both editOne and other callers
+              // (cancel/restore — which still use the legacy single-order)
+              // resolve.
               if (cols && cols.trim() === 'id') {
+                const slotIdResult = () =>
+                  Promise.resolve({ data: { id: slotRow.id }, error: null });
                 return {
                   eq: () => ({
                     eq: () => ({
                       order: () => ({
-                        limit: () => ({
-                          maybeSingle: () =>
-                            Promise.resolve({ data: { id: slotRow.id }, error: null }),
+                        order: () => ({
+                          limit: () => ({ maybeSingle: slotIdResult }),
                         }),
+                        limit: () => ({ maybeSingle: slotIdResult }),
                       }),
                     }),
                   }),
                 };
               }
-              // Embed read for findByIdOrThrow.
+              // Embed read for findByIdOrThrow / findByIdOrThrowAtSlot.
               return {
                 eq: () => ({
                   eq: () => ({
@@ -469,7 +520,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(RES, ACTOR, { start_at: newStart }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }),
       );
       await drainMicrotasks();
 
@@ -499,7 +550,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(RES, ACTOR, { start_at: newStart }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }),
       );
       await drainMicrotasks();
 
@@ -531,7 +582,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(RES, ACTOR, { space_id: SPACE_NEW }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { space_id: SPACE_NEW }),
       );
       await drainMicrotasks();
 

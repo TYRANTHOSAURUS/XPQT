@@ -1,9 +1,14 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
+import {
+  BOOKING_TX_BOUNDARY,
+  type BookingTransactionBoundary,
+} from './booking-transaction-boundary';
+import { BookingCompensationService } from './booking-compensation.service';
 import type { ActorContext, RecurrenceRule, RecurrenceScope } from './dto/types';
 import type { BookingFlowService } from './booking-flow.service';
 import {
@@ -95,10 +100,20 @@ export class RecurrenceService {
   // The optional Supabase service is only required when calling
   // materialize / splitSeries / cron. Passed via constructor when the module
   // wires the service; tests using `new RecurrenceService()` keep working.
+  //
+  // /full-review v3 closure I4 — compensation boundary + service injected so
+  // each occurrence's clone-orders step is wrapped in runWithCompensation.
+  // If the clone throws, the boundary deletes the orphan occurrence booking
+  // (or surfaces partial_failure when a sub-series blocks deletion).
+  // Both Optional so tests using `new RecurrenceService()` keep working — the
+  // wrapper short-circuits to direct invocation when neither is provided.
   constructor(
     @Optional() private readonly supabase?: SupabaseService,
     @Optional() private readonly conflict?: ConflictGuardService,
     @Optional() private readonly tenants?: TenantService,
+    @Optional() @Inject(BOOKING_TX_BOUNDARY)
+    private readonly txBoundary?: BookingTransactionBoundary,
+    @Optional() private readonly compensation?: BookingCompensationService,
   ) {}
 
   /** Wire the booking flow lazily to break the circular dep. */
@@ -432,7 +447,6 @@ export class RecurrenceService {
           },
           RecurrenceService.SYSTEM_ACTOR,
         );
-        created.push(created_row.id);
 
         // Sub-project 2 fan-out: if the master has services, clone its
         // orders + lines + asset_reservations onto the new occurrence.
@@ -440,19 +454,31 @@ export class RecurrenceService {
         // Post-canonicalisation (2026-05-02): the booking IS the bundle
         // (00277:27). We pass the OCCURRENCE's booking id (created_row.id)
         // as the `bundleId` so the cloned orders attach to the new
-        // occurrence's booking — not the master's. This mirrors the
-        // pre-rewrite behaviour where `lazyCreateBundle` would mint a
-        // per-occurrence bundle row, but without the extra row.
+        // occurrence's booking — not the master's.
         //
-        // Best-effort — a failure here doesn't fail the materialise run;
-        // the user still got their occurrence's booking.
+        // /full-review v3 closure I4 — wrap the clone step in
+        // BookingTransactionBoundary.runWithCompensation. Pre-fix:
+        // bookingFlow.create(...) ran with services=[] (atomic on its
+        // own; the compensation boundary in BookingFlowService gates on
+        // input.services.length > 0 and skips when empty). Then the
+        // separate cloneBundleOrdersToOccurrence call ran AFTER the
+        // booking was committed. If the clone threw, the orphan
+        // occurrence booking persisted; the catch block below incremented
+        // `skipped += 1` but the room stayed reserved indefinitely.
         //
-        // OrderService.cloneOrderForOccurrence was rewritten in slice C to
-        // use the canonical `orders.booking_id` / `orders.linked_slot_id`
-        // columns (00278:108-118). The caller-side contract here is correct
-        // and the writer no longer fails at runtime.
+        // Wrapping the clone in runWithCompensation means: clone throws →
+        // boundary calls compensation.deleteBooking(occurrence.id) which
+        // invokes the delete_booking_with_guard RPC (00292) → orphan
+        // booking + slots are removed. The boundary then re-throws the
+        // original error, which our outer catch handles below.
+        //
+        // Fallback: if either txBoundary or compensation isn't injected
+        // (lightweight tests), fall back to direct invocation. Tests
+        // covering the wrapped path pass both. The fallback is the
+        // pre-fix behaviour and preserves backward compatibility for
+        // callers that haven't wired the boundary.
         if (this.orders && this.supabase) {
-          await this.cloneBundleOrdersToOccurrence({
+          const cloneArgs = {
             masterReservationId: master.id,             // = master booking id
             masterStartAt: master.start_at,
             // Occurrence's booking id — clones land on the NEW booking.
@@ -464,8 +490,24 @@ export class RecurrenceService {
               end_at: created_row.end_at,
             },
             requesterPersonId: master.requester_person_id,
-          });
+          };
+          if (this.txBoundary && this.compensation) {
+            const comp = this.compensation;
+            await this.txBoundary.runWithCompensation(
+              created_row.id,
+              () => this.cloneBundleOrdersToOccurrence(cloneArgs),
+              (id) => comp.deleteBooking(id),
+            );
+          } else {
+            await this.cloneBundleOrdersToOccurrence(cloneArgs);
+          }
         }
+        // /full-review v3 closure I4 — push only AFTER the clone (and
+        // any boundary rollback) committed. On the rollback path the
+        // booking was deleted by compensation; pushing here would lie
+        // about the surviving set. Order: create → clone (boundary-
+        // wrapped) → push to `created`.
+        created.push(created_row.id);
       } catch (err) {
         // 23P01 (conflict guard) → skip, don't fail the whole run.
         if (this.conflict && this.conflict.isExclusionViolation(err)) {
@@ -477,6 +519,27 @@ export class RecurrenceService {
         const e = err as { response?: { code?: string }; message?: string };
         const code = e.response?.code;
         if (code === 'rule_deny' || code === 'reservation_slot_conflict') {
+          skipped += 1;
+          continue;
+        }
+        // /full-review v3 closure I4 — clone failures reach this catch
+        // via the boundary's re-throw of the original error. By the
+        // time we get here:
+        //   - The boundary's compensate(bookingId) ran. On 'rolled_back'
+        //     the orphan booking + slots are GONE; on 'partial_failure'
+        //     the booking persists and the boundary throws
+        //     BadRequestException(code: 'booking.partial_failure').
+        //   - We never pushed to `created` (the push is now AFTER the
+        //     clone), so no cleanup of `created` is needed regardless
+        //     of outcome.
+        // Either way: log + skipped += 1 + continue. partial_failure is
+        // logged at error level since manual recovery is required (the
+        // audit_events row written by BookingCompensationService is
+        // the discoverable surface for ops).
+        if (code === 'booking.partial_failure') {
+          this.log.error(
+            `materialize ${seriesId}: occurrence ${occ.index} clone failed AND compensation blocked — manual recovery required: ${e.message}`,
+          );
           skipped += 1;
           continue;
         }
@@ -499,10 +562,25 @@ export class RecurrenceService {
 
   /**
    * Per spec §5.1, sub-project 2 fan-out. For each order on the master
-   * reservation's bundle, clone it onto the new occurrence. Best-effort:
-   * a clone failure logs a warning but doesn't fail the materialise loop.
-   * Lines with `repeats_with_series=false` are skipped by the cloner;
-   * asset GiST conflicts surface as `recurrence_skipped=true` per line.
+   * reservation's bundle, clone it onto the new occurrence. Lines with
+   * `repeats_with_series=false` are skipped by the cloner; asset GiST
+   * conflicts surface as `recurrence_skipped=true` per line.
+   *
+   * /full-review v3 closure I4 — propagate failures.
+   *
+   * Pre-fix: this method swallowed every per-order clone error
+   * ("Best-effort"). The result was that an asset GiST conflict, FK
+   * failure, or transient DB error during clone would silently leave
+   * the occurrence's booking in a partially-cloned state — orphan
+   * services on later orders that didn't get cloned.
+   *
+   * Post-fix: errors propagate to the caller. The caller in materialize
+   * wraps this in BookingTransactionBoundary.runWithCompensation, which
+   * deletes the occurrence's booking on any throw. That's the correct
+   * trade-off: better to compensate (delete + re-try next tick) than to
+   * leave the user with a half-cloned occurrence and no recovery path.
+   *
+   * The list-orders error (rare, indicates DB outage) also propagates.
    */
   private async cloneBundleOrdersToOccurrence(args: {
     masterReservationId: string;
@@ -515,36 +593,30 @@ export class RecurrenceService {
     if (!this.supabase || !this.orders) return;
     // Find the master booking's orders. Post-canonicalisation
     // `orders.booking_id` (00278:109) is the canonical column tying an
-    // order to its parent booking. `orders.linked_slot_id` (00278:112,
-    // renamed from linked_reservation_id) is per-slot and not used
-    // here — we want every order on the booking. Filter on
-    // `booking_id = master.id` (the master booking id, == legacy
-    // booking_bundle_id under canonicalisation).
+    // order to its parent booking.
     const { data: orders, error } = await this.supabase.admin
       .from('orders')
       .select('id')
       .eq('booking_id', args.masterReservationId);
     if (error) {
-      this.log.warn(
+      // Throw rather than swallow — caller wraps this in
+      // runWithCompensation so the orphan booking gets cleaned up.
+      throw new Error(
         `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
       );
-      return;
     }
     for (const o of (orders ?? []) as Array<{ id: string }>) {
-      try {
-        await this.orders.cloneOrderForOccurrence({
-          masterOrderId: o.id,
-          newReservation: args.newReservation,
-          masterReservationStartAt: args.masterStartAt,
-          bundleId: args.bundleId,
-          recurrenceSeriesId: args.seriesId,
-          requesterPersonId: args.requesterPersonId,
-        });
-      } catch (err) {
-        this.log.warn(
-          `bundle fan-out: clone order ${o.id} → reservation ${args.newReservation.id} failed: ${(err as Error).message}`,
-        );
-      }
+      // Per-order errors propagate. With compensation wrapping at the
+      // call site, a single bad order kills the occurrence cleanly
+      // (delete + skip) rather than leaving partial state.
+      await this.orders.cloneOrderForOccurrence({
+        masterOrderId: o.id,
+        newReservation: args.newReservation,
+        masterReservationStartAt: args.masterStartAt,
+        bundleId: args.bundleId,
+        recurrenceSeriesId: args.seriesId,
+        requesterPersonId: args.requesterPersonId,
+      });
     }
   }
 
