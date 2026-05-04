@@ -219,3 +219,21 @@ Notes / accepted deltas:
 - Admin UI for editing tenant meal windows is a follow-up; v1 ships seed defaults only (Lunch 11:30–13:30, Dinner 17:00–19:00).
 - Multi-room atomic bookings — out of scope for this redesign. Re-introduce by adding back the legacy `additional-rooms-field` plumbing if needed.
 - Visitors v2 smart entity recognition (the `<VisitorOrAttendeePicker>` swap) is deferred.
+
+### 2026-05-04 — Right-pane summary↔picker pivot
+
+After /design-review on the v1 modal that shipped 2026-05-03, the right pane was re-architected from a "checklist of three collapsed cards" to a stack-navigator with two views: **summary** (default) and **picker** (full-panel, slide-animated, with [← Back]).
+
+- `<RightPanel>` view-state machine: `summary | picker:room | picker:catering | picker:av`
+- Default view is a stack of four `<*SummaryCard>` cells: Times, Room, Catering, AV — each in either empty (CTA) or filled (Robin-style summary + Change/Remove) state
+- Picker view fills the entire right panel, hosts the existing `<RoomPickerInline>` / `<ServicePickerBody>` (no nested modals)
+- Slide animation between views: `transition-transform 200ms var(--ease-smooth)`
+- TimeRow converted to inline-visible dropdown quartet `[date▾] [time▾] → [date▾] [time▾]` (Robin pattern); legacy combined calendar+slot popover preserved as Advanced path
+- emptyDraft() now seeds startAt = next 15-min slot, endAt = +1h, so Times card opens filled
+- Modal aside container switched from floating-card border to left-hairline (matches table-inspector-layout)
+- Misc must-fixes from /design-review: handleSubmit useCallback, suggestions deps narrowed, validation message aria-live polite, modal close anim 200ms swift-out
+- Six legacy components dropped: AddinStack, AddinCard, RoomCard, CateringCard, AvCard, addin-card.test
+- Plan: `docs/superpowers/plans/2026-05-04-right-pane-summary-pivot.md`
+- 10 implementation commits between `602a02b` and `45bbb17`; docs commit `91363e3` on top (final HEAD).
+
+Verification: 94/94 web vitest tests pass · web typecheck clean · web build clean (9.06s) · web lint: 0 errors, 22 pre-existing warnings (none from this pivot). API tests not re-run — no API code touched.

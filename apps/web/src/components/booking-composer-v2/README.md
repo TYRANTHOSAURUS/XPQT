@@ -43,6 +43,25 @@ Plan: [`docs/superpowers/plans/2026-05-02-create-booking-modal-redesign.md`](../
   `times-summary-card`, `room-summary-card`, `catering-summary-card`,
   `av-summary-card`.
 
+## Right-pane state machine
+
+```
+view = 'summary' | 'picker:room' | 'picker:catering' | 'picker:av'
+```
+
+`summary` shows the four summary cards stacked. Tapping a card's CTA or
+Change button transitions to the matching `picker:*` view, which fills
+the entire right pane and renders the picker body inline (no nested
+modals). The picker's [← Back] returns to `summary`. Transitions slide
+horizontally via `transition-transform 200ms var(--ease-smooth)`. Legacy
+`AddinStack` / `AddinCard` / per-domain `*Card` (single-expand grid-row
+trick) was removed in this pivot — never reintroduce; use `SummaryView` +
+the picker views instead.
+
+`TimeRow` shipped two presentations: the inline-visible dropdown quartet
+`[date▾] [time▾] → [date▾] [time▾]` (Robin pattern, default), and the
+combined calendar+slot popover (kept as the Advanced path).
+
 ## Reuses from the old composer (still alive)
 
 - `service-picker-sheet.tsx` — `ServicePickerBody` is the catalog browser
