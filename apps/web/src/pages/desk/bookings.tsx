@@ -76,8 +76,25 @@ export function DeskBookingsPage() {
     has_bundle: scope === 'bundles' ? true : undefined,
   });
 
+  // Phase 1.2: the list endpoint returns ONE ROW PER SLOT. A multi-room
+  // booking surfaces N rows that all share the same `booking_id` but
+  // each have a distinct `slot_id`. /desk/bookings is a per-BOOKING
+  // operator view (one card per booking; the detail panel handles
+  // multi-room rooms via group-siblings), so we dedup by `booking_id`,
+  // keeping the first slot encountered (= primary by display_order via
+  // the server's ORDER BY). Without this dedup, React emits
+  // duplicate-key warnings and operators see the same booking listed
+  // multiple times.
   const allItems = useMemo<OperatorReservationItem[]>(() => {
-    return (data?.items ?? []) as OperatorReservationItem[];
+    const rows = (data?.items ?? []) as OperatorReservationItem[];
+    const seen = new Set<string>();
+    const out: OperatorReservationItem[] = [];
+    for (const r of rows) {
+      if (seen.has(r.booking_id)) continue;
+      seen.add(r.booking_id);
+      out.push(r);
+    }
+    return out;
   }, [data]);
 
   const filtered = useMemo(() => {
@@ -267,7 +284,9 @@ export function DeskBookingsPage() {
                 <div className="overflow-hidden rounded-xl border bg-card divide-y divide-border/60">
                   {group.items.map((r) => (
                     <BookingRow
-                      key={r.id}
+                      // Phase 1.2: dedup above keeps one row per booking_id;
+                      // key on booking_id is the canonical grouping field.
+                      key={r.booking_id}
                       item={r}
                       selected={selectedId === r.id}
                       onSelect={() => openDetail(r.id)}

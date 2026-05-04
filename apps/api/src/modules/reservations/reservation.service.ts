@@ -223,10 +223,20 @@ export class ReservationService {
       const sep = opts.cursor.lastIndexOf('__');
       if (sep > 0) {
         const cursorStart = opts.cursor.slice(0, sep);
-        const cursorId = opts.cursor.slice(sep + 2);
+        // Phase 1.2 — Bug #4: the cursor's id half is the SLOT id, not the
+        // booking id. ORDER BY runs on `booking_slots.id` (this query is
+        // against `from('booking_slots')`); the projection's `id` is the
+        // BOOKING id (= bookings.id) under canonicalisation. Comparing the
+        // booking id against the booking_slots.id column is a domain
+        // mismatch — multi-room bookings (N slots, all sharing one
+        // booking_id but each with a distinct slot id) skipped or
+        // duplicated rows across page boundaries. Decoded var is named
+        // `cursorSlotId` for parity with `${last.slot_id}` on the encode
+        // side below.
+        const cursorSlotId = opts.cursor.slice(sep + 2);
         q = ascending
-          ? q.or(`start_at.gt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorId})`)
-          : q.or(`start_at.lt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorId})`);
+          ? q.or(`start_at.gt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorSlotId})`)
+          : q.or(`start_at.lt.${cursorStart},and(start_at.eq.${cursorStart},id.gt.${cursorSlotId})`);
       }
     }
 
@@ -244,9 +254,12 @@ export class ReservationService {
         space_name: r.space?.name ?? null,
       };
     });
+    // Phase 1.2 — Bug #4: encode the cursor's id half from `slot_id`
+    // (= booking_slots.id, the ORDER BY column), NOT `id` (= booking.id).
+    // See the matching decode comment above for the bug rationale.
     const next_cursor =
       all.length > limit && rowsToReturn.length > 0
-        ? `${rowsToReturn[rowsToReturn.length - 1].start_at}__${rowsToReturn[rowsToReturn.length - 1].id}`
+        ? `${rowsToReturn[rowsToReturn.length - 1].start_at}__${rowsToReturn[rowsToReturn.length - 1].slot_id}`
         : undefined;
     return { items: rowsToReturn, next_cursor };
   }

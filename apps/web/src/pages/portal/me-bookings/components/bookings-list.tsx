@@ -37,7 +37,25 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
   // joins `space_name` server-side, but if a row predates that backfill we
   // gracefully fall back to the spaces list.
   const { data: spaces } = useSpaces();
-  const items = useMemo(() => data?.items ?? [], [data]);
+  // Phase 1.2: the list endpoint returns ONE ROW PER SLOT. A multi-room
+  // booking surfaces N rows that all share the same `booking_id` but
+  // each have a distinct `slot_id`. The "My bookings" UX is one card
+  // per BOOKING (the user thinks "my 3-room offsite", not "3 separate
+  // reservations"), so we dedup by `booking_id`, keeping the first
+  // slot encountered (= primary, lowest display_order, given the API's
+  // ORDER BY). Without this, React emits duplicate-key warnings and the
+  // user sees the same booking listed three times.
+  const items = useMemo<MyReservationItem[]>(() => {
+    const rows = data?.items ?? [];
+    const seen = new Set<string>();
+    const out: MyReservationItem[] = [];
+    for (const r of rows) {
+      if (seen.has(r.booking_id)) continue;
+      seen.add(r.booking_id);
+      out.push(r);
+    }
+    return out;
+  }, [data]);
 
   const spaceNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -154,7 +172,11 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
             >
               {group.items.map((r) => (
                 <BookingRow
-                  key={r.id}
+                  // Phase 1.2: dedup happens above (one row per booking_id);
+                  // the React key is the booking grouping field, not `r.id`
+                  // which today equals `r.booking_id` but is documented as a
+                  // legacy alias of "the projected row's id".
+                  key={r.booking_id}
                   reservation={r}
                   spaceName={resolveSpaceName(r)}
                   partOfSeries={Boolean(r.recurrence_series_id)}
@@ -296,7 +318,9 @@ function PendingApprovalsSection({
       </header>
       <ul className="divide-y divide-purple-500/15 dark:divide-purple-500/25">
         {items.map((r) => (
-          <li key={r.id}>
+          // Phase 1.2: pendingItems is sourced from the already-deduped
+          // items list above, so booking_id is unique here.
+          <li key={r.booking_id}>
             <Link
               to={buildHref(r.id)}
               className="group/pending flex items-center gap-3 px-4 py-3 [transition:background-color_120ms_var(--ease-snap)] hover:bg-purple-500/10 focus-visible:bg-purple-500/10 focus-visible:outline-none"

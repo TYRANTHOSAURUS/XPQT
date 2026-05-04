@@ -75,6 +75,12 @@ export function slotAndBookingToReservation(
 ): Reservation {
   return {
     id: booking.id,                                // BREAKING — was reservations.id
+    // slot_id is the unit of calendar interaction AND the stable cursor key for
+    // list pagination. listMine orders by booking_slots.id; the cursor MUST
+    // use slot.id (this field), not booking.id. (Phase 1.2 fix — using
+    // booking.id here would skip/duplicate rows in multi-room bookings
+    // because all slots share one booking_id while distinct slot ids drive
+    // the ORDER BY tie-break.)
     slot_id: slot.id,                              // canonical booking_slots.id (NEW; post-/full-review I2 fix)
     booking_id: booking.id,                        // Phase 1.4: explicit booking grouping field — same value as `id`
                                                    //   today, emitted separately so list dedup/grouping consumers
