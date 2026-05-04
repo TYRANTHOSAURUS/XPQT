@@ -456,7 +456,7 @@ export function BookingComposerModal({
             <aside
               data-testid="booking-composer-right-pane"
               className={cn(
-                'flex flex-col overflow-y-auto border-t border-border/60 bg-muted/30',
+                'flex min-h-0 flex-col overflow-hidden border-t border-border/60 bg-muted/30',
                 'sm:flex-1 sm:border-t-0 sm:border-l',
               )}
             >

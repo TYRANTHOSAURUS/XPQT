@@ -63,27 +63,27 @@ export function RightPanel({
   const activePickerTitle = kind ? pickerTitles[kind] : '';
 
   return (
-    <div className="relative overflow-hidden">
+    <div className="relative flex min-h-0 flex-1 overflow-hidden">
       <div
         className={cn(
-          'flex w-full transition-transform duration-[200ms]',
+          'flex h-full w-full transition-transform duration-[200ms]',
           isPicker ? '-translate-x-full' : 'translate-x-0',
         )}
         style={{ transitionTimingFunction: 'var(--ease-smooth)' }}
       >
         <div
-          className="w-full shrink-0"
+          className="flex h-full w-full shrink-0 flex-col overflow-y-auto"
           aria-hidden={isPicker}
         >
           {summary}
         </div>
         <div
-          className="w-full shrink-0"
+          className="flex h-full w-full shrink-0 flex-col"
           aria-hidden={!isPicker}
         >
           {isPicker && (
-            <div>
-              <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2.5">
+            <>
+              <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2.5">
                 <button
                   type="button"
                   onClick={() => onViewChange('summary')}
@@ -97,8 +97,8 @@ export function RightPanel({
                 </button>
                 <h3 className="text-sm font-medium text-foreground">{activePickerTitle}</h3>
               </div>
-              <div>{activePickerNode}</div>
-            </div>
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{activePickerNode}</div>
+            </>
           )}
         </div>
       </div>
