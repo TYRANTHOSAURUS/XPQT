@@ -93,7 +93,8 @@ interface Props {
   /** Drag-create preview range (rendered as a translucent block). */
   pendingCreate?: { startCell: number; endCell: number } | null;
   /**
-   * Drag-resize / move preview, keyed by reservation id.
+   * Drag-resize / move preview, keyed by SLOT id (Phase 1.4 — was the
+   * booking id pre-rewrite, which collapsed multi-room slots).
    *
    * `isGhost` is set when this row is the *target* of a cross-row drag-move
    * (the operator picked up an event from a different lane and is hovering
@@ -102,7 +103,7 @@ interface Props {
    * substitute its position.
    */
   pendingDrag?: {
-    reservationId: string;
+    slotId: string;
     newStartCell: number;
     newEndCell: number;
     collide: boolean;
@@ -398,10 +399,11 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
           />
         ))}
 
-        {/* Buffer shading (sits behind blocks) */}
+        {/* Buffer shading (sits behind blocks). Keyed by slot id post-1.4
+            so multi-room buffers render distinctly. */}
         {blocks.map(({ reservation, meetingStart, meetingEnd, effStart, effEnd }) => (
           <BufferLayer
-            key={`buf-${reservation.id}`}
+            key={`buf-${reservation.slot_id}`}
             effStart={effStart}
             meetingStart={meetingStart}
             meetingEnd={meetingEnd}
@@ -412,7 +414,11 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
 
         {/* Event blocks */}
         {blocks.map(({ reservation, meetingStart, meetingEnd }) => {
-          const isDragging = pendingDrag?.reservationId === reservation.id;
+          // Phase 1.4: drag identity is slot_id, not the booking id. With
+          // multi-room bookings, multiple blocks share `reservation.id` but
+          // have distinct `reservation.slot_id`s — the slot id is what the
+          // backend mutates and what disambiguates the visual block.
+          const isDragging = pendingDrag?.slotId === reservation.slot_id;
           const startCell = isDragging ? pendingDrag!.newStartCell : meetingStart;
           const endCell = isDragging ? pendingDrag!.newEndCell : meetingEnd;
           const dragState = isDragging
@@ -422,7 +428,7 @@ export const SchedulerGridRow = memo(function SchedulerGridRow({
             : 'idle';
           return (
             <SchedulerEventBlock
-              key={reservation.id}
+              key={reservation.slot_id}
               reservation={reservation}
               startCell={startCell}
               endCell={endCell}

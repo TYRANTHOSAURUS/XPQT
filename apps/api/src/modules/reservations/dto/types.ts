@@ -202,6 +202,15 @@ export interface Reservation {
    * key for booking-level operations.
    */
   slot_id: string;
+  /**
+   * Phase 1.4 prep — same value as `id` today (the booking id), emitted
+   * as a separate field so callers that need to dedup or group by booking
+   * (lists, reports, command palette) don't have to remember which
+   * meaning of `id` they're looking at. Phase 1.2 makes this field
+   * load-bearing for cursor pagination dedup; we add it now to avoid a
+   * frontend cascade later.
+   */
+  booking_id: string;
   tenant_id: string;
   reservation_type: ReservationType;
   space_id: string;

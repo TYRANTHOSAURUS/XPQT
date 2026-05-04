@@ -193,17 +193,20 @@ export function SchedulerGrid({
             pendingCreateBySpace && pendingCreateBySpace.spaceId === room.space_id
               ? { startCell: pendingCreateBySpace.startCell, endCell: pendingCreateBySpace.endCell }
               : null;
+          // Phase 1.4: row-level pendingDrag is keyed by slot_id (was the
+          // booking id pre-rewrite, which collapsed multi-room slots into
+          // one drag preview per booking).
           const pendingDragForRow =
             pendingResize && pendingResize.spaceId === room.space_id
               ? {
-                  reservationId: pendingResize.reservationId,
+                  slotId: pendingResize.slotId,
                   newStartCell: pendingResize.newStartCell,
                   newEndCell: pendingResize.newEndCell,
                   collide: pendingResize.collide,
                 }
               : pendingMove && pendingMove.spaceId === room.space_id
                 ? {
-                    reservationId: pendingMove.reservationId,
+                    slotId: pendingMove.slotId,
                     newStartCell: pendingMove.newStartCell,
                     newEndCell: pendingMove.newEndCell,
                     collide: pendingMove.collide,

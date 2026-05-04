@@ -16,10 +16,18 @@ import { useCallback, useRef, useState } from 'react';
  * `onComplete` receives both the new cell range AND the target space id,
  * which equals the original when the user kept the gesture inside one
  * row.
+ *
+ * Phase 1.4 (slot-first scheduler): MoveState carries both `bookingId`
+ * AND `slotId`. The legacy single `reservationId` (= booking id)
+ * conflated multi-room slots and made non-primary drags move the
+ * primary instead. The scheduler PATCHes
+ * `/reservations/:bookingId/slots/:slotId`, so both ids are needed in
+ * the completion payload.
  */
 
 export interface MoveState {
-  reservationId: string;
+  bookingId: string;
+  slotId: string;
   newStartCell: number;
   newEndCell: number;
   /** The row the cursor is currently over — may differ from origin. */
@@ -38,7 +46,8 @@ export function useDragMove(opts: {
 
   const [active, setActive] = useState<MoveState | null>(null);
   const ctxRef = useRef<{
-    reservationId: string;
+    bookingId: string;
+    slotId: string;
     initialStartCell: number;
     initialEndCell: number;
     pointerStartCell: number;
@@ -76,7 +85,8 @@ export function useDragMove(opts: {
 
   const begin = useCallback(
     (e: React.PointerEvent<HTMLElement>, args: {
-      reservationId: string;
+      bookingId: string;
+      slotId: string;
       startCell: number;
       endCell: number;
       rowEl: HTMLElement;
@@ -88,7 +98,8 @@ export function useDragMove(opts: {
       const originSpaceId =
         args.rowEl.closest('[data-space-id]')?.getAttribute('data-space-id') ?? '';
       ctxRef.current = {
-        reservationId: args.reservationId,
+        bookingId: args.bookingId,
+        slotId: args.slotId,
         initialStartCell: args.startCell,
         initialEndCell: args.endCell,
         pointerStartCell: pointerCell,
@@ -97,7 +108,8 @@ export function useDragMove(opts: {
         targetSpaceId: originSpaceId,
       };
       setActive({
-        reservationId: args.reservationId,
+        bookingId: args.bookingId,
+        slotId: args.slotId,
         newStartCell: args.startCell,
         newEndCell: args.endCell,
         originSpaceId,
@@ -119,7 +131,8 @@ export function useDragMove(opts: {
       const targetSpaceId = targetSpaceFromPoint(e.clientX, e.clientY, ctx.originSpaceId);
       ctx.targetSpaceId = targetSpaceId;
       setActive({
-        reservationId: ctx.reservationId,
+        bookingId: ctx.bookingId,
+        slotId: ctx.slotId,
         newStartCell: newStart,
         newEndCell: newEnd,
         originSpaceId: ctx.originSpaceId,
@@ -147,7 +160,8 @@ export function useDragMove(opts: {
       const moved = newStart !== ctx.initialStartCell || targetSpaceId !== ctx.originSpaceId;
       if (moved) {
         onComplete({
-          reservationId: ctx.reservationId,
+          bookingId: ctx.bookingId,
+          slotId: ctx.slotId,
           newStartCell: newStart,
           newEndCell: newEnd,
           originSpaceId: ctx.originSpaceId,
