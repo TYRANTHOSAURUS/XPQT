@@ -321,21 +321,27 @@ export class ReservationService {
     // pointing back via orders.booking_id (00278:109). Pre-rewrite this was
     // a `booking_bundle_id IS NOT NULL` check on reservations; under
     // canonicalisation the bundle IS the booking, so "has services" is the
-    // right question. We do it via a defensive double-query (orders by
-    // booking_id IN (...)) rather than a complex OR clause to keep the
-    // query readable; the operator list rarely exceeds 200 rows.
+    // right question.
+    //
+    // B.3.3 / 00298 — codex round-3 flagged the previous `.from('orders')
+    // .select('booking_id') ...` shape as an N+1 antipattern. It pulled
+    // EVERY orders row for the tenant (one row per order, not per
+    // booking), then deduped client-side, then sent the deduped id list
+    // back through .in('booking_id', ids) — which past ~1k ids hits
+    // CDN/edge URL-length limits and either truncates or 414s.
+    //
+    // Fix: bookings_with_orders_for_tenant returns the deduped booking_id
+    // set in one round-trip (DISTINCT subquery, partial-index scan via
+    // idx_orders_booking from 00278:120-122). The TS layer just receives
+    // the bounded set and feeds it to the existing .in() filter — no
+    // dedup pass, no over-fetch.
     if (opts.has_bundle) {
-      const { data: bookingIdsWithOrders, error: ordersErr } = await this.supabase.admin
-        .from('orders')
-        .select('booking_id')
-        .eq('tenant_id', tenantId)
-        .not('booking_id', 'is', null);
+      const { data: rpcData, error: ordersErr } = await this.supabase.admin
+        .rpc('bookings_with_orders_for_tenant', { p_tenant_id: tenantId });
       if (ordersErr) throw new BadRequestException(`list_for_operator_orders:${ordersErr.message}`);
-      const ids = Array.from(new Set(
-        ((bookingIdsWithOrders ?? []) as Array<{ booking_id: string | null }>)
-          .map((r) => r.booking_id)
-          .filter((id): id is string => Boolean(id)),
-      ));
+      const ids = ((rpcData ?? []) as Array<string | { bookings_with_orders_for_tenant: string }>)
+        .map((row) => (typeof row === 'string' ? row : row?.bookings_with_orders_for_tenant))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
       if (ids.length === 0) {
         return { items: [] };
       }
