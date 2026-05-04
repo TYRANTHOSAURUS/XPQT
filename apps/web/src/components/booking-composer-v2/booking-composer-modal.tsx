@@ -32,15 +32,39 @@ import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestio
 import { useCreateBooking } from '@/api/room-booking';
 import { useCreateInvitation } from '@/api/visitors';
 import { buildBookingPayload } from '@/components/booking-composer/submit';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toast, toastCreated, toastError } from '@/lib/toast';
 import { useNavigate } from 'react-router-dom';
 import { defaultTitle as defaultTitleFor } from './booking-draft';
+
+/**
+ * Build the partial-success toast description from N visitor failures.
+ * Avoids the prior bug where only the first failure's error was shown
+ * (post-/full-review v2): names every failed visitor so the operator
+ * knows who needs re-inviting.
+ */
+function describeVisitorFailures(
+  failures: { name: string; error: unknown }[],
+): string {
+  if (failures.length === 1) return `${failures[0].name} couldn't be invited.`;
+  if (failures.length <= 3) {
+    const names = failures.map((f) => f.name).join(', ');
+    return `Couldn't invite ${names}.`;
+  }
+  const head = failures.slice(0, 2).map((f) => f.name).join(', ');
+  return `Couldn't invite ${head} and ${failures.length - 2} others.`;
+}
 
 export interface BookingComposerModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: ComposerMode;
-  entrySource?: ComposerEntrySource;
+  /**
+   * /full-review v2 fix — required (was optional with silent 'desk-list'
+   * fallback). Caller MUST disambiguate the entry surface so portal /
+   * desk / scheduler bookings land with the correct `source` on the
+   * backend. Compile-time guard beats runtime mis-attribution.
+   */
+  entrySource: ComposerEntrySource;
   callerPersonId: string;
   hostFirstName: string | null;
   /** Optional seed for the draft. The popover→modal escalation passes
@@ -152,18 +176,30 @@ export function BookingComposerModal({
       state: adapter,
       mode,
       // /full-review C2 fix — was hardcoded 'desk-list' which mis-attributed
-      // every portal booking. Use the caller's entry-source; default to
-      // 'desk-list' only when the caller didn't supply one.
-      entrySource: entrySource ?? 'desk-list',
+      // every portal booking. Caller's entry-source threaded through;
+      // prop is now required (no fallback) so future callers fail at
+      // compile time, not silently in audit logs.
+      entrySource,
       callerPersonId,
     });
     if (!payload) return;
 
     // Attach title + description from the draft. /full-review C1 fix —
     // when the user leaves the title blank, send the placeholder string
-    // (the WYSIWYG contract from spec §53-69), so we never persist a
-    // null title that renders as "Maple Room" elsewhere. Matches the
-    // popover's behavior at quick-book-popover.tsx:130.
+    // (WYSIWYG title contract), so we never persist a null title that
+    // renders as "Maple Room" elsewhere.
+    //
+    // /full-review v2 fix — guard against the spaces-cache race: if the
+    // user picked a room but spacesCache is still loading on submit,
+    // pickedRoom is null and the placeholder loses the room name.
+    // Refuse to submit until the cache is resolved (validateDraft already
+    // gates spaceId presence; this gates room-name lookup).
+    if (composer.draft.spaceId && !pickedRoom) {
+      toastError("Couldn't book the room", {
+        description: 'Room details still loading — try again in a moment.',
+      });
+      return;
+    }
     const placeholderTitle = defaultTitleFor({
       hostFirstName,
       roomName: pickedRoom?.name ?? null,
@@ -220,21 +256,28 @@ export function BookingComposerModal({
           .filter((x): x is { name: string; error: unknown } => x !== null);
       }
 
-      // /full-review C5 fix — CLAUDE.md mandate: every entity-create
-      // toast goes through `toastCreated(<entity>, { onView })`.
-      // Partial-success on visitor flush is surfaced as a separate
-      // warning toast (CLAUDE.md "partialSuccess" rule); the booking
-      // itself is still a clean create.
-      toastCreated('Booking', {
-        onView: () => navigate(`/desk/bookings/${bookingId}`),
-      });
-      if (visitorFailures.length > 0) {
+      // /full-review v2 fix — replace the dual-toast (green
+      // toastCreated + red toastError) with a SINGLE toast whose
+      // severity matches the actual outcome:
+      //   - clean create  → toastCreated('Booking', { onView })
+      //   - partial fail  → toast.warning('Booking created — N of M
+      //                     visitors failed', { onView })
+      // Two parallel toasts of opposite color stacked newest-on-top
+      // is the exact "interleaved" UX the prior commit claimed to
+      // fix. Also guards `bookingId` against a 200-without-id
+      // backend regression (mirrors the popover at line 187-191).
+      const onView = bookingId
+        ? () => navigate(`/desk/bookings/${bookingId}`)
+        : undefined;
+      if (visitorFailures.length === 0) {
+        toastCreated('Booking', { onView });
+      } else {
         const ok = visitorTotal - visitorFailures.length;
-        toastError(
-          `${ok} of ${visitorTotal} visitors invited — ${visitorFailures.length} failed`,
+        toast.warning(
+          `Booking created — ${ok} of ${visitorTotal} visitors invited, ${visitorFailures.length} failed`,
           {
-            error: visitorFailures[0].error,
-            retry: () => navigate(`/desk/bookings/${bookingId}`),
+            description: describeVisitorFailures(visitorFailures),
+            ...(onView ? { action: { label: 'View', onClick: onView } } : {}),
           },
         );
       }

@@ -129,7 +129,11 @@ export function QuickBookPopover({
 
   const buildDraft = (): BookingDraft =>
     draftFromComposerSeed({
-      title: title || placeholder,
+      // /full-review v2 fix — `.trim()` parity with modal so that
+      // whitespace-only titles fall through to the placeholder
+      // (previously '   ' would persist three spaces here while the
+      // modal correctly fell through).
+      title: title.trim() || placeholder,
       spaceId: room.space_id,
       startAt: effectiveStart,
       endAt: effectiveEnd,

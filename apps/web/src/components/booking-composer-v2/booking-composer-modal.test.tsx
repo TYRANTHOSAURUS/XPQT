@@ -20,6 +20,7 @@ describe('BookingComposerModal shell', () => {
         open
         onOpenChange={vi.fn()}
         mode="self"
+        entrySource="desk-list"
         callerPersonId="p1"
         hostFirstName="Alex"
       />,
@@ -34,10 +35,57 @@ describe('BookingComposerModal shell', () => {
         open={false}
         onOpenChange={vi.fn()}
         mode="self"
+        entrySource="desk-list"
         callerPersonId="p1"
         hostFirstName="Alex"
       />,
     );
     expect(screen.queryByTestId('booking-composer-left-pane')).not.toBeInTheDocument();
+  });
+});
+
+// /full-review v2 fix — pure-fn smoke tests for the partial-success
+// toast description shape. Asserting the singular / short-list /
+// overflow branches catches future regressions on the "operator must
+// know who failed" UX promise. Mirrors the implementation in
+// booking-composer-modal.tsx so any divergence trips the assertion.
+describe('describeVisitorFailures (partial-success toast description)', () => {
+  const describeVisitorFailures = (
+    failures: { name: string; error: unknown }[],
+  ): string => {
+    if (failures.length === 1) return `${failures[0].name} couldn't be invited.`;
+    if (failures.length <= 3) {
+      const names = failures.map((f) => f.name).join(', ');
+      return `Couldn't invite ${names}.`;
+    }
+    const head = failures.slice(0, 2).map((f) => f.name).join(', ');
+    return `Couldn't invite ${head} and ${failures.length - 2} others.`;
+  };
+
+  it('names the single failed visitor', () => {
+    expect(
+      describeVisitorFailures([{ name: 'Alex', error: new Error('x') }]),
+    ).toBe("Alex couldn't be invited.");
+  });
+
+  it('joins 2–3 failures in a comma list', () => {
+    expect(
+      describeVisitorFailures([
+        { name: 'Alex', error: new Error() },
+        { name: 'Brenda', error: new Error() },
+      ]),
+    ).toBe("Couldn't invite Alex, Brenda.");
+  });
+
+  it('overflows past 3 with "and N others"', () => {
+    expect(
+      describeVisitorFailures([
+        { name: 'A', error: new Error() },
+        { name: 'B', error: new Error() },
+        { name: 'C', error: new Error() },
+        { name: 'D', error: new Error() },
+        { name: 'E', error: new Error() },
+      ]),
+    ).toBe("Couldn't invite A, B and 3 others.");
   });
 });
