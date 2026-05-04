@@ -28,10 +28,30 @@ const MAX_TENANT_OWNED_IDS_PER_QUERY = 200;
  * Options:
  *   - `activeOnly: true`     — additionally require `active = true`
  *   - `reservableOnly: true` — additionally require `reservable = true`
+ *   - `personState: 'active'`— for `persons` only: additionally require
+ *                              `active = true AND anonymized_at IS NULL
+ *                              AND left_at IS NULL`. Default `'any'`
+ *                              keeps the lighter `(id, tenant_id)` check
+ *                              (back-compat for existing call sites).
+ *                              See `validateWatcherIdsInTenant` for the
+ *                              tighter watcher-add semantics; this option
+ *                              lets callers opt-into the same filter for
+ *                              singular person FKs (e.g. order requester,
+ *                              visitor host).
  *   - `entityName`           — friendlier error message ("space" vs "spaces")
- *   - `skipForSystemActor`   — bypass for `__system__` actor (resolver paths)
+ *   - `skipForSystemActor`   — bypass for `__system__` actor (resolver paths).
+ *                              SECURITY: only use for visibility/permission
+ *                              gating. Data-integrity FK validation MUST
+ *                              run for system actor too — workflow JSONB,
+ *                              routing config, and templates are user-
+ *                              authored and must be validated at execution
+ *                              time even from system contexts.
  *
  * Throws:
+ *   - `Error('invariant: tenantId required for assertTenantOwned')` when
+ *     tenantId is missing/empty/non-string. This is a CALLER bug
+ *     (tenant context not loaded) and surfaces as a 500, not a 400 —
+ *     it should never reach a user-facing path.
  *   - `BadRequestException({ code: 'reference.invalid_uuid' })` for malformed input
  *   - `BadRequestException({ code: 'reference.not_in_tenant' })` if missing
  *   - `BadRequestException({ code: 'reference.lookup_failed' })` on driver error
@@ -44,11 +64,26 @@ export async function assertTenantOwned(
   options: {
     activeOnly?: boolean;
     reservableOnly?: boolean;
+    personState?: 'any' | 'active';
     entityName?: string;
     skipForSystemActor?: boolean;
   } = {},
 ): Promise<void> {
   if (options.skipForSystemActor) return;
+
+  // Plan A.4 / Commit 1 (N1) — invariant guard. A missing tenantId here
+  // means the caller forgot to load TenantContext; it's never a user
+  // error. Throw a plain Error so it surfaces as a 500 (caller bug),
+  // NOT a BadRequestException (which would imply the user did something
+  // wrong). Without this guard the .eq('tenant_id', undefined) below
+  // silently coerces to the string 'undefined' and the row lookup
+  // succeeds for any global row that happens to have that string —
+  // catastrophic.
+  if (typeof tenantId !== 'string' || tenantId.length === 0) {
+    throw new Error(
+      `invariant: tenantId required for assertTenantOwned(${table}, ${id})`,
+    );
+  }
 
   const entity = options.entityName ?? table;
 
@@ -75,6 +110,17 @@ export async function assertTenantOwned(
     .eq('tenant_id', tenantId);
   if (options.activeOnly) q = q.eq('active', true);
   if (options.reservableOnly) q = q.eq('reservable', true);
+  if (options.personState === 'active') {
+    // persons-table specific filter, mirroring validateWatcherIdsInTenant.
+    // Reject deactivated, anonymized, or off-boarded persons even though
+    // their row still exists in the tenant. Asymmetric vs the watcher
+    // helper: this option is opt-in (default 'any' = legacy behaviour);
+    // watchers always apply the filter because adding a new watcher to
+    // a stale-state person is a UX bug. Callers like OrderService
+    // requester / visitor host opt-in because adding those FKs to a
+    // departed person is the same bug-class.
+    q = q.eq('active', true).is('anonymized_at', null).is('left_at', null);
+  }
 
   const { data, error } = await q.maybeSingle();
   if (error) {
@@ -113,10 +159,21 @@ export async function assertTenantOwnedAll(
   options: {
     entityName?: string;
     skipForSystemActor?: boolean;
+    personState?: 'any' | 'active';
   } = {},
 ): Promise<string[]> {
   if (options.skipForSystemActor) return [];
   if (!ids || ids.length === 0) return [];
+
+  // Plan A.4 / Commit 1 (N1) — invariant guard. Mirror of assertTenantOwned;
+  // see that function for the rationale. Bare-Error surfaces as 500 (caller
+  // bug). Skip the guard when `skipForSystemActor` short-circuits above
+  // (system-actor paths legitimately pass empty tenant context).
+  if (typeof tenantId !== 'string' || tenantId.length === 0) {
+    throw new Error(
+      `invariant: tenantId required for assertTenantOwnedAll(${table}, ${ids.length} ids)`,
+    );
+  }
 
   const entity = options.entityName ?? table;
 
@@ -148,11 +205,20 @@ export async function assertTenantOwnedAll(
     });
   }
 
-  const { data, error } = await supabase.admin
+  // Plan A.4 / Commit 1 (N3) — opt-in personState filter. Default 'any'
+  // preserves back-compat for existing array callers (visitor co-hosts,
+  // booking attendees). Opt-in 'active' applies the watcher-grade filter
+  // (active=true AND anonymized_at IS NULL AND left_at IS NULL) to reject
+  // adds against deactivated / anonymized / off-boarded persons.
+  let q = supabase.admin
     .from(table)
     .select('id')
     .eq('tenant_id', tenantId)
     .in('id', unique);
+  if (options.personState === 'active') {
+    q = q.eq('active', true).is('anonymized_at', null).is('left_at', null);
+  }
+  const { data, error } = await q;
   if (error) {
     throw new BadRequestException({
       code: 'reference.lookup_failed',
