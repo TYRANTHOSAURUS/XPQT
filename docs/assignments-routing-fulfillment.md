@@ -526,6 +526,43 @@ There is no generator for plandate yet. Setting it is always a deliberate edit b
 
 ---
 
+## 8d. Routing decision write path — tenant-validation contract
+
+The routing/dispatch surface writes FK references (request type, assignees, SLA policy, location, asset, parent ticket) onto `tickets` and `work_orders` rows. Every one of those FKs goes to a **tenant-owned table**. Postgres FKs prove only that the referenced row exists *globally*; they do **not** prove tenant ownership. Because the API uses `supabase.admin` (service-role) to bypass RLS for these writes, the tenant boundary lives entirely in the application layer.
+
+**The write-path contract:**
+
+1. **Every FK field sourced from a DTO is validated against the calling tenant before the INSERT/UPDATE fires.** Single-uuid FKs go through `assertTenantOwned(supabase, table, id, tenantId)`; uuid arrays go through `assertTenantOwnedAll`; the assignee trio (`assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`) goes through `validateAssigneesInTenant` (which is just three `assertTenantOwned` calls plus URL-cap + uuid-shape pre-filters). All three live in `apps/api/src/common/tenant-validation.ts`.
+
+2. **System actors do NOT bypass FK validation.** `__system__` (workflow engine, cron jobs, webhook ingest) bypasses *visibility* and *permission* gates because those agents legitimately operate on rows they couldn't otherwise see. They MUST NOT bypass *data-integrity* validation. Workflow node configs (`assign`, `approval`, `update_ticket`, `create_child_tasks`), routing config, and templates are all user-authored data; a forged or imported workflow definition can carry a foreign-tenant uuid, and the system-actor path was historically the one that wrote it blind. Plan A.4 / Commit 2 (C1) drops every `skipForSystemActor: actorAuthUid === SYSTEM_ACTOR` flag from the dispatch tenant validators for this reason.
+
+3. **Workflow JSONB nodes are treated as untrusted at execution time.** Specifically:
+   - `assign` node: `node.config.team_id` / `node.config.user_id` go through `validateAssigneesInTenant` before the tickets UPDATE.
+   - `approval` node: `node.config.approver_person_id` / `node.config.approver_team_id` go through `assertTenantOwned('persons')` / `'teams'` before the approvals INSERT.
+   - `update_ticket` node: `node.config.fields` is split into a safe-scalar allowlist and an FK allowlist (full lists at the top of `apps/api/src/modules/workflow/workflow-engine.service.ts`). Anything outside both lists throws `workflow.update_ticket_field_not_allowed`. Each FK is then validated against the tenant, and the UPDATE itself carries an explicit `.eq('tenant_id', ...)` filter for defense-in-depth.
+   - `create_child_tasks` node: dispatches through `DispatchService.dispatch(ticketId, dto, '__system__')`, which runs the FK-validation pipeline above on every DTO field.
+
+4. **The post-create automation and rerun-resolver paths ALSO validate the routing target.** Routing definitions are tenant-scoped at the source, but the resolver returns a structured payload — a routing-table compromise / rule import / test-time override could return a foreign uuid. Both `runPostCreateAutomation` (auto-routing on case create — `ticket.service.ts:777-787`) and `reassign(rerun_resolver=true)` (`ticket.service.ts:1276-1287`) call `validateAssigneesInTenant` on the resolver's target before propagating. Fail-soft: a foreign uuid throws → the existing try/catch logs + writes a `routing_evaluation_failed` system-event breadcrumb → ticket stays unassigned. Better than writing a cross-tenant FK.
+
+**Write-path coverage map (Plan A.4 closed list):**
+
+| Service · method | DTO fields validated | System-actor path validated? |
+|---|---|---|
+| `DispatchService.dispatch` | `ticket_type_id`, `assigned_*_id`, `sla_id`, `location_id`, `asset_id`, override `executor_sla_policy_id` | yes |
+| `TicketService.create` (post-create automation) | watchers, assignees from DTO, post-routing target | yes |
+| `TicketService.update` | watchers, assignees | yes |
+| `TicketService.reassign` (incl. `rerun_resolver: true`) | assignees from DTO, post-resolver target | yes |
+| `WorkOrderService.updateMetadata` / `updateAssignment` / `reassign` | watchers, assignees | yes |
+| `ReservationService.editOne` / `editSlot` | `space_id` (active+reservable), `host_person_id`, `attendee_person_ids` | n/a (always actor-driven) |
+| `OrderService.cloneOrderForOccurrence` | `bundle_id` | yes |
+| `OrderService.createOrder` (private, single entry) | `bundle_id`, `requester_person_id` (active), `delivery_space_id`, `cost_center_id` | yes |
+| `InvitationService.create` | `co_host_person_ids`, `meeting_room_id`, `booking_id`; `building_id` via `assertBuildingInScope` | n/a |
+| `WorkflowEngineService.executeNode` (`assign`, `approval`, `update_ticket`) | per-node config | yes |
+
+**When you add a new write to any of the trigger files listed in CLAUDE.md (the doc-drift mandate), update both this section and the `UPDATE_TICKET_*` allowlists in `workflow-engine.service.ts`. Drift is the failure mode the round-3/round-4 codex audits keep finding.**
+
+---
+
 ## 9. Audit — `routing_decisions`
 
 Every resolver run that goes through `RoutingService.recordDecision` writes one row:

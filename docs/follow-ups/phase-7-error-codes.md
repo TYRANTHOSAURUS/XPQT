@@ -54,6 +54,7 @@ this round (C1, I2) follow the same shape.
 | `reference.lookup_failed`             | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwned* (Plan A.2)` | 400 |
 | `reference.invalid_uuid`              | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwned* (Plan A.2)` | 400 |
 | `reference.too_many`                  | validation  | `apps/api/src/common/tenant-validation.ts assertTenantOwnedAll (Plan A.2)` | 400 |
+| `workflow.update_ticket_field_not_allowed` | validation | `apps/api/src/modules/workflow/workflow-engine.service.ts (Plan A.4 Commit 4 / C3)` | 400 |
 
 ## Phase 1 codes still using legacy snake_case (renamed in Phase 7)
 
