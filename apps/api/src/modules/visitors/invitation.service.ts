@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nest
 import { createHash, randomBytes } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { assertTenantOwnedAll } from '../../common/tenant-validation';
 import { PersonService } from '../person/person.service';
 import type { CreateInvitationDto } from './dto/create-invitation.dto';
 
@@ -150,6 +151,27 @@ export class InvitationService {
     const visitorId = (visitorRow as { id: string }).id;
 
     // 6. visitor_hosts — primary + co-hosts.
+    //
+    // Plan A.2 / Commit 5 / gap map §invitation.service.ts:159-165.
+    // Pre-fix, dto.co_host_person_ids was inserted blind into
+    // visitor_hosts. The FK on visitor_hosts.person_id → persons(id)
+    // only proves global existence; supabase.admin bypasses RLS, so a
+    // foreign-tenant person uuid would land as a co-host — gaining
+    // visibility on the visit + appearing in host-side notifications.
+    // Validate before the insert so a clean 400 surfaces upstream.
+    const coHostsToValidate = (dto.co_host_person_ids ?? []).filter(
+      (id) => id !== actor.person_id,
+    );
+    if (coHostsToValidate.length > 0) {
+      await assertTenantOwnedAll(
+        this.supabase,
+        'persons',
+        coHostsToValidate,
+        tenant.id,
+        { entityName: 'co-host persons' },
+      );
+    }
+
     const hostRows = [
       {
         visitor_id: visitorId,

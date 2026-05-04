@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { assertTenantOwned } from '../../common/tenant-validation';
 import {
   loadPermissionMap,
   loadRequesterContext,
@@ -142,6 +143,20 @@ export class OrderService {
         message: `Master order ${args.masterOrderId} not found.`,
       });
     }
+
+    // Plan A.2 / Commit 5 / gap map §orders.service.ts:164. The clone insert
+    // at line 164 below writes `booking_id: args.bundleId` — a FK to
+    // bookings(id) which is tenant-owned. The FK only proves global
+    // existence; if a malicious / buggy recurrence materializer or webhook
+    // passes a foreign-tenant booking id, the clone lands cross-tenant.
+    // Validate before the insert.
+    await assertTenantOwned(
+      this.supabase,
+      'bookings',
+      args.bundleId,
+      tenantId,
+      { entityName: 'booking' },
+    );
 
     // 1. Create the clone order row, scoped to the new occurrence.
     // Column renames (00278:108-118):

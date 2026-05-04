@@ -47,6 +47,13 @@ interface FakeOptions {
   tenantSettings?: { visitor_dedup_by_email: boolean } | null;
   /** Existing dedup-match persons row. When set, `findExistingVisitorPerson` returns it. */
   existingVisitorPersonByEmail?: { id: string; email: string } | null;
+  /**
+   * Plan A.2 / Commit 5: which person ids count as in-tenant for the
+   * assertTenantOwnedAll co_host validation. Defaults to "every id is
+   * in-tenant" so existing tests pass; tests that want to simulate a
+   * cross-tenant co-host set this to a narrowed list.
+   */
+  tenantOwnedPersonIds?: string[];
   /** Inserted persons rows captured for assertion. */
   insertedPersons?: Array<Record<string, unknown>>;
   /** Inserted visitor row captured. */
@@ -135,20 +142,32 @@ function makeService(opts: FakeOptions = {}) {
             };
           case 'persons':
             return {
-              select: () => ({
-                eq: () => ({
-                  eq: () => ({
-                    eq: () => ({
-                      eq: () => ({
-                        maybeSingle: async () => ({
-                          data: opts.existingVisitorPersonByEmail ?? null,
-                          error: null,
-                        }),
-                      }),
-                    }),
+              // Plan A.2 / Commit 5: invitation.create now calls
+              // assertTenantOwnedAll('persons', co_host_person_ids, ...)
+              // which uses .select('id').eq('tenant_id', ...).in('id', ids).
+              // Existing dedup-by-email path still uses the deeper .eq() chain.
+              // The chain object below supports BOTH terminal shapes by carrying
+              // the call mode through.
+              select: () => {
+                const eqChain: Record<string, unknown> = {
+                  eq: () => eqChain,
+                  in: (_col: string, ids: string[]) => ({
+                    then: (onFulfilled: (v: { data: Array<{ id: string }>; error: null }) => unknown) => {
+                      // Filter to opts.tenantOwnedPersonIds if provided; default is "all in-tenant".
+                      const allowed = opts.tenantOwnedPersonIds;
+                      const data = allowed
+                        ? ids.filter((id) => allowed.includes(id)).map((id) => ({ id }))
+                        : ids.map((id) => ({ id }));
+                      return Promise.resolve({ data, error: null }).then(onFulfilled);
+                    },
                   }),
-                }),
-              }),
+                  maybeSingle: async () => ({
+                    data: opts.existingVisitorPersonByEmail ?? null,
+                    error: null,
+                  }),
+                };
+                return eqChain;
+              },
               insert: (row: Record<string, unknown>) => ({
                 select: () => ({
                   single: async () => {
@@ -362,6 +381,32 @@ describe('InvitationService.create', () => {
     expect(personIds).toEqual(
       expect.arrayContaining([ACTOR_PERSON_ID, CO_HOST_PERSON_ID, '99999999-9999-4999-8999-999999999999']),
     );
+  });
+
+  // Plan A.2 / Commit 5 / gap map §invitation.service.ts:159-165.
+  it('rejects when co_host_person_ids contains a foreign-tenant person', async () => {
+    const FOREIGN_PERSON = '00000000-0000-4000-8000-0000000fffff';
+    const ctx = makeService({
+      // Only the in-tenant co-host is registered as owned by this tenant.
+      tenantOwnedPersonIds: [CO_HOST_PERSON_ID],
+    });
+    let caught: unknown = null;
+    try {
+      await ctx.svc.create(
+        { ...baseDto(), co_host_person_ids: [CO_HOST_PERSON_ID, FOREIGN_PERSON] },
+        ACTOR,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeTruthy();
+    expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
+      code: 'reference.not_in_tenant',
+      reference_table: 'persons',
+      missing_ids: [FOREIGN_PERSON],
+    });
+    // No visitor_hosts row should have been written when validation fails.
+    expect(ctx.insertedHostsRows).toEqual([]);
   });
 
   it('dedup ON: existing persons row reused (no new persons.create)', async () => {
