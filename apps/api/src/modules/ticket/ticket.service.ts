@@ -784,7 +784,34 @@ export class TicketService {
           if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
           if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
 
-          await this.supabase.admin.from('tickets').update(updates).eq('id', data.id as string);
+          // Plan A.4 / Commit 6 (I2) / round-4 codex flag
+          // ticket.service.ts:777-787. Post-create auto-routing writes
+          // routing.target.{team_id,user_id,vendor_id} to tickets
+          // without validation. Symmetric to the rerun-resolver fix
+          // (commit bd5882d / line 1277): routing definitions are
+          // tenant-scoped, but a routing-table compromise / rule import /
+          // test override could return a foreign uuid that lands on the
+          // tickets row blind. Validate before the UPDATE — wrapped
+          // inside the existing try/catch (line 765) so a foreign uuid
+          // throws → caught → logged → routing_evaluation_failed
+          // breadcrumb added. Fail-soft matches rerun-resolver semantics:
+          // better to leave the ticket unassigned than to mark it
+          // cross-tenant.
+          await validateAssigneesInTenant(
+            this.supabase,
+            {
+              assigned_team_id: updates.assigned_team_id,
+              assigned_user_id: updates.assigned_user_id,
+              assigned_vendor_id: updates.assigned_vendor_id,
+            },
+            tenantId,
+          );
+
+          await this.supabase.admin
+            .from('tickets')
+            .update(updates)
+            .eq('id', data.id as string)
+            .eq('tenant_id', tenantId);
           Object.assign(data, updates);
 
           await this.addActivity(data.id as string, {
