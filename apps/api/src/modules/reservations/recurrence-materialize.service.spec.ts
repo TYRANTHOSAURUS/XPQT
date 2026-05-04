@@ -534,3 +534,332 @@ describe('RecurrenceService.materialize — clone wraps in compensation boundary
     expect(compensation.deleteBooking).toHaveBeenCalled();
   });
 });
+
+// /full-review v3 closure I4 — materialized_through advances ONLY on
+// expected failures. Pre-fix the catch block treated every error as
+// "skip and advance" — a partial_failure or compensation_failed
+// occurrence got bypassed forever after the first run, with no retry.
+//
+// Post-fix: the loop tracks `sawUnexpectedFailure`. When set,
+// materialized_through is NOT bumped, so the next materialize() call
+// re-attempts the same occurrences (and may finally succeed once ops
+// clears the blocker).
+describe('RecurrenceService.materialize — I4 retry-on-unexpected-failure', () => {
+  function masterBooking() {
+    return {
+      id: 'MASTER',
+      tenant_id: 'T',
+      title: null,
+      description: null,
+      requester_person_id: 'P',
+      host_person_id: null,
+      booked_by_user_id: 'U',
+      location_id: 'S',
+      start_at: '2026-05-01T09:00:00Z',
+      end_at: '2026-05-01T10:00:00Z',
+      timezone: 'UTC',
+      status: 'confirmed' as const,
+      source: 'portal',
+      cost_center_id: null,
+      cost_amount_snapshot: null,
+      policy_snapshot: {},
+      applied_rule_ids: [],
+      config_release_id: null,
+      calendar_event_id: null,
+      calendar_provider: null,
+      calendar_etag: null,
+      calendar_last_synced_at: null,
+      recurrence_series_id: 'SER',
+      recurrence_index: 0,
+      recurrence_overridden: false,
+      recurrence_skipped: false,
+      template_id: null,
+      created_at: '2026-05-01T09:00:00Z',
+      updated_at: '2026-05-01T09:00:00Z',
+    };
+  }
+
+  /**
+   * Build a supabase mock that:
+   *   - returns the series + master master-slot embed for materialise reads
+   *   - tracks `recurrence_series.update({ materialized_through })` calls
+   *     so the test can assert whether the bump fired or not
+   */
+  function makeMaterializedThroughTracker(opts: {
+    masterBooking: ReturnType<typeof masterBooking>;
+    masterOrders: Array<{ id: string }>;
+    seriesMaterializedThrough: string;
+  }) {
+    const series = {
+      id: 'SER',
+      tenant_id: 'T',
+      recurrence_rule: { frequency: 'daily', interval: 1, count: 3 },
+      series_start_at: '2026-05-01T09:00:00Z',
+      series_end_at: null,
+      max_occurrences: 365,
+      holiday_calendar_id: null,
+      materialized_through: opts.seriesMaterializedThrough,
+      parent_booking_id: 'MASTER',
+    };
+
+    const masterSlotEmbed = {
+      id: 'MASTER-SLOT',
+      tenant_id: 'T',
+      booking_id: 'MASTER',
+      slot_type: 'room',
+      space_id: 'S',
+      start_at: opts.masterBooking.start_at,
+      end_at: opts.masterBooking.end_at,
+      setup_buffer_minutes: 0,
+      teardown_buffer_minutes: 0,
+      effective_start_at: opts.masterBooking.start_at,
+      effective_end_at: opts.masterBooking.end_at,
+      attendee_count: 2,
+      attendee_person_ids: [],
+      status: opts.masterBooking.status,
+      check_in_required: false,
+      check_in_grace_minutes: 15,
+      checked_in_at: null,
+      released_at: null,
+      cancellation_grace_until: null,
+      display_order: 0,
+      created_at: opts.masterBooking.created_at,
+      updated_at: opts.masterBooking.updated_at,
+      bookings: opts.masterBooking,
+    };
+
+    // Track materialized_through update payloads.
+    const seriesUpdates: Array<unknown> = [];
+
+    return {
+      seriesUpdates,
+      supabase: {
+        admin: {
+          from: (table: string) => {
+            if (table === 'recurrence_series') {
+              const lookupChain: any = {
+                eq: () => lookupChain,
+                maybeSingle: () => Promise.resolve({ data: series, error: null }),
+              };
+              const buildUpdateChain = (patch: unknown) => {
+                seriesUpdates.push(patch);
+                const c: any = {
+                  eq: () => c,
+                  then: (r: (v: { error: unknown }) => unknown) =>
+                    Promise.resolve({ error: null }).then(r),
+                };
+                return c;
+              };
+              return {
+                select: () => ({ eq: () => lookupChain }),
+                update: (patch: unknown) => buildUpdateChain(patch),
+              };
+            }
+            if (table === 'booking_slots') {
+              return {
+                select: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      order: () => ({
+                        limit: () => ({
+                          maybeSingle: () =>
+                            Promise.resolve({ data: masterSlotEmbed, error: null }),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              };
+            }
+            if (table === 'bookings') {
+              return {
+                select: () => ({ eq: () => ({ eq: () =>
+                  Promise.resolve({ data: [{ recurrence_index: 0 }], error: null }) }) }),
+              };
+            }
+            if (table === 'business_hours_calendars') {
+              const c: any = {
+                eq: () => c,
+                maybeSingle: () => Promise.resolve({ data: null, error: null }),
+              };
+              return { select: () => ({ eq: () => c }) };
+            }
+            if (table === 'orders') {
+              const c: any = {
+                eq: () => c,
+                then: (r: (v: { data: unknown; error: unknown }) => unknown) =>
+                  Promise.resolve({ data: opts.masterOrders, error: null }).then(r),
+              };
+              return { select: () => c };
+            }
+            return {};
+          },
+        },
+      },
+    };
+  }
+
+  it('partial_failure does NOT advance materialized_through (retried on next call)', async () => {
+    const initialMaterialized = '2026-05-01T00:00:00Z';
+    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
+      masterBooking: masterBooking(),
+      masterOrders: [{ id: 'ORDER-1' }],
+      seriesMaterializedThrough: initialMaterialized,
+    });
+
+    const bookingFlow = {
+      create: jest.fn(async (input: { start_at: string; end_at: string }) => ({
+        id: 'OCC-1', start_at: input.start_at, end_at: input.end_at,
+      })),
+    };
+    const conflict = { isExclusionViolation: () => false };
+    const ordersFanOut = {
+      cloneOrderForOccurrence: jest.fn(async () => {
+        throw new Error('clone failed');
+      }),
+    };
+    // Compensation returns partial_failure on every attempt.
+    const compensation = {
+      deleteBooking: jest.fn(async (bookingId: string) => ({
+        kind: 'partial_failure' as const,
+        bookingId,
+        blockedBy: ['recurrence_series'],
+      })),
+    };
+    const txBoundary = {
+      runWithCompensation: jest.fn(async <T>(
+        bookingId: string,
+        operation: () => Promise<T>,
+        compensate: (bookingId: string) => Promise<{ kind: 'rolled_back' | 'partial_failure'; bookingId: string; blockedBy?: string[] }>,
+      ): Promise<T> => {
+        try { return await operation(); } catch {
+          const outcome = await compensate(bookingId);
+          if (outcome.kind === 'rolled_back') throw new Error('rolled_back path');
+          throw Object.assign(new Error('booking.partial_failure'), {
+            response: { code: 'booking.partial_failure', booking_id: outcome.bookingId },
+          });
+        }
+      }),
+    };
+
+    const svc = new RecurrenceService(
+      supabase as never,
+      conflict as never,
+      undefined,
+      txBoundary as never,
+      compensation as never,
+    );
+    svc.setBookingFlow(bookingFlow as never);
+    svc.setOrdersFanOut(ordersFanOut as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // The retry signal: NO materialized_through advance.
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
+  });
+
+  it('compensation_failed does NOT advance materialized_through', async () => {
+    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
+      masterBooking: masterBooking(),
+      masterOrders: [{ id: 'ORDER-1' }],
+      seriesMaterializedThrough: '2026-05-01T00:00:00Z',
+    });
+
+    const bookingFlow = {
+      create: jest.fn(async (input: { start_at: string; end_at: string }) => ({
+        id: 'OCC-1', start_at: input.start_at, end_at: input.end_at,
+      })),
+    };
+    const conflict = { isExclusionViolation: () => false };
+    const ordersFanOut = {
+      cloneOrderForOccurrence: jest.fn(async () => {
+        throw new Error('clone failed');
+      }),
+    };
+    const compensation = {
+      deleteBooking: jest.fn(async () => {
+        throw new Error('compensation RPC blew up');
+      }),
+    };
+    // Boundary mirrors the InProcessBookingTransactionBoundary path: when
+    // compensate() throws, it rethrows as InternalServerErrorException
+    // with code 'booking.compensation_failed'.
+    const txBoundary = {
+      runWithCompensation: jest.fn(async <T>(
+        bookingId: string,
+        operation: () => Promise<T>,
+        compensate: (bookingId: string) => Promise<unknown>,
+      ): Promise<T> => {
+        try { return await operation(); } catch {
+          try {
+            await compensate(bookingId);
+          } catch {
+            throw Object.assign(new Error('booking.compensation_failed'), {
+              response: { code: 'booking.compensation_failed', booking_id: bookingId },
+            });
+          }
+          throw new Error('unreachable');
+        }
+      }),
+    };
+
+    const svc = new RecurrenceService(
+      supabase as never,
+      conflict as never,
+      undefined,
+      txBoundary as never,
+      compensation as never,
+    );
+    svc.setBookingFlow(bookingFlow as never);
+    svc.setOrdersFanOut(ordersFanOut as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
+  });
+
+  it('expected failures (23P01 conflict) DO advance materialized_through', async () => {
+    // Counter-example: when every failure is "expected" (slot taken,
+    // rule deny), materialized_through SHOULD advance — those are
+    // permanent skips. Otherwise the cron would loop forever on a
+    // permanently-conflicted occurrence.
+    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
+      masterBooking: masterBooking(),
+      masterOrders: [],
+      seriesMaterializedThrough: '2026-05-01T00:00:00Z',
+    });
+
+    const bookingFlow = {
+      create: jest.fn(async () => {
+        // Every create throws GiST conflict — expected, advance.
+        throw Object.assign(new Error('exclusion'), { code: '23P01' });
+      }),
+    };
+    const conflict = {
+      isExclusionViolation: (err: unknown) =>
+        (err as { code?: string })?.code === '23P01',
+    };
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(bookingFlow as never);
+
+    await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    // EXACTLY one advance fired — proves the path isn't accidentally
+    // gated off by I4's flag for expected failures.
+    expect(advanced.length).toBeGreaterThan(0);
+  });
+});

@@ -434,6 +434,28 @@ export class RecurrenceService {
 
     const created: string[] = [];
     let skipped = 0;
+    // /full-review v3 closure I4 — distinguish EXPECTED failures (skip
+    // OK; advance materialized_through) from UNEXPECTED failures (do
+    // NOT advance; retry on next call).
+    //
+    // Expected (compensation-aware skip):
+    //   - GiST exclusion (23P01) — slot taken, occurrence permanently
+    //     unavailable for this anchor. Skip + advance.
+    //   - rule_deny / reservation_slot_conflict — rule outcome at
+    //     create-time; user-correctable. Skip + advance (re-tries
+    //     don't help; the rule still denies).
+    //
+    // Unexpected (retry signal):
+    //   - booking.compensation_failed (RPC blew up, booking persists in
+    //     unknown state). Manual recovery in audit_events; on next
+    //     materialize() the occurrence may finally clone cleanly. Do
+    //     NOT advance materialized_through past it.
+    //   - booking.partial_failure (recurrence_series blocker). The
+    //     orphan booking persists; ops must clear the blocker first.
+    //     Same retry signal: don't advance.
+    //   - Any other unknown exception. We don't know if the booking
+    //     committed or not, so be conservative and retry.
+    let sawUnexpectedFailure = false;
 
     for (const occ of occurrences) {
       if (created.length >= PER_TICK_CAP) break;
@@ -528,51 +550,76 @@ export class RecurrenceService {
         // wrapped) → push to `created`.
         created.push(created_row.id);
       } catch (err) {
-        // 23P01 (conflict guard) → skip, don't fail the whole run.
+        // /full-review v3 closure I4 — categorise the failure.
+        //
+        // EXPECTED: 23P01 (GiST exclusion / conflict guard) → the slot
+        // is permanently taken for this anchor; skipping AND advancing
+        // materialized_through is correct (re-attempts won't unblock).
         if (this.conflict && this.conflict.isExclusionViolation(err)) {
           skipped += 1;
           continue;
         }
-        // Approval-required / deny → skip with a warning. The user still got
-        // their first booking; downstream failures shouldn't blow up the run.
+        // EXPECTED: rule_deny / reservation_slot_conflict → rule outcome
+        // at create-time, user-correctable. Skip + advance.
         const e = err as { response?: { code?: string }; message?: string };
         const code = e.response?.code;
         if (code === 'rule_deny' || code === 'reservation_slot_conflict') {
           skipped += 1;
           continue;
         }
-        // /full-review v3 closure I4 — clone failures reach this catch
-        // via the boundary's re-throw of the original error. By the
-        // time we get here:
-        //   - The boundary's compensate(bookingId) ran. On 'rolled_back'
-        //     the orphan booking + slots are GONE; on 'partial_failure'
-        //     the booking persists and the boundary throws
-        //     BadRequestException(code: 'booking.partial_failure').
-        //   - We never pushed to `created` (the push is now AFTER the
-        //     clone), so no cleanup of `created` is needed regardless
-        //     of outcome.
-        // Either way: log + skipped += 1 + continue. partial_failure is
-        // logged at error level since manual recovery is required (the
-        // audit_events row written by BookingCompensationService is
-        // the discoverable surface for ops).
+        // UNEXPECTED: clone failures reach this catch via the boundary's
+        // re-throw. Two sub-cases:
+        //   - booking.partial_failure: the orphan booking persists
+        //     because compensation was blocked (recurrence_series, etc).
+        //     Retry next tick after manual recovery.
+        //   - booking.compensation_failed: the compensation RPC itself
+        //     blew up; booking exists in unknown post-attach state.
+        //     Retry next tick.
+        // Both are persistent "don't advance" signals — when we drop
+        // out of the loop we will NOT bump materialized_through past
+        // these occurrences, so the next materialize() call (cron or
+        // ad-hoc) will reattempt the same indices.
         if (code === 'booking.partial_failure') {
           this.log.error(
             `materialize ${seriesId}: occurrence ${occ.index} clone failed AND compensation blocked — manual recovery required: ${e.message}`,
           );
+          sawUnexpectedFailure = true;
           skipped += 1;
           continue;
         }
-        this.log.warn(`materialize ${seriesId}: occurrence ${occ.index} unexpected: ${e.message}`);
+        if (code === 'booking.compensation_failed') {
+          this.log.error(
+            `materialize ${seriesId}: occurrence ${occ.index} compensation RPC failed — booking may persist in unknown state: ${e.message}`,
+          );
+          sawUnexpectedFailure = true;
+          skipped += 1;
+          continue;
+        }
+        // UNEXPECTED: everything else. We don't know if the row committed
+        // or not (DB flake, network blip during the post-create read,
+        // rule-engine OOM, etc.). Conservative default: don't advance.
+        // Retry next tick.
+        this.log.warn(
+          `materialize ${seriesId}: occurrence ${occ.index} unexpected (will retry): ${e.message}`,
+        );
+        sawUnexpectedFailure = true;
         skipped += 1;
       }
     }
 
     // Bump materialized_through if we extended it.
+    //
     // /full-review v3 closure I3 — tenant_id filter on the update
     // prevents an accidentally-wide write (defence-in-depth; admin
     // client bypasses RLS so the filter is the only scope).
+    //
+    // /full-review v3 closure I4 — also gated on sawUnexpectedFailure.
+    // If any occurrence in this run failed for an unexpected reason
+    // (compensation_failed, partial_failure, unknown error), do NOT
+    // advance — the next materialize() call must reattempt those
+    // indices once ops clears the blocker.
     const newThrough = effectiveHorizon.toISOString();
-    if (newThrough > series.materialized_through) {
+    if (newThrough > series.materialized_through && !sawUnexpectedFailure) {
       await this.supabase.admin
         .from('recurrence_series')
         .update({ materialized_through: newThrough })
