@@ -11,7 +11,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { FieldGroup } from '@/components/ui/field';
-import { Loader2 } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
+import { PersonPicker } from '@/components/person-picker';
 import { useBookingDraft } from './use-booking-draft';
 import { type BookingDraft, validateDraft } from './booking-draft';
 import type { ComposerMode, ComposerEntrySource } from '../booking-composer/state';
@@ -346,19 +347,51 @@ export function BookingComposerModal({
           disablePortal
           showCloseButton={false}
           className={cn(
-            'flex flex-col w-[880px] max-w-[calc(100vw-2rem)] sm:max-w-[880px] gap-0 p-0',
-            'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,680px)]',
+            'flex flex-col w-[1024px] max-w-[calc(100vw-2rem)] sm:max-w-[1024px] gap-0 p-0',
+            'h-auto rounded-none max-h-screen sm:rounded-xl sm:max-h-[min(85vh,720px)]',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
             'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
             'data-open:zoom-in-[0.96]',
           )}
         >
-          <DialogHeader className="sr-only">
-            <DialogTitle>New booking</DialogTitle>
-            <DialogDescription>
+          {/* Visible header. base-ui's DialogTitle already renders an
+              <h2>; we just feed it the heading content. The dialog
+              primitive's accessible name resolves to "New booking" or
+              "New booking for <person>" depending on mode.
+              <DialogDescription> stays sr-only — the body of the modal
+              IS the description; no need to repeat. */}
+          <DialogHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b border-border/60 px-5 py-3">
+            <DialogTitle className="flex min-w-0 items-center gap-1 text-lg font-semibold">
+              {mode === 'operator' ? (
+                <>
+                  <span className="shrink-0">New booking for</span>
+                  <PersonPicker
+                    value={composer.draft.requesterPersonId}
+                    onChange={(id) => composer.setRequester(id || null)}
+                    excludeId={null}
+                    placeholder="someone…"
+                    clearLabel={null}
+                    triggerClassName="h-auto px-2 py-1 text-lg font-semibold hover:bg-muted/50"
+                  />
+                </>
+              ) : (
+                <span>New booking</span>
+              )}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
               Configure a room booking. Title, time, and add-ins.
             </DialogDescription>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              onClick={() => onOpenChange(false)}
+              aria-label="Close"
+            >
+              <X className="size-4" aria-hidden />
+            </Button>
           </DialogHeader>
           <div className="flex flex-1 min-h-[480px] flex-col sm:flex-row">
             {/* Left pane — 520px on desktop. Outer div owns the scroll +
@@ -391,8 +424,6 @@ export function BookingComposerModal({
                 />
                 <HostRow
                   mode={mode}
-                  requesterPersonId={composer.draft.requesterPersonId}
-                  onRequesterChange={composer.setRequester}
                   hostPersonId={composer.draft.hostPersonId}
                   onHostChange={composer.setHost}
                 />
@@ -419,17 +450,18 @@ export function BookingComposerModal({
                 />
               </FieldGroup>
             </div>
-            {/* Right pane — 360px on desktop. Hairline divider on the
-                left edge desktop, top edge mobile (matches the
-                table-inspector-layout pattern). The pane itself owns no
-                padding — RightPanel + summary cards control their own
-                spacing so the slide animation between summary and picker
-                is gap-free. */}
+            {/* Right pane — flex-1 on desktop so it absorbs the surplus
+                width (1024 modal − 520 left = 504px effective). Hairline
+                divider on the left edge desktop, top edge mobile
+                (matches the table-inspector-layout pattern). The pane
+                itself owns no padding — RightPanel + summary cards
+                control their own spacing so the slide animation between
+                summary and picker is gap-free. */}
             <aside
               data-testid="booking-composer-right-pane"
               className={cn(
                 'flex flex-col overflow-y-auto border-t border-border/60',
-                'sm:w-[360px] sm:flex-none sm:border-t-0 sm:border-l',
+                'sm:flex-1 sm:border-t-0 sm:border-l',
               )}
             >
               <RightPanel

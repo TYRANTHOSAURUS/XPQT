@@ -1,5 +1,4 @@
 import { useId, useMemo, useState } from 'react';
-import { Maximize2 } from 'lucide-react';
 import { Calendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
@@ -86,16 +85,18 @@ function shortTimezone(): string {
 
 /**
  * From/To controls for the left pane. Robin-style inline-visible
- * dropdown trio:
+ * dropdown quad:
  *
- *   [date▾] [time▾] → [date▾] [time▾] · TZ  [advanced]
+ *   [date▾] [time▾] → [date▾] [time▾] · TZ
  *
  * Each segment is its own popover trigger:
  *  - Date dropdown opens a `<Calendar>`
  *  - Time dropdown opens a 15-minute slot list
  *  - The timezone label is passive (short tz name)
- *  - The Advanced button opens the legacy combined calendar+slot popover
- *    anchored to the From side
+ *
+ * The legacy combined calendar+slot "Advanced" picker was dropped
+ * 2026-05-04 — the four inline dropdowns are sufficient and the icon
+ * cluttered the row.
  *
  * Conflict-strike (red strike on conflicting slots) is wired in Phase 6
  * when the conflict-check API is integrated; in this task we render
@@ -197,13 +198,6 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
             {tzLabel}
           </span>
         ) : null}
-        <AdvancedPicker
-          startAt={startAt}
-          endAt={endAt}
-          startDate={startDate}
-          onPickDay={onPickStartDay}
-          onPickSlot={onPickStartSlot}
-        />
       </div>
     </Field>
   );
@@ -338,91 +332,3 @@ function TimePopover({ side, value, dateContext, onPick }: TimePopoverProps) {
   );
 }
 
-interface AdvancedPickerProps {
-  startAt: string | null;
-  endAt: string | null;
-  startDate: Date;
-  onPickDay: (date: Date | undefined) => void;
-  onPickSlot: (iso: string) => void;
-}
-
-/**
- * Combined calendar + slot list, anchored to the From side. Same shape as
- * the legacy single-button popover this task replaces — kept available
- * for users who want to see the full month + slot list at once.
- */
-function AdvancedPicker({
-  startAt,
-  endAt,
-  startDate,
-  onPickDay,
-  onPickSlot,
-}: AdvancedPickerProps) {
-  const [open, setOpen] = useState(false);
-  const slots = useMemo(() => generateSlotsForDay(startDate), [startDate]);
-  const summaryLabel =
-    startAt && endAt
-      ? `${formatDay(startAt)} · ${formatTime(startAt)} – ${formatTime(endAt)}`
-      : 'Pick start date and time';
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="ml-0.5 size-7 shrink-0"
-            aria-label={`Advanced time picker: ${summaryLabel}`}
-          />
-        }
-      >
-        <Maximize2 className="size-3.5" aria-hidden />
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        side="bottom"
-        className="flex w-auto gap-3 p-3"
-      >
-        <Calendar
-          mode="single"
-          selected={startDate}
-          onSelect={(date) => {
-            onPickDay(date);
-          }}
-        />
-        <div
-          className="flex max-h-[280px] w-[140px] flex-col gap-0.5 overflow-y-auto pr-1"
-          role="listbox"
-          aria-label="Start time slots"
-        >
-          {slots.map((iso) => {
-            const selected = isSameLocalSlot(startAt, iso);
-            return (
-              <button
-                key={iso}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                onClick={() => {
-                  onPickSlot(iso);
-                  setOpen(false);
-                }}
-                className={cn(
-                  'flex h-7 w-full items-center justify-start rounded-md px-2',
-                  'font-mono text-[12px] tabular-nums text-foreground/80',
-                  'transition-colors hover:bg-accent/50 hover:text-foreground',
-                  '[transition-duration:100ms] [transition-timing-function:var(--ease-snap)]',
-                  selected && 'bg-accent text-foreground',
-                )}
-              >
-                {TIME_FORMAT.format(new Date(iso))}
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}

@@ -36,6 +36,14 @@ interface PersonPickerProps {
   /** Label for the clear affordance inside the popover. Pass null to hide. */
   clearLabel?: string | null;
   disabled?: boolean;
+  /**
+   * Optional override for the trigger button's className. Merged on top
+   * of the default (`h-8 w-full justify-start px-2 text-sm font-normal`)
+   * via `cn()` — pass any utility you want to win (e.g. `"h-auto py-1
+   * text-lg font-semibold"` to use the picker as part of a header
+   * sentence). Defaults are unchanged when omitted.
+   */
+  triggerClassName?: string;
 }
 
 function personLabel(p: Person): string {
@@ -51,6 +59,7 @@ export function PersonPicker({
   placeholder = 'Select person...',
   clearLabel = 'Clear',
   disabled,
+  triggerClassName,
 }: PersonPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -143,6 +152,7 @@ export function PersonPicker({
             className={cn(
               'h-8 w-full justify-start px-2 text-sm font-normal',
               !selectedPerson && 'text-muted-foreground',
+              triggerClassName,
             )}
           />
         }
