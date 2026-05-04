@@ -348,7 +348,7 @@ export function BookingComposerModal({
           showCloseButton={false}
           className={cn(
             'flex flex-col w-[1152px] max-w-[calc(100vw-2rem)] sm:max-w-[1152px] gap-0 p-0',
-            'h-auto rounded-none max-h-screen sm:rounded-xl sm:min-h-[648px] sm:max-h-[min(90vh,820px)]',
+            'h-auto rounded-none max-h-screen sm:rounded-xl sm:min-h-[720px] sm:max-h-[min(90vh,880px)]',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
             'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
