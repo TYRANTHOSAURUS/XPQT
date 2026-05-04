@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toastError, toastUpdated } from '@/lib/toast';
 import { useAuth } from '@/providers/auth-provider';
-import { useEditBooking, type Reservation, type RuleOutcome, type SchedulerRoom } from '@/api/room-booking';
+import { useEditBookingSlot, type Reservation, type RuleOutcome, type SchedulerRoom } from '@/api/room-booking';
 import { usePerson } from '@/api/persons';
 import { useSpaceTree, type SpaceTreeNode } from '@/api/spaces';
 import { formatDayLabel } from '@/lib/format';
@@ -271,18 +271,25 @@ export function DeskSchedulerPage() {
   );
 
   // ── Drag-resize / move ────────────────────────────────────────────
-  const editBooking = useEditBooking();
+  // Phase 1.4: drag/resize/move route through `useEditBookingSlot` so
+  // dragging a non-primary slot of a multi-room booking actually moves
+  // THAT slot, not the booking's primary. Booking-level edits
+  // (host_person_id, attendee_count) still go through `useEditBooking`
+  // — different mutation, different route.
+  const editBookingSlot = useEditBookingSlot();
 
   const persistEdit = useCallback(
     async (
-      reservationId: string,
+      bookingId: string,
+      slotId: string,
       newStartIso: string,
       newEndIso: string,
       newSpaceId?: string,
     ) => {
       try {
-        await editBooking.mutateAsync({
-          id: reservationId,
+        await editBookingSlot.mutateAsync({
+          bookingId,
+          slotId,
           patch: {
             start_at: newStartIso,
             end_at: newEndIso,
@@ -293,11 +300,11 @@ export function DeskSchedulerPage() {
       } catch (e) {
         toastError("Couldn't update booking", {
           error: e,
-          retry: () => persistEdit(reservationId, newStartIso, newEndIso, newSpaceId),
+          retry: () => persistEdit(bookingId, slotId, newStartIso, newEndIso, newSpaceId),
         });
       }
     },
-    [editBooking],
+    [editBookingSlot],
   );
 
   const dragResize = useDragResize({
@@ -305,7 +312,8 @@ export function DeskSchedulerPage() {
     numDays: win.dates.length,
     onComplete: (state) => {
       void persistEdit(
-        state.reservationId,
+        state.bookingId,
+        state.slotId,
         cellToIso(state.newStartCell),
         cellToIso(state.newEndCell + 1),
       );
@@ -317,13 +325,15 @@ export function DeskSchedulerPage() {
     numDays: win.dates.length,
     onComplete: (state) => {
       // Cross-row drop: pass the new space id when the user landed in a
-      // different lane than the one the reservation started in. The
-      // backend's `editOne` already accepts `space_id` in the patch and
-      // re-runs the conflict guard against the destination room.
+      // different lane than the one the slot started in. The slot-edit
+      // RPC accepts `space_id` in the patch and the GiST exclusion
+      // constraint re-runs against the destination space inside the
+      // same transaction.
       const switchedRow =
         state.targetSpaceId && state.targetSpaceId !== state.originSpaceId;
       void persistEdit(
-        state.reservationId,
+        state.bookingId,
+        state.slotId,
         cellToIso(state.newStartCell),
         cellToIso(state.newEndCell + 1),
         switchedRow ? state.targetSpaceId : undefined,
@@ -332,20 +342,25 @@ export function DeskSchedulerPage() {
   });
 
   // Detect collisions for the active drag — used to paint green / red on
-  // the dragged block. We loop the row's reservations and compare.
-  const activeDragSpaceId = (dragResize.active || dragMove.active)
-    ? findSpaceForReservation(
-        (dragResize.active ?? dragMove.active!)!.reservationId,
-        data.reservationsBySpaceId,
-      )
+  // the dragged block. We loop the row's reservations and compare by
+  // slot_id (Phase 1.4) since multi-room bookings would otherwise
+  // collide-self on every drag.
+  const activeDragSlotId = (dragResize.active || dragMove.active)?.slotId ?? null;
+  const activeDragSpaceId = activeDragSlotId
+    ? findSpaceForSlot(activeDragSlotId, data.reservationsBySpaceId)
     : null;
 
   const computeCollision = useCallback(
-    (spaceId: string | null, reservationId: string, newStart: number, newEnd: number) => {
+    (spaceId: string | null, slotId: string, newStart: number, newEnd: number) => {
       if (!spaceId) return false;
       const list = data.reservationsBySpaceId.get(spaceId) ?? [];
       for (const r of list) {
-        if (r.id === reservationId) continue;
+        // Phase 1.4: compare by slot_id, not booking id. With multi-room
+        // bookings, two slots share the same booking id but live in
+        // different rows — using the booking id here would falsely
+        // skip the sibling slot when checking for overlap on the same
+        // row.
+        if (r.slot_id === slotId) continue;
         const start = Math.round((new Date(r.effective_start_at).getTime() - windowStartMs) / msPerCell);
         const end = Math.round((new Date(r.effective_end_at).getTime() - windowStartMs) / msPerCell);
         if (newStart < end && newEnd + 1 > start) return true;
@@ -362,7 +377,7 @@ export function DeskSchedulerPage() {
           spaceId: activeDragSpaceId,
           collide: computeCollision(
             activeDragSpaceId,
-            dragResize.active.reservationId,
+            dragResize.active.slotId,
             dragResize.active.newStartCell,
             dragResize.active.newEndCell,
           ),
@@ -385,7 +400,7 @@ export function DeskSchedulerPage() {
             dragMove.active.targetSpaceId !== activeDragSpaceId,
           collide: computeCollision(
             dragMove.active.targetSpaceId || activeDragSpaceId,
-            dragMove.active.reservationId,
+            dragMove.active.slotId,
             dragMove.active.newStartCell,
             dragMove.active.newEndCell,
           ),
@@ -552,7 +567,17 @@ export function DeskSchedulerPage() {
       endCell: number,
       rowEl: HTMLElement,
     ) => {
-      dragResize.begin(e, { reservationId: r.id, edge, startCell, endCell, rowEl });
+      // Phase 1.4: pass both `bookingId` (= r.id; the booking the slot
+      // belongs to) and `slotId` (= r.slot_id; the per-row identity) so
+      // the drag mutation hits PATCH /reservations/:bookingId/slots/:slotId.
+      dragResize.begin(e, {
+        bookingId: r.id,
+        slotId: r.slot_id,
+        edge,
+        startCell,
+        endCell,
+        rowEl,
+      });
     },
     [dragResize],
   );
@@ -565,7 +590,13 @@ export function DeskSchedulerPage() {
       endCell: number,
       rowEl: HTMLElement,
     ) => {
-      dragMove.begin(e, { reservationId: r.id, startCell, endCell, rowEl });
+      dragMove.begin(e, {
+        bookingId: r.id,
+        slotId: r.slot_id,
+        startCell,
+        endCell,
+        rowEl,
+      });
     },
     [dragMove],
   );
@@ -828,17 +859,24 @@ function resolveBuildingFromSpaceId(
 }
 
 /**
- * Linear scan to find which room a reservation belongs to. Cheap because
- * the visible reservation set is bounded by the window query (default
- * cap 2000 rows).
+ * Phase 1.4 — Bug #2: identity for "which row does this drag belong to"
+ * is now `slot_id`, not `booking.id`. Multi-room bookings have N slots
+ * (one per room) sharing the same booking id but living in DIFFERENT
+ * rows; the booking-id scan would just return the first row it found
+ * (= the primary slot's row), and dragging a non-primary slot would
+ * paint the dragging visual on the primary row instead of the operator's
+ * actual row.
+ *
+ * Cheap because the visible reservation set is bounded by the window
+ * query (default cap 2000 rows).
  */
-function findSpaceForReservation(
-  reservationId: string,
+function findSpaceForSlot(
+  slotId: string,
   index: Map<string, Reservation[]>,
 ): string | null {
   for (const [spaceId, list] of index) {
     for (const r of list) {
-      if (r.id === reservationId) return spaceId;
+      if (r.slot_id === slotId) return spaceId;
     }
   }
   return null;

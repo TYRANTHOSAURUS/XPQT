@@ -287,6 +287,40 @@ export class ReservationController {
     return this.service.editOne(id, actor, dto);
   }
 
+  /**
+   * Phase 1.4 — Bug #2 (slot-first scheduler).
+   *
+   * `PATCH /reservations/:bookingId/slots/:slotId` — edit ONE slot's
+   * geometry (space_id / start_at / end_at). The desk scheduler routes
+   * drag/resize/move here so a non-primary slot of a multi-room booking
+   * actually moves that slot, not the primary (which the legacy
+   * `PATCH /reservations/:id` would do).
+   *
+   * The booking-level `PATCH /reservations/:id` (`editOne`) STAYS for
+   * non-geometry edits (host_person_id, attendee_count). Frontend uses:
+   *   - `useEditBooking`     → booking-level fields
+   *   - `useEditBookingSlot` → drag/resize/move (slot geometry)
+   *
+   * URL contract (codex 2026-05-04 #16): `slot.booking_id` MUST equal
+   * `bookingId` in the URL — enforced inside the service so the
+   * controller doesn't double-load the slot. On mismatch the service
+   * throws `BadRequestException(booking_slot.url_mismatch)`.
+   */
+  @Patch(':bookingId/slots/:slotId')
+  async editSlot(
+    @Req() request: Request,
+    @Param('bookingId') bookingId: string,
+    @Param('slotId') slotId: string,
+    @Body() body: { space_id?: string; start_at?: string; end_at?: string },
+  ) {
+    const actor = await this.actorFromRequest(request);
+    return this.service.editSlot(bookingId, slotId, actor, {
+      space_id: body?.space_id,
+      start_at: body?.start_at,
+      end_at: body?.end_at,
+    });
+  }
+
   @Post(':id/cancel')
   async cancel(
     @Req() request: Request,

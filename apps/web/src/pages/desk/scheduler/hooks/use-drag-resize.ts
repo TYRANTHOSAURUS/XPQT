@@ -9,12 +9,20 @@ import { useCallback, useRef, useState } from 'react';
  * Emits a live {newStartCell, newEndCell} during drag; the row component
  * paints a green / red border based on whether the path collides with any
  * other event on the same row.
+ *
+ * Phase 1.4 (slot-first scheduler): ResizeState carries both `bookingId`
+ * AND `slotId`. The legacy single `reservationId` (= booking id) couldn't
+ * disambiguate slots in a multi-room booking — using only the booking id
+ * routed every resize through the booking's primary slot. The scheduler
+ * PATCHes `/reservations/:bookingId/slots/:slotId`, so both ids are
+ * needed in the completion payload.
  */
 
 export type ResizeEdge = 'start' | 'end';
 
 export interface ResizeState {
-  reservationId: string;
+  bookingId: string;
+  slotId: string;
   edge: ResizeEdge;
   newStartCell: number;
   newEndCell: number;
@@ -30,7 +38,8 @@ export function useDragResize(opts: {
 
   const [active, setActive] = useState<ResizeState | null>(null);
   const ctxRef = useRef<{
-    reservationId: string;
+    bookingId: string;
+    slotId: string;
     edge: ResizeEdge;
     fixedStartCell: number;
     fixedEndCell: number;
@@ -49,7 +58,8 @@ export function useDragResize(opts: {
 
   const begin = useCallback(
     (e: React.PointerEvent<HTMLElement>, args: {
-      reservationId: string;
+      bookingId: string;
+      slotId: string;
       edge: ResizeEdge;
       startCell: number;
       endCell: number;
@@ -59,14 +69,16 @@ export function useDragResize(opts: {
       e.preventDefault();
       args.rowEl.setPointerCapture(e.pointerId);
       ctxRef.current = {
-        reservationId: args.reservationId,
+        bookingId: args.bookingId,
+        slotId: args.slotId,
         edge: args.edge,
         fixedStartCell: args.startCell,
         fixedEndCell: args.endCell,
         rowEl: args.rowEl,
       };
       setActive({
-        reservationId: args.reservationId,
+        bookingId: args.bookingId,
+        slotId: args.slotId,
         edge: args.edge,
         newStartCell: args.startCell,
         newEndCell: args.endCell,
@@ -88,7 +100,8 @@ export function useDragResize(opts: {
         // any visible explanation — looks like a broken drag.
         const newStart = Math.min(cell, ctx.fixedEndCell - 1);
         setActive({
-          reservationId: ctx.reservationId,
+          bookingId: ctx.bookingId,
+          slotId: ctx.slotId,
           edge: 'start',
           newStartCell: newStart,
           newEndCell: ctx.fixedEndCell,
@@ -96,7 +109,8 @@ export function useDragResize(opts: {
       } else {
         const newEnd = Math.max(cell, ctx.fixedStartCell + 1);
         setActive({
-          reservationId: ctx.reservationId,
+          bookingId: ctx.bookingId,
+          slotId: ctx.slotId,
           edge: 'end',
           newStartCell: ctx.fixedStartCell,
           newEndCell: newEnd,
@@ -119,13 +133,15 @@ export function useDragResize(opts: {
       const next: ResizeState =
         ctx.edge === 'start'
           ? {
-              reservationId: ctx.reservationId,
+              bookingId: ctx.bookingId,
+              slotId: ctx.slotId,
               edge: 'start',
               newStartCell: Math.min(cell, ctx.fixedEndCell),
               newEndCell: ctx.fixedEndCell,
             }
           : {
-              reservationId: ctx.reservationId,
+              bookingId: ctx.bookingId,
+              slotId: ctx.slotId,
               edge: 'end',
               newStartCell: ctx.fixedStartCell,
               newEndCell: Math.max(cell, ctx.fixedStartCell),

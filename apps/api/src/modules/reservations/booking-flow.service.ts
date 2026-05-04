@@ -822,6 +822,10 @@ function bookingToLegacyReservation(
     // consumers can address a specific room. `''` only when the caller
     // has no slot id yet (rare; create_booking always returns one).
     slot_id: slotId ?? '',
+    // Phase 1.4: explicit booking-grouping field (= booking.id today,
+    // emitted separately so list dedup/grouping consumers don't conflate
+    // it with the per-slot key). Mirrors reservation-projection.ts.
+    booking_id: booking.id,
     tenant_id: booking.tenant_id,
     // The legacy `reservation_type` is `'room' | 'desk' | 'parking' | 'other'`;
     // the new slot_type is `'room' | 'desk' | 'asset' | 'parking'`. Map

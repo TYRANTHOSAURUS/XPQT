@@ -171,6 +171,14 @@ export interface Reservation {
    * Reservation interface (apps/api/src/modules/reservations/dto/types.ts).
    */
   slot_id: string;
+  /**
+   * Phase 1.4 prep — explicit booking-grouping field. Same value as
+   * `id` today (the booking id) but emitted as its own key so list
+   * consumers that dedup or group by booking (Phase 1.2 cursor pagination,
+   * /desk/bookings cards, command palette) don't conflate it with the
+   * per-slot key. Mirrors the API projection (reservation-projection.ts).
+   */
+  booking_id: string;
   tenant_id: string;
   // `module_number` is intentionally omitted post-canonicalisation (2026-05-02).
   // The legacy `reservations.module_number` column lived on the dropped

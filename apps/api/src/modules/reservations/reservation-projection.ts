@@ -76,6 +76,10 @@ export function slotAndBookingToReservation(
   return {
     id: booking.id,                                // BREAKING — was reservations.id
     slot_id: slot.id,                              // canonical booking_slots.id (NEW; post-/full-review I2 fix)
+    booking_id: booking.id,                        // Phase 1.4: explicit booking grouping field — same value as `id`
+                                                   //   today, emitted separately so list dedup/grouping consumers
+                                                   //   (Phase 1.2 cursor pagination, /desk/bookings cards, command
+                                                   //   palette) don't conflate it with the per-slot key.
     tenant_id: booking.tenant_id,
     // 00277:122 enumerates room/desk/asset/parking; legacy ReservationType
     // included 'other' which we map back from 'asset' so consumers checking

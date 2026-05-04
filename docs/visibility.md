@@ -128,3 +128,11 @@ Update this document in the same PR as any change to:
 - `apps/api/src/modules/visitors/visitor.service.ts` — read paths use `visitor_visibility_ids` as the canonical predicate; changes to the read shape or the supplementary scope filters belong here.
 - Any migration that alters: `ticket_visibility_ids`, `visitor_visibility_ids`, `expand_space_closure`, `user_has_permission`, `users`, `user_role_assignments`, `team_members`, `roles`, or the tickets/visitors columns used by either predicate.
 - New permission strings on `roles.permissions` (especially the `visitors.*` family).
+
+## 11. Slot vs. booking visibility
+
+Phase 1.4 (slot-first scheduler, 2026-05-04) introduced a slot-targeted edit path (`PATCH /reservations/:bookingId/slots/:slotId`) but did NOT introduce a slot-level visibility gate. Slot-level visibility derives entirely from booking-level: a user who passes `assertVisible(reservation, ctx)` against the parent booking can read all of its slots, and a user who passes `canEdit(reservation, ctx)` can `editSlot` on any of its slots — the booking is the unit of authorisation.
+
+Concretely, `ReservationService.editSlot(bookingId, slotId, actor, patch)` runs the auth gate against the parent booking (via `findByIdOrThrow(bookingId, tenantId)` + `assertVisible` + `canEdit`) BEFORE the RPC fires. There is no per-slot ACL or per-slot read filter — and we don't expect to add one: multi-room bookings are designed to be atomic, so a user who can edit "the booking" can edit any of its slots.
+
+The slot-edit RPC (`edit_booking_slot`, 00291) double-checks tenant scope at the row level (the `tenant_id` filter on the `booking_slots` update), but tenant scope is not a visibility gate — it's the cross-tenant isolation invariant. The reservation visibility gate (`rooms.read_all` / `rooms.write_all` / `rooms.admin` / requester / host / booker) is the visibility model and applies booking-wide.

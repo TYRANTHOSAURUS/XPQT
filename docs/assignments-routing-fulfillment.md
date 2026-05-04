@@ -1044,3 +1044,41 @@ Any change to these requires updating this section:
 - `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
 - `apps/api/src/modules/approval/approval.service.ts:handleBookingApprovalDecided` (dispatch to bundle service; renamed from `handleBookingBundleApprovalDecided` when the canonical `'booking'` `target_entity_type` was introduced — see G2 spec refresh)
 - Migrations changing `service_rules`, `location_service_routing`, `resolve_setup_routing`, or `order_line_items.pending_setup_trigger_args`
+
+---
+
+## §26 — Identity rules across the booking ↔ work-order surface
+
+The desk scheduler can manipulate three different things and they each have a different "id" — confusing them is the bug-class Phase 1.4 was designed to fix.
+
+| Concept | Postgres key | What it represents | Mutation surface |
+|---|---|---|---|
+| **Booking** | `bookings.id` | The header / atomic group. Multi-room bookings are ONE booking with N slots. Approvals, services, and recurrence link here. | `PATCH /reservations/:id` (booking-level fields: host_person_id, attendee_count, attendee_person_ids). Frontend hook: `useEditBooking`. |
+| **Booking slot** | `booking_slots.id` | The unit of calendar interaction — one held resource (room/desk/asset/parking). What an operator drags / resizes / moves on the desk scheduler. Multi-room bookings have N of these. | `PATCH /reservations/:bookingId/slots/:slotId` (slot geometry: space_id, start_at, end_at). Frontend hook: `useEditBookingSlot`. RPC: `edit_booking_slot` (00291). |
+| **Work order** | `work_orders.id` | The unit of dispatch — one fulfillment ticket against a vendor or internal team. A booking can have 0..N. | `PATCH /tickets/:id` (assignment, plan, status). |
+
+### Slot-edit mirror invariant (00291 `edit_booking_slot` RPC)
+
+After updating any slot of a booking B, atomically inside the same Postgres transaction:
+
+- `bookings.start_at = MIN(start_at)` across all slots of that booking.
+- `bookings.end_at = MAX(end_at)` across all slots of that booking.
+- `bookings.location_id = (patch->>'space_id')::uuid` ONLY when the edited slot is the booking's **PRIMARY** (lowest `display_order`, ties broken by `created_at` ascending — NOT just `display_order = 0`) AND the patch carries a `space_id`. For non-primary slot space changes, the booking's `location_id` is left as-is.
+
+URL contract (codex 2026-05-04 #16): the slot-edit endpoint asserts `slot.booking_id === bookingId` from the URL. Mismatch → `400 booking_slot.url_mismatch`. The check lives in the service layer (not just the controller) so a single round-trip handles not-found / url-mismatch / write paths.
+
+GiST exclusion (`booking_slots_no_overlap`, 00277:211-217) propagates as `SQLSTATE 23P01` from the RPC; the API maps it to `ConflictException(booking.slot_conflict)`.
+
+### Cursor / order-by rule (anticipates Phase 1.2)
+
+Any list endpoint that orders by `booking_slots.id` MUST cursor by it too. Mixing "order by slot id" with a cursor that encodes "booking id" is the pagination identity collision Phase 1.2 fixes — one endpoint, one identity. If a list reads from `booking_slots`, the projection should expose both `id` (= `bookings.id`) AND `slot_id` (= `booking_slots.id`) AND `booking_id` (= `bookings.id`, named explicitly for grouping/dedup); cursors and React keys then pick the matching field at the right layer.
+
+### Trigger additions for §26
+
+Any change to these requires updating §26:
+
+- `apps/api/src/modules/reservations/reservation.service.ts:editSlot`
+- `apps/api/src/modules/reservations/reservation.controller.ts` (the `:bookingId/slots/:slotId` route)
+- `apps/api/src/modules/reservations/reservation-projection.ts` (the `booking_id` field, the `slot_id` field)
+- `apps/web/src/api/room-booking/mutations.ts` (`useEditBookingSlot`, `useEditBooking`)
+- Any migration that adds or alters `edit_booking_slot`, `bookings.location_id`, `bookings.start_at`/`end_at`, or `booking_slots.display_order`.

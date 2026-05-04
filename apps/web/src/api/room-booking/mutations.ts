@@ -15,6 +15,11 @@ function invalidateAfterWrite(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
+  // Unified scheduler-data bucket (rooms + reservations in one round-trip).
+  // Phase 1.4 wires the desk scheduler against this key, so any geometry
+  // mutation must invalidate it alongside the legacy scheduler-window
+  // bucket.
+  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-data'] });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'availability'] });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'find-time'] });
 }
@@ -76,6 +81,15 @@ export function useMultiRoomBooking() {
   });
 }
 
+/**
+ * Booking-LEVEL edit. Use for fields that are not slot geometry —
+ * `host_person_id`, `attendee_count`, `attendee_person_ids`. Routes to
+ * the legacy `PATCH /reservations/:id` which only edits the booking's
+ * PRIMARY slot (lowest display_order). For slot-geometry edits in a
+ * multi-room context, use `useEditBookingSlot` below — that's the path
+ * the desk scheduler drag/resize/move hits so a non-primary slot
+ * actually moves the slot the operator clicked.
+ */
 export function useEditBooking() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -91,6 +105,42 @@ export function useEditBooking() {
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
+      invalidateAfterWrite(queryClient);
+    },
+  });
+}
+
+/**
+ * SLOT-targeted geometry edit (Phase 1.4 — Bug #2: slot-first scheduler).
+ *
+ * Use this for any drag / resize / move on the desk scheduler — anywhere
+ * the operator manipulates a specific slot's space / start / end. Routes
+ * to `PATCH /reservations/:bookingId/slots/:slotId` so a non-primary
+ * slot of a multi-room booking actually moves THAT slot, not the
+ * booking's primary.
+ *
+ * The booking-level mirror (start_at / end_at / location_id) is
+ * recomputed atomically on the server inside the `edit_booking_slot`
+ * RPC (00291) — there's no separate booking write to issue from the
+ * client.
+ *
+ * For booking-level fields (host_person_id, attendee_count), use
+ * `useEditBooking` instead.
+ */
+export function useEditBookingSlot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bookingId, slotId, patch }: {
+      bookingId: string;
+      slotId: string;
+      patch: Partial<Pick<Reservation, 'space_id' | 'start_at' | 'end_at'>>;
+    }) =>
+      apiFetch<Reservation>(`/reservations/${bookingId}/slots/${slotId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.bookingId) });
       invalidateAfterWrite(queryClient);
     },
   });
