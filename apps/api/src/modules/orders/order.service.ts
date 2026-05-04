@@ -1201,10 +1201,20 @@ export class OrderService {
     unit: 'per_item' | 'per_person' | 'flat_rate';
     fulfillment_team_id: string | null;
   }> {
+    // Plan A.4 / Commit 11 (N2) / round-4 codex flag order.service.ts:1148-1169.
+    // Read-side leak: loadCatalogItem queried by `id` only, no tenant
+    // filter. catalog_items is tenant-owned; supabase.admin bypasses
+    // RLS. A foreign-tenant catalog id (passed via DTO and not yet
+    // validated upstream) would resolve to that tenant's row, leaking
+    // category / price / fulfillment_team_id. Add the explicit tenant
+    // filter — defense-in-depth that doesn't depend on every caller
+    // having validated the id first.
+    const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
       .from('catalog_items')
       .select('id, category, price_per_unit, unit, fulfillment_team_id')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (error) throw error;
     if (!data) throw new NotFoundException({ code: 'catalog_item_not_found', message: `Catalog item ${id} not found.` });
