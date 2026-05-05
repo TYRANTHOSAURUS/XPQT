@@ -122,6 +122,17 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   };
   if (etag) headers['If-None-Match'] = etag;
 
+  // v8.1 invariant (B.0.E.2): apiFetch does NOT generate an
+  // `X-Client-Request-Id` header. The id belongs at the
+  // mutation-attempt scope, not the fetch scope, because React Query
+  // retries call mutationFn → apiFetch again, which would produce a
+  // fresh UUID per retry and defeat idempotency. Producer mutation
+  // hooks (`useCreateBooking`, `useGrantBookingApproval`, etc.)
+  // generate the id ONCE per `mutate()` and pass it explicitly via
+  // `options.headers` so all retries of that attempt reuse it.
+  // See docs/superpowers/specs/2026-05-04-domain-outbox-design.md §3.3
+  // and the regression test at src/lib/__tests__/api.spec.ts.
+
   let res: Response;
   try {
     res = await fetch(url, { ...init, headers });
