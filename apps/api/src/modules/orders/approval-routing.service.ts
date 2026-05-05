@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import type { AttachPlanApproval } from '../booking-bundles/attach-plan.types';
+import { planUuid } from '../booking-bundles/plan-uuid';
+import { comparePlanApprovals } from '../booking-bundles/plan-sort';
 import type {
   ApproverTarget,
   ServiceRuleOutcome,
@@ -133,6 +136,89 @@ export class ApprovalRoutingService {
       out.push(result);
     }
     return out;
+  }
+
+  /**
+   * Plan-only variant of `assemble` for the combined-RPC path
+   * (`create_booking_with_attach_plan`). Returns the same logical rows the
+   * existing `assemble` would have written — but does NOT write them. The
+   * combined RPC inserts the rows atomically alongside booking + slots +
+   * orders + OLIs + asset_reservations.
+   *
+   * Spec: §7.5 of docs/superpowers/specs/2026-05-04-domain-outbox-design.md.
+   *
+   * Differences from `assemble`:
+   *   - `target_entity_type` is narrowed to `'booking'` (the combined RPC
+   *     only ever inserts booking-anchored approvals; the standalone-order
+   *     path keeps using `assemble`).
+   *   - Caller MUST pass `idempotencyKey` so each row's `id` is derived
+   *     deterministically via `planUuid(key, 'approval', approver_person_id)`.
+   *     Two retries with the same idempotencyKey produce byte-identical
+   *     approval ids.
+   *   - Output is canonically sorted by `approver_person_id` so two retries
+   *     with shuffled inputs produce byte-identical plan jsonb.
+   *   - No DB writes; the combined RPC owns insertion + the unique-index
+   *     dedup safety net.
+   *
+   * Why the existing `assemble` stays. Several non-attach call sites still
+   * write approvals directly — `OrderService.createStandaloneOrder` is the
+   * leading example, plus any future `onApprovalDecided` re-fire path. They
+   * keep using `assemble` until each migrates onto its own RPC.
+   */
+  async assemblePlan(
+    args: AssembleApprovalsArgs & {
+      target_entity_type: 'booking';
+      idempotencyKey: string;
+    },
+  ): Promise<AttachPlanApproval[]> {
+    const tuples = await this.collectApproverTuples(args);
+    if (tuples.length === 0) return [];
+
+    // Step 3 (mirrors assemble): group by approver_person_id, build merged
+    // scope_breakdown.
+    const grouped = new Map<
+      string,
+      {
+        scope: ApprovalScope;
+        reasons: Array<{ rule_id: string; denial_message: string | null }>;
+      }
+    >();
+    for (const t of tuples) {
+      const entry = grouped.get(t.approver_person_id) ?? {
+        scope: {},
+        reasons: [],
+      };
+      mergeScopeInto(entry.scope, t.scope);
+      // Dedup reasons by rule_id within this group — repeating a rule_id
+      // across N lines yields the same reason once.
+      if (!entry.reasons.some((r) => r.rule_id === t.rule_id)) {
+        entry.reasons.push({ rule_id: t.rule_id, denial_message: t.denial_message });
+      }
+      grouped.set(t.approver_person_id, entry);
+    }
+
+    // Step 4 — build plan rows + canonical sort. The stableIndex IS the
+    // approver_person_id (§7.4 v8 row-kind table); sort applies the
+    // determinism invariant on output.
+    const rows: AttachPlanApproval[] = [];
+    for (const [approverPersonId, entry] of grouped) {
+      rows.push({
+        id: planUuid(args.idempotencyKey, 'approval', approverPersonId),
+        target_entity_type: 'booking',
+        target_entity_id: args.target_entity_id,
+        approver_person_id: approverPersonId,
+        scope_breakdown: {
+          reservation_ids: entry.scope.reservation_ids ?? [],
+          order_ids: entry.scope.order_ids ?? [],
+          order_line_item_ids: entry.scope.order_line_item_ids ?? [],
+          ticket_ids: entry.scope.ticket_ids ?? [],
+          asset_reservation_ids: entry.scope.asset_reservation_ids ?? [],
+          reasons: entry.reasons,
+        },
+        status: 'pending',
+      });
+    }
+    return rows.sort(comparePlanApprovals);
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
