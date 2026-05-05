@@ -2249,6 +2249,18 @@ interface HydratedLine {
 // orders, and any pre-deny approvals routed by ApprovalRoutingService.
 // The booking row stays as-is on rollback (it's the user's room
 // reservation; deleting it because services failed would surprise them).
+//
+// @deprecated B.0 cutover replaced this with the combined RPC
+// `create_booking_with_attach_plan` (00309), which is atomic at the
+// Postgres layer — no in-process compensation needed. The single-room
+// path (BookingFlowService.create) no longer hits this Cleanup class.
+// The multi-room path (multi-room-booking.service.ts:300-329) still
+// calls `attachServicesToBooking` (which uses Cleanup) because
+// multi-room hasn't been cut over to a combined RPC yet; that's
+// part of Phase 6 hardening backlog (spec §10X). Once multi-room is
+// migrated to a combined RPC, delete this class + the entire
+// `attachServicesToBooking` method per spec §16.1 step 6 + 17.
+// Tracked in `docs/follow-ups/b0-legacy-cleanup.md`.
 class Cleanup {
   private orderIds: string[] = [];
   private oliIds: string[] = [];

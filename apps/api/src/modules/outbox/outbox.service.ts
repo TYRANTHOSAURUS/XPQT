@@ -7,17 +7,16 @@ import type { OutboxEventInput } from './outbox.types';
  *
  * Spec: docs/superpowers/specs/2026-05-04-domain-outbox-design.md §3.2.
  *
- * Two methods, two semantics:
- *
- *   1. `emit()` — fire-and-forget. NOT transactional. Failures logged, never
- *      thrown. Use ONLY for best-effort post-commit operations (notifications,
- *      webhook delivery hints). Anything where loss of the event corrupts
- *      state belongs in a row-trigger or in an RPC body that calls
- *      `outbox.emit` directly (spec §1).
- *
- *   2. `markConsumed()` — lease consumption. THROWS on RPC error. The success
- *      path NEEDS this to succeed or a watchdog handler fires a false-positive
- *      ~30s later. Used by RPC-emitting producers to ack the lease.
+ * @deprecated B.0 cutover — `markConsumed()` and the v3/v4 lease semantics
+ * it documents are obsolete. The new producer surface is `outbox.emit()`
+ * called directly from inside RPC bodies (combined RPC, grant_booking
+ * _approval, approve_booking_setup_trigger, create_setup_work_order_from
+ * _event). `OutboxService.emit()` survives as a fire-and-forget producer
+ * for future best-effort emissions but currently has zero callers; spec
+ * §11 open question 4 keeps it for now. Scheduled for cleanup per
+ * spec §16.1: delete `markConsumed`, prune the lease-era prose, narrow
+ * the file to the fire-and-forget emit only. Tracked in
+ * `docs/follow-ups/b0-legacy-cleanup.md`.
  */
 @Injectable()
 export class OutboxService {
@@ -60,9 +59,15 @@ export class OutboxService {
   }
 
   /**
-   * Marks a lease event consumed (spec §2.5). THROWS on RPC error — the
-   * caller's success-path semantics require this round-trip to succeed.
-   * Returns true when a row was updated, false on idempotent re-call.
+   * Marks a lease event consumed (spec §2.5).
+   *
+   * @deprecated B.0 cutover retired the lease-based watchdog flow that
+   * required a separate consumer-side ack. Producer RPCs now write the
+   * outbox row in the same tx as their domain mutation, so there's no
+   * lease to consume. This method has zero call sites in non-test code
+   * (verified 2026-05-04). Scheduled for deletion per spec §16.1
+   * step 1; tracked in `docs/follow-ups/b0-legacy-cleanup.md`. Do NOT
+   * add new callers — write your producer as a combined RPC instead.
    */
   async markConsumed(input: {
     tenantId: string;

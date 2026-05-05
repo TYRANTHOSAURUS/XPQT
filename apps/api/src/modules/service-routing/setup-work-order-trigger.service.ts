@@ -42,6 +42,16 @@ export class SetupWorkOrderTriggerService {
    * (or null if no team was configured at this combo, or if the create
    * failed — both states are audited internally so callers don't need to
    * branch on the response).
+   *
+   * @deprecated B.0 cutover replaced this code path with the
+   * outbox-driven flow: combined RPC emits a
+   * `setup_work_order.create_required` event; SetupWorkOrderHandler
+   * consumes via `create_setup_work_order_from_event` RPC (00312) which
+   * inserts the WO + dedup row atomically. Two callers remain (bundle
+   * legacy attach + standalone-order createStandaloneOrder); both are
+   * Phase 6 hardening backlog per spec §10X. Schedule for deletion per
+   * spec §16.1 step 6 once those paths cut over. Tracked in
+   * `docs/follow-ups/b0-legacy-cleanup.md`.
    */
   async trigger(args: TriggerArgs): Promise<{ ticket_id: string } | null> {
     // Outer try/catch: caller fires this AFTER bundle/order commit. Any
@@ -146,6 +156,9 @@ export class SetupWorkOrderTriggerService {
    * Fire the trigger for many lines in parallel. Order of args doesn't
    * matter — each result is independent. Use this from creation hot paths
    * to avoid sequential round trips.
+   *
+   * @deprecated See {@link trigger} for the cutover context. Schedule
+   * for deletion in spec §16.1 step 6.
    */
   async triggerMany(argsList: TriggerArgs[]): Promise<Array<{ ticket_id: string } | null>> {
     if (argsList.length === 0) return [];
