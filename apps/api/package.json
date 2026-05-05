@@ -11,7 +11,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "smoke:work-orders": "node scripts/smoke-work-orders.mjs"
+    "smoke:work-orders": "node scripts/smoke-work-orders.mjs",
+    "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",
