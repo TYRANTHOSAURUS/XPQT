@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Inject, InternalServerErrorException, forwardRef } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
@@ -31,6 +32,53 @@ export interface RespondDto {
   comments?: string;
 }
 
+/**
+ * Minimal shape of an approvals row read from `select('*')`. Used by the
+ * B.0.D.3 cutover so the booking-target dispatcher has typed access to
+ * the fields it needs without loosely typing the whole module on
+ * `Record<string, unknown>`.
+ */
+interface ApprovalRow {
+  id: string;
+  tenant_id: string;
+  target_entity_type: string;
+  target_entity_id: string;
+  parallel_group: string | null;
+  approval_chain_id: string | null;
+  status: string;
+  step_number?: number | null;
+  comments?: string | null;
+  approver_person_id: string | null;
+  approver_team_id: string | null;
+}
+
+/**
+ * Possible outcomes of `grant_booking_approval` (00310 / spec §10.1).
+ * Mirrors the jsonb `kind` field the RPC returns.
+ */
+type GrantBookingApprovalResult =
+  | { kind: 'non_booking_approved'; approval_id: string; target_entity_type: string }
+  | { kind: 'already_responded'; approval_id: string; prior_status: string }
+  | { kind: 'partial_approved'; approval_id: string; remaining: number }
+  | {
+      kind: 'resolved';
+      approval_id: string;
+      booking_id: string;
+      final_decision: 'approved' | 'rejected';
+      new_status: 'confirmed' | 'cancelled';
+      slots_transitioned: number;
+      booking_transitioned: boolean;
+      setup_emit: { emitted_count: number; skipped_cancelled?: number; skipped_no_args?: number; reason?: string };
+    };
+
+/**
+ * `respond` return shape — pre-cutover this was the post-CAS approvals
+ * row. Post-cutover the booking branch returns the RPC's structured
+ * outcome (one of the four `kind` shapes above). The non-booking branch
+ * still returns the approvals row.
+ */
+type RespondReturn = ApprovalRow | GrantBookingApprovalResult;
+
 @Injectable()
 export class ApprovalService {
   constructor(
@@ -38,6 +86,12 @@ export class ApprovalService {
     @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
     @Inject(forwardRef(() => BookingNotificationsService))
     private readonly bookingNotifications: BookingNotificationsService,
+    // BundleService is no longer called from approval.service after the
+    // B.0.D.3 cutover (the `grant_booking_approval` RPC subsumes
+    // BundleService.onApprovalDecided's effects atomically). The DI
+    // wiring stays for `attachServicesToBooking` which other modules
+    // call directly; we void the field below to satisfy noUnusedLocals
+    // until a future refactor removes it from this constructor.
     @Inject(forwardRef(() => BundleService))
     private readonly bundleService: BundleService,
     // VisitorService — slice 3 wiring for `target_entity_type='visitor_invite'`.
@@ -46,7 +100,10 @@ export class ApprovalService {
     // InvitationService writes the approvals row at invite time).
     @Inject(forwardRef(() => VisitorService))
     private readonly visitorService: VisitorService,
-  ) {}
+  ) {
+    // Kept on the class for DI compatibility — see comment above.
+    void this.bundleService;
+  }
 
   /**
    * Resolve a Supabase auth uid to the caller's user/person identity within
@@ -349,12 +406,32 @@ export class ApprovalService {
    * caller's auth uid — never trust them from the request body. We verify the
    * caller is either the named approver, on the approver team, or holds an
    * active delegation from the named approver.
+   *
+   * B.0.D.3 cutover (spec §10.1): for `target_entity_type='booking'` this
+   * method is now a planner/dispatcher. State validation + auth gate runs
+   * in TS, then the atomic `grant_booking_approval` RPC commits the
+   * approval CAS update + slot/booking transitions + setup-WO outbox
+   * emit in ONE transaction. The previous five-HTTP-call sequence
+   * (approval row UPDATE → booking_slots UPDATE → bookings UPDATE →
+   * bundle cascade claim RPC → trigger emit) was the headline lie the
+   * v6 spec called out: there was no transaction wrapping those, so a
+   * mid-flow crash left the approval row `approved` while slots stayed
+   * `pending_approval`. Now: one atomic boundary.
+   *
+   * Notifications fan-out (BookingNotificationsService.onApprovalDecided)
+   * stays in TS post-RPC — that's a vendor email call which can take
+   * seconds and shouldn't extend the booking-level advisory lock.
+   *
+   * Ticket and visitor_invite branches keep their existing TS-orchestrated
+   * paths because their downstream effects don't have a multi-row
+   * transition to coordinate atomically.
    */
   async respond(
     approvalId: string,
     dto: RespondDto,
     respondingPersonId: string,
     respondingUserId?: string,
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -373,6 +450,25 @@ export class ApprovalService {
     if (!allowed) {
       throw new ForbiddenException('You are not an approver for this request');
     }
+
+    // ── Booking branch — B.0.D.3 cutover to grant_booking_approval RPC ──
+    if (approval.target_entity_type === 'booking') {
+      return this.grantBookingApproval(
+        approval as ApprovalRow,
+        dto,
+        respondingPersonId,
+        respondingUserId,
+        clientRequestId,
+      );
+    }
+
+    // ── Non-booking branches — unchanged from pre-B.0.D.3 ──
+    //
+    // The approval row CAS update + downstream dispatch stay in TS for
+    // tickets and visitor_invites because their downstream effects
+    // (TicketService.onApprovalDecision, VisitorService.onApprovalDecided)
+    // are individually atomic per-row. Spec §10.1 explicitly excludes
+    // these from the atomic-RPC cutover.
 
     // CAS — codex 2026-04-30 review found a read-then-unconditional-write
     // race: two concurrent respond() calls can both pass the read-side
@@ -422,29 +518,6 @@ export class ApprovalService {
       }
     }
 
-    // For bookings (and standalone orders, which also use
-    // target_entity_type='booking' post-canonicalisation): transition the
-    // booking + linked orders, fire deferred work orders, notify the
-    // requester. The pre-rewrite split (reservation vs. booking_bundle)
-    // collapses into one `'booking'` branch since the booking IS the
-    // bundle (00277:27). Parallel/chain semantics live inside the handler.
-    //
-    // 00278:163-165 backfills any legacy `'reservation'` / `'booking_bundle'`
-    // rows to `'booking'`, so this single branch covers both old and new
-    // data uniformly. The dispatcher used to invoke separate
-    // `handleReservationApprovalDecided` + `handleBookingBundleApprovalDecided`
-    // codepaths; the merged handler invokes BOTH downstream effects so we
-    // (a) flip the booking_slots/bookings status to confirmed/cancelled
-    // (the old reservation handler's job) and (b) flip the orders + fire
-    // deferred internal-setup (the old bundle handler's job).
-    if (approval.target_entity_type === 'booking') {
-      try {
-        await this.handleBookingApprovalDecided(approval, dto);
-      } catch (err) {
-        console.error('[approval] booking notification failed', err);
-      }
-    }
-
     // For visitor invites (slice 3 — visitor management v1 §11.3):
     // dispatch to VisitorService.onApprovalDecided which:
     //   - on 'approved': transitions visitor pending_approval → expected
@@ -488,173 +561,192 @@ export class ApprovalService {
   }
 
   /**
-   * Merged booking approval handler. Post-canonicalisation (2026-05-02):
-   * the booking IS the bundle (00277:27), so a single approval target —
-   * `target_entity_type='booking'` — covers what used to be split between
-   * the `'reservation'` and `'booking_bundle'` branches. We:
+   * B.0.D.3 — booking-target approval grant. Calls the atomic
+   * `grant_booking_approval` RPC (00310 / spec §10.1) which:
+   *   - Locks the approval row (advisory + FOR UPDATE)
+   *   - Validates target_entity_type='booking' + status='pending'
+   *   - Applies the CAS update on the approval row
+   *   - Resolves booking-level decision (parallel/sequential semantics)
+   *   - Transitions booking_slots + bookings status from
+   *     pending_approval → confirmed | cancelled
+   *   - Expires sibling pending approvals on rejection
+   *   - Emits setup_work_order.create_required outbox events for
+   *     non-cancelled OLIs (calls approve_booking_setup_trigger
+   *     internally via PERFORM — same tx)
+   *   - Inserts a domain_events row for the approval decision
+   * All in one Postgres transaction. If any step fails, the whole tx
+   * rolls back; the user sees a 4xx/5xx and the approval row stays
+   * pending — no four-way state divergence.
    *
-   *   1. Resolve the final decision using the strictest topology rule
-   *      across single-step / parallel / sequential / mixed approvals
-   *      (every approval row on the target must be `approved` or
-   *      `expired` — see `areAllTargetApprovalsApproved` for why
-   *      `expired` counts).
-   *   2. Flip the booking_slots' status from pending_approval →
-   *      confirmed | cancelled (per-slot status, 00277:142-144). For
-   *      v1 single-slot bookings this is one row; for multi-slot,
-   *      every pending_approval slot transitions together.
-   *   3. Mirror to bookings.status (booking-level, 00277:49-51) so list
-   *      endpoints reflect the change.
-   *   4. Re-read the booking via the slot+booking projection helper
-   *      (the notification consumer still takes the legacy `Reservation`
-   *      shape) and dispatch the requester email via
-   *      BookingNotificationsService.onApprovalDecided.
-   *   5. Cascade through BundleService.onApprovalDecided to flip linked
-   *      orders + fire deferred internal-setup work orders.
+   * Possible RPC outcomes (jsonb `kind` field):
+   *   - 'non_booking_approved' — defensive (we already filtered on
+   *     target_entity_type='booking' in respond(), but the RPC
+   *     re-checks).
+   *   - 'already_responded' — race: another caller decided between our
+   *     read and the RPC's lock. We map to BadRequestException with
+   *     the existing 'Approval already responded to' message so the
+   *     UX matches the pre-cutover behavior.
+   *   - 'partial_approved' — multi-approver bundle, this approver's
+   *     decision committed but more peers' decisions are still pending.
+   *     Return as-is to the controller (the frontend renders "thanks,
+   *     waiting on others"; was the same pre-cutover via the
+   *     handleBookingApprovalDecided early return).
+   *   - 'resolved' — final-decision committed; slots + bookings flipped.
    *
-   * Why the merger is safe: orders attach to bookings via
-   * orders.booking_id (00278:109). Any order linked to this approval's
-   * booking is the same set previously found via the legacy
-   * `target_entity_type='booking_bundle'` lookup — under canonicalisation
-   * those are the same id.
-   *
-   * Resolution rules:
-   *   - Any rejection ends the approval immediately ('rejected'). Sibling
-   *     pending peers are expired by `BundleService.onApprovalDecided`
-   *     to keep approvers' queues clean.
-   *   - Otherwise: every approval row on the same `target_entity_id`
-   *     must be in `approved` or `expired` status. If any is still
-   *     `pending` (or defensively `rejected`), return — the next peer's
-   *     grant will re-enter this handler.
+   * Post-RPC best-effort:
+   *   - BookingNotificationsService.onApprovalDecided fan-out (the
+   *     requester email) runs in TS so it doesn't hold the
+   *     booking-level advisory lock during a vendor email round-trip.
+   *     A failure here does NOT roll the approval back — the user has
+   *     already seen success in their queue.
    */
-  private async handleBookingApprovalDecided(
-    approval: { id: string; target_entity_id: string; parallel_group: string | null;
-                approval_chain_id: string | null; comments?: string | null },
+  private async grantBookingApproval(
+    approval: ApprovalRow,
     dto: RespondDto,
-  ): Promise<void> {
+    respondingPersonId: string,
+    respondingUserId: string | undefined,
+    clientRequestId: string | undefined,
+  ): Promise<RespondReturn> {
     const tenant = TenantContext.current();
+    const idempotencyKey = `approval.grant:${approval.id}:${clientRequestId ?? randomUUID()}`;
 
-    let finalDecision: 'approved' | 'rejected';
-    if (dto.status === 'rejected') {
-      finalDecision = 'rejected';
-    } else {
-      const allResolved = await this.areAllTargetApprovalsApproved(
-        approval.target_entity_id,
-      );
-      if (!allResolved) return;
-      finalDecision = 'approved';
+    const { data, error } = await this.supabase.admin.rpc('grant_booking_approval', {
+      p_approval_id: approval.id,
+      p_tenant_id: tenant.id,
+      p_actor_user_id: respondingUserId ?? null,
+      p_decision: dto.status,
+      p_comments: dto.comments ?? null,
+      p_idempotency_key: idempotencyKey,
+    });
+
+    if (error) {
+      throw this.mapGrantBookingApprovalError(error);
     }
 
-    const newStatus = finalDecision === 'approved' ? 'confirmed' : 'cancelled';
-
-    // Transition booking_slots first (the per-slot source of truth).
-    // Optimistic: only transition pending_approval rows.
-    const { data: transitionedSlots, error: slotErr } = await this.supabase.admin
-      .from('booking_slots')
-      .update({
-        status: newStatus,
-        ...(newStatus === 'cancelled'
-          ? { cancellation_grace_until: null }
-          : {}),
-      })
-      .eq('booking_id', approval.target_entity_id)
-      .eq('tenant_id', tenant.id)
-      .eq('status', 'pending_approval')
-      .select('id');
-    if (slotErr) {
-      console.error('[approval] booking_slots transition failed', slotErr);
+    const result = (data ?? null) as GrantBookingApprovalResult | null;
+    if (!result) {
+      throw new InternalServerErrorException({
+        code: 'approval.grant_failed',
+        message: 'grant_booking_approval RPC returned no result',
+      });
     }
 
-    // Mirror to bookings.status. The "did anything actually change?"
-    // signal comes from the slot result above — if no slot transitioned,
-    // the booking has already been resolved by another path.
-    const { data: bookingRow } = await this.supabase.admin
-      .from('bookings')
-      .update({
-        status: newStatus,
-      })
-      .eq('id', approval.target_entity_id)
-      .eq('tenant_id', tenant.id)
-      .eq('status', 'pending_approval')
-      .select('id')
-      .maybeSingle();
-
-    // If neither layer transitioned, another path beat us to it. Don't
-    // re-fire the downstream notification or bundle cascade — those
-    // already ran (or will run) on the winning path.
-    if (!bookingRow && (transitionedSlots ?? []).length === 0) {
-      return;
+    // Race / no-op outcomes — surface as a BadRequestException so the
+    // pre-cutover UX is preserved (the FE already renders
+    // "Approval already responded to" for this case).
+    if (result.kind === 'already_responded') {
+      throw new BadRequestException('Approval already responded to');
+    }
+    if (result.kind === 'non_booking_approved') {
+      // Defensive — should not happen because respond() routed only
+      // booking-targets here. If it does, an admin re-typed an
+      // approval row and the RPC bailed out cleanly.
+      throw new BadRequestException({
+        code: 'approval.non_booking_approved',
+        message: 'Cannot grant approval on non-booking target via this path.',
+      });
     }
 
-    // Notification: the consumer takes the legacy Reservation shape, so
-    // re-read the booking via the slot+booking projection. Best-effort —
-    // the approval has already been recorded; a notification failure
-    // shouldn't roll the decision back.
-    try {
-      const { data: refreshed } = await this.supabase.admin
-        .from('booking_slots')
-        .select(SLOT_WITH_BOOKING_SELECT)
-        .eq('tenant_id', tenant.id)
-        .eq('booking_id', approval.target_entity_id)
-        .order('display_order', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (refreshed) {
-        await this.bookingNotifications.onApprovalDecided(
-          slotWithBookingToReservation(refreshed as unknown as SlotWithBookingEmbed),
-          finalDecision,
-          approval.comments ?? undefined,
-        );
+    // ── Post-RPC best-effort: notification fan-out ─────────────────────
+    //
+    // The RPC has already committed the booking + slots + setup-WO
+    // emit. Failure of the notification doesn't roll the grant back.
+    if (result.kind === 'resolved') {
+      try {
+        const { data: refreshed } = await this.supabase.admin
+          .from('booking_slots')
+          .select(SLOT_WITH_BOOKING_SELECT)
+          .eq('tenant_id', tenant.id)
+          .eq('booking_id', approval.target_entity_id)
+          .order('display_order', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (refreshed) {
+          await this.bookingNotifications.onApprovalDecided(
+            slotWithBookingToReservation(refreshed as unknown as SlotWithBookingEmbed),
+            result.final_decision,
+            dto.comments ?? undefined,
+          );
+        }
+      } catch (err) {
+        console.error('[approval] booking notification fan-out failed', err);
       }
-    } catch (err) {
-      console.error('[approval] booking notification fan-out failed', err);
     }
 
-    // Bundle cascade: flip linked orders + fire deferred internal-setup
-    // work orders. Even when there are no orders attached this is a no-op
-    // (the bundle service short-circuits when zero orders match).
-    try {
-      await this.bundleService.onApprovalDecided(
-        approval.target_entity_id,
-        finalDecision,
-      );
-    } catch (err) {
-      console.error('[approval] booking bundle cascade failed', err);
-    }
+    // Surface the RPC's structured outcome to the caller. The pre-
+    // cutover return shape was the post-CAS approvals row — callers
+    // didn't actually read most fields. The new shape exposes the
+    // RPC's `kind` + decision metadata which is more useful.
+    void respondingPersonId;
+    return result as unknown as RespondReturn;
   }
 
   /**
-   * True when every approval row on the given target is RESOLVED
-   * affirmatively — explicitly: every row is `approved` or `expired`,
-   * and no row is `pending` or `rejected` (or any other future status).
-   *
-   * Why `expired` counts as resolved: `BundleCascadeService.
-   * rescopeApprovalsAfterLineCancel` sets approvals to `expired` when
-   * their scope_breakdown is emptied by a line cancel. Treating
-   * `expired` as blocking would deadlock multi-approver bundles
-   * whenever any line cancels — the surviving approver's grant could
-   * never resolve the bundle.
-   *
-   * Why we explicitly enumerate (instead of "anything not-pending"):
-   * future approval-row statuses (e.g. `delegated`, `revoked`) should
-   * not silently count as resolved. If a new status is introduced, this
-   * helper should be revisited explicitly.
-   *
-   * False when there are zero rows — defensive: a target with no rows
-   * shouldn't reach this path. Used by booking_bundle resolution.
+   * Map a `grant_booking_approval` RPC error to a Nest HTTP exception.
+   * Spec §10.1 + 00310 migration error sites.
    */
-  private async areAllTargetApprovalsApproved(
-    targetEntityId: string,
-  ): Promise<boolean> {
-    const tenant = TenantContext.current();
-    const { data } = await this.supabase.admin
-      .from('approvals')
-      .select('status')
-      .eq('tenant_id', tenant.id)
-      .eq('target_entity_id', targetEntityId);
-    if (!data || data.length === 0) return false;
-    const RESOLVED = new Set(['approved', 'expired']);
-    return data.every((a) => RESOLVED.has(a.status as string));
+  private mapGrantBookingApprovalError(rpcError: { code?: string; message?: string }): Error {
+    const message = rpcError.message ?? '';
+
+    // approval.not_found — would mean the approval row was deleted
+    // between our pre-RPC read and the RPC's FOR UPDATE select. Rare
+    // but possible. Map to NotFoundException so it surfaces consistently.
+    if (message.includes('approval.not_found')) {
+      return new NotFoundException('Approval not found');
+    }
+
+    // approval.cas_lost — the RPC's CAS update missed despite the
+    // advisory lock + FOR UPDATE. The 00310 migration's hint says
+    // "investigate concurrent path" — this is a bug in the lock code,
+    // not a normal user race. Surface as 500 + log.
+    if (message.includes('approval.cas_lost')) {
+      console.error('[approval] grant_booking_approval cas_lost — concurrent grant raced past lock', rpcError);
+      return new ConflictException({
+        code: 'approval.cas_lost',
+        message: 'Approval state changed during grant attempt — please retry.',
+      });
+    }
+
+    // p_decision validation — defensive (we control dto.status; the RPC
+    // raises only if a future caller passes garbage).
+    if (message.includes('p_decision must be approved or rejected')) {
+      return new BadRequestException({
+        code: 'approval.invalid_decision',
+        message: 'Decision must be approved or rejected.',
+      });
+    }
+
+    // Catch-all — the RPC's `raise exception` path with no recognised
+    // structured prefix. Preserve the message for ops triage but
+    // surface as 500 with a stable code.
+    console.error('[approval] grant_booking_approval unexpected error:', rpcError);
+    return new InternalServerErrorException({
+      code: 'approval.grant_failed',
+      message: message || 'Approval grant failed unexpectedly.',
+    });
   }
+
+  // B.0.D.3 — `handleBookingApprovalDecided` + `areAllTargetApprovalsApproved`
+  // were retired in this commit. Their multi-step write sequence (approvals
+  // CAS → booking_slots → bookings → bundle cascade) was the headline lie
+  // the v6 spec called out: there was no transaction wrapping those, so a
+  // mid-flow crash left the four-way state diverged. The atomic
+  // `grant_booking_approval` RPC (00310 / spec §10.1) replaces all of it
+  // in one Postgres transaction:
+  //
+  //   - All-resolved gate (the helper's job) is the
+  //     `select count(*) filter (where status in ('pending','rejected'))`
+  //     check at the top of the RPC's `else` branch (00310 lines 167-180).
+  //   - `expired` counting as resolved follows from the count's filter
+  //     not including 'expired' — same semantics, now in SQL.
+  //   - Slot + booking transitions happen in steps 6 (00310 lines 196-213).
+  //   - Bundle cascade is subsumed by step 7 (00310 lines 215-244): the
+  //     setup_work_order outbox emit (via `approve_booking_setup_trigger`
+  //     called inline) replaces what `BundleService.onApprovalDecided`
+  //     used to do.
+  //
+  // The `BundleService.onApprovalDecided` method itself stays (B.0.D.4
+  // refactors its body to call the new RPC, not retire the method).
 
   /**
    * Check if all approvals in a parallel group are complete.

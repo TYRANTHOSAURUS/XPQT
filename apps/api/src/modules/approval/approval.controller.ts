@@ -84,7 +84,11 @@ export class ApprovalController {
     const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
     if (!actor) throw new ForbiddenException('No person record linked to caller');
     // Body's responding_person_id is now ignored — server-derived only.
-    return this.approvalService.respond(id, dto, actor.personId, actor.userId);
+    // clientRequestId is threaded from ClientRequestIdMiddleware (B.0.D.1)
+    // and used by the grant_booking_approval RPC as the idempotency key
+    // (spec §3.3 + §10.1).
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.approvalService.respond(id, dto, actor.personId, actor.userId, clientRequestId);
   }
 
   @Get('chain/:chainId/complete')
