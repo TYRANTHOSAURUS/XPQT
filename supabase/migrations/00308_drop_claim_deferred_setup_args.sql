@@ -1,0 +1,47 @@
+-- B.0.A.7 — drop claim_deferred_setup_trigger_args RPC.
+--
+-- Spec: docs/superpowers/specs/2026-05-04-domain-outbox-design.md §7.9 (v7).
+--
+-- ╔══════════════════════════════════════════════════════════════════════╗
+-- ║ STATUS: PENDING APPLICATION — DO NOT psql -f THIS FILE TO REMOTE.    ║
+-- ║                                                                      ║
+-- ║ This migration is committed for traceability but MUST NOT be applied ║
+-- ║ until the TS-side cutover in B.0.D removes every caller of           ║
+-- ║ claim_deferred_setup_trigger_args. Active callers as of B.0.A:       ║
+-- ║                                                                      ║
+-- ║   apps/api/src/modules/booking-bundles/bundle.service.ts:1453        ║
+-- ║   apps/api/src/modules/booking-bundles/bundle-approval-decided.spec  ║
+-- ║     .ts:64,261,324                                                   ║
+-- ║                                                                      ║
+-- ║ Applying this migration before B.0.D would break the bundle approval ║
+-- ║ flow at runtime (UndefinedFunction on every grant). The brief        ║
+-- ║ explicitly directs: "if callers exist, commit the migration file but ║
+-- ║ DO NOT apply; mark the migration with a comment that it's pending    ║
+-- ║ B.0.D's cutover."                                                    ║
+-- ║                                                                      ║
+-- ║ B.0.D plan: replace bundle.service.ts:1452-1527 with a single        ║
+-- ║ approve_booking_setup_trigger RPC call (v7 contract — reads + emits  ║
+-- ║ + clears in one tx). Once that ships, retire this comment block and  ║
+-- ║ apply normally.                                                      ║
+-- ╚══════════════════════════════════════════════════════════════════════╝
+--
+-- Why retire claim_deferred_setup_trigger_args entirely:
+--
+--   v7 §7.9 retires the 00198 claim flow because the new
+--   approve_booking_setup_trigger RPC reads + emits + clears in ONE tx.
+--   The old claim RPC pre-cleared pending_setup_trigger_args before the
+--   new RPC could read it — v6's cutover was broken because the new RPC
+--   then saw NULL on every row and emitted zero events. v7's fix retires
+--   00198 and inlines its read-and-clear into the new RPC.
+--
+--   Leaving 00198 in place after the cutover is worse than dropping it:
+--   a future contributor reading the v6 spec sees "leave it standalone"
+--   and uses it for a new flow, recreating the same bug. Drop it cleanly.
+--
+-- The function signature being dropped (per actual remote state — verified
+-- via 00198_claim_deferred_setup_args.sql:24-27):
+--
+--   public.claim_deferred_setup_trigger_args(p_tenant_id uuid, p_order_ids uuid[])
+--   returns table(oli_id uuid, args jsonb)
+
+drop function if exists public.claim_deferred_setup_trigger_args(uuid, uuid[]);
