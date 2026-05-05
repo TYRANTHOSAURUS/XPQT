@@ -29,10 +29,13 @@ scope, owned by a follow-up sprint.
 
 ## By the numbers
 
-- **Commits:** 28 `B.0.x` commits across A → B → C → D → E → F stages
-  (orchestrated as 5 implementation slices + 1 closing slice).
-- **Migrations:** 11 (00299–00312) covering the foundation + 4 RPCs +
-  3 dedup tables + 4 validation helpers.
+- **Commits:** 29 `B.0.x` commits across A → B → C → D → E → F stages
+  (orchestrated as 5 implementation slices + 1 closing slice; the
+  closing slice picked up 3 production bugs the smoke probe surfaced).
+- **Migrations:** 14 (00299–00312 foundation/A/B + 00313/00314/00315
+  closing-slice fixes). Foundation: outbox infra. A: 3 dedup tables +
+  4 validation helpers. B: 4 RPCs. F.5: 3 hotfixes for JSON-null and
+  missing INSERT grant.
 - **Tests:** baseline 1299 → final 1396 (+97 specs across the new
   helpers, plan-builders, RPC contracts, and middleware).
 - **Stages:**
@@ -152,6 +155,41 @@ v5-onward pattern in the Phase 6 hardening sprint:
 6. **§16.1 cleanup commit** — see
    [`b0-legacy-cleanup.md`](./b0-legacy-cleanup.md). Tag now,
    delete after stabilisation.
+
+## Smoke probe — ran first time, found three real bugs
+
+The B.0.F.1 round-trip smoke probe caught three production bugs on its
+first end-to-end run against the remote DB. All three were the kind of
+issue mocked-jest cannot catch:
+
+1. **00313 `pending_setup_trigger_args` JSON-null trip** — validator
+   tripped on `pending_setup_trigger_args: null` (the TS plan-builder's
+   default field shape on OLIs that don't need it) because SQL `is not
+   null` doesn't distinguish JSON null from a missing key. Fix:
+   `jsonb_typeof = 'object'`. Affects every booking with a setup-WO
+   service line.
+2. **00314 outbox.events INSERT grant missing** — foundation 00299:363
+   granted `select, update` to service_role but not INSERT. Combined
+   RPC is SECURITY INVOKER → `outbox.emit()` is also INVOKER → service
+   _role's INSERT privilege check fires on the inner table-write,
+   raises `permission denied for table events`. Affects EVERY booking
+   with a setup-WO emit.
+3. **00315 setup_emit JSON-null trip** — sibling of 00313 inside the
+   combined RPC's step 12. Pre-fix emitted a phantom outbox event with
+   `service_category: null, rule_ids: null` for every OLI without a
+   real setup_emit. Affects every booking with services where any OLI
+   doesn't trigger an internal-setup rule.
+
+All three shipped as 00313 / 00314 / 00315 + the smoke probe was
+adjusted to use a `pg.Client` for outbox.events (PostgREST schema
+exposure varies across environments) and to seed the rule with the
+canonical always-match predicate `{and: []}` (the TS resolver throws +
+silently swallows on `{}`).
+
+After the fixes: **13 probes pass, 0 fail.** Full round-trip
+verified end-to-end. Without the smoke probe, all three would have
+shipped to production as latent bugs that fired on the first booking
++ services flow.
 
 ## What's next
 
