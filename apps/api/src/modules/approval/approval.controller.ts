@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Param, Body, Req, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Req, UnauthorizedException, ForbiddenException, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import { ApprovalService, CreateApprovalDto, RespondDto } from './approval.service';
 
 @Controller('approvals')
@@ -73,7 +74,9 @@ export class ApprovalController {
     return this.approvalService.createParallelGroup(dto.target_entity_type, dto.target_entity_id, dto.approvers, dto.group_name);
   }
 
+  /** B.0.E.4 — producer route, requires X-Client-Request-Id (spec §3.3). */
   @Post(':id/respond')
+  @UseGuards(RequireClientRequestIdGuard)
   async respond(
     @Req() request: Request,
     @Param('id') id: string,

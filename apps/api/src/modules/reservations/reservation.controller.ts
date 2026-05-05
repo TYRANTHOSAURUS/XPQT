@@ -1,7 +1,8 @@
 import {
   BadRequestException, Body, Controller, Delete, Get, Header, Headers, Param,
-  Patch, Post, Query, Req, Res, UnauthorizedException,
+  Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards,
 } from '@nestjs/common';
+import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import type { Request, Response } from 'express';
 import { createHash } from 'node:crypto';
 import { ReservationService } from './reservation.service';
@@ -99,7 +100,9 @@ export class ReservationController {
 
   // ---- Mutations ----
 
+  /** B.0.E.4 — producer route, requires X-Client-Request-Id (spec §3.3). */
   @Post()
+  @UseGuards(RequireClientRequestIdGuard)
   async create(@Req() request: Request, @Body() dto: CreateReservationDto) {
     const actor = await this.actorFromRequest(request);
     const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
@@ -142,7 +145,9 @@ export class ReservationController {
     return this.bookingFlow.dryRun(input, actor);
   }
 
+  /** B.0.E.4 — producer route, requires X-Client-Request-Id (spec §3.3). */
   @Post('multi-room')
+  @UseGuards(RequireClientRequestIdGuard)
   async createMultiRoom(@Req() request: Request, @Body() dto: MultiRoomBookingDto) {
     const actor = await this.actorFromRequest(request);
     const requesterPersonId = this.assertCanRequestForPerson(dto.requester_person_id, actor);
@@ -421,7 +426,9 @@ export class ReservationController {
    *
    * Write gate: requester / host / `rooms.admin`.
    */
+  /** B.0.E.4 — producer route, requires X-Client-Request-Id (spec §3.3). */
   @Post(':id/services')
+  @UseGuards(RequireClientRequestIdGuard)
   async attachServices(
     @Req() request: Request,
     @Param('id') id: string,
