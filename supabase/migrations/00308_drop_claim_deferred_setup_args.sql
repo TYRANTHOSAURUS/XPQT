@@ -2,28 +2,12 @@
 --
 -- Spec: docs/superpowers/specs/2026-05-04-domain-outbox-design.md §7.9 (v7).
 --
--- ╔══════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: PENDING APPLICATION — DO NOT psql -f THIS FILE TO REMOTE.    ║
--- ║                                                                      ║
--- ║ This migration is committed for traceability but MUST NOT be applied ║
--- ║ until the TS-side cutover in B.0.D removes every caller of           ║
--- ║ claim_deferred_setup_trigger_args. Active callers as of B.0.A:       ║
--- ║                                                                      ║
--- ║   apps/api/src/modules/booking-bundles/bundle.service.ts:1453        ║
--- ║   apps/api/src/modules/booking-bundles/bundle-approval-decided.spec  ║
--- ║     .ts:64,261,324                                                   ║
--- ║                                                                      ║
--- ║ Applying this migration before B.0.D would break the bundle approval ║
--- ║ flow at runtime (UndefinedFunction on every grant). The brief        ║
--- ║ explicitly directs: "if callers exist, commit the migration file but ║
--- ║ DO NOT apply; mark the migration with a comment that it's pending    ║
--- ║ B.0.D's cutover."                                                    ║
--- ║                                                                      ║
--- ║ B.0.D plan: replace bundle.service.ts:1452-1527 with a single        ║
--- ║ approve_booking_setup_trigger RPC call (v7 contract — reads + emits  ║
--- ║ + clears in one tx). Once that ships, retire this comment block and  ║
--- ║ apply normally.                                                      ║
--- ╚══════════════════════════════════════════════════════════════════════╝
+-- Status: APPLIED in B.0.D.5 (2026-05-05). The TS-side cutover in
+-- B.0.D.4 retired every caller of claim_deferred_setup_trigger_args
+-- (bundle.service.ts:1885 onApprovalDecided now calls
+-- approve_booking_setup_trigger directly; bundle-approval-decided.spec
+-- rewritten to mock the new RPC). A pre-flight grep confirmed zero
+-- callers in apps/api/src before applying.
 --
 -- Why retire claim_deferred_setup_trigger_args entirely:
 --
