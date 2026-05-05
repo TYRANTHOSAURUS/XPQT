@@ -58,7 +58,8 @@ this round (C1, I2) follow the same shape.
 | `outbox.idempotency_collision`        | conflict    | `outbox.emit()` SQL helper raises 23505 on same-key/different-payload (00299, spec §2.3) | n/a (server-internal; surfaces via the producing RPC's rollback) |
 | `outbox.tenant_id_required`           | validation  | `outbox.emit()` / `outbox.mark_consumed()` SQL helpers (00299) — no anonymous emits | n/a (server-internal) |
 | `outbox.idempotency_key_required`     | validation  | `outbox.emit()` / `outbox.mark_consumed()` SQL helpers (00299) | n/a (server-internal) |
-| `setup_wo.requester_person_id_not_allowed` | validation  | `validate_setup_wo_fks` SQL helper (00306) — rejects non-null `requester_person_id` in setup-WO row payload to preserve the legacy visibility contract (`apps/api/src/modules/ticket/ticket.service.ts:1889`). Outbox spec v8.1 §7.8.2. | 400 (server-internal; raised inside `create_setup_work_order_from_event` RPC and surfaced by the SetupWorkOrderHandler retry loop) |
+| `setup_wo.requester_person_id_not_allowed` | validation  | `validate_setup_wo_fks` SQL helper (00305, B.0.A.4) — rejects non-null `requester_person_id` in setup-WO row payload to preserve the legacy visibility contract (`apps/api/src/modules/ticket/ticket.service.ts:1889`). Outbox spec v8.1 §7.8.2. | 400 (server-internal; raised inside `create_setup_work_order_from_event` RPC and surfaced by the SetupWorkOrderHandler retry loop) |
+| `setup_wo.fk_invalid`                 | validation  | `validate_setup_wo_fks` SQL helper (00305, B.0.A.4) — tenant FK validation for `location_id` / `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` / `sla_id` / `request_type_id` in setup-WO row payload. Outbox spec v8 §7.8.2. | 400 (server-internal; raised inside `create_setup_work_order_from_event` RPC) |
 
 ## Phase 1 codes still using legacy snake_case (renamed in Phase 7)
 
