@@ -11,6 +11,58 @@
 > §1 + §3.1 + §7.6 (canonical RPC pattern) → §10X (B.0's deferral list,
 > which B.2 inherits in part).
 
+## Revision history
+
+- **v1 (2026-05-04 morning).** Initial survey + design. 19 surfaces
+  surveyed (1.1–1.20). 6 RPCs proposed (status / assignment / SLA /
+  dispatch / approval / WO orchestrator). 13 migrations. ~30-40
+  commits. Split into B.2.A (foundation + 3 hottest RPCs) and B.2.B
+  (rest). Live at this doc through commit prior to v2.
+
+- **v2 (2026-05-04 afternoon).** Folds codex-v1 review findings.
+  Headline changes:
+  - **C1.** Replace per-entity status / assignment / SLA / metadata
+    PATCH RPCs at the controller boundary with a single
+    `update_entity_combined(entity_kind, …)` orchestrator (§3.0).
+    Per-field RPCs survive as **internal helpers** the orchestrator
+    composes; controllers (`PATCH /tickets/:id`,
+    `PATCH /work-orders/:id`) only call the orchestrator. Eliminates
+    the case-side equivalent of the WO orchestrator non-atomicity
+    that v1 still had.
+  - **C2.** Workflow-engine `assign` + `update_ticket` nodes are now
+    in scope. They were silently writing tickets directly. Cutover
+    routes them through `set_entity_assignment` /
+    `update_entity_combined` with idempotency key
+    `workflow:${instance_id}:${node_id}:${attempt}`. New §1.21 in
+    survey, sequenced in B.2.B.
+  - **C3.** Async SLA resume is unsafe under v1's outbox-only
+    pattern (the breach cron at `sla.service.ts:333` reads
+    `paused=false` + stale `due_at` and falsely breaches in the
+    gap). Adds `sla_timers.recompute_pending boolean` flag set
+    atomically with `paused=false` and cleared by the worker after
+    `due_at` recompute. All breach / threshold readers add
+    `AND recompute_pending = false`. v1 §9 pushback #3 is RETRACTED.
+  - **C4.** `ReclassifyService.execute` was missing from v1 survey.
+    Added as §1.22. Reclassification atomically emits three outbox
+    follow-ups (`sla.timer_repointed_required`,
+    `workflow.start_required`, `routing.decision_recorded`) inside
+    the RPC tx. Sequenced in B.2.B.
+  - **I1.** `RequireClientRequestIdGuard` is mandated on every
+    write endpoint that fronts a B.2 RPC (PATCH /tickets/:id, PATCH
+    /work-orders/:id, POST /tickets/:id/dispatch,
+    POST /approvals/:id/respond). Threads
+    `actor.client_request_id` through service methods into the
+    idempotency key. Foundation in B.2.A.
+  - **I2.** Routing has a per-surface sync/async split — sync for
+    create + dispatch (latency-sensitive UX); async outbox-driven
+    with a `tickets.routing_status` column for re-routing /
+    transition-driven flows. v1 §9 pushback #2 narrowed
+    accordingly.
+  - Migration count bumped 13 → 16 (recompute_pending column,
+    routing_status column, reclassify follow-up RPC). Commit count
+    32-44.
+
+
 ---
 
 ## 0. Scope contract (read first)
@@ -570,6 +622,117 @@ ticket transition + activity rows + domain events.
 
 ---
 
+### 1.21 `WorkflowEngineService.executeNode('assign' | 'update_ticket')`
+
+`workflow-engine.service.ts` — the `assign` node and the
+`update_ticket` node both write to `tickets` directly today (UPDATE
+through supabase-js, no service-call indirection). The engine is
+loud about its own create_child_tasks loop (§1.18) but quiet about
+these two. Codex review surfaced them.
+
+**Writes (per node execution):**
+- `assign`: one `tickets.UPDATE` (assignment columns) + a
+  `node_event` row for the workflow audit. No `routing_decisions`
+  row, no `ticket_activities` row, no `domain_events` row. The
+  human-visible audit trail is missing entirely.
+- `update_ticket`: one `tickets.UPDATE` (status / priority /
+  metadata depending on node config) + a `node_event` row.
+  Same gap — no `ticket_activities`, no `domain_events`.
+
+**Failure modes:**
+- ✅ tickets.UPDATE commits, node_event fails → workflow advances
+  but the audit row is missing on the workflow-instance side.
+  Hard to tell from the operator UI which node fired.
+- The bigger issue is the SHAPE of these writes — they bypass the
+  per-field service methods entirely, so even on success there's
+  no `assignment_changed` / `status_changed` activity, no
+  `ticket_assigned` / `ticket_status_changed` domain event, and no
+  notification fan-out. Workflow-driven mutations don't appear in
+  the case timeline. **The current code is silently audit-dropping
+  every workflow-driven assignment / status change.**
+
+**Severity:** `critical`. Two reasons: (a) audit drift on every
+workflow tick — orders of magnitude more frequent than the human
+PATCH paths; (b) silent skip of notifications + domain events
+(downstream consumers, search index reindex, cross-tenant analytics
+don't see workflow-driven changes).
+
+**Fix:** the engine's `assign` node calls `set_entity_assignment`
+RPC (§3.2) with idempotency key
+`workflow:${instance_id}:${node_id}:${attempt}` — deterministic,
+retry-safe, replays cleanly across engine restarts. The
+`update_ticket` node calls `update_entity_combined` (§3.0) with
+the same key shape. Both pass `actor_user_id = SYSTEM_ACTOR_USER_ID`
+and a `source: 'workflow'` breadcrumb in the activity payload so
+the audit feed labels the row "by Workflow" not "by System".
+
+---
+
+### 1.22 `ReclassifyService.execute()`
+
+`apps/api/src/modules/reclassify/reclassify.service.ts` — Codex
+review surfaced this; v1 missed it entirely. Reclassification is
+when an admin / reception agent moves a ticket from one
+`request_type_id` to another (e.g. "this was filed as 'IT support'
+but it's actually 'facilities cleanup'"). It triggers a cascade of
+follow-ups: SLA repoint (different policy may apply), workflow
+restart (different workflow definition may apply), routing
+re-evaluation (different rules apply).
+
+**Writes (in order):**
+1. `tickets.UPDATE` (request_type_id, possibly category, location
+   if the new type forces it).
+2. `ticket_activities.INSERT` (`reclassified`, with old/new types
+   in payload).
+3. `domain_events.INSERT` (`ticket_reclassified`).
+4. *(if SLA changes)* `sla_timers.UPDATE` (complete existing) +
+   `sla_timers.INSERT` (fresh) + `tickets.UPDATE` (new due dates).
+5. *(if workflow changes)* `workflow_instances.UPDATE` (cancel
+   current) + `workflow_instances.INSERT` (start new).
+6. *(if routing rule changes)* `routing_decisions.INSERT` + new
+   assignment write through `tickets.UPDATE`.
+
+**Failure modes:**
+- ✅ tickets.UPDATE commits, SLA repoint fails → ticket has a new
+  request_type but the SLA queue still tracks the old policy's
+  thresholds. **Critical: SLA timer divergence.**
+- ✅ tickets + SLA commits, workflow restart fails → old workflow
+  instance still ticking with stale state, new one never started.
+  **Critical: workflow drift.**
+- ✅ tickets + SLA + workflow commits, routing re-eval fails → new
+  type assigned, but the assignee is still the old type's resolver
+  result. Operator sees "this is a cleaning job assigned to the IT
+  team" with no breadcrumb of why.
+
+**Severity:** `critical`. Reclassification is a low-frequency op
+(reception agents do a handful per day at busy tenants) but each
+one fans into 3-5 dependent writes that are ALL critical to keep
+consistent. The current code fails-soft on SLA / workflow / routing
+follow-ups via try/catch — exactly the same pattern that produced
+the §1.4 audit drift bug.
+
+**Fix:** new RPC `reclassify_ticket(p_ticket_id, p_tenant_id,
+p_actor_user_id, p_idempotency_key, p_payload)` that does the
+ticket UPDATE + activity + domain event INSIDE the tx, then atomically
+emits **three outbox events** in the same tx:
+- `sla.timer_repointed_required` — TS handler completes old timers,
+  starts new ones if the new policy differs.
+- `workflow.start_required` — TS handler cancels the running
+  instance and starts a new one matching the new request_type's
+  workflow_definition_id.
+- `routing.decision_recorded` — TS handler runs the resolver and
+  calls `set_entity_assignment` RPC if the result differs.
+
+Atomicity comes from the outbox: all three events are in the same
+PG tx as the tickets UPDATE, so either all-or-nothing. Worst case
+on handler failure: the outbox-deadletter retry catches it. No
+silent drift.
+
+**Sequencing:** B.2.B, after §3.0 + §3.2 land (the reclassify RPC
+calls into both via outbox handlers + inline as needed).
+
+---
+
 ### 1.20 Bundle-cascade WO closure (out of scope but listed)
 
 `bundle-cascade.service.ts:142-153` — when a booking line is cancelled,
@@ -606,25 +769,42 @@ Phase 6.** B.2 leaves it.
 | 1.18 | `WorkflowEngineService.create_child_tasks` (loop) | critical |
 | 1.19 | `ApprovalService.respond` (ticket branch) | critical |
 | 1.20 | Bundle-cascade WO closure | (out of scope) |
+| 1.21 | `WorkflowEngineService.assign` + `update_ticket` nodes | critical |
+| 1.22 | `ReclassifyService.execute` | critical |
 
-**Critical count: 10. Important count: 6. Nits + out-of-scope: 4.**
+**Critical count: 12. Important count: 6. Nits + out-of-scope: 4.**
 
-The critical 10 collapse into **6 logical command surfaces** because
+The critical 12 collapse into **8 logical command surfaces** because
 several are aspects of the same abstraction:
 
 1. **Status transition** (cases + WOs) — §1.1 status branch + §1.10.
 2. **Assignment / reassignment** — §1.1 assignment branch + §1.4 +
-   §1.12 + §1.14.
+   §1.12 + §1.14 + §1.21 (workflow `assign` node uses the same RPC).
 3. **SLA reassignment** — §1.1 sla branch (currently disabled) + §1.8.
 4. **Dispatch** (case → child WO) — §1.15 + §1.18 (the workflow loop).
 5. **Approval grant on ticket target** — §1.3 + §1.19.
 6. **Ticket create with approval gate / automation** — §1.2 (the two
    sub-paths).
+7. **Workflow-driven generic update** — §1.21's `update_ticket` node
+   (status / priority / metadata via `update_entity_combined`).
+8. **Reclassification** — §1.22 (request_type repoint + cascading
+   SLA / workflow / routing follow-ups via outbox).
 
 Plus the 6 "important" surfaces (plan, priority, metadata, booking-
 origin WO create, threshold-fire, SLA helpers) which fold into the
 above as additional jsonb-payload variants OR get their own thin
 RPCs.
+
+**Combined-PATCH atomicity (the v2 headline).** The case-side PATCH
+endpoint (`PATCH /tickets/:id`) and the WO-side PATCH endpoint
+(`PATCH /work-orders/:id`) both accept multi-field payloads (status
++ priority + assignee in one save is the desk-UI norm). v1 designed
+per-field RPCs (§3.1-3.3) without a controller-facing combined RPC
+on the case side, leaving the same partial-commit hazard the WO
+orchestrator (§1.7) already documents. v2 fixes this with a generic
+`update_entity_combined` (§3.0) that branches on `entity_kind` —
+both controllers call into one orchestrator that composes the
+per-field helpers in a single tx.
 
 ---
 
@@ -633,11 +813,137 @@ RPCs.
 For each surface: signature, body sketch, idempotency model, what stays
 in TS, compensation. Numbering aligns with the §2 collapse.
 
+### 3.0 RPC `update_entity_combined(p_entity_kind, p_entity_id, p_tenant_id, p_actor_user_id, p_idempotency_key, p_patches)` (controller-facing orchestrator)
+
+**Replaces:** the controller boundary for `PATCH /tickets/:id` and
+`PATCH /work-orders/:id`. Both controllers call this one RPC. The
+per-field RPCs (§3.1-3.3) become **internal helpers** the
+orchestrator composes; controllers do not call them directly. This
+is the v2 fix for the C1 finding — v1 left case-side PATCH
+atomicity unsolved by exposing only per-field RPCs there.
+
+**Signature:**
+```sql
+create or replace function public.update_entity_combined(
+  p_entity_kind     text,        -- 'case' | 'work_order'
+  p_entity_id       uuid,
+  p_tenant_id       uuid,
+  p_actor_user_id   uuid,
+  p_idempotency_key text,
+  p_patches         jsonb        -- { status?, status_category?, waiting_reason?,
+                                 --   priority?, assignment?, sla_id?,
+                                 --   plan?, metadata?, ... }
+) returns jsonb
+language plpgsql
+security invoker
+```
+
+**Body sketch:**
+1. Advisory xact lock keyed on `(p_tenant_id, p_idempotency_key)`.
+2. `command_operations` idempotency gate (§3.7).
+3. Branch on `p_entity_kind`:
+   - `'case'` → SELECT from `tickets` FOR UPDATE.
+   - `'work_order'` → SELECT from `work_orders` FOR UPDATE.
+4. Validate every FK ref in `p_patches` is tenant-owned (calls
+   `validate_assignees_in_tenant`, `validate_entity_in_tenant`,
+   `validate_sla_id_in_tenant`).
+5. Compute per-field diffs against the current row.
+6. Apply field groups in this order, each branch is conditional on
+   the patch containing that field:
+   - **status** → call `_apply_status_transition(...)` private helper
+     (the body of §3.1 hoisted into a SECURITY INVOKER inner
+     function); state-machine validation; SLA pause/resume math
+     (with C3's `recompute_pending` flag — see §3.3); single
+     `tickets.UPDATE` for the new status / status_category /
+     waiting_reason.
+   - **priority** → write priority + updated_at on the row.
+   - **assignment** → call `_apply_assignment(...)` (body of §3.2);
+     emit `routing_decisions.INSERT` if `reason` is set; UPDATE
+     assignment columns.
+   - **sla_id** → call `_apply_sla_repoint(...)` (body of §3.3);
+     C3's `recompute_pending=true` set atomically with the new
+     `sla_id`; emit outbox event for due-date recompute.
+   - **plan** → write planned_start_at / planned_duration_minutes;
+     emit `plan_changed` activity.
+   - **metadata** → write title / description / cost / tags /
+     watchers; emit `metadata_changed` activity.
+7. Emit a **single** `ticket_activities.INSERT` per field-group
+   that mutated (status_changed, assignment_changed, etc.) — same
+   row count as today's per-method writes, just inside one tx.
+8. Emit `domain_events` rows in the same tx (one per logically
+   distinct event: status / assigned).
+9. UPDATE `command_operations` to outcome='success'.
+
+**Why "generic with entity_kind branching" vs "two RPCs"
+(`update_case_combined` + `update_work_order_combined`):**
+- The schema differs only in target table name (`tickets` vs
+  `work_orders`) and a handful of column names that already
+  match (assigned_team_id / assigned_user_id / assigned_vendor_id;
+  status; status_category; planned_start_at; etc.). PL/pgSQL
+  `EXECUTE format(...)` lets the body parameterize over the table
+  name in two places.
+- One RPC = one body to keep in lockstep. Two RPCs = drift risk
+  every time the column lists evolve.
+- Pattern matches the §3.1-3.5 RPCs that already use
+  `p_entity_kind`. v2's generic-with-branching is the consistent
+  shape.
+
+**Trade-off acknowledged:** `EXECUTE format(...)` PL/pgSQL is
+slightly harder to debug than two static SQL bodies. The fix is
+to keep all dynamic SQL inside the private inner helpers
+(`_apply_status_transition` etc.) which take `p_table_name` as a
+literal — those helpers are tiny and obviously correct.
+
+**Per-field RPCs (§3.1-3.3) still ship.** They're the inner
+helpers the orchestrator composes, plus they're called directly
+by:
+- The escalation cron (§1.16) calling `set_entity_assignment` to
+  reassign a ticket on threshold fire.
+- The workflow engine's `assign` node (§1.21) calling
+  `set_entity_assignment` directly.
+- The reclassify RPC's outbox handler (§1.22) calling
+  `set_entity_assignment` for the routing follow-up.
+- Migration tooling / admin one-shots that need a narrow surface.
+
+The internal-helper / RPC separation is purely about exposure: §3.0
+is the **only** RPC the controllers call.
+
+**Idempotency:** standard `command_operations` row.
+`p_idempotency_key` keys the orchestrator. Field-group writes
+inside the tx don't need their own keys — they're part of the
+parent tx and roll back if any branch fails.
+
+**TS plan-build phase:**
+- DTO normalization (waiting_reason `null` vs `undefined`,
+  trim string fields, etc.).
+- Permission checks (visibility floor + per-action gates: the
+  payload's fields determine which gate fires —
+  `tickets.change_status` for status; `tickets.assign` for
+  assignment; `tickets.change_priority` for priority).
+- Mint
+  `idempotency_key = "patch:${entity_kind}:${entity_id}:${actor.client_request_id}"`
+  per the I1 guard mandate.
+
+**Compensation:** none. Fully atomic.
+
+---
+
 ### 3.1 RPC `transition_entity_status(p_entity_id, p_entity_kind, p_tenant_id, p_actor_user_id, p_idempotency_key, p_payload)`
 
 **Replaces:** §1.1 status branch (ticket) + §1.10 (WO). One RPC, two
 entity_kind values: `'case'` writes `tickets`; `'work_order'` writes
 `work_orders`.
+
+**Exposure (v2 update):** this RPC is **not called by the PATCH
+controllers directly**. The combined orchestrator §3.0 composes
+its body via the `_apply_status_transition` private helper. §3.1
+ships as a public RPC because:
+- Cron paths (e.g. auto-resolve on parent-close) call it directly.
+- The reclassify outbox handler may call it if the new request_type
+  forces a status change.
+- The workflow-engine `update_ticket` node is wrapped by §3.0 (so
+  it goes through the orchestrator), but the older `transition`
+  workflow nodes call it directly.
 
 **Signature:**
 ```sql
@@ -771,27 +1077,77 @@ the same RPC handles both via `p_entity_kind`.
 
 **Signature:** same shape; `p_payload = { sla_id: uuid|null }`.
 
-**Body sketch:**
+**v2 critical correction (C3): the `recompute_pending` flag.**
+v1 of this section, plus §9 pushback #3, claimed async SLA resume
+was safe — the outbox-worker would compute the new `due_at`
+eventually. Codex review found this is **NOT safe**: the breach
+cron at `sla.service.ts:333` reads `paused=false` AND a
+not-yet-recomputed `due_at`, sees the timer "should have fired",
+and emits a false breach. The window is small (the time between
+the RPC tx commit and the worker landing the recomputed `due_at`)
+but non-zero, and on a busy tenant the cron tick runs every 30s.
+
+**Schema fix.** Add a `recompute_pending boolean not null default false`
+column to `sla_timers`. The migration also adds a partial index
+`(tenant_id, entity_id) where recompute_pending = true` so the
+worker can find pending rows cheaply.
+
+**Atomicity contract (must hold in EVERY writer):**
+- Any RPC that flips `paused=false` OR re-points `sla_id` MUST set
+  `recompute_pending=true` in the same UPDATE.
+- Any reader that compares `now() >= due_at` for breach / threshold
+  decisions MUST add `AND recompute_pending = false` to its WHERE.
+- The worker computes the new `due_at` (business-hours math in TS),
+  then atomically UPDATEs `(due_at = $new, recompute_pending = false)`
+  — single statement, one tx. If the worker fails mid-recompute,
+  `recompute_pending` stays `true`, the next tick retries, no false
+  breach in the gap.
+
+**Body sketch (v2):**
 1. Advisory lock + command_operations gate.
 2. Visibility / permission validation (TS-side; see plan-build).
 3. SELECT current row.
 4. Validate `sla_id` is a tenant-owned `sla_policies` row (or null).
 5. UPDATE entity row (sla_id + updated_at).
-6. **Stop existing timers + start fresh ones** — atomic INSIDE this
-   RPC:
-   - UPDATE sla_timers SET completed_at=now() WHERE entity matches
-     AND completed_at IS NULL.
+6. **Stop existing timers + start fresh ones with the recompute
+   flag set** — atomic INSIDE this RPC:
+   - `UPDATE sla_timers SET completed_at = now() WHERE entity
+     matches AND completed_at IS NULL`.
    - UPDATE entity row clearing SLA-derived columns.
-   - *(if new policy)* SELECT sla_policies, INSERT new sla_timers,
-     UPDATE entity row with new due dates (business-hours math: see
-     §3.1's open question — same "outbox-event → TS worker" pattern).
-7. INSERT ticket_activities (`sla_changed`).
-8. UPDATE command_operations.
+   - *(if new policy)* SELECT sla_policies, `INSERT INTO sla_timers
+     (..., recompute_pending) VALUES (..., true)`. Initial `due_at`
+     is `NULL` — the worker will fill it in. Reader queries already
+     skip `recompute_pending = true`, so they never see the null
+     either.
+7. Emit outbox event `sla.timer_recompute_required` (carries
+   tenant_id, entity_id, entity_kind, sla_id) for the worker.
+8. INSERT ticket_activities (`sla_changed`).
+9. UPDATE command_operations.
 
-**Compensation:** if the business-hours computation is deferred to
-an outbox worker, the entity row temporarily shows null due-dates
-until the worker fires. This matches today's behavior on a fresh
-SLA assignment (the cron tick computes the due date eventually).
+**Body sketch for waiting-state pause/resume (called by §3.1's
+status branch, but the same flag rule applies):**
+- On pause:
+  `UPDATE sla_timers SET paused = true, paused_at = now()` — no
+  recompute needed (pause math is simple, can stay TS-side or be
+  inlined in PG). `recompute_pending` stays `false`.
+- On resume:
+  `UPDATE sla_timers SET paused = false, recompute_pending = true`
+  in one statement. Emit `sla.timer_recompute_required` outbox
+  event in the same tx. Worker computes the new `due_at` accounting
+  for the paused interval + business hours, then clears the flag.
+
+**Reader-side migration.** Every existing breach / threshold
+reader (`sla.service.ts:333` and similar) gets
+`AND recompute_pending = false` added in the cutover commit.
+This is a small, mechanical change — easy to grep + audit.
+
+**Compensation:** if the worker permanently fails, the row stays
+`recompute_pending=true` and the alert pipeline (existing
+deadletter) surfaces it. The entity row's due-dates display as
+"computing..." until resolved. Worse than fresh-SLA today (which
+just shows null), but better than the false-breach hazard v1 had.
+
+**v1 §9 pushback #3 retracted.** See updated §9.
 
 ---
 
@@ -915,40 +1271,32 @@ is a project unto itself. The outbox handler approach matches how
 
 ---
 
-### 3.6 RPC `update_work_order_combined(p_work_order_id, p_tenant_id, p_actor_user_id, p_idempotency_key, p_payload)`
+### 3.6 ~~RPC `update_work_order_combined`~~ → see §3.0
 
-**Replaces:** §1.7 (WorkOrderService.update orchestrator).
+**v2 supersession.** v1 proposed a WO-only orchestrator
+`update_work_order_combined`. Codex review noted that the case
+side has the identical shape and v1 left it without a combined
+RPC, exposing the case PATCH endpoint to the same partial-commit
+hazard the WO orchestrator (§1.7) explicitly documented as known
+debt.
 
-The orchestrator today dispatches to up to 6 per-field methods
-sequentially. The right replacement is **one RPC that takes the
-union DTO and applies every field-group atomically** — not 6 RPCs.
+**v2 fix.** Replaced with the generic `update_entity_combined`
+described in §3.0. Both `PATCH /tickets/:id` and
+`PATCH /work-orders/:id` route through it. The `entity_kind`
+parameter selects the target table; the body composes the same
+field-group helpers (status / assignment / SLA / plan / priority /
+metadata) for either kind.
 
-**Signature:**
-```sql
-returns jsonb    -- the final WO row
-```
+The "why one big RPC vs. composing per-field RPCs" rationale from
+v1 still applies — same reasoning, same tx-boundary argument —
+just hoisted up to §3.0 and made symmetric across the case + WO
+sides.
 
-`p_payload` shape mirrors `UpdateWorkOrderDto`. The RPC body folds
-the equivalents of §3.1 (status), §3.2 (assignment), §3.3 (SLA)
-into one tx, plus standalone branches for plan / priority / metadata
-that today have no per-field RPCs (just `work_orders.UPDATE` +
-activity).
-
-**Why one big RPC vs. composing the per-field RPCs:**
-- Composing inside the same connection = same tx if we open one in
-  TS with `BEGIN/COMMIT`. But supabase-js doesn't expose that primitive;
-  we'd need to switch to the `pg` driver for the orchestrator path,
-  which is a bigger architectural shift.
-- Postgres has no per-call tx primitive that ties multiple RPC calls
-  into one tx without explicit BEGIN.
-- One RPC = one tx. Matches the B.0 precedent
-  (`create_booking_with_attach_plan` does the same — booking +
-  slots + orders + OLIs + asset_reservations + approvals all in one
-  RPC body, not 6 stitched together).
-
-**Per-field RPCs §3.1-3.5 still ship** for the controller endpoints
-that hit them directly (cron, workflow engine, single-purpose
-controller calls). The orchestrator RPC is sibling, not parent.
+**Per-field RPCs §3.1-3.5 still ship** as internal helpers + as
+direct endpoints for the narrow callers listed in each section
+(cron, workflow engine, reclassify outbox handlers). The
+orchestrator at §3.0 is the **only** RPC the PATCH controllers
+call.
 
 ---
 
@@ -998,9 +1346,143 @@ migration and one more RLS policy — trivial.
   pure helper, returns the `(diff, previous, next)` jsonb shape
   every audit-emit site uses. Cuts duplication across §3.1-3.6.
 
-**No DDL changes to existing tables.** All existing FK constraints,
-RLS policies, and triggers stay. The RPCs work within the schema
-B.0 left.
+**No DDL changes to existing tables, except:**
+- `sla_timers.recompute_pending boolean not null default false` (C3,
+  see §3.3). Required for safe async SLA resume.
+- `tickets.routing_status text not null default 'idle'` (I2, see
+  §3.9.2). Required for outbox-driven re-routing to coexist with
+  sync routing on create/dispatch.
+
+All existing FK constraints, RLS policies, and triggers stay.
+
+---
+
+### 3.9 Cross-cutting controls (v2 additions)
+
+#### 3.9.1 I1 — `RequireClientRequestIdGuard` is mandatory
+
+Every endpoint that fronts a B.2 RPC MUST attach
+`RequireClientRequestIdGuard` (existing guard, used today by some
+booking endpoints). The guard:
+- Reads `X-Client-Request-Id` from the request header.
+- Returns 400 (`request.client_request_id_required`) if missing.
+- Validates UUID format.
+- Stores it on `req.actor.client_request_id` for downstream services.
+
+**Endpoints in scope (v2 mandate):**
+- `PATCH /tickets/:id` (calls §3.0 with entity_kind='case').
+- `PATCH /work-orders/:id` (calls §3.0 with entity_kind='work_order').
+- `POST /tickets/:id/dispatch` (calls §3.4 dispatch).
+- `POST /approvals/:id/respond` (calls §3.5 grant_ticket_approval).
+- `POST /tickets/:id/reclassify` (calls §3.10 reclassify_ticket).
+- `POST /tickets/:id/reassign` (calls §3.2 set_entity_assignment
+  with reason).
+- `POST /work-orders/:id/reassign` (same).
+
+The guard wave lands in B.2.A foundation (sequenced first). Service
+methods accept `actor.client_request_id` as part of the actor
+context object and thread it into the idempotency key:
+`${operation}:${entity_id}:${client_request_id}`. This is the
+mechanism that makes "user double-clicks Save" behave correctly
+with the `command_operations` cache.
+
+**Frontend cooperation.** The `apiFetch` wrapper already mints a
+`X-Client-Request-Id` for every mutation; the guard just enforces
+it. No frontend change required beyond confirming the wrapper is
+used on the affected hooks.
+
+#### 3.9.2 I2 — Routing per-surface sync/async split
+
+v1 §9 pushback #2 argued the routing engine was too big to port to
+PG and should be deferred to outbox-driven async handlers. Codex
+review pushed back: the engine size argument is correct, but
+async-everywhere has a UX latency cost — on a fresh ticket create,
+the requester would see "Submitting..." then "Routing..." then
+finally an assigned ticket, with each step a separate spinner.
+
+**v2 decision: split by surface.**
+
+| Surface | Routing mode | Why |
+|---|---|---|
+| `POST /tickets` (create) | **sync** | Latency-critical. The requester sees the assigned team / SLA on the success page. Routing must be done before the response. |
+| `POST /tickets/:id/dispatch` (manual + workflow `create_child_tasks`) | **sync** | Same. Operator/workflow expects the child WO to appear with the assignee shown. |
+| Approval-grant follow-up routing (§3.5) | **async** | The user already sees "Approved"; the routing/assignment landing 1-2s later is fine. |
+| Reclassify follow-up routing (§3.10) | **async** | Same — admin already sees "Reclassified to <new type>"; the new assignee landing on the next render tick is acceptable. |
+| Re-routing on transition (e.g. waiting → open might re-route) | **async** | Background flow; no user blocking on the result. |
+
+**Schema support.** Add `tickets.routing_status text not null
+default 'idle'` with values `'idle' | 'pending' | 'failed'`. Async
+re-routing flows set it to `'pending'` in the same tx as the
+trigger event; the outbox handler clears it to `'idle'` (or sets
+`'failed'` with a reason in `routing_failure_reason`) on resolution.
+The desk UI reads `routing_status` and shows a small "Routing..."
+chip when not idle. This makes the async-ness honest in the UI
+rather than hidden.
+
+**Sync-routing implementation.** In TS, before calling the create
+or dispatch RPC, run `RoutingService.evaluate(...)` (read-only)
+and pass the resolver result + trace into the RPC's payload. The
+RPC stores the trace in `routing_decisions` atomically with the
+INSERT. Same pattern v1 already proposed for §3.4 dispatch — v2
+just affirms it for the create path and lists the surfaces
+explicitly.
+
+**Async-routing implementation.** The triggering RPC emits an
+outbox event `routing.evaluation_required` (carries entity_id,
+trigger_reason, payload context). The handler runs the resolver in
+TS, calls `set_entity_assignment` RPC if the result differs,
+clears `routing_status`. Mirrors the §3.5 + §3.10 patterns.
+
+---
+
+### 3.10 RPC `reclassify_ticket(p_ticket_id, p_tenant_id, p_actor_user_id, p_idempotency_key, p_payload)`
+
+**Replaces:** §1.22 (ReclassifyService.execute).
+
+**Signature:**
+```sql
+returns jsonb     -- { ticket: row, follow_ups: [...event types emitted] }
+```
+
+`p_payload = { new_request_type_id: uuid, reason?: string,
+new_location_id?: uuid }`.
+
+**Body sketch:**
+1. Advisory lock + command_operations gate.
+2. SELECT current ticket FOR UPDATE.
+3. Validate new_request_type_id is tenant-owned + active.
+4. Compute the cascade (does SLA change? workflow change? routing
+   change?) by reading old + new request_type configs.
+5. UPDATE tickets (request_type_id, possibly category / location).
+6. INSERT ticket_activities (`reclassified`, payload includes
+   old + new types).
+7. INSERT domain_events (`ticket_reclassified`).
+8. **Emit outbox events atomically (in the same tx):**
+   - `sla.timer_repointed_required` if old.sla_policy_id !=
+     new.sla_policy_id.
+   - `workflow.start_required` if old.workflow_definition_id !=
+     new.workflow_definition_id.
+   - `routing.evaluation_required` (always — even if the new type
+     might resolve to the same target, the resolver should re-run
+     to record the breadcrumb).
+9. Set `tickets.routing_status='pending'` (per §3.9.2) so the UI
+   shows the routing-in-flight chip.
+10. UPDATE command_operations.
+
+**TS handlers** (sibling to existing `SetupWorkOrderHandler` from
+B.0.E):
+- `SlaTimerRepointHandler` — completes old timers, starts fresh
+  ones with the new policy. Atomically writes
+  `recompute_pending=true` on the new row (per §3.3); worker fills
+  in `due_at`.
+- `WorkflowRestartHandler` — cancels current `workflow_instances`
+  row, starts a new one matching the new `workflow_definition_id`.
+- `RoutingEvaluationHandler` — runs `RoutingService.evaluate(...)`,
+  calls `set_entity_assignment` RPC if the target differs, clears
+  `routing_status`.
+
+**Sequencing:** B.2.B, after §3.0 + §3.2 land. The reclassify
+handlers depend on the per-field RPCs being available.
 
 ---
 
@@ -1012,30 +1494,36 @@ Numbering starts at 00316 (B.0 ended at 00315).
 |---|---|---|
 | 00316 | `command_operations_table.sql` | New idempotency table (§3.7). |
 | 00317 | `validate_assignees_in_tenant_helper.sql` | Drop-in for TS helper. |
-| 00318 | `validate_entity_in_tenant_helper.sql` | Tenant-validate (case|wo).id. |
-| 00319 | `transition_entity_status_rpc.sql` | §3.1. |
-| 00320 | `set_entity_assignment_rpc.sql` | §3.2. |
-| 00321 | `update_entity_sla_rpc.sql` | §3.3. |
-| 00322 | `dispatch_child_work_order_rpc.sql` | §3.4. |
-| 00323 | `dispatch_child_work_orders_batch_rpc.sql` | §3.4 batch variant. |
-| 00324 | `grant_ticket_approval_rpc.sql` | §3.5. |
-| 00325 | `update_work_order_combined_rpc.sql` | §3.6 — the orchestrator. |
-| 00326 | `update_work_order_metadata_rpc.sql` | Plain audit-row write for plan / priority / metadata branches. |
-| 00327 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
-| 00328 | `outbox_events_routing_rerun_handler.sql` | Outbox event type for §3.5 deferred routing. |
+| 00318 | `validate_entity_in_tenant_helper.sql` | Tenant-validate (case\|wo).id. |
+| 00319 | `sla_timers_recompute_pending_column.sql` | C3 fix — `recompute_pending boolean` + partial index. Required before §3.1 / §3.3. |
+| 00320 | `tickets_routing_status_column.sql` | I2 fix — `routing_status text` for async-routing surfaces. |
+| 00321 | `transition_entity_status_rpc.sql` | §3.1. |
+| 00322 | `set_entity_assignment_rpc.sql` | §3.2. |
+| 00323 | `update_entity_sla_rpc.sql` | §3.3 (with recompute_pending semantics). |
+| 00324 | `update_entity_combined_rpc.sql` | §3.0 — the controller-facing orchestrator (was §3.6 in v1, now generic). |
+| 00325 | `dispatch_child_work_order_rpc.sql` | §3.4. |
+| 00326 | `dispatch_child_work_orders_batch_rpc.sql` | §3.4 batch variant. |
+| 00327 | `grant_ticket_approval_rpc.sql` | §3.5. |
+| 00328 | `reclassify_ticket_rpc.sql` | §3.10 (C4). |
+| 00329 | `update_entity_metadata_rpc.sql` | Plain audit-row write for plan / priority / metadata branches (called from §3.0 + standalone). |
+| 00330 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
+| 00331 | `outbox_events_b2_handlers.sql` | Outbox event types for routing rerun + sla timer recompute + workflow restart. |
 
-13 migrations. Slightly fewer than B.0's 14 (B.0's was inflated by
-hotfix migrations 00313-00315).
+16 migrations. Up from v1's 13 — adds the `recompute_pending` column
+(C3), the `routing_status` column (I2), and the reclassify RPC (C4).
 
 **Cutover plan:**
-- Direct cutover (no shadow mode) for §3.1, §3.3, §3.6, §3.5. The
-  outcome-shape is the same (the RPC returns the row), the audit
-  rows look identical, and rollback is "stop calling the RPC".
-- **Shadow mode for §3.4 (dispatch).** Reasoning: the workflow
-  engine's `create_child_tasks` loop is hit at unpredictable times
-  by tenant workflow definitions; flipping it without a shadow run
+- Direct cutover (no shadow mode) for §3.0 (the orchestrator), §3.1,
+  §3.2, §3.3, §3.5, §3.10. The outcome-shape is the same (the RPC
+  returns the row), the audit rows look identical, and rollback is
+  "stop calling the RPC".
+- **Shadow mode for §3.4 (dispatch) and §1.21 (workflow `assign` +
+  `update_ticket` nodes).** Reasoning: the workflow
+  engine's `create_child_tasks` loop and the `assign` /
+  `update_ticket` nodes are hit at unpredictable times
+  by tenant workflow definitions; flipping them without a shadow run
   is risky. Mirror the B.0 setup-WO-handler pattern: TS still
-  dispatches the legacy way, RPC writes a shadow row, smoke probe
+  writes the legacy way, RPC writes a shadow row, smoke probe
   asserts equivalence, then flip.
 
 Same `pnpm db:push` flow; user authorization required (per CLAUDE.md
@@ -1091,40 +1579,56 @@ Rough commit / migration / test budget per RPC:
 
 | RPC | Commits | Migrations | New mocked specs | Smoke probe additions |
 |---|---|---|---|---|
-| §3.1 transition_entity_status | 3-4 | 1 | 12 | 2 |
+| §3.0 update_entity_combined (generic orchestrator) | 4-6 | 1 | 18 | 4 |
+| §3.1 transition_entity_status (helper) | 2-3 | 1 | 12 | 2 |
 | §3.2 set_entity_assignment | 3-4 | 1 | 14 | 2 |
-| §3.3 update_entity_sla | 3 | 1 | 10 | 1 |
+| §3.3 update_entity_sla (with recompute_pending) | 3-4 | 2 (RPC + column) | 12 | 2 |
 | §3.4 dispatch_child_work_order | 4-5 | 2 (single + batch) | 16 | 3 |
 | §3.5 grant_ticket_approval | 3-4 | 1 | 10 | 2 |
-| §3.6 update_work_order_combined | 4-6 | 1 | 14 | 4 |
 | §3.7 command_operations table + helpers | 2 | 3 | 6 | — |
-| §3.8 outbox routing-rerun handler | 2 | 1 | 6 | 1 |
-| TS call-site cutover | 4-6 | — | (covered above) | — |
+| §3.9.1 RequireClientRequestIdGuard wave | 2-3 | — | 8 | 1 |
+| §3.9.2 routing_status column + async handlers | 2-3 | 2 (column + outbox events) | 10 | 2 |
+| §3.10 reclassify_ticket RPC + handlers | 3-4 | 1 | 12 | 2 |
+| Workflow-engine `assign` + `update_ticket` cutover (§1.21) | 2-3 | — | 8 | 2 |
+| TS call-site cutover (controller PATCH endpoints) | 3-5 | — | (covered above) | — |
 | `pnpm smoke:wo-commands` | 1-2 | — | — | (script itself) |
 | Closing slice (legacy tag, retro) | 1-2 | 1-3 | — | — |
-| **TOTAL** | **30-40** | **12-14** | **~88** | **~15** |
+| **TOTAL** | **32-44** | **15-18** | **~126** | **~22** |
 
-**B.0 was 29 commits + 14 migrations + 97 specs. B.2 is in the same
-ballpark — 30-40 commits + 12-14 migrations + ~88 specs.**
+**B.0 was 29 commits + 14 migrations + 97 specs. v2 B.2 is bigger:
+32-44 commits + 15-18 migrations + ~126 specs.** The growth comes
+from the v2 codex-fold additions: the generic orchestrator (§3.0)
++ guard wave (I1) + routing async surfaces (I2) + reclassify
+follow-ups (C4) + workflow node cutover (C2). Roughly +35% on
+all dimensions vs v1.
 
 **Recommendation: split B.2 into B.2.A and B.2.B.**
 
-- **B.2.A — highest-severity surface (≈18-22 commits).** §3.1
-  status, §3.2 assignment, §3.3 SLA. These cover the desk-UI's
-  hottest paths and the SLA-divergence corruption hazard.
-  Includes: command_operations table + helpers + 3 RPCs +
-  TS cutover for `WorkOrderService.update*` + `TicketService.update`
-  + smoke probe extension.
+- **B.2.A — foundation + controller-facing orchestrator
+  (≈20-26 commits).** Includes:
+  - `command_operations` table + helpers (§3.7).
+  - `sla_timers.recompute_pending` column (C3).
+  - `tickets.routing_status` column (I2).
+  - `RequireClientRequestIdGuard` wave on every PATCH /
+    dispatch / approval / reclassify endpoint (I1).
+  - Per-field internal helper RPCs §3.1 (status), §3.2
+    (assignment), §3.3 (SLA with recompute_pending).
+  - `update_entity_combined` orchestrator §3.0 — both PATCH
+    controllers cut over.
+  - Smoke probe extension.
 
-- **B.2.B — rest (≈12-18 commits).** §3.4 dispatch (with batch
-  variant + workflow-engine cutover) + §3.5 grant_ticket_approval +
-  §3.6 update_work_order_combined orchestrator + §3.8 outbox
-  routing-rerun handler.
+- **B.2.B — dispatch + approval + reclassify + workflow nodes
+  (≈12-18 commits).** §3.4 dispatch (with batch variant +
+  workflow-engine create_child_tasks cutover) + §3.5
+  grant_ticket_approval + §3.10 reclassify_ticket + outbox handlers
+  for routing rerun / SLA recompute / workflow restart + §1.21
+  workflow-engine `assign` + `update_ticket` node cutover.
 
 The split aligns with B.0's staged pattern (B.0.A foundation → B.0.B
 RPCs → B.0.C TS plan-builder → B.0.D cutover → B.0.E handler →
-B.0.F smoke + retro). B.2.A is "foundation + the three highest-
-traffic RPCs"; B.2.B is "everything else + cleanup".
+B.0.F smoke + retro). v2 B.2.A is "foundation + I1 guard + the
+generic orchestrator"; B.2.B is "dispatch + approval + reclassify
++ workflow nodes + cleanup".
 
 ---
 
@@ -1134,38 +1638,60 @@ Within B.2.A:
 
 1. **Foundation first** (1-2 days): `command_operations` table,
    `validate_assignees_in_tenant`, `validate_entity_in_tenant`,
-   `compute_entity_state_diff`. No call-site change yet.
+   `compute_entity_state_diff`, `sla_timers.recompute_pending`
+   column + reader-side WHERE-clause migration to add
+   `AND recompute_pending = false` to every existing breach /
+   threshold reader, `tickets.routing_status` column. No call-site
+   behavior change yet.
 
-2. **§3.1 transition_entity_status** (3-4 days): RPC + mocked
-   specs + TS plan-builder + cutover for `WorkOrderService.updateStatus`
-   first (smaller blast radius than `TicketService.update`),
-   then `TicketService.update` status branch.
+2. **I1 guard wave** (1 day):
+   `RequireClientRequestIdGuard` attached to every PATCH /
+   dispatch / approval / reclassify / reassign endpoint. Service
+   methods accept the threaded `actor.client_request_id`. No RPC
+   call yet, just the plumbing.
 
-3. **§3.2 set_entity_assignment** (3-4 days): RPC + cutover for
-   `WorkOrderService.updateAssignment` + `WorkOrderService.reassign` +
-   `TicketService.update` assignment branch + `TicketService.reassign`.
+3. **§3.1 transition_entity_status helper** (3-4 days): RPC + mocked
+   specs. Not yet wired to controllers — will be composed by §3.0.
 
-4. **§3.3 update_entity_sla** (2-3 days): RPC + cutover for
-   `WorkOrderService.updateSla`. Smaller scope (one method).
+4. **§3.2 set_entity_assignment** (3-4 days): RPC + mocked specs.
+   Same — composed by §3.0; also called directly by future
+   reclassify / workflow `assign` cutovers.
 
-5. **B.2.A smoke probe extension + retro** (1-2 days): port
+5. **§3.3 update_entity_sla** (2-3 days): RPC + mocked specs +
+   recompute_pending semantics validated against the breach cron
+   (the reader-side migration in step 1 is the gate).
+
+6. **§3.0 update_entity_combined orchestrator** (4-5 days): RPC
+   that composes §3.1 + §3.2 + §3.3 + plan/priority/metadata.
+   PATCH controllers cut over here — first
+   `PATCH /work-orders/:id` (smaller blast radius), then
+   `PATCH /tickets/:id`.
+
+7. **B.2.A smoke probe extension + retro** (1-2 days): port
    `pnpm smoke:work-orders` to assert the RPC path; ship a
    `b2a-shipped.md` retrospective.
 
-Then B.2.B in any order — they're independent. Recommended:
+Then B.2.B. Order matters here too — workflow + reclassify both
+call into §3.2 and §3.0:
 
-6. **§3.4 dispatch + batch variant** (4-5 days). The hardest one.
-   Routing-engine integration + workflow-engine batch cutover.
-7. **§3.5 grant_ticket_approval + outbox routing-rerun handler**
-   (3-4 days). Mirrors B.0.D.3 structurally.
-8. **§3.6 update_work_order_combined orchestrator** (3-4 days).
-   Folds in the per-field RPCs (§3.1-3.3) + plan / priority /
-   metadata writes. Last because it depends on all the others.
+8. **§3.4 dispatch + batch variant** (4-5 days). Routing-engine
+   integration (sync per I2) + workflow-engine `create_child_tasks`
+   batch cutover.
+9. **§1.21 workflow-engine `assign` + `update_ticket` cutover**
+   (2-3 days). Replace direct `tickets.UPDATE` calls with §3.2
+   and §3.0 invocations. Idempotency key
+   `workflow:${instance_id}:${node_id}:${attempt}`.
+10. **§3.5 grant_ticket_approval + outbox routing-evaluation
+    handler** (3-4 days). Mirrors B.0.D.3 structurally.
+11. **§3.10 reclassify_ticket RPC + 3 outbox handlers**
+    (4-5 days). Last in the dependency chain — depends on §3.2
+    and §3.0 for handler implementations.
+12. **Closing retro** (1 day). `b2-shipped.md`.
 
-**Why this order works:** §3.1 (status) is foundational because
-§3.6 (orchestrator) is the union of all the per-field RPCs. Ship
-status first, dispatch and approval can iterate in parallel after
-§3.1+§3.2+§3.3 are stable.
+**Why this order works (v2):** §3.0 is now the load-bearing piece
+— it's the controller-facing orchestrator and depends on §3.1 +
+§3.2 + §3.3 as internal helpers. Workflow + reclassify cutovers
+follow because they re-use §3.2 / §3.0 as building blocks.
 
 ---
 
@@ -1235,46 +1761,104 @@ advisory lock. **B.2 inherits this rule.** Every RPC's "after-
 commit notifications" goes through `OutboxService.emit()` and a
 TS handler — never inline in the RPC.
 
+### 8.6 [CLOSED] SLA resume safety under async due-date recompute
+
+v1 left this open with a recommendation to defer business-hours
+math to an outbox handler. **Codex review (C3) showed this was
+unsafe** — see §3.3 v2 update. **Decision: add `recompute_pending`
+boolean on `sla_timers`, set atomically with `paused=false`, all
+breach readers add `AND recompute_pending=false`, worker clears
+the flag when due_at is recomputed.** No further open question.
+
+### 8.7 Routing sync vs. async per surface
+
+v1 §9 pushback #2 leaned async-everywhere. **v2 decision: split
+per surface** (see §3.9.2). Sync for create + dispatch
+(latency-critical UX); async with `routing_status` column for
+re-routing / approval / reclassify follow-ups. The split is in the
+spec; the implementation per-surface is settled. Open sub-question:
+**should we include a hybrid path** where create runs sync routing
+but degrades to async-with-status if the resolver takes >500ms?
+Not in scope for B.2 — defer to a v3 polish pass if real numbers
+show the resolver is slow enough to hurt P95 create latency.
+
 ---
 
 ## 9. Pushback
 
-The combined-RPC pattern is the right shape for §3.1, §3.2, §3.3,
-§3.4, §3.5, §3.6. **No pushback on the critical 6.**
+The combined-RPC pattern is the right shape for §3.0, §3.1, §3.2,
+§3.3, §3.4, §3.5, §3.10. **No pushback on the critical 8.**
 
-Pushback on `nit` and some `important` surfaces:
+### 9.1 [STILL VALID] §1.5 bulkUpdate
 
-- **§1.5 `bulkUpdate`** doesn't need an RPC. It's already one
-  statement at the row level; the partial-commit hazard doesn't
-  exist. The audit drift it has (no per-field activity emission)
-  is a separate UX choice, not a B.2 concern.
+`bulkUpdate` doesn't need an RPC. It's already one statement at the
+row level; the partial-commit hazard doesn't exist. The audit drift
+it has (no per-field activity emission) is a separate UX choice,
+not a B.2 concern.
 
-- **§1.16 `fireThreshold`** is the only honest case where "we
-  decided to live with the duplication window". The class comment
-  documents the trade-off. **Recommend wrapping it in an RPC
-  anyway** because the cost is low (one RPC, ~50 lines of PL/pgSQL)
-  and the rule is consistent. Schedule for B.2.B's tail end.
+### 9.2 [v2 NARROWED] Routing engine porting vs. outbox
 
-- **§1.17 SLA helpers** standalone don't need RPCs — they're
-  callable from inside the RPCs in §3.1, §3.3, §3.6 which already
-  wrap them in tx. The cron paths can stay TS-side temporarily and
-  cut over later (the cron writes are bounded; partial-commit on
-  cron has a "next tick will fix it" recovery semantic).
+**v1 position:** routing engine is too big to port to PG, so every
+routing-driven write should be deferred to a TS outbox handler.
+**v2 position (after I2):** the engine is still too big to port —
+that part stands — BUT outbox-everywhere is wrong UX. Sync routing
+on create + dispatch (the latency-critical surfaces); async
+outbox-driven routing with `tickets.routing_status` for re-routing
+/ approval-grant follow-up / reclassify follow-up. See §3.9.2 for
+the per-surface table.
 
-- **§1.6 `createBookingOriginWorkOrder`** is small enough that
-  folding it into the existing `create_setup_work_order_from_event`
-  RPC (00312, B.0.B) is a one-line scope addition — pull the
-  activity + domain_event INSERT into that RPC instead of TS.
-  **Recommend: do this in B.2.A as a free extra**, not its own RPC.
+### 9.3 [RETRACTED] Async SLA resume safety
 
-- **§3.6 orchestrator vs. per-field RPCs** — there's a real argument
-  for "ship the orchestrator only and never expose the per-field
-  RPCs externally". Pro: simpler API surface; clients only see
-  `update_work_order_combined`. Con: cron / workflow-engine /
-  internal callers want narrow per-field calls. **Decision:**
-  ship both. Per-field RPCs as primitives; orchestrator as the
-  controller-facing one. Same as B.0's `create_booking_with_attach_plan`
-  + `approve_booking_setup_trigger` pattern.
+**v1 claimed:** SLA pause/resume could safely defer due-date
+recompute to a TS outbox handler because nothing reads the new
+due-date during the gap. **Codex review (C3) showed this is
+WRONG.** The breach cron at `sla.service.ts:333` reads
+`paused=false` AND a stale `due_at`, sees the timer "should have
+fired" within the gap window, and emits a false breach. The
+race is small (RPC commit → worker recompute) but real, and on a
+busy tenant the cron tick runs every 30s.
+
+**v2 fix:** add `sla_timers.recompute_pending boolean` set
+atomically with `paused=false`; all breach / threshold readers add
+`AND recompute_pending=false`; worker recomputes `due_at` and
+clears the flag in one tx. See §3.3 v2 for the detail. This
+section is left as a marker — the v1 reasoning was wrong, the
+v2 schema fix is in.
+
+### 9.4 [STILL VALID] §1.16 fireThreshold escalation cron
+
+The only honest case where "we decided to live with the duplication
+window". The class comment documents the trade-off. **Recommend
+wrapping it in an RPC anyway** because the cost is low (one RPC,
+~50 lines of PL/pgSQL) and the rule is consistent. Schedule for
+B.2.B's tail end.
+
+### 9.5 [STILL VALID] §1.17 SLA helpers as standalone
+
+The helpers don't need their own RPCs — they're called from inside
+the RPCs in §3.1, §3.3, §3.0 which already wrap them in tx. The
+cron paths can stay TS-side temporarily and cut over later (the
+cron writes are bounded; partial-commit on cron has a "next tick
+will fix it" recovery semantic).
+
+### 9.6 [STILL VALID] §1.6 createBookingOriginWorkOrder
+
+Small enough that folding it into the existing
+`create_setup_work_order_from_event` RPC (00312, B.0.B) is a
+one-line scope addition — pull the activity + domain_event INSERT
+into that RPC instead of TS. **Recommend: do this in B.2.A as a
+free extra**, not its own RPC.
+
+### 9.7 [v2 SUPERSEDED] §3.6 orchestrator vs. per-field RPCs
+
+v1 framed this as "ship both: per-field RPCs as primitives,
+orchestrator as the controller-facing one". v2 keeps that decision
+but restates it with the corrected naming: §3.0
+`update_entity_combined` is the controller-facing orchestrator;
+§3.1-§3.3 are internal helpers that the orchestrator composes,
+also exposed as RPCs for the narrow non-controller callers (cron
+escalation, workflow `assign` node, reclassify outbox handlers,
+admin one-shots). PATCH controllers call ONLY §3.0.
 
 ---
 
