@@ -19,6 +19,13 @@ import type {
   ActorContext, Booking, CreateReservationInput, PolicySnapshot,
   RecurrenceScope, Reservation,
 } from './dto/types';
+import type {
+  AttachPlan,
+  AttachPlanBookingSlot,
+  BookingInput,
+} from '../booking-bundles/attach-plan.types';
+import { planUuid } from '../booking-bundles/plan-uuid';
+import { comparePlanSlots } from '../booking-bundles/plan-sort';
 
 /**
  * BookingFlowService — the canonical create-a-booking pipeline.
@@ -451,6 +458,241 @@ export class BookingFlowService {
     // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
 
     return reservation;
+  }
+
+  /**
+   * `buildAttachPlan` — pure plan-builder for the combined-RPC path
+   * (`create_booking_with_attach_plan`). Returns `{ bookingInput, attachPlan }`
+   * — both jsonb-shaped for the RPC arguments. Does NOT call the RPC.
+   *
+   * Spec: §7.4 + §7.5 + §7.6 of
+   * docs/superpowers/specs/2026-05-04-domain-outbox-design.md.
+   *
+   * Pipeline:
+   *   1. Validate input (assertValid mirrors `create`).
+   *   2. Load + verify the space (active, reservable).
+   *   3. Snapshot buffers (back-to-back collapse).
+   *   4. Resolve booking rules.
+   *   5. Handle deny / require_approval / override gates (mirrors `create`'s
+   *      ForbiddenException + override-reason gates so `create` and
+   *      `buildAttachPlan` stay in lockstep).
+   *   6. Compute status + policy_snapshot + cost_amount_snapshot.
+   *   7. Pre-generate booking_id + slot_ids via `planUuid`.
+   *   8. Build BookingInput (mirrors `create_booking` RPC param list at
+   *      00277:236-292).
+   *   9. Delegate to `BundleService.buildAttachPlan` for service rows
+   *      (returns AttachPlan with pre-gen UUIDs, sorted canonically).
+   *   10. Compose the result.
+   *
+   * Dormant in B.0.C — `BookingFlowService.create` keeps using the
+   * `create_booking` RPC + `attachServicesToBooking` until B.0.D rewires
+   * the call site to `create_booking_with_attach_plan`.
+   *
+   * **Single-room only** for v1 — multi-room batches multiple slot specs
+   * into one call (deferred to MultiRoomBookingService rewrite, separate
+   * slice). Mirrors the same constraint as `create`.
+   */
+  async buildAttachPlan(
+    input: CreateReservationInput,
+    actor: ActorContext,
+    idempotencyKey: string,
+  ): Promise<{ bookingInput: BookingInput; attachPlan: AttachPlan }> {
+    if (!idempotencyKey || idempotencyKey.length === 0) {
+      throw new BadRequestException({
+        code: 'idempotency_key_required',
+        message: 'buildAttachPlan: idempotencyKey required.',
+      });
+    }
+    this.assertValid(input);
+    const tenantId = TenantContext.current().id;
+
+    // 1+2. Load space + verify
+    const space = await this.loadSpace(input.space_id);
+
+    // 3. Buffer collapse for same-requester back-to-back
+    const buffers = await this.conflict.snapshotBuffersForBooking({
+      space_id: input.space_id,
+      requester_person_id: input.requester_person_id,
+      start_at: input.start_at,
+      end_at: input.end_at,
+      room_setup_buffer_minutes: space.setup_buffer_minutes ?? 0,
+      room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
+    });
+
+    // 4. Resolve booking rules
+    const ruleOutcome = await this.ruleResolver.resolve({
+      requester_person_id: input.requester_person_id,
+      space_id: input.space_id,
+      start_at: input.start_at,
+      end_at: input.end_at,
+      attendee_count: input.attendee_count ?? null,
+      criteria: {},
+    });
+
+    // 5. Deny gate — same shape as `create`
+    if (ruleOutcome.final === 'deny') {
+      const canOverride = actor.has_override_rules && ruleOutcome.overridable;
+      if (!canOverride) {
+        throw new ForbiddenException({
+          code: 'rule_deny',
+          message: ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.',
+          denial_messages: ruleOutcome.denialMessages,
+          matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+        });
+      }
+      if (!actor.override_reason) {
+        throw new BadRequestException({
+          code: 'override_reason_required',
+          message: 'Service-desk override requires a reason.',
+        });
+      }
+    }
+
+    // 6. Status + policy + cost (mirrors `create`)
+    const status: 'pending_approval' | 'confirmed' =
+      ruleOutcome.final === 'require_approval' ? 'pending_approval' : 'confirmed';
+
+    const policySnapshot: PolicySnapshot = {
+      matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+      effects_seen: ruleOutcome.effects,
+      buffers_collapsed_for_back_to_back:
+        buffers.setup_buffer_minutes !== (space.setup_buffer_minutes ?? 0) ||
+        buffers.teardown_buffer_minutes !== (space.teardown_buffer_minutes ?? 0),
+      source_room_check_in_required: space.check_in_required ?? false,
+      source_room_setup_buffer_minutes: space.setup_buffer_minutes ?? 0,
+      source_room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
+      rule_evaluations: ruleOutcome.matchedRules.map((r) => ({
+        rule_id: r.id,
+        matched: true,
+        effect: r.effect,
+        denial_message: r.denial_message ?? undefined,
+      })),
+    };
+
+    const costAmountSnapshot = this.computeCost(space, input);
+
+    // Source narrowing — mirrors `create` (the new bookings.source CHECK
+    // constraint at 00277:56-58 doesn't admit 'auto'; coerce based on
+    // actor identity).
+    const rawSource = input.source ?? 'portal';
+    const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
+      rawSource === 'auto'
+        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
+        : rawSource;
+
+    // Map legacy 'other' → 'asset' (00277:122 admits room/desk/asset/parking).
+    const inputType = input.reservation_type ?? 'room';
+    const slotType: 'room' | 'desk' | 'asset' | 'parking' =
+      inputType === 'other' ? 'asset' : inputType;
+
+    // 7. Pre-generate booking_id + slot_ids via planUuid (deterministic)
+    const bookingId = planUuid(idempotencyKey, 'booking', '0');
+    const slotDisplayOrder = 0;            // single-room: always slot 0
+    const slotId = planUuid(idempotencyKey, 'slot', String(slotDisplayOrder));
+
+    // 8. BookingInput — every field the create_booking RPC param list
+    //    expects (00277:236-292), shaped as the §7.4 BookingInput jsonb.
+    const slot: AttachPlanBookingSlot = {
+      id: slotId,
+      slot_type: slotType,
+      space_id: input.space_id,
+      start_at: input.start_at,
+      end_at: input.end_at,
+      attendee_count: input.attendee_count ?? null,
+      attendee_person_ids: input.attendee_person_ids ?? [],
+      setup_buffer_minutes: buffers.setup_buffer_minutes,
+      teardown_buffer_minutes: buffers.teardown_buffer_minutes,
+      check_in_required: space.check_in_required ?? false,
+      check_in_grace_minutes: space.check_in_grace_minutes ?? 15,
+      display_order: slotDisplayOrder,
+    };
+    // Canonical sort — single-slot is a no-op, but the discipline matters
+    // when multi-room lands.
+    const slots = [slot].sort(comparePlanSlots);
+    const slotIds = slots.map((s) => s.id);
+
+    const bookingInput: BookingInput = {
+      booking_id: bookingId,
+      slot_ids: slotIds,
+      requester_person_id: input.requester_person_id,
+      host_person_id: input.host_person_id ?? null,
+      booked_by_user_id: actor.user_id,
+      location_id: input.space_id,
+      start_at: input.start_at,
+      end_at: input.end_at,
+      timezone: input.timezone ?? 'UTC',
+      status,
+      source: bookingSource,
+      title: input.title ?? null,
+      description: input.description ?? null,
+      cost_center_id: input.bundle?.cost_center_id ?? null,
+      cost_amount_snapshot: costAmountSnapshot,
+      policy_snapshot: policySnapshot as unknown as Record<string, unknown>,
+      applied_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+      config_release_id: null,
+      recurrence_series_id: input.recurrence_series_id ?? null,
+      recurrence_index: input.recurrence_index ?? null,
+      template_id: input.bundle?.template_id ?? null,
+      slots,
+    };
+
+    // 9. AttachPlan — delegate to BundleService.buildAttachPlan when there
+    //    are services; produce an empty plan otherwise.
+    let attachPlan: AttachPlan;
+    if (input.services && input.services.length > 0) {
+      if (!this.bundle) {
+        throw new Error(
+          'BundleService not injected — booking-flow cannot build attach plan. ' +
+            'Wire BookingBundlesModule into ReservationsModule.imports.',
+        );
+      }
+      attachPlan = await this.bundle.buildAttachPlan({
+        booking_id: bookingId,
+        tenant_id: tenantId,
+        booking: {
+          location_id: input.space_id,
+          requester_person_id: input.requester_person_id,
+          host_person_id: input.host_person_id ?? null,
+          start_at: input.start_at,
+          end_at: input.end_at,
+          attendee_count: input.attendee_count ?? null,
+          source: bookingSource,
+        },
+        requester_person_id: input.requester_person_id,
+        bundle: input.bundle
+          ? {
+              bundle_type: input.bundle.bundle_type,
+              cost_center_id: input.bundle.cost_center_id ?? null,
+              template_id: input.bundle.template_id ?? null,
+              source: bookingSource,
+            }
+          : { source: bookingSource },
+        services: input.services,
+        idempotency_key: idempotencyKey,
+      });
+    } else {
+      attachPlan = {
+        version: 1,
+        any_pending_approval: false,
+        any_deny: false,
+        deny_messages: [],
+        orders: [],
+        asset_reservations: [],
+        order_line_items: [],
+        approvals: [],
+        bundle_audit_payload: {
+          bundle_id: bookingId,
+          booking_id: bookingId,
+          order_ids: [],
+          order_line_item_ids: [],
+          asset_reservation_ids: [],
+          approval_ids: [],
+          any_pending_approval: false,
+        },
+      };
+    }
+
+    return { bookingInput, attachPlan };
   }
 
   /**
