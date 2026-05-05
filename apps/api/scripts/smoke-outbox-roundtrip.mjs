@@ -63,6 +63,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 
 // ─────────────────────────────────────────────────────────────────────
 // Config
@@ -175,31 +176,46 @@ async function selectMany(table, filters) {
   return data ?? [];
 }
 
-// outbox.events lives in the outbox schema; supabase-js doesn't expose
-// non-public schemas through PostgREST without explicit config. Use the
-// public-schema view shipped with 00299_outbox_foundation.sql.
+// outbox.events lives in the outbox schema; PostgREST doesn't expose
+// non-public schemas without explicit config and the supabase-js client
+// can't reach it. Use a direct postgres connection (the same fallback
+// pattern documented in CLAUDE.md "Supabase: remote vs local") so the
+// smoke probe doesn't depend on PostgREST schema settings that vary
+// across environments.
+const pgClient = new pg.Client({
+  host: 'db.iwbqnyrvycqgnatratrk.supabase.co',
+  port: 5432,
+  user: 'postgres',
+  password: env.SUPABASE_DB_PASS,
+  database: 'postgres',
+  ssl: { rejectUnauthorized: false },
+});
+let pgConnected = false;
+async function ensurePgConnected() {
+  if (!pgConnected) {
+    await pgClient.connect();
+    pgConnected = true;
+  }
+}
+
 async function selectOutboxEvents(filters) {
-  // Fall back to admin client; the outbox.events table is service_role
-  // accessible via the dotted name through the schema-qualified RPC
-  // approach. PostgREST exposes 'outbox' schema iff supabase config
-  // enables it — for the smoke we use a JSON-RPC wrapper if available;
-  // otherwise we fall back to a direct admin SELECT through the
-  // postgres-meta surface. The cleanest cross-environment approach is
-  // a SQL function we can call via .rpc(); but the foundation
-  // migration didn't ship one for events. So we issue the SELECT via
-  // the postgres connection through PgAdmin's REST shim is overkill —
-  // simplest: read through a PostgREST view in the public schema.
-  // Since we don't have one, do a single-row read via the schema-aware
-  // supabase client after temporarily switching schemas.
-  const client = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    db: { schema: 'outbox' },
-  });
-  let q = client.from('events').select('*');
-  for (const [k, v] of Object.entries(filters)) q = q.eq(k, v);
-  const { data, error } = await q;
-  if (error) throw error;
-  return data ?? [];
+  await ensurePgConnected();
+  const conds = [];
+  const values = [];
+  let i = 1;
+  for (const [k, v] of Object.entries(filters)) {
+    conds.push(`${k} = $${i++}`);
+    values.push(v);
+  }
+  const where = conds.length ? `where ${conds.join(' and ')}` : '';
+  const q = `select * from outbox.events ${where}`;
+  const r = await pgClient.query(q, values);
+  return r.rows;
+}
+
+async function deleteOutboxEvent(id) {
+  await ensurePgConnected();
+  await pgClient.query('delete from outbox.events where id = $1', [id]);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -240,6 +256,11 @@ async function seedRoutingFixture() {
   // service_rules — a catalog-item-scoped rule that requires_internal_setup.
   // effect='allow' so it doesn't trigger an approval (we want the
   // happy-path setup-WO emit, not the deferred-emit-on-grant flow).
+  // applies_when={and:[]} is the canonical "always-match" predicate
+  // (PredicateEngineService.evaluate: empty `every` → true). An empty
+  // object {} would throw a structural error and be silently swallowed
+  // by the resolver (returns false), so we'd see no event emitted
+  // even though the rule looked correct.
   const rule = await supaAdmin
     .from('service_rules')
     .insert({
@@ -247,7 +268,7 @@ async function seedRoutingFixture() {
       name: `smoke-outbox-${Date.now()}`,
       target_kind: 'catalog_item',
       target_id: CATALOG_ITEM_ID,
-      applies_when: {},
+      applies_when: { and: [] },
       effect: 'allow',
       priority: 50,
       active: true,
@@ -297,14 +318,12 @@ async function cleanupCreated() {
   }
 
   if (created.outboxEventId) {
-    // Use the schema-aware client.
-    const client = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-      db: { schema: 'outbox' },
-    });
-    const o = await client.from('events').delete().eq('id', created.outboxEventId);
-    if (o.error) console.log(`  warn: outbox.events delete: ${o.error.message}`);
-    else console.log(`  ✓ cleanup outbox event ${created.outboxEventId.slice(0, 8)}…`);
+    try {
+      await deleteOutboxEvent(created.outboxEventId);
+      console.log(`  ✓ cleanup outbox event ${created.outboxEventId.slice(0, 8)}…`);
+    } catch (e) {
+      console.log(`  warn: outbox.events delete: ${e.message}`);
+    }
   }
 
   if (created.attachOperationId) {
@@ -373,6 +392,10 @@ async function createBookingWithService(authToken) {
       source: 'desk',
       services: [
         {
+          // client_line_id is REQUIRED per spec §7.4 v8 — the canonical
+          // sort uses it as the immutable per-row stable key. Bundle
+          // service rejects with `client_line_id_required` otherwise.
+          client_line_id: `smoke-${randomUUID()}`,
           catalog_item_id: CATALOG_ITEM_ID,
           quantity: 4,
         },
@@ -660,6 +683,13 @@ async function main() {
       await cleanupCreated();
     } catch (e) {
       console.log(`  warn: cleanup threw: ${e.message}`);
+    }
+    if (pgConnected) {
+      try {
+        await pgClient.end();
+      } catch {
+        // ignore — process is exiting
+      }
     }
   }
 
