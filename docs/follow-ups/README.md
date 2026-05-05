@@ -10,6 +10,9 @@ deferred" + "what to do" + "when to revisit". Don't bloat.
 
 ### Outbox / B.0
 
+- [`b0-shipped.md`](./b0-shipped.md) — B.0 retrospective: 28 commits,
+  11 migrations, 8 spec rounds, lessons learned, and the open
+  deferrals.
 - [`b0-real-db-concurrency-harness.md`](./b0-real-db-concurrency-harness.md) —
   pgTAP / two-connection `pg.Pool` harness for advisory-lock concurrency
   tests across the four B.0 RPCs. Cutover gate per spec §16.2 #20a.

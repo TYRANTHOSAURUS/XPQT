@@ -1051,15 +1051,29 @@ When a service rule on a line emits `effect=require_approval` (or `allow_overrid
 
 - All flagged lines emit `*.setup_deferred_pending_approval` to audit so the deferral is visible.
 - The `TriggerArgs` snapshot is persisted on `order_line_items.pending_setup_trigger_args` (00197) at deferral time. If the persist write fails, both creators emit a HIGH-severity `*.setup_deferral_persist_failed` event INSTEAD of the normal `*.setup_deferred_pending_approval` marker — otherwise the audit trail would show "deferred" while approval-grant later silently does nothing.
-- `ApprovalService.respondToApproval` dispatches to `BundleService.onApprovalDecided` once the bundle's approval is fully resolved. Resolution rules (`booking` target type):
-  - Any rejection ends the approval immediately.
+
+**Post-B.0 grant flow (booking-target approvals).** As of the B.0 outbox cutover (2026-05-04), the booking branch of `ApprovalService.respond` invokes the `grant_booking_approval` RPC (00310) instead of the legacy 5-step TS pipeline. The RPC handles everything atomically inside one Postgres transaction:
+
+  1. Acquire a `pg_advisory_xact_lock` keyed on `(approval_id)` to serialise concurrent grants on the same row.
+  2. Lock + read the approval (`for update`) and validate target entity type + state machine; reject early on `non_booking_approved` for ticket / visitor_invite branches without mutating any row.
+  3. CAS update the approval row (`approvals.status` from `pending` → `approved` / `rejected`) — only after validation passes.
+  4. Acquire a second `pg_advisory_xact_lock` keyed on `(booking_id)` to serialise grants across sibling approvals on the same booking (parallel groups, chains).
+  5. Re-read `v_unresolved_count` to decide whether the booking's approvals are fully resolved. If not (`partial_approved`), exit without touching slots/bookings/OLIs.
+  6. On `resolved + approved`: flip linked order rows to `approved`, transition `booking_slots.status` + `bookings.status` per the booking state machine, and **`PERFORM approve_booking_setup_trigger`** inline. The setup-trigger RPC (00311) reads each OLI's `pending_setup_trigger_args`, validates `rule_ids[]` are still in-tenant, emits one `setup_work_order.create_required` outbox event per OLI via `outbox.emit()`, and clears the `pending_setup_trigger_args` column. Audit row `booking.deferred_setup_emitted_on_approval` lands with `emitted_count`. All in the same tx.
+  7. On `resolved + rejected`: flip linked orders to `cancelled`, transition slots/bookings to `cancelled`, expire sibling approvals in the same parallel group, and clear `pending_setup_trigger_args` without emitting any outbox event. Audit row `booking.deferred_setup_dropped_on_rejection` lands.
+
+- Resolution rules (`booking` target type) for `v_unresolved_count`:
+  - Any rejection ends the approval immediately (sibling-expire branch).
   - Otherwise: every approval row on the same `target_entity_id` must be `approved` or `expired` (explicitly enumerated; `pending`/`rejected`/any future status block). Bundle approvals are typically upserted by `ApprovalRoutingService.assemble` as independent single-step rows (one per unique approver) with `parallel_group=null` / `chain=null`, but the same target can also receive parallel/chain approvals via the generic API. Always requiring "every row resolved" handles all topologies — single-step, parallel, chain, and mixed — uniformly. `expired` rows count as resolved because `BundleCascadeService.rescopeApprovalsAfterLineCancel` expires approvals whose scope is emptied by a line cancel; treating `expired` as blocking would deadlock the bundle.
-- Args are claimed atomically via `claim_deferred_setup_trigger_args(p_tenant_id, p_order_ids)` (00198). The RPC uses `SELECT FOR UPDATE` so two callers cannot both fire the trigger for the same OLI even when granting truly concurrently across multiple API instances. Returns one row per claimed OLI with the OLD args value.
-- Cancel/approve race guard: after `triggerMany` fires on the approve branch, `BundleService.onApprovalDecided` re-runs the cancel-cascade's tickets-close clause for any of the just-fired OLIs that are now in `fulfillment_status='cancelled'`. Without this, a `cancelLine` running between the claim RPC commit and the trigger insert could leave an open work order linked to a cancelled line. The race window emits `bundle.deferred_setup_closed_after_concurrent_cancel` (medium severity).
-  - **Approved:** linked orders flip `submitted` → `approved`; the persisted args are read back and `SetupWorkOrderTriggerService.triggerMany` re-fires the work-order creation for every deferred OLI; args are cleared (one-shot); audit emits `bundle.deferred_setup_fired_on_approval`.
-  - **Rejected:** linked orders flip `submitted` → `cancelled`; persisted args are cleared; audit emits `bundle.deferred_setup_dropped_on_rejection`. No trigger fires.
-- The handler is idempotent — order updates filter on `status='submitted'` and OLI clears filter on the args being present, so re-running on an already-decided bundle is a no-op.
-- The persisted args capture the decision **at create time**. Rule edits between booking and approval do not change what fires on grant — by design, so the operator's read of the booking matches what facilities will see.
+
+- **Cancel/grant race protection** is now provided by `for update of oli` inside `approve_booking_setup_trigger`: cancellation cascades take the same row lock to flip `fulfillment_status='cancelled'`, so a grant arriving after a cancel sees the cancelled status under lock and skips the emit (audit row `bundle.deferred_setup_skipped_cancelled`). The pre-B.0 defensive close path + `bundle.deferred_setup_closed_after_concurrent_cancel` audit event are dead code post-cutover; they live in `bundle.service.ts:1550-1614` queued for §16.1 deletion. **Do not write new callers.**
+
+- The legacy `claim_deferred_setup_trigger_args(p_tenant_id, p_order_ids)` RPC was dropped in migration 00308; the new `approve_booking_setup_trigger(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)` (00311) takes the booking id directly and reads + emits + clears in one tx. The legacy `BundleService.onApprovalDecided` method survives but the production approval-grant flow no longer calls it — `ApprovalService.respond` calls the RPC directly. The legacy method is now reachable only from admin batch tooling or recovery scripts that want to drive the trigger without going through the full state machine.
+
+- The handler is idempotent — `approve_booking_setup_trigger` filters on `pending_setup_trigger_args is not null` and skips OLIs that have already been processed; the `setup_work_order.create_required` event has a unique `(tenant_id, idempotency_key)` constraint on `outbox.events` (where idempotency_key is derived from the OLI id) so a re-emit is a no-op.
+- The persisted args capture the decision **at create time**. Rule edits between booking and approval do not change what fires on grant — by design, so the operator's read of the booking matches what facilities will see. Rule deletions are caught at emit time by `validate_rule_ids_in_tenant` (00306): a rule that was deleted between create and grant raises `setup_wo.rule_id_invalid` and rolls back the whole tx, surfacing the misconfiguration rather than silently emitting a stale rule snapshot.
+
+- **Outbox-driven setup-WO creation.** Once `approve_booking_setup_trigger` (or the create-time path in `create_booking_with_attach_plan`) has emitted a `setup_work_order.create_required` event, the work order is created asynchronously by `SetupWorkOrderHandler` consuming the event. The handler builds the row payload via `SetupWorkOrderRowBuilder.buildFromEvent` (matrix routing + lead-time math) and hands it to `create_setup_work_order_from_event` RPC (00312), which inserts the `work_orders` row + `setup_work_order_emissions` dedup row + audit row atomically. Crash between the event emit and worker drain ⇒ the worker retries; the dedup row prevents duplicate WOs. Per spec §16.2 #20a, the cutover from shadow → active mode requires the real-DB concurrency harness in `docs/follow-ups/b0-real-db-concurrency-harness.md`.
 
 ### Visibility — what's intentionally NOT set on booking-origin work orders
 
@@ -1075,12 +1089,18 @@ Visibility for these tickets falls to the assignee path: `assigned_team_id` matc
 Any change to these requires updating this section:
 
 - `apps/api/src/modules/ticket/ticket.service.ts:createBookingOriginWorkOrder`
-- `apps/api/src/modules/booking-bundles/bundle.service.ts` (`attachServicesToReservation`, `onApprovalDecided`)
+- `apps/api/src/modules/booking-bundles/bundle.service.ts` (`attachServicesToBooking`, `buildAttachPlan`, `onApprovalDecided`)
 - `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts` (cancel cascade for `linked_order_line_item_id`)
 - `apps/api/src/modules/orders/order.service.ts:createStandaloneOrder`
 - `apps/api/src/modules/service-catalog/service-rule-resolver.service.ts:aggregateMatchedRules` (the `requires_internal_setup` aggregation)
-- `apps/api/src/modules/approval/approval.service.ts:handleBookingApprovalDecided` (dispatch to bundle service; renamed from `handleBookingBundleApprovalDecided` when the canonical `'booking'` `target_entity_type` was introduced — see G2 spec refresh)
+- `apps/api/src/modules/approval/approval.service.ts:respond` (booking branch invokes `grant_booking_approval` RPC; ticket / visitor_invite branches keep their pre-B.0 TS-orchestrated flow; renamed from `handleBookingBundleApprovalDecided` when the canonical `'booking'` `target_entity_type` was introduced — see G2 spec refresh)
+- `apps/api/src/modules/reservations/booking-flow.service.ts:create` (services-present path uses `create_booking_with_attach_plan` combined RPC; no-services path keeps `create_booking`)
+- `apps/api/src/modules/booking-bundles/plan-uuid.ts` + `plan-sort.ts` + `attach-plan.types.ts` (the TS plan-builder for the combined RPC; deterministic UUIDs + canonical sort)
+- `apps/api/src/modules/service-routing/setup-work-order-row-builder.service.ts` (TS row payload for `create_setup_work_order_from_event`)
+- `apps/api/src/modules/outbox/handlers/setup-work-order.handler.ts` (consumes `setup_work_order.create_required` events; calls the create RPC)
+- `apps/api/src/modules/outbox/outbox.worker.ts` (drain + dead-letter state machine)
 - Migrations changing `service_rules`, `location_service_routing`, `resolve_setup_routing`, or `order_line_items.pending_setup_trigger_args`
+- B.0 outbox migrations (00299–00312): `outbox.events`, `attach_operations`, `setup_work_order_emissions`, the four B.0 RPCs, the validation helpers (`validate_attach_plan_tenant_fks`, `validate_attach_plan_internal_refs`, `validate_setup_wo_fks`, `validate_rule_ids_in_tenant`)
 
 ---
 
