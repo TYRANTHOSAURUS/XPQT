@@ -1,8 +1,9 @@
-# Domain Outbox Design Specification — Plan B.1 (v7)
+# Domain Outbox Design Specification — Plan B.1 (v8)
 
 > **Authored:** 2026-05-04
 > **Phase:** 6 (Durable Infrastructure)
 > **Scope:** Investigation + Design only. No implementation code beyond this spec.
+> **Status:** v8 is the FINAL design round before B.0 implementation begins. After v8 ships, B.0 starts immediately.
 
 ---
 
@@ -14,7 +15,8 @@
 - **v4** (commit `2c564f4`, superseded): replaced v3's destructive lease with **A-prime atomic attach**. TS kept the rule resolver / approval routing as a *plan-building* preflight; the WRITE phase became `attach_services_to_booking(p_plan jsonb)`. `delete_booking_with_guard` was amended to lock + re-check (`already_gone` / `already_attached`); the lease window was widened to 5 min and made GUC-configurable. Codex flagged 4 criticals on v4: **C1** GUC-based lease config doesn't reliably carry across PostgREST-pooled connections; **C2** the slow-preflight window between `create_booking` returning and the attach RPC starting can outlive the lease (TS preflight can take 10+ seconds on cold caches, and the lease only starts ticking inside the booking insert); **C3** operation idempotency is incomplete (a TS retry that rebuilds the plan with fresh UUIDs bypasses the per-UUID dedup); **C4** the FK validation matrix in §X.3 only listed catalog/asset/menu/cost_center/person — missing requester_person_id on orders, fulfillment_team_id and vendor_id on OLIs, host_person_id and attendee_person_ids on the booking, and approver_team_id on approvals.
 - **v5** (commit `48048f6`, superseded): collapse the booking + services split write into ONE atomic RPC: `create_booking_with_attach_plan(booking_input, attach_plan, idempotency_key, tenant_id)`. TS keeps rule resolver + approval routing as plan-building (pure-SQL conversion isn't worth the cost — see §7.5). RPC takes the built plan and writes booking + slots + orders + asset_reservations + OLIs + approvals + outbox emissions in a single transaction. The `attach_operations` table provides retry idempotency. **No watchdog. No lease. No `booking.create_attempted` event.** Atomic = nothing to compensate. The outbox foundation stays for genuinely async durable work (setup work orders, SLA timers, notifications, escalations); the first cutover becomes setup-WO emitted atomically from inside the combined RPC, NOT best-effort post-commit. v5 dropped v4-C1 (GUC) and v4-C2 (preflight window) entirely as failure modes; folded v4-C3 (operation idempotency via `attach_operations`); folded v4-C4 (exhaustive FK matrix in §8); folded v4-I1/I3 (separate forced-probe mode for staging; no silent `mark_consumed=false`); folded v4-I2 (`approvals[].id` pre-generated TS-side along with every other UUID).
 - **v6** (commit `fd561fd`, superseded): folds 4 criticals + 3 importants + 1 nit from the codex v5 review. Headline corrections: **(C1)** every plan UUID — booking, slots, orders, OLIs, asset_reservations, approvals — is now derived from `uuidv5(idempotency_key, row_kind, stable_index, NS_PLAN)` instead of `crypto.randomUUID()`. The previous random scheme defeated the very `attach_operations` mechanism v5 introduced, because a TS retry that rebuilt the plan with fresh UUIDs would hash to a different `payload_hash` and trip `payload_mismatch` instead of returning `cached_result`. **(C2)** the combined RPC takes a transaction-scoped `pg_advisory_xact_lock` keyed on `(tenant_id, idempotency_key)` *before* it reads `attach_operations`. v5's `SELECT FOR UPDATE` couldn't see uncommitted in-progress rows, so two racing retries both passed the gate and both `INSERT`-ed the marker — second got `23505` instead of cached_result. **(C3)** `SetupWorkOrderTriggerService` gains a strict-mode sibling (`triggerStrict`) that throws transient errors and returns typed terminal outcomes. The outbox handler calls `triggerStrict`, so transient DB failures retry through the worker instead of being swallowed by the legacy `trigger`'s outer try/catch. **(C4)** the approval-grant deferred-setup path (`bundle.service.ts:1523` calling `setupTrigger.triggerMany` directly) is replaced by a new `approve_booking_setup_trigger(p_oli_ids, p_tenant_id)` RPC that reads `pending_setup_trigger_args`, emits `setup_work_order.create_required` to outbox, and clears the args — all in one transaction. Approval grant becomes durable end-to-end. Folds **(I1)** `setup_work_order_emissions` dedup table replacing the racy `work_orders.linked_order_line_item_id` lookup; **(I2)** internal-graph FK validation helper alongside the tenant-FK matrix; **(I3)** drops `failed` and stale `in_progress` from the `attach_operations.outcome` enum (the marker insert lives inside the RPC tx — failures roll the row back, so persistent `failed` state was never produced); **(N1)** strips `OutboxService.markConsumed` and the `booking.create_attempted` references from `outbox.service.ts` (already retired from spec; implementation file lagged).
-- **v7** (this revision): folds 3 criticals + 4 importants + 2 nits from the codex v6 review. Pattern: every TS-side multi-step write needs an atomic RPC. v6 closed the create path's split-write but introduced new ones in the approval-grant path and the WO-create-from-event path; v7 closes ALL remaining split-writes in the booking + approval + WO-creation surface area. **(C1)** the v6 cutover wired `approve_booking_setup_trigger` to consume `claimedRows` produced by the OLD `claim_deferred_setup_trigger_args` RPC (00198) — but 00198 already NULLs `pending_setup_trigger_args` before returning, so the new RPC reads null args and emits zero events. v7 retires the 00198 claim flow entirely; the new `approve_booking_setup_trigger(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)` reads + emits + clears atomically in a single RPC, taking a `pg_advisory_xact_lock` keyed on `(tenant_id, booking_id)` for per-grant serialisation. The TS approval-decision path (`bundle.service.ts:1452-1527`) collapses from "claim RPC + branch + triggerMany / audit" to "call approve RPC". **(C2)** the v6 spec claimed approval-emit failure rolls back the approval decision, but `approval.service.ts:440` runs multiple supabase-js HTTP writes (approval row UPDATE + booking_slots UPDATE + bookings UPDATE + bundle cascade) — there is no transaction to roll back across separate HTTP calls. v7 introduces `grant_booking_approval(p_approval_id, p_tenant_id, p_actor_user_id, p_decision, p_comments, p_idempotency_key)` which atomically: locks the approval row + applies the CAS update + transitions linked booking_slots/bookings + clears `pending_setup_trigger_args` + emits `setup_work_order.create_required` outbox events for non-cancelled OLIs (when `p_decision='approved'`). The TS approval.service.ts becomes a planner/dispatcher: it validates auth + state machine, then calls the single RPC. Notifications + visitor-invite + ticket dispatch stay in TS, fired AFTER the RPC commits (best-effort by design). **(C3)** v6's setup-WO handler created the WO via `triggerStrict` in one supabase-js HTTP call, then INSERT-ed the dedup row in `setup_work_order_emissions` in a SECOND HTTP call. Crash between commits → duplicate WO on replay. v7 introduces `create_setup_work_order_from_event(p_event_id, p_tenant_id, p_wo_row_data, p_idempotency_key)` which inserts the WO row + dedup row atomically in one tx. The TS handler builds the WO row payload (using the existing routing/lead-time logic, now factored as `SetupWorkOrderRowBuilder.build`) and passes it to the RPC. Folds **(I1)** canonical sort discipline for plan UUIDs — every row-kind has a defined sort tuple before `stableIndex` assignment, so two equivalent retries with shuffled input produce identical UUIDs (closes a hole in v6 §7.4 where caller-iteration order leaked into the hash); **(I2)** real `X-Client-Request-Id` mechanism — `apiFetch` auto-generates a UUID per mutation request and threads it as a header; the API guard exposes `request.clientRequestId`; producers use it as the `p_idempotency_key` (closes the v6 reference to a non-existent `RequestIdProvider`); **(I3)** `setup_work_order_emissions.work_order_id` FK now references `public.work_orders(id)` not `public.tickets(id)` — the rewrite collapsed tickets into work_orders for booking-origin work, so the v6 schema would 23503 on insert; **(I4)** mandatory snapshot UUID validation — `applied_rule_ids[]`, `config_release_id`, `setup_emit.rule_ids[]`, and approval-reason `rule_id` are now batch-validated against tenant-scoped rule/config tables in `validate_attach_plan_internal_refs` (closes the explicit "skip" in v6 §8.2; cost is small, downside of a smuggled cross-tenant rule_id baking into the audit trail forever is permanent). Folds nits: **(N1)** §5.1 Phase C reference to `attach_operations.outcome='failed'` was stale (v6 collapsed the enum to `('in_progress', 'success')`) — replaced with the surviving signals (`payload_mismatch` count + dead-letter rate); **(N2)** §16.1 "CI grep guard" was prose only — v7 specifies the actual GitHub Actions step that fails the build on any reintroduced obsolete symbol (`markConsumed`, `booking.create_attempted`, `claim_deferred_setup_trigger_args`, `setupTrigger.triggerMany`).
+- **v8** (this revision): folds 1 critical + 6 importants + 1 nit from the codex v7 review, plus an explicit "Not in B.0" deferral section. v8 is the FINAL design round — convergence, not redesign — and the spec is frozen for implementation. **(C1)** setup-WO RPC trusted `p_wo_row_data` for identity; v8 loads `outbox.events`, derives `v_oli_id` from `aggregate_id`, validates OLI→order→booking chain, and validates every tenant-owned FK via new `validate_setup_wo_fks` helper. §7.8.2. **(I1)** `X-Client-Request-Id` auto-stamp at fetch scope lost stability across React Query retries; v8 moves id generation to mutation-attempt scope (caller passes `requestId` in variables shape; `apiFetch` no longer auto-stamps). §3.3. **(I2)** `grant_booking_approval` mutated approval row before validating `target_entity_type`; v8 reorders to lock+select+validate first, CAS update last. §10.1. **(I3)** signature drift on `validate_attach_plan_internal_refs`; v8 canonicalises `(p_tenant_id, p_booking_input, p_attach_plan)` at both definition and call site. **(I4)** `setup_work_order_emissions.work_order_id` was ON DELETE CASCADE; admin WO delete cascaded the dedup signal. v8 changes to ON DELETE SET NULL with tombstone semantics + admin reset runbook. §2.5. **(I5)** canonical OLI sort used `_input_position` tie-breaker, contradicting shuffled-input invariant; v8 requires `client_line_id` on every input line and uses fully-immutable tuples per row-kind. §7.4. **(I6)** `approve_booking_setup_trigger` emitted persisted ruleIds without runtime tenant validation; v8 adds `validate_rule_ids_in_tenant` called inside the emit loop. §7.9.1. **(N1)** §15.5 mocked race tests can't simulate real Postgres advisory-lock acquisition; v8 mandates pgTAP or two-connection `pg.Pool` harness for cutover-blocking tests. §15.5-bis. **(NEW)** explicit §10X "Not in B.0" defers booking cancellation (`bundle-cascade.service.ts:115`) and standalone-order creation (`order.service.ts:752`) to a Phase 6 hardening sprint.
+- **v7** (commit `e96bec5`, superseded): folded 3 criticals + 4 importants + 2 nits from the codex v6 review. Pattern: every TS-side multi-step write needs an atomic RPC. v6 closed the create path's split-write but introduced new ones in the approval-grant path and the WO-create-from-event path; v7 closes ALL remaining split-writes in the booking + approval + WO-creation surface area. **(C1)** the v6 cutover wired `approve_booking_setup_trigger` to consume `claimedRows` produced by the OLD `claim_deferred_setup_trigger_args` RPC (00198) — but 00198 already NULLs `pending_setup_trigger_args` before returning, so the new RPC reads null args and emits zero events. v7 retires the 00198 claim flow entirely; the new `approve_booking_setup_trigger(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)` reads + emits + clears atomically in a single RPC, taking a `pg_advisory_xact_lock` keyed on `(tenant_id, booking_id)` for per-grant serialisation. The TS approval-decision path (`bundle.service.ts:1452-1527`) collapses from "claim RPC + branch + triggerMany / audit" to "call approve RPC". **(C2)** the v6 spec claimed approval-emit failure rolls back the approval decision, but `approval.service.ts:440` runs multiple supabase-js HTTP writes (approval row UPDATE + booking_slots UPDATE + bookings UPDATE + bundle cascade) — there is no transaction to roll back across separate HTTP calls. v7 introduces `grant_booking_approval(p_approval_id, p_tenant_id, p_actor_user_id, p_decision, p_comments, p_idempotency_key)` which atomically: locks the approval row + applies the CAS update + transitions linked booking_slots/bookings + clears `pending_setup_trigger_args` + emits `setup_work_order.create_required` outbox events for non-cancelled OLIs (when `p_decision='approved'`). The TS approval.service.ts becomes a planner/dispatcher: it validates auth + state machine, then calls the single RPC. Notifications + visitor-invite + ticket dispatch stay in TS, fired AFTER the RPC commits (best-effort by design). **(C3)** v6's setup-WO handler created the WO via `triggerStrict` in one supabase-js HTTP call, then INSERT-ed the dedup row in `setup_work_order_emissions` in a SECOND HTTP call. Crash between commits → duplicate WO on replay. v7 introduces `create_setup_work_order_from_event(p_event_id, p_tenant_id, p_wo_row_data, p_idempotency_key)` which inserts the WO row + dedup row atomically in one tx. The TS handler builds the WO row payload (using the existing routing/lead-time logic, now factored as `SetupWorkOrderRowBuilder.build`) and passes it to the RPC. Folds **(I1)** canonical sort discipline for plan UUIDs — every row-kind has a defined sort tuple before `stableIndex` assignment, so two equivalent retries with shuffled input produce identical UUIDs (closes a hole in v6 §7.4 where caller-iteration order leaked into the hash); **(I2)** real `X-Client-Request-Id` mechanism — `apiFetch` auto-generates a UUID per mutation request and threads it as a header; the API guard exposes `request.clientRequestId`; producers use it as the `p_idempotency_key` (closes the v6 reference to a non-existent `RequestIdProvider`); **(I3)** `setup_work_order_emissions.work_order_id` FK now references `public.work_orders(id)` not `public.tickets(id)` — the rewrite collapsed tickets into work_orders for booking-origin work, so the v6 schema would 23503 on insert; **(I4)** mandatory snapshot UUID validation — `applied_rule_ids[]`, `config_release_id`, `setup_emit.rule_ids[]`, and approval-reason `rule_id` are now batch-validated against tenant-scoped rule/config tables in `validate_attach_plan_internal_refs` (closes the explicit "skip" in v6 §8.2; cost is small, downside of a smuggled cross-tenant rule_id baking into the audit trail forever is permanent). Folds nits: **(N1)** §5.1 Phase C reference to `attach_operations.outcome='failed'` was stale (v6 collapsed the enum to `('in_progress', 'success')`) — replaced with the surviving signals (`payload_mismatch` count + dead-letter rate); **(N2)** §16.1 "CI grep guard" was prose only — v7 specifies the actual GitHub Actions step that fails the build on any reintroduced obsolete symbol (`markConsumed`, `booking.create_attempted`, `claim_deferred_setup_trigger_args`, `setupTrigger.triggerMany`).
 
 ---
 
@@ -141,10 +143,19 @@ create table public.setup_work_order_emissions (
   -- work_orders for booking-origin work (00288), and TicketService
   -- .createBookingOriginWorkOrder writes to public.work_orders directly
   -- (ticket.service.ts:1903). v6's tickets(id) FK would have raised 23503
-  -- on the first INSERT. ON DELETE CASCADE: if a WO is admin-deleted, the
-  -- dedup row goes too — handler can re-create on replay (intentional;
-  -- matches the "WO can be legitimately deleted" reasoning below).
-  work_order_id    uuid        not null references public.work_orders(id) on delete cascade,
+  -- on the first INSERT.
+  --
+  -- v8-I4: FK is `ON DELETE SET NULL`, NOT `ON DELETE CASCADE`. Rationale:
+  -- the dedup row's "this OLI was already handled" signal MUST survive an
+  -- admin WO deletion. v7 used CASCADE, which meant a WO admin-cleanup
+  -- cascaded the dedup row away, allowing a replayed event to recreate the
+  -- WO — exactly the failure mode the dedup table was designed to prevent.
+  -- v8 contract: a row with `work_order_id IS NULL` is a TOMBSTONE meaning
+  -- "this OLI's setup-WO was created and later deleted by admin". The
+  -- handler treats tombstones as already_handled (idempotent no-op). To
+  -- explicitly reset setup-WO creation for an OLI, admins DELETE the
+  -- dedup row (see §13.6 admin runbook).
+  work_order_id    uuid        references public.work_orders(id) on delete set null,
   outbox_event_id  uuid        not null,                -- audit pointer; fk soft to outbox.events
   created_at       timestamptz not null default now(),
   primary key (tenant_id, oli_id)
@@ -161,7 +172,7 @@ revoke all on table public.setup_work_order_emissions from public;
 grant select, insert on table public.setup_work_order_emissions to service_role;
 
 comment on table public.setup_work_order_emissions is
-  'Handler-side dedup for setup_work_order.create_required outbox events (§7.8 of the outbox spec). Primary key (tenant_id, oli_id) — at most one setup WO is emitted per OLI for the lifetime of the row. v7: rows are inserted by create_setup_work_order_from_event RPC in the SAME tx as the work_orders insert (atomic). Survives WO close/cancel and event replay.';
+  'Handler-side dedup for setup_work_order.create_required outbox events (§7.8 of the outbox spec). Primary key (tenant_id, oli_id) — at most one setup WO is emitted per OLI for the lifetime of the row. v7: rows are inserted by create_setup_work_order_from_event RPC in the SAME tx as the work_orders insert (atomic). v8: FK to work_orders is ON DELETE SET NULL (was CASCADE in v7) so the dedup signal survives admin WO cleanup. Survives WO close/cancel/delete and event replay; admins reset by DELETE-ing the dedup row.';
 ```
 
 **v7 atomicity correction (folds C3).** v6 had the handler create the WO via `triggerStrict` (one supabase-js HTTP call → one tx commit) and then INSERT the dedup row via a second `supabase.admin.from('setup_work_order_emissions').insert(...)` (a second HTTP call → a second tx commit). v6 §7.8 explicitly acknowledged the gap as "small enough that the simpler shape wins". Codex v6 review pushed back: "small enough" and "atomic" are not the same thing, and a crash between the WO commit and the dedup commit produces a duplicate WO on replay, which is exactly the failure mode the dedup table was supposed to prevent. v7 closes the gap — the WO insert + dedup insert run in one PL/pgSQL function, `create_setup_work_order_from_event` (§7.8). The handler builds the row payload TS-side (using the existing routing matrix + lead-time logic) and passes it to the RPC; the RPC does the two inserts atomically.
@@ -175,9 +186,32 @@ comment on table public.setup_work_order_emissions is
 5. On RPC throw: handler retries via worker state machine; eventual dead-letter.
 
 **Why a separate table instead of a unique index on `work_orders`?** Same reasoning as v6:
-- (a) WOs can be legitimately deleted (admin cleanup) without invalidating the "this event was already handled" signal. Coupling dedup to WO row existence reintroduces the replay-after-cancel hole. (Note the `ON DELETE CASCADE` on `work_order_id` is intentional: if a WO is deleted, the dedup row goes too, and the next replay re-creates — that's the desired behaviour.)
+- (a) WOs can be legitimately deleted (admin cleanup) without invalidating the "this event was already handled" signal. Coupling dedup to WO row existence reintroduces the replay-after-cancel hole. **v8 contract:** the FK is `ON DELETE SET NULL`. When an admin deletes the WO, the dedup row stays as a TOMBSTONE (`work_order_id IS NULL`); the handler treats tombstones as `already_handled` (idempotent no-op). Replay after WO delete does NOT recreate; admin must explicitly reset (see admin runbook below). v7's `ON DELETE CASCADE` made the dedup row go away with the WO and was the source of the replay-after-delete recreation bug — closed in v8.
 - (b) The dedup row must commit *atomically with the WO insert*. v7 achieves this by doing both inserts in one PL/pgSQL function — see (a) above for why "unique index on work_orders.linked_order_line_item_id" doesn't help.
 - (c) `setup_work_order_emissions` carries `outbox_event_id` for ops triage. The lookup answers "was this specific event already handled?", not just "is there a WO for this OLI?".
+
+**Admin runbook — resetting setup-WO creation for an OLI (v8).** If an operator wants to allow setup-WO creation to re-fire for a specific OLI (e.g. routing matrix was misconfigured at first emit, has since been fixed, and the operator wants the handler to re-evaluate on the next replay), the procedure is:
+
+```sql
+-- 1. Confirm the OLI's current dedup row state.
+select tenant_id, oli_id, work_order_id, created_at
+  from public.setup_work_order_emissions
+ where tenant_id = :tenant_id and oli_id = :oli_id;
+
+-- 2. Delete the dedup row. This removes both the "already_created" record
+--    AND the "tombstone" (NULL work_order_id) record. Replays of the
+--    setup_work_order.create_required event will now re-evaluate.
+delete from public.setup_work_order_emissions
+ where tenant_id = :tenant_id and oli_id = :oli_id;
+
+-- 3. (If needed) Re-emit the event. If the OLI's pending_setup_trigger_args
+--    was already cleared on the original approval grant, the operator must
+--    construct a fresh outbox.events row by hand or call a (future) admin
+--    re-emit endpoint. The reset alone is NOT sufficient to re-fire — it
+--    only un-blocks the next replay.
+```
+
+The reset is intentionally manual because "redo a setup WO" is not a routine operation — every reset implies operator-side investigation of what went wrong the first time.
 
 ### 2.6 SQL grants
 
@@ -292,16 +326,18 @@ export class OutboxService {
 
 `OutboxService.markConsumed` is **dropped from the spec in v5 and from the implementation file in v6** (codex N1). The wrapper RPC `outbox_mark_consumed_via_rpc` stays in 00299 as dormant infra (cheap; future deferred-work flows may revive the lease primitive). Steady-state TS code never marks events consumed — atomic emission inside RPCs replaces lease consumption. v6 also strips the `booking.create_attempted` references from `apps/api/src/modules/outbox/outbox.service.ts:18-21` (the module-level docstring still describes the v3/v4 lease semantics that v5 retired). See §16 cleanup task.
 
-### 3.3 Frontend `X-Client-Request-Id` threading (NEW in v7 — folds I2)
+### 3.3 Frontend `X-Client-Request-Id` threading (v8 contract — folds v6-I2 + v7-I1)
 
 **The v6 hole.** v6 §7.3 said: "BookingFlowService should generate one [idempotency_key] per request: `booking.create:${actor.user_id}:${input.client_request_id ?? randomUUID()}`. The frontend's React Query mutation layer already supplies a `client_request_id` per mutation (cf. the `RequestIdProvider` in `apps/web/src/api/api-fetch.ts`)." Both claims are wrong — `RequestIdProvider` does not exist, no header is sent, and the API has no guard reading it. A grep across `apps/web/src apps/api/src` returns zero hits for `client_request_id`, `RequestIdProvider`, or `X-Client-Request-Id`. The "key reuse on automatic retry" property the v6 idempotency story depends on is unimplemented.
 
-v7 specifies the actual mechanism — small, surgical, no React-context needed.
+**The v7 hole (codex v7-I1).** v7 said `apiFetch` auto-generates a UUID for any non-GET request. That sounds right, but it lives at the **fetch scope** — not the **mutation-attempt scope**. React Query's automatic retry logic re-runs `mutationFn`, which calls `apiFetch` again, which generates a **fresh** UUID on every retry. Two retries of the same logical attempt produce two different `X-Client-Request-Id` values, and the producer sees them as two different operations — defeating the very idempotency mechanism the header was added to enable. v7's "the key is reused for free" sentence is wrong about React Query's retry behaviour: the retry calls the mutation function again; it does not reuse the previous fetch's headers.
 
-**Frontend (`apps/web/src/lib/api.ts`).** `apiFetch` auto-generates a UUID for any non-GET request unless the caller supplies one. The header is `X-Client-Request-Id`. React Query's automatic retry logic preserves the same `fetch` invocation across retries within the same mutation, so the key is reused for free; explicit user-driven retries (e.g. clicking "Retry" in a toast) re-enter the mutation function and get a new key (correct — the user's intent is "fresh attempt", not "retry the in-flight one"). Callers that need to override (background sync workers, idempotency probes) can pass their own `X-Client-Request-Id` via `options.headers`.
+**v8 fix.** The id MUST be generated at the **mutation-attempt scope** (the caller's `mutate({ requestId, ... })` shape, captured in closure or generated once before the mutation enters the retry loop) and passed to `apiFetch` as an explicit header. `apiFetch` only forwards the header if the caller passes one — the auto-stamp from v7 is **dropped**. Producer-route hooks generate the id at form-submit time and thread it; routes that don't need idempotency can skip the header entirely (the backend middleware fills in a server default and the producer constructs a key that never collides with another client's).
+
+**`apiFetch` v8 contract (no auto-stamp).**
 
 ```typescript
-// apps/web/src/lib/api.ts (v7 addition; replaces lines 113-122 of the existing impl)
+// apps/web/src/lib/api.ts (v8 contract — supersedes the v7 auto-stamp)
 
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { query, etag, onNotModified, etagOut, ...init } = options;
@@ -315,19 +351,57 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   };
   if (etag) headers['If-None-Match'] = etag;
 
-  // v7 — auto-stamp X-Client-Request-Id on mutations so the API can use it
-  // as an idempotency_key. Caller-supplied headers win (background workers,
-  // idempotency probes). GET requests don't need one — they're idempotent
-  // by definition; sending one is harmless but pointless.
-  const method = (init.method ?? 'GET').toUpperCase();
-  const isMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
-  if (isMutation && !headers['X-Client-Request-Id'] && !headers['x-client-request-id']) {
-    headers['X-Client-Request-Id'] = crypto.randomUUID();
-  }
+  // v8 — apiFetch does NOT generate an X-Client-Request-Id header. The id
+  // belongs at the mutation-attempt scope, not the fetch scope, because
+  // React Query retries call mutationFn → apiFetch again, which would
+  // generate a fresh UUID per retry and defeat idempotency. Callers that
+  // need the header pass it explicitly via options.headers.
 
   // ... rest unchanged ...
 }
 ```
+
+**Mutation hook contract (v8 — the canonical pattern producer routes follow).**
+
+The hook accepts the request id as part of its variables (or as an external prop) and threads it as the `X-Client-Request-Id` header. The id is generated ONCE per logical attempt — by the form-submit handler, the page-level provider, or the call site — and is captured in closure for the duration of the mutation including any retries.
+
+```typescript
+// apps/web/src/api/<module>/mutations.ts (v8 contract)
+
+interface CreateBookingVariables {
+  input: CreateBookingInput;
+  requestId: string;            // generated once per attempt by the caller
+}
+
+export function useCreateBooking() {
+  return useMutation({
+    mutationFn: async ({ input, requestId }: CreateBookingVariables) => {
+      return apiFetch<Reservation>('/reservations', {
+        method: 'POST',
+        body: input,
+        headers: { 'X-Client-Request-Id': requestId },
+      });
+    },
+    // retry semantics are caller's choice; whatever they pick, retries reuse
+    // the same `requestId` because it's captured in the mutation variables.
+  });
+}
+
+// Caller — typical form-submit path:
+//
+//   const mutation = useCreateBooking();
+//   const onSubmit = (input: CreateBookingInput) => {
+//     // Generate ONCE per attempt. If React Query retries (or the user
+//     // clicks Retry in a toast that re-uses the same handler), the same
+//     // requestId rides along.
+//     const requestId = crypto.randomUUID();
+//     mutation.mutate({ input, requestId });
+//   };
+```
+
+**Why "mutation-attempt scope" and not "component-mount scope".** Generating once at component mount and reusing across all submissions of the same form would produce the *opposite* bug: two distinct user clicks with the same key, the first commits, the second hits `attach_operations` cached_result and returns the first attempt's booking — the user thinks they made two bookings but only got one. Mutation-attempt scope is correct: one click, one `requestId`; one click + N React Query retries, one `requestId`; click again, fresh `requestId`. The "click Retry in a toast" case re-enters the form-submit handler so it gets a fresh id by construction (intentional — the user's intent is "fresh attempt", not "retry the in-flight one").
+
+**No internal-helper shortcut.** A `useMutationWithRequestId(mutationFn)` wrapper that generates inside `mutationFn` re-runs on React Query retry — same bug class as v7's auto-stamp. There is no shorter pattern; producer hooks must accept the id in their variables shape and the caller must generate it once per attempt.
 
 **Backend NestJS guard (`apps/api/src/common/middleware/client-request-id.middleware.ts` — NEW in v7).** A small middleware reads `X-Client-Request-Id`, validates it's a UUID-shaped string, and stamps it onto `request.clientRequestId`. Missing or malformed values default to a fresh server-generated UUID (so the property is always set; the producer doesn't need to branch).
 
@@ -762,7 +836,10 @@ interface AttachPlan {
 
   // Order line items (bundle.service.ts:1254-1289)
   order_line_items: Array<{
-    id: string;                                  // = planUuid(key, 'oli', `${order_id}:${j}`)
+    id: string;                                  // = planUuid(key, 'oli', `${order_id}:${client_line_id}`)
+    client_line_id: string;                      // REQUIRED in v8 — caller-supplied stable id (form-row key
+                                                 // or hash). Validated for non-empty + per-order uniqueness
+                                                 // by buildAttachPlan before any UUID is generated.
     order_id: string;                            // FK into plan.orders[].id
     catalog_item_id: string;
     quantity: number;
@@ -846,30 +923,26 @@ export const NS_PLAN_BOOKING_WITH_ATTACH =
  *
  *   rowKind:     'booking' | 'slot' | 'order' | 'oli' | 'asset_reservation' | 'approval'
  *   stableIndex: a string that is deterministic given the request input.
- *                Per row-kind:
+ *                Per row-kind (v8 contract — supersedes v7):
  *                  booking            → '0' (always exactly one)
  *                  slot               → String(slot.display_order)
- *                  order              → `${service_type}:${stable_order_index}`
- *                                        where stable_order_index is the
- *                                        position in a deterministic ordering
- *                                        of service types (alphabetical by
- *                                        catalog_menus.service_type, ascending).
- *                  oli                → `${order_id}:${stable_line_index}`
- *                                        where stable_line_index is the
- *                                        position in a deterministic ordering
- *                                        of input lines for that order
- *                                        (sort by input.lines.indexOf — preserve
- *                                        the caller's order; if the caller's
- *                                        order can vary, sort by catalog_item_id).
+ *                  order              → `${service_type}` (one order per
+ *                                        service_type group; service_type IS
+ *                                        the unique key)
+ *                  oli                → `${order_id}:${client_line_id}`
+ *                                        where client_line_id is REQUIRED on
+ *                                        the input line (rejected at validation
+ *                                        time if missing or non-unique within
+ *                                        an order). v8: no _input_position
+ *                                        fallback — input order must not leak
+ *                                        into the hash.
  *                  asset_reservation  → the OLI id (1:1 — every line that
  *                                        needs one has exactly one)
- *                  approval           → `${approval_sequence}:${approver_person_id}`
- *                                        where approval_sequence is a stable
- *                                        ordering of approval rows after
+ *                  approval           → `${approver_person_id}`
+ *                                        (unique per approval row after
  *                                        ApprovalRoutingService.assemblePlan
- *                                        dedup (sort by approver_person_id
- *                                        ascending; the index k is the
- *                                        position in that sorted list).
+ *                                        dedup; the approver_person_id IS the
+ *                                        stable index).
  */
 export function planUuid(
   idempotencyKey: string,
@@ -886,61 +959,95 @@ export function planUuid(
 }
 ```
 
-**Stable-index discipline (v7 mandatory canonical-sort table — folds I1).** The v6 prose described "sort lines by service_type before building orders" as one example, but left the discipline informal. Codex v6 review pointed out that any caller iterating input in a different order on retry — `Object.values()` ordering, JSON parser quirks, async resolver returning lines in network-arrival order — would shift `stableIndex` and break idempotency. v7 promotes the discipline to a per-row-kind canonical sort table, mandatory in the plan-builder.
+**Stable-index discipline (v8 mandatory canonical-sort table — folds v6-I1 + v7-I1 + v8-I5).** The v6 prose described "sort lines by service_type before building orders" as one example, but left the discipline informal. Codex v6 review pointed out that any caller iterating input in a different order on retry — `Object.values()` ordering, JSON parser quirks, async resolver returning lines in network-arrival order — would shift `stableIndex` and break idempotency. v7 promoted the discipline to a per-row-kind canonical sort table. **v7's table used `_input_position` as the OLI tie-breaker, which contradicted the shuffled-input invariant** — caller iteration order leaked back into the hash via the tie-breaker. v8 fixes this by mandating that every row-kind's sort tuple is composed of fully-immutable, caller-provided fields. For OLIs specifically, this means **`client_line_id` is required** on every input line: the caller MUST supply a stable per-line identifier (typically the form-row's React key, or a hashed concatenation of catalog_item + service_window if the form has no per-line key). Plans without `client_line_id` on every OLI are rejected at validation time before the RPC is called — see the "v8: required input fields" callout below.
 
 | Row kind | Sort tuple (ascending) | `stableIndex` value |
 |---|---|---|
 | `booking` | n/a (always exactly one) | `'0'` |
-| `slot` | `slot.display_order` (set by caller; integer) | `String(slot.display_order)` |
-| `order` | `service_type` (string) | `${service_type}:${pos_in_sorted_orders}` |
-| `oli` | within an order: `(catalog_item_id, line_position_in_input)` | `${order_id}:${pos_in_sorted_olis}` |
-| `asset_reservation` | `(asset_id, start_at)` | `${oli_id}` (1:1 with the OLI that needs it; OLI is already sorted) |
-| `approval` | `approver_person_id` (after `assemblePlan` dedup) | `${pos_in_sorted_approvers}:${approver_person_id}` |
+| `slot` | `(display_order, space_id, start_at)` | `String(display_order)` (display_order is caller-supplied + unique per slot in a booking) |
+| `order` | `(service_type)` (service_type is unique per order in v8 — one order per service_type group) | `${service_type}` |
+| `oli` | `(client_line_id)` REQUIRED. Secondary sort never needed because client_line_id is unique per line within an order. | `${order_id}:${client_line_id}` |
+| `asset_reservation` | derived from the OLI it's attached to | `${oli_id}` (1:1 with the OLI; OLI is already sorted by client_line_id) |
+| `approval` | `(approver_person_id)` (after `assemblePlan` dedup; unique per approval row) | `${approver_person_id}` |
 
-**Plan-builder contract.** `BundleService.buildAttachPlan(input)` MUST apply each sort BEFORE assigning the `stableIndex`. The sorts are stable (`Array.prototype.sort` is stable in V8/Node 18+), and ties on the primary key are broken by the secondary key listed in the tuple — never by input position. A unit test asserts: given two `input` objects that are equal modulo array-element ordering, `buildAttachPlan` returns byte-identical jsonb.
+**Plan-builder contract (v8).** `BundleService.buildAttachPlan(input)` MUST:
+1. Validate that every input line has a non-empty `client_line_id` and that `client_line_id` values are unique within each `(input.order_grouping, client_line_id)` scope. If validation fails, throw `BookingPlanError('client_line_id missing or non-unique')` BEFORE any UUID is generated.
+2. Apply each canonical sort using ONLY the immutable fields in the tuple — no `_input_position` fallback, no `Array.prototype.indexOf` calls.
+3. Assign `stableIndex` from the sorted position only when the tuple itself isn't already a sufficient identifier. For OLIs, the `stableIndex` IS the `client_line_id` (no positional component); for orders, the `stableIndex` IS the `service_type` (one order per service_type by construction); for approvals, the `stableIndex` IS the `approver_person_id`.
+
+A unit test asserts: given two `input` objects that are equal modulo array-element ordering, `buildAttachPlan` returns byte-identical jsonb.
 
 ```typescript
-// apps/api/src/modules/booking-bundles/plan-uuid.ts (v7 addition — alongside planUuid)
+// apps/api/src/modules/booking-bundles/plan-uuid.ts (v8 contract — supersedes v7)
 
 /**
  * Canonical-sort comparators per row-kind. Sort BEFORE assigning stableIndex.
  * The plan-builder calls these directly; do not bypass.
+ *
+ * v8: every comparator uses ONLY fully-immutable, caller-provided fields.
+ * No `_input_position` tie-breakers — that shape contradicted the
+ * shuffled-input invariant in v7.
  */
 export const planSort = {
-  slots: (a: { display_order: number }, b: { display_order: number }) =>
-    a.display_order - b.display_order,
+  slots: (
+    a: { display_order: number; space_id: string; start_at: string },
+    b: { display_order: number; space_id: string; start_at: string },
+  ) => {
+    const c = a.display_order - b.display_order;
+    if (c !== 0) return c;
+    const d = a.space_id.localeCompare(b.space_id);
+    return d !== 0 ? d : a.start_at.localeCompare(b.start_at);
+  },
 
   orders: (a: { service_type: string }, b: { service_type: string }) =>
     a.service_type.localeCompare(b.service_type),
 
+  // v8: `client_line_id` is REQUIRED on every input line. The plan-builder
+  // validates presence + per-order uniqueness before this comparator runs.
+  // No fallback, no _input_position — if client_line_id is missing, the
+  // plan-builder throws.
   olis: (
-    a: { catalog_item_id: string; _input_position: number },
-    b: { catalog_item_id: string; _input_position: number },
-  ) => {
-    const c = a.catalog_item_id.localeCompare(b.catalog_item_id);
-    return c !== 0 ? c : a._input_position - b._input_position;
-  },
+    a: { client_line_id: string },
+    b: { client_line_id: string },
+  ) => a.client_line_id.localeCompare(b.client_line_id),
 
+  // Asset reservations sort positionally by their attached OLI, which is
+  // already sorted by client_line_id; the comparator is here only for
+  // independent tests of the helper.
   assetReservations: (
-    a: { asset_id: string; start_at: string },
-    b: { asset_id: string; start_at: string },
-  ) => {
-    const c = a.asset_id.localeCompare(b.asset_id);
-    return c !== 0 ? c : a.start_at.localeCompare(b.start_at);
-  },
+    a: { client_line_id: string },
+    b: { client_line_id: string },
+  ) => a.client_line_id.localeCompare(b.client_line_id),
 
   approvals: (a: { approver_person_id: string }, b: { approver_person_id: string }) =>
     a.approver_person_id.localeCompare(b.approver_person_id),
 } as const;
 ```
 
+**v8: required input fields (closes v7-I5).** The combined-RPC input contract grows one mandatory field per OLI:
+
+```typescript
+interface AttachInputLine {
+  client_line_id: string;              // REQUIRED (v8). Stable identifier for this line
+                                       // within the request. Typically the React form-row
+                                       // key, or a hash of (catalog_item_id, service_window).
+                                       // Plan-builder rejects requests where any line is
+                                       // missing this OR where two lines in the same order
+                                       // have the same value.
+  catalog_item_id: string;
+  // ... existing fields ...
+}
+```
+
+Frontend forms that call `useCreateBooking` must populate `client_line_id` before submission. The simplest pattern: when adding a service line to the form, generate `crypto.randomUUID()` and store it on the line; this id then survives across submit + retries. **This is unrelated to `X-Client-Request-Id` (§3.3)** — `client_line_id` is per-line; `X-Client-Request-Id` is per-mutation-attempt. Both are required for end-to-end retry idempotency on a multi-line booking.
+
 **Document the per-row-kind derivation in the plan-builder code's docstring.** A future change to the canonical sort breaks idempotency for any in-flight retries, so the choice belongs in review-friendly code, not just spec prose.
 
-**Pre-v6 stable-index examples below are now historical — see the table above for the v7 contract:**
+**Pre-v8 stable-index examples below are now historical — see the table above for the v8 contract:**
 
 - `slot.display_order` is set by the caller and is part of the input; deterministic.
 - `service_type` ordering: sort the input lines by `service_type` ascending (alphabetical) before building orders. Two retries see the same input lines, sort identically, and produce identical order indices.
-- `order_id` is itself derived from `(service_type, sorted_position)`, so by the time we compute the OLI's `stable_line_index`, `order_id` is already deterministic.
+- `order_id` is itself derived from `(service_type)`, so by the time we compute the OLI's `stable_line_index`, `order_id` is already deterministic.
 - `approver_person_id` is given by the resolver; sort ascending for the approval index.
 
 **Trust + safety.** The RPC trusts the TS-generated UUIDs and inserts them verbatim. UUIDv5 collisions across distinct namespaces are cryptographically implausible. Within a namespace, collisions only happen for identical `(idempotencyKey, rowKind, stableIndex)` triples — which is the exact behaviour we want for retry idempotency. A duplicate from a buggy retry (somehow constructing the same triple for two semantically distinct rows) would surface as `23505` and roll the whole RPC back.
@@ -970,16 +1077,18 @@ async assemblePlan(args: AssembleApprovalsArgs): Promise<AssembledApprovalRow[]>
   const grouped = new Map<string, ...>();
   for (const t of tuples) { ... mergeScopeInto(...); }
 
-  // v6: deterministic id derived from idempotency_key + sorted approver_person_id.
-  // Sort approver ids ascending so the index is stable across retries.
+  // v6: deterministic id derived from idempotency_key + approver_person_id.
+  // Sort approver ids ascending for byte-stable plan output.
+  // v8 (folds I5): the stableIndex IS the approver_person_id — no positional
+  // index. The sort is for output determinism only; the hash input no longer
+  // depends on sorted position.
   const sortedApproverIds = Array.from(grouped.keys()).sort();
 
   const out: AssembledApprovalRow[] = [];
-  for (let k = 0; k < sortedApproverIds.length; k++) {
-    const approverPersonId = sortedApproverIds[k];
+  for (const approverPersonId of sortedApproverIds) {
     const entry = grouped.get(approverPersonId)!;
     out.push({
-      id: planUuid(args.idempotencyKey, 'approval', `${k}:${approverPersonId}`),  // v6-C1
+      id: planUuid(args.idempotencyKey, 'approval', approverPersonId),  // v6-C1, v8-I5
       target_entity_type: args.target_entity_type,
       target_entity_id: args.target_entity_id,
       approver_person_id: approverPersonId,
@@ -1073,7 +1182,7 @@ begin
 
   -- ── 4. Validate every FK in both payloads (§8.1 tenant + §8.2 internal) ──
   perform public.validate_attach_plan_tenant_fks(p_tenant_id, p_booking_input, p_attach_plan);
-  perform public.validate_attach_plan_internal_refs(p_booking_input, p_attach_plan);  -- v6-I2
+  perform public.validate_attach_plan_internal_refs(p_tenant_id, p_booking_input, p_attach_plan);  -- v6-I2 + v8-I3 (signature gained p_tenant_id in v7 §8.2; v8 aligns the call site)
 
   -- ── 5. INSERT booking ────────────────────────────────────────────────
   -- (mirrors create_booking RPC body at 00277:277-296, with the booking_id
@@ -1704,10 +1813,12 @@ export class SetupWorkOrderHandler {
 }
 ```
 
-#### 7.8.1 `create_setup_work_order_from_event` RPC body (v7 — folds C3)
+#### 7.8.1 `create_setup_work_order_from_event` RPC body (v7 baseline — SUPERSEDED BY §7.8.2 IN V8)
+
+> **v8 note:** the body below is preserved for traceability of v7's C3 fix (atomic WO + dedup + audit in one tx). It is **NOT the v8 contract** — v8 changes the identity-derivation discipline (load `outbox.events` row, derive `v_oli_id` from `aggregate_id`, validate the chain, cross-check row JSON, validate every tenant-owned FK). See §7.8.2 below for the v8 RPC body that ships in 00306. The v7 listing here is reference-only; do not implement it as written.
 
 ```sql
--- supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql (NEW in v7)
+-- supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql (v7 baseline; superseded by v8 §7.8.2)
 
 create or replace function public.create_setup_work_order_from_event(
   p_event_id        uuid,
@@ -1872,6 +1983,322 @@ comment on function public.create_setup_work_order_from_event(uuid, uuid, jsonb,
 
 **Caveat: keep the RPC's audit/event rows in sync with the legacy `createBookingOriginWorkOrder`.** The legacy method writes `addActivity({ activity_type: 'system_event', ... })` and `logDomainEvent('booking_origin_work_order_created', ...)`. The RPC above inlines the equivalents (`domain_events` + `audit_events` rows). Validate parity in tests: a WO created via the RPC should produce the same downstream rows (modulo timestamps) as one created via the legacy method, otherwise the activity feed / audit timeline will fork.
 
+#### 7.8.2 v8-C1 fix — derive identity from `outbox.events`, not row JSON
+
+**The v7 hole.** v7's RPC body validates `event.aggregate_id` belongs to the tenant (via the worker's §4.3 guard) but then trusts `p_wo_row_data` for `linked_order_line_item_id`, `location_id`, `assigned_team_id`, `sla_id`, etc., and inserts those FK fields blind. A buggy row-builder or compromised handler could pass an OLI id from a different event's aggregate OR cross-tenant FK values.
+
+**v8 fix:** the RPC stops trusting the row JSON for identity. It loads the `outbox.events` row, derives `v_oli_id` from `aggregate_id`, validates the OLI→order→booking chain under tenant (capturing `v_booking_id` from the chain), cross-checks the row JSON's identity fields against the derived ids (raises `setup_wo.row_oli_mismatch` / `setup_wo.row_booking_mismatch` on disagreement), and validates every tenant-owned FK in the row JSON via the new `validate_setup_wo_fks` helper. Identity values written to `public.work_orders` come from the chain; the row JSON keeps non-identity fields (title, description, priority, audit_metadata).
+
+**v8 RPC body** (replaces the v7 body in §7.8.1):
+
+```sql
+-- supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql (v8 contract)
+
+create or replace function public.create_setup_work_order_from_event(
+  p_event_id        uuid,
+  p_tenant_id       uuid,
+  p_wo_row_data     jsonb,    -- SetupWorkOrderRowData (§7.7); identity fields are CROSS-CHECKED, not trusted
+  p_idempotency_key text      -- 'setup_work_order:<oli_id>'
+) returns jsonb
+language plpgsql
+security invoker
+set search_path = public, outbox
+as $$
+declare
+  v_event            outbox.events%rowtype;
+  v_oli_id           uuid;
+  v_order_id         uuid;
+  v_booking_id       uuid;
+  v_existing_wo_id   uuid;
+  v_lock_key         bigint;
+  v_work_order_id    uuid;
+  v_audit_metadata   jsonb;
+  v_row_oli_id       uuid;
+begin
+  if p_tenant_id is null then
+    raise exception 'create_setup_work_order_from_event: p_tenant_id required';
+  end if;
+
+  -- ── 1. Load the outbox event row (canonical source of identity). v8-C1.
+  -- The row's tenant_id MUST match p_tenant_id; the event_type MUST be the
+  -- setup-WO type. Either failure is a bug in the worker (claimed the wrong
+  -- event for this RPC) and aborts before any side effect. ────────────────
+  select * into v_event
+    from outbox.events
+   where id = p_event_id
+     and tenant_id = p_tenant_id
+     and event_type = 'setup_work_order.create_required';
+  if not found then
+    raise exception 'setup_wo.event_not_found event_id=% tenant_id=%',
+      p_event_id, p_tenant_id
+      using errcode = 'P0002';
+  end if;
+
+  v_oli_id := v_event.aggregate_id;
+  if v_oli_id is null then
+    raise exception 'setup_wo.event_missing_aggregate event_id=%', p_event_id
+      using errcode = 'P0002';
+  end if;
+
+  -- ── 2. Validate OLI → order → booking chain under tenant. v_booking_id is
+  -- DERIVED from the chain; we do not trust p_wo_row_data->>'booking_id'. ──
+  select oli.order_id, o.booking_id
+    into v_order_id, v_booking_id
+    from public.order_line_items oli
+    join public.orders            o on o.id = oli.order_id
+   where oli.id        = v_oli_id
+     and oli.tenant_id = p_tenant_id
+     and o.tenant_id   = p_tenant_id;
+  if not found then
+    raise exception 'setup_wo.oli_chain_invalid oli_id=% tenant_id=%',
+      v_oli_id, p_tenant_id
+      using errcode = 'P0002',
+            detail = 'OLI does not exist in tenant or order chain is broken';
+  end if;
+
+  -- ── 3. Cross-check the row JSON's identity fields against the derived
+  -- ids. If they disagree, the row-builder is buggy/compromised — raise
+  -- LOUDLY and roll back before any side effect. ─────────────────────────
+  v_row_oli_id := nullif(p_wo_row_data->>'linked_order_line_item_id', '')::uuid;
+  if v_row_oli_id is null then
+    raise exception 'setup_wo.row_oli_missing'
+      using errcode = 'P0001';
+  end if;
+  if v_row_oli_id <> v_oli_id then
+    raise exception 'setup_wo.row_oli_mismatch row=% event_aggregate=%',
+      v_row_oli_id, v_oli_id
+      using errcode = 'P0001',
+            hint = 'Row-builder produced an OLI id that does not match the event aggregate. Fix the builder.';
+  end if;
+  -- booking_id: if present in the row JSON, must agree with the chain.
+  if p_wo_row_data ? 'booking_id'
+     and p_wo_row_data->>'booking_id' is not null
+     and length(p_wo_row_data->>'booking_id') > 0
+     and (p_wo_row_data->>'booking_id')::uuid <> v_booking_id then
+    raise exception 'setup_wo.row_booking_mismatch row=% chain=%',
+      (p_wo_row_data->>'booking_id')::uuid, v_booking_id
+      using errcode = 'P0001';
+  end if;
+
+  -- ── 4. Validate every tenant-owned FK field in the row JSON. v8-C1. ────
+  perform public.validate_setup_wo_fks(p_tenant_id, v_booking_id, p_wo_row_data);
+
+  -- ── 5. Per-OLI advisory lock — serialises concurrent handler retries ──
+  v_lock_key := hashtextextended(p_tenant_id::text || ':setup_wo:' || v_oli_id::text, 0);
+  perform pg_advisory_xact_lock(v_lock_key);
+
+  -- ── 6. Already created? ──────────────────────────────────────────────
+  -- v8-I4: ON DELETE SET NULL means a row with work_order_id IS NULL is a
+  -- tombstone (admin deleted the WO). Treat as already_handled — admin must
+  -- explicitly DELETE the dedup row to allow re-creation. See §2.5.
+  select work_order_id into v_existing_wo_id
+    from public.setup_work_order_emissions
+   where tenant_id = p_tenant_id and oli_id = v_oli_id
+   for update;
+  if found then
+    return jsonb_build_object(
+      'kind',          case when v_existing_wo_id is null then 'already_handled_tombstone'
+                            else 'already_created' end,
+      'work_order_id', v_existing_wo_id  -- may be null (tombstone)
+    );
+  end if;
+
+  -- ── 7. INSERT the work order. Identity fields use the DERIVED values
+  -- (v_booking_id, v_oli_id), NOT p_wo_row_data. Tenant_id is stamped from
+  -- p_tenant_id. The non-identity row fields (title, description, priority,
+  -- assigned_team_id, sla_id, etc.) come from p_wo_row_data after step 4
+  -- validated them. ──────────────────────────────────────────────────────
+  v_work_order_id := gen_random_uuid();
+  v_audit_metadata := coalesce(p_wo_row_data->'audit_metadata', '{}'::jsonb);
+
+  insert into public.work_orders (
+    id, tenant_id,
+    parent_kind, parent_ticket_id,
+    booking_id, linked_order_line_item_id,
+    title, description, priority,
+    interaction_mode, status, status_category,
+    requester_person_id, location_id,
+    assigned_team_id, assigned_user_id, assigned_vendor_id,
+    sla_id, sla_resolution_due_at,
+    source_channel
+  ) values (
+    v_work_order_id, p_tenant_id,
+    p_wo_row_data->>'parent_kind',
+    nullif(p_wo_row_data->>'parent_ticket_id', '')::uuid,
+    v_booking_id,                                        -- DERIVED, v8-C1
+    v_oli_id,                                            -- DERIVED, v8-C1
+    p_wo_row_data->>'title',
+    nullif(p_wo_row_data->>'description', ''),
+    coalesce(p_wo_row_data->>'priority', 'medium'),
+    p_wo_row_data->>'interaction_mode',
+    p_wo_row_data->>'status',
+    p_wo_row_data->>'status_category',
+    nullif(p_wo_row_data->>'requester_person_id', '')::uuid,
+    nullif(p_wo_row_data->>'location_id', '')::uuid,
+    nullif(p_wo_row_data->>'assigned_team_id', '')::uuid,
+    nullif(p_wo_row_data->>'assigned_user_id', '')::uuid,
+    nullif(p_wo_row_data->>'assigned_vendor_id', '')::uuid,
+    nullif(p_wo_row_data->>'sla_id', '')::uuid,
+    nullif(p_wo_row_data->>'sla_resolution_due_at', '')::timestamptz,
+    p_wo_row_data->>'source_channel'
+  );
+
+  -- ── 8. INSERT the dedup row in the SAME tx. ─────────────────────────
+  insert into public.setup_work_order_emissions (
+    tenant_id, oli_id, work_order_id, outbox_event_id
+  ) values (
+    p_tenant_id, v_oli_id, v_work_order_id, p_event_id
+  );
+
+  -- ── 9. Domain event + audit row in same tx (unchanged from v7). ───────
+  insert into public.domain_events (
+    tenant_id, event_type, entity_type, entity_id, payload
+  ) values (
+    p_tenant_id,
+    'booking_origin_work_order_created',
+    'work_order',
+    v_work_order_id,
+    jsonb_build_object(
+      'work_order_id',              v_work_order_id,
+      'booking_id',                 v_booking_id,
+      'linked_order_line_item_id',  v_oli_id,
+      'audit_metadata',             v_audit_metadata
+    )
+  );
+
+  insert into public.audit_events (
+    tenant_id, event_type, entity_type, entity_id, details
+  ) values (
+    p_tenant_id,
+    'setup_work_order_created',
+    'work_order',
+    v_work_order_id,
+    jsonb_build_object(
+      'event_id',      p_event_id,
+      'oli_id',        v_oli_id,
+      'team_id',       nullif(p_wo_row_data->>'assigned_team_id', '')::uuid,
+      'due_at',        nullif(p_wo_row_data->>'sla_resolution_due_at', '')::timestamptz,
+      'sla_policy_id', nullif(p_wo_row_data->>'sla_id', '')::uuid,
+      'metadata',      v_audit_metadata
+    )
+  );
+
+  return jsonb_build_object(
+    'kind',          'created',
+    'work_order_id', v_work_order_id
+  );
+
+exception
+  when unique_violation then
+    select work_order_id into v_existing_wo_id
+      from public.setup_work_order_emissions
+     where tenant_id = p_tenant_id and oli_id = v_oli_id;
+    if v_existing_wo_id is null then
+      raise;
+    end if;
+    return jsonb_build_object(
+      'kind',          'already_created',
+      'work_order_id', v_existing_wo_id
+    );
+end;
+$$;
+```
+
+**`validate_setup_wo_fks` helper (NEW in v8 — folds C1).**
+
+```sql
+-- supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql (v8 addition)
+
+create or replace function public.validate_setup_wo_fks(
+  p_tenant_id   uuid,
+  p_booking_id  uuid,
+  p_wo_row_data jsonb
+) returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_id uuid;
+begin
+  -- location_id (optional)
+  v_id := nullif(p_wo_row_data->>'location_id', '')::uuid;
+  if v_id is not null then
+    perform 1 from public.spaces where id = v_id and tenant_id = p_tenant_id;
+    if not found then
+      raise exception 'setup_wo.fk_invalid: location_id %', v_id
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- assigned_team_id (optional)
+  v_id := nullif(p_wo_row_data->>'assigned_team_id', '')::uuid;
+  if v_id is not null then
+    perform 1 from public.teams where id = v_id and tenant_id = p_tenant_id;
+    if not found then
+      raise exception 'setup_wo.fk_invalid: assigned_team_id %', v_id
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- assigned_user_id (optional)
+  v_id := nullif(p_wo_row_data->>'assigned_user_id', '')::uuid;
+  if v_id is not null then
+    perform 1 from public.users where id = v_id and tenant_id = p_tenant_id;
+    if not found then
+      raise exception 'setup_wo.fk_invalid: assigned_user_id %', v_id
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- assigned_vendor_id (optional)
+  v_id := nullif(p_wo_row_data->>'assigned_vendor_id', '')::uuid;
+  if v_id is not null then
+    perform 1 from public.vendors where id = v_id and tenant_id = p_tenant_id;
+    if not found then
+      raise exception 'setup_wo.fk_invalid: assigned_vendor_id %', v_id
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- sla_id (optional) — references public.sla_policies
+  v_id := nullif(p_wo_row_data->>'sla_id', '')::uuid;
+  if v_id is not null then
+    perform 1 from public.sla_policies where id = v_id and tenant_id = p_tenant_id;
+    if not found then
+      raise exception 'setup_wo.fk_invalid: sla_id %', v_id
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- request_type_id (optional)
+  if p_wo_row_data ? 'request_type_id' then
+    v_id := nullif(p_wo_row_data->>'request_type_id', '')::uuid;
+    if v_id is not null then
+      perform 1 from public.request_types where id = v_id and tenant_id = p_tenant_id;
+      if not found then
+        raise exception 'setup_wo.fk_invalid: request_type_id %', v_id
+          using errcode = '42501';
+      end if;
+    end if;
+  end if;
+end;
+$$;
+
+comment on function public.validate_setup_wo_fks(uuid, uuid, jsonb) is
+  'Validates every tenant-owned FK in a setup WO row payload before INSERT. Folds v8-C1 of the outbox spec — closes the hole where create_setup_work_order_from_event trusted FK fields from p_wo_row_data without tenant validation.';
+```
+
+**Tests added (v8 — append to §15.5).**
+- Cross-tenant `linked_order_line_item_id` in `p_wo_row_data` (different from `outbox.events.aggregate_id`) → raises `setup_wo.row_oli_mismatch` BEFORE any insert; verify by row-state assertion (no `work_orders` row, no `setup_work_order_emissions` row).
+- Cross-tenant `assigned_team_id` (valid UUID, but in another tenant) → raises `setup_wo.fk_invalid: assigned_team_id` BEFORE any insert.
+- Cross-tenant `location_id`, `sla_id` — same shape, one test each.
+- `outbox.events` row has been deleted (race: worker held the row and event got purged) → raises `setup_wo.event_not_found`; no insert.
+- Mismatched `booking_id` in `p_wo_row_data` (event chain → booking A; row JSON has booking B) → raises `setup_wo.row_booking_mismatch` (the chain is authoritative; row JSON is cross-checked).
+- Happy path: identity derived from chain, FKs valid → success; assert `work_orders.booking_id` and `work_orders.linked_order_line_item_id` match the *chain-derived* values, not what the row JSON contained (mutate the row JSON's `booking_id` to match the chain so the test passes the §3 cross-check; verify the chain-derived values are what got persisted).
+
+---
+
 ### 7.9 `approve_booking_setup_trigger` RPC (REWRITTEN IN V7 — folds v6-C4 + v7-C1)
 
 **The v6 cutover was broken.** v6 §7.9 specified a new RPC `approve_booking_setup_trigger(p_oli_ids, p_tenant_id)` that read `pending_setup_trigger_args` for the given OLIs and emitted outbox events. But the TS call site (v6 §7.9 last paragraph) said: "`claim_deferred_setup_trigger_args` is NOT folded into the new RPC: ... the v6 change is additive". The v6 cutover left the existing claim flow in place — `bundle.service.ts:1452` calls `claim_deferred_setup_trigger_args(p_tenant_id, p_order_ids)` first (00198), which `for update`s the OLI rows and **NULLs `pending_setup_trigger_args` BEFORE returning**. Then v6 said TS should call the new RPC with `oliIds` from `claimedRows`. The new RPC re-reads `pending_setup_trigger_args` from those OLIs — and finds NULL on every row, because 00198 already cleared them. The `if v_oli.pending_setup_trigger_args is null then continue;` branch fires for every iteration; `v_emit_count` returns 0; no events land; the durability promise of v6-C4 is voided.
@@ -1948,6 +2375,29 @@ begin
     end if;
     v_args := v_oli.pending_setup_trigger_args;
 
+    -- ── v8-I6: Emit-time ruleIds validation ──────────────────────────
+    -- pending_setup_trigger_args.ruleIds was validated at plan time (§8.2,
+    -- snapshot UUIDs in validate_attach_plan_internal_refs). But the value
+    -- is then PERSISTED on order_line_items.pending_setup_trigger_args
+    -- between plan time and approval grant. Admin tooling, a future bulk
+    -- rule-rewrite migration, or a misbehaving cleanup job could mutate
+    -- service_rules between plan-time and grant-time, leaving a stale or
+    -- cross-tenant rule id baked into the persisted args. Validate here
+    -- before the args land in an outbox event payload (which goes into
+    -- audit_events on handle, where the bad id would persist forever).
+    declare
+      v_rule_ids uuid[];
+    begin
+      v_rule_ids := coalesce(
+        (select array_agg(value::uuid)
+           from jsonb_array_elements_text(coalesce(v_args->'ruleIds', '[]'::jsonb))),
+        '{}'::uuid[]
+      );
+      if cardinality(v_rule_ids) > 0 then
+        perform public.validate_rule_ids_in_tenant(p_tenant_id, v_rule_ids);
+      end if;
+    end;
+
     -- Build event payload from the persisted args. Schema mirrors §7.6's
     -- v_event_payload — the handler is shape-agnostic across the create
     -- and approval-grant origins.
@@ -2012,8 +2462,59 @@ end;
 $$;
 
 comment on function public.approve_booking_setup_trigger(uuid, uuid, uuid, text) is
-  'Approval-grant emit path for setup_work_order.create_required (§7.9 of the outbox spec — v7 contract). Reads pending_setup_trigger_args for every OLI in the booking, emits one outbox event per non-null OLI, clears the args — all in one transaction. Replaces the v6 (00198 claim + new RPC) two-step that broke because 00198 nulled the args before the new RPC could read them.';
+  'Approval-grant emit path for setup_work_order.create_required (§7.9 of the outbox spec — v7 contract; v8 adds emit-time ruleIds validation via validate_rule_ids_in_tenant). Reads pending_setup_trigger_args for every OLI in the booking, validates persisted ruleIds against tenant service_rules (defense-in-depth against rule mutations between plan-time and grant-time), emits one outbox event per non-null OLI, clears the args — all in one transaction. Replaces the v6 (00198 claim + new RPC) two-step that broke because 00198 nulled the args before the new RPC could read them.';
 ```
+
+#### 7.9.1 `validate_rule_ids_in_tenant` helper (NEW in v8 — folds I6)
+
+Shared validator: every rule UUID in the input array MUST exist in `public.service_rules` under `p_tenant_id`. Raises `setup_wo.rule_id_invalid` on the first miss; the caller's tx rolls back, no outbox event is emitted, the audit_events row at the end of `approve_booking_setup_trigger` reflects the failure (it never lands because the tx rolls back — handled at the application layer through the absence of the row + the propagated exception).
+
+```sql
+-- supabase/migrations/00305_approve_booking_setup_trigger_rpc.sql (v8 addition)
+-- (or split into a separate migration if 00305 is already applied to remote)
+
+create or replace function public.validate_rule_ids_in_tenant(
+  p_tenant_id uuid,
+  p_rule_ids  uuid[]
+) returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_missing uuid;
+begin
+  if p_rule_ids is null or cardinality(p_rule_ids) = 0 then
+    return;
+  end if;
+
+  -- Find any id in the input that's NOT in service_rules under tenant.
+  -- Single round-trip; planner picks an index scan on (tenant_id, id).
+  with input_ids as (
+    select unnest(p_rule_ids) as id
+  )
+  select i.id into v_missing
+    from input_ids i
+   where not exists (
+     select 1 from public.service_rules sr
+      where sr.id = i.id and sr.tenant_id = p_tenant_id
+   )
+   limit 1;
+
+  if v_missing is not null then
+    raise exception 'setup_wo.rule_id_invalid: % not in tenant service_rules', v_missing
+      using errcode = '42501';
+  end if;
+end;
+$$;
+
+comment on function public.validate_rule_ids_in_tenant(uuid, uuid[]) is
+  'Defense-in-depth helper for v8: validates a UUID[] of rule ids against tenant-scoped public.service_rules. Used by approve_booking_setup_trigger at emit time to catch stale or cross-tenant rule_ids that were persisted on order_line_items.pending_setup_trigger_args between plan time and grant time. Folds v8-I6 of the outbox spec.';
+```
+
+**v8 §15.5 test additions for v8-I6.** Pre-populate an OLI's `pending_setup_trigger_args.ruleIds` with `[<another-tenant's-rule-id>]`; call `approve_booking_setup_trigger`; assert the RPC raises `setup_wo.rule_id_invalid`; assert the OLI's pending_setup_trigger_args is STILL non-null (the rollback restored the args); assert no `outbox.events` row landed; assert no audit row for `booking.deferred_setup_emitted_on_approval` (the audit insert is in the same rolled-back tx).
+
+This closes v7's open "verify with codex review" question on §15.5 — v8 commits to runtime validation as the right shape.
 
 **Before (v6, broken):**
 
@@ -2386,7 +2887,13 @@ The §8.1 matrix only checks that every UUID *exists* in the right tenant. It do
 ```sql
 -- supabase/migrations/00303_create_booking_with_attach_plan_rpc.sql (v6 addition)
 
+-- v8-I3: signature is `(p_tenant_id uuid, p_booking_input jsonb, p_attach_plan jsonb)`.
+-- v7 added p_tenant_id implicitly in §8.2's snapshot-validation block but did
+-- not update the function definition or the call site in §7.6. v8 makes both
+-- consistent: the canonical signature is the three-arg form below; §7.6 step 4
+-- calls it with `(p_tenant_id, p_booking_input, p_attach_plan)`.
 create or replace function public.validate_attach_plan_internal_refs(
+  p_tenant_id     uuid,
   p_booking_input jsonb,
   p_attach_plan   jsonb
 ) returns void
@@ -2504,8 +3011,8 @@ begin
 end;
 $$;
 
-comment on function public.validate_attach_plan_internal_refs(jsonb, jsonb) is
-  'Validates internal cross-references in the AttachPlan + BookingInput payloads. Runs alongside validate_attach_plan_tenant_fks before any insert in create_booking_with_attach_plan. v6-I2 (codex review of v5).';
+comment on function public.validate_attach_plan_internal_refs(uuid, jsonb, jsonb) is
+  'Validates internal cross-references in the AttachPlan + BookingInput payloads. Runs alongside validate_attach_plan_tenant_fks before any insert in create_booking_with_attach_plan. v6-I2 (codex review of v5); v7 added snapshot UUID validation; v8 canonicalised the three-arg signature.';
 ```
 
 **What §8.1 vs §8.2 each catch:**
@@ -2535,6 +3042,10 @@ The two together close the failure modes a per-table FK constraint would not: Po
   --   service_config_releases (id, tenant_id) — config_release_id
 
   -- 7a. booking_input.applied_rule_ids[]
+  -- v8-I3: uses the canonical p_tenant_id parameter (the function takes
+  -- (p_tenant_id, p_booking_input, p_attach_plan) — see top of §8.2). The
+  -- v7 placeholder hack (`select tenant_id from public.bookings limit 0`)
+  -- has been removed.
   with snap as (
     select distinct value::uuid as id
       from jsonb_array_elements_text(coalesce(p_booking_input->'applied_rule_ids', '[]'::jsonb))
@@ -2542,19 +3053,9 @@ The two together close the failure modes a per-table FK constraint would not: Po
     select s.id from snap s
      where not exists (
        select 1 from public.service_rules sr
-        where sr.id = s.id and sr.tenant_id = (
-          -- Pull the tenant from the booking_input — validated against the
-          -- RPC's p_tenant_id elsewhere (§8.1), so this read is safe.
-          select tenant_id from public.bookings limit 0
-        )
+        where sr.id = s.id and sr.tenant_id = p_tenant_id
      )
   )
-  -- NOTE: the "select tenant_id from public.bookings limit 0" pattern above
-  -- is wrong (no booking row exists yet at validation time). The correct
-  -- shape is to take p_tenant_id as an additional parameter to
-  -- validate_attach_plan_internal_refs. v7 changes the signature:
-  -- validate_attach_plan_internal_refs(p_tenant_id uuid, p_booking_input jsonb, p_attach_plan jsonb).
-  -- The RPC at §7.6 step 4 is updated to pass p_tenant_id.
   select id into v_bad from missing limit 1;
   if v_bad is not null then
     raise exception 'attach_plan.internal_refs: applied_rule_ids[] % not in tenant service_rules', v_bad
@@ -2612,7 +3113,7 @@ The two together close the failure modes a per-table FK constraint would not: Po
   end if;
 ```
 
-**Implementation note:** the helper signature gains `p_tenant_id uuid` as the first parameter (was `(p_booking_input, p_attach_plan)` in v6). Update §7.6 step 4 to pass it: `perform public.validate_attach_plan_internal_refs(p_tenant_id, p_booking_input, p_attach_plan);`.
+**Implementation note (v8):** the canonical signature is `(p_tenant_id uuid, p_booking_input jsonb, p_attach_plan jsonb)`. v7 added `p_tenant_id` to the snapshot-validation block but neglected to update the function definition and the §7.6 call site, leaving a drift. v8 closes the drift: the function definition above takes the three-arg form; §7.6 step 4 calls it as `perform public.validate_attach_plan_internal_refs(p_tenant_id, p_booking_input, p_attach_plan);`.
 
 **Tests added (Phase 6 scope, v7):** four integration tests, one per snapshot category. Each constructs a plan whose `applied_rule_ids[0]`, `config_release_id`, `setup_emit.rule_ids[0]`, or approval-reason `rule_id` is a valid UUID for a different tenant; assert `42501 attach_plan.internal_refs: <field> ... not in tenant service_rules` (or `service_config_releases` for category b).
 
@@ -2732,44 +3233,69 @@ begin
   );
   perform pg_advisory_xact_lock(v_lock_key);
 
-  -- ── 2. CAS update on the approval row. The .eq('status','pending')
-  -- gate from approval.service.ts:398 moves into the WHERE clause here. ─
+  -- ── 2. Lock + read FIRST (v8-I2) — order matters. v7 ran the CAS update
+  -- before checking target_entity_type, so a mistaken caller (passing a
+  -- ticket or visitor_invite approval id) would mark the row as `approved`
+  -- before the rejection. v8 reorders: select + FOR UPDATE first, validate
+  -- the row's target_entity_type, validate the state machine (status =
+  -- 'pending'), THEN apply the CAS update. The advisory lock above already
+  -- serialises concurrent grants on the SAME row; the FOR UPDATE here gives
+  -- us a full row to read and validate before any mutation. ─────────────
+  select id, target_entity_type, target_entity_id, parallel_group, approval_chain_id, comments, status
+    into v_approval
+    from public.approvals
+   where id        = p_approval_id
+     and tenant_id = p_tenant_id
+   for update;
+
+  if not found then
+    raise exception 'approval.not_found id=% tenant=%', p_approval_id, p_tenant_id
+      using errcode = 'P0002';
+  end if;
+
+  -- Validate target_entity_type BEFORE any mutation. Bail out cleanly for
+  -- non-booking branches; the caller (ApprovalService.respond) routes those
+  -- through the existing TS-orchestrated paths (§11 open question 8). ───
+  if v_approval.target_entity_type <> 'booking' then
+    return jsonb_build_object(
+      'kind',                'non_booking_approved',
+      'approval_id',         p_approval_id,
+      'target_entity_type',  v_approval.target_entity_type
+    );
+  end if;
+
+  -- Validate state machine. If already responded (idempotent retry by the
+  -- same caller, or a different caller's decision committed between the
+  -- TS-side .single() read and this RPC), return cleanly. ────────────────
+  if v_approval.status <> 'pending' then
+    return jsonb_build_object(
+      'kind',         'already_responded',
+      'approval_id',  p_approval_id,
+      'prior_status', v_approval.status
+    );
+  end if;
+
+  -- ── 3. NOW apply the CAS update. The advisory lock + FOR UPDATE above
+  -- mean no concurrent grant can interleave between the validation and the
+  -- mutation, so the CAS guard is defensive (we expect it to always
+  -- succeed); a `not found` here would be a bug, not a race. ─────────────
   update public.approvals
      set status        = p_decision,
          responded_at  = now(),
          comments      = p_comments
    where id            = p_approval_id
      and tenant_id     = p_tenant_id
-     and status        = 'pending'
-   returning id, target_entity_type, target_entity_id, parallel_group, approval_chain_id, comments
-   into v_approval;
+     and status        = 'pending';
 
   if not found then
-    -- Either the approval doesn't exist, the tenant is wrong, or another
-    -- caller decided it concurrently. Return the equivalent of "already
-    -- responded" without raising — matches the BadRequestException the TS
-    -- layer raises today.
-    return jsonb_build_object(
-      'kind', 'already_responded',
-      'approval_id', p_approval_id
-    );
-  end if;
-
-  -- Only the booking branch in this RPC. Ticket / visitor_invite branches
-  -- stay in TS (their downstream effects don't have the same atomicity
-  -- requirement; ticket routing is best-effort, visitor-invite emits its
-  -- own outbox events).
-  if v_approval.target_entity_type <> 'booking' then
-    return jsonb_build_object(
-      'kind', 'non_booking_approved',
-      'approval_id', p_approval_id,
-      'target_entity_type', v_approval.target_entity_type
-    );
+    raise exception 'approval.cas_lost id=%', p_approval_id
+      using errcode = 'P0001',
+            hint = 'CAS update missed despite advisory lock + FOR UPDATE — investigate concurrent path';
   end if;
 
   v_target_id := v_approval.target_entity_id;
 
-  -- ── 3. Take a per-booking advisory lock so concurrent approvers grant
+  -- ── 4. Take a per-booking advisory lock so concurrent approvers grant
   -- in series at the booking level (slot transitions + bundle cascade
   -- don't race). ─────────────────────────────────────────────────────────
   v_lock_key := hashtextextended(
@@ -2777,7 +3303,7 @@ begin
   );
   perform pg_advisory_xact_lock(v_lock_key);
 
-  -- ── 4. Resolve the booking-level decision using v_approval.status as
+  -- ── 5. Resolve the booking-level decision using v_approval.status as
   -- the just-committed gate (same logic as
   -- ApprovalService.areAllTargetApprovalsApproved at approval.service.ts:645). ─
   if p_decision = 'rejected' then
@@ -2813,7 +3339,7 @@ begin
     v_new_status := 'confirmed';
   end if;
 
-  -- ── 5. Transition booking_slots + bookings (mirrors
+  -- ── 6. Transition booking_slots + bookings (mirrors
   -- approval.service.ts:551-579). All in same tx now. ────────────────────
   update public.booking_slots
      set status = v_new_status,
@@ -2832,7 +3358,7 @@ begin
   get diagnostics v_pending_count = row_count;
   v_booking_changed := v_pending_count > 0;
 
-  -- ── 6. Setup-WO emit on approval. Inline the §7.9 logic via perform —
+  -- ── 7. Setup-WO emit on approval. Inline the §7.9 logic via perform —
   -- one tx, no separate RPC round trip. The standalone
   -- approve_booking_setup_trigger RPC stays callable for admin/batch tooling. ─
   if v_new_status = 'confirmed' then
@@ -2851,7 +3377,7 @@ begin
     v_emit_summary := jsonb_build_object('emitted_count', 0, 'reason', 'rejected');
   end if;
 
-  -- ── 7. Domain event for the approval decision (mirrors
+  -- ── 8. Domain event for the approval decision (mirrors
   -- ApprovalService.logDomainEvent at approval.service.ts:707). ──────────
   insert into public.domain_events (
     tenant_id, event_type, entity_type, entity_id, payload
@@ -2978,7 +3504,33 @@ After Phase B, `SetupWorkOrderTriggerService.trigger`, `triggerMany`, and `trigg
 
 ---
 
-## 11. Open questions remaining (post-v7)
+## 10X. Not in B.0 scope — Phase 6 hardening backlog (NEW in v8)
+
+The following split-writes EXIST in the codebase but are NOT addressed by B.0. They are deferred to a Phase 6 hardening sprint that runs AFTER B.0 lands. Codex v7 review acknowledged they're deferrable IF B.0 scope is "create + approval + setup-WO only"; v8 makes that scope-boundary explicit so the B.0 implementer doesn't pull them into scope mid-implementation. Deferral justification: **bounded failure mode + multi-week cost to fix**.
+
+### 10X.1 Booking cancellation cascade
+
+- **File:** `apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:115` (`cancelLine` / `cancelBundle`).
+- **Pattern:** cascading updates across `asset_reservations`, `work_orders`, `order_line_items`, `approvals` via separate supabase-js HTTP calls.
+- **Failure mode:** partial-cancel — lines cancelled but approval still `pending`, or WOs cancelled but a sibling reservation still `confirmed`. Bounded: admin tooling can re-run.
+- **Phase 6 plan:** `cancel_booking_atomic` RPC mirroring §10.1 with a per-booking advisory lock. Owner: TBD.
+
+### 10X.2 Standalone-order creation
+
+- **File:** `apps/api/src/modules/orders/order.service.ts:752` (`createStandalone` — `/portal/order` flow).
+- **Pattern:** multi-step TS write for orders+OLIs+asset_reservations+approvals when there's no attached booking. Same class as the v4-pre booking attach split-write.
+- **Failure mode:** half-created standalone order. Bounded: admin re-creation.
+- **Phase 6 plan:** `create_standalone_order_with_attach_plan` RPC mirroring v5's combined-RPC pattern, with a `kind: 'standalone'` discriminator. Owner: TBD.
+
+### 10X.3 Other known split-writes — same deferral
+
+`TicketService.dispatch`, `VisitorPassService.assignFromPool`, recurrence-clone paths. All bounded failure modes; all out of B.0 scope. The Phase 6 hardening sprint applies the v5-onward "TS plans / PL/pgSQL writes" pattern to every multi-step write in the codebase — multi-month project, follows §1.
+
+**B.0 scope-boundary contract:** B.0 implements create-booking-with-services + approval-grant + setup-WO-from-event. B.0 does NOT touch cancellation, standalone-order creation, dispatch, visitor-pass assignment, or recurrence cloning. PRs claiming to be "B.0" that touch those paths are out of scope.
+
+---
+
+## 11. Open questions remaining (post-v7; updated for v8)
 
 Not blocking implementation; revisit during Phase 6 hardening or earlier if prod signals demand.
 
@@ -2991,7 +3543,19 @@ Not blocking implementation; revisit during Phase 6 hardening or earlier if prod
 7. **Standalone-order approval grants need their own atomic RPC** (NEW open in v7) — `grant_booking_approval` (§10.1) covers `target_entity_type='booking'`. A future `OrderService.createStandaloneOrder` migration introduces `target_entity_type='standalone_order'` (or whatever post-canonicalisation calls it) and the approval-grant flow for that target type would have its own slot/booking-equivalent transitions. v7 leaves the standalone-order approval flow on the existing TS-orchestrated path because (a) standalone orders don't have booking_slots; (b) the transition surface is smaller (just `orders.status`); (c) the approval volume is lower than booking approvals. If it ever becomes a hotspot, mirror the v7 pattern with a dedicated `grant_standalone_order_approval` RPC.
 8. **Ticket and visitor_invite approval branches** (NEW open in v7) — §10.1's `grant_booking_approval` covers booking approvals only. The ticket branch (`approval.service.ts:417-422`) and visitor_invite branch (`approval.service.ts:460-485`) keep their existing TS-orchestrated paths. Justification: the ticket dispatch is genuinely best-effort (an SLA-policy attachment failure shouldn't roll back the approval — the ticket is queued either way); visitor_invite has its own internal outbox emit (`visitor.invitation.expected`) that's already atomic on the visitors-side. Revisit if either becomes a corruption hotspot.
 9. **Atomic snapshot UUID validation: shared rule registry implications** (NEW open in v7) — v7 §8.2 mandates that `applied_rule_ids[]`, `config_release_id`, `setup_emit.rule_ids[]`, and approval-reason `rule_id` are validated against tenant-scoped tables. If a future feature introduces a "shared rule registry" (cross-tenant rule definitions, e.g. industry-standard FIC allergen rules), the validation needs an explicit bypass for those rule rows. Document the bypass clearly when it's needed; don't silently relax the helper.
-10. **`grant_booking_approval` parallel-group atomicity** (NEW open in v7) — the v7 RPC handles single-step + parallel-group + sequential-chain via the `v_unresolved_count` check at §10.1 step 4. Tested per `15.6` integration test (parallel group → first grant returns `partial_approved`; final grant returns `resolved`). Edge case: a parallel group with ≥3 approvers where the third grant lands while the second is still emitting setup-WOs. The advisory lock at §10.1 step 3 (`booking_approval:` keyed) serializes them, but the third grant's `v_unresolved_count` query needs to read AFTER the second's commit — verify the lock ordering is correct in tests. (Current design: yes; the second's CAS update + sibling-expire + slot transition happen before lock release; the third blocks at the advisory lock and reads committed state.)
+10. **`grant_booking_approval` parallel-group atomicity** (NEW open in v7) — the v7 RPC handles single-step + parallel-group + sequential-chain via the `v_unresolved_count` check at §10.1 step 5. Tested per `15.6` integration test (parallel group → first grant returns `partial_approved`; final grant returns `resolved`). Edge case: a parallel group with ≥3 approvers where the third grant lands while the second is still emitting setup-WOs. The advisory lock at §10.1 step 4 (`booking_approval:` keyed) serializes them, but the third grant's `v_unresolved_count` query needs to read AFTER the second's commit — verify the lock ordering is correct in tests. (Current design: yes; the second's CAS update + sibling-expire + slot transition happen before lock release; the third blocks at the advisory lock and reads committed state.)
+11. **Real-DB concurrency test harness** (NEW open in v8) — the cutover-blocking concurrency tests in §15.5-bis require a real Postgres harness (pgTAP or two-connection `pg.Pool` in jest/vitest) that does not exist today in `apps/api/test/` or `supabase/tests/`. Building the harness is a B.0 → cutover prerequisite (NOT a B.0 foundation prerequisite). Status as of v8: not started. Owner: TBD — likely the engineer who lands the cutover commit, since the harness blocks Phase B in §5.1. Track in §16.2 as an explicit cutover gate distinct from the foundation gate.
+
+**Resolved by v8 (codex review of v7):**
+
+- ~~v7 C1 (setup-WO RPC trusted `p_wo_row_data` identity instead of deriving from event chain + chain validation)~~ — RPC now loads `outbox.events` row, derives `v_oli_id` from `aggregate_id`, validates OLI→order→booking chain under tenant, cross-checks row JSON, validates every tenant-owned FK via `validate_setup_wo_fks`. §7.8.2.
+- ~~v7 I1 (X-Client-Request-Id auto-stamp at fetch scope lost stability across React Query retries)~~ — moved id generation to mutation-attempt scope; `apiFetch` no longer auto-stamps; producer hooks accept `requestId` in their variables shape and thread it as the header. §3.3.
+- ~~v7 I2 (`grant_booking_approval` mutated approval row before checking target_entity_type)~~ — reordered: lock + read + validate target_entity_type + validate state machine FIRST, CAS update LAST. §10.1.
+- ~~v7 I3 (signature drift on `validate_attach_plan_internal_refs` between §7.6 and §8.2)~~ — canonical signature `(p_tenant_id, p_booking_input, p_attach_plan)`; both sites aligned. §7.6 + §8.2.
+- ~~v7 I4 (`setup_work_order_emissions.work_order_id` ON DELETE CASCADE allowed replay-after-delete to recreate)~~ — FK changed to ON DELETE SET NULL; tombstone semantics; admin runbook for explicit reset. §2.5.
+- ~~v7 I5 (canonical OLI sort used `_input_position` tie-breaker, contradicted shuffled-input invariant)~~ — `client_line_id` now required on every input line; canonical sort uses fully-immutable, caller-provided fields per row-kind. §7.4.
+- ~~v7 I6 (`approve_booking_setup_trigger` emitted persisted ruleIds without runtime tenant validation)~~ — `validate_rule_ids_in_tenant` helper called inside the emit loop; raises `setup_wo.rule_id_invalid` on cross-tenant id; whole tx rolls back. §7.9.1.
+- ~~v7 N1 (§15.5 mocked race tests can't simulate real Postgres advisory-lock acquisition)~~ — §15.5-bis introduces a real-DB two-connection harness; cutover-blocking tests routed through it; harness shipping tracked as §11 open question 11.
 
 **Resolved by v7 (codex review of v6):**
 
@@ -3039,9 +3603,11 @@ Not blocking implementation; revisit during Phase 6 hardening or earlier if prod
 - `supabase/migrations/00303_create_booking_with_attach_plan_rpc.sql` — `create_booking_with_attach_plan` RPC + `validate_attach_plan_tenant_fks` helper (§7.6 + §8.1) + `validate_attach_plan_internal_refs` helper (§8.2). **NEW in v5; v6 adds advisory lock + internal-refs helper; v7 extends internal-refs with snapshot UUID validation (signature gains `p_tenant_id`)**.
 - `supabase/migrations/00304_setup_work_order_emissions.sql` — `setup_work_order_emissions` dedup table (§2.5). **NEW in v6; v7 fixes FK to `work_orders` (was `tickets`)**.
 - `supabase/migrations/00305_approve_booking_setup_trigger_rpc.sql` — `approve_booking_setup_trigger` RPC (§7.9). **NEW in v6; v7 REWRITES the signature to `(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)` and reads `pending_setup_trigger_args` directly (no claim RPC dependency)**.
-- `supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql` — `create_setup_work_order_from_event` RPC (§7.8.1). **NEW in v7**.
-- `supabase/migrations/00307_grant_booking_approval_rpc.sql` — `grant_booking_approval` RPC (§10.1). **NEW in v7**.
+- `supabase/migrations/00306_create_setup_work_order_from_event_rpc.sql` — `create_setup_work_order_from_event` RPC (§7.8.2 in v8) + `validate_setup_wo_fks` helper (§7.8.2 in v8). **NEW in v7; v8 supersedes the body to load `outbox.events` row and derive identity from chain (folds C1).**
+- `supabase/migrations/00307_grant_booking_approval_rpc.sql` — `grant_booking_approval` RPC (§10.1). **NEW in v7; v8 reorders body to lock + validate before CAS update (folds I2).**
 - `supabase/migrations/00308_drop_claim_deferred_setup_args.sql` — drops `claim_deferred_setup_trigger_args` (00198). **NEW in v7**.
+- `supabase/migrations/00309_validate_rule_ids_in_tenant_helper.sql` — `validate_rule_ids_in_tenant` helper called by `approve_booking_setup_trigger` at emit time (§7.9.1). **NEW in v8 (folds I6)**. Could equivalently be appended to 00305 if 00305 has not yet shipped to remote; if 00305 is already applied, ship as 00309.
+- `supabase/migrations/00310_setup_work_order_emissions_fk_set_null.sql` — alters `setup_work_order_emissions.work_order_id` FK from ON DELETE CASCADE (v7) to ON DELETE SET NULL (v8). Required if 00304 already shipped to remote with the v7 contract; if 00304 has not yet shipped, fold the change directly into 00304 instead. **NEW in v8 (folds I4)**.
 
 ### TypeScript
 - `apps/api/src/modules/outbox/outbox.service.ts` — fire-and-forget producer only. **v6 cleanup:** strip `markConsumed` method (lines 67-82) + `booking.create_attempted` references in the module-level docstring (lines 18-21).
@@ -3130,6 +3696,7 @@ Carry forward the foundation metrics. v5/v6/v7 changes:
 - **`create_setup_work_order_from_event_outcomes_total{outcome}`** — NEW in v7. Labels: `created | already_created`. `already_created` = handler retry after the prior attempt committed; healthy.
 - **`setup_work_order_emissions_inserts_total{outcome}`** — Labels: `inserted | duplicate`. v7 makes this near-zero on the duplicate side because the dedup row is now inserted in the same tx as the WO; the only way to see `duplicate` is a non-blocking advisory-lock release between two concurrent handlers, which the read-side dedup at §7.8 step 3 catches.
 - **`client_request_id_source_total{source}`** — NEW in v7. Labels: `client | server_default`. Surfaces how many mutations arrive without the header; high `server_default` counts indicate frontend code paths that aren't going through `apiFetch` (e.g. raw `fetch` calls). Alert at >5% sustained.
+- **`setup_wo_rpc_validation_errors_total{kind}`** — NEW in v8. Labels: `event_not_found | oli_chain_invalid | row_oli_mismatch | row_booking_mismatch | fk_invalid | rule_id_invalid`. All should be ≈0 in steady state — any non-zero indicates a row-builder bug, a stale event, or admin tooling mutating rules without coordinating with in-flight grants. Alert on first occurrence in production.
 
 Removed (vs v4):
 - `outbox_lease_recovery_total` (no lease)
@@ -3172,12 +3739,32 @@ This replaces v4's "forced lease-expiry probe" — the failure mode it tested (c
 
 Per §5.2. Two scenarios (configured matrix + misconfigured matrix); shadow handler vs inline best-effort path; assert outcomes match. Hooked into staging CI; mandatory before each Phase A → B deploy. **v6:** the shadow handler's `dryRun` replicates `triggerStrict` instead of `trigger`; expected outcomes are typed (`would_create | no_op_terminal{reason}`) rather than nullable.
 
-### 15.5 Handler dedup test (v6 + v7 atomicity)
+### 15.5 Handler dedup test (v6 + v7 atomicity + v8 identity-from-chain + tombstones)
 
 - Insert a `setup_work_order_emissions` row manually for `(tenant_id, oli_id)`. Fire the same outbox event. Assert handler returns success WITHOUT calling `SetupWorkOrderRowBuilder.build` (mock the builder; assert zero calls).
-- **v7:** Concurrent handler dispatch — two workers somehow claim the same event (force via stale-claim recovery). Both reach the read-side dedup; both miss; both call `create_setup_work_order_from_event` RPC. One acquires the per-OLI advisory lock first and inserts the WO + dedup row in one tx; the second blocks at the lock, then re-reads the committed dedup row and returns `kind: 'already_created'`. Assert exactly one WO created.
+- **v8: tombstone case (folds I4)** — insert a dedup row with `work_order_id IS NULL` (tombstone — admin deleted the WO). Fire the same outbox event. Assert RPC returns `kind: 'already_handled_tombstone'` and `work_order_id: null`; assert NO new WO created; assert the tombstone row is unchanged.
+- **v8: tombstone reset workflow** — insert a tombstone; admin runs `DELETE FROM setup_work_order_emissions WHERE oli_id = ?`; fire the same outbox event. Assert a fresh WO + dedup row are created (the dedup row's `work_order_id` is now non-null again).
+- **v7:** Concurrent handler dispatch — two workers somehow claim the same event (force via stale-claim recovery). Both reach the read-side dedup; both miss; both call `create_setup_work_order_from_event` RPC. One acquires the per-OLI advisory lock first and inserts the WO + dedup row in one tx; the second blocks at the lock, then re-reads the committed dedup row and returns `kind: 'already_created'`. Assert exactly one WO created. **v8: this test is one of the "real-DB concurrency tests" — must run via the harness in §15.8 below, not via mocked race-injection.**
 - Cancel-then-replay: handler creates WO + dedup row (atomically); admin closes the WO; replay the same outbox event. Assert handler returns success on the read-side dedup hit; no second WO.
 - **v7:** Crash-between-WO-and-dedup is now structurally impossible — a unit test asserts that if `create_setup_work_order_from_event` is called and the WO INSERT succeeds but the dedup INSERT raises (impossible without an external constraint violation, but defensive), the WO INSERT rolls back. Confirms the atomicity claim is real, not aspirational.
+- **v8 (folds C1): identity-from-chain validation tests.** See full list in §7.8.2 ("Tests added (v8 — append to §15.5)") — covers cross-tenant `linked_order_line_item_id`, cross-tenant FK fields (`assigned_team_id`, `location_id`, `sla_id`), event-not-found race, mismatched booking_id, and the happy path that verifies chain-derived values are persisted (not row-JSON values).
+- **v8 (folds I6): emit-time ruleIds validation.** See §7.9.1 ("v8 §15.5 test additions for v8-I6") — covers the cross-tenant rule_id case and asserts rollback (args still non-null, no outbox event, no audit row). This test was an open question in v7 §15.5 ("verify with codex review whether this test fits §8.2 or needs a separate runtime guard"); v8 resolves it: separate runtime guard at §7.9.1, with the test living here.
+
+### 15.5-bis Real-DB concurrency harness (NEW in v8 — folds the v7 nit)
+
+v7's "concurrent handler dispatch" + "concurrent grant on same approval" tests described mocked race-injection. Mocks cannot simulate real Postgres advisory-lock acquisition order or commit timing.
+
+**v8 contract: concurrency tests for cutover-blocking RPCs MUST use a real-DB harness.** Two acceptable shapes:
+
+1. **pgTAP** via `pg_prove` against a real Postgres instance — `lives_ok` / `throws_ok` + `pg_locks` introspection.
+2. **Node test runner with `pg` direct connections** — spawn two connections from `pg.Pool`; one BEGINs + acquires the advisory lock + holds; the second BEGINs + tries to acquire; assert via `pg_locks` that the second is blocked (`granted=false`); release the first; assert the second proceeds. Run with `--runInBand`.
+
+**Mandatory tests routed through this harness:**
+- Concurrent handler dispatch on the same `setup_work_order.create_required` event (§15.5).
+- Concurrent grants on the same `approval_id` and on different approvals of the same booking (§15.6).
+- Concurrent retries of `create_booking_with_attach_plan` with the same key (§15.2).
+
+**B.0 cutover prerequisite** (NOT a foundation prerequisite): the harness must ship before Phase B of §5.1 flips. Tracked in §11 open question 11.
 
 ### 15.6 `grant_booking_approval` integration tests (NEW in v7)
 
@@ -3189,7 +3776,7 @@ Per §5.2. Two scenarios (configured matrix + misconfigured matrix); shadow hand
 - **Concurrent grant on same approval**: two parallel calls on the same approval_id. The advisory lock at §10.1 step 1 serializes; first wins with `resolved`; second blocks, then reads committed state and returns `already_responded`.
 - **Concurrent grant on different approvals, same booking**: two parallel calls on TWO sibling approvals (parallel group). The booking-level advisory lock at §10.1 step 3 serializes; first call returns `partial_approved` (or `resolved` depending on ordering); second waits, then re-reads `v_unresolved_count` after the first commits and resolves correctly.
 - **Cancel-race during grant**: pre-populate OLI args; mark one OLI as `fulfillment_status='cancelled'` after the grant call begins (race-injection via test hook). The RPC's `for update of oli` lock makes this serialized; assert no event for the cancelled OLI.
-- **Snapshot UUID validation (v7-I4)**: pre-populate an OLI with `pending_setup_trigger_args.ruleIds = [<another-tenant's-rule-id>]`. Call `grant_booking_approval`. Assert RPC raises `42501` from `approve_booking_setup_trigger`'s embedded validation (or via the call into `outbox.emit` payload validation if we put it there — see §8.2 implementation note). NOTE: this test is a behavioural sanity check; the v7 §8.2 helper validates *plan-time* snapshots, but `pending_setup_trigger_args` is persisted from a prior plan, so a separate guard at emit time is needed if we want to catch backend-internal corruption. **Open question — verify with codex review whether this test fits §8.2 or needs a separate runtime guard.**
+- **Snapshot UUID validation (v7-I4 + v8-I6 RESOLVED)**: pre-populate an OLI with `pending_setup_trigger_args.ruleIds = [<another-tenant's-rule-id>]`. Call `grant_booking_approval`. Assert RPC raises `setup_wo.rule_id_invalid` from `validate_rule_ids_in_tenant` (called inside `approve_booking_setup_trigger` per §7.9.1); the whole tx rolls back; OLI args remain non-null; no outbox event landed. v8 resolves the v7 open question — the right shape is a runtime guard at `approve_booking_setup_trigger` emit time (NOT at `grant_booking_approval` ingress, NOT inside `outbox.emit`). The §8.2 plan-time validation catches rule_ids that are wrong at plan time; the §7.9.1 emit-time validation catches the (rare but possible) case where rules mutated between plan-time and grant-time.
 - **Validation: ticket and visitor_invite branches don't enter the RPC**: call `grant_booking_approval` with an approval whose `target_entity_type` is `'ticket'` (manually inserted for the test). Assert the RPC returns `kind: 'non_booking_approved'` and does not touch booking_slots or bookings.
 
 ### 15.7 `X-Client-Request-Id` middleware tests (NEW in v7)
@@ -3276,14 +3863,16 @@ This commit lands ahead of B.0 (§16.2) so the v7 implementation work isn't figh
 
 ### 16.2 Phase 6 (B.0 + cutover) is complete when:
 
-1. v5/v6 NEW migrations applied to remote Supabase + `notify pgrst, 'reload schema'`:
+1. v5/v6/v7/v8 NEW migrations applied to remote Supabase + `notify pgrst, 'reload schema'`:
    - 00302 (`attach_operations` — v6 contract: outcome enum collapsed to `('in_progress', 'success')`).
-   - 00303 (`create_booking_with_attach_plan` RPC + `validate_attach_plan_tenant_fks` + `validate_attach_plan_internal_refs` — v7 signature now takes `p_tenant_id`).
-   - 00304 (`setup_work_order_emissions` — v7 FK to `work_orders`).
-   - 00305 (`approve_booking_setup_trigger` RPC — v7 SIGNATURE: `(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)`).
-   - 00306 (`create_setup_work_order_from_event` RPC — v7 NEW).
-   - 00307 (`grant_booking_approval` RPC — v7 NEW).
+   - 00303 (`create_booking_with_attach_plan` RPC + `validate_attach_plan_tenant_fks` + `validate_attach_plan_internal_refs` — **v8 signature `(p_tenant_id, p_booking_input, p_attach_plan)`** for the internal-refs helper; matches §7.6 call site).
+   - 00304 (`setup_work_order_emissions` — v7 FK to `work_orders`; **v8 contract: ON DELETE SET NULL**, see 00310 if 00304 shipped already).
+   - 00305 (`approve_booking_setup_trigger` RPC — v7 SIGNATURE: `(p_booking_id, p_tenant_id, p_actor_user_id, p_idempotency_key)`; **v8 body adds emit-time `validate_rule_ids_in_tenant` call**).
+   - 00306 (`create_setup_work_order_from_event` RPC — v7 NEW; **v8 body supersedes: loads `outbox.events` row, derives identity from chain, validates FKs via `validate_setup_wo_fks`**) + `validate_setup_wo_fks` helper.
+   - 00307 (`grant_booking_approval` RPC — v7 NEW; **v8 body reorders lock+validate before CAS update**).
    - 00308 (drops `claim_deferred_setup_trigger_args` — v7 NEW).
+   - 00309 (`validate_rule_ids_in_tenant` helper — **v8 NEW**; folds I6).
+   - 00310 (alters `setup_work_order_emissions.work_order_id` FK to SET NULL — **v8 NEW**; folds I4; required only if 00304 already applied with v7 CASCADE contract).
 2. `OutboxService` (emit-only — post-cleanup §16.1) + `OutboxWorker` (§4.2 state machine) + decorator registry implemented + unit-tested.
 3. `planUuid()` helper + `planSort` comparators (`apps/api/src/modules/booking-bundles/plan-uuid.ts`) implemented + unit-tested. Tests assert: same `(idempotencyKey, rowKind, stableIndex)` → same UUID across runs; **v7: equivalent input objects with shuffled array elements produce byte-identical jsonb plans (canonical-sort discipline)**; namespace constant is committed and never rotated.
 4. `BundleService.buildAttachPlan` unit-tested against the survey of existing `attachServicesToBooking` writes (every row type covered). Stable-index discipline asserted: `buildAttachPlan(input)` called twice produces a byte-identical jsonb plan; **v7: also asserts shuffled-input equivalence (test injects an identity-permutation noop and asserts identical output)**.
@@ -3303,6 +3892,8 @@ This commit lands ahead of B.0 (§16.2) so the v7 implementation work isn't figh
 18. **v7: `BundleService.onApprovalDecided` collapsed** — claim RPC + branch logic + `triggerMany` call all replaced by a single call into `grant_booking_approval` from `ApprovalService.respond`. The `onApprovalDecided` method itself becomes vestigial after the cutover (its only job in v7 is the post-RPC notification fan-out, which `ApprovalService.respond` can do directly). Final cleanup: delete `bundle.service.ts:1370-1642`.
 19. **v7: cancel-race block at `bundle.service.ts:1550-1614` deleted** — the RPC's `for update of oli` lock subsumes it.
 20. Best-effort `SetupWorkOrderTriggerService.trigger`/`triggerMany`/`triggerStrict` deleted in the cleanup commit after Phase B is fully cut over (§16.1 step 6).
+20a. **v8 cutover gate (NOT a foundation gate): real-DB concurrency harness** (§15.5-bis). Before Phase B can flip the SetupWorkOrderHandler to active, the cutover-blocking concurrency tests in §15.5/§15.6/§15.2 MUST run via the real-DB harness (pgTAP or two-connection `pg.Pool` with `pg_locks` introspection), not via mocks. The harness ships as a separate piece of test infrastructure; its absence does not block B.0 foundation work, but its presence is mandatory for cutover. Tracked in §11 open question 11.
+20b. **v8 input-contract validation:** `BundleService.buildAttachPlan` rejects inputs missing `client_line_id` on any line, and rejects inputs where two lines in the same order have the same `client_line_id`. Unit-tested.
 21. `SetupWorkOrderHandler` Phase A burn-in: 7 days, ≥50 samples, zero `outbox_shadow_results.matched=false`.
 22. `pnpm smoke:booking-create-with-services` and `pnpm smoke:approve-booking-setup-trigger` pass against staging. **v7: `pnpm smoke:grant-booking-approval` covers the new RPC** — creates a booking that needs approval, approves, asserts slot/booking transitioned + outbox event landed.
 23. Setup-WO cutover Phase A → B → C without incident; `outbox_setup_wo_handler_outcomes_total{outcome="dead_lettered"}` is 0 across the cutover window.
@@ -3315,6 +3906,7 @@ This commit lands ahead of B.0 (§16.2) so the v7 implementation work isn't figh
 
 ## Document version
 
-- v7 — 2026-05-04. Status: DESIGN (not implemented; investigation + spec only). Replaces v6 (commit `fd561fd`). Folds 3 criticals + 4 importants + 2 nits from codex v6 review.
+- v8 — 2026-05-04. Status: DESIGN (not implemented; investigation + spec only) — **FINAL design round before B.0 implementation begins.** Replaces v7 (commit `e96bec5`). Folds 1 critical + 6 importants + 1 nit from codex v7 review, plus an explicit "Not in B.0" deferral section. After v8, B.0 implementation starts immediately; further design changes go through B.0 + Phase 6 hardening, not another spec round.
+- v7 — 2026-05-04. Status: superseded (commit `e96bec5`). Folded 3 criticals + 4 importants + 2 nits from codex v6 review.
 - v6 — 2026-05-04. Status: superseded (commit `fd561fd`). Folded 4 criticals + 3 importants + 1 nit from codex v5 review.
 - v5 — 2026-05-04. Status: superseded. Replaced v4 (commit `2c564f4`).
