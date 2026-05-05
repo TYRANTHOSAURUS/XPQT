@@ -1,7 +1,8 @@
 import {
-  BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException,
-  Optional,
+  BadRequestException, ConflictException, ForbiddenException, Inject, Injectable,
+  InternalServerErrorException, Logger, NotFoundException, Optional,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
@@ -75,9 +76,24 @@ export class BookingFlowService {
      *  to keep older booking-flow specs (no service attach) constructible
      *  without the new collaborators; the create path enforces presence
      *  when services are non-empty. */
+    /**
+     * B.0.D.2 cutover: the combined RPC `create_booking_with_attach_plan`
+     * is atomic, so the post-create attach + compensation pattern is no
+     * longer used by `create()`. These properties remain in the
+     * constructor signature so existing tests + DI wiring keep working
+     * unchanged, and so the legacy compensation primitive stays
+     * available if any future caller (e.g. a recovery script, the
+     * standalone-order flow) needs it. Marked `Optional` for the same
+     * reason.
+     */
     @Optional() @Inject(BOOKING_TX_BOUNDARY) private readonly txBoundary?: BookingTransactionBoundary,
     @Optional() private readonly compensation?: BookingCompensationService,
-  ) {}
+  ) {
+    // Reference unused fields so the strict `noUnusedLocals` check passes.
+    // These are kept on the class for the reasons documented above.
+    void this.txBoundary;
+    void this.compensation;
+  }
 
   /**
    * Run the full pipeline and atomically create one Booking + one BookingSlot
@@ -115,6 +131,20 @@ export class BookingFlowService {
     this.log.log(
       `[create] space=${input.space_id} services_len=${input.services?.length ?? 0} bundle_present=${!!input.bundle} source=${input.source ?? 'portal'}`,
     );
+
+    // B.0.D.2 cutover: WITH-services path goes through the combined RPC
+    // `create_booking_with_attach_plan` (one transaction commits booking +
+    // slots + orders + asset_reservations + OLIs + approvals + outbox
+    // emissions). NO-services path stays on the existing `create_booking`
+    // RPC unchanged — there's nothing to attach, the combined RPC's
+    // attach_operations idempotency table would just be cluttered with
+    // no-op rows, and the existing path is well-tested.
+    //
+    // Spec §3.1 + §7.6 of
+    // docs/superpowers/specs/2026-05-04-domain-outbox-design.md.
+    if (input.services && input.services.length > 0) {
+      return this.createWithAttachPlan(input, actor, tenantId);
+    }
 
     // 1+2. Load space + snapshot
     const space = await this.loadSpace(input.space_id);
@@ -377,63 +407,13 @@ export class BookingFlowService {
       matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
     });
 
-    // - Service lines → bundle attach (sub-project 2 — kept here so
-    //   the materialiser still sees the booking before fan-out).
-    //   Fail loudly if BundleService isn't wired; silent drop = the
-    //   "disappearing services" bug.
-    //
-    //   Phase 1.3: this attach is the second of two writes (after the
-    //   `create_booking` RPC). It's a sequence of supabase-js calls, not
-    //   atomic. If it fails, the booking already exists. We wrap the call
-    //   in `txBoundary.runWithCompensation` so a failure invokes
-    //   `delete_booking_with_guard` (00292) to roll back the booking
-    //   atomically. Per blocker map (docs/follow-ups/phase-1-3-blocker-map.md),
-    //   only recurrence_series can block compensation; if that happens the
-    //   boundary throws BadRequestException(booking.partial_failure) with
-    //   booking_id + blocked_by[] for manual recovery.
-    if (input.services && input.services.length > 0) {
-      this.log.log(
-        `[booking-flow] services=${input.services.length} bundle_present=${!!input.bundle} for booking ${booking.id}`,
-      );
-      if (!this.bundle) {
-        throw new Error(
-          'BundleService not injected — booking-flow cannot attach services. ' +
-            'Wire BookingBundlesModule into ReservationsModule.imports.',
-        );
-      }
-      if (!this.txBoundary || !this.compensation) {
-        // Phase 1.3 wiring missing — refuse to attach silently.
-        throw new Error(
-          'BookingTransactionBoundary + BookingCompensationService not injected — ' +
-            'booking-flow cannot atomically attach services. Wire both into ReservationsModule.providers.',
-        );
-      }
-      // AttachServicesArgs shape verified at bundle.service.ts:58 (Phase 1.3
-      // Read first #6): { booking_id, requester_person_id, bundle?, services }.
-      const bundle = this.bundle;
-      const compensation = this.compensation;
-      await this.txBoundary.runWithCompensation(
-        booking.id,
-        () =>
-          bundle.attachServicesToBooking({
-            booking_id: booking.id,
-            requester_person_id: booking.requester_person_id,
-            bundle: input.bundle
-              ? {
-                  bundle_type: input.bundle.bundle_type,
-                  cost_center_id: input.bundle.cost_center_id ?? null,
-                  template_id: input.bundle.template_id ?? null,
-                  source: bookingSource,
-                }
-              : { source: bookingSource },
-            services: input.services!,
-          }),
-        (id) => compensation.deleteBooking(id),
-      );
-      // No need to refresh booking_bundle_id — under canonicalisation the
-      // booking IS the bundle (no separate booking_bundles row). Orders
-      // link to the booking directly via orders.booking_id (00278:109).
-    }
+    // B.0.D.2: services attach is now handled by `createWithAttachPlan`
+    // (the with-services path returns early at the top of `create`).
+    // The post-create attach + txBoundary compensation has been retired
+    // for the canonical create path; the legacy `attachServicesToBooking`
+    // method stays callable for `addLinesToBundle` (post-create line
+    // additions on an existing booking) and the deprecated
+    // `attachServicesToReservation` shim.
 
     // - Recurrence series materialisation (master row + first 90d of rows).
     //   Fire-and-forget so the user gets their first booking back immediately.
@@ -458,6 +438,331 @@ export class BookingFlowService {
     // TODO(phase-H): enqueue outlook calendar push (uses calendar-sync adapter)
 
     return reservation;
+  }
+
+  /**
+   * B.0.D.2 — combined-RPC path: booking WITH services. Calls
+   * `buildAttachPlan` to produce `{ bookingInput, attachPlan }`, then
+   * invokes `create_booking_with_attach_plan` (00309 / spec §7.6) which
+   * commits booking + slots + orders + asset_reservations + OLIs +
+   * approvals + outbox emissions in one transaction. No `txBoundary`
+   * compensation needed — the RPC is atomic; if any insert fails the
+   * whole transaction rolls back and `attach_operations` doesn't persist.
+   *
+   * Idempotency key construction (spec §3.3):
+   *   `booking.create:${actor.user_id}:${actor.client_request_id}`
+   *
+   * Two distinct user clicks on the form get different `client_request_id`
+   * values (mutation-attempt scope on the client). React Query retries of
+   * the SAME click reuse the same id, hitting the `attach_operations`
+   * cached_result row and returning the prior result without re-inserting.
+   *
+   * Error mapping (spec §7.6, §3.1):
+   *   - 23505 / `attach_operations.payload_mismatch` (P0001) → 409
+   *     `booking.idempotency_payload_mismatch`
+   *   - 23P01 (booking_slots_no_overlap GiST exclusion) → existing
+   *     `reservation_slot_conflict` mapping with picker alternatives
+   *   - 42501 with `attach_plan.fk_invalid: …` → 400
+   *     `booking.fk_invalid`
+   *   - 22023 with `attach_plan.internal_refs: …` → 400
+   *     `booking.internal_ref_invalid`
+   *   - 42501 with `…rule_ids[]` / `applied_rule_ids[]` →
+   *     `booking.snapshot_uuid_invalid`
+   *   - P0001 `service_rule_deny: …` → 400 with structured deny payload
+   *   - other → 500 `booking.unexpected_error`
+   */
+  private async createWithAttachPlan(
+    input: CreateReservationInput,
+    actor: ActorContext,
+    tenantId: string,
+  ): Promise<Reservation> {
+    if (!this.bundle) {
+      throw new Error(
+        'BundleService not injected — booking-flow cannot build attach plan. ' +
+          'Wire BookingBundlesModule into ReservationsModule.imports.',
+      );
+    }
+
+    // Idempotency key — spec §3.3 producer-wiring table. Falls back to a
+    // local randomUUID when the actor has no client_request_id (legacy
+    // tests or the recurrence materialiser construct ActorContext
+    // directly without going through the controller — they get a random
+    // key per call which is correct: no retry semantics expected there).
+    const clientRequestId = actor.client_request_id ?? randomUUID();
+    const idempotencyKey = `booking.create:${actor.user_id}:${clientRequestId}`;
+
+    // Build the plan (TS-side: rule resolver, approval routing, deterministic
+    // UUIDs). Throws on rule deny, override-reason missing, basic input
+    // validation — same gates as the no-services path's `create` body.
+    const { bookingInput, attachPlan } = await this.buildAttachPlan(
+      input,
+      actor,
+      idempotencyKey,
+    );
+
+    this.log.log(
+      `[create-with-attach-plan] booking=${bookingInput.booking_id} services=${input.services?.length ?? 0} idem=${idempotencyKey}`,
+    );
+
+    // ── Atomic combined RPC ─────────────────────────────────────────
+    const { data: rpcData, error: rpcError } = await this.supabase.admin.rpc(
+      'create_booking_with_attach_plan',
+      {
+        p_booking_input: bookingInput,
+        p_attach_plan: attachPlan,
+        p_tenant_id: tenantId,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+
+    if (rpcError) {
+      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor);
+    }
+
+    // RPC returns the cached_result jsonb. supabase-js surfaces it directly.
+    const result = (rpcData ?? null) as
+      | {
+          booking_id: string;
+          slot_ids: string[];
+          order_ids: string[];
+          order_line_item_ids: string[];
+          asset_reservation_ids: string[];
+          approval_ids: string[];
+          any_pending_approval: boolean;
+        }
+      | null;
+    if (!result?.booking_id) {
+      throw new InternalServerErrorException({
+        code: 'booking.unexpected_error',
+        message: 'create_booking_with_attach_plan returned no booking_id',
+      });
+    }
+
+    // Re-read the booking row so downstream consumers (notifications,
+    // audit, recurrence) see the server-canonical state (defaults filled
+    // in, updated_at, etc.). Same shape as the no-services path's re-read.
+    const { data: bookingRow, error: readErr } = await this.supabase.admin
+      .from('bookings')
+      .select('*')
+      .eq('id', result.booking_id)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (readErr || !bookingRow) {
+      this.log.error(`booking re-read failed after combined RPC: ${readErr?.message ?? 'no row'}`);
+      throw new InternalServerErrorException({
+        code: 'booking.unexpected_error',
+        message: readErr?.message ?? 'Booking re-read returned no row',
+      });
+    }
+    const booking = bookingRow as unknown as Booking;
+
+    // The plan builder already canonicalised slot_type + source on the
+    // bookingInput; reuse those for the legacy projection (no need to
+    // recompute). The plan's first slot is the primary (display_order=0).
+    const primarySlot = bookingInput.slots[0];
+    const reservation: Reservation = bookingToLegacyReservation(
+      booking,
+      {
+        slot_type: primarySlot.slot_type,
+        space_id: primarySlot.space_id,
+        start_at: primarySlot.start_at,
+        end_at: primarySlot.end_at,
+        attendee_count: primarySlot.attendee_count,
+        attendee_person_ids: primarySlot.attendee_person_ids,
+        setup_buffer_minutes: primarySlot.setup_buffer_minutes,
+        teardown_buffer_minutes: primarySlot.teardown_buffer_minutes,
+        check_in_required: primarySlot.check_in_required,
+        check_in_grace_minutes: primarySlot.check_in_grace_minutes,
+      },
+      primarySlot.id,
+      bookingInput.applied_rule_ids,
+      bookingInput.source,
+      primarySlot.slot_type,
+    );
+
+    // Post-RPC best-effort fan-out (notifications + audit). All failures
+    // are logged but do NOT roll back the booking — the RPC already
+    // committed; rollback is impossible from here.
+    //
+    // Notification: combined-RPC pending_approval path uses `onCreated`
+    // for v1 because the plan-builder already discarded `approvalConfig`
+    // by the time we reach here, and the persisted `approvals` rows
+    // carry only `approver_person_id` (no team variant on the plan).
+    // A follow-up can split this into a dedicated
+    // `onApprovalRequestedFromPlan(reservation, approvalIds)` that
+    // re-loads the approval rows; out of B.0.D.2 scope.
+    if (this.notifications) {
+      void this.notifications.onCreated(reservation);
+    }
+
+    void this.audit(tenantId, 'booking.created', {
+      booking_id: booking.id,
+      slot_ids: result.slot_ids,
+      order_ids: result.order_ids,
+      order_line_item_ids: result.order_line_item_ids,
+      asset_reservation_ids: result.asset_reservation_ids,
+      approval_ids: result.approval_ids,
+      space_id: input.space_id,
+      source: booking.source,
+      requester_person_id: booking.requester_person_id,
+      status: booking.status,
+      matched_rule_ids: bookingInput.applied_rule_ids,
+      idempotency_key: idempotencyKey,
+      via: 'create_booking_with_attach_plan',
+    });
+
+    // Recurrence series — same gate as no-services path. The materialiser
+    // sees the booking with its services attached because the combined
+    // RPC committed them all in one transaction.
+    if (
+      input.recurrence_rule &&
+      !input.recurrence_series_id &&
+      this.recurrence &&
+      booking.status !== 'pending_approval'
+    ) {
+      void this.startSeries(reservation, input.recurrence_rule).catch((err) => {
+        this.log.warn(`startSeries failed for ${booking.id}: ${(err as Error).message}`);
+      });
+    }
+
+    return reservation;
+  }
+
+  /**
+   * Map a PostgREST `create_booking_with_attach_plan` RPC error to the
+   * appropriate Nest HTTP exception with a structured `code` so the
+   * frontend can present specific messages. Spec §7.6 + §8.
+   *
+   * The error shape from supabase-js / PostgREST has `code` (the SQLSTATE)
+   * and `message` (the `RAISE EXCEPTION` text). We branch first on
+   * SQLSTATE, then string-match the message prefix for the structured
+   * error variants the RPC raises (`attach_plan.fk_invalid: …`,
+   * `attach_plan.internal_refs: …`, `service_rule_deny: …`,
+   * `attach_operations.payload_mismatch`).
+   *
+   * The 23P01 GiST-exclusion path mirrors the no-services path's
+   * `create_booking` handler (load conflicts + alternatives) so the UX
+   * is consistent.
+   */
+  private async mapAttachPlanRpcError(
+    rpcError: { code?: string; message?: string },
+    input: CreateReservationInput,
+    bookingInput: BookingInput,
+    actor: ActorContext,
+  ): Promise<Error> {
+    const code = rpcError.code ?? '';
+    const message = rpcError.message ?? '';
+
+    // GiST exclusion — booking_slots_no_overlap. Mirrors the
+    // no-services path's conflict mapping (load conflicts + ask the
+    // picker for 3 alternative rooms at the same time).
+    if (this.conflict.isExclusionViolation(rpcError as never)) {
+      const conflicts = await this.conflict.preCheck({
+        space_id: input.space_id,
+        effective_start_at: this.subtractMinutes(
+          input.start_at,
+          bookingInput.slots[0].setup_buffer_minutes,
+        ),
+        effective_end_at: this.addMinutes(
+          input.end_at,
+          bookingInput.slots[0].teardown_buffer_minutes,
+        ),
+      });
+      let alternatives: Array<{ space_id: string; name: string; capacity: number | null }> = [];
+      if (this.picker) {
+        try {
+          const result = await this.picker.list(
+            {
+              start_at: input.start_at,
+              end_at: input.end_at,
+              attendee_count: input.attendee_count ?? 1,
+              requester_id: input.requester_person_id,
+              limit: 4,
+            },
+            actor,
+          );
+          alternatives = result.rooms
+            .filter((r) => r.space_id !== input.space_id)
+            .slice(0, 3)
+            .map((r) => ({ space_id: r.space_id, name: r.name, capacity: r.capacity }));
+        } catch (e) {
+          this.log.warn(`alternatives lookup failed: ${(e as Error).message}`);
+        }
+      }
+      return new ConflictException({
+        code: 'booking.slot_conflict',
+        message: 'Just booked — pick another slot.',
+        conflicts: conflicts.map((c) => ({ id: c.id, start_at: c.start_at, end_at: c.end_at })),
+        alternatives,
+      });
+    }
+
+    // Idempotency payload mismatch — same key, different payload (the
+    // caller's plan changed between retries; the RPC refuses to silently
+    // serve a stale cached_result).
+    if (message.includes('attach_operations.payload_mismatch')) {
+      return new ConflictException({
+        code: 'booking.idempotency_payload_mismatch',
+        message:
+          'A retry of this booking attempt arrived with different content. ' +
+          'Re-submit with a fresh request id, or refresh and try again.',
+      });
+    }
+
+    // Tenant-FK validation — `attach_plan.fk_invalid: <field>` raised by
+    // `validate_attach_plan_tenant_fks` (00303). Spec §8.1.
+    if (message.includes('attach_plan.fk_invalid')) {
+      return new BadRequestException({
+        code: 'booking.fk_invalid',
+        message: this.extractRaiseMessage(message),
+      });
+    }
+
+    // Snapshot UUID validation — applied_rule_ids[] / setup_emit.rule_ids[] /
+    // approvals.reasons[].rule_id all raise with errcode 42501 from
+    // `validate_attach_plan_internal_refs` (00304). Spec §8.2.
+    if (message.includes('attach_plan.internal_refs') && code === '42501') {
+      return new BadRequestException({
+        code: 'booking.snapshot_uuid_invalid',
+        message: this.extractRaiseMessage(message),
+      });
+    }
+
+    // Internal cross-reference validation — order_line_items[].order_id
+    // not in plan.orders[], etc. Spec §8.2.
+    if (message.includes('attach_plan.internal_refs')) {
+      return new BadRequestException({
+        code: 'booking.internal_ref_invalid',
+        message: this.extractRaiseMessage(message),
+      });
+    }
+
+    // Service rule deny — pre-flight any_deny short-circuit inside the
+    // RPC. errcode is P0001 ('42P10' was the v5 spec value; the actual
+    // 00309 migration uses P0001 which is what plpgsql RAISE defaults
+    // to). String-match defensively.
+    if (message.includes('service_rule_deny')) {
+      return new BadRequestException({
+        code: 'service_rule_deny',
+        message: this.extractRaiseMessage(message),
+      });
+    }
+
+    // Catch-all. Surface the raw message so ops can triage.
+    this.log.error(
+      `create_booking_with_attach_plan unexpected error: code=${code} message=${message}`,
+    );
+    return new InternalServerErrorException({
+      code: 'booking.unexpected_error',
+      message: message || 'Unexpected error during booking creation.',
+    });
+  }
+
+  /** Strip the `prefix: ` part of a `RAISE EXCEPTION` message so callers
+   *  can present the human-readable tail. */
+  private extractRaiseMessage(raw: string): string {
+    const idx = raw.indexOf(': ');
+    return idx >= 0 ? raw.slice(idx + 2) : raw;
   }
 
   /**

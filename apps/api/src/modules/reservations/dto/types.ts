@@ -345,6 +345,21 @@ export interface ActorContext {
   is_service_desk: boolean;                 // gates book_on_behalf + override
   has_override_rules: boolean;              // rooms.override_rules permission
   override_reason?: string;                 // required if has_override_rules used
+  /**
+   * `X-Client-Request-Id` from the incoming request, threaded through
+   * ClientRequestIdMiddleware (B.0.D.1). Used as the idempotency_key
+   * argument to combined RPCs (create_booking_with_attach_plan,
+   * grant_booking_approval). Producer services construct keys of the
+   * shape `booking.create:${user_id}:${client_request_id}` so two
+   * distinct user clicks get distinct keys, while React Query retries
+   * of the SAME click reuse the same key. Spec §3.3 of
+   * docs/superpowers/specs/2026-05-04-domain-outbox-design.md.
+   *
+   * Optional only because some unit tests (and legacy callers like
+   * RecurrenceService) construct an ActorContext without going through
+   * the controller. The middleware always sets it on real HTTP requests.
+   */
+  client_request_id?: string;
 }
 
 export type RecurrenceScope = 'this' | 'this_and_following' | 'series';

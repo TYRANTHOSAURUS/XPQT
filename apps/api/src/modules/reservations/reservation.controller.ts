@@ -700,6 +700,11 @@ export class ReservationController {
    * Build the ActorContext: user_id (app-side), person_id, override permission.
    * Currently we look up the user row + check rooms.override_rules permission.
    * Phase F may extend this with additional rooms.* permissions.
+   *
+   * The `client_request_id` is threaded from `req.clientRequestId`
+   * (populated by `ClientRequestIdMiddleware`, B.0.D.1). Producer paths
+   * use it as the idempotency key for combined RPCs — see spec §3.3 of
+   * docs/superpowers/specs/2026-05-04-domain-outbox-design.md.
    */
   private async actorFromRequest(req: Request): Promise<ActorContext> {
     const authUid = this.getAuthUid(req);
@@ -721,6 +726,7 @@ export class ReservationController {
       person_id: ctx.person_id,
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,
+      client_request_id: (req as { clientRequestId?: string }).clientRequestId,
     };
   }
 }
