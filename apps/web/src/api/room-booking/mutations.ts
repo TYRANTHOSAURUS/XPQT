@@ -4,6 +4,25 @@ import { roomBookingKeys } from './keys';
 import type { BookingPayload, MultiRoomBookingPayload, Reservation } from './types';
 
 /**
+ * Producer-route mutation discipline (B.0.E.3).
+ *
+ * Spec: docs/superpowers/specs/2026-05-04-domain-outbox-design.md §3.3 (v8.1).
+ *
+ * Booking-create + service-attach hooks accept a `requestId: string` in
+ * their variables shape so the caller (form-submit handler, override
+ * dialog, etc.) generates the id ONCE per attempt with `crypto.randomUUID()`
+ * and React Query retries of that attempt reuse it. Threaded as
+ * `X-Client-Request-Id` so the backend producer constructs an
+ * idempotency_key of the form `booking.create:${userId}:${requestId}` —
+ * see BookingFlowService.createWithAttachPlan and the `attach_operations`
+ * table for the cached_result semantics.
+ *
+ * The id MUST NOT be generated inside `mutationFn` — React Query retries
+ * re-run mutationFn, which would produce a fresh UUID per retry and
+ * defeat the idempotency mechanism (the v7-I1 hole that v8 closes).
+ */
+
+/**
  * Invalidate every cached read that could be affected by a write to a
  * reservation: the user-facing list, the portal picker, the desk
  * scheduler window, and the find-time / availability buckets. We
@@ -25,19 +44,33 @@ function invalidateAfterWrite(queryClient: QueryClient): void {
 }
 
 /**
+ * Variables shape for `useCreateBooking`. `requestId` MUST be generated
+ * once per attempt by the caller (e.g. `crypto.randomUUID()` inside the
+ * form-submit handler) and threaded through React Query's `mutate()` so
+ * automatic retries of the same logical attempt reuse it. See §3.3.
+ */
+export interface CreateBookingVariables {
+  payload: BookingPayload;
+  requestId: string;
+}
+
+/**
  * Create a single-room booking. Runs the full pipeline server-side
  * (rule resolver + conflict guard + write).
  *
  * On 409 (race lost), the API returns alternatives in the error body —
  * surface them in the UI so the user can rebook in one click.
+ *
+ * Producer route — requires X-Client-Request-Id (see CreateBookingVariables).
  */
 export function useCreateBooking() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: BookingPayload) =>
+    mutationFn: ({ payload, requestId }: CreateBookingVariables) =>
       apiFetch<Reservation>('/reservations', {
         method: 'POST',
         body: JSON.stringify(payload),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSuccess: () => invalidateAfterWrite(queryClient),
   });
@@ -63,10 +96,19 @@ export function useDryRunBooking() {
   });
 }
 
+/**
+ * Variables shape for `useMultiRoomBooking`. Same Pattern A as
+ * `useCreateBooking` — caller generates `requestId` once per attempt.
+ */
+export interface MultiRoomBookingVariables {
+  payload: MultiRoomBookingPayload;
+  requestId: string;
+}
+
 export function useMultiRoomBooking() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: MultiRoomBookingPayload) =>
+    mutationFn: ({ payload, requestId }: MultiRoomBookingVariables) =>
       // Post-canonicalisation (2026-05-02): the response shape is
       // `{ group_id, reservations[] }` where `group_id` is the booking
       // id (the dropped `multi_room_groups` table is replaced by
@@ -75,7 +117,11 @@ export function useMultiRoomBooking() {
       // of them resolves to /desk/bookings/:id correctly.
       apiFetch<{ group_id: string; reservations: Reservation[] }>(
         '/reservations/multi-room',
-        { method: 'POST', body: JSON.stringify(payload) },
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: { 'X-Client-Request-Id': requestId },
+        },
       ),
     onSuccess: () => invalidateAfterWrite(queryClient),
   });
@@ -189,6 +235,12 @@ export interface AttachServicesInput {
  * Attach service lines to an existing reservation. Lazy-creates the
  * booking_bundle on first attach; appends to it on subsequent calls.
  * Used by the post-booking "+ Add service" affordance.
+ *
+ * Producer route — caller generates `requestId` once per attempt
+ * (Pattern A, spec §3.3). React Query retries reuse the same id so
+ * the backend's `attach_operations` cached_result row hits on the second
+ * attempt and the client gets back the original result without
+ * re-inserting OLIs.
  */
 export function useAttachReservationServices(reservationId: string) {
   const queryClient = useQueryClient();
@@ -202,12 +254,13 @@ export function useAttachReservationServices(reservationId: string) {
       any_pending_approval: boolean;
     },
     Error,
-    { services: AttachServicesInput[] }
+    { services: AttachServicesInput[]; requestId: string }
   >({
-    mutationFn: ({ services }) =>
+    mutationFn: ({ services, requestId }) =>
       apiFetch(`/reservations/${reservationId}/services`, {
         method: 'POST',
         body: JSON.stringify({ services }),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSuccess: (data) => {
       // Post-canonicalisation (2026-05-02) the booking IS the bundle, so

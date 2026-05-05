@@ -90,18 +90,23 @@ export interface AddBundleLinesResult {
  * underlying `POST /reservations/:id/services` endpoint, sibling cache
  * invalidations); this hook stays for callers that want bundle-keyed
  * invalidation as the primary effect.
+ *
+ * Producer route — caller generates `requestId` once per attempt
+ * (Pattern A, spec §3.3). See `useAttachReservationServices` for the
+ * full rationale.
  */
 export function useAddBundleLines(bundleId: string) {
   const qc = useQueryClient();
   return useMutation<
     AddBundleLinesResult,
     Error,
-    { services: AddBundleLinesInput[] }
+    { services: AddBundleLinesInput[]; requestId: string }
   >({
-    mutationFn: ({ services }) =>
+    mutationFn: ({ services, requestId }) =>
       apiFetch<AddBundleLinesResult>(`/reservations/${bundleId}/services`, {
         method: 'POST',
         body: JSON.stringify({ services }),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleKeys.detail(bundleId) });

@@ -72,6 +72,10 @@ export function BundleServicesSection({ reservation, canEdit, alwaysShow = false
   const attach = useAttachReservationServices(reservation.id);
 
   const handleAdd = async (selections: PickerSelection[]) => {
+    // B.0.E.3 — mutation-attempt-scoped request id (spec §3.3). React
+    // Query retries reuse it; the toast-retry callback re-enters
+    // handleAdd and gets a fresh id (new logical attempt).
+    const requestId = crypto.randomUUID();
     try {
       await attach.mutateAsync({
         services: selections.map((s) => ({
@@ -81,6 +85,7 @@ export function BundleServicesSection({ reservation, canEdit, alwaysShow = false
           service_window_start_at: s.service_window_start_at ?? null,
           service_window_end_at: s.service_window_end_at ?? null,
         })),
+        requestId,
       });
       toastSuccess(
         selections.length === 1

@@ -194,8 +194,11 @@ export function QuickBookPopover({
     });
     if (!payload) return;
     const titled = { ...payload, title: draft.title || undefined };
+    // B.0.E.3 — request-id is mutation-attempt-scoped (spec §3.3). Each
+    // call to handleBook gets a fresh id; React Query retries reuse it.
+    const requestId = crypto.randomUUID();
     try {
-      const result = await createBooking.mutateAsync(titled);
+      const result = await createBooking.mutateAsync({ payload: titled, requestId });
       const reservationId = (result as { id?: string }).id;
       // /full-review C5 fix — CLAUDE.md mandate: every entity-create
       // toast goes through toastCreated(<entity>, { onView }).

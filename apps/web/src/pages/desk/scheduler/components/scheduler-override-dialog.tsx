@@ -64,15 +64,23 @@ export function SchedulerOverrideDialog({
   const submit = async () => {
     setTouched(true);
     if (tooShort) return;
+    // B.0.E.3 — mutation-attempt-scoped request id (spec §3.3); React
+    // Query retries reuse it. The toast retry callback re-enters submit()
+    // and gets a fresh id, which is correct: an explicit user retry is a
+    // new logical attempt, not a continuation of the prior one.
+    const requestId = crypto.randomUUID();
     try {
       await create.mutateAsync({
-        space_id: room.space_id,
-        requester_person_id: requesterPersonId,
-        start_at: startAtIso,
-        end_at: endAtIso,
-        attendee_count: 1,
-        source: 'desk',
-        override_reason: reason.trim(),
+        payload: {
+          space_id: room.space_id,
+          requester_person_id: requesterPersonId,
+          start_at: startAtIso,
+          end_at: endAtIso,
+          attendee_count: 1,
+          source: 'desk',
+          override_reason: reason.trim(),
+        },
+        requestId,
       });
       toastSuccess(`Override booked: ${room.name}`);
       onCreated?.();

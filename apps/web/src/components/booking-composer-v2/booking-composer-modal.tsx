@@ -238,8 +238,15 @@ export function BookingComposerModal({
       description: composer.draft.description || undefined,
     };
 
+    // B.0.E.3 — generate the X-Client-Request-Id ONCE per submit attempt
+    // so React Query retries reuse it and the backend's
+    // `attach_operations.cached_result` row hits on the second attempt
+    // (user gets back the original booking; no double-create). Two
+    // successive clicks of Submit get fresh ids, which is correct: each
+    // click is a new logical attempt.
+    const requestId = crypto.randomUUID();
     try {
-      const result = await createBooking.mutateAsync(titled);
+      const result = await createBooking.mutateAsync({ payload: titled, requestId });
       // Post-canonicalisation (00277): the booking IS the bundle.
       // `result.id` is the canonical booking id to pass to visitors.
       // `booking_bundle_id` was dropped from the Reservation type in

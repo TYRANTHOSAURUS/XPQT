@@ -54,8 +54,13 @@ export function ApprovalsPage() {
   const handleRespond = (approvalId: string, status: 'approved' | 'rejected') => {
     if (!personId) return;
     setResponding((prev) => ({ ...prev, [approvalId]: true }));
+    // B.0.E.3 — mutation-attempt-scoped request id (spec §3.3). Each
+    // Approve/Reject click gets a fresh id; React Query retries reuse it.
+    // The backend constructs the idempotency key
+    // `approval.grant:${approvalId}:${requestId}` for grant_booking_approval.
+    const requestId = crypto.randomUUID();
     respond.mutate(
-      { approvalId, status, comments: comments[approvalId] },
+      { approvalId, status, comments: comments[approvalId], requestId },
       {
         onSuccess: () => {
           setComments((prev) => {

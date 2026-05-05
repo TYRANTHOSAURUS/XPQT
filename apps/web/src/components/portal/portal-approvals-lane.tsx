@@ -99,8 +99,12 @@ export function PortalApprovalsLane() {
   const handle = (approval: Approval, status: 'approved' | 'rejected') => {
     if (!personId) return;
     setResponding((prev) => ({ ...prev, [approval.id]: true }));
+    // B.0.E.3 — mutation-attempt-scoped request id (spec §3.3). Each
+    // tap gets a fresh id; React Query retries reuse it. The toast-retry
+    // callback re-enters handle() and gets a new id (new logical attempt).
+    const requestId = crypto.randomUUID();
     respond.mutate(
-      { approvalId: approval.id, status },
+      { approvalId: approval.id, status, requestId },
       {
         onSuccess: () => {
           if (status === 'approved') {

@@ -37,20 +37,31 @@ export function usePendingApprovals(personId: string | null | undefined) {
   return useQuery(pendingApprovalsOptions(personId));
 }
 
+/**
+ * Variables shape for `useRespondApproval`. `requestId` MUST be generated
+ * once per attempt by the caller (e.g. `crypto.randomUUID()` inside the
+ * Approve/Reject click handler) so React Query retries reuse it. Threaded
+ * as `X-Client-Request-Id` so the backend constructs an idempotency key
+ * of the form `approval.grant:${approvalId}:${requestId}` for the
+ * `grant_booking_approval` RPC. See spec §3.3 + §10.1 of the outbox spec
+ * (B.0.E.3).
+ */
 export interface RespondApprovalPayload {
   approvalId: string;
   status: 'approved' | 'rejected';
   comments?: string;
+  requestId: string;
 }
 
 /** Approve/reject with optimistic removal from the pending list. */
 export function useRespondApproval(personId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, RespondApprovalPayload, { previous?: Approval[] }>({
-    mutationFn: ({ approvalId, status, comments }) =>
+    mutationFn: ({ approvalId, status, comments, requestId }) =>
       apiFetch(`/approvals/${approvalId}/respond`, {
         method: 'POST',
         body: JSON.stringify({ status, comments }),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onMutate: async ({ approvalId }) => {
       if (!personId) return {};
