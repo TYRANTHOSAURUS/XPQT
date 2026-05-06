@@ -108,6 +108,84 @@
     `routing_failure_reason` rolled into 00320 (no extra migration).
     Commit count 34-46.
 
+- **v4 (2026-05-06 evening).** Folds codex-v3 review findings.
+  Headline changes:
+  - **C1.** Routing contract on `POST /tickets` create reconciled.
+    v3 §3.9.2 said sync; v3 §3.11 silently went async (emitted
+    `routing.evaluation_required` always, set `routing_status='pending'`).
+    v4 makes create **sync-routing**, matching the existing TS code:
+    TS plan-build runs `RoutingService.evaluate(...)` BEFORE the RPC
+    and passes `routing_decision` + `routing_trace` into `p_input`.
+    The RPC writes `routing_decisions` + `tickets.assigned_*`
+    atomically. `routing_status` stays `'idle'` after create. The
+    RPC also **skips routing if `p_input` already includes
+    `assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`**
+    (current code's behavior). Async `routing.evaluation_required`
+    only fires from §3.5 (post-grant) and §3.10 (reclassify).
+  - **C2.** `WorkflowStartHandler` idempotency was relying on a
+    nonexistent `workflow_instances UNIQUE (tenant_id, ticket_id)`
+    constraint. The DB only has the non-unique
+    `idx_wi_ticket` (`supabase/migrations/00009_workflows.sql:47`),
+    and `WorkflowEngineService.startForTicket`
+    (`workflow-engine.service.ts:172`) blindly inserts. Handler
+    replay would create duplicate workflow instances. v4 adds a
+    real dedup primitive via migration 00333 — partial unique index
+    on `workflow_instances (tenant_id, ticket_id)` WHERE
+    `status IN ('active', 'waiting')`. The handler does
+    `INSERT ... ON CONFLICT DO NOTHING`; if a row already exists,
+    treats it as already-started and returns no-op. Implementation
+    note added to §3.5 step 8 + new "Handler contract" subsection.
+  - **C3.** `execution_token` persistence is fixed via a new
+    table `workflow_node_executions` (migration 00334) — written by
+    the workflow engine BEFORE each node body fires, with
+    `UNIQUE (workflow_instance_id, node_id, attempt)`. v3's claim
+    that the token would be persisted on `workflow_instance_events`
+    (the audit-only table whose `emit()` swallows insert failure
+    at `workflow-engine.service.ts:687`) was wrong — that table has
+    no unique key per node fire and `emit()` is best-effort. v4's
+    `workflow_node_executions` is the durable record. The engine
+    writes the row BEFORE invoking the node body; on retry-after-
+    engine-restart, the same `(instance_id, node_id, attempt)` row
+    is found and its `execution_token` is reused → same idempotency
+    key → command RPC returns cached result. §1.21 + §3.0 + §3.2
+    idempotency-key wording rewritten to reference this table.
+  - **I1.** Frontend hook citation table at §3.9.1 corrected.
+    v3 had `mutations.ts:257` as `useDispatchTicket` — that line is
+    actually `useUpdateWorkOrder`. Dispatch is at
+    `apps/web/src/hooks/use-work-orders.ts:73` as
+    `useDispatchWorkOrder`. `useRespondApproval` already exists at
+    `api/approvals/index.ts:57` and **already threads `requestId`
+    via `X-Client-Request-Id`** — so no hook update is needed; the
+    guard can attach immediately. `useReclassifyTicket` is at
+    `hooks/use-reclassify.ts:121`. `useReassignTicket`
+    (`mutations.ts:104`) and `useReassignWorkOrder`
+    (`mutations.ts:316`) are real, listed.
+  - **I2.** Portal create path added to §3.11 cutover. Per
+    `apps/api/src/modules/portal/portal-submit.service.ts:35`,
+    `PortalSubmitService.submit` ALSO calls `TicketService.create`,
+    so cutting over to `create_ticket_with_automation` requires
+    updating both `TicketController` and `PortalSubmitService`.
+    Frontend posts via `apps/web/src/pages/portal/submit-request.tsx:230`.
+    `RequireClientRequestIdGuard` endpoint list (§3.9.1) gains
+    `POST /portal/submit`.
+  - **I3.** Handler contract consolidated. v3 had §3.5 doing inline
+    SLA insert, §3.11 using `SlaTimerHandler`, §3.10 using
+    `SlaTimerRepointHandler` — three behaviors for the same
+    operation family. v4 defines four canonical handlers (new
+    "Handler contract" subsection §3.9.3) and rewrites §3.5 step 8
+    to emit `sla.timer_recompute_required` outbox event (matching
+    §3.11's pattern) instead of the inline insert. All three RPCs
+    that drive post-grant / post-create / post-reclassify SLA work
+    now use the same handler.
+  - **Nit.** §3.11 input enumeration: drop `attendee_person_ids`
+    (no such column / table on the ticket surface; per
+    `ticket.service.ts:76`, the watcher field is `watchers: string[]`,
+    not `watcher_person_ids`). Both fields corrected.
+  - Migration count: 17 → 19. Adds 00333
+    (`workflow_instances_active_unique_index.sql`, C2) and 00334
+    (`workflow_node_executions_table.sql`, C3).
+    Commit count 35-50.
+
 
 ---
 
@@ -705,24 +783,71 @@ don't see workflow-driven changes).
 
 **Fix:** the engine's `assign` node calls `set_entity_assignment`
 RPC (§3.2) with idempotency key
-`workflow:${instance_id}:${node_id}:${execution_token}` — deterministic,
-retry-safe, replays cleanly across engine restarts. The
-`update_ticket` node calls `update_entity_combined` (§3.0) with
-the same key shape. Both pass `actor_user_id = SYSTEM_ACTOR_USER_ID`
-and a `source: 'workflow'` breadcrumb in the activity payload so
-the audit feed labels the row "by Workflow" not "by System".
+`workflow:${instance_id}:${node_id}:${execution_token}` — where
+`execution_token` is read from the durable
+`workflow_node_executions` row (migration 00334; see "execution_token
+definition" below). Deterministic, retry-safe, replays cleanly
+across engine restarts because the token row is the source of
+truth. The `update_ticket` node calls `update_entity_combined`
+(§3.0) with the same key shape. Both pass
+`actor_user_id = SYSTEM_ACTOR_USER_ID` and a `source: 'workflow'`
+breadcrumb in the activity payload so the audit feed labels the
+row "by Workflow" not "by System".
 
-**`execution_token` definition (v3 / I3 fix).** `workflow_instances`
-has no `attempt` field per `supabase/migrations/00009_workflows.sql:28`,
-so v2's literal `${attempt}` had no persistence. v3 replaces it with
-a UUID minted by the workflow engine on each node fire and persisted
-on the existing `node_event` row alongside the engine's audit. The
-token is the seed — same node firing twice (e.g. retry after engine
-restart) reuses the same `node_event` row → same token → same
-idempotency key → cached result returned by the RPC. Fresh fires
-(workflow-loop iterations) get fresh tokens by construction. No new
-table required; the engine just stores `execution_token uuid` in the
-`node_event` payload jsonb at fire time.
+**`execution_token` definition (v3 / I3 attempted fix; v4 / C3
+real fix).** v3 said the engine would store the token on the
+existing `workflow_instance_events` (a.k.a. "node_event") row.
+Codex v3 review correctly flagged that as broken: that table is
+append-only audit, has no UNIQUE key per node fire, and
+`WorkflowEngineService.emit()`
+(`apps/api/src/modules/workflow/workflow-engine.service.ts:687`)
+**catches and swallows** insert failure — so writing the token there
+is best-effort, not durable. Replay after engine restart cannot
+reliably find "the same node fire" by reading
+`workflow_instance_events`.
+
+v4 introduces a new durable table via migration 00334:
+
+```sql
+create table public.workflow_node_executions (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null,
+  workflow_instance_id uuid not null
+    references public.workflow_instances(id) on delete cascade,
+  node_id text not null,
+  attempt int not null default 1,
+  execution_token uuid not null default gen_random_uuid(),
+  fired_at timestamptz not null default now(),
+  status text not null default 'pending'
+    check (status in ('pending', 'succeeded', 'failed')),
+  unique (workflow_instance_id, node_id, attempt)
+);
+
+create index idx_wne_tenant on public.workflow_node_executions (tenant_id);
+create index idx_wne_instance_node on public.workflow_node_executions
+  (workflow_instance_id, node_id);
+
+alter table public.workflow_node_executions enable row level security;
+create policy "tenant_isolation" on public.workflow_node_executions
+  using (tenant_id = public.current_tenant_id());
+```
+
+The workflow engine writes a `workflow_node_executions` row
+**before** invoking the node body. The token in that row is the
+seed for any command idempotency keys the node fires. On retry
+(engine restart, queue redrive), the engine looks up
+`(instance_id, node_id, attempt)`; if the row exists, reuses
+its `execution_token` → same command idempotency key → command
+RPC returns cached result. Fresh node fires (workflow-loop
+iterations beyond the first attempt) bump `attempt` to get a
+fresh token by construction.
+
+Engine commits the row outcome (`status='succeeded'` or
+`'failed'`) inside the same transaction that mutates the
+workflow instance state — guaranteeing the token row reflects
+reality. `workflow_instance_events` keeps its current best-effort
+audit semantics; it is no longer the source of truth for
+idempotency.
 
 ---
 
@@ -1323,29 +1448,49 @@ returns jsonb     -- { kind: 'resolved' | 'partial_approved' | 'already_responde
 6. *(if approved)* UPDATE tickets (status='new', status_category='new').
 7. *(if part of chain or parallel group)* check if all-resolved; if
    not, return `kind: 'partial_approved'`.
-8. *(if approved AND fully resolved)* run inline post-create automation:
+8. *(if approved AND fully resolved)* run post-grant automation
+   atomically (v4 / I3 — no inline SLA insert; everything is an
+   outbox event for handler-contract uniformity):
    - SELECT request_types config.
-   - *(if has SLA)* INSERT sla_timers, UPDATE tickets.
+   - *(if has SLA)* emit `sla.timer_recompute_required` outbox event
+     in the same tx (carries tenant_id, ticket_id, sla_policy_id).
+     Handler `SlaTimerHandler` (§3.9.3) INSERTs `sla_timers` with
+     `recompute_pending=true` and updates ticket due-dates per the
+     §3.3 semantics. **Replaces the v3 inline INSERT.** Reasoning:
+     same handler pattern as §3.10 reclassify and §3.11 create — one
+     SLA emit primitive, one handler.
    - Routing evaluation: this is non-trivial. **Defer routing to
      post-commit outbox event** `routing.evaluation_required` so the
-     RPC itself stays small. The outbox handler runs the resolver
-     in TS and either calls `set_entity_assignment` RPC or emits a
+     RPC itself stays small. The outbox handler
+     (`RoutingEvaluationHandler`, §3.9.3) runs the resolver in TS and
+     either calls `set_entity_assignment` RPC or emits a
      `routing_failed` breadcrumb activity.
-   - **Workflow start (v3 / C2 fix).** If the request_type config
-     has a `workflow_definition_id` AND no `workflow_instances` row
-     exists yet for this ticket, atomically emit
-     `workflow.start_required` outbox event in the same tx. The
-     outbox handler (sibling of `SetupWorkOrderHandler` from B.0.E)
+   - **Workflow start (v3 / C2 fix; v4 / C2 idempotency primitive).**
+     If the request_type config has a `workflow_definition_id` AND
+     no active workflow instance exists yet for this ticket,
+     atomically emit `workflow.start_required` outbox event in the
+     same tx. The outbox handler (`WorkflowStartHandler`, §3.9.3)
      starts the workflow instance via the existing
      `workflowService.startInstance(...)` TS path. This closes the
      v2 gap where v2's RPC covered SLA + routing but dropped
-     workflow start; today
-     `runPostCreateAutomation` (`ticket.service.ts:716`) calls
-     `startInstance` at line 865, and v2 silently lost that branch
-     when migrating to the RPC. Idempotency on the outbox handler
-     is the same `workflow_instances UNIQUE (tenant_id, ticket_id)`
-     constraint that already exists; replay → existing instance →
-     handler returns no-op.
+     workflow start; today `runPostCreateAutomation`
+     (`ticket.service.ts:716`) calls `startInstance` at line 865,
+     and v2 silently lost that branch when migrating to the RPC.
+
+     **Idempotency primitive (v4 / C2).** `workflow_instances` does
+     NOT have `UNIQUE (tenant_id, ticket_id)` today — only the
+     non-unique `idx_wi_ticket` (`supabase/migrations/00009_workflows.sql:47`).
+     `WorkflowEngineService.startForTicket` blindly inserts at line
+     172 (`apps/api/src/modules/workflow/workflow-engine.service.ts:172`).
+     v4 adds a partial unique index via migration 00333 on
+     `workflow_instances (tenant_id, ticket_id)` WHERE
+     `status IN ('active', 'waiting')` — i.e. at most one
+     non-terminal workflow per ticket. The handler does
+     `INSERT ... ON CONFLICT DO NOTHING`; on conflict it loads the
+     existing row and returns `{ kind: 'already_started',
+     instance_id: <existing> }`. `startForTicket` is updated in the
+     same change to surface conflict cleanly rather than throwing.
+     Replays after engine restart are safe.
 9. INSERT ticket_activities (approval_approved | approval_rejected).
 10. INSERT domain_events.
 11. UPDATE command_operations.
@@ -1460,9 +1605,12 @@ booking endpoints). The guard:
 - Validates UUID format.
 - Stores it on `req.actor.client_request_id` for downstream services.
 
-**Endpoints in scope (v2 mandate):**
+**Endpoints in scope (v2 mandate, v4 amends):**
 - `PATCH /tickets/:id` (calls §3.0 with entity_kind='case').
 - `PATCH /work-orders/:id` (calls §3.0 with entity_kind='work_order').
+- `POST /tickets` (calls §3.11 `create_ticket_with_automation`).
+- `POST /portal/submit` (calls §3.11 via `PortalSubmitService.submit`,
+  v4 / I2).
 - `POST /tickets/:id/dispatch` (calls §3.4 dispatch).
 - `POST /approvals/:id/respond` (calls §3.5 grant_ticket_approval).
 - `POST /tickets/:id/reclassify` (calls §3.10 reclassify_ticket).
@@ -1486,16 +1634,18 @@ at mutation-attempt scope (Pattern A from B.0.E.3): `useMemo` (or
 equivalent) outside the mutationFn closure so React Query retries
 of the same logical attempt reuse the same id.
 
-**Affected hooks** (the producer routes that call B.2 RPCs):
+**Affected hooks (v4 / I1 — all citations verified):**
 
-| File:line | Hook | Endpoint |
-|---|---|---|
-| `apps/web/src/api/tickets/mutations.ts:63` | `useUpdateTicket` | PATCH /tickets/:id |
-| `apps/web/src/api/tickets/mutations.ts:257` | `useDispatchTicket` | POST /tickets/:id/dispatch |
-| `apps/web/src/hooks/use-work-orders.ts:76` | `useUpdateWorkOrder` | PATCH /work-orders/:id |
-| (TBD: useGrantApproval) | approval grant on ticket target | POST /approvals/:id/respond |
-| (TBD: useReclassifyTicket) | reclassify | POST /tickets/:id/reclassify |
-| (TBD: useReassignTicket / useReassignWorkOrder) | reassign endpoints | POST .../reassign |
+| File:line | Hook | Endpoint | Status |
+|---|---|---|---|
+| `apps/web/src/api/tickets/mutations.ts:59` | `useUpdateTicket` | `PATCH /tickets/:id` | needs Pattern A retrofit |
+| `apps/web/src/api/tickets/mutations.ts:248` | `useUpdateWorkOrder` | `PATCH /work-orders/:id` | needs Pattern A retrofit |
+| `apps/web/src/hooks/use-work-orders.ts:73` | `useDispatchWorkOrder` | `POST /tickets/:id/dispatch` | needs Pattern A retrofit |
+| `apps/web/src/api/tickets/mutations.ts:104` | `useReassignTicket` | `POST /tickets/:id/reassign` | needs Pattern A retrofit |
+| `apps/web/src/api/tickets/mutations.ts:316` | `useReassignWorkOrder` | `POST /work-orders/:id/reassign` | needs Pattern A retrofit |
+| `apps/web/src/hooks/use-reclassify.ts:121` | `useReclassifyTicket` | `POST /tickets/:id/reclassify` | needs Pattern A retrofit |
+| `apps/web/src/api/approvals/index.ts:57` | `useRespondApproval` | `POST /approvals/:id/respond` | **already threads `requestId`** (line 64); guard can attach immediately |
+| (new: portal submit) | `apps/web/src/pages/portal/submit-request.tsx:230` POST callsite | `POST /portal/submit` | needs Pattern A retrofit (v4 / I2) |
 
 **Frontend cutover sequence (B.2.A foundation):** the hook updates
 ship BEFORE the `RequireClientRequestIdGuard` activates — otherwise
@@ -1541,17 +1691,54 @@ rather than hidden.
 
 **Sync-routing implementation.** In TS, before calling the create
 or dispatch RPC, run `RoutingService.evaluate(...)` (read-only)
-and pass the resolver result + trace into the RPC's payload. The
-RPC stores the trace in `routing_decisions` atomically with the
+and pass the resolver result + trace into the RPC's payload as
+`routing_decision` (resolved target) + `routing_trace` (jsonb).
+The RPC stores the trace in `routing_decisions` atomically with the
 INSERT. Same pattern v1 already proposed for §3.4 dispatch — v2
-just affirms it for the create path and lists the surfaces
-explicitly.
+affirms it for the create path and v4 makes it the single contract
+for create (no async fallback in the create path).
+
+**Caller-provided assignee wins (v4 / C1 reconciliation).** If
+the create or dispatch payload already carries
+`assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`, the RPC
+**skips** the routing branch entirely (no `routing_decisions` row,
+no resolver trace) and writes the caller's assignment as-is. This
+matches existing TS code in `TicketService.create` /
+`runPostCreateAutomation` which only routes when no assignee is
+present. Without this gate, every API call that supplies an
+assignee would also generate a misleading "routing decided" trace.
 
 **Async-routing implementation.** The triggering RPC emits an
 outbox event `routing.evaluation_required` (carries entity_id,
 trigger_reason, payload context). The handler runs the resolver in
 TS, calls `set_entity_assignment` RPC if the result differs,
-clears `routing_status`. Mirrors the §3.5 + §3.10 patterns.
+clears `routing_status`. **Used only by §3.5 (post-grant) and
+§3.10 (reclassify).** NOT used by §3.11 create path — see C1
+reconciliation in v4 revision history.
+
+#### 3.9.3 Handler contract (v4 / I3)
+
+v3 had three different SLA-side behaviors across §3.5 / §3.10 / §3.11
+(inline insert vs. `SlaTimerHandler` vs. `SlaTimerRepointHandler`).
+v4 consolidates the canonical handler set; every B.2 outbox event
+maps to exactly one handler with one well-defined idempotency
+contract. All handlers are siblings of `SetupWorkOrderHandler` from
+B.0.E and registered in the same `OutboxModule`.
+
+| Event type | Handler | Emitting RPCs | Idempotency primitive |
+|---|---|---|---|
+| `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | `INSERT INTO sla_timers ON CONFLICT (tenant_id, ticket_id, sla_policy_id) WHERE state='active' DO UPDATE SET recompute_pending=true`. Existing partial unique index on `sla_timers (tenant_id, ticket_id) WHERE state='active'` already enforces "one active timer per ticket." Handler returns no-op on conflict. Worker fills `due_at` per §3.3. |
+| `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | Two-step: (1) UPDATE existing active timer set `state='completed'`; (2) INSERT new active timer with new `sla_policy_id` and `recompute_pending=true`. Idempotency: replay finds the new timer already exists (or the old one already completed) → no-op. Both steps are inside one tx invoked by the handler via a small RPC (`repoint_sla_timer`). |
+| `routing.evaluation_required` | `RoutingEvaluationHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket. **Not** §3.11 create (sync-routing per §3.9.2). | Reads `tickets.routing_status`; if `'idle'` (already resolved by a prior replay), returns no-op. Else runs `RoutingService.evaluate(...)`, calls `set_entity_assignment` RPC if a target was resolved, sets `routing_status='idle'` (or `'failed'` with `routing_failure_reason`). The `set_entity_assignment` RPC is itself idempotent via `command_operations` keyed on `${event_id}:routing`. |
+| `workflow.start_required` | `WorkflowStartHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket, §3.11 create_ticket_with_automation | `WorkflowEngineService.startForTicket` updated to do `INSERT INTO workflow_instances ... ON CONFLICT (tenant_id, ticket_id) WHERE status IN ('active', 'waiting') DO NOTHING` per the migration 00333 partial unique index (C2 fix). On conflict the handler returns `{ kind: 'already_started' }` referencing the existing instance. |
+
+**Why no inline branches.** The historical pattern of "RPC writes
+SLA inline, RPC writes routing inline, RPC starts workflow inline"
+is what produced the v3 contradictions. v4's rule: a B.2 RPC may
+**only** write the entity row + activity + domain_event + routing
+trace (when sync). Anything else is an outbox event, picked up by
+exactly one of the four handlers above. The handlers all carry
+their own idempotency primitive so replay is safe end-to-end.
 
 ---
 
@@ -1621,9 +1808,13 @@ returns jsonb     -- { ticket: row, follow_ups: ['sla', 'routing', 'workflow', '
 
 `p_input` carries the create payload: `request_type_id, requester_person_id,
 title, description, priority?, location_id?, asset_id?, assigned_team_id?,
-assigned_user_id?, attendee_person_ids?, watcher_person_ids?, parent_ticket_id?,
-booking_id?, source, metadata?`. TS pre-mints `ticket_id` deterministically
-from the idempotency key.
+assigned_user_id?, assigned_vendor_id?, watchers?, parent_ticket_id?,
+booking_id?, source, metadata?, routing_decision?, routing_trace?`. TS
+pre-mints `ticket_id` deterministically from the idempotency key.
+`watchers` is `string[]` to match `tickets.watchers` (`ticket.service.ts:76`).
+`routing_decision` and `routing_trace` are populated by the TS resolver
+preflight when no caller-provided assignee is present (per §3.9.2 v4 sync
+contract).
 
 **Body sketch:**
 1. Advisory lock + `command_operations` gate (same pattern as §3.0).
@@ -1634,41 +1825,46 @@ from the idempotency key.
    side-effect derives from its config.
 3. SELECT request_types config FOR SHARE (it drives the rest of the
    flow): `requires_approval`, `sla_policy_id`, `workflow_definition_id`.
-4. INSERT into `tickets` with the pre-minted id. Status:
+4. INSERT into `tickets` with the pre-minted id, including
+   `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` if
+   provided in `p_input` OR derived from `routing_decision`. Status:
    - if `requires_approval` → `'pending_approval'`
    - else → `'new'`
-5. INSERT `ticket_activities (ticket_id, event='ticket_created', ...)`.
-6. INSERT `domain_events (event_type='ticket_created', ...)`.
-7. Branch on `requires_approval`:
+   `routing_status` stays `'idle'` (sync routing path; no async chip).
+5. **Routing record (sync, v4 / C1).** If
+   `p_input.assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`
+   is non-null, **skip** routing entirely. Else, if
+   `p_input.routing_decision` is non-null, INSERT a `routing_decisions`
+   row with `routing_trace` payload atomically with the ticket. Else
+   no routing row is written (no resolver match → unassigned ticket;
+   matches existing TS behavior). No `routing.evaluation_required`
+   outbox event from this path.
+6. INSERT `ticket_activities (ticket_id, event='ticket_created', ...)`.
+7. INSERT `domain_events (event_type='ticket_created', ...)`.
+8. Branch on `requires_approval`:
    - **YES** → call `approvalService.createSingleStep` equivalent inline
      as a private helper:
      - INSERT `approvals (target_entity_type='ticket', target_entity_id=ticket_id, status='pending', ...)`.
      - INSERT `domain_events (event_type='approval_requested', ...)`.
      - INSERT `ticket_activities (event='approval_requested', ...)`.
-     - **No** SLA timers, **no** routing, **no** workflow start yet.
-       Those land when the approval is granted (via §3.5).
+     - **No** SLA timers, **no** workflow start yet. Those land when
+       the approval is granted (via §3.5). Routing is already recorded
+       in step 5 (sync) or absent.
    - **NO** (no approval gate) → emit post-create automation outbox
      events atomically in the same tx:
      - *(if request_type has SLA)* `sla.timer_recompute_required`
        carrying tenant_id, ticket_id, sla_policy_id. Handler is the
-       `SlaTimerHandler` (B.0.E sibling) — INSERTs sla_timers + UPDATEs
+       `SlaTimerHandler` (§3.9.3) — INSERTs sla_timers + UPDATEs
        ticket due-dates with the existing `recompute_pending=true`
        semantics from §3.3 (worker fills in `due_at`).
-     - `routing.evaluation_required` carrying tenant_id, ticket_id,
-       trigger_reason='create'. Handler runs the routing engine in TS,
-       calls `set_entity_assignment` RPC if a target was resolved,
-       writes a `routing_decisions` row with the trace, and clears
-       `tickets.routing_status` (or sets it to `'failed'` with
-       `routing_failure_reason` if the resolver couldn't pick).
      - *(if request_type has workflow)* `workflow.start_required`
        carrying tenant_id, ticket_id, workflow_definition_id. Handler
-       starts the workflow instance via the existing
-       `workflowService.startInstance` TS path.
-     - Set `tickets.routing_status='pending'` atomically with the
-       INSERT. UI shows the routing-in-flight chip until the handler
-       clears it.
-8. UPDATE `command_operations` to outcome='success'.
-9. Return `{ ticket: row, follow_ups: [...event types emitted] }`.
+       (`WorkflowStartHandler`, §3.9.3) starts the workflow instance
+       via the existing `workflowService.startInstance` TS path with
+       `INSERT ... ON CONFLICT DO NOTHING` semantics keyed on the
+       partial unique index added in migration 00333 (C2 fix).
+9. UPDATE `command_operations` to outcome='success'.
+10. Return `{ ticket: row, follow_ups: [...event types emitted] }`.
 
 **Why this is one RPC, not three.** The decisive question: can the
 ticket exist without ANY of the post-create side-effects firing? On
@@ -1677,21 +1873,35 @@ the no-approval branch, today's code creates the ticket then calls
 in TS. If the ticket commits but routing/SLA/workflow fails, the
 ticket is in a partial-onboarding state — assignee stale, SLA
 queue blind, workflow never started. The RPC closes that gap by
-emitting all three outbox events atomically with the ticket INSERT.
-Either all-fire-or-none-fire. Same architectural rule the other
-B.2 RPCs apply.
+writing routing inline (sync, step 5) and emitting SLA + workflow
+outbox events atomically with the ticket INSERT. Either
+all-fire-or-none-fire. Same architectural rule the other B.2 RPCs
+apply.
 
 **TS plan-build phase:**
 - Mint `ticket_id` deterministically: `uuidv5(idempotency_key, ns)`.
 - Authorization (callerCanCreate per request_type permissions) —
   TS-side, before the RPC.
-- Read-only resolver pre-flight is **not** done here. Routing fires
-  async via outbox — see §3.9.2 for the per-surface decision. The
-  trade-off accepted: ticket appears with `routing_status='pending'`
-  until the handler resolves. Per §3.9.2 v2, this is the right call
-  for create — routing is fire-and-forget UX-wise (the user already
-  sees the success page; the assigned-team chip lands on the next
-  render tick).
+- **Routing resolver runs sync (v4 / C1).** Per §3.9.2, the create
+  path is sync-routing. If no caller-provided assignee is present in
+  the dto, TS calls `RoutingService.evaluate(...)` and adds the
+  result to `p_input` as `routing_decision` + `routing_trace`. The
+  RPC writes the `routing_decisions` row atomically. Caller-provided
+  assignee bypasses routing entirely (see step 5). No `routing.
+  evaluation_required` outbox event from this path.
+
+**Cutover scope (v4 / I2).** Both call sites of `TicketService.create`
+must move to `create_ticket_with_automation`:
+1. `TicketController` (`POST /tickets`).
+2. `PortalSubmitService.submit` (`apps/api/src/modules/portal/portal-
+   submit.service.ts:35`) — invoked by `POST /portal/submit`. The
+   portal flow currently builds an `intake` + `portal_trace` payload
+   and then calls `TicketService.create`; v4 routes that call through
+   the new RPC with the resolver preflight identical to the controller
+   path. Frontend cooperation: `apps/web/src/pages/portal/submit-
+   request.tsx:230` adds the `X-Client-Request-Id` header (Pattern A).
+   `RequireClientRequestIdGuard` is attached to `POST /portal/submit`
+   in §3.9.1's endpoint list.
 
 **Idempotency.** Same key reused → cached_result. Different payload
 on same key → `command_operations.payload_mismatch` (mirror §3.0).
@@ -1734,10 +1944,13 @@ Numbering starts at 00316 (B.0 ended at 00315).
 | 00330 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
 | 00331 | `outbox_events_b2_handlers.sql` | Outbox event types for routing rerun + sla timer recompute + workflow restart. |
 | 00332 | `create_ticket_with_automation_rpc.sql` | §3.11 (v3 / C1) — atomic ticket create + automation outbox emit. |
+| 00333 | `workflow_instances_active_unique_index.sql` | v4 / C2 — partial unique index on `workflow_instances (tenant_id, ticket_id)` WHERE `status IN ('active', 'waiting')`. Required before §3.5 / §3.10 / §3.11 ship workflow-start outbox emits. |
+| 00334 | `workflow_node_executions_table.sql` | v4 / C3 — durable per-node-fire record carrying the `execution_token`. UNIQUE on `(workflow_instance_id, node_id, attempt)`. Required before §1.21 cutover. |
 
-17 migrations. Up from v2's 16 — adds the create_ticket_with_automation
-RPC (C1). `routing_failure_reason` column folded into 00320 alongside
-`routing_status` (no extra migration).
+19 migrations. Up from v3's 17 — adds the workflow_instances unique
+index (00333, C2) and the workflow_node_executions table (00334, C3).
+`routing_failure_reason` remains folded into 00320 (no extra
+migration).
 
 **Cutover plan:**
 - Direct cutover (no shadow mode) for §3.0 (the orchestrator), §3.1,
@@ -1782,7 +1995,12 @@ different workstream, so re-confirm before pushing.
   - Add new probes for: `dispatch_child_work_order` (parent →
     child round-trip), `grant_ticket_approval` (create requires-
     approval ticket → approve → assert routing fires), `transition_
-    entity_status` (waiting-state pause/resume).
+    entity_status` (waiting-state pause/resume),
+    `create_ticket_with_automation` (sync routing + caller-assignee
+    bypass + post-create SLA outbox emit; 4-5 probes covering the
+    branch matrix in §3.11), and `workflow_node_executions`
+    idempotency (fire same node twice → reused token → command
+    RPC returns cached result).
 - New script `pnpm smoke:wo-commands` — sibling of
   `smoke-outbox-roundtrip.mjs`, scoped to the new RPCs:
   - Mint a fixture parent case + service-desk team + actor user.
@@ -1907,7 +2125,11 @@ call into §3.2 and §3.0:
 9. **§1.21 workflow-engine `assign` + `update_ticket` cutover**
    (2-3 days). Replace direct `tickets.UPDATE` calls with §3.2
    and §3.0 invocations. Idempotency key
-   `workflow:${instance_id}:${node_id}:${execution_token}`.
+   `workflow:${instance_id}:${node_id}:${execution_token}` where
+   `execution_token` is read from the `workflow_node_executions`
+   row (migration 00334, v4 / C3). Engine MUST write that row
+   before invoking the node body; cutover is gated on migration
+   00334 + the engine update.
 10. **§3.5 grant_ticket_approval + outbox routing-evaluation
     handler** (3-4 days). Mirrors B.0.D.3 structurally.
 11. **§3.10 reclassify_ticket RPC + 3 outbox handlers**
