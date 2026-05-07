@@ -631,7 +631,8 @@ export class TicketService {
           .from('request_types')
           .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
           .eq('id', data.ticket_type_id)
-          .single()).data
+          .eq('tenant_id', tenant.id)
+          .maybeSingle()).data
       : null;
 
     // ── Approval gate ─────────────────────────────────────────
@@ -710,7 +711,8 @@ export class TicketService {
           .from('request_types')
           .select('domain, sla_policy_id, workflow_definition_id')
           .eq('id', ticketRecord.ticket_type_id)
-          .single()).data
+          .eq('tenant_id', tenant.id)
+          .maybeSingle()).data
       : null;
 
     await this.runPostCreateAutomation(ticketRecord as Record<string, unknown>, tenant.id, cfg);
@@ -1267,13 +1269,18 @@ export class TicketService {
             .from('request_types')
             .select('domain')
             .eq('id', current.ticket_type_id)
-            .single()).data
+            .eq('tenant_id', tenant.id)
+            .maybeSingle()).data
         : null;
 
       let effectiveLocation = current.location_id as string | null;
       if (!effectiveLocation && current.asset_id) {
         const { data: asset } = await this.supabase.admin
-          .from('assets').select('assigned_space_id').eq('id', current.asset_id as string).single();
+          .from('assets')
+          .select('assigned_space_id')
+          .eq('id', current.asset_id as string)
+          .eq('tenant_id', tenant.id)
+          .maybeSingle();
         effectiveLocation = (asset?.assigned_space_id as string | null) ?? null;
       }
 

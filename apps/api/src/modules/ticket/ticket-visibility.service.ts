@@ -319,6 +319,7 @@ export class TicketVisibilityService {
             .from('request_types')
             .select('domain')
             .eq('id', woData.ticket_type_id as string)
+            .eq('tenant_id', tenantId)
             .maybeSingle();
           (woData as Record<string, unknown>).ticket_type = typeRow ? { domain: (typeRow as { domain: string | null }).domain } : null;
         }
