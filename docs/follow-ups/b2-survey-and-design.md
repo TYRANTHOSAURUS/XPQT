@@ -359,6 +359,80 @@
   while the workflow is still on that node. No further change to
   that table's design.
 
+- **v7 (2026-05-07).** Folds codex-v6 review findings.
+  Headline changes:
+  - **C1.** PG function signature corrected. v6 §3.11 step 2a
+    called `request_type_effective_scope_override(p_input.request_type_id,
+    effective_location_id)` but the actual signature per
+    `supabase/migrations/00096_effective_scope_override.sql:10` is
+    `(p_tenant_id uuid, p_request_type_id uuid, p_selected_space_id uuid)
+    returns jsonb`. The proposed call would not compile. v7 fixes
+    the call shape and the result-handling: the function returns a
+    jsonb object (or NULL); the RPC reads `(result->>'workflow_definition_id')::uuid`
+    and `(result->>'case_sla_policy_id')::uuid` for the equality
+    assertions.
+  - **C2.** Workflow restart contradiction. §3.10 reclassify
+    emits `workflow.start_required` when workflow changes; the
+    canonical handler does `INSERT ... ON CONFLICT DO NOTHING` per
+    the migration 00333 partial unique index, which means a
+    pre-existing active workflow instance silently no-ops the new
+    workflow start — reclassify can't actually change the
+    workflow. v7 fix: **fold cancellation into the
+    `reclassify_ticket` RPC body** (mirroring the existing
+    pattern at `supabase/migrations/00046_reclassify_preserve_parent_status.sql:65-77`).
+    Inside the RPC's tx, before emitting `workflow.start_required`:
+    UPDATE active workflow_instances rows for this ticket SET
+    `status='cancelled'`, `cancelled_at=now()`,
+    `cancelled_reason=p_reason`, `cancelled_by=p_actor_user_id`.
+    With the active rows now `cancelled`, the partial unique
+    index no longer matches and the handler's INSERT can succeed.
+    `WorkflowRestartHandler` is **dropped** — there is no separate
+    handler. `WorkflowStartHandler` is the only workflow-start
+    handler; the RPC owns the cancellation.
+  - **I1.** Effective-location re-derivation. v6 §3.11 step 2a
+    only validated TS-supplied `effective_location_id` was
+    tenant-owned, then trusted it to the override function. A
+    same-tenant stale plan could pick the wrong location. v7 has
+    PG independently re-derive: per
+    `apps/api/src/modules/routing/scope-override-resolver.service.ts:111`,
+    TS computes `effective_location = explicit_location ?? asset.assigned_space`.
+    PG mirrors with: `coalesce(p_input.location_id, (select assigned_space_id from public.assets where id = p_input.asset_id and tenant_id = p_tenant_id))`.
+    Assert equality with `p_automation_plan.effective_location_id`;
+    mismatch → reject `automation_plan.effective_location_mismatch`.
+  - **I2.** Ticket SLA column corrected. v6 wrote
+    `sla_policy_id = p_automation_plan.effective_sla_policy_id`
+    on tickets, but the runtime column is `sla_id` per
+    `supabase/migrations/00011_tickets.sql:23`. Same class as
+    v6 / C1 (workflow_definition_id → workflow_id). Every spec
+    mention fixed.
+  - **I3.** `repoint_sla_timer` idempotency restored. v6's body
+    UNCONDITIONALLY stopped active timers in step 1, then
+    inserted new ones — on replay, the second invocation would
+    stop the *new* timer (now active) and create a third row.
+    v7 fix: RPC starts with an idempotency short-circuit —
+    `if exists(select 1 from sla_timers where tenant_id=$, ticket_id=$,
+    sla_policy_id=p_sla_policy_id and stopped_at is null and
+    completed_at is null)` then return `{ kind: 'already_repointed' }`.
+    Else proceed: stop OLD timers (`sla_policy_id != p_sla_policy_id`,
+    not all active timers), insert new, update ticket due-dates.
+    Replay finds the new active timer, returns. No double-stop.
+  - **I4.** 00335 cleanup heuristic corrected. v6 used `min(id)`
+    on UUID, which has no meaning for v4 randoms. v7 makes the
+    cleanup operator-driven: the runbook provides the audit query
+    plus a template that the operator parameterizes by hand-picked
+    `keep_id` per `(tenant_id, ticket_id, sla_policy_id, timer_type)`
+    group, after reviewing breach state, due_at, started_at, and
+    ticket SLA due-date columns.
+  - **I5.** 00333 cleanup heuristic likewise made operator-driven.
+    "Keep most-recent `started_at`" was unsafe — older instance
+    may hold real progress/context. v7 also corrects the cleanup
+    to write the established cancellation metadata
+    (`cancelled_at`, `cancelled_reason`, `cancelled_by`) per
+    `supabase/migrations/00046_reclassify_preserve_parent_status.sql:65-71`,
+    not the v6 `completed_at` shortcut.
+  - Migration count: 22 (unchanged — these are wording / body-
+    sketch fixes). Commit estimate 39-55.
+
 
 ---
 
@@ -1942,7 +2016,7 @@ B.0.E and registered in the same `OutboxModule`.
 | Event type | Handler | Emitting RPCs | Idempotency primitive |
 |---|---|---|---|
 | `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | **TS handler computes `due_at` then calls `start_sla_timers` RPC (v6 / C2 — single atomic write).** Steps: (a) SELECT the SLA policy + business hours calendar; (b) compute `due_at` for each `timer_type` (`response`, `resolution`) using `BusinessHoursService.addBusinessMinutes(calendar, ticket.created_at, policy.<minutes>)` — `started_at = ticket.created_at` per v6 nit, NOT `now()`, so the SLA clock matches when the customer asked; (c) call migration 00336's `start_sla_timers(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers)` RPC which does **INSERT timer rows + UPDATE `tickets.sla_response_due_at` / `sla_resolution_due_at` in one PG transaction**. The RPC uses `ON CONFLICT DO NOTHING` against migration 00335's partial unique index for replay safety. **No TS-side multi-write** — that was the v5 split-write that codex C2 flagged. |
-| `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | TS handler computes new `due_at` (same path as above) then calls migration 00337's `repoint_sla_timer(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers, p_reason)` RPC which atomically: (1) UPDATEs existing active timers `SET stopped_at=now(), stopped_reason=$reason` WHERE `stopped_at IS NULL AND completed_at IS NULL`; (2) INSERTs fresh active timers with `due_at` filled and `recompute_pending=false`, with `ON CONFLICT DO NOTHING` against the 00335 partial unique index; (3) UPDATEs ticket SLA due-date columns to the new values. All in one PG tx. Idempotency: replay finds the new timer already exists (or the old one already stopped) → no-op. |
+| `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | TS handler computes new `due_at` (same path as above) then calls migration 00337's `repoint_sla_timer(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers, p_reason)` RPC. **Idempotency short-circuit (v7 / I3):** RPC opens with `if exists (select 1 from sla_timers where tenant_id=$, ticket_id=$, sla_policy_id=p_sla_policy_id and stopped_at is null and completed_at is null) then return jsonb_build_object('kind','already_repointed'); end if;` so a replay returns no-op without touching state. Else proceeds atomically: (1) UPDATEs existing active timers `SET stopped_at=now(), stopped_reason=$reason` WHERE `sla_policy_id IS DISTINCT FROM p_sla_policy_id AND stopped_at IS NULL AND completed_at IS NULL` — **scoped to the OLD policy** so a re-execution wouldn't stop the new policy's timers; (2) INSERTs fresh active timers with `due_at` filled and `recompute_pending=false`, with `ON CONFLICT DO NOTHING` against the 00335 partial unique index; (3) UPDATEs ticket SLA due-date columns to the new values. All in one PG tx. |
 | `routing.evaluation_required` | `RoutingEvaluationHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket. **Not** §3.11 create (sync-routing per §3.9.2). | Reads `tickets.routing_status`; if `'idle'` already, returns no-op. Else runs `RoutingService.evaluate(...)`. **Unassigned outcome (v5 / I4):** if resolver returns `chosen_by='unassigned'` (no rule matched, valid per `docs/assignments-routing-fulfillment.md:149`), INSERT a `routing_decisions` row with `target=null`, `chosen_by='unassigned'` and set `routing_status='idle'`. **Failure outcome:** if the resolver throws, FK validation fails, or `set_entity_assignment` RPC errors, set `routing_status='failed'` and write `routing_failure_reason`. Successful resolve calls `set_entity_assignment` RPC (idempotent via `command_operations` keyed on `${event_id}:routing`) and sets `routing_status='idle'`. |
 | `workflow.start_required` | `WorkflowStartHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket, §3.11 create_ticket_with_automation | `WorkflowEngineService.startForTicket` updated to do `INSERT INTO workflow_instances ... ON CONFLICT (tenant_id, ticket_id) WHERE status IN ('active', 'waiting') DO NOTHING` per the migration 00333 partial unique index (C2 fix). On conflict the handler returns `{ kind: 'already_started' }` referencing the existing instance. |
 
@@ -1978,17 +2052,39 @@ new_location_id?: uuid }`.
 6. INSERT ticket_activities (`reclassified`, payload includes
    old + new types).
 7. INSERT domain_events (`ticket_reclassified`).
-8. **Emit outbox events atomically (in the same tx):**
+8. **Cancel pre-existing active workflow_instances if the
+   workflow definition is changing (v7 / C2 fix).** The
+   `WorkflowStartHandler` does `INSERT ... ON CONFLICT DO NOTHING`
+   keyed on the migration 00333 partial unique index, so a still-
+   active row would silently no-op the new workflow start. The
+   RPC must cancel the old row in the same tx, mirroring the
+   existing pattern at `supabase/migrations/00046_reclassify_preserve_parent_status.sql:65-77`:
+   ```sql
+   if old.workflow_definition_id is distinct from new.workflow_definition_id then
+     update public.workflow_instances
+        set status = 'cancelled',
+            cancelled_at = now(),
+            cancelled_reason = p_reason,
+            cancelled_by = p_actor_user_id
+      where ticket_id = p_ticket_id
+        and tenant_id = p_tenant_id
+        and status in ('active', 'waiting');
+   end if;
+   ```
+   With the active rows now `cancelled`, the partial unique index
+   no longer matches and the handler's INSERT can succeed.
+
+9. **Emit outbox events atomically (in the same tx):**
    - `sla.timer_repointed_required` if old.sla_policy_id !=
      new.sla_policy_id.
    - `workflow.start_required` if old.workflow_definition_id !=
-     new.workflow_definition_id.
+     new.workflow_definition_id (cancellation done in step 8).
    - `routing.evaluation_required` (always — even if the new type
      might resolve to the same target, the resolver should re-run
      to record the breadcrumb).
-9. Set `tickets.routing_status='pending'` (per §3.9.2) so the UI
-   shows the routing-in-flight chip.
-10. UPDATE command_operations.
+10. Set `tickets.routing_status='pending'` (per §3.9.2) so the UI
+    shows the routing-in-flight chip.
+11. UPDATE command_operations.
 
 **TS handlers** (sibling to existing `SetupWorkOrderHandler` from
 B.0.E; full contract in §3.9.3):
@@ -1997,10 +2093,13 @@ B.0.E; full contract in §3.9.3):
   ones with `due_at` computed in TS from the new policy
   (mirrors `sla.service.ts:73 startTimers`). `recompute_pending`
   stays `false` — fresh inserts always carry a real `due_at`
-  (v5 / C2).
-- `WorkflowRestartHandler` — cancels current `workflow_instances`
-  row, starts a new one matching the new `workflow_definition_id`.
-  Idempotent via the migration 00333 partial unique index (v4 / C2).
+  (v5 / C2). v7 / I3: handler short-circuits on replay if the
+  new policy already has active timers.
+- `WorkflowStartHandler` — same handler as the create + grant
+  paths (no separate `WorkflowRestartHandler`). The RPC's step 8
+  cancels the old workflow_instances row in the same tx, so by
+  the time the handler runs, INSERT succeeds against the partial
+  unique index (v7 / C2 fold-in).
 - `RoutingEvaluationHandler` — runs `RoutingService.evaluate(...)`,
   calls `set_entity_assignment` RPC if the target differs, sets
   `routing_status='idle'` on success OR on a valid `unassigned`
@@ -2092,35 +2191,62 @@ The TS plan-build phase mirrors the existing
    **No automation-plan field is trusted blindly; tenant
    ownership is verified for every FK.**
 
-2a. **Semantic re-derivation (v6 / I2).** Tenant validation
-    proves "the row belongs to this tenant" but does not prove
-    "the row is the correct one for this request." A buggy or
-    stale TS plan-build could pass tenant validation but still
-    select the wrong workflow/SLA. v6 adds independent re-
-    derivation in PG:
-    1. SELECT `effective_scope = public.request_type_effective_scope_override(p_input.request_type_id, p_automation_plan.effective_location_id)`
-       — uses the existing PG function from migration 00096.
-    2. Compute `derived_workflow_definition_id =
-       coalesce(effective_scope.workflow_definition_id,
-       request_types.workflow_definition_id)` and
-       `derived_sla_policy_id =
-       coalesce(effective_scope.case_sla_policy_id,
-       request_types.sla_policy_id)`.
-    3. **Assert** `derived_workflow_definition_id IS NOT
-       DISTINCT FROM p_automation_plan.effective_workflow_definition_id`
-       AND `derived_sla_policy_id IS NOT DISTINCT FROM
-       p_automation_plan.effective_sla_policy_id`. On
-       mismatch, raise `automation_plan.semantic_mismatch`
-       AppError with both values in the payload for
-       debugging — surfaces TS-side cache staleness or
-       resolution bugs immediately rather than committing
-       the wrong config.
-    4. *(if `p_automation_plan.routing_decision` is non-null)*
-       assert `routing_trace.input` matches
-       `(p_input.request_type_id, p_automation_plan.effective_location_id, p_input.asset_id)`
-       — proves the resolver ran on the correct tuple even
-       though we don't re-run the resolver itself in PG.
-       Mismatch → `automation_plan.routing_input_mismatch`.
+2a. **Semantic re-derivation (v6 / I2; v7 / I1+C1 fixes).**
+    Tenant validation proves "the row belongs to this tenant"
+    but does not prove "the row is the correct one for this
+    request." A buggy or stale TS plan-build could pass tenant
+    validation but still select the wrong workflow/SLA/location.
+    PG independently re-derives:
+
+    1. **Effective location (v7 / I1).** Mirror the TS chain at
+       `apps/api/src/modules/routing/scope-override-resolver.service.ts:111`
+       — `coalesce(p_input.location_id, (select assigned_space_id
+       from public.assets where id = p_input.asset_id and tenant_id
+       = p_tenant_id))`. Assert this equals
+       `p_automation_plan.effective_location_id`; mismatch →
+       reject `automation_plan.effective_location_mismatch`.
+       Trusting TS-supplied location is unsafe; this catches
+       stale-plan bugs at the gate.
+
+    2. **Effective workflow + SLA (v6 / I2; v7 / C1 signature).**
+       Use the existing PG function. Per
+       `supabase/migrations/00096_effective_scope_override.sql:10`:
+       ```sql
+       v_override jsonb := public.request_type_effective_scope_override(
+         p_tenant_id,            -- (NOT p_input.request_type_id first)
+         p_input.request_type_id,
+         v_derived_location_id   -- the value verified in step 1
+       );
+       v_request_type record :=  -- already SELECTed in step 3 below
+       v_derived_workflow_definition_id uuid := coalesce(
+         (v_override->>'workflow_definition_id')::uuid,
+         v_request_type.workflow_definition_id
+       );
+       v_derived_sla_policy_id uuid := coalesce(
+         (v_override->>'case_sla_policy_id')::uuid,
+         v_request_type.sla_policy_id
+       );
+       ```
+       Assert `v_derived_workflow_definition_id IS NOT DISTINCT
+       FROM p_automation_plan.effective_workflow_definition_id`
+       AND `v_derived_sla_policy_id IS NOT DISTINCT FROM
+       p_automation_plan.effective_sla_policy_id`. Mismatch →
+       reject `automation_plan.semantic_mismatch` AppError with
+       both values in the payload.
+
+    3. **Override id (v7).** If `p_automation_plan.scope_override_id`
+       is non-null, assert it equals `(v_override->>'id')::uuid`.
+       Else assert `v_override IS NULL` (no override resolved on
+       either side). Mismatch →
+       `automation_plan.scope_override_mismatch`.
+
+    4. **Routing trace input (v6 / I2).** *(if
+       `p_automation_plan.routing_decision` is non-null)* assert
+       `routing_trace.input` matches `(p_input.request_type_id,
+       v_derived_location_id, p_input.asset_id)` — proves the
+       resolver ran on the correct tuple even though we don't
+       re-run the resolver itself in PG. Mismatch →
+       `automation_plan.routing_input_mismatch`.
 3. SELECT `request_types(id, tenant_id) FOR SHARE` purely to read
    `requires_approval`. Workflow/SLA/location IDs come from
    `p_automation_plan`, not from this row — TS already resolved
@@ -2131,9 +2257,11 @@ The TS plan-build phase mirrors the existing
    - `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`
      from `p_input` if caller provided, else from
      `p_automation_plan.routing_decision`, else null.
-   - `sla_policy_id = p_automation_plan.effective_sla_policy_id`
-     (mirrors `runPostCreateAutomation`'s
-     `effectiveCaseSlaPolicyId` write).
+   - **`sla_id = p_automation_plan.effective_sla_policy_id`**
+     (note: the **column on `tickets` is `sla_id`** per
+     `supabase/migrations/00011_tickets.sql:23`, not
+     `sla_policy_id`. Same name asymmetry as `workflow_id` —
+     v7 / I2.)
    - **`workflow_id = p_automation_plan.effective_workflow_definition_id`**
      (note: the **column on `tickets` is `workflow_id`** per
      `supabase/migrations/00011_tickets.sql:22`, even though the
@@ -2296,52 +2424,66 @@ begin
 end $$;
 ```
 
-If the migration aborts, the operator runs this cleanup
-(replace the BEGIN/COMMIT pair with a transaction in their psql
-session; never run as a single auto-commit batch):
+If the migration aborts, the operator works through the audit
++ decision + cleanup steps below. **The cleanup is fully
+operator-driven (v7 / I5) — there is no automated heuristic.**
+v6 said "keep most-recent `started_at`," but that's unsafe:
+older instances may hold real progress / context (decision
+history, parallel-branch state, in-flight commands). The
+operator reviews each duplicate group and picks the canonical
+row by hand using the audit output:
 
 ```sql
--- 1. Audit which rows would be cancelled. Save this output.
-select wi.id, wi.tenant_id, wi.ticket_id, wi.status, wi.started_at,
-       wi.workflow_definition_id, wi.workflow_version
+-- 1. Audit. For every duplicate group, list every row's
+-- identifying state. Save this output and review row-by-row
+-- before running cleanup.
+select wi.id, wi.tenant_id, wi.ticket_id, wi.status,
+       wi.started_at, wi.completed_at, wi.cancelled_at,
+       wi.workflow_definition_id, wi.workflow_version,
+       wi.current_node_id, wi.context
 from public.workflow_instances wi
 join (
-  select tenant_id, ticket_id,
-         max(started_at) as canonical_started_at
+  select tenant_id, ticket_id
   from public.workflow_instances
   where status in ('active', 'waiting')
   group by 1, 2 having count(*) > 1
-) keep on wi.tenant_id = keep.tenant_id
-       and wi.ticket_id = keep.ticket_id
+) dupes
+  on wi.tenant_id = dupes.tenant_id
+ and wi.ticket_id = dupes.ticket_id
 where wi.status in ('active', 'waiting')
-  and wi.started_at < keep.canonical_started_at
 order by wi.tenant_id, wi.ticket_id, wi.started_at;
+```
 
--- 2. Cancel the older duplicates, keeping the most-recent
--- `started_at` row per (tenant_id, ticket_id) as canonical.
--- v6 / I3: column is `started_at` per 00009:38, NOT
--- `created_at`.
-update public.workflow_instances wi
+Decision criteria (operator applies per group):
+- Prefer the row whose `current_node_id` shows the most
+  meaningful progress (not the trigger node).
+- If multiple are mid-flight, prefer the one whose `context`
+  jsonb has the most accumulated state.
+- `started_at` recency is a weak tie-breaker, never a
+  primary criterion.
+
+```sql
+-- 2. Cancel the non-canonical rows. Replace the IN-list with
+-- the row IDs the operator decided to retire. Use the
+-- established cancellation metadata (v7 / I5) — same shape as
+-- migration 00046:65-71's existing reclassify cancellation.
+update public.workflow_instances
 set status = 'cancelled',
-    completed_at = now()
-from (
-  select tenant_id, ticket_id, max(started_at) as canonical_started_at
-  from public.workflow_instances
-  where status in ('active', 'waiting')
-  group by 1, 2 having count(*) > 1
-) keep
-where wi.tenant_id = keep.tenant_id
-  and wi.ticket_id = keep.ticket_id
-  and wi.status in ('active', 'waiting')
-  and wi.started_at < keep.canonical_started_at;
+    cancelled_at = now(),
+    cancelled_reason = 'deduplicated_pre_index',
+    cancelled_by = '<operator-user-id>'::uuid
+where id in (
+  -- Row IDs from step 1 audit that the operator chose to retire.
+  '<id-1>'::uuid, '<id-2>'::uuid, /* ... */
+);
 
 -- 3. Re-run migration 00333.
 ```
 
 Cleanup is operator-driven, not embedded in the migration —
 silently cancelling someone's real active workflow is not
-recoverable. The audit row from step 1 must be retained for
-post-cutover analysis.
+recoverable. The audit output from step 1 must be retained
+for post-cutover analysis.
 
 #### Migration 00335 runbook (v6 / I4)
 
@@ -2366,57 +2508,71 @@ begin
 end $$;
 ```
 
-If aborted, the operator runs:
+If aborted, the operator works through audit + decision +
+cleanup. **Operator-driven (v7 / I4) — no automated heuristic.**
+v6 used `min(id)` as canonical, but UUIDv4 IDs have no temporal
+meaning. The operator picks per group based on breach state,
+due_at, started_at, and the ticket's current SLA due-date
+columns:
 
 ```sql
--- 1. Audit. Save the output for breach-history analysis.
+-- 1. Full audit per duplicate group. Also pull the ticket's
+-- sla_response_due_at / sla_resolution_due_at so the operator
+-- can see which timer's due_at the ticket is actually
+-- displaying. Save this output.
 select t.id, t.tenant_id, t.ticket_id, t.sla_policy_id,
-       t.timer_type, t.started_at, t.due_at, t.breached
+       t.timer_type, t.started_at, t.due_at,
+       t.breached, t.breached_at,
+       t.paused, t.paused_at, t.total_paused_minutes,
+       tk.sla_response_due_at as ticket_response_due_at,
+       tk.sla_resolution_due_at as ticket_resolution_due_at
 from public.sla_timers t
+join public.tickets tk on tk.id = t.ticket_id
 join (
-  select tenant_id, ticket_id, sla_policy_id, timer_type,
-         min(id) as canonical_id
+  select tenant_id, ticket_id, sla_policy_id, timer_type
   from public.sla_timers
   where stopped_at is null and completed_at is null
   group by 1, 2, 3, 4 having count(*) > 1
-) keep
-  on  t.tenant_id     = keep.tenant_id
-  and t.ticket_id     = keep.ticket_id
-  and t.sla_policy_id = keep.sla_policy_id
-  and t.timer_type    = keep.timer_type
-where t.id <> keep.canonical_id
-  and t.stopped_at is null
+) dupes
+  on  t.tenant_id     = dupes.tenant_id
+ and  t.ticket_id     = dupes.ticket_id
+ and  t.sla_policy_id = dupes.sla_policy_id
+ and  t.timer_type    = dupes.timer_type
+where t.stopped_at is null
   and t.completed_at is null
-order by t.tenant_id, t.ticket_id, t.timer_type, t.id;
+order by t.tenant_id, t.ticket_id, t.timer_type, t.started_at;
+```
 
--- 2. STOP non-canonical duplicates (preserves audit + breach
--- history; the canonical row keeps its breach state). The
--- canonical row is the smallest `id` per group.
-update public.sla_timers t
+Decision criteria (operator applies per group):
+- If exactly one row's `due_at` matches the ticket's SLA
+  due-date column → **that row is canonical** (the UI was
+  showing it; preserve continuity).
+- Else prefer the row that has been monitored longest
+  (oldest `started_at`).
+- If a row is `breached=true` and the others aren't, prefer
+  the breached row (preserve breach history).
+- Total-paused-minutes ties go to the row that's been
+  paused most (more "real" history).
+
+```sql
+-- 2. STOP non-canonical duplicates. Replace the IN-list with
+-- the row IDs the operator picked to retire. STOP preserves
+-- audit + breach history (we do not delete).
+update public.sla_timers
 set stopped_at = now(),
     stopped_reason = 'deduplicated_pre_index'
-from (
-  select tenant_id, ticket_id, sla_policy_id, timer_type,
-         min(id) as canonical_id
-  from public.sla_timers
-  where stopped_at is null and completed_at is null
-  group by 1, 2, 3, 4 having count(*) > 1
-) keep
-where t.tenant_id     = keep.tenant_id
-  and t.ticket_id     = keep.ticket_id
-  and t.sla_policy_id = keep.sla_policy_id
-  and t.timer_type    = keep.timer_type
-  and t.id <> keep.canonical_id
-  and t.stopped_at is null
-  and t.completed_at is null;
+where id in (
+  -- Row IDs from step 1 audit that the operator chose to retire.
+  '<id-1>'::uuid, '<id-2>'::uuid, /* ... */
+);
 
 -- 3. Re-run migration 00335.
 ```
 
-Note: STOP (`stopped_at = now()`) preserves the row + its breach
-history; we do not delete. The canonical row (`min(id)`) keeps its
-existing `due_at` and breach state — operators should not see UI
-behavior change after dedup.
+Note: the canonical row keeps its existing `due_at` and breach
+state. Operators should not see UI behavior change after dedup
+because the kept row is the one whose `due_at` the ticket
+already displays.
 
 **Cutover plan:**
 - Direct cutover (no shadow mode) for §3.0 (the orchestrator), §3.1,
