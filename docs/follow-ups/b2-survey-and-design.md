@@ -186,6 +186,88 @@
     (`workflow_node_executions_table.sql`, C3).
     Commit count 35-50.
 
+- **v5 (2026-05-07).** Folds codex-v4 review findings.
+  Headline changes:
+  - **C1.** §3.11 silently dropped scope-override resolution. The
+    current TS code at `apps/api/src/modules/ticket/ticket.service.ts:743`
+    derives `effectiveLocation` via `ScopeOverrideResolverService`,
+    then at `:747` resolves the per-location scope override, then
+    at `:754` / `:758` picks `effectiveWorkflowDefinitionId` and
+    `effectiveCaseSlaPolicyId` (override wins, else request_type
+    config). v4 §3.11 only SELECTed raw `request_types.*` config —
+    so any tenant with `request_type_scope_overrides` rows would
+    get the wrong SLA / workflow on create. v5 fix: TS plan-build
+    computes the **automation plan** (effective_location_id,
+    effective_workflow_definition_id, effective_sla_policy_id,
+    scope_override_id, routing_decision, routing_trace) BEFORE
+    calling the RPC; RPC accepts it as `p_automation_plan` and
+    validates each FK is tenant-owned via existing helpers. Same
+    "TS plans, Postgres commits the plan atomically" rule from B.0.
+  - **C2.** §3.9.3 SLA handler contract was structurally invalid.
+    `sla_timers` has no `state` column
+    (`supabase/migrations/00011_tickets.sql:90`); `due_at` is
+    `NOT NULL` (`:98`); the only "active" index is non-unique on
+    `(stopped_at IS NULL AND completed_at IS NULL)`
+    (`supabase/migrations/00044_reclassify_support.sql:34`). v4's
+    "INSERT with due_at=NULL and recompute_pending=true" violates
+    today's schema. v5 rewrites:
+    1. `SlaTimerHandler` computes `due_at` in TS (mirroring the
+       existing `apps/api/src/modules/sla/sla.service.ts:73`
+       `startTimers` pattern: policy minutes + business calendar
+       + ticket created_at) and INSERTs with due_at filled,
+       `recompute_pending=false`. The `recompute_pending=true`
+       semantics from §3.3 apply only to the **existing-timer
+       update path** (waiting-state resume) where due_at needs
+       recomputation, never to fresh inserts.
+    2. New migration 00335 adds a partial unique index on
+       `sla_timers (tenant_id, ticket_id, sla_policy_id, timer_type)`
+       WHERE `stopped_at IS NULL AND completed_at IS NULL` to
+       enforce "one active timer per (ticket, policy, timer_type)"
+       so `INSERT ... ON CONFLICT DO NOTHING` works.
+    3. §3.3 / §3.11 / §3.5 wording updated to reference existing
+       schema columns; bogus `state='active'` references removed.
+  - **I1.** Migration 00333 (workflow_instances unique index)
+    needs preflight. v4 said "create the index" without checking
+    whether existing rows violate it. v5 adds explicit preflight
+    SQL + cleanup decision tree to migration 00333: (a) duplicate
+    detection query; (b) abort with a clear error if duplicates
+    exist; (c) operator runs cleanup separately (cancel duplicates
+    keeping most-recent `created_at`); (d) re-run migration. No
+    silent cleanup inside the migration — the consequence of
+    cancelling a real active workflow is too high to automate.
+  - **I2.** §1.21 / §3.0 / migration 00334 wording: drop the
+    "engine commits row outcome inside the same transaction"
+    claim. The workflow engine uses Supabase HTTP calls (separate
+    txs per call), so a shared tx with the workflow_instances
+    UPDATE is impossible without a new RPC. v5 simplifies: drop
+    the `status` column from `workflow_node_executions`. The table
+    holds only `(id, tenant_id, instance_id, node_id, attempt,
+    execution_token, fired_at)`. The token is the only durable
+    artifact needed for command idempotency; node-fire outcome
+    stays best-effort in `workflow_instance_events`. If a future
+    iteration needs atomic outcome tracking, it adds a small
+    `commit_node_execution_outcome` RPC.
+  - **I3.** Portal route corrected throughout. v4 said
+    `POST /portal/submit`; the actual controller route at
+    `apps/api/src/modules/portal/portal.controller.ts:111` is
+    `POST /portal/tickets`, and the frontend posts there at
+    `apps/web/src/pages/portal/submit-request.tsx:230`. §3.9.1
+    guard list, §3.11 cutover scope, and the §3.9.1 hook table
+    all updated.
+  - **I4.** Async routing handler must distinguish "no target
+    matched" (valid unassigned outcome per
+    `docs/assignments-routing-fulfillment.md:149`) from "handler
+    or validation error." v4 §3.9.2 + §3.9.3 wrote both as
+    `routing_status='failed'`. v5 fix: unassigned (resolver
+    matched zero rules → `chosen_by='unassigned'`) sets
+    `routing_status='idle'` with an `unassigned` decision row in
+    `routing_decisions`. `'failed'` is reserved for genuine
+    errors (resolver throws, FK validation rejects, RPC errors).
+    Same in §3.11 (sync path is symmetric).
+  - Migration count: 19 → 20. Adds 00335
+    (`sla_timers_active_unique_index.sql`, C2). Commit count
+    37-52.
+
 
 ---
 
@@ -806,7 +888,17 @@ is best-effort, not durable. Replay after engine restart cannot
 reliably find "the same node fire" by reading
 `workflow_instance_events`.
 
-v4 introduces a new durable table via migration 00334:
+v4 introduces a new durable table via migration 00334. **v5 / I2
+fix:** drops the `status` column. The workflow engine uses Supabase
+HTTP calls (separate transactions per call), so the v4 claim of
+"engine commits row outcome inside the same transaction that mutates
+the workflow instance state" is impossible without a new RPC. v5
+scopes the table to its essential job: persisting the execution
+token. Outcome tracking stays in `workflow_instance_events`
+(best-effort audit, as today). If a future iteration needs atomic
+outcome tracking, it adds a small `commit_node_execution_outcome`
+RPC. The token alone is sufficient for command idempotency, which
+is the goal.
 
 ```sql
 create table public.workflow_node_executions (
@@ -818,8 +910,6 @@ create table public.workflow_node_executions (
   attempt int not null default 1,
   execution_token uuid not null default gen_random_uuid(),
   fired_at timestamptz not null default now(),
-  status text not null default 'pending'
-    check (status in ('pending', 'succeeded', 'failed')),
   unique (workflow_instance_id, node_id, attempt)
 );
 
@@ -842,12 +932,12 @@ RPC returns cached result. Fresh node fires (workflow-loop
 iterations beyond the first attempt) bump `attempt` to get a
 fresh token by construction.
 
-Engine commits the row outcome (`status='succeeded'` or
-`'failed'`) inside the same transaction that mutates the
-workflow instance state — guaranteeing the token row reflects
-reality. `workflow_instance_events` keeps its current best-effort
-audit semantics; it is no longer the source of truth for
-idempotency.
+`workflow_instance_events` keeps its current best-effort audit
+semantics. It is **not** the source of truth for idempotency
+(v5 / C3 from v4 still holds — that table's `emit()` swallows
+failures); the `workflow_node_executions` row IS. Decoupling the
+two is the v5 / I2 simplification: no shared transaction needed,
+no new RPC needed for the v4 / C3 fix to work.
 
 ---
 
@@ -1044,8 +1134,11 @@ security invoker
      emit `routing_decisions.INSERT` if `reason` is set; UPDATE
      assignment columns.
    - **sla_id** → call `_apply_sla_repoint(...)` (body of §3.3);
-     C3's `recompute_pending=true` set atomically with the new
-     `sla_id`; emit outbox event for due-date recompute.
+     stops old active timers (`stopped_at=now()`); inserts fresh
+     ones with `due_at` computed by TS plan-build (passed in
+     `p_patches.sla.timers[]`) per v5 / C2; no outbox event needed
+     for the fresh-insert case (the `recompute_pending` flag is
+     scoped to existing-timer pause/resume only).
    - **plan** → write planned_start_at / planned_duration_minutes;
      emit `plan_changed` activity.
    - **metadata** → write title / description / cost / tags /
@@ -1292,20 +1385,36 @@ worker can find pending rows cheaply.
 3. SELECT current row.
 4. Validate `sla_id` is a tenant-owned `sla_policies` row (or null).
 5. UPDATE entity row (sla_id + updated_at).
-6. **Stop existing timers + start fresh ones with the recompute
-   flag set** — atomic INSIDE this RPC:
-   - `UPDATE sla_timers SET completed_at = now() WHERE entity
-     matches AND completed_at IS NULL`.
+6. **Stop existing timers + start fresh ones (v5 / C2 — schema-
+   compliant).** Atomic INSIDE this RPC:
+   - `UPDATE sla_timers SET stopped_at = now(), stopped_reason =
+     'sla_changed' WHERE entity matches AND stopped_at IS NULL AND
+     completed_at IS NULL`. (`stopped_at`, not `completed_at` —
+     mirrors the existing reclassify_ticket pattern at
+     `supabase/migrations/00044_reclassify_support.sql:115-125`.)
    - UPDATE entity row clearing SLA-derived columns.
-   - *(if new policy)* SELECT sla_policies, `INSERT INTO sla_timers
-     (..., recompute_pending) VALUES (..., true)`. Initial `due_at`
-     is `NULL` — the worker will fill it in. Reader queries already
-     skip `recompute_pending = true`, so they never see the null
-     either.
-7. Emit outbox event `sla.timer_recompute_required` (carries
-   tenant_id, entity_id, entity_kind, sla_id) for the worker.
-8. INSERT ticket_activities (`sla_changed`).
-9. UPDATE command_operations.
+   - *(if new policy)* the caller's TS plan-build phase has already
+     computed the new `due_at` (per `sla.service.ts:73 startTimers`
+     pattern: now() + policy minutes via business calendar). The RPC
+     receives `p_payload.timers` as an array of `{ timer_type,
+     target_minutes, due_at, business_hours_calendar_id }` rows and
+     `INSERT INTO sla_timers (..., due_at)` with `due_at` filled,
+     `recompute_pending=false`, `paused=false` and
+     `ON CONFLICT DO NOTHING` against the migration 00335 partial
+     unique index. **Initial `due_at` is NEVER null — the schema's
+     `NOT NULL` constraint is honored.**
+7. INSERT ticket_activities (`sla_changed`).
+8. UPDATE command_operations.
+
+**Why no outbox event for fresh timers.** v4 said "emit
+`sla.timer_recompute_required` after the INSERT and let the worker
+fill in due_at." That was incompatible with the schema's `NOT NULL`
+on `due_at` (see v5 / C2). v5 inverts: TS computes due_at, RPC
+inserts with the value, no follow-up outbox event needed for the
+common case. The `recompute_pending` flag remains for the
+**existing-timer pause/resume** scenario below — where the row
+already has a `due_at` and we need to recompute it without a
+window of false breach.
 
 **Body sketch for waiting-state pause/resume (called by §3.1's
 status branch, but the same flag rule applies):**
@@ -1342,11 +1451,20 @@ fixture row is correctly skipped. Tests live in
 guard added to flag any new `from('sla_timers')` query that omits
 the clause.
 
-**Compensation:** if the worker permanently fails, the row stays
-`recompute_pending=true` and the alert pipeline (existing
-deadletter) surfaces it. The entity row's due-dates display as
-"computing..." until resolved. Worse than fresh-SLA today (which
-just shows null), but better than the false-breach hazard v1 had.
+**Compensation:** if the worker permanently fails to recompute a
+paused-then-resumed timer, the row stays `recompute_pending=true`
+and the alert pipeline (existing deadletter) surfaces it. The
+entity row's due-dates continue to display the old `due_at`
+(stale, not null) until the worker recovers. Readers skip the row
+via the `recompute_pending = false` filter so the false-breach
+hazard is avoided.
+
+**Scope of `recompute_pending` (v5 / C2 clarification).** The
+flag exists for the **existing-timer** pause/resume case where
+`due_at` is stale and being recomputed without write window. It
+is NEVER set on a fresh INSERT — fresh inserts always have
+`due_at` filled by TS plan-build (see SlaTimerHandler in §3.9.3).
+The schema's `due_at NOT NULL` is honored at all times.
 
 **v1 §9 pushback #3 retracted.** See updated §9.
 
@@ -1454,11 +1572,12 @@ returns jsonb     -- { kind: 'resolved' | 'partial_approved' | 'already_responde
    - SELECT request_types config.
    - *(if has SLA)* emit `sla.timer_recompute_required` outbox event
      in the same tx (carries tenant_id, ticket_id, sla_policy_id).
-     Handler `SlaTimerHandler` (§3.9.3) INSERTs `sla_timers` with
-     `recompute_pending=true` and updates ticket due-dates per the
-     §3.3 semantics. **Replaces the v3 inline INSERT.** Reasoning:
+     Handler `SlaTimerHandler` (§3.9.3) computes `due_at` in TS
+     (mirrors `sla.service.ts:73 startTimers`), INSERTs `sla_timers`
+     with `due_at` filled and `recompute_pending=false`, and updates
+     ticket due-dates. **Replaces the v3 inline INSERT.** Reasoning:
      same handler pattern as §3.10 reclassify and §3.11 create — one
-     SLA emit primitive, one handler.
+     SLA emit primitive, one handler. Schema-compliant per v5 / C2.
    - Routing evaluation: this is non-trivial. **Defer routing to
      post-commit outbox event** `routing.evaluation_required` so the
      RPC itself stays small. The outbox handler
@@ -1609,8 +1728,8 @@ booking endpoints). The guard:
 - `PATCH /tickets/:id` (calls §3.0 with entity_kind='case').
 - `PATCH /work-orders/:id` (calls §3.0 with entity_kind='work_order').
 - `POST /tickets` (calls §3.11 `create_ticket_with_automation`).
-- `POST /portal/submit` (calls §3.11 via `PortalSubmitService.submit`,
-  v4 / I2).
+- `POST /portal/tickets` (calls §3.11 via `PortalSubmitService.submit`,
+  v4 / I2; route corrected v5 / I3).
 - `POST /tickets/:id/dispatch` (calls §3.4 dispatch).
 - `POST /approvals/:id/respond` (calls §3.5 grant_ticket_approval).
 - `POST /tickets/:id/reclassify` (calls §3.10 reclassify_ticket).
@@ -1645,7 +1764,7 @@ of the same logical attempt reuse the same id.
 | `apps/web/src/api/tickets/mutations.ts:316` | `useReassignWorkOrder` | `POST /work-orders/:id/reassign` | needs Pattern A retrofit |
 | `apps/web/src/hooks/use-reclassify.ts:121` | `useReclassifyTicket` | `POST /tickets/:id/reclassify` | needs Pattern A retrofit |
 | `apps/web/src/api/approvals/index.ts:57` | `useRespondApproval` | `POST /approvals/:id/respond` | **already threads `requestId`** (line 64); guard can attach immediately |
-| (new: portal submit) | `apps/web/src/pages/portal/submit-request.tsx:230` POST callsite | `POST /portal/submit` | needs Pattern A retrofit (v4 / I2) |
+| (new: portal submit) | `apps/web/src/pages/portal/submit-request.tsx:230` POST callsite | `POST /portal/tickets` | needs Pattern A retrofit (v4 / I2; route corrected v5 / I3) |
 
 **Frontend cutover sequence (B.2.A foundation):** the hook updates
 ship BEFORE the `RequireClientRequestIdGuard` activates — otherwise
@@ -1683,11 +1802,15 @@ finally an assigned ticket, with each step a separate spinner.
 **Schema support.** Add `tickets.routing_status text not null
 default 'idle'` with values `'idle' | 'pending' | 'failed'`. Async
 re-routing flows set it to `'pending'` in the same tx as the
-trigger event; the outbox handler clears it to `'idle'` (or sets
-`'failed'` with a reason in `routing_failure_reason`) on resolution.
-The desk UI reads `routing_status` and shows a small "Routing..."
-chip when not idle. This makes the async-ness honest in the UI
-rather than hidden.
+trigger event; the outbox handler clears it to `'idle'` on success
+OR on a valid `unassigned` outcome (v5 / I4 — unassigned is a
+terminal valid result per `docs/assignments-routing-fulfillment.md:149`,
+not a failure), or sets `'failed'` with a reason in
+`routing_failure_reason` only for genuine errors (resolver throws,
+FK validation rejects, downstream RPC errors). The desk UI reads
+`routing_status` and shows a small "Routing..." chip when
+`'pending'`; "Unassigned" pill is driven separately by the
+absence of `assigned_team_id`/`user_id`/`vendor_id`.
 
 **Sync-routing implementation.** In TS, before calling the create
 or dispatch RPC, run `RoutingService.evaluate(...)` (read-only)
@@ -1727,9 +1850,9 @@ B.0.E and registered in the same `OutboxModule`.
 
 | Event type | Handler | Emitting RPCs | Idempotency primitive |
 |---|---|---|---|
-| `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | `INSERT INTO sla_timers ON CONFLICT (tenant_id, ticket_id, sla_policy_id) WHERE state='active' DO UPDATE SET recompute_pending=true`. Existing partial unique index on `sla_timers (tenant_id, ticket_id) WHERE state='active'` already enforces "one active timer per ticket." Handler returns no-op on conflict. Worker fills `due_at` per §3.3. |
-| `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | Two-step: (1) UPDATE existing active timer set `state='completed'`; (2) INSERT new active timer with new `sla_policy_id` and `recompute_pending=true`. Idempotency: replay finds the new timer already exists (or the old one already completed) → no-op. Both steps are inside one tx invoked by the handler via a small RPC (`repoint_sla_timer`). |
-| `routing.evaluation_required` | `RoutingEvaluationHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket. **Not** §3.11 create (sync-routing per §3.9.2). | Reads `tickets.routing_status`; if `'idle'` (already resolved by a prior replay), returns no-op. Else runs `RoutingService.evaluate(...)`, calls `set_entity_assignment` RPC if a target was resolved, sets `routing_status='idle'` (or `'failed'` with `routing_failure_reason`). The `set_entity_assignment` RPC is itself idempotent via `command_operations` keyed on `${event_id}:routing`. |
+| `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | **TS handler computes `due_at`** (mirrors existing `sla.service.ts:73 startTimers`): policy minutes + business calendar + ticket created_at. Inserts one row per `timer_type` (`response`, `resolution`) with `due_at` filled, `recompute_pending=false`, `paused=false`, `started_at=now()`. Idempotency primitive: migration 00335's partial unique index on `sla_timers (tenant_id, ticket_id, sla_policy_id, timer_type)` WHERE `stopped_at IS NULL AND completed_at IS NULL`. Insert uses `ON CONFLICT DO NOTHING`; replay returns no-op. Then UPDATEs `tickets.sla_response_due_at` / `sla_resolution_due_at` to match. |
+| `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | Two-step inside a small RPC (`repoint_sla_timer`): (1) UPDATE existing active timers `SET stopped_at=now(), stopped_reason='reclassified'` WHERE `stopped_at IS NULL AND completed_at IS NULL`; (2) compute new `due_at` from new policy + ticket created_at and INSERT fresh active timers with `recompute_pending=false` and `ON CONFLICT DO NOTHING` against the 00335 partial unique index. Idempotency: replay finds the new timer already exists (or the old one already stopped) → no-op. |
+| `routing.evaluation_required` | `RoutingEvaluationHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket. **Not** §3.11 create (sync-routing per §3.9.2). | Reads `tickets.routing_status`; if `'idle'` already, returns no-op. Else runs `RoutingService.evaluate(...)`. **Unassigned outcome (v5 / I4):** if resolver returns `chosen_by='unassigned'` (no rule matched, valid per `docs/assignments-routing-fulfillment.md:149`), INSERT a `routing_decisions` row with `target=null`, `chosen_by='unassigned'` and set `routing_status='idle'`. **Failure outcome:** if the resolver throws, FK validation fails, or `set_entity_assignment` RPC errors, set `routing_status='failed'` and write `routing_failure_reason`. Successful resolve calls `set_entity_assignment` RPC (idempotent via `command_operations` keyed on `${event_id}:routing`) and sets `routing_status='idle'`. |
 | `workflow.start_required` | `WorkflowStartHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket, §3.11 create_ticket_with_automation | `WorkflowEngineService.startForTicket` updated to do `INSERT INTO workflow_instances ... ON CONFLICT (tenant_id, ticket_id) WHERE status IN ('active', 'waiting') DO NOTHING` per the migration 00333 partial unique index (C2 fix). On conflict the handler returns `{ kind: 'already_started' }` referencing the existing instance. |
 
 **Why no inline branches.** The historical pattern of "RPC writes
@@ -1777,16 +1900,20 @@ new_location_id?: uuid }`.
 10. UPDATE command_operations.
 
 **TS handlers** (sibling to existing `SetupWorkOrderHandler` from
-B.0.E):
-- `SlaTimerRepointHandler` — completes old timers, starts fresh
-  ones with the new policy. Atomically writes
-  `recompute_pending=true` on the new row (per §3.3); worker fills
-  in `due_at`.
+B.0.E; full contract in §3.9.3):
+- `SlaTimerRepointHandler` — calls `repoint_sla_timer` RPC which
+  stops old active timers (`stopped_at=now()`) and inserts fresh
+  ones with `due_at` computed in TS from the new policy
+  (mirrors `sla.service.ts:73 startTimers`). `recompute_pending`
+  stays `false` — fresh inserts always carry a real `due_at`
+  (v5 / C2).
 - `WorkflowRestartHandler` — cancels current `workflow_instances`
   row, starts a new one matching the new `workflow_definition_id`.
+  Idempotent via the migration 00333 partial unique index (v4 / C2).
 - `RoutingEvaluationHandler` — runs `RoutingService.evaluate(...)`,
-  calls `set_entity_assignment` RPC if the target differs, clears
-  `routing_status`.
+  calls `set_entity_assignment` RPC if the target differs, sets
+  `routing_status='idle'` on success OR on a valid `unassigned`
+  outcome (v5 / I4); `'failed'` only for genuine errors.
 
 **Sequencing:** B.2.B, after §3.0 + §3.2 land. The reclassify
 handlers depend on the per-field RPCs being available.
@@ -1806,39 +1933,87 @@ the gap.
 returns jsonb     -- { ticket: row, follow_ups: ['sla', 'routing', 'workflow', 'approval'] }
 ```
 
+**Two parameters: `p_input` (raw user payload) + `p_automation_plan`
+(TS-resolved effective config — v5 / C1).** The split makes the
+RPC's contract explicit: the user-facing fields drive validation +
+column writes; the automation plan drives the cascading side-
+effects. TS owns the resolution work (which is HTTP/index-heavy
+and benefits from caching); PG owns the atomic commit.
+
 `p_input` carries the create payload: `request_type_id, requester_person_id,
 title, description, priority?, location_id?, asset_id?, assigned_team_id?,
 assigned_user_id?, assigned_vendor_id?, watchers?, parent_ticket_id?,
-booking_id?, source, metadata?, routing_decision?, routing_trace?`. TS
-pre-mints `ticket_id` deterministically from the idempotency key.
-`watchers` is `string[]` to match `tickets.watchers` (`ticket.service.ts:76`).
-`routing_decision` and `routing_trace` are populated by the TS resolver
-preflight when no caller-provided assignee is present (per §3.9.2 v4 sync
-contract).
+booking_id?, source, metadata?`. TS pre-mints `ticket_id`
+deterministically from the idempotency key. `watchers` is `string[]`
+to match `tickets.watchers` (`ticket.service.ts:76`).
+
+`p_automation_plan` carries the TS-resolved effective config (v5 /
+C1):
+```
+{
+  effective_location_id: uuid | null,         -- ScopeOverrideResolverService.deriveEffectiveLocation
+  scope_override_id:    uuid | null,          -- ScopeOverrideResolverService.resolveForLocation (audit breadcrumb)
+  effective_workflow_definition_id: uuid | null,  -- override wins, else request_types.workflow_definition_id
+  effective_sla_policy_id:          uuid | null,  -- override wins, else request_types.sla_policy_id
+  routing_decision: { team_id?: uuid, user_id?: uuid, vendor_id?: uuid, chosen_by: text } | null,
+  routing_trace:    jsonb | null,             -- present iff routing_decision is non-null
+}
+```
+
+The TS plan-build phase mirrors the existing
+`runPostCreateAutomation` order at `apps/api/src/modules/ticket/ticket.service.ts:743`:
+1. `ScopeOverrideResolverService.deriveEffectiveLocation(tenant, intake)`
+   → `effective_location_id`.
+2. `ScopeOverrideResolverService.resolveForLocation(tenant, request_type_id, effective_location_id)`
+   → `scopeOverride` row.
+3. `effective_workflow_definition_id = scopeOverride?.workflow_definition_id ?? requestTypeCfg?.workflow_definition_id ?? null`.
+4. `effective_sla_policy_id = scopeOverride?.case_sla_policy_id ?? requestTypeCfg?.sla_policy_id ?? null`.
+5. *(if no caller assignee)* `RoutingService.evaluate(...)` →
+   `routing_decision` + `routing_trace`. Per §3.9.2 v4 sync contract.
+6. Build `p_automation_plan` and call the RPC.
 
 **Body sketch:**
 1. Advisory lock + `command_operations` gate (same pattern as §3.0).
-2. Validate every FK ref in `p_input` is tenant-owned via existing
-   helpers (`validate_assignees_in_tenant`, `validate_entity_in_tenant`
-   for parent_ticket_id, etc.). request_type_id check against
-   `request_types(id, tenant_id)` is critical because every cascading
-   side-effect derives from its config.
-3. SELECT request_types config FOR SHARE (it drives the rest of the
-   flow): `requires_approval`, `sla_policy_id`, `workflow_definition_id`.
-4. INSERT into `tickets` with the pre-minted id, including
-   `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` if
-   provided in `p_input` OR derived from `routing_decision`. Status:
-   - if `requires_approval` → `'pending_approval'`
-   - else → `'new'`
-   `routing_status` stays `'idle'` (sync routing path; no async chip).
-5. **Routing record (sync, v4 / C1).** If
+2. Validate every FK ref in `p_input` AND `p_automation_plan` is
+   tenant-owned via existing helpers
+   (`validate_assignees_in_tenant`, `validate_entity_in_tenant`
+   for parent_ticket_id, etc.). `request_type_id` check against
+   `request_types(id, tenant_id)`. Plan-side validation:
+   `effective_location_id` exists in `spaces(id, tenant_id)`,
+   `scope_override_id` (if any) exists in
+   `request_type_scope_overrides(id, tenant_id)`,
+   `effective_workflow_definition_id` exists in
+   `workflow_definitions`, `effective_sla_policy_id` exists in
+   `sla_policies`. **All FKs validated through the tenant-validation
+   helpers — no automation plan field is trusted blindly.**
+3. SELECT `request_types(id, tenant_id) FOR SHARE` purely to read
+   `requires_approval`. Workflow/SLA/location IDs come from
+   `p_automation_plan`, not from this row — TS already resolved
+   them.
+4. INSERT into `tickets` with the pre-minted id. Columns:
+   - `location_id = p_automation_plan.effective_location_id` (TS
+     already resolved through scope-override chain).
+   - `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`
+     from `p_input` if caller provided, else from
+     `p_automation_plan.routing_decision`, else null.
+   - `sla_policy_id = p_automation_plan.effective_sla_policy_id`
+     (mirrors `runPostCreateAutomation`'s
+     `effectiveCaseSlaPolicyId` write).
+   - `workflow_definition_id = p_automation_plan.effective_workflow_definition_id`.
+   - Status:
+     - if `requires_approval` → `'pending_approval'`
+     - else → `'new'`
+   - `routing_status` stays `'idle'` (sync routing path; no async chip).
+5. **Routing record (sync, v4 / C1; v5 / I4 unassigned).** If
    `p_input.assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`
-   is non-null, **skip** routing entirely. Else, if
-   `p_input.routing_decision` is non-null, INSERT a `routing_decisions`
-   row with `routing_trace` payload atomically with the ticket. Else
-   no routing row is written (no resolver match → unassigned ticket;
-   matches existing TS behavior). No `routing.evaluation_required`
-   outbox event from this path.
+   is non-null, **skip** routing entirely (no `routing_decisions`
+   row). Else, if `p_automation_plan.routing_decision` is non-null,
+   INSERT a `routing_decisions` row with the plan's `routing_trace`
+   payload. **`chosen_by='unassigned'` is a valid terminal outcome**
+   per `docs/assignments-routing-fulfillment.md:149`; the row still
+   gets written (with `target=null`, `chosen_by='unassigned'`) so
+   the audit trail is complete. `routing_status` stays `'idle'`
+   for unassigned (it is NOT a failure — see §3.9.2 v5 / I4).
 6. INSERT `ticket_activities (ticket_id, event='ticket_created', ...)`.
 7. INSERT `domain_events (event_type='ticket_created', ...)`.
 8. Branch on `requires_approval`:
@@ -1852,13 +2027,15 @@ contract).
        in step 5 (sync) or absent.
    - **NO** (no approval gate) → emit post-create automation outbox
      events atomically in the same tx:
-     - *(if request_type has SLA)* `sla.timer_recompute_required`
-       carrying tenant_id, ticket_id, sla_policy_id. Handler is the
-       `SlaTimerHandler` (§3.9.3) — INSERTs sla_timers + UPDATEs
-       ticket due-dates with the existing `recompute_pending=true`
-       semantics from §3.3 (worker fills in `due_at`).
-     - *(if request_type has workflow)* `workflow.start_required`
-       carrying tenant_id, ticket_id, workflow_definition_id. Handler
+     - *(if `p_automation_plan.effective_sla_policy_id` is non-null)*
+       `sla.timer_recompute_required` carrying tenant_id, ticket_id,
+       sla_policy_id. Handler is the `SlaTimerHandler` (§3.9.3) —
+       computes `due_at` in TS (mirrors `sla.service.ts:73 startTimers`),
+       INSERTs `sla_timers` with `due_at` filled, `recompute_pending=false`,
+       and UPDATEs ticket due-dates. Schema-compliant per v5 / C2.
+     - *(if `p_automation_plan.effective_workflow_definition_id`
+       is non-null)* `workflow.start_required` carrying tenant_id,
+       ticket_id, workflow_definition_id. Handler
        (`WorkflowStartHandler`, §3.9.3) starts the workflow instance
        via the existing `workflowService.startInstance` TS path with
        `INSERT ... ON CONFLICT DO NOTHING` semantics keyed on the
@@ -1890,17 +2067,20 @@ apply.
   assignee bypasses routing entirely (see step 5). No `routing.
   evaluation_required` outbox event from this path.
 
-**Cutover scope (v4 / I2).** Both call sites of `TicketService.create`
-must move to `create_ticket_with_automation`:
+**Cutover scope (v4 / I2; v5 / I3 route correction).** Both call
+sites of `TicketService.create` must move to
+`create_ticket_with_automation`:
 1. `TicketController` (`POST /tickets`).
 2. `PortalSubmitService.submit` (`apps/api/src/modules/portal/portal-
-   submit.service.ts:35`) — invoked by `POST /portal/submit`. The
+   submit.service.ts:35`) — invoked by `POST /portal/tickets`
+   per `apps/api/src/modules/portal/portal.controller.ts:111`. The
    portal flow currently builds an `intake` + `portal_trace` payload
-   and then calls `TicketService.create`; v4 routes that call through
-   the new RPC with the resolver preflight identical to the controller
-   path. Frontend cooperation: `apps/web/src/pages/portal/submit-
-   request.tsx:230` adds the `X-Client-Request-Id` header (Pattern A).
-   `RequireClientRequestIdGuard` is attached to `POST /portal/submit`
+   and then calls `TicketService.create`; v5 routes that call through
+   the new RPC with the resolver + automation-plan preflight identical
+   to the controller path. Frontend cooperation: `apps/web/src/pages/portal/submit-
+   request.tsx:230` (POSTs to `/portal/tickets`) adds the
+   `X-Client-Request-Id` header (Pattern A).
+   `RequireClientRequestIdGuard` is attached to `POST /portal/tickets`
    in §3.9.1's endpoint list.
 
 **Idempotency.** Same key reused → cached_result. Different payload
@@ -1944,13 +2124,13 @@ Numbering starts at 00316 (B.0 ended at 00315).
 | 00330 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
 | 00331 | `outbox_events_b2_handlers.sql` | Outbox event types for routing rerun + sla timer recompute + workflow restart. |
 | 00332 | `create_ticket_with_automation_rpc.sql` | §3.11 (v3 / C1) — atomic ticket create + automation outbox emit. |
-| 00333 | `workflow_instances_active_unique_index.sql` | v4 / C2 — partial unique index on `workflow_instances (tenant_id, ticket_id)` WHERE `status IN ('active', 'waiting')`. Required before §3.5 / §3.10 / §3.11 ship workflow-start outbox emits. |
-| 00334 | `workflow_node_executions_table.sql` | v4 / C3 — durable per-node-fire record carrying the `execution_token`. UNIQUE on `(workflow_instance_id, node_id, attempt)`. Required before §1.21 cutover. |
+| 00333 | `workflow_instances_active_unique_index.sql` | v4 / C2 — partial unique index on `workflow_instances (tenant_id, ticket_id)` WHERE `status IN ('active', 'waiting')`. **v5 / I1 — REQUIRES PREFLIGHT.** Existing code (`apps/api/src/modules/workflow/workflow-engine.service.ts:172`) blindly inserts; production may have duplicates. Migration starts with a `do $$ begin if exists (select 1 from workflow_instances where status in ('active','waiting') group by tenant_id, ticket_id having count(*) > 1) then raise exception 'duplicates detected — run cleanup first'; end if; end $$;` block that aborts if duplicates exist. Operator runs cleanup separately (cancel the older duplicates keeping the most-recent `created_at` per ticket), then re-runs the migration. **No silent cleanup inside the migration** — accidentally cancelling a real active workflow is not recoverable. Required before §3.5 / §3.10 / §3.11 ship workflow-start outbox emits. |
+| 00334 | `workflow_node_executions_table.sql` | v4 / C3 — durable per-node-fire record carrying the `execution_token`. UNIQUE on `(workflow_instance_id, node_id, attempt)`. v5 / I2 — table holds only the token (no `status` column; workflow engine uses Supabase HTTP, no shared tx for outcome tracking). Required before §1.21 cutover. |
+| 00335 | `sla_timers_active_unique_index.sql` | v5 / C2 — partial unique index on `sla_timers (tenant_id, ticket_id, sla_policy_id, timer_type)` WHERE `stopped_at IS NULL AND completed_at IS NULL`. Enforces "one active timer per (ticket, policy, timer_type)" so handler `INSERT ... ON CONFLICT DO NOTHING` works. Existing schema columns (`stopped_at`, `completed_at` from migrations 00011/00044) are reused; no schema change to `sla_timers`. **Same preflight pattern as 00333:** abort if duplicates exist, operator cleans up, re-run. Required before SlaTimerHandler ships in §3.5 / §3.11. |
 
-19 migrations. Up from v3's 17 — adds the workflow_instances unique
-index (00333, C2) and the workflow_node_executions table (00334, C3).
-`routing_failure_reason` remains folded into 00320 (no extra
-migration).
+20 migrations. Up from v4's 19 — adds 00335 (SLA timer active
+unique index, v5 / C2). `routing_failure_reason` remains folded
+into 00320 (no extra migration).
 
 **Cutover plan:**
 - Direct cutover (no shadow mode) for §3.0 (the orchestrator), §3.1,
