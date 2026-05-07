@@ -433,6 +433,116 @@
   - Migration count: 22 (unchanged — these are wording / body-
     sketch fixes). Commit estimate 39-55.
 
+- **v8 (2026-05-07).** Folds codex-v7 review findings.
+  Headline changes (the rule for v8: every place that picks
+  workflow / SLA reads from the **ticket row** at the time of
+  use, never from `request_types` defaults — the ticket carries
+  the effective config that was committed at create time. v3-v7
+  all leaked raw config reads into post-create paths; v8
+  closes the class):
+  - **C1.** Post-approval automation now reads from the ticket,
+    not from `request_types` defaults. v7 §3.5 SELECTed
+    request_types config and emitted SLA / workflow events
+    based on its raw fields — but the **effective** plan was
+    already committed onto `tickets.sla_id` and
+    `tickets.workflow_id` by §3.11 at create time. A scope-
+    overridden approval-gated ticket would start the WRONG SLA
+    and workflow on grant. v8 fix: §3.5 step 8 SELECTs the
+    target ticket FOR UPDATE and reads `ticket.sla_id` /
+    `ticket.workflow_id` directly. Outbox events carry those
+    values. The committed plan at create time is the
+    authoritative source.
+  - **C2.** Reclassify now compares **effective** config, not
+    raw request_type defaults, and updates `tickets.workflow_id`
+    / `tickets.sla_id` to the new effective values. v7 §3.10
+    compared `old.workflow_definition_id` /
+    `new.workflow_definition_id` from raw request_type config —
+    inconsistent with the create path's override-precedence
+    rule. v8 fix: the reclassify RPC body is rewritten to (a)
+    read OLD effective config from `ticket.workflow_id` /
+    `ticket.sla_id` (already on the row); (b) compute NEW
+    effective config via `request_type_effective_scope_override`
+    using the new request_type_id and the ticket's location;
+    (c) compare effective values; (d) UPDATE
+    `tickets.workflow_id` / `tickets.sla_id` to the new
+    effective values atomically with the request-type change;
+    (e) then conditionally cancel old workflow_instance + emit
+    follow-up events. Symmetric with §3.11.
+  - **C3.** Zombie workflow event race closed.
+    `WorkflowStartHandler`'s only previous guard was the
+    partial unique index — a stale pre-cancellation event for
+    an old workflow_definition_id could win the INSERT race
+    against a fresh post-cancellation event. v8 makes the
+    handler **read `ticket.workflow_id` at fire time** and
+    use THAT as the workflow_definition_id to insert. The
+    event payload is treated as a wake-up signal, not the
+    source of truth. If the event payload's
+    `workflow_definition_id` doesn't match the ticket's
+    current `workflow_id`, the event is stale and the handler
+    no-ops. Same discipline applied to `SlaTimerHandler` (now
+    reads `ticket.sla_id` at fire time, not event payload) —
+    closes the same race-class for SLA, even though codex
+    didn't flag it specifically. **Sweep finding.**
+  - **I1.** §3.11 step ordering corrected. v7 step 2a used
+    `v_request_type` before step 3 SELECTed it. v8 reorders:
+    step 1 (lock + idempotency), step 2 (FK validators),
+    step 3 (SELECT request_types FOR SHARE), step 4 (semantic
+    re-derivation, was 2a), step 5 onward (writes).
+  - **I2.** Ticket runtime column corrected. The ticket's
+    request-type column is `tickets.ticket_type_id` per
+    `supabase/migrations/00011_tickets.sql:6`, not
+    `request_type_id`. v7 spec used `request_type_id` in the
+    payload but never mapped it explicitly on INSERT. v8 keeps
+    the user-facing payload field as `request_type_id`
+    (matches the existing public API) but the RPC's INSERT
+    column list explicitly maps `ticket_type_id =
+    p_input.request_type_id`. Same naming asymmetry as
+    `workflow_id` (column) ← `workflow_definition_id` (config).
+    Documented inline so future readers don't repeat the
+    confusion.
+  - **I3.** Validators fully enumerated. v7 said
+    "validate_entity_in_tenant(...,'asset')" / "...,'request_type'"
+    "or dedicated helper" — hand-wavy. v8 makes 00318 a single
+    SECURITY DEFINER function with an allowlisted enum:
+    ```sql
+    create function public.validate_entity_in_tenant(
+      p_tenant_id uuid, p_kind text, p_id uuid
+    ) returns void language plpgsql security definer as $$ ...
+    ```
+    `p_kind` is checked against a fixed enum
+    `{'case', 'work_order', 'asset', 'space', 'request_type',
+    'scope_override', 'workflow_definition', 'sla_policy'}`,
+    then dispatches via CASE to the right table. One function,
+    allowlisted kinds, no SQL injection. The §3.11 step 2 list
+    references this function for every kind.
+  - **Sweep finding 1.** Every spec mention of "SELECT
+    request_types config and read workflow_definition_id /
+    sla_policy_id" was hunted. Outside the create path's
+    semantic re-derivation gate (§3.11 step 4 / v8 / I1) and
+    reclassify's NEW-effective-derivation (§3.10), there are
+    NO other places that may read raw request_types config.
+    All post-create + post-grant + post-reclassify paths read
+    from the ticket row. Documented as the v8 contract.
+  - **Sweep finding 2.** Every column-name asymmetry inventoried
+    once: `tickets.ticket_type_id` (config:
+    `request_type_id`), `tickets.workflow_id` (config:
+    `workflow_definition_id`), `tickets.sla_id` (config:
+    `sla_policy_id`). New §0.1 inline glossary added so
+    implementers don't have to chase migrations.
+  - Migration count: 22 (still unchanged — wording fixes; the
+    handler reads-from-ticket pattern is implementation, not
+    schema). Commit estimate 39-55.
+
+  **Meta-note on the round count.** This is the seventh
+  spec round. The pattern across rounds has been: codex flags
+  finding X, fold X locally, miss the same failure-class
+  elsewhere, codex finds it next round. v8 attempts to break
+  the pattern with explicit cross-cutting sweeps (above) and a
+  documented contract (the v8 rule: ticket row is source of
+  truth post-create). If v8 still has class-leak findings, the
+  next iteration adds an explicit invariant table to the spec
+  and a CI grep guard.
+
 
 ---
 
@@ -479,6 +589,42 @@ state-machine check → atomic writes → outbox emit (if any) → return
 outcome. Best-effort post-commit work (vendor email fan-out, slow
 notifications) stays in TS via `OutboxService.emit()` per the B.0
 pattern.
+
+## 0.1 Column-name glossary + source-of-truth contract (v8)
+
+**Column-name asymmetries.** The runtime `tickets` row carries
+shorter column names than the config tables; the spec uses both
+families and they are NOT interchangeable. Implementers must
+match the column to its actual table:
+
+| Concept | Config table column | Runtime ticket column |
+|---|---|---|
+| Request type | `request_types.id` | `tickets.ticket_type_id` |
+| Workflow definition | `request_types.workflow_definition_id` / `request_type_scope_overrides.workflow_definition_id` | `tickets.workflow_id` |
+| SLA policy | `request_types.sla_policy_id` / `request_type_scope_overrides.case_sla_policy_id` | `tickets.sla_id` |
+
+Citations: `supabase/migrations/00011_tickets.sql:6` (`ticket_type_id`),
+`:22` (`workflow_id`), `:23` (`sla_id`).
+
+**Source-of-truth contract (v8).** The effective workflow + SLA
+plan for a ticket is committed onto the runtime `tickets` row at
+create time (§3.11) and updated at reclassify time (§3.10).
+**Every read after create / grant / reclassify uses the ticket
+row's `workflow_id` and `sla_id`, NOT a fresh re-derivation
+from `request_types` config.** Re-derivation in PG happens only
+once: at the create RPC's semantic-mismatch gate (§3.11 step 4)
+to validate the TS plan, and at reclassify (§3.10) to compute
+the new effective values. After that, the ticket carries the
+truth.
+
+This is the contract that closes v8 / C1+C2+C3 — every
+post-create handler reads from the ticket, every event payload
+is treated as a wake-up signal whose payload may be stale, and
+the ticket row's effective columns are the only authority on
+which workflow / SLA should run. The committed plan is sticky;
+later edits to a `request_type_scope_overrides` row do not
+retroactively change the SLA / workflow on already-created
+tickets (admins use reclassify for that intent).
 
 ---
 
@@ -1733,31 +1879,44 @@ returns jsonb     -- { kind: 'resolved' | 'partial_approved' | 'already_responde
    not, return `kind: 'partial_approved'`.
 8. *(if approved AND fully resolved)* run post-grant automation
    atomically (v4 / I3 — no inline SLA insert; everything is an
-   outbox event for handler-contract uniformity):
-   - SELECT request_types config.
-   - *(if has SLA)* emit `sla.timer_recompute_required` outbox event
-     in the same tx (carries tenant_id, ticket_id, sla_policy_id).
-     Handler `SlaTimerHandler` (§3.9.3) computes `due_at` in TS
-     (mirrors `sla.service.ts:73 startTimers`), INSERTs `sla_timers`
-     with `due_at` filled and `recompute_pending=false`, and updates
-     ticket due-dates. **Replaces the v3 inline INSERT.** Reasoning:
-     same handler pattern as §3.10 reclassify and §3.11 create — one
-     SLA emit primitive, one handler. Schema-compliant per v5 / C2.
+   outbox event for handler-contract uniformity. **v8 / C1 fix —
+   read effective values from the TICKET, not from request_types
+   defaults**):
+   - SELECT the target ticket FOR UPDATE: `select id, tenant_id,
+     workflow_id, sla_id, ticket_type_id from public.tickets where
+     id = v_ticket_id`. The ticket carries the **effective**
+     workflow + SLA committed at create time by §3.11, possibly
+     including a scope override. Reading raw `request_types`
+     config here would silently start the wrong policy on
+     scope-overridden tickets (this was the v7 / C1 bug).
+   - *(if `ticket.sla_id` is non-null)* emit
+     `sla.timer_recompute_required` outbox event in the same tx
+     carrying `tenant_id, ticket_id, sla_id` (yes, the column on
+     tickets is `sla_id`; see §0.1 glossary). Handler
+     `SlaTimerHandler` (§3.9.3) computes `due_at` in TS using
+     `ticket.sla_id` policy + `BusinessHoursService.addBusinessMinutes`
+     and calls 00336's `start_sla_timers` RPC. **The handler
+     re-reads `ticket.sla_id` at fire time, not the event
+     payload** (v8 / C3 sweep — closes the stale-event race for
+     SLA the same way C3 closes it for workflow).
    - Routing evaluation: this is non-trivial. **Defer routing to
      post-commit outbox event** `routing.evaluation_required` so the
      RPC itself stays small. The outbox handler
      (`RoutingEvaluationHandler`, §3.9.3) runs the resolver in TS and
      either calls `set_entity_assignment` RPC or emits a
      `routing_failed` breadcrumb activity.
-   - **Workflow start (v3 / C2 fix; v4 / C2 idempotency primitive).**
-     If the request_type config has a `workflow_definition_id` AND
-     no active workflow instance exists yet for this ticket,
-     atomically emit `workflow.start_required` outbox event in the
-     same tx. The outbox handler (`WorkflowStartHandler`, §3.9.3)
-     starts the workflow instance via the existing
-     `workflowService.startInstance(...)` TS path. This closes the
-     v2 gap where v2's RPC covered SLA + routing but dropped
-     workflow start; today `runPostCreateAutomation`
+   - **Workflow start (v3 / C2 fix; v4 / C2 idempotency primitive;
+     v8 / C1+C3 source-of-truth fix).** If `ticket.workflow_id` is
+     non-null AND no active workflow instance exists yet for this
+     ticket (per migration 00333 partial unique index), atomically
+     emit `workflow.start_required` outbox event in the same tx
+     carrying `tenant_id, ticket_id, workflow_definition_id =
+     ticket.workflow_id`. **The handler re-reads `ticket.workflow_id`
+     at fire time and uses THAT value to insert** (v8 / C3 fix —
+     stale event payloads do not win the INSERT race). The handler
+     is the same `WorkflowStartHandler` used by §3.10 + §3.11.
+     This closes the v2 gap where v2's RPC covered SLA + routing
+     but dropped workflow start; today `runPostCreateAutomation`
      (`ticket.service.ts:716`) calls `startInstance` at line 865,
      and v2 silently lost that branch when migrating to the RPC.
 
@@ -2015,10 +2174,10 @@ B.0.E and registered in the same `OutboxModule`.
 
 | Event type | Handler | Emitting RPCs | Idempotency primitive |
 |---|---|---|---|
-| `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | **TS handler computes `due_at` then calls `start_sla_timers` RPC (v6 / C2 — single atomic write).** Steps: (a) SELECT the SLA policy + business hours calendar; (b) compute `due_at` for each `timer_type` (`response`, `resolution`) using `BusinessHoursService.addBusinessMinutes(calendar, ticket.created_at, policy.<minutes>)` — `started_at = ticket.created_at` per v6 nit, NOT `now()`, so the SLA clock matches when the customer asked; (c) call migration 00336's `start_sla_timers(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers)` RPC which does **INSERT timer rows + UPDATE `tickets.sla_response_due_at` / `sla_resolution_due_at` in one PG transaction**. The RPC uses `ON CONFLICT DO NOTHING` against migration 00335's partial unique index for replay safety. **No TS-side multi-write** — that was the v5 split-write that codex C2 flagged. |
+| `sla.timer_recompute_required` | `SlaTimerHandler` | §3.5 grant_ticket_approval (post-grant), §3.11 create_ticket_with_automation (post-create no-approval) | **Reads `ticket.sla_id` + `ticket.created_at` at fire time as source of truth (v8 / C3 sweep).** Event payload's `sla_policy_id` is treated as a wake-up reference; handler compares it against `tickets.sla_id`. If they differ → event is stale (a more recent reclassify ran), handler no-ops with `{ kind: 'stale_event' }`. If `ticket.sla_id IS NULL` → no-op. Else: (a) SELECT the SLA policy by `ticket.sla_id` + its business-hours calendar; (b) compute `due_at` for each `timer_type` (`response`, `resolution`) using `BusinessHoursService.addBusinessMinutes(calendar, ticket.created_at, policy.<minutes>)` — `started_at = ticket.created_at`, NOT `now()`, so the SLA clock matches when the customer asked; (c) call migration 00336's `start_sla_timers(p_tenant_id, p_ticket_id, p_sla_policy_id = ticket.sla_id, p_timers)` RPC which does **INSERT timer rows + UPDATE `tickets.sla_response_due_at` / `sla_resolution_due_at` in one PG transaction**. The RPC uses `ON CONFLICT DO NOTHING` against migration 00335's partial unique index for replay safety. **No TS-side multi-write** (v6 / C2). **No event-payload trust** (v8 / C3 sweep). |
 | `sla.timer_repointed_required` | `SlaTimerRepointHandler` | §3.10 reclassify_ticket | TS handler computes new `due_at` (same path as above) then calls migration 00337's `repoint_sla_timer(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers, p_reason)` RPC. **Idempotency short-circuit (v7 / I3):** RPC opens with `if exists (select 1 from sla_timers where tenant_id=$, ticket_id=$, sla_policy_id=p_sla_policy_id and stopped_at is null and completed_at is null) then return jsonb_build_object('kind','already_repointed'); end if;` so a replay returns no-op without touching state. Else proceeds atomically: (1) UPDATEs existing active timers `SET stopped_at=now(), stopped_reason=$reason` WHERE `sla_policy_id IS DISTINCT FROM p_sla_policy_id AND stopped_at IS NULL AND completed_at IS NULL` — **scoped to the OLD policy** so a re-execution wouldn't stop the new policy's timers; (2) INSERTs fresh active timers with `due_at` filled and `recompute_pending=false`, with `ON CONFLICT DO NOTHING` against the 00335 partial unique index; (3) UPDATEs ticket SLA due-date columns to the new values. All in one PG tx. |
 | `routing.evaluation_required` | `RoutingEvaluationHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket. **Not** §3.11 create (sync-routing per §3.9.2). | Reads `tickets.routing_status`; if `'idle'` already, returns no-op. Else runs `RoutingService.evaluate(...)`. **Unassigned outcome (v5 / I4):** if resolver returns `chosen_by='unassigned'` (no rule matched, valid per `docs/assignments-routing-fulfillment.md:149`), INSERT a `routing_decisions` row with `target=null`, `chosen_by='unassigned'` and set `routing_status='idle'`. **Failure outcome:** if the resolver throws, FK validation fails, or `set_entity_assignment` RPC errors, set `routing_status='failed'` and write `routing_failure_reason`. Successful resolve calls `set_entity_assignment` RPC (idempotent via `command_operations` keyed on `${event_id}:routing`) and sets `routing_status='idle'`. |
-| `workflow.start_required` | `WorkflowStartHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket, §3.11 create_ticket_with_automation | `WorkflowEngineService.startForTicket` updated to do `INSERT INTO workflow_instances ... ON CONFLICT (tenant_id, ticket_id) WHERE status IN ('active', 'waiting') DO NOTHING` per the migration 00333 partial unique index (C2 fix). On conflict the handler returns `{ kind: 'already_started' }` referencing the existing instance. |
+| `workflow.start_required` | `WorkflowStartHandler` | §3.5 grant_ticket_approval, §3.10 reclassify_ticket, §3.11 create_ticket_with_automation | **Reads `ticket.workflow_id` at fire time as source of truth (v8 / C3).** Event payload's `workflow_definition_id` is treated as a wake-up reference; handler compares it against `tickets.workflow_id`. If they differ → event is stale (a more recent reclassify ran), handler no-ops with `{ kind: 'stale_event' }`. If they match (or the event has the same value because it's the only path), `WorkflowEngineService.startForTicket` does `INSERT INTO workflow_instances (..., workflow_definition_id = ticket.workflow_id, ...) ON CONFLICT (tenant_id, ticket_id) WHERE status IN ('active', 'waiting') DO NOTHING` per the migration 00333 partial unique index (v4 / C2). On conflict (a different active instance is already running for the same workflow), the handler returns `{ kind: 'already_started' }` referencing the existing instance. If `ticket.workflow_id IS NULL` (e.g. reclassified to a request_type with no workflow), handler returns `{ kind: 'no_workflow' }` immediately. **Closes the zombie-event race** that existed when the handler trusted the event payload. |
 
 **Why no inline branches.** The historical pattern of "RPC writes
 SLA inline, RPC writes routing inline, RPC starts workflow inline"
@@ -2042,25 +2201,69 @@ returns jsonb     -- { ticket: row, follow_ups: [...event types emitted] }
 `p_payload = { new_request_type_id: uuid, reason?: string,
 new_location_id?: uuid }`.
 
-**Body sketch:**
+**Body sketch (v8 — effective-config comparison):**
 1. Advisory lock + command_operations gate.
-2. SELECT current ticket FOR UPDATE.
-3. Validate new_request_type_id is tenant-owned + active.
-4. Compute the cascade (does SLA change? workflow change? routing
-   change?) by reading old + new request_type configs.
-5. UPDATE tickets (request_type_id, possibly category / location).
+2. SELECT current ticket FOR UPDATE — captures
+   `(ticket_type_id, location_id, asset_id, workflow_id,
+   sla_id)`. The ticket's current `workflow_id` and `sla_id`
+   are the **OLD effective values** (committed at create or
+   the previous reclassify; see §0.1 source-of-truth contract).
+3. Validate `new_request_type_id` is tenant-owned + active via
+   the validators from §3.9.1.
+4. **Compute NEW effective config (v8 / C2 fix).** Comparing
+   raw `request_types.workflow_definition_id` /
+   `sla_policy_id` would skip overrides — a new request_type
+   with a matching scope override could leave effective values
+   unchanged, but raw config compare would say they changed
+   (and vice versa). Mirror §3.11 step 4:
+   ```sql
+   v_effective_location_id := coalesce(
+     coalesce(p_payload.new_location_id, ticket.location_id),
+     (select assigned_space_id from public.assets where id = ticket.asset_id and tenant_id = p_tenant_id)
+   );
+   v_new_override jsonb := public.request_type_effective_scope_override(
+     p_tenant_id, p_payload.new_request_type_id, v_effective_location_id
+   );
+   v_new_request_type record :=
+     (select sla_policy_id, workflow_definition_id from request_types
+      where id = p_payload.new_request_type_id and tenant_id = p_tenant_id);
+   v_new_workflow_id uuid := coalesce(
+     (v_new_override->>'workflow_definition_id')::uuid,
+     v_new_request_type.workflow_definition_id
+   );
+   v_new_sla_id uuid := coalesce(
+     (v_new_override->>'case_sla_policy_id')::uuid,
+     v_new_request_type.sla_policy_id
+   );
+   ```
+   These are the **new effective values** that go onto the
+   ticket and drive cascade decisions. Compare against
+   `ticket.workflow_id` (OLD effective) and `ticket.sla_id`
+   (OLD effective).
+5. UPDATE tickets — write the request-type column with its
+   correct runtime name, the new effective workflow + SLA,
+   and the resolved location:
+   ```sql
+   update public.tickets
+      set ticket_type_id = p_payload.new_request_type_id,
+          location_id    = v_effective_location_id,
+          workflow_id    = v_new_workflow_id,
+          sla_id         = v_new_sla_id,
+          reclassified_reason = p_reason,
+          reclassified_at = now(),
+          reclassified_by = p_actor_user_id,
+          updated_at     = now()
+    where id = p_ticket_id and tenant_id = p_tenant_id;
+   ```
 6. INSERT ticket_activities (`reclassified`, payload includes
-   old + new types).
+   old + new types AND old + new effective workflow/SLA so
+   the audit feed shows the actual decision drivers).
 7. INSERT domain_events (`ticket_reclassified`).
 8. **Cancel pre-existing active workflow_instances if the
-   workflow definition is changing (v7 / C2 fix).** The
-   `WorkflowStartHandler` does `INSERT ... ON CONFLICT DO NOTHING`
-   keyed on the migration 00333 partial unique index, so a still-
-   active row would silently no-op the new workflow start. The
-   RPC must cancel the old row in the same tx, mirroring the
-   existing pattern at `supabase/migrations/00046_reclassify_preserve_parent_status.sql:65-77`:
+   effective workflow is changing (v7 / C2 fix; v8 / C2 effective
+   compare).** Compare effective values, not raw config:
    ```sql
-   if old.workflow_definition_id is distinct from new.workflow_definition_id then
+   if ticket.workflow_id is distinct from v_new_workflow_id then
      update public.workflow_instances
         set status = 'cancelled',
             cancelled_at = now(),
@@ -2071,17 +2274,29 @@ new_location_id?: uuid }`.
         and status in ('active', 'waiting');
    end if;
    ```
-   With the active rows now `cancelled`, the partial unique index
-   no longer matches and the handler's INSERT can succeed.
+   Mirrors `supabase/migrations/00046_reclassify_preserve_parent_status.sql:65-77`.
+   With the active rows now `cancelled`, the partial unique
+   index no longer matches and the handler's INSERT can
+   succeed. If effective workflow is unchanged (override
+   absorbed the request_type change), no cancellation, no
+   start event — the existing instance keeps running.
 
-9. **Emit outbox events atomically (in the same tx):**
-   - `sla.timer_repointed_required` if old.sla_policy_id !=
-     new.sla_policy_id.
-   - `workflow.start_required` if old.workflow_definition_id !=
-     new.workflow_definition_id (cancellation done in step 8).
-   - `routing.evaluation_required` (always — even if the new type
-     might resolve to the same target, the resolver should re-run
-     to record the breadcrumb).
+9. **Emit outbox events atomically (in the same tx) using
+   EFFECTIVE comparison:**
+   - `sla.timer_repointed_required` if `ticket.sla_id IS
+     DISTINCT FROM v_new_sla_id`. Payload carries
+     `tenant_id, ticket_id, sla_policy_id = v_new_sla_id`.
+     Handler re-reads `ticket.sla_id` at fire time per v8 / C3
+     sweep.
+   - `workflow.start_required` if `ticket.workflow_id IS
+     DISTINCT FROM v_new_workflow_id` AND `v_new_workflow_id
+     IS NOT NULL` (cancellation already done in step 8).
+     Payload carries `workflow_definition_id =
+     v_new_workflow_id`. Handler re-reads `ticket.workflow_id`
+     at fire time per v8 / C3.
+   - `routing.evaluation_required` (always — even if the new
+     type might resolve to the same target, the resolver should
+     re-run to record the breadcrumb).
 10. Set `tickets.routing_status='pending'` (per §3.9.2) so the UI
     shows the routing-in-flight chip.
 11. UPDATE command_operations.
@@ -2162,62 +2377,81 @@ The TS plan-build phase mirrors the existing
    `routing_decision` + `routing_trace`. Per §3.9.2 v4 sync contract.
 6. Build `p_automation_plan` and call the RPC.
 
-**Body sketch:**
+**Body sketch (v8 — step ordering corrected per I1):**
 1. Advisory lock + `command_operations` gate (same pattern as §3.0).
 2. Validate every FK ref in `p_input` AND `p_automation_plan` is
-   tenant-owned via the dedicated helpers from migration 00318
-   (v6 / I1 — one validator per table-family):
+   tenant-owned via the single allowlisted-kind helper from
+   migration 00318 (v6 / I1; v8 / I3 consolidation —
+   `validate_entity_in_tenant(p_tenant_id, p_kind, p_id)`):
    - `p_input.requester_person_id` →
      `validate_assignees_in_tenant` (existing).
    - `p_input.parent_ticket_id` →
-     `validate_entity_in_tenant(...,'ticket')` (existing).
-   - `p_input.asset_id` → `validate_entity_in_tenant(...,'asset')`
-     (or dedicated helper if asset isn't in the existing
-     enum).
+     `validate_entity_in_tenant(p_tenant_id, 'case', p_id)`.
+   - `p_input.asset_id` →
+     `validate_entity_in_tenant(p_tenant_id, 'asset', p_id)`.
    - `p_input.assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`
      → `validate_assignees_in_tenant`.
    - `p_input.location_id` AND
      `p_automation_plan.effective_location_id` →
-     `validate_space_in_tenant` (new in 00318 per v6 / I1).
+     `validate_entity_in_tenant(p_tenant_id, 'space', p_id)`.
    - `p_automation_plan.scope_override_id` →
-     `validate_scope_override_in_tenant` (new).
+     `validate_entity_in_tenant(p_tenant_id, 'scope_override', p_id)`.
    - `p_automation_plan.effective_workflow_definition_id` →
-     `validate_workflow_definition_in_tenant` (new).
+     `validate_entity_in_tenant(p_tenant_id, 'workflow_definition', p_id)`.
    - `p_automation_plan.effective_sla_policy_id` →
-     `validate_sla_policy_in_tenant` (new).
+     `validate_entity_in_tenant(p_tenant_id, 'sla_policy', p_id)`.
    - `p_input.request_type_id` →
-     `validate_entity_in_tenant(...,'request_type')` or
-     dedicated helper.
-   **No automation-plan field is trusted blindly; tenant
-   ownership is verified for every FK.**
+     `validate_entity_in_tenant(p_tenant_id, 'request_type', p_id)`.
+   The function rejects any `p_kind` outside the allowlist
+   `{'case', 'work_order', 'asset', 'space', 'request_type',
+   'scope_override', 'workflow_definition', 'sla_policy'}` so
+   no SQL injection is possible (v8 / I3). **No automation-plan
+   field is trusted blindly; tenant ownership is verified for
+   every FK.**
+3. **SELECT `request_types FOR SHARE`** purely to read
+   `requires_approval` AND `workflow_definition_id` AND
+   `sla_policy_id` (the latter two are needed for step 4's
+   re-derivation — they're the fallbacks when no override
+   matches):
+   ```sql
+   v_request_type record := (
+     select requires_approval, workflow_definition_id, sla_policy_id
+     from public.request_types
+     where id = p_input.request_type_id and tenant_id = p_tenant_id
+     for share
+   );
+   ```
+   This step **must precede** step 4 (v8 / I1 fix — v7 had
+   step 2a referencing `v_request_type` before step 3 selected
+   it).
+4. **Semantic re-derivation (v6 / I2; v7 / C1 signature; v8 / I1
+   ordering).** Tenant validation proves "the row belongs to
+   this tenant" but does not prove "the row is the correct one
+   for this request." A buggy or stale TS plan-build could pass
+   tenant validation but still select the wrong workflow/SLA/
+   location. PG independently re-derives:
 
-2a. **Semantic re-derivation (v6 / I2; v7 / I1+C1 fixes).**
-    Tenant validation proves "the row belongs to this tenant"
-    but does not prove "the row is the correct one for this
-    request." A buggy or stale TS plan-build could pass tenant
-    validation but still select the wrong workflow/SLA/location.
-    PG independently re-derives:
+    1. **Effective location.** Mirror the TS chain at
+       `apps/api/src/modules/routing/scope-override-resolver.service.ts:111`:
+       ```sql
+       v_derived_location_id uuid := coalesce(
+         p_input.location_id,
+         (select assigned_space_id from public.assets
+          where id = p_input.asset_id and tenant_id = p_tenant_id)
+       );
+       ```
+       Assert this equals `p_automation_plan.effective_location_id`;
+       mismatch → reject
+       `automation_plan.effective_location_mismatch`.
 
-    1. **Effective location (v7 / I1).** Mirror the TS chain at
-       `apps/api/src/modules/routing/scope-override-resolver.service.ts:111`
-       — `coalesce(p_input.location_id, (select assigned_space_id
-       from public.assets where id = p_input.asset_id and tenant_id
-       = p_tenant_id))`. Assert this equals
-       `p_automation_plan.effective_location_id`; mismatch →
-       reject `automation_plan.effective_location_mismatch`.
-       Trusting TS-supplied location is unsafe; this catches
-       stale-plan bugs at the gate.
-
-    2. **Effective workflow + SLA (v6 / I2; v7 / C1 signature).**
-       Use the existing PG function. Per
-       `supabase/migrations/00096_effective_scope_override.sql:10`:
+    2. **Effective workflow + SLA.** Use the existing PG function
+       per `supabase/migrations/00096_effective_scope_override.sql:10`:
        ```sql
        v_override jsonb := public.request_type_effective_scope_override(
-         p_tenant_id,            -- (NOT p_input.request_type_id first)
+         p_tenant_id,
          p_input.request_type_id,
-         v_derived_location_id   -- the value verified in step 1
+         v_derived_location_id
        );
-       v_request_type record :=  -- already SELECTed in step 3 below
        v_derived_workflow_definition_id uuid := coalesce(
          (v_override->>'workflow_definition_id')::uuid,
          v_request_type.workflow_definition_id
@@ -2234,43 +2468,42 @@ The TS plan-build phase mirrors the existing
        reject `automation_plan.semantic_mismatch` AppError with
        both values in the payload.
 
-    3. **Override id (v7).** If `p_automation_plan.scope_override_id`
+    3. **Override id.** If `p_automation_plan.scope_override_id`
        is non-null, assert it equals `(v_override->>'id')::uuid`.
        Else assert `v_override IS NULL` (no override resolved on
        either side). Mismatch →
        `automation_plan.scope_override_mismatch`.
 
-    4. **Routing trace input (v6 / I2).** *(if
+    4. **Routing trace input.** *(if
        `p_automation_plan.routing_decision` is non-null)* assert
        `routing_trace.input` matches `(p_input.request_type_id,
        v_derived_location_id, p_input.asset_id)` — proves the
        resolver ran on the correct tuple even though we don't
        re-run the resolver itself in PG. Mismatch →
        `automation_plan.routing_input_mismatch`.
-3. SELECT `request_types(id, tenant_id) FOR SHARE` purely to read
-   `requires_approval`. Workflow/SLA/location IDs come from
-   `p_automation_plan`, not from this row — TS already resolved
-   them.
-4. INSERT into `tickets` with the pre-minted id. Columns:
+5. INSERT into `tickets` with the pre-minted id. **Column-name
+   mappings (v8 / I2 — every ticket-side column is the runtime
+   name, not the config name; see §0.1 glossary):**
+   - **`ticket_type_id = p_input.request_type_id`** (the user-
+     facing payload field is `request_type_id` to match the
+     existing public API + the rest of this spec; the column on
+     `tickets` is `ticket_type_id` per
+     `supabase/migrations/00011_tickets.sql:6`. Map explicitly
+     on INSERT.)
    - `location_id = p_automation_plan.effective_location_id` (TS
      already resolved through scope-override chain).
    - `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`
      from `p_input` if caller provided, else from
      `p_automation_plan.routing_decision`, else null.
    - **`sla_id = p_automation_plan.effective_sla_policy_id`**
-     (note: the **column on `tickets` is `sla_id`** per
-     `supabase/migrations/00011_tickets.sql:23`, not
-     `sla_policy_id`. Same name asymmetry as `workflow_id` —
-     v7 / I2.)
+     (column is `sla_id` per `00011:23`; v7 / I2.)
    - **`workflow_id = p_automation_plan.effective_workflow_definition_id`**
-     (note: the **column on `tickets` is `workflow_id`** per
-     `supabase/migrations/00011_tickets.sql:22`, even though the
-     config tables use `workflow_definition_id`. v6 / C1.)
+     (column is `workflow_id` per `00011:22`; v6 / C1.)
    - Status:
      - if `requires_approval` → `'pending_approval'`
      - else → `'new'`
    - `routing_status` stays `'idle'` (sync routing path; no async chip).
-5. **Routing record (sync, v4 / C1; v5 / I4 unassigned).** If
+6. **Routing record (sync, v4 / C1; v5 / I4 unassigned).** If
    `p_input.assigned_team_id`/`assigned_user_id`/`assigned_vendor_id`
    is non-null, **skip** routing entirely (no `routing_decisions`
    row). Else, if `p_automation_plan.routing_decision` is non-null,
@@ -2280,34 +2513,36 @@ The TS plan-build phase mirrors the existing
    gets written (with `target=null`, `chosen_by='unassigned'`) so
    the audit trail is complete. `routing_status` stays `'idle'`
    for unassigned (it is NOT a failure — see §3.9.2 v5 / I4).
-6. INSERT `ticket_activities (ticket_id, event='ticket_created', ...)`.
-7. INSERT `domain_events (event_type='ticket_created', ...)`.
-8. Branch on `requires_approval`:
+7. INSERT `ticket_activities (ticket_id, event='ticket_created', ...)`.
+8. INSERT `domain_events (event_type='ticket_created', ...)`.
+9. Branch on `requires_approval`:
    - **YES** → call `approvalService.createSingleStep` equivalent inline
      as a private helper:
      - INSERT `approvals (target_entity_type='ticket', target_entity_id=ticket_id, status='pending', ...)`.
      - INSERT `domain_events (event_type='approval_requested', ...)`.
      - INSERT `ticket_activities (event='approval_requested', ...)`.
      - **No** SLA timers, **no** workflow start yet. Those land when
-       the approval is granted (via §3.5). Routing is already recorded
-       in step 5 (sync) or absent.
+       the approval is granted (via §3.5, which **reads
+       `tickets.sla_id` / `tickets.workflow_id` at grant time** —
+       v8 / C1 source-of-truth). Routing is already recorded in
+       step 6 (sync) or absent.
    - **NO** (no approval gate) → emit post-create automation outbox
-     events atomically in the same tx:
-     - *(if `p_automation_plan.effective_sla_policy_id` is non-null)*
-       `sla.timer_recompute_required` carrying tenant_id, ticket_id,
-       sla_policy_id. Handler is the `SlaTimerHandler` (§3.9.3) —
-       computes `due_at` in TS (mirrors `sla.service.ts:73 startTimers`),
-       INSERTs `sla_timers` with `due_at` filled, `recompute_pending=false`,
-       and UPDATEs ticket due-dates. Schema-compliant per v5 / C2.
-     - *(if `p_automation_plan.effective_workflow_definition_id`
-       is non-null)* `workflow.start_required` carrying tenant_id,
-       ticket_id, workflow_definition_id. Handler
-       (`WorkflowStartHandler`, §3.9.3) starts the workflow instance
-       via the existing `workflowService.startInstance` TS path with
-       `INSERT ... ON CONFLICT DO NOTHING` semantics keyed on the
-       partial unique index added in migration 00333 (C2 fix).
-9. UPDATE `command_operations` to outcome='success'.
-10. Return `{ ticket: row, follow_ups: [...event types emitted] }`.
+     events atomically in the same tx (payloads carry the EFFECTIVE
+     values committed onto the ticket in step 5, but handlers
+     re-read from the ticket row at fire time per v8 / C3):
+     - *(if `ticket.sla_id IS NOT NULL`)* `sla.timer_recompute_required`
+       carrying `tenant_id, ticket_id, sla_policy_id = ticket.sla_id`.
+       Handler `SlaTimerHandler` (§3.9.3) re-reads `ticket.sla_id`
+       at fire time, computes `due_at` in TS, calls 00336
+       `start_sla_timers` RPC.
+     - *(if `ticket.workflow_id IS NOT NULL`)*
+       `workflow.start_required` carrying `tenant_id, ticket_id,
+       workflow_definition_id = ticket.workflow_id`. Handler
+       `WorkflowStartHandler` (§3.9.3) re-reads `ticket.workflow_id`
+       at fire time, INSERTs via `INSERT ... ON CONFLICT DO NOTHING`
+       against the migration 00333 partial unique index.
+10. UPDATE `command_operations` to outcome='success'.
+11. Return `{ ticket: row, follow_ups: [...event types emitted] }`.
 
 **Why this is one RPC, not three.** The decisive question: can the
 ticket exist without ANY of the post-create side-effects firing? On
@@ -2330,7 +2565,7 @@ apply.
   the dto, TS calls `RoutingService.evaluate(...)` and adds the
   result to `p_input` as `routing_decision` + `routing_trace`. The
   RPC writes the `routing_decisions` row atomically. Caller-provided
-  assignee bypasses routing entirely (see step 5). No `routing.
+  assignee bypasses routing entirely (see step 6). No `routing.
   evaluation_required` outbox event from this path.
 
 **Cutover scope (v4 / I2; v5 / I3 route correction).** Both call
@@ -2375,7 +2610,7 @@ Numbering starts at 00316 (B.0 ended at 00315).
 |---|---|---|
 | 00316 | `command_operations_table.sql` | New idempotency table (§3.7). |
 | 00317 | `validate_assignees_in_tenant_helper.sql` | Drop-in for TS helper. |
-| 00318 | `validate_entity_in_tenant_helper.sql` | Tenant-validate (case\|wo).id. **v6 / I1 — also adds four dedicated validators** for the automation-plan FKs: `validate_space_in_tenant(p_tenant_id, p_id)`, `validate_scope_override_in_tenant(p_tenant_id, p_id)`, `validate_workflow_definition_in_tenant(p_tenant_id, p_id)`, `validate_sla_policy_in_tenant(p_tenant_id, p_id)`. Each is a SECURITY DEFINER function that raises if the row isn't found in the named table for the given tenant. Pattern matches `validate_assignees_in_tenant`. |
+| 00318 | `validate_entity_in_tenant_helper.sql` | Single SECURITY DEFINER function `validate_entity_in_tenant(p_tenant_id uuid, p_kind text, p_id uuid)` (v8 / I3 consolidation). `p_kind` is checked against an allowlist `{'case', 'work_order', 'asset', 'space', 'request_type', 'scope_override', 'workflow_definition', 'sla_policy'}` at function start; unknown kind raises immediately. Body dispatches via CASE to the right table for the tenant-ownership check; raises if the row is missing. One function, allowlisted kinds, no SQL injection. |
 | 00319 | `sla_timers_recompute_pending_column.sql` | C3 fix — `recompute_pending boolean` + partial index. Required before §3.1 / §3.3. |
 | 00320 | `tickets_routing_status_column.sql` | I2 fix — `routing_status text` (default `'idle'`, values `'idle'\|'pending'\|'failed'`) + `routing_failure_reason text` for async-routing surfaces. |
 | 00321 | `transition_entity_status_rpc.sql` | §3.1. |
