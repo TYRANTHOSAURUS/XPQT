@@ -88,7 +88,7 @@ export class WebhookIngestService {
           workflowInstanceId = instance?.id ?? null;
         }
 
-        await this.markUsed(webhook.id);
+        await this.markUsed(webhook.id, webhook.tenant_id);
         await this.events.log({
           tenantId: webhook.tenant_id,
           webhookId: webhook.id,
@@ -163,11 +163,16 @@ export class WebhookIngestService {
     return data?.id ?? null;
   }
 
-  private async markUsed(webhookId: string) {
+  private async markUsed(webhookId: string, tenantId: string) {
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): the webhook
+    // id was already validated by WebhookAuthService.verify, but
+    // supabase.admin bypasses RLS — defense-in-depth tenant filter on the
+    // last_used_at stamp.
     const { error } = await this.supabase.admin
       .from('workflow_webhooks')
       .update({ last_used_at: new Date().toISOString() })
-      .eq('id', webhookId);
+      .eq('id', webhookId)
+      .eq('tenant_id', tenantId);
     if (error) this.logger.warn(`webhook last_used_at update failed: ${error.message}`);
   }
 }

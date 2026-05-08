@@ -366,7 +366,7 @@ export class SlaService {
     // Mark tickets as "at risk" when within 80% of their SLA
     const { data: atRiskTimers } = await this.supabase.admin
       .from('sla_timers')
-      .select('id, ticket_id, started_at, due_at, target_minutes')
+      .select('id, ticket_id, tenant_id, started_at, due_at, target_minutes')
       .eq('breached', false)
       .eq('paused', false)
       .is('completed_at', null)
@@ -374,30 +374,50 @@ export class SlaService {
       .gt('due_at', now.toISOString())
       .limit(200);
 
-    const atRiskTicketIds: string[] = [];
+    // Cross-tenant bulk-write fix (codex post-fix review 2026-05-08): the
+    // prior shape did `.in('id', atRiskTicketIds)` with no tenant filter,
+    // so a corrupt sla_timers.ticket_id (e.g. an id colliding across
+    // tenants) could flip another tenant's tickets/work_orders to
+    // sla_at_risk=true. Group by tenant_id (carried on each timer row) and
+    // run one update per tenant. tickets.sla_at_risk and
+    // work_orders.sla_at_risk are independent rows so this is also more
+    // honest about the boundary.
+    const atRiskByTenant = new Map<string, Set<string>>();
     for (const timer of atRiskTimers ?? []) {
       const started = new Date(timer.started_at).getTime();
       const due = new Date(timer.due_at).getTime();
       const elapsed = now.getTime() - started;
       const total = due - started;
       const percentUsed = total > 0 ? elapsed / total : 0;
-      if (percentUsed >= 0.8) atRiskTicketIds.push(timer.ticket_id as string);
+      if (percentUsed >= 0.8) {
+        const tenantId = timer.tenant_id as string;
+        const set = atRiskByTenant.get(tenantId) ?? new Set<string>();
+        set.add(timer.ticket_id as string);
+        atRiskByTenant.set(tenantId, set);
+      }
     }
-    if (atRiskTicketIds.length > 0) {
+    if (atRiskByTenant.size > 0) {
       // Step 1c.10c: ids may live in tickets (cases) or work_orders. Issue
-      // both updates; each is a no-op for ids not in that table.
-      await Promise.all([
-        this.supabase.admin
-          .from('tickets')
-          .update({ sla_at_risk: true })
-          .in('id', atRiskTicketIds)
-          .eq('sla_at_risk', false),
-        this.supabase.admin
-          .from('work_orders')
-          .update({ sla_at_risk: true })
-          .in('id', atRiskTicketIds)
-          .eq('sla_at_risk', false),
-      ]);
+      // both updates per tenant; each is a no-op for ids not in that table.
+      await Promise.all(
+        Array.from(atRiskByTenant.entries()).flatMap(([tenantId, ids]) => {
+          const idArr = Array.from(ids);
+          return [
+            this.supabase.admin
+              .from('tickets')
+              .update({ sla_at_risk: true })
+              .eq('tenant_id', tenantId)
+              .in('id', idArr)
+              .eq('sla_at_risk', false),
+            this.supabase.admin
+              .from('work_orders')
+              .update({ sla_at_risk: true })
+              .eq('tenant_id', tenantId)
+              .in('id', idArr)
+              .eq('sla_at_risk', false),
+          ];
+        }),
+      );
     }
 
     // Threshold-crossing pass — fires notify/escalate actions.

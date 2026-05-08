@@ -491,6 +491,7 @@ export class ApprovalService {
         comments: dto.comments,
       })
       .eq('id', approvalId)
+      .eq('tenant_id', tenant.id)
       .eq('status', 'pending')
       .select()
       .maybeSingle();

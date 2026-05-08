@@ -113,12 +113,18 @@ export class BundleCascadeService {
     const lineKind = await this.lineKindForOli(args.line_id, tenantId);
 
     // Cancel asset reservation, work-order ticket, then the line.
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): every
+    // .update().eq('id', X) below adds .eq('tenant_id', tenantId) for
+    // defense-in-depth. The line/bundle were already proven in-tenant via
+    // loadLine/loadBundle reads above; supabase.admin still bypasses RLS
+    // so an unfiltered update would mutate any row sharing the id.
     const cascaded = { ticket_ids: [] as string[], asset_reservation_ids: [] as string[] };
     if (line.linked_asset_reservation_id) {
       await this.supabase.admin
         .from('asset_reservations')
         .update({ status: 'cancelled' })
-        .eq('id', line.linked_asset_reservation_id);
+        .eq('id', line.linked_asset_reservation_id)
+        .eq('tenant_id', tenantId);
       cascaded.asset_reservation_ids.push(line.linked_asset_reservation_id);
     }
     // Cascade-cancel any booking-origin work orders linked TO this line via
@@ -163,7 +169,8 @@ export class BundleCascadeService {
         fulfillment_status: 'cancelled',
         pending_setup_trigger_args: null,
       })
-      .eq('id', args.line_id);
+      .eq('id', args.line_id)
+      .eq('tenant_id', tenantId);
 
     // Re-scope approvals: drop the cancelled line + its linked ticket + its
     // linked asset reservation from scope_breakdown. Otherwise an approval
@@ -286,6 +293,7 @@ export class BundleCascadeService {
       await this.supabase.admin
         .from('asset_reservations')
         .update({ status: 'cancelled' })
+        .eq('tenant_id', tenantId)
         .in('id', cancelledAssetReservationIds);
     }
 
@@ -318,6 +326,7 @@ export class BundleCascadeService {
           fulfillment_status: 'cancelled',
           pending_setup_trigger_args: null,
         })
+        .eq('tenant_id', tenantId)
         .in('id', cancelledLineIds);
     }
 
@@ -566,17 +575,23 @@ export class BundleCascadeService {
         const arr = (updated[key] as string[] | undefined) ?? [];
         return arr.length > 0;
       });
+      // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+      // approvals row was already loaded under tenantId above, but writes
+      // by id alone bypass RLS via supabase.admin. Add explicit tenant
+      // filter for defense-in-depth.
       if (!stillCovers) {
         await this.supabase.admin
           .from('approvals')
           .update({ status: 'expired', responded_at: new Date().toISOString(), comments: 'Auto-closed after scope drop' })
-          .eq('id', row.id);
+          .eq('id', row.id)
+          .eq('tenant_id', tenantId);
         closed.push(row.id);
       } else {
         await this.supabase.admin
           .from('approvals')
           .update({ scope_breakdown: updated })
-          .eq('id', row.id);
+          .eq('id', row.id)
+          .eq('tenant_id', tenantId);
       }
     }
     return closed;
@@ -593,9 +608,11 @@ export class BundleCascadeService {
     if (error) throw error;
     const ids = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
     if (ids.length === 0) return [];
+    // Cross-tenant write fix: bulk update by id list — add tenant filter.
     await this.supabase.admin
       .from('approvals')
       .update({ status: 'expired', responded_at: new Date().toISOString(), comments: 'Bundle cancelled; voiding approval' })
+      .eq('tenant_id', tenantId)
       .in('id', ids);
     return ids;
   }

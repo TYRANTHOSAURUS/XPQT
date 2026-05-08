@@ -212,10 +212,20 @@ export class WorkflowEngineService {
     if (!nextNode) return;
 
     if (!ctx?.dryRun) {
+      // Cross-tenant FK leak fix (security audit 2026-05-08, codex post-fix
+      // review): the prior version updated workflow_instances by id alone.
+      // supabase.admin bypasses RLS, so a colliding instance id would let one
+      // tenant advance another tenant's workflow. advance() is only invoked
+      // from inside a TenantContext.run scope (startForTicket → controller's
+      // ambient context; executeNode → tenant resolved at the top of each
+      // node branch; resume() → TenantContext.run({id: instance.tenant_id})).
+      // Filter the write defensively.
+      const advTenant = TenantContext.current();
       await this.supabase.admin
         .from('workflow_instances')
         .update({ current_node_id: nextNode.id })
-        .eq('id', instanceId);
+        .eq('id', instanceId)
+        .eq('tenant_id', advTenant.id);
     }
 
     await this.executeNode(instanceId, graph, nextNode, ticketId, ctx);
@@ -509,10 +519,17 @@ export class WorkflowEngineService {
             status: 'pending',
           });
         }
-        await this.supabase.admin
-          .from('workflow_instances')
-          .update({ status: 'waiting', waiting_for: 'approval' })
-          .eq('id', instanceId);
+        // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+        // approval/wait/timer/end branches all mutated workflow_instances by
+        // id alone. tenant guaranteed non-null in non-dry-run path (set at
+        // the top of executeNode). Add explicit .eq('tenant_id', …).
+        if (tenant) {
+          await this.supabase.admin
+            .from('workflow_instances')
+            .update({ status: 'waiting', waiting_for: 'approval' })
+            .eq('id', instanceId)
+            .eq('tenant_id', tenant.id);
+        }
         await this.emit(instanceId, 'instance_waiting', { node_id: node.id, node_type: 'approval', payload: { waiting_for: 'approval' } });
         break;
       }
@@ -524,10 +541,13 @@ export class WorkflowEngineService {
           await this.emit(instanceId, 'instance_waiting', { node_id: node.id, node_type: 'wait_for', payload: { wait_type: waitType } }, ctx);
           return;
         }
-        await this.supabase.admin
-          .from('workflow_instances')
-          .update({ status: 'waiting', waiting_for: waitType })
-          .eq('id', instanceId);
+        if (tenant) {
+          await this.supabase.admin
+            .from('workflow_instances')
+            .update({ status: 'waiting', waiting_for: waitType })
+            .eq('id', instanceId)
+            .eq('tenant_id', tenant.id);
+        }
         await this.emit(instanceId, 'instance_waiting', { node_id: node.id, node_type: 'wait_for', payload: { wait_type: waitType } });
         break;
       }
@@ -539,7 +559,7 @@ export class WorkflowEngineService {
           await this.emit(instanceId, 'instance_waiting', { node_id: node.id, node_type: 'timer', payload: { delay_minutes: delayMinutes } }, ctx);
           return;
         }
-        if (delayMinutes) {
+        if (delayMinutes && tenant) {
           const resumeAt = new Date(Date.now() + delayMinutes * 60_000);
           await this.supabase.admin
             .from('workflow_instances')
@@ -548,18 +568,20 @@ export class WorkflowEngineService {
               waiting_for: 'timer',
               context: { timer_resume_at: resumeAt.toISOString(), timer_node_id: node.id },
             })
-            .eq('id', instanceId);
+            .eq('id', instanceId)
+            .eq('tenant_id', tenant.id);
           await this.emit(instanceId, 'instance_waiting', { node_id: node.id, node_type: 'timer', payload: { resume_at: resumeAt.toISOString() } });
         }
         break;
       }
 
       case 'end': {
-        if (!ctx?.dryRun) {
+        if (!ctx?.dryRun && tenant) {
           await this.supabase.admin
             .from('workflow_instances')
             .update({ status: 'completed', completed_at: new Date().toISOString() })
-            .eq('id', instanceId);
+            .eq('id', instanceId)
+            .eq('tenant_id', tenant.id);
         }
         await this.emit(instanceId, 'instance_completed', { node_id: node.id, node_type: 'end' }, ctx);
         break;
@@ -687,42 +709,38 @@ export class WorkflowEngineService {
     });
   }
 
-  async resume(instanceId: string, edgeCondition?: string) {
-    // Cross-tenant FK leak fix (site 5): the original implementation had
-    // NO tenant context — external callbacks (controller endpoint) could
-    // resume any tenant's workflow by id alone, and downstream node
-    // execution (condition / http_request / saveAs) would read foreign
-    // tickets blind. Two-part defense:
-    //   1. If a TenantContext is set on the calling thread (e.g. authed
-    //      controller request), filter the read by it AND assert the
-    //      instance row's tenant_id matches — refuses cross-tenant resume
-    //      attempts hard.
-    //   2. Wrap the rest of the resume (update + emit + advance →
-    //      executeNode) inside TenantContext.run({ id: instance.tenant_id })
-    //      so every downstream read in this engine sees the row's own
-    //      tenant. Audit suggested this fallback in lieu of plumbing a
-    //      tenantId param through every caller (currently only
-    //      WorkflowController calls .resume()).
-    const ambient = TenantContext.currentOrNull();
-
+  /**
+   * Resume a waiting workflow instance.
+   *
+   * Cross-tenant FK leak fix (codex post-fix review 2026-05-08): the prior
+   * implementation accepted only `instanceId` and relied on ambient
+   * `TenantContext` if present, falling back to `instance.tenant_id` when
+   * unset. That fallback branch existed for a hypothetical caller that has
+   * no TenantContext — but the only real caller is the WorkflowController,
+   * which always runs inside an authed-request TenantContext. Drop the
+   * fallback: require `tenantId` explicitly. Forces every caller to prove
+   * which tenant it's resuming as.
+   *
+   * The instance lookup filters by tenant_id; a cross-tenant resume attempt
+   * (any instanceId not in the caller's tenant) returns null and exits with
+   * no side effect.
+   */
+  async resume(instanceId: string, tenantId: string, edgeCondition?: string) {
     // Two-step read: load instance ONLY (no embedded definition). The
     // PostgREST embed `definition:workflow_definitions(*)` would FK-traverse
     // server-side without an independent tenant filter — a foreign
     // workflow_definition_id (FK-smuggle) would load a foreign graph and
     // execute it. Audit finding: separate query so the second SELECT can
     // be tenant-filtered explicitly.
-    let q = this.supabase.admin
+    const { data: instance } = await this.supabase.admin
       .from('workflow_instances')
       .select('*')
-      .eq('id', instanceId);
-    if (ambient) q = q.eq('tenant_id', ambient.id);
-    const { data: instance } = await q.maybeSingle();
+      .eq('id', instanceId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
 
     if (!instance || instance.status !== 'waiting') return;
 
-    // No-ambient callback path: instance.tenant_id is now the source of
-    // truth for the rest of the resume. Load definition with that tenant.
-    const tenantId = instance.tenant_id as string;
     const { data: definition } = await this.supabase.admin
       .from('workflow_definitions')
       .select('*')
@@ -732,11 +750,12 @@ export class WorkflowEngineService {
     if (!definition) return;
 
     const graph = (definition as { graph_definition: unknown }).graph_definition as WorkflowGraph;
-    // Resolve the full TenantInfo (slug + tier) so downstream code that reads
-    // tenant.slug / tier (audit logs, billing gates) sees real values, not
-    // synthetic placeholders.
+    // Reuse ambient TenantContext if it matches; otherwise resolve full
+    // TenantInfo (slug + tier) from `tenants` so downstream audit/billing
+    // reads see real values.
+    const ambient = TenantContext.currentOrNull();
     let tenantInfo: { id: string; slug: string; tier: 'standard' | 'enterprise' };
-    if (ambient) {
+    if (ambient && ambient.id === tenantId) {
       tenantInfo = ambient;
     } else {
       const { data: tenantRow } = await this.supabase.admin

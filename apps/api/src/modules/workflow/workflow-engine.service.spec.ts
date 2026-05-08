@@ -149,7 +149,7 @@ describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validat
   });
 
   function makeAssignDeps(rowsByTable: Record<string, Array<{ id: string; tenant_id: string }>>) {
-    const updates: Array<Record<string, unknown>> = [];
+    const updates: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];
     const supabase = {
       admin: {
         from: jest.fn((table: string) => {
@@ -174,23 +174,20 @@ describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validat
           if (table === 'tickets') {
             return {
               update: (patch: Record<string, unknown>) => {
-                const eqChain = {
-                  eq: () => eqChain,
-                  then: (resolve: (v: unknown) => void) => {
-                    updates.push(patch);
-                    resolve({ error: null });
+                // Capture both filters chained off update so the test can
+                // assert .eq('id', X) AND .eq('tenant_id', Y).
+                const fs: Record<string, unknown> = {};
+                const eqChain: Record<string, unknown> & PromiseLike<unknown> = {
+                  eq: (col: string, val: unknown) => {
+                    fs[col] = val;
+                    return eqChain;
                   },
-                };
-                return {
-                  eq: () => {
-                    return {
-                      eq: () => {
-                        updates.push(patch);
-                        return Promise.resolve({ error: null });
-                      },
-                    };
+                  then: (onFulfilled?: (v: unknown) => unknown) => {
+                    updates.push({ patch, filters: { ...fs } });
+                    return Promise.resolve({ error: null }).then(onFulfilled);
                   },
-                };
+                } as Record<string, unknown> & PromiseLike<unknown>;
+                return eqChain;
               },
             } as unknown;
           }
@@ -244,10 +241,12 @@ describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validat
     }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'ticket-1', undefined);
 
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
+    expect(updates[0].patch).toMatchObject({
       assigned_team_id: VALID_TEAM,
       status_category: 'assigned',
     });
+    // Defense-in-depth: explicit tenant filter (codex post-fix review 2026-05-08).
+    expect(updates[0].filters).toMatchObject({ id: 'ticket-1', tenant_id: 't1' });
   });
 });
 
@@ -295,12 +294,20 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
           }
           if (table === 'workflow_instances') {
             return {
-              update: (patch: Record<string, unknown>) => ({
-                eq: () => {
-                  updates.push(patch);
-                  return Promise.resolve({ error: null });
-                },
-              }),
+              update: (patch: Record<string, unknown>) => {
+                const fs: Record<string, unknown> = {};
+                const eqChain: Record<string, unknown> & PromiseLike<unknown> = {
+                  eq: (col: string, val: unknown) => {
+                    fs[col] = val;
+                    return eqChain;
+                  },
+                  then: (onFulfilled?: (v: unknown) => unknown) => {
+                    updates.push({ ...patch, __filters: fs });
+                    return Promise.resolve({ error: null }).then(onFulfilled);
+                  },
+                } as Record<string, unknown> & PromiseLike<unknown>;
+                return eqChain;
+              },
             } as unknown;
           }
           return {} as unknown;
@@ -372,7 +379,7 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
   it('lets an approval node through when both approvers are in-tenant', async () => {
     const VALID_PERSON = '00000000-0000-4000-8000-00000000aaaa';
     const VALID_TEAM = '00000000-0000-4000-8000-00000000bbbb';
-    const { supabase, inserts } = makeApprovalDeps({
+    const { supabase, inserts, updates } = makeApprovalDeps({
       persons: [{ id: VALID_PERSON, tenant_id: 't1' }],
       teams: [{ id: VALID_TEAM, tenant_id: 't1' }],
     });
@@ -395,6 +402,14 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
       approver_person_id: VALID_PERSON,
       approver_team_id: VALID_TEAM,
       status: 'pending',
+    });
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+    // workflow_instances waiting/approval transition must filter by
+    // tenant_id, not just by id.
+    expect(updates).toHaveLength(1);
+    expect((updates[0] as { __filters: Record<string, unknown> }).__filters).toMatchObject({
+      id: 'inst-1',
+      tenant_id: 't1',
     });
   });
 

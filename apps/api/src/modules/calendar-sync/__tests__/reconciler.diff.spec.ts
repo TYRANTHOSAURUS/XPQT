@@ -53,9 +53,13 @@ describe('ReconcilerService.reconcileSpace', () => {
             });
           }
           if (table === 'spaces') {
+            // Production now chains .eq('id', x).eq('tenant_id', y) on the
+            // last-sync stamp write (codex post-fix review 2026-05-08).
             return chainOf({
               update: () => ({
-                eq: async () => ({ data: null, error: null }),
+                eq: () => ({
+                  eq: async () => ({ data: null, error: null }),
+                }),
               }),
             });
           }

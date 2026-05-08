@@ -761,7 +761,7 @@ export class OrderService {
     }
 
     const tenantId = TenantContext.current().id;
-    const cleanup = new StandaloneCleanup(this.supabase);
+    const cleanup = new StandaloneCleanup(this.supabase, tenantId);
     const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
     const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
 
@@ -1360,7 +1360,13 @@ class StandaloneCleanup {
   private assetReservationIds: string[] = [];
   private done = false;
 
-  constructor(private readonly supabase: SupabaseService) {}
+  // Cross-tenant write fix (codex post-fix review 2026-05-08): the rollback
+  // path previously deleted/updated by id alone. supabase.admin bypasses
+  // RLS, so a corrupted id list (or future bug that hands StandaloneCleanup
+  // an id from another tenant) would mutate foreign rows. The rows tracked
+  // here all belong to the calling tenant per createStandalone — thread it
+  // in and filter every write defensively.
+  constructor(private readonly supabase: SupabaseService, private readonly tenantId: string) {}
 
   bundle(id: string) { this.bundleId = id; }
   order(id: string) { this.orderId = id; }
@@ -1375,7 +1381,11 @@ class StandaloneCleanup {
     const failures: string[] = [];
     if (this.oliIds.length > 0) {
       try {
-        await this.supabase.admin.from('order_line_items').delete().in('id', this.oliIds);
+        await this.supabase.admin
+          .from('order_line_items')
+          .delete()
+          .eq('tenant_id', this.tenantId)
+          .in('id', this.oliIds);
       } catch (err) {
         failures.push(`oli: ${(err as Error).message}`);
       }
@@ -1385,6 +1395,7 @@ class StandaloneCleanup {
         await this.supabase.admin
           .from('asset_reservations')
           .update({ status: 'cancelled' })
+          .eq('tenant_id', this.tenantId)
           .in('id', this.assetReservationIds);
       } catch (err) {
         failures.push(`asset_reservations: ${(err as Error).message}`);
@@ -1392,7 +1403,11 @@ class StandaloneCleanup {
     }
     if (this.orderId) {
       try {
-        await this.supabase.admin.from('orders').delete().eq('id', this.orderId);
+        await this.supabase.admin
+          .from('orders')
+          .delete()
+          .eq('id', this.orderId)
+          .eq('tenant_id', this.tenantId);
       } catch (err) {
         failures.push(`order: ${(err as Error).message}`);
       }
@@ -1403,7 +1418,11 @@ class StandaloneCleanup {
       // (00276:43-58). The booking has no slots, so the delete cascades to
       // nothing else here.
       try {
-        await this.supabase.admin.from('bookings').delete().eq('id', this.bundleId);
+        await this.supabase.admin
+          .from('bookings')
+          .delete()
+          .eq('id', this.bundleId)
+          .eq('tenant_id', this.tenantId);
       } catch (err) {
         failures.push(`bundle: ${(err as Error).message}`);
       }

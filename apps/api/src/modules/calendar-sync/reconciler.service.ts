@@ -158,10 +158,12 @@ export class ReconcilerService {
     }
 
     // Update the space's last full sync stamp.
+    // Cross-tenant cron path: scope by tenant_id carried on the SpaceForRecon row.
     await this.supabase.admin
       .from('spaces')
       .update({ external_calendar_last_full_sync_at: new Date().toISOString() })
-      .eq('id', space.id);
+      .eq('id', space.id)
+      .eq('tenant_id', space.tenant_id);
 
     return diffs;
   }

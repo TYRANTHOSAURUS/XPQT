@@ -36,9 +36,10 @@ function buildCaptureClient(rowsByTable: RowsByTable, captures: FilterCapture[])
   function buildSelectChain(table: string) {
     const filters: Record<string, unknown> = {};
     const rows = rowsByTable[table] ?? [];
-    const chain: Record<string, unknown> = {
+    let isUpdate = false;
+    const chain: Record<string, unknown> & PromiseLike<unknown> = {
       select: () => chain,
-      update: () => chain,
+      update: () => { isUpdate = true; return chain; },
       eq: (col: string, val: unknown) => { filters[col] = val; return chain; },
       in: (col: string, val: unknown[]) => { filters[`__in_${col}`] = val; return chain; },
       maybeSingle: async () => {
@@ -63,7 +64,14 @@ function buildCaptureClient(rowsByTable: RowsByTable, captures: FilterCapture[])
         });
         return { data: match ?? null, error: null };
       },
-    };
+      // Make .update().eq().eq() awaitable, capturing filters on terminator.
+      then: (onFulfilled?: (v: unknown) => unknown) => {
+        if (isUpdate) {
+          captures.push({ table, filters: { ...filters } });
+        }
+        return Promise.resolve({ error: null }).then(onFulfilled);
+      },
+    } as Record<string, unknown> & PromiseLike<unknown>;
     return chain;
   }
   return { from: (table: string) => buildSelectChain(table) };
@@ -172,19 +180,17 @@ describe('WorkflowEngineService raw reads — cross-tenant FK leak regression', 
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
     expect(readResult.data).toBeNull();
 
-    // Now the update side — also gated by tenant_id.
+    // Now the update side — also gated by tenant_id. The capture client
+    // records filters on terminator (await), so the chain below is enough
+    // to assert the production code's update path is tenant-filtered.
     await (client as any)
       .from('workflow_instances')
       .update({ context: {} })
       .eq('id', SHARED_ID)
       .eq('tenant_id', TENANT_A);
 
-    // Second capture is the update; assert tenant_id present. (The
-    // capture is recorded on the terminator; for an update with no
-    // .single/.maybeSingle, our stub never captures — but the .eq
-    // filters are still set on the chain, so we re-issue a read with the
-    // same filters as a proxy. The real test: the production code now
-    // chains .eq('tenant_id', tenant.id) on the update.)
+    expect(captures.length).toBeGreaterThanOrEqual(2);
+    expect(captures[1].filters.tenant_id).toBe(TENANT_A);
   });
 
   it('site 5: resume — instance read filters by tenant when ambient context is set', async () => {

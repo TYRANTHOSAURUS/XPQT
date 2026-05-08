@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
+import { TenantContext } from '../../common/tenant-context';
 import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowSimulatorService } from './workflow-simulator.service';
@@ -58,7 +59,13 @@ export class WorkflowController {
 
   @Post('instances/:instanceId/resume')
   async resume(@Param('instanceId') instanceId: string, @Body() dto?: { edge_condition?: string }) {
-    return this.engineService.resume(instanceId, dto?.edge_condition);
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): pass tenant
+    // explicitly to engine.resume() — the prior fallback branch let an
+    // un-tenanted caller resume any tenant's workflow by id alone. The
+    // controller always runs inside an authed-request TenantContext, so
+    // .current() is the right source.
+    const tenant = TenantContext.current();
+    return this.engineService.resume(instanceId, tenant.id, dto?.edge_condition);
   }
 
   @Get('instances/ticket/:ticketId')

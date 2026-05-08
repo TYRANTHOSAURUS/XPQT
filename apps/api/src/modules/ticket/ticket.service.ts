@@ -641,10 +641,14 @@ export class TicketService {
     // happen once approval is granted (see onApprovalDecision).
     if (requestTypeCfg?.requires_approval &&
         (requestTypeCfg.approval_approver_person_id || requestTypeCfg.approval_approver_team_id)) {
+      // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+      // ticket was just inserted under tenant.id above, but supabase.admin
+      // bypasses RLS — defense-in-depth filter on the post-create transition.
       await this.supabase.admin
         .from('tickets')
         .update({ status: 'awaiting_approval', status_category: 'pending_approval' })
-        .eq('id', data.id);
+        .eq('id', data.id)
+        .eq('tenant_id', tenant.id);
       data.status = 'awaiting_approval';
       data.status_category = 'pending_approval';
 
@@ -680,11 +684,16 @@ export class TicketService {
     const ticket = await this.getById(ticketId, SYSTEM_ACTOR);
     if (ticket.status_category !== 'pending_approval') return;
 
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): both
+    // approval-decision branches updated tickets by id alone. supabase.admin
+    // bypasses RLS — filter by tenant. tenant resolved via TenantContext at
+    // the top of this method.
     if (outcome === 'rejected') {
       await this.supabase.admin
         .from('tickets')
         .update({ status: 'rejected', status_category: 'closed', closed_at: new Date().toISOString() })
-        .eq('id', ticketId);
+        .eq('id', ticketId)
+        .eq('tenant_id', tenant.id);
       await this.addActivity(ticketId, {
         activity_type: 'system_event',
         visibility: 'system',
@@ -697,7 +706,8 @@ export class TicketService {
     await this.supabase.admin
       .from('tickets')
       .update({ status: 'new', status_category: 'new' })
-      .eq('id', ticketId);
+      .eq('id', ticketId)
+      .eq('tenant_id', tenant.id);
     const ticketRecord = await this.getById(ticketId, SYSTEM_ACTOR);
 
     await this.addActivity(ticketId, {
@@ -847,7 +857,13 @@ export class TicketService {
     if (effectiveCaseSlaPolicyId) {
       try {
         await this.slaService.startTimers(data.id as string, tenantId, effectiveCaseSlaPolicyId);
-        await this.supabase.admin.from('tickets').update({ sla_id: effectiveCaseSlaPolicyId }).eq('id', data.id as string);
+        // Cross-tenant write fix (codex post-fix review 2026-05-08):
+        // explicit tenant filter on the SLA-id stamp.
+        await this.supabase.admin
+          .from('tickets')
+          .update({ sla_id: effectiveCaseSlaPolicyId })
+          .eq('id', data.id as string)
+          .eq('tenant_id', tenantId);
       } catch (err) {
         // SLA failure should not block ticket creation, but record the breadcrumb.
         const message = err instanceof Error ? err.message : String(err);

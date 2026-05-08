@@ -137,12 +137,19 @@ export class NotificationService {
 
   /**
    * Mark a notification as read.
+   *
+   * Cross-tenant write fix (codex post-fix review 2026-05-08): the prior
+   * implementation updated by id alone. supabase.admin bypasses RLS, so a
+   * cross-tenant or colliding notification id from any authed user could
+   * flip another tenant's notification to "read". Filter by tenant.
    */
   async markAsRead(notificationId: string) {
+    const tenant = TenantContext.current();
     const { error } = await this.supabase.admin
       .from('notifications')
       .update({ status: 'read', read_at: new Date().toISOString() })
-      .eq('id', notificationId);
+      .eq('id', notificationId)
+      .eq('tenant_id', tenant.id);
 
     if (error) throw error;
     return { read: true };
@@ -231,10 +238,15 @@ export class NotificationService {
       .single();
     if (versionError) throw versionError;
 
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): write the
+    // current_published_version_id with explicit tenant filter. The id was
+    // just inserted by us above so it's safe per-row, but supabase.admin
+    // bypasses RLS — defense-in-depth.
     await this.supabase.admin
       .from('config_entities')
       .update({ current_published_version_id: version.id })
-      .eq('id', entity.id);
+      .eq('id', entity.id)
+      .eq('tenant_id', tenant.id);
 
     return { ...entity, current_version: version };
   }
@@ -283,10 +295,13 @@ export class NotificationService {
       .single();
     if (error) throw error;
 
+    // Cross-tenant write fix: tenant_id is in scope from the rename branch
+    // above (or just defensively re-read). Filter explicitly.
     await this.supabase.admin
       .from('config_entities')
       .update({ current_published_version_id: version.id })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('tenant_id', tenant.id);
 
     return version;
   }

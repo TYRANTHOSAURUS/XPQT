@@ -27,9 +27,13 @@ export class WebhookRenewalService {
   @Cron(CronExpression.EVERY_HOUR, { name: 'outlookWebhookRenew' })
   async renewUserSubscriptions() {
     const cutoff = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    // Cross-tenant cron path: select tenant_id alongside id so each per-row
+    // write below can be scoped explicitly. supabase.admin bypasses RLS, so
+    // unfiltered .eq('id', X) on a colliding id could touch another
+    // tenant's link row.
     const { data: links, error } = await this.supabase.admin
       .from('calendar_sync_links')
-      .select('id, user_id, external_calendar_id, refresh_token_encrypted, webhook_subscription_id, webhook_expires_at')
+      .select('id, tenant_id, user_id, external_calendar_id, refresh_token_encrypted, webhook_subscription_id, webhook_expires_at')
       .eq('provider', 'outlook')
       .eq('sync_status', 'active')
       .not('webhook_subscription_id', 'is', null)
@@ -48,7 +52,8 @@ export class WebhookRenewalService {
         await this.supabase.admin
           .from('calendar_sync_links')
           .update({ webhook_expires_at: result.expiresAt.toISOString() })
-          .eq('id', link.id);
+          .eq('id', link.id)
+          .eq('tenant_id', link.tenant_id as string);
         this.logger.log(`Renewed user webhook ${link.webhook_subscription_id}`);
       } catch (err) {
         this.logger.warn(`User webhook renew failed (${link.id}): ${(err as Error).message}`);
@@ -63,7 +68,7 @@ export class WebhookRenewalService {
     const cutoff = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const { data: spaces, error } = await this.supabase.admin
       .from('spaces')
-      .select('id, name, external_calendar_id, external_calendar_subscription_id, external_calendar_subscription_expires_at')
+      .select('id, tenant_id, name, external_calendar_id, external_calendar_subscription_id, external_calendar_subscription_expires_at')
       .eq('calendar_sync_mode', 'pattern_a')
       .not('external_calendar_subscription_id', 'is', null)
       .lt('external_calendar_subscription_expires_at', cutoff);
@@ -93,12 +98,15 @@ export class WebhookRenewalService {
           space.external_calendar_subscription_id as string,
           tok.accessToken,
         );
+        // Cross-tenant cron path: scope the spaces write by tenant_id from
+        // the row read above.
         await this.supabase.admin
           .from('spaces')
           .update({
             external_calendar_subscription_expires_at: result.expiresAt.toISOString(),
           })
-          .eq('id', space.id);
+          .eq('id', space.id)
+          .eq('tenant_id', space.tenant_id as string);
         this.logger.log(`Renewed room webhook ${space.external_calendar_subscription_id} for ${space.name}`);
       } catch (err) {
         this.logger.warn(`Room webhook renew failed (${space.id}): ${(err as Error).message}`);

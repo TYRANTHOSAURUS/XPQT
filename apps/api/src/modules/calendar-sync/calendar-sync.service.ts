@@ -120,13 +120,17 @@ export class CalendarSyncService {
         { id: link.id, user_id: userId, provider: 'outlook', external_calendar_id: tokens.externalCalendarId },
         tokens.accessToken,
       );
+      // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+      // calendar_sync_links row was just upserted under tenant.id above, but
+      // supabase.admin bypasses RLS — defense-in-depth tenant filter.
       await this.supabase.admin
         .from('calendar_sync_links')
         .update({
           webhook_subscription_id: sub.subscriptionId,
           webhook_expires_at: sub.expiresAt.toISOString(),
         })
-        .eq('id', link.id);
+        .eq('id', link.id)
+        .eq('tenant_id', tenant.id);
     } catch (err) {
       this.logger.warn(`Webhook subscription failed for link ${link.id}: ${(err as Error).message}`);
     }
@@ -173,9 +177,11 @@ export class CalendarSyncService {
 
   async forceResync(authUid: string): Promise<{ ok: true; events_seen: number }> {
     const { userId } = await this.resolveActor(authUid);
+    const tenant = TenantContext.current();
     const { data: link, error } = await this.supabase.admin
       .from('calendar_sync_links')
       .select('id, external_calendar_id, refresh_token_encrypted')
+      .eq('tenant_id', tenant.id)
       .eq('user_id', userId)
       .eq('provider', 'outlook')
       .maybeSingle();
@@ -188,10 +194,12 @@ export class CalendarSyncService {
       accessToken,
     );
 
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): defense-in-depth.
     await this.supabase.admin
       .from('calendar_sync_links')
       .update({ last_synced_at: new Date().toISOString(), last_error: null, sync_status: 'active' })
-      .eq('id', link.id);
+      .eq('id', link.id)
+      .eq('tenant_id', tenant.id);
 
     await this.audit('calendar_sync.force_resync', {
       user_id: userId,
@@ -370,6 +378,9 @@ export class CalendarSyncService {
       this.logger.warn(`Conflict resolution side-effect failed: ${(err as Error).message}`);
     }
 
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): the
+    // conflict was loaded under tenant.id above, but supabase.admin bypasses
+    // RLS — defense-in-depth tenant filter on the resolution write.
     const { data: updated, error: uErr } = await this.supabase.admin
       .from('room_calendar_conflicts')
       .update({
@@ -380,6 +391,7 @@ export class CalendarSyncService {
         resolved_by: resolvedUserId,
       })
       .eq('id', conflictId)
+      .eq('tenant_id', tenant.id)
       .select(
         `id, space_id, detected_at, conflict_type, slot_id, external_event_id,
          external_event_payload, resolution_status, resolution_action, resolved_at, resolved_by,
@@ -429,9 +441,15 @@ export class CalendarSyncService {
    * next call doesn't need another refresh.
    */
   async refreshAndPersist(linkId: string): Promise<{ accessToken: string }> {
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): this is a
+    // cross-tenant cron path (called from WebhookRenewalService for any
+    // link expiring in the next hour). Read the row's tenant_id and use it
+    // as a per-row scope check on the write — supabase.admin bypasses RLS,
+    // so an id collision could otherwise rotate tokens on a foreign tenant's
+    // link row.
     const { data: row, error } = await this.supabase.admin
       .from('calendar_sync_links')
-      .select('id, refresh_token_encrypted')
+      .select('id, tenant_id, refresh_token_encrypted')
       .eq('id', linkId)
       .single();
     if (error || !row) throw new NotFoundException('Sync link not found');
@@ -449,18 +467,27 @@ export class CalendarSyncService {
         sync_status: 'active',
         last_error: null,
       })
-      .eq('id', linkId);
+      .eq('id', linkId)
+      .eq('tenant_id', row.tenant_id as string);
     return { accessToken: result.accessToken };
   }
 
   async markLinkError(linkId: string, message: string): Promise<void> {
+    // Cross-tenant cron path: read tenant_id and use as a per-row scope check.
+    const { data: row } = await this.supabase.admin
+      .from('calendar_sync_links')
+      .select('tenant_id')
+      .eq('id', linkId)
+      .maybeSingle();
+    if (!row) return;
     await this.supabase.admin
       .from('calendar_sync_links')
       .update({
         sync_status: 'error',
         last_error: message,
       })
-      .eq('id', linkId);
+      .eq('id', linkId)
+      .eq('tenant_id', row.tenant_id as string);
   }
 
   async getLinkByUser(userId: string) {
