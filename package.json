@@ -17,6 +17,7 @@
     "smoke:work-orders": "pnpm --filter @prequest/api run smoke:work-orders",
     "smoke:outbox": "pnpm --filter @prequest/api run smoke:outbox",
     "design:check": "bash scripts/check-design.sh",
+    "b2:check-config-reads": "bash scripts/check-b2-config-reads.sh",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",

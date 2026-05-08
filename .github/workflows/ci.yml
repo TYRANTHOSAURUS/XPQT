@@ -52,6 +52,14 @@ jobs:
       - name: Design check (fonts, motion, format helpers, widths)
         run: pnpm design:check
 
+      - name: B.2 config-reads check (allowlist diff)
+        # Per docs/follow-ups/b2-survey-and-design.md §0.3: snapshot-
+        # allowlist diff. New raw reads of workflow_definition_id /
+        # sla_policy_id / case_sla_policy_id in B.2-scope modules
+        # require either a fix or an allowlist update + triage entry
+        # in docs/follow-ups/b2-config-reads-triage.md.
+        run: pnpm b2:check-config-reads
+
       - name: Typecheck web
         run: pnpm --filter @prequest/web run lint
 
