@@ -13,6 +13,17 @@ export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
   /**
+   * Server-emitted trace id from the `X-Request-Id` response header. The
+   * server stamps this on every response (success and failure) via
+   * `RequestIdMiddleware` + `AllExceptionsFilter`. The SPA reads it here
+   * so toasts and contact-support recovery can surface it per the
+   * error-handling spec §6.1.
+   *
+   * Undefined when the response had no header (e.g. network error, or
+   * the server is older than Phase 7.A.1).
+   */
+  readonly traceId?: string;
+  /**
    * Alias for `body`. Most call sites read `error.details` for the structured
    * error payload (e.g. picker 409 conflict alternatives). Kept as a separate
    * getter so the contract is clear at the boundary.
@@ -27,12 +38,14 @@ export class ApiError extends Error {
     message: string;
     body?: unknown;
     isNetworkError?: boolean;
+    traceId?: string;
   }) {
     super(opts.message);
     this.name = 'ApiError';
     this.status = opts.status;
     this.body = opts.body;
     this._isNetworkError = opts.isNetworkError ?? false;
+    if (opts.traceId !== undefined) this.traceId = opts.traceId;
   }
 
   isNetworkError(): boolean {
@@ -166,7 +179,11 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
       typeof (body as { message?: unknown }).message === 'string'
         ? (body as { message: string }).message
         : `API error: ${res.status}`;
-    throw new ApiError({ status: res.status, message, body });
+    // Codex I3: pull the server-stamped trace id off the response header
+    // so callers can render it in toasts / contact-support flows. The
+    // CORS preflight (apps/api/src/main.ts) exposes the header.
+    const traceId = res.headers.get('X-Request-Id') ?? undefined;
+    throw new ApiError({ status: res.status, message, body, traceId });
   }
 
   if (etagOut) etagOut(res.headers.get('ETag'));

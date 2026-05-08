@@ -75,20 +75,67 @@ export function randomTraceId(): string {
 }
 
 // ─── Vendor / pg leakage scrub ──────────────────────────────────────────────
-// Only scrubs fields/details on a small set of indicators that survive the
-// Phase 7.A.1 hardening (Fix 3 dropped HttpException-string details
-// outright). Kept as a defence-in-depth for AppError detail overrides
-// authored by humans who pasted a vendor message.
+// Centralised scrubber applied to every detail-bearing wire field in
+// `buildBody` (detail override, fields[].message). Defends against:
+//   - Author-pasted vendor strings on AppError detail.
+//   - Coded HttpException callers passing { code, message: 'INSERT INTO ...' }
+//     (codex C1: pre-Phase-7.A.1.1 the coded branch passed payload.message
+//     straight through, leaking SQL).
+//   - ZodError issues whose `message` was authored from a pg error
+//     (e.g. caller `safeParse`d an upstream-rewritten message).
+//
+// SQL-leak indicators: bare `INSERT|UPDATE|DELETE|SELECT` keywords always
+// indicate a pasted query, even without vendor names; the existing
+// VENDOR_NAME_RE covers Resend/Supabase/Stripe/Postgres/etc., and
+// SQLSTATE_RE catches `23505`-shape and `pg_*` system tokens.
 
 const VENDOR_NAME_RE =
   /\b(resend|supabase|stripe|postgres|postgresql|sendgrid|twilio|aws|azure)\b/i;
 // SQLSTATE-shaped tokens (`23505`, `40P01`) and `pg_*` system schema names
 // almost always indicate a leaked pg / postgrest error string.
 const SQLSTATE_RE = /\b\d{2}[0-9A-P]\d{2}\b|\bpg_[a-z_]+/i;
+// SQL keywords — bare `INSERT INTO`, `UPDATE … SET`, etc. — leak when a
+// caller passes a query fragment as the user-visible message even though
+// no vendor name is present.
+const SQL_KEYWORD_RE =
+  /\b(INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM|SELECT\s+.+\s+FROM)\b/i;
+// Postgres "duplicate key" / "violates … constraint" / "invalid input
+// syntax" surface in caller-provided messages too — duck-type the family.
+const PG_PROSE_RE =
+  /\b(duplicate\s+key|violates\s+(unique|foreign\s+key|check|not-null|exclusion)\s+constraint|invalid\s+input\s+syntax)\b/i;
+// JWT decode prose ("JWT malformed", "jwt expired") surfaces from auth
+// libraries when callers put the underlying error on a coded payload.
+const JWT_PROSE_RE = /\bjwt\s+(malformed|expired|invalid|signature)\b/i;
 
 function looksLikeLeak(text: string | undefined): boolean {
   if (!text) return false;
-  return VENDOR_NAME_RE.test(text) || SQLSTATE_RE.test(text);
+  return (
+    VENDOR_NAME_RE.test(text) ||
+    SQLSTATE_RE.test(text) ||
+    SQL_KEYWORD_RE.test(text) ||
+    PG_PROSE_RE.test(text) ||
+    JWT_PROSE_RE.test(text)
+  );
+}
+
+/**
+ * Returns the original text if clean; `undefined` if leaky (so the caller
+ * can fall back to messages.en or a code-derived placeholder). When a
+ * scrub triggers, emits `console.warn('errors:detail-scrubbed', …)` in
+ * non-prod so authors notice — production stays silent.
+ */
+function scrubLeakyText(
+  text: string | undefined,
+  source: 'detail-override' | 'field-message',
+  code: string,
+): string | undefined {
+  if (text === undefined) return undefined;
+  if (!looksLikeLeak(text)) return text;
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.warn('errors:detail-scrubbed', { code, source });
+  }
+  return undefined;
 }
 
 // ─── Branch helpers ──────────────────────────────────────────────────────────
@@ -131,20 +178,31 @@ function buildBody(args: {
     status: safeStatus,
     traceId: safeArgs.traceId,
   };
-  // Detail precedence: explicit override > messages.en > omit.
-  // Override is dropped if it looks like a leak (vendor name / SQLSTATE).
-  let safeOverride: string | undefined;
-  if (safeArgs.detailOverride && !looksLikeLeak(safeArgs.detailOverride)) {
-    safeOverride = safeArgs.detailOverride;
-  } else if (safeArgs.detailOverride) {
-    if (process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.warn('errors:detail-scrubbed', { code: safeArgs.code });
-    }
-  }
+  // Detail precedence: scrubbed-explicit-override > messages.en > omit.
+  // Codex C1 hardening: scrub centrally so coded HttpException, AppError
+  // detail, and ZodError-shaped fields[] all run through the same gate.
+  const safeOverride = scrubLeakyText(
+    safeArgs.detailOverride,
+    'detail-override',
+    safeArgs.code,
+  );
   const detail = safeOverride ?? message.detail;
   if (detail !== undefined) body.detail = detail;
-  if (safeArgs.fields !== undefined) body.fields = safeArgs.fields;
+  // Scrub each fields[].message — when leaky, replace with a readable
+  // placeholder derived from the field's code so the client still has
+  // something to render (e.g. `INVALID_VALUE`). Don't drop the entry —
+  // that would lose the field/code mapping the form needs.
+  if (safeArgs.fields !== undefined) {
+    body.fields = safeArgs.fields.map((f) => {
+      const cleaned = scrubLeakyText(f.message, 'field-message', safeArgs.code);
+      if (cleaned !== undefined) return f;
+      const placeholder =
+        typeof f.code === 'string' && f.code.length > 0
+          ? f.code.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()
+          : 'INVALID';
+      return { ...f, message: placeholder };
+    });
+  }
   if (safeArgs.docsUrl !== undefined) body.docsUrl = safeArgs.docsUrl;
   if (safeArgs.retryAfter !== undefined) body.retryAfter = safeArgs.retryAfter;
   if (safeArgs.serverVersion !== undefined) body.serverVersion = safeArgs.serverVersion;
@@ -197,7 +255,9 @@ function fromHttpException(error: HttpException, traceId: string): NormalizedErr
   const status = error.getStatus();
   const response = error.getResponse();
 
-  // 3: Legacy Phase 1 throw — { code, message, ... } payload.
+  // 3: Legacy Phase 1 throw — { code, message, ... } payload. Pass payload
+  // strings through *un-scrubbed*; `buildBody` runs the central scrubber
+  // on `detailOverride` and every `fields[].message` (codex C1 fix).
   if (
     typeof response === 'object' &&
     response !== null &&
@@ -206,10 +266,10 @@ function fromHttpException(error: HttpException, traceId: string): NormalizedErr
     const payload = response as Record<string, unknown>;
     const code = payload.code as string;
     const detail =
-      typeof payload.message === 'string'
-        ? payload.message
-        : typeof payload.detail === 'string'
-          ? (payload.detail as string)
+      typeof payload.detail === 'string'
+        ? (payload.detail as string)
+        : typeof payload.message === 'string'
+          ? (payload.message as string)
           : undefined;
     const fields = Array.isArray(payload.fields)
       ? (payload.fields as WireShape['fields'])

@@ -60,16 +60,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     }
 
-    // Echo the trace id on the response header too — apiFetch reads this.
-    if (typeof res?.setHeader === 'function') {
-      res.setHeader('X-Request-Id', traceId);
-    }
-
-    // If the response stream has already been opened (e.g. controller had
-    // streamed partial data before throwing) Express will reject a
-    // status/json call with ERR_HTTP_HEADERS_SENT. End the stream
-    // gracefully — the client got a partial response, but we don't crash
-    // the server.
+    // Codex I1: `headersSent` MUST be checked BEFORE `setHeader`. On real
+    // Express, calling `setHeader` after the response has been written
+    // throws `ERR_HTTP_HEADERS_SENT` synchronously — the original
+    // ordering only worked because the test mock didn't enforce it. End
+    // the partial stream gracefully and return; never call status/json
+    // when headers have already gone out.
     if (res?.headersSent) {
       try {
         res.end();
@@ -77,6 +73,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
         // ignore — connection may already be torn down
       }
       return;
+    }
+
+    // Echo the trace id on the response header too — apiFetch reads this.
+    // Wrap defensively: a stream may transition to "sent" between the
+    // check above and this call (race on connection-reset writes).
+    if (typeof res?.setHeader === 'function') {
+      try {
+        res.setHeader('X-Request-Id', traceId);
+      } catch {
+        // best-effort — header write failed because the response already
+        // moved on; the body write below will surface the real condition.
+      }
     }
 
     res.status(normalized.status).json(normalized.body);

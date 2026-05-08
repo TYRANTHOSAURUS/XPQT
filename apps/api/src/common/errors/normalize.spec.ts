@@ -141,6 +141,101 @@ describe('normalize()', () => {
       expect(result.status).toBe(409);
       expect(result.body.code).toBe('booking.slot_conflict');
     });
+
+    // ─── Codex C1: leak-scrub on coded HttpException payload ────────────
+    describe('codex C1 — coded payload leaks scrubbed centrally', () => {
+      let warnSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => undefined);
+      });
+
+      afterEach(() => {
+        warnSpy.mockRestore();
+      });
+
+      it('scrubs SQL-fragment payload.message → falls back to messages.en', () => {
+        const err = new BadRequestException({
+          code: 'booking.slot_conflict',
+          message:
+            'INSERT INTO bookings VALUES (1, 2, 3) — duplicate key value violates unique constraint',
+        });
+        const result = normalize(err, TRACE);
+        expect(result.body.code).toBe('booking.slot_conflict');
+        // detail falls back to messages.en (booking.slot_conflict copy).
+        expect(result.body.detail).toBe(
+          'The selected room is already booked for that time.',
+        );
+        // Whole-body assertion — no SQL fragment anywhere.
+        expect(JSON.stringify(result.body)).not.toContain('INSERT');
+        expect(JSON.stringify(result.body)).not.toContain('duplicate key');
+        expect(JSON.stringify(result.body)).not.toContain('VALUES');
+        // Synthesized `body.message` mirrors detail → also clean.
+        expect(JSON.stringify(result.body)).not.toContain('INSERT INTO');
+      });
+
+      it('scrubs vendor-named payload.detail → falls back to messages.en', () => {
+        const err = new BadRequestException({
+          code: 'booking.slot_conflict',
+          detail: 'Resend complained about the room',
+        });
+        const result = normalize(err, TRACE);
+        expect(result.body.detail).toBe(
+          'The selected room is already booked for that time.',
+        );
+        expect(JSON.stringify(result.body)).not.toMatch(/resend/i);
+      });
+
+      it('scrubs leaky fields[].message → replaces with code-derived placeholder', () => {
+        const err = new BadRequestException({
+          code: 'validation.failed',
+          fields: [
+            {
+              field: 'title',
+              code: 'invalid',
+              message:
+                'duplicate key value violates unique constraint "tickets_pkey"',
+            },
+            // Non-leaky entry should pass through untouched.
+            {
+              field: 'priority',
+              code: 'required',
+              message: 'Priority is required',
+            },
+          ],
+        });
+        const result = normalize(err, TRACE);
+        expect(result.body.fields).toHaveLength(2);
+        // First entry was leaky → message replaced with `INVALID` placeholder.
+        expect(result.body.fields![0].field).toBe('title');
+        expect(result.body.fields![0].code).toBe('invalid');
+        expect(result.body.fields![0].message).toBe('INVALID');
+        // Second entry untouched.
+        expect(result.body.fields![1].message).toBe('Priority is required');
+        // No PG fragment anywhere in the body.
+        expect(JSON.stringify(result.body)).not.toContain('duplicate key');
+        expect(JSON.stringify(result.body)).not.toContain('tickets_pkey');
+      });
+
+      it('scrubs leaky AppError fields[].message similarly', () => {
+        const err = new AppError('validation.failed', 422, {
+          fields: [
+            {
+              field: 'x',
+              code: 'invalid',
+              message: 'PG error 42501: permission denied for table foo',
+            },
+          ],
+        });
+        const result = normalize(err, TRACE);
+        // The leaky pg-shaped message is scrubbed → placeholder used.
+        expect(result.body.fields![0].message).toBe('INVALID');
+        expect(JSON.stringify(result.body)).not.toContain('42501');
+        expect(JSON.stringify(result.body)).not.toContain('permission denied');
+      });
+    });
   });
 
   describe('HttpException with string response → generic.<class> (string DROPPED)', () => {
@@ -230,7 +325,13 @@ describe('normalize()', () => {
     });
 
     it('AppError with unregistered code → wire code unknown.server_error 500, detail dropped', () => {
-      const err = new AppError('totally.invented_code' as string, 418, {
+      // Codex I2: AppError.code is now `KnownErrorCode` at the type level;
+      // bypass with a double-cast for the runtime fail-closed test.
+      const err = new (AppError as unknown as new (
+        c: string,
+        s: number,
+        o?: { detail?: string },
+      ) => AppError)('totally.invented_code', 418, {
         detail: 'this should never appear on the wire',
       });
       const result = normalize(err, TRACE);

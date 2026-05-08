@@ -11,14 +11,18 @@
  * Legacy NestJS `HttpException` throws are still supported by the filter
  * (mapped to `generic.<class>` codes) but will be migrated in Phase 7.A.2.
  *
- * NOTE: this module intentionally exports a *string* `code` rather than the
- * `KnownErrorCode` union from `@prequest/shared`. Reason: the filter accepts
- * registered codes from anywhere — Phase 1 inline `throw new
- * BadRequestException({ code: 'booking.slot_conflict' })` payloads pass
- * through the same passthrough path, and the registry enforces validity at
- * the messages-lookup boundary, not the throw site. (CI-level enforcement
- * is Phase 7.A.3.)
+ * Codex I2 (Phase 7.A.1 review fix): `code` is typed as `KnownErrorCode`,
+ * NOT `string`. A typo at a throw site (`AppErrors.notFound('person')`
+ * when `person.not_found` is unregistered) is now a TS error at compile
+ * time, not a 500 mystery at runtime. The `buildBody` runtime fail-closed
+ * check stays as defence-in-depth for codes that arrive via
+ * HttpException payloads (which TypeScript can't see).
  */
+
+import type { KnownErrorCode } from '@prequest/shared';
+
+/** Entity prefixes that have a `<entity>.not_found` code registered. */
+type NotFoundEntity = KnownErrorCode extends `${infer E}.not_found` ? E : never;
 
 export type AppErrorField = {
   field: string;
@@ -37,7 +41,7 @@ export type AppErrorOptions = {
 };
 
 export class AppError extends Error {
-  readonly code: string;
+  readonly code: KnownErrorCode;
   readonly status: number;
   readonly detail?: string;
   readonly fields?: AppErrorField[];
@@ -47,7 +51,7 @@ export class AppError extends Error {
   readonly serverVersion?: string;
   readonly clientVersion?: string;
 
-  constructor(code: string, status: number, opts?: AppErrorOptions) {
+  constructor(code: KnownErrorCode, status: number, opts?: AppErrorOptions) {
     super(opts?.detail ?? code);
     this.name = 'AppError';
     this.code = code;
@@ -73,15 +77,17 @@ export class AppError extends Error {
  */
 export const AppErrors = {
   /**
-   * Resource not found. Code defaults to `<entity>.not_found`.
+   * Resource not found. Code is `<entity>.not_found`. The entity union is
+   * derived from `KnownErrorCode` — adding a new not-found code in the
+   * registry automatically extends the accepted entity values here.
    *
    * The `id` is included in `detail` for ops/log readability — never user-
    * visible (the renderer ignores `detail` in favour of the messages.en
    * lookup). If a resource type needs custom copy, register
    * `<entity>.not_found` in messages.en.ts; this factory still produces it.
    */
-  notFound: (entity: string, id?: string): AppError =>
-    new AppError(`${entity}.not_found`, 404, {
+  notFound: (entity: NotFoundEntity, id?: string): AppError =>
+    new AppError(`${entity}.not_found` as KnownErrorCode, 404, {
       detail: id ? `${entity} ${id} not found` : `${entity} not found`,
     }),
 
@@ -104,13 +110,13 @@ export const AppErrors = {
    * the code is more specific than `validation.failed`.
    */
   validationFailed: (
-    code: string,
+    code: KnownErrorCode,
     opts?: { detail?: string; fields?: AppErrorField[] },
   ): AppError => new AppError(code, 400, opts),
 
   /** 409 conflict — pass `serverVersion`/`clientVersion` for stale-write conflicts. */
   conflict: (
-    code: string,
+    code: KnownErrorCode,
     opts?: { detail?: string; serverVersion?: string; clientVersion?: string },
   ): AppError => new AppError(code, 409, opts),
 
@@ -119,8 +125,10 @@ export const AppErrors = {
     new AppError('rate_limit.exceeded', 429, { ...opts, retryAfter }),
 
   /** 500 server error — pick a domain code (`booking.compensation_failed`, etc). */
-  server: (code: string, opts?: { detail?: string; cause?: unknown }): AppError =>
-    new AppError(code, 500, opts),
+  server: (
+    code: KnownErrorCode,
+    opts?: { detail?: string; cause?: unknown },
+  ): AppError => new AppError(code, 500, opts),
 
   /** 401 unauthenticated. Reason is logged, not user-visible. */
   unauthorized: (reason?: string): AppError =>
@@ -133,7 +141,7 @@ export const AppErrors = {
    * problem (those go through `validation` / `validationFailed`). E.g. a
    * client used the wrong endpoint, a feature flag is off, etc.
    */
-  badRequest: (code: string, detail?: string): AppError =>
+  badRequest: (code: KnownErrorCode, detail?: string): AppError =>
     new AppError(code, 400, { detail }),
 } as const;
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apiFetch } from '../api';
+import { ApiError, apiFetch } from '../api';
 
 /**
  * B.0.E.2 — apiFetch contract: NO auto-stamp of `X-Client-Request-Id`.
@@ -112,5 +112,123 @@ describe('apiFetch — X-Client-Request-Id contract (B.0.E.2)', () => {
         'x-client-request-id',
       );
     }
+  });
+});
+
+/**
+ * Codex I3 — `ApiError` carries the `X-Request-Id` response header as
+ * `traceId`. Server CORS exposes the header; SPA reads it for toast /
+ * support-recovery surfacing per error-handling spec §6.1.
+ */
+describe('apiFetch — ApiError.traceId propagation (codex I3)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('reflects the X-Request-Id response header on a 4xx error', async () => {
+    fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          code: 'ticket.not_found',
+          title: 'Not found',
+          status: 404,
+          traceId: 'req_abc123',
+        }),
+        {
+          status: 404,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Request-Id': 'req_abc123',
+          },
+        },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    let caught: unknown;
+    try {
+      await apiFetch('/missing');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).traceId).toBe('req_abc123');
+    expect((caught as ApiError).status).toBe(404);
+  });
+
+  it('reflects the X-Request-Id response header on a 5xx error', async () => {
+    fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          code: 'unknown.server_error',
+          title: 'Something went wrong',
+          status: 500,
+          traceId: 'req_xyz789',
+        }),
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Request-Id': 'req_xyz789',
+          },
+        },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    let caught: unknown;
+    try {
+      await apiFetch('/boom');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).traceId).toBe('req_xyz789');
+  });
+
+  it('leaves traceId undefined when the response omits the header', async () => {
+    fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ code: 'generic.bad_request', status: 400 }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    let caught: unknown;
+    try {
+      await apiFetch('/no-header');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).traceId).toBeUndefined();
+  });
+
+  it('leaves traceId undefined on a network error (no response)', async () => {
+    fetchMock = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    let caught: unknown;
+    try {
+      await apiFetch('/offline');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).isNetworkError()).toBe(true);
+    expect((caught as ApiError).traceId).toBeUndefined();
   });
 });

@@ -188,16 +188,37 @@ describe('AllExceptionsFilter', () => {
     expect(() => filter.catch(new Error('ws-only'), host)).toThrow('ws-only');
   });
 
-  it('does not call res.status / res.json when headersSent is true (Fix 8)', () => {
+  it('does not call res.status / res.json / res.setHeader when headersSent is true (Fix 8 + codex I1)', () => {
     const filter = new AllExceptionsFilter();
     const res = makeRes({ headersSent: true });
     const host = makeHost({ id: 'req_partial' }, res);
     filter.catch(new Error('boom'), host);
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json).not.toHaveBeenCalled();
+    // Codex I1: the headersSent guard runs BEFORE setHeader, so on a
+    // real Express response we don't trigger ERR_HTTP_HEADERS_SENT.
+    expect(res.setHeader).not.toHaveBeenCalled();
     // res.end must be called to terminate the stream.
     expect(res.end).toHaveBeenCalledTimes(1);
     expect(res.__ended).toBe(true);
+  });
+
+  it('completes without unhandled error when setHeader throws (codex I1)', () => {
+    // Real Express: setHeader('X-Request-Id', …) can throw
+    // ERR_HTTP_HEADERS_SENT if the response moves to "sent" between the
+    // headersSent check and the setHeader call. Filter must swallow.
+    const filter = new AllExceptionsFilter();
+    const res = makeRes();
+    res.setHeader.mockImplementation(() => {
+      const e: NodeJS.ErrnoException = new Error('Cannot set headers after they are sent');
+      e.code = 'ERR_HTTP_HEADERS_SENT';
+      throw e;
+    });
+    const host = makeHost({ id: 'req_race' }, res);
+    expect(() => filter.catch(new Error('boom'), host)).not.toThrow();
+    // The body is still written — best-effort path.
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledTimes(1);
   });
 
   it('serialises a chained Error cause without [object Object] (Fix 9)', () => {

@@ -38,7 +38,12 @@ async function bootstrap() {
     // Browsers send `If-None-Match` automatically on revalidation; the
     // CORS preflight has to whitelist our `ETag` response header so the
     // SPA can read it from `cache: 'no-cache'` requests.
-    exposedHeaders: ['ETag'],
+    //
+    // Codex I3 (Phase 7.A.1 review): expose `X-Request-Id` so the SPA
+    // `apiFetch` (apps/web/src/lib/api.ts) can read the trace id off
+    // cross-origin error responses and surface it in toasts / contact-
+    // support recovery per the error-handling spec §6.1.
+    exposedHeaders: ['ETag', 'X-Request-Id'],
   });
 
   // Gzip / deflate every JSON payload above 1 KB. The desk scheduler
