@@ -204,6 +204,10 @@ export class PortalService {
     const primaryOrgRaw = primaryRow?.org_node ?? null;
     const primaryOrg = Array.isArray(primaryOrgRaw) ? primaryOrgRaw[0] ?? null : primaryOrgRaw;
 
+    // Tenant-fk guard: userFull came from .maybeSingle() with tenant_id
+    // filter — a smuggled foreign userId returns null. Throw rather than
+    // null-deref on portal_current_location_id below.
+    if (!userFull.data) throw new NotFoundException('User not found');
     const userRow = userFull.data as { id: string; email: string | null; portal_current_location_id: string | null };
 
     const authorized = authorizedLocationsRes;
@@ -239,7 +243,8 @@ export class PortalService {
       await this.supabase.admin
         .from('users')
         .update({ portal_current_location_id: fallback })
-        .eq('id', userId);
+        .eq('id', userId)
+        .eq('tenant_id', tenant.id);
     } else if (!currentLocationId && can_submit) {
       const initial =
         defaultLocation?.id ??
@@ -252,7 +257,8 @@ export class PortalService {
         await this.supabase.admin
           .from('users')
           .update({ portal_current_location_id: initial })
-          .eq('id', userId);
+          .eq('id', userId)
+          .eq('tenant_id', tenant.id);
       }
     }
 

@@ -99,7 +99,7 @@ export class SlaService {
       // Step 1c.10c: route to tickets (case) or work_orders.
       await this.updateTicketOrWorkOrder(ticketId, {
         sla_response_due_at: responseDue.toISOString(),
-      });
+      }, tenantId);
     }
 
     if (policy.resolution_time_minutes) {
@@ -116,7 +116,7 @@ export class SlaService {
 
       await this.updateTicketOrWorkOrder(ticketId, {
         sla_resolution_due_at: resolutionDue.toISOString(),
-      });
+      }, tenantId);
     }
 
     if (timers.length > 0) {
@@ -152,7 +152,7 @@ export class SlaService {
     await this.updateTicketOrWorkOrder(ticketId, {
       sla_paused: true,
       sla_paused_at: now.toISOString(),
-    });
+    }, tenantId);
   }
 
   /**
@@ -226,7 +226,7 @@ export class SlaService {
       if (t.timer_type === 'resolution') updates.sla_resolution_due_at = t.due_at;
     }
 
-    await this.updateTicketOrWorkOrder(ticketId, updates);
+    await this.updateTicketOrWorkOrder(ticketId, updates, tenantId);
   }
 
   /**
@@ -314,7 +314,7 @@ export class SlaService {
       sla_at_risk: false,
       sla_paused: false,
       sla_paused_at: null,
-    });
+    }, tenantId);
 
     if (newSlaPolicyId) {
       await this.startTimers(ticketId, tenantId, newSlaPolicyId);
@@ -635,7 +635,7 @@ export class SlaService {
     if (changed) {
       updates.watchers = Array.from(newWatchers);
       // Step 1c.10c: route to tickets (case) or work_orders.
-      await this.updateTicketOrWorkOrder(ticket.id, updates);
+      await this.updateTicketOrWorkOrder(ticket.id, updates, ticket.tenant_id);
     }
     return changed;
   }

@@ -52,3 +52,5 @@ apps/api/src/modules/ticket/ticket.service.ts:    // Scope override's case_sla_p
 apps/api/src/modules/workflow/workflow-engine.service.ts:                  ? { sla_id: task.sla_policy_id ?? null }
 apps/api/src/modules/workflow/workflow-engine.service.ts:                ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
 apps/api/src/modules/workflow/workflow-engine.service.ts:        workflow_definition_id: workflowDefinitionId,
+apps/api/src/modules/workflow/workflow-engine.service.ts:      .eq('id', instance.workflow_definition_id as string)
+apps/api/src/modules/workflow/workflow-engine.service.ts:    // workflow_definition_id (FK-smuggle) would load a foreign graph and

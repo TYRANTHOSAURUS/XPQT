@@ -173,12 +173,25 @@ describe('WorkflowEngineService.executeNode (assign) — Plan A.2 tenant validat
           }
           if (table === 'tickets') {
             return {
-              update: (patch: Record<string, unknown>) => ({
-                eq: () => {
-                  updates.push(patch);
-                  return Promise.resolve({ error: null });
-                },
-              }),
+              update: (patch: Record<string, unknown>) => {
+                const eqChain = {
+                  eq: () => eqChain,
+                  then: (resolve: (v: unknown) => void) => {
+                    updates.push(patch);
+                    resolve({ error: null });
+                  },
+                };
+                return {
+                  eq: () => {
+                    return {
+                      eq: () => {
+                        updates.push(patch);
+                        return Promise.resolve({ error: null });
+                      },
+                    };
+                  },
+                };
+              },
             } as unknown;
           }
           return {} as unknown;

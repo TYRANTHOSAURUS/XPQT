@@ -101,7 +101,22 @@ are the existing `runPostCreateAutomation` plan-build pattern that
 - `legit`: `// Scope override's case_sla_policy_id wins over request_types.sla_policy_id`
   - Comment.
 
-## workflow/workflow-engine.service.ts (3 entries)
+## workflow/workflow-engine.service.ts (5 entries — was 3, +2 from audit follow-up)
+
+The audit follow-up commit added two new entries to this file by
+splitting the embedded-resource resume() read into separate
+tenant-filtered queries:
+
+- `legit`: `.eq('id', instance.workflow_definition_id as string)`
+  - The new explicit tenant-filtered SELECT of workflow_definitions
+    that replaces the unsafe embed at line 702. Reads the column
+    from the workflow_instances row (already tenant-filtered) and
+    passes it to a separately-filtered SELECT with
+    `.eq('tenant_id', tenantId)`. Closing the embed leak.
+- `legit`: comment `// workflow_definition_id (FK-smuggle) would load a foreign graph and`
+  - Documentation explaining the embed-leak fix.
+
+
 
 All 3 are workflow-engine internals around node-config payloads, not
 raw config-table reads.

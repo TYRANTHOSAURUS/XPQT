@@ -139,7 +139,19 @@ function makeService(opts: {
               };
               chain.in = (col: string, val: unknown) => {
                 filters.push({ kind: 'in', col, val });
-                return Promise.resolve({ data: opts.bundleLines ?? [], error: null });
+                // Post-audit (cross-tenant FK leak fix): cancelBundleImpl now
+                // chains a trailing .eq('tenant_id', tenantId) after .in().
+                // Return a thenable that ALSO supports .eq() so both shapes work.
+                const thenable: Record<string, unknown> = {
+                  eq: (c: string, v: unknown) => {
+                    filters.push({ kind: 'eq', col: c, val: v });
+                    return Promise.resolve({ data: opts.bundleLines ?? [], error: null });
+                  },
+                  then: (resolve: (v: unknown) => void) => {
+                    resolve({ data: opts.bundleLines ?? [], error: null });
+                  },
+                };
+                return thenable as unknown as Promise<{ data: unknown; error: null }>;
               };
               chain.maybeSingle = () => Promise.resolve({ data: opts.line ?? null, error: null });
               return chain;

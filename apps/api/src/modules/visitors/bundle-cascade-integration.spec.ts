@@ -396,8 +396,16 @@ function buildHarness(opts: {
             select: (cols?: string) => {
               if (cols && cols.includes('fulfillment_status')) {
                 const chain: Record<string, (...args: unknown[]) => unknown> = {};
-                chain.in = () =>
-                  Promise.resolve({ data: opts.bundleLines ?? [], error: null });
+                chain.in = () => {
+                  // Post-audit: cancelBundleImpl chains .in().eq('tenant_id', tenantId).
+                  // Return a thenable that supports .eq() AND awaits as a Promise.
+                  const thenable: Record<string, unknown> = {
+                    eq: () => Promise.resolve({ data: opts.bundleLines ?? [], error: null }),
+                    then: (resolve: (v: unknown) => void) =>
+                      resolve({ data: opts.bundleLines ?? [], error: null }),
+                  };
+                  return thenable;
+                };
                 chain.eq = () => chain;
                 chain.maybeSingle = () => Promise.resolve({ data: null, error: null });
                 return chain;

@@ -1262,7 +1262,8 @@ export class TicketService {
       await this.supabase.admin
         .from('tickets')
         .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
-        .eq('id', id);
+        .eq('id', id)
+        .eq('tenant_id', tenant.id);
 
       const rtCfg = current.ticket_type_id
         ? (await this.supabase.admin

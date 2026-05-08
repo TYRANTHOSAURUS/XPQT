@@ -258,7 +258,13 @@ export class WorkflowEngineService {
           if (teamId) updates.assigned_team_id = teamId;
           if (userId) updates.assigned_user_id = userId;
           if (teamId || userId) updates.status_category = 'assigned';
-          await this.supabase.admin.from('tickets').update(updates).eq('id', ticketId);
+          if (tenant) {
+            await this.supabase.admin
+              .from('tickets')
+              .update(updates)
+              .eq('id', ticketId)
+              .eq('tenant_id', tenant.id);
+          }
         }
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
         break;
@@ -699,25 +705,48 @@ export class WorkflowEngineService {
     //      WorkflowController calls .resume()).
     const ambient = TenantContext.currentOrNull();
 
+    // Two-step read: load instance ONLY (no embedded definition). The
+    // PostgREST embed `definition:workflow_definitions(*)` would FK-traverse
+    // server-side without an independent tenant filter — a foreign
+    // workflow_definition_id (FK-smuggle) would load a foreign graph and
+    // execute it. Audit finding: separate query so the second SELECT can
+    // be tenant-filtered explicitly.
     let q = this.supabase.admin
       .from('workflow_instances')
-      .select('*, definition:workflow_definitions(*)')
+      .select('*')
       .eq('id', instanceId);
     if (ambient) q = q.eq('tenant_id', ambient.id);
     const { data: instance } = await q.maybeSingle();
 
     if (!instance || instance.status !== 'waiting') return;
 
-    // If we had an ambient tenant, the .eq filter already gated this; the
-    // assert below is belt + braces for the no-ambient (callback) path.
-    if (ambient && instance.tenant_id !== ambient.id) return;
+    // No-ambient callback path: instance.tenant_id is now the source of
+    // truth for the rest of the resume. Load definition with that tenant.
+    const tenantId = instance.tenant_id as string;
+    const { data: definition } = await this.supabase.admin
+      .from('workflow_definitions')
+      .select('*')
+      .eq('id', instance.workflow_definition_id as string)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (!definition) return;
 
-    const graph = instance.definition.graph_definition as unknown as WorkflowGraph;
-    const tenantInfo = ambient ?? {
-      id: instance.tenant_id as string,
-      slug: 'workflow_resume',
-      tier: 'standard' as const,
-    };
+    const graph = (definition as { graph_definition: unknown }).graph_definition as WorkflowGraph;
+    // Resolve the full TenantInfo (slug + tier) so downstream code that reads
+    // tenant.slug / tier (audit logs, billing gates) sees real values, not
+    // synthetic placeholders.
+    let tenantInfo: { id: string; slug: string; tier: 'standard' | 'enterprise' };
+    if (ambient) {
+      tenantInfo = ambient;
+    } else {
+      const { data: tenantRow } = await this.supabase.admin
+        .from('tenants')
+        .select('id, slug, tier')
+        .eq('id', tenantId)
+        .maybeSingle();
+      if (!tenantRow) return;
+      tenantInfo = tenantRow as { id: string; slug: string; tier: 'standard' | 'enterprise' };
+    }
 
     await TenantContext.run(tenantInfo, async () => {
       await this.supabase.admin
