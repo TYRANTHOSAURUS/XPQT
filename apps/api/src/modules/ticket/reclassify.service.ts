@@ -313,7 +313,8 @@ export class ReclassifyService {
         await this.supabase.admin
           .from('tickets')
           .update({ sla_id: newType.sla_policy_id })
-          .eq('id', ticketId);
+          .eq('id', ticketId)
+          .eq('tenant_id', tenant.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown error';
         console.error('[reclassify] update sla_id failed', err);
@@ -340,7 +341,8 @@ export class ReclassifyService {
             sla_resolution_breached_at: null,
             sla_at_risk: false,
           })
-          .eq('id', ticketId);
+          .eq('id', ticketId)
+          .eq('tenant_id', tenant.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown error';
         console.error('[reclassify] clear sla fields failed', err);

@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { assertTenantOwned } from '../../common/tenant-validation';
 
 export interface CreateConfigEntityDto {
   config_type: string;
@@ -81,6 +82,17 @@ export class ConfigEngineService {
   async createDraft(entityId: string, dto: UpdateConfigVersionDto) {
     const tenant = TenantContext.current();
 
+    // Cross-tenant write fix (codex post-fix review 2026-05-08): the prior
+    // shape SELECTed `latest` filtered by entityId+tenant, then INSERTed a
+    // new config_versions row with `config_entity_id=entityId,
+    // tenant_id=tenant.id`. supabase.admin bypasses RLS and the parent FK
+    // exists globally, so a foreign entityId would silently land an
+    // attacker-owned draft on a victim tenant's entity. Pre-flight assert
+    // the entity is in this tenant.
+    await assertTenantOwned(this.supabase, 'config_entities', entityId, tenant.id, {
+      entityName: 'config_entity',
+    });
+
     // Find the latest version to determine the next version number
     const { data: latest } = await this.supabase.admin
       .from('config_versions')
@@ -129,6 +141,7 @@ export class ConfigEngineService {
       .from('config_versions')
       .update({ definition: dto.definition })
       .eq('id', draft.id)
+      .eq('tenant_id', tenant.id)
       .select()
       .single();
 
@@ -152,19 +165,26 @@ export class ConfigEngineService {
 
     if (findError || !draft) throw new BadRequestException('No draft version to publish');
 
-    // Mark as published
+    // Mark as published. Tenant filter is defense-in-depth — draft.id was
+    // resolved from a tenant-filtered SELECT above.
     const { error: publishError } = await this.supabase.admin
       .from('config_versions')
       .update({ status: 'published', published_at: new Date().toISOString() })
-      .eq('id', draft.id);
+      .eq('id', draft.id)
+      .eq('tenant_id', tenant.id);
 
     if (publishError) throw publishError;
 
-    // Update entity to point to this version
+    // Update entity to point to this version. Codex post-fix review 2026-05-08:
+    // entityId came in via path param; without tenant filter, supabase.admin
+    // bypasses RLS and a foreign entityId could be flipped to point at this
+    // tenant's draft. .eq('tenant_id', tenant.id) closes that. The draft.id
+    // load above is also tenant-scoped, but defense-in-depth on the write.
     const { error: updateError } = await this.supabase.admin
       .from('config_entities')
       .update({ current_published_version_id: draft.id })
-      .eq('id', entityId);
+      .eq('id', entityId)
+      .eq('tenant_id', tenant.id);
 
     if (updateError) throw updateError;
 
@@ -193,11 +213,13 @@ export class ConfigEngineService {
 
     if (error || !version) throw new NotFoundException('Version not found');
 
-    // Update entity to point to the target version
+    // Update entity to point to the target version. Tenant filter:
+    // defense-in-depth (codex post-fix review 2026-05-08).
     await this.supabase.admin
       .from('config_entities')
       .update({ current_published_version_id: targetVersionId })
-      .eq('id', entityId);
+      .eq('id', entityId)
+      .eq('tenant_id', tenant.id);
 
     await this.supabase.admin.from('audit_events').insert({
       tenant_id: tenant.id,
