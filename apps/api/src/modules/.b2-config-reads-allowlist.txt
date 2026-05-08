@@ -24,11 +24,12 @@
 #
 # Format: each non-comment line is a content key, sorted.
 
-apps/api/src/modules/sla/sla.service.ts:        const thresholds = thresholdsByPolicy.get(timer.sla_policy_id) ?? [];
+apps/api/src/modules/sla/sla.service.ts:        const thresholds = thresholdsByPolicy.get(`${timer.sla_policy_id}|${timer.tenant_id}`) ?? [];
 apps/api/src/modules/sla/sla.service.ts:        sla_policy_id: slaPolicyId,
 apps/api/src/modules/sla/sla.service.ts:      .select('id, tenant_id, ticket_id, sla_policy_id, timer_type, target_minutes, started_at, due_at, total_paused_minutes')
-apps/api/src/modules/sla/sla.service.ts:    const policyIds = Array.from(new Set(timerRows.map((t) => t.sla_policy_id)));
-apps/api/src/modules/sla/sla.service.ts:    const policyName = await this.loadPolicyName(timer.sla_policy_id);
+apps/api/src/modules/sla/sla.service.ts:      set.add(t.sla_policy_id);
+apps/api/src/modules/sla/sla.service.ts:    // bypasses RLS, so a smuggled cross-tenant sla_policy_id on a timer would
+apps/api/src/modules/sla/sla.service.ts:    const policyName = await this.loadPolicyName(timer.sla_policy_id, timer.tenant_id);
 apps/api/src/modules/ticket/dispatch.service.ts:   * Resolve which sla_policy_id to attach to a child work order.
 apps/api/src/modules/ticket/reclassify.service.ts:          .update({ sla_id: newType.sla_policy_id })
 apps/api/src/modules/ticket/reclassify.service.ts:        ? this.loadWorkflowDefinition(newType.workflow_definition_id, tenant.id)

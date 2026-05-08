@@ -406,12 +406,20 @@ export class SlaService {
 
   /**
    * Get SLA status for a specific ticket.
+   *
+   * Tenant filter is mandatory: supabase.admin bypasses RLS, and pre-fix
+   * the controller had NO visibility check + this method filtered by
+   * ticket_id alone. Any authenticated user could read any ticket's
+   * timers (cross-tenant + cross-actor leak). Controller now calls
+   * assertVisible() before invoking this; the .eq('tenant_id', …) here
+   * is the defense-in-depth at the data layer.
    */
-  async getTicketSlaStatus(ticketId: string) {
+  async getTicketSlaStatus(ticketId: string, tenantId: string) {
     const { data, error } = await this.supabase.admin
       .from('sla_timers')
       .select('*')
       .eq('ticket_id', ticketId)
+      .eq('tenant_id', tenantId)
       .order('timer_type');
 
     if (error) throw error;
@@ -422,10 +430,17 @@ export class SlaService {
    * Resolve an escalation-threshold target to either a `persons.id` or a `teams.id`.
    * Returns null for `manager_of_requester` when the requester has no manager — the
    * caller should record a `skipped_no_manager` crossing and move on.
+   *
+   * tenantId is required: all three reads (tickets/work_orders/persons) hit
+   * supabase.admin which bypasses RLS. Without the tenant filter, a row whose
+   * id collides across tenants — or a smuggled FK — would resolve to the
+   * wrong-tenant requester / manager. Caller (fireThreshold) has the tenant
+   * id from timer.tenant_id.
    */
   private async resolveTarget(
     threshold: EscalationThreshold,
     ticketId: string,
+    tenantId: string,
   ): Promise<{ personId?: string; teamId?: string } | null> {
     if (threshold.target_type === 'user' && threshold.target_id) {
       return { personId: threshold.target_id };
@@ -440,6 +455,7 @@ export class SlaService {
         .from('tickets')
         .select('requester_person_id')
         .eq('id', ticketId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       requesterId = (caseRes.data?.requester_person_id as string | null) ?? null;
       if (!requesterId) {
@@ -447,6 +463,7 @@ export class SlaService {
           .from('work_orders')
           .select('requester_person_id')
           .eq('id', ticketId)
+          .eq('tenant_id', tenantId)
           .maybeSingle();
         requesterId = (woRes.data?.requester_person_id as string | null) ?? null;
       }
@@ -455,7 +472,8 @@ export class SlaService {
         .from('persons')
         .select('manager_person_id')
         .eq('id', requesterId)
-        .single();
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
       const managerId = requester?.manager_person_id as string | null;
       if (!managerId) return null;
       return { personId: managerId };
@@ -463,14 +481,20 @@ export class SlaService {
     return null;
   }
 
-  private async loadTicketForFire(ticketId: string) {
+  private async loadTicketForFire(ticketId: string, tenantId: string) {
     // Step 1c.10c: id may live in tickets (case) or work_orders. Try
     // tickets first, fall back to work_orders.
+    //
+    // tenantId required: supabase.admin bypasses RLS; without the filter
+    // a colliding/smuggled id from another tenant would feed the wrong
+    // ticket title, assignee, and requester into the notification + the
+    // reassignment write. Caller (fireThreshold) passes timer.tenant_id.
     const cols = 'id, tenant_id, title, assigned_user_id, assigned_team_id, requester_person_id, watchers';
     const caseRes = await this.supabase.admin
       .from('tickets')
       .select(cols)
       .eq('id', ticketId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (caseRes.data) {
       return caseRes.data as {
@@ -487,6 +511,7 @@ export class SlaService {
       .from('work_orders')
       .select(cols)
       .eq('id', ticketId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (woRes.error) throw woRes.error;
     if (!woRes.data) {
@@ -503,12 +528,17 @@ export class SlaService {
     };
   }
 
-  private async loadPolicyName(policyId: string): Promise<string> {
+  private async loadPolicyName(policyId: string, tenantId: string): Promise<string> {
+    // tenantId required: cosmetic notification name, but defense-in-depth.
+    // supabase.admin bypasses RLS — a foreign sla_policies row with a
+    // colliding id would otherwise leak its name into another tenant's
+    // notification subject/body.
     const { data } = await this.supabase.admin
       .from('sla_policies')
       .select('name')
       .eq('id', policyId)
-      .single();
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
     return (data?.name as string) ?? 'SLA policy';
   }
 
@@ -529,13 +559,20 @@ export class SlaService {
     return { subject, body };
   }
 
-  private async resolveTargetName(resolved: { personId?: string; teamId?: string }): Promise<string> {
+  private async resolveTargetName(
+    resolved: { personId?: string; teamId?: string },
+    tenantId: string,
+  ): Promise<string> {
+    // tenantId required: cosmetic notification name, but defense-in-depth.
+    // Without the filter a colliding id from another tenant would leak the
+    // foreign person/team name into this tenant's notification copy.
     if (resolved.personId) {
       const { data } = await this.supabase.admin
         .from('persons')
         .select('first_name, last_name')
         .eq('id', resolved.personId)
-        .single();
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
       if (!data) return 'person';
       return `${(data.first_name as string) ?? ''} ${(data.last_name as string) ?? ''}`.trim() || 'person';
     }
@@ -544,7 +581,8 @@ export class SlaService {
         .from('teams')
         .select('name')
         .eq('id', resolved.teamId)
-        .single();
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
       return (data?.name as string) ?? 'team';
     }
     return 'target';
@@ -573,11 +611,19 @@ export class SlaService {
     } else if (resolved.personId) {
       // tickets.assigned_user_id references users(id). resolved.personId is a persons id;
       // look up the user row.
+      //
+      // HIGH severity tenant-scope: this user lookup feeds a WRITE
+      // (assigned_user_id on the case/work_order). Without the tenant
+      // filter, a person_id colliding across tenants would resolve to a
+      // foreign-tenant users row and assign that foreign user to this
+      // tenant's ticket — cross-tenant ticket reassignment via SLA
+      // escalation. supabase.admin bypasses RLS so id alone is unsafe.
       const { data: user } = await this.supabase.admin
         .from('users')
         .select('id, person_id')
         .eq('person_id', resolved.personId)
-        .single();
+        .eq('tenant_id', ticket.tenant_id)
+        .maybeSingle();
       const newAssigneeUserId = (user?.id as string) ?? null;
       if (newAssigneeUserId && ticket.assigned_user_id !== newAssigneeUserId) {
         updates.assigned_user_id = newAssigneeUserId;
@@ -663,9 +709,9 @@ export class SlaService {
     timer: SlaTimerRow,
     threshold: EscalationThreshold,
   ): Promise<void> {
-    const ticket = await this.loadTicketForFire(timer.ticket_id);
-    const policyName = await this.loadPolicyName(timer.sla_policy_id);
-    const resolved = await this.resolveTarget(threshold, ticket.id);
+    const ticket = await this.loadTicketForFire(timer.ticket_id, timer.tenant_id);
+    const policyName = await this.loadPolicyName(timer.sla_policy_id, timer.tenant_id);
+    const resolved = await this.resolveTarget(threshold, ticket.id, timer.tenant_id);
 
     // Skip path — record a crossing so we don't retry forever.
     if (!resolved) {
@@ -689,7 +735,7 @@ export class SlaService {
       return;
     }
 
-    const targetName = await this.resolveTargetName(resolved);
+    const targetName = await this.resolveTargetName(resolved, timer.tenant_id);
     const { subject, body } = this.buildNotificationCopy({
       ticketId: ticket.id,
       ticketTitle: ticket.title,
@@ -765,16 +811,33 @@ export class SlaService {
     const timerRows = (timers ?? []) as SlaTimerRow[];
     if (timerRows.length === 0) return;
 
-    // Load distinct policies used by this batch in one query.
-    const policyIds = Array.from(new Set(timerRows.map((t) => t.sla_policy_id)));
-    const { data: policies } = await this.supabase.admin
-      .from('sla_policies')
-      .select('id, escalation_thresholds')
-      .in('id', policyIds);
+    // Load distinct policies used by this batch, grouped by tenant. Pre-fix
+    // this issued a single .in('id', policyIds) across tenants — supabase.admin
+    // bypasses RLS, so a smuggled cross-tenant sla_policy_id on a timer would
+    // resolve to the foreign tenant's escalation_thresholds and fire the
+    // wrong-tenant escalations. Defense-in-depth: tenant filter on the read.
+    // Key the result map by `${policyId}|${tenantId}` so the lookup at the
+    // call site can't accidentally hit a different tenant's policy.
+    const policyIdsByTenant = new Map<string, Set<string>>();
+    for (const t of timerRows) {
+      let set = policyIdsByTenant.get(t.tenant_id);
+      if (!set) {
+        set = new Set<string>();
+        policyIdsByTenant.set(t.tenant_id, set);
+      }
+      set.add(t.sla_policy_id);
+    }
     const thresholdsByPolicy = new Map<string, EscalationThreshold[]>();
-    for (const p of policies ?? []) {
-      const raw = (p.escalation_thresholds as EscalationThreshold[] | null) ?? [];
-      thresholdsByPolicy.set(p.id as string, raw);
+    for (const [tenantId, ids] of policyIdsByTenant) {
+      const { data: policies } = await this.supabase.admin
+        .from('sla_policies')
+        .select('id, escalation_thresholds')
+        .eq('tenant_id', tenantId)
+        .in('id', Array.from(ids));
+      for (const p of policies ?? []) {
+        const raw = (p.escalation_thresholds as EscalationThreshold[] | null) ?? [];
+        thresholdsByPolicy.set(`${p.id as string}|${tenantId}`, raw);
+      }
     }
 
     // Load existing crossings for this batch in one query.
@@ -795,7 +858,7 @@ export class SlaService {
 
     for (const timer of timerRows) {
       try {
-        const thresholds = thresholdsByPolicy.get(timer.sla_policy_id) ?? [];
+        const thresholds = thresholdsByPolicy.get(`${timer.sla_policy_id}|${timer.tenant_id}`) ?? [];
         if (thresholds.length === 0) continue;
         const percent = percentElapsed(timer, now);
         const applicable = selectApplicableThresholds({
@@ -832,12 +895,19 @@ export class SlaService {
   /**
    * List threshold crossings for a ticket, ordered newest first, with the target's
    * resolved display name joined in. Intended for the ticket-detail escalations panel.
+   *
+   * tenantId required (defense-in-depth): controller gates with
+   * assertVisible() before calling, but supabase.admin bypasses RLS — without
+   * the tenant filter, three reads (sla_threshold_crossings + persons + teams
+   * by id) would otherwise resolve cross-tenant rows on a smuggled or
+   * colliding id.
    */
-  async listCrossingsForTicket(ticketId: string) {
+  async listCrossingsForTicket(ticketId: string, tenantId: string) {
     const { data: rows, error } = await this.supabase.admin
       .from('sla_threshold_crossings')
       .select('id, fired_at, timer_type, at_percent, action, target_type, target_id, notification_id')
       .eq('ticket_id', ticketId)
+      .eq('tenant_id', tenantId)
       .order('fired_at', { ascending: false });
     if (error) throw error;
 
@@ -856,6 +926,7 @@ export class SlaService {
       const { data } = await this.supabase.admin
         .from('persons')
         .select('id, first_name, last_name')
+        .eq('tenant_id', tenantId)
         .in('id', personIds);
       for (const p of data ?? []) {
         const name = `${(p.first_name as string) ?? ''} ${(p.last_name as string) ?? ''}`.trim() || 'person';
@@ -867,6 +938,7 @@ export class SlaService {
       const { data } = await this.supabase.admin
         .from('teams')
         .select('id, name')
+        .eq('tenant_id', tenantId)
         .in('id', teamIds);
       for (const t of data ?? []) teamNames.set(t.id as string, (t.name as string) ?? 'team');
     }
