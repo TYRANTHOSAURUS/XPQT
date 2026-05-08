@@ -167,9 +167,9 @@ export class RoutingSimulatorService {
     };
 
     const decision = await this.resolver.resolve(context);
-    const targetName = await this.resolveTargetName(decision.target);
+    const targetName = await this.resolveTargetName(decision.target, tenant.id);
 
-    const v2 = input.include_v2 ? await this.runV2Preview(context, decision.target) : null;
+    const v2 = input.include_v2 ? await this.runV2Preview(context, decision.target, tenant.id) : null;
 
     const portal_availability = input.simulate_as_person_id
       ? await this.evaluatePortalAvailability(
@@ -300,13 +300,14 @@ export class RoutingSimulatorService {
   private async runV2Preview(
     context: ResolverContext,
     legacyTarget: AssignmentTarget | null,
+    tenantId: string,
   ): Promise<V2DecisionView[]> {
     const hooks: RoutingHook[] = ['case_owner', 'child_dispatch'];
     const results: V2DecisionView[] = [];
     for (const hook of hooks) {
       const { decision, error } = await this.evaluator.simulateV2(hook, context);
       const target = decision?.target ?? null;
-      const name = await this.resolveTargetName(target);
+      const name = await this.resolveTargetName(target, tenantId);
       results.push({
         hook,
         chosen_by: decision?.chosen_by ?? null,
@@ -358,13 +359,16 @@ export class RoutingSimulatorService {
     };
   }
 
-  private async resolveTargetName(target: AssignmentTarget | null): Promise<string | null> {
+  private async resolveTargetName(target: AssignmentTarget | null, tenantId: string): Promise<string | null> {
     if (!target) return null;
+    // Tenant filter is mandatory: supabase.admin bypasses RLS so a target id
+    // smuggled in from another tenant would otherwise leak the row's name.
     if (target.kind === 'team') {
       const { data } = await this.supabase.admin
         .from('teams')
         .select('name')
         .eq('id', target.team_id)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       return (data as { name?: string } | null)?.name ?? null;
     }
@@ -373,6 +377,7 @@ export class RoutingSimulatorService {
         .from('vendors')
         .select('name')
         .eq('id', target.vendor_id)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       return (data as { name?: string } | null)?.name ?? null;
     }
@@ -381,6 +386,7 @@ export class RoutingSimulatorService {
       .from('users')
       .select('email')
       .eq('id', target.user_id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     return (data as { email?: string } | null)?.email ?? null;
   }

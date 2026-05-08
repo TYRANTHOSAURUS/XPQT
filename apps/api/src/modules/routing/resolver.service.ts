@@ -91,7 +91,12 @@ export class ResolverService {
     }
 
     if ((shape === 'location' || shape === 'auto') && loaded.location_chain) {
-      const hit = await this.tryLocationChain(loaded.location_chain, loaded.domain_chain ?? [], trace);
+      const hit = await this.tryLocationChain(
+        loaded.location_chain,
+        loaded.domain_chain ?? [],
+        context.tenant_id,
+        trace,
+      );
       if (hit) return this.done(trace, hit.step, shape, hit.target);
     }
 
@@ -229,6 +234,7 @@ export class ResolverService {
   private async tryLocationChain(
     chain: string[],
     domainChain: string[],
+    tenantId: string,
     trace: TraceEntry[],
   ): Promise<{ step: ChosenBy; target: AssignmentTarget } | null> {
     if (domainChain.length === 0) {
@@ -240,7 +246,7 @@ export class ResolverService {
       const dom = domainChain[d];
       for (let s = 0; s < chain.length; s++) {
         const spaceId = chain[s];
-        const hit = await this.repo.locationTeam(spaceId, dom);
+        const hit = await this.repo.locationTeam(spaceId, dom, tenantId);
         const target = this.fromHit(hit);
         if (target) {
           const step: ChosenBy =
@@ -250,7 +256,7 @@ export class ResolverService {
           trace.push({ step, matched: true, reason: `space ${spaceId} domain ${dom}`, target });
           return { step, target };
         }
-        const groupHit = await this.repo.spaceGroupTeam(spaceId, dom);
+        const groupHit = await this.repo.spaceGroupTeam(spaceId, dom, tenantId);
         const groupTarget = this.fromHit(groupHit);
         if (groupTarget) {
           const step: ChosenBy = d > 0 ? 'domain_fallback' : 'space_group_team';
@@ -265,11 +271,13 @@ export class ResolverService {
 
   private async hydrate(context: ResolverContext) {
     const request_type = context.request_type_id
-      ? await this.repo.loadRequestType(context.request_type_id)
+      ? await this.repo.loadRequestType(context.request_type_id, context.tenant_id)
       : null;
-    const asset = context.asset_id ? await this.repo.loadAsset(context.asset_id) : null;
+    const asset = context.asset_id ? await this.repo.loadAsset(context.asset_id, context.tenant_id) : null;
     const primaryLocation = context.location_id ?? asset?.assigned_space_id ?? null;
-    const location_chain = primaryLocation ? await this.repo.locationChain(primaryLocation) : [];
+    const location_chain = primaryLocation
+      ? await this.repo.locationChain(primaryLocation, context.tenant_id)
+      : [];
     const domain_chain = context.domain
       ? await this.repo.domainChain(context.tenant_id, context.domain)
       : [];

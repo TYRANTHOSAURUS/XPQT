@@ -41,7 +41,7 @@ export class IntakeScopingService {
         : null;
 
     const operational_scope_chain = location_id
-      ? await this.resolverRepo.locationChain(location_id)
+      ? await this.resolverRepo.locationChain(location_id, intake.tenant_id)
       : [];
     const operational_scope_id = operational_scope_chain[0] ?? null;
 
@@ -63,7 +63,7 @@ export class IntakeScopingService {
   }
 
   private async resolveDomainId(intake: IntakeContext): Promise<string | null> {
-    const rt = await this.resolverRepo.loadRequestType(intake.request_type_id);
+    const rt = await this.resolverRepo.loadRequestType(intake.request_type_id, intake.tenant_id);
     if (!rt) return null;
     // Prefer the FK (fast, accurate, no string comparison).
     if (rt.domain_id) return rt.domain_id;

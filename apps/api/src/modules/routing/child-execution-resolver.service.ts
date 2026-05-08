@@ -76,7 +76,7 @@ export class ChildExecutionResolverService {
     if (locationFirst && location_id) {
       const domain = plan.execution_context.domain_id ?? '';
       if (domain) {
-        const hit = await this.repo.locationTeam(location_id, domain);
+        const hit = await this.repo.locationTeam(location_id, domain, plan.execution_context.tenant_id);
         if (hit && (hit.team_id || hit.vendor_id)) {
           const target: AssignmentTarget = hit.team_id
             ? { kind: 'team', team_id: hit.team_id }

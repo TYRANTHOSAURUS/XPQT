@@ -11,16 +11,20 @@ import {
 export class ResolverRepository {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async loadRequestType(id: string): Promise<LoadedRequestType | null> {
+  async loadRequestType(id: string, tenantId: string): Promise<LoadedRequestType | null> {
+    // Tenant filter is mandatory: supabase.admin bypasses RLS, so a foreign id
+    // (smuggled FK or shared uuid across tenants) would otherwise leak through.
+    // See commit 75ad3b0 for the analogous ticket-module fix.
     const { data } = await this.supabase.admin
       .from('request_types')
       .select('id, domain, domain_id, fulfillment_strategy, default_team_id, default_vendor_id, asset_type_filter')
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     return (data as LoadedRequestType | null) ?? null;
   }
 
-  async loadAsset(id: string): Promise<LoadedAsset | null> {
+  async loadAsset(id: string, tenantId: string): Promise<LoadedAsset | null> {
     const { data } = await this.supabase.admin
       .from('assets')
       .select(`
@@ -28,6 +32,7 @@ export class ResolverRepository {
         type:asset_types!assets_asset_type_id_fkey(id, default_team_id, default_vendor_id)
       `)
       .eq('id', id)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (!data) return null;
     const raw = data as Record<string, unknown>;
@@ -35,7 +40,10 @@ export class ResolverRepository {
     return { ...(raw as object), type } as LoadedAsset;
   }
 
-  async locationChain(spaceId: string): Promise<string[]> {
+  async locationChain(spaceId: string, tenantId: string): Promise<string[]> {
+    // Cross-tenant FK-smuggle path: a tenant whose space had its parent_id set
+    // to a foreign tenant's space could otherwise walk into that tenant's
+    // hierarchy. Each step in the chain re-asserts tenant_id.
     const chain: string[] = [];
     let current: string | null = spaceId;
     for (let i = 0; current && i < 10; i++) {
@@ -44,27 +52,30 @@ export class ResolverRepository {
         .from('spaces')
         .select('parent_id')
         .eq('id', current)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       current = result.data?.parent_id ?? null;
     }
     return chain;
   }
 
-  async locationTeam(spaceId: string, domain: string): Promise<LocationTeamHit | null> {
+  async locationTeam(spaceId: string, domain: string, tenantId: string): Promise<LocationTeamHit | null> {
     const { data } = await this.supabase.admin
       .from('location_teams')
       .select('team_id, vendor_id')
       .eq('space_id', spaceId)
       .eq('domain', domain)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     return (data as LocationTeamHit | null) ?? null;
   }
 
-  async spaceGroupTeam(spaceId: string, domain: string): Promise<LocationTeamHit | null> {
+  async spaceGroupTeam(spaceId: string, domain: string, tenantId: string): Promise<LocationTeamHit | null> {
     const { data: memberships } = await this.supabase.admin
       .from('space_group_members')
       .select('space_group_id')
-      .eq('space_id', spaceId);
+      .eq('space_id', spaceId)
+      .eq('tenant_id', tenantId);
     const groupIds = (memberships ?? []).map((m) => (m as { space_group_id: string }).space_group_id);
     if (groupIds.length === 0) return null;
 
@@ -73,6 +84,7 @@ export class ResolverRepository {
       .select('team_id, vendor_id')
       .in('space_group_id', groupIds)
       .eq('domain', domain)
+      .eq('tenant_id', tenantId)
       .limit(1)
       .maybeSingle();
     return (data as LocationTeamHit | null) ?? null;
