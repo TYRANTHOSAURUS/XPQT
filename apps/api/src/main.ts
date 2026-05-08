@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import compression from 'compression';
 import type { Request } from 'express';
+import { AllExceptionsFilter } from './common/errors/all-exceptions.filter';
 
 async function bootstrap() {
   // Disable NestJS's auto bodyParser so we control parser order explicitly.
@@ -47,6 +48,12 @@ async function bootstrap() {
   app.use(compression({ threshold: 1024 }));
 
   app.setGlobalPrefix('api');
+
+  // Phase 7.A.1: normalise every thrown error to the RFC 9457-inspired wire
+  // shape. Legacy `throw new BadRequestException('msg')` callers still work;
+  // they map to `generic.bad_request`. See docs/superpowers/specs/
+  // 2026-05-02-error-handling-system-design.md §3.2.
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   await app.listen(port, host);
   console.log(`Prequest API running on http://${host}:${port}`);
