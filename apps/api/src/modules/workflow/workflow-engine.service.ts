@@ -155,11 +155,18 @@ export class WorkflowEngineService {
   async startForTicket(ticketId: string, workflowDefinitionId: string) {
     const tenant = TenantContext.current();
 
+    // Cross-tenant FK leak fix (security audit 2026-05-08, site 1):
+    // workflow_definitions read keyed by id alone. supabase.admin bypasses
+    // RLS, so a foreign-tenant workflow uuid (e.g. smuggled via a request
+    // type pointing across tenants) would be returned blind and used to
+    // start an instance — branching on a foreign workflow's nodes/edges.
+    // Filter by tenant.
     const { data: definition } = await this.supabase.admin
       .from('workflow_definitions')
       .select('*')
       .eq('id', workflowDefinitionId)
-      .single();
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
 
     if (!definition) return null;
 
@@ -376,7 +383,16 @@ export class WorkflowEngineService {
         if (ctx?.dryRun) {
           ticket = ctx.simulatedTicket ?? {};
         } else {
-          const { data } = await this.supabase.admin.from('tickets').select('*').eq('id', ticketId).single();
+          // Cross-tenant FK leak fix (site 2): condition node reads tickets
+          // by id alone and BRANCHES on the result. A workflow_instance
+          // pointing at a foreign-tenant ticket (or an id collision) would
+          // route execution based on another tenant's data. Filter by
+          // tenant — when no context is set (resume() callsite, see site 5
+          // fix below), fall back to instance.tenant_id captured upstream.
+          const condTenant = TenantContext.currentOrNull();
+          let q = this.supabase.admin.from('tickets').select('*').eq('id', ticketId);
+          if (condTenant) q = q.eq('tenant_id', condTenant.id);
+          const { data } = await q.maybeSingle();
           ticket = data;
         }
         if (!ticket) break;
@@ -551,11 +567,22 @@ export class WorkflowEngineService {
         const saveAs = (node.config.save_response_as as string) ?? '';
 
         // Load ticket/context for template substitution
+        // Cross-tenant FK leak fix (site 3) — EXFILTRATION VECTOR.
+        // This node reads tickets.* and substitutes EVERY column into
+        // user-authored URL/body/header templates, then sends the result
+        // to a user-authored URL. Without a tenant filter, a workflow
+        // instance pointing at a foreign-tenant ticket (or an id
+        // collision) would exfiltrate the foreign tenant's row to THIS
+        // tenant's webhook. Filter by tenant; resume() now installs a
+        // tenant context so currentOrNull() resolves.
         let ticket: Record<string, unknown> | null = null;
         if (ctx?.dryRun) {
           ticket = ctx.simulatedTicket ?? {};
         } else {
-          const { data } = await this.supabase.admin.from('tickets').select('*').eq('id', ticketId).single();
+          const httpTenant = TenantContext.currentOrNull();
+          let q = this.supabase.admin.from('tickets').select('*').eq('id', ticketId);
+          if (httpTenant) q = q.eq('tenant_id', httpTenant.id);
+          const { data } = await q.maybeSingle();
           ticket = data;
         }
 
@@ -595,16 +622,27 @@ export class WorkflowEngineService {
           });
 
           if (saveAs) {
-            const { data: inst } = await this.supabase.admin
+            // Cross-tenant FK leak fix (site 4): saveAs reads + writes
+            // workflow_instances.context by id alone. Without a tenant
+            // filter, a foreign-tenant instance with a colliding id could
+            // be read (leak) and overwritten (tamper). Filter both the
+            // read and the update. Falls back to no extra filter when no
+            // tenant context is set (shouldn't happen post site-5 fix,
+            // but defensive).
+            const saveTenant = TenantContext.currentOrNull();
+            let readQ = this.supabase.admin
               .from('workflow_instances')
               .select('context')
-              .eq('id', instanceId)
-              .single();
+              .eq('id', instanceId);
+            if (saveTenant) readQ = readQ.eq('tenant_id', saveTenant.id);
+            const { data: inst } = await readQ.maybeSingle();
             const newCtx = { ...(inst?.context ?? {}), [saveAs]: parsed };
-            await this.supabase.admin
+            let writeQ = this.supabase.admin
               .from('workflow_instances')
               .update({ context: newCtx })
               .eq('id', instanceId);
+            if (saveTenant) writeQ = writeQ.eq('tenant_id', saveTenant.id);
+            await writeQ;
           }
         } catch (err) {
           await this.emit(instanceId, 'instance_failed', {
@@ -644,23 +682,53 @@ export class WorkflowEngineService {
   }
 
   async resume(instanceId: string, edgeCondition?: string) {
-    const { data: instance } = await this.supabase.admin
+    // Cross-tenant FK leak fix (site 5): the original implementation had
+    // NO tenant context — external callbacks (controller endpoint) could
+    // resume any tenant's workflow by id alone, and downstream node
+    // execution (condition / http_request / saveAs) would read foreign
+    // tickets blind. Two-part defense:
+    //   1. If a TenantContext is set on the calling thread (e.g. authed
+    //      controller request), filter the read by it AND assert the
+    //      instance row's tenant_id matches — refuses cross-tenant resume
+    //      attempts hard.
+    //   2. Wrap the rest of the resume (update + emit + advance →
+    //      executeNode) inside TenantContext.run({ id: instance.tenant_id })
+    //      so every downstream read in this engine sees the row's own
+    //      tenant. Audit suggested this fallback in lieu of plumbing a
+    //      tenantId param through every caller (currently only
+    //      WorkflowController calls .resume()).
+    const ambient = TenantContext.currentOrNull();
+
+    let q = this.supabase.admin
       .from('workflow_instances')
       .select('*, definition:workflow_definitions(*)')
-      .eq('id', instanceId)
-      .single();
+      .eq('id', instanceId);
+    if (ambient) q = q.eq('tenant_id', ambient.id);
+    const { data: instance } = await q.maybeSingle();
 
     if (!instance || instance.status !== 'waiting') return;
 
+    // If we had an ambient tenant, the .eq filter already gated this; the
+    // assert below is belt + braces for the no-ambient (callback) path.
+    if (ambient && instance.tenant_id !== ambient.id) return;
+
     const graph = instance.definition.graph_definition as unknown as WorkflowGraph;
+    const tenantInfo = ambient ?? {
+      id: instance.tenant_id as string,
+      slug: 'workflow_resume',
+      tier: 'standard' as const,
+    };
 
-    await this.supabase.admin
-      .from('workflow_instances')
-      .update({ status: 'active', waiting_for: null })
-      .eq('id', instanceId);
+    await TenantContext.run(tenantInfo, async () => {
+      await this.supabase.admin
+        .from('workflow_instances')
+        .update({ status: 'active', waiting_for: null })
+        .eq('id', instanceId)
+        .eq('tenant_id', tenantInfo.id);
 
-    await this.emit(instanceId, 'instance_resumed', { payload: { edge_condition: edgeCondition ?? null } });
-    await this.advance(instanceId, graph, instance.current_node_id, instance.ticket_id, edgeCondition);
+      await this.emit(instanceId, 'instance_resumed', { payload: { edge_condition: edgeCondition ?? null } });
+      await this.advance(instanceId, graph, instance.current_node_id, instance.ticket_id, edgeCondition);
+    });
   }
 
   private async emit(
