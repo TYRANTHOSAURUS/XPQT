@@ -1,5 +1,6 @@
-import { Body, Controller, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Param, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import { ReclassifyService } from './reclassify.service';
 import type { ReclassifyPreviewDto, ReclassifyExecuteDto } from './dto/reclassify.dto';
 
@@ -14,7 +15,7 @@ export class ReclassifyController {
     @Body() dto: ReclassifyPreviewDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.service.computeImpact(id, dto.newRequestTypeId, actorAuthUid);
   }
 
@@ -25,7 +26,7 @@ export class ReclassifyController {
     @Body() dto: ReclassifyExecuteDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.service.execute(id, dto, actorAuthUid);
   }
 }

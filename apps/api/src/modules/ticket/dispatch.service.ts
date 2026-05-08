@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -49,25 +50,31 @@ export class DispatchService {
     }
 
     if (!dto.title?.trim()) {
-      throw new BadRequestException('dispatch requires a non-empty title');
+      throw AppErrors.validationFailed('dispatch.title_required', {
+        detail: 'dispatch requires a non-empty title',
+      });
     }
 
-    // getById throws NotFoundException on miss — no null guard needed
+    // getById throws AppError(ticket.not_found) on miss — no null guard needed
     const parent = await this.tickets.getById(parentId, SYSTEM_ACTOR) as Record<string, unknown>;
     if (parent.ticket_kind === 'work_order') {
-      throw new BadRequestException('cannot dispatch from a work_order; dispatch from the parent case');
+      throw AppErrors.validationFailed('dispatch.from_work_order', {
+        detail: 'cannot dispatch from a work_order; dispatch from the parent case',
+      });
     }
 
     if (parent.status_category === 'pending_approval') {
-      throw new BadRequestException('cannot dispatch while parent is pending approval');
+      throw AppErrors.validationFailed('dispatch.parent_pending_approval', {
+        detail: 'cannot dispatch while parent is pending approval',
+      });
     }
     // The parent-close trigger (00134) rejects child inserts under terminal
     // parents at the DB level. Catch it here for a friendly 400 instead of
     // a generic 500.
     if (parent.status_category === 'resolved' || parent.status_category === 'closed') {
-      throw new BadRequestException(
-        `cannot dispatch a work order on a ${parent.status_category as string} case`,
-      );
+      throw AppErrors.validationFailed('dispatch.parent_terminal', {
+        detail: `cannot dispatch a work order on a ${parent.status_category as string} case`,
+      });
     }
 
     const ticketTypeId = dto.ticket_type_id ?? (parent.ticket_type_id as string | null);

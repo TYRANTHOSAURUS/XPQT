@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { TicketVisibilityService, VisibilityContext } from './ticket-visibility.service';
 
 function ctx(over: Partial<VisibilityContext> = {}): VisibilityContext {
@@ -95,7 +95,11 @@ describe('TicketVisibilityService.assertVisible', () => {
 
   it('denies read when no path matches', async () => {
     const s = svc(baseRow);
-    await expect(s.assertVisible('tk1', ctx(), 'read')).rejects.toThrow(ForbiddenException);
+    await expect(s.assertVisible('tk1', ctx(), 'read')).rejects.toThrow(AppError);
+    await expect(s.assertVisible('tk1', ctx(), 'read')).rejects.toMatchObject({
+      code: 'ticket.read_forbidden',
+      status: 403,
+    });
   });
 
   it('allows read when has_read_all is true regardless of paths', async () => {
@@ -111,7 +115,11 @@ describe('TicketVisibilityService.assertVisible', () => {
       ],
     });
     await expect(s.assertVisible('tk1', c, 'read')).resolves.toBeUndefined();
-    await expect(s.assertVisible('tk1', c, 'write')).rejects.toThrow(ForbiddenException);
+    await expect(s.assertVisible('tk1', c, 'write')).rejects.toThrow(AppError);
+    await expect(s.assertVisible('tk1', c, 'write')).rejects.toMatchObject({
+      code: 'ticket.write_forbidden',
+      status: 403,
+    });
   });
 
   it('allows write when a non-readonly role matches', async () => {
@@ -135,7 +143,7 @@ describe('TicketVisibilityService.assertVisible', () => {
     await expect(s.assertVisible('tk1', ctx({ has_write_all: true }), 'write')).resolves.toBeUndefined();
   });
 
-  it('throws ForbiddenException when ticket does not exist', async () => {
+  it('throws AppError (ticket.read_forbidden) when ticket does not exist', async () => {
     const supabase = {
       admin: {
         from: jest.fn(() => ({
@@ -150,7 +158,11 @@ describe('TicketVisibilityService.assertVisible', () => {
       },
     };
     const s = new TicketVisibilityService(supabase as never);
-    await expect(s.assertVisible('tk-missing', ctx(), 'read')).rejects.toThrow(ForbiddenException);
+    await expect(s.assertVisible('tk-missing', ctx(), 'read')).rejects.toThrow(AppError);
+    await expect(s.assertVisible('tk-missing', ctx(), 'read')).rejects.toMatchObject({
+      code: 'ticket.read_forbidden',
+      status: 403,
+    });
   });
 });
 

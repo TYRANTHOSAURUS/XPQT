@@ -108,6 +108,49 @@ export type KnownErrorCode =
   | 'ticket.title_required'
   | 'ticket.assignment_invalid'
   | 'ticket.routing_no_match'
+
+  // ─── ticket module migration (Phase 7.A.2.a) ─────────────────────────────
+  | 'ticket.not_in_tenant'
+  | 'ticket.bulk_cap_exceeded'
+  | 'ticket.no_writable_in_selection'
+  | 'ticket.case_sla_immutable'
+  | 'ticket.cannot_reassign_to_same'
+  | 'ticket.tags_invalid'
+  | 'ticket.watchers_invalid'
+  | 'ticket.no_files_uploaded'
+  | 'ticket.visibility_trace_forbidden'
+  | 'ticket.write_forbidden'
+  | 'ticket.read_forbidden'
+  | 'ticket.plan_forbidden'
+  | 'ticket.bulk_update_invalid'
+  | 'ticket.reassignment_reason_required'
+  | 'ticket.children_open_cannot_close'
+  | 'ticket.priority_change_forbidden'
+  | 'ticket.assign_forbidden'
+  | 'ticket.cannot_reclassify_child'
+  | 'ticket.terminal_cannot_reclassify'
+
+  // ─── reclassify codes ────────────────────────────────────────────────────
+  | 'reclassify.target_not_found'
+  | 'reclassify.target_inactive'
+  | 'reclassify.target_same'
+  | 'reclassify.reason_too_short'
+  | 'reclassify.reason_too_long'
+  | 'reclassify.in_progress_collision'
+  | 'reclassify.in_progress_children_unacked'
+  | 'reclassify.terminal_state'
+  | 'reclassify.work_order_target'
+  | 'reclassify.actor_not_resolvable'
+
+  // ─── dispatch codes ──────────────────────────────────────────────────────
+  | 'dispatch.title_required'
+  | 'dispatch.from_work_order'
+  | 'dispatch.parent_pending_approval'
+  | 'dispatch.assignment_required'
+  | 'dispatch.parent_terminal'
+
+  // ─── auth ────────────────────────────────────────────────────────────────
+  | 'auth.no_session'
   | 'booking.conflict'
   | 'booking.window_closed'
   | 'booking.capacity_exceeded'
@@ -194,6 +237,41 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'ticket.title_required',
   'ticket.assignment_invalid',
   'ticket.routing_no_match',
+  'ticket.not_in_tenant',
+  'ticket.bulk_cap_exceeded',
+  'ticket.no_writable_in_selection',
+  'ticket.case_sla_immutable',
+  'ticket.cannot_reassign_to_same',
+  'ticket.tags_invalid',
+  'ticket.watchers_invalid',
+  'ticket.no_files_uploaded',
+  'ticket.visibility_trace_forbidden',
+  'ticket.write_forbidden',
+  'ticket.read_forbidden',
+  'ticket.plan_forbidden',
+  'ticket.bulk_update_invalid',
+  'ticket.reassignment_reason_required',
+  'ticket.children_open_cannot_close',
+  'ticket.priority_change_forbidden',
+  'ticket.assign_forbidden',
+  'ticket.cannot_reclassify_child',
+  'ticket.terminal_cannot_reclassify',
+  'reclassify.target_not_found',
+  'reclassify.target_inactive',
+  'reclassify.target_same',
+  'reclassify.reason_too_short',
+  'reclassify.reason_too_long',
+  'reclassify.in_progress_collision',
+  'reclassify.in_progress_children_unacked',
+  'reclassify.terminal_state',
+  'reclassify.work_order_target',
+  'reclassify.actor_not_resolvable',
+  'dispatch.title_required',
+  'dispatch.from_work_order',
+  'dispatch.parent_pending_approval',
+  'dispatch.assignment_required',
+  'dispatch.parent_terminal',
+  'auth.no_session',
   'booking.conflict',
   'booking.window_closed',
   'booking.capacity_exceeded',

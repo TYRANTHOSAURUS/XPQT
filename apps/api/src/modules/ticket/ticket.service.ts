@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
   assertTenantOwned,
@@ -561,7 +562,7 @@ export class TicketService {
     if (woResult.data) {
       return { ...woResult.data, ticket_kind: 'work_order' as const };
     }
-    throw new NotFoundException('Ticket not found');
+    throw AppErrors.notFound('ticket', id);
   }
 
   async create(
@@ -930,7 +931,8 @@ export class TicketService {
           );
           if (permErr) throw permErr;
           if (!hasChange) {
-            throw new ForbiddenException(
+            throw AppErrors.forbidden(
+              'ticket.priority_change_forbidden',
               'tickets.change_priority permission required to change a ticket priority',
             );
           }
@@ -946,7 +948,8 @@ export class TicketService {
           );
           if (permErr) throw permErr;
           if (!hasAssign) {
-            throw new ForbiddenException(
+            throw AppErrors.forbidden(
+              'ticket.assign_forbidden',
               'tickets.assign permission required to change a ticket assignment',
             );
           }
@@ -1015,7 +1018,9 @@ export class TicketService {
     // Step 1c.10c: tickets is case-only. The previous ticket_kind='case' guards
     // are now unconditional — every ticket here IS a case. SLA-on-case is locked.
     if (dto.sla_id !== undefined) {
-      throw new BadRequestException('cannot change sla_id on a case; parent SLA is locked');
+      throw AppErrors.validationFailed('ticket.case_sla_immutable', {
+        detail: 'cannot change sla_id on a case; parent SLA is locked',
+      });
     }
 
     // Parent close guard: case cannot move to resolved/closed while children are open.
@@ -1031,9 +1036,9 @@ export class TicketService {
         .not('status_category', 'in', '(resolved,closed)');
       const childIds = (openChildren ?? []).map((c: { id: string }) => c.id);
       if (childIds.length > 0) {
-        throw new BadRequestException(
-          `cannot close case while children are open: ${childIds.join(', ')}`,
-        );
+        throw AppErrors.validationFailed('ticket.children_open_cannot_close', {
+          detail: `cannot close case while children are open: ${childIds.join(', ')}`,
+        });
       }
     }
 
@@ -1247,7 +1252,8 @@ export class TicketService {
         );
         if (permErr) throw permErr;
         if (!hasAssign) {
-          throw new ForbiddenException(
+          throw AppErrors.forbidden(
+            'ticket.assign_forbidden',
             'tickets.assign permission required to reassign a ticket',
           );
         }
@@ -1257,7 +1263,9 @@ export class TicketService {
     const current = await this.getById(id, SYSTEM_ACTOR);
 
     if (!dto.reason?.trim()) {
-      throw new Error('reassignment reason is required');
+      throw AppErrors.validationFailed('ticket.reassignment_reason_required', {
+        detail: 'reassignment reason is required',
+      });
     }
 
     const prev = {
@@ -1590,7 +1598,9 @@ export class TicketService {
     // Cap blast radius. The desk UI never selects more than a screenful at a
     // time; an unbounded list here is almost certainly an abuse signal.
     if (ids.length > 200) {
-      throw new BadRequestException('bulk update is capped at 200 ids per call');
+      throw AppErrors.validationFailed('ticket.bulk_cap_exceeded', {
+        detail: 'bulk update is capped at 200 ids per call',
+      });
     }
 
     // Visibility gate: only update tickets the actor can write. We narrow the
@@ -1611,7 +1621,10 @@ export class TicketService {
           }
         }
         if (allowedIds.length === 0) {
-          throw new ForbiddenException('No tickets in selection are writable for this user');
+          throw AppErrors.forbidden(
+            'ticket.no_writable_in_selection',
+            'No tickets in selection are writable for this user',
+          );
         }
         ids = allowedIds;
       }

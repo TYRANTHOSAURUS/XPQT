@@ -7,7 +7,7 @@
 // many more dependencies than WorkOrderService — most are stubbed as
 // no-op proxies because the gate runs before any of those paths fire.
 
-import { ForbiddenException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 
 type Row = {
@@ -198,7 +198,10 @@ describe('TicketService — per-action permission gates', () => {
 
       await expect(
         svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(AppError);
+      await expect(
+        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
+      ).rejects.toMatchObject({ code: 'ticket.priority_change_forbidden', status: 403 });
       await expect(
         svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
       ).rejects.toThrow(/tickets\.change_priority permission required/);

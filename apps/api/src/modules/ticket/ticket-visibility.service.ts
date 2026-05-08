@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 
 export interface RoleAssignmentCtx {
@@ -135,14 +136,14 @@ export class TicketVisibilityService {
    * Per-ticket gate. Loads the ticket, evaluates paths in TypeScript against ctx.
    * `mode = 'read'`: any path matches or has_read_all.
    * `mode = 'write'`: participant OR non-readonly operator OR has_write_all.
-   * Throws ForbiddenException on denial.
+   * Throws AppError(ticket.read_forbidden | ticket.write_forbidden) on denial.
    */
   async assertVisible(ticketId: string, ctx: VisibilityContext, mode: 'read' | 'write'): Promise<void> {
     if (mode === 'read' && ctx.has_read_all) return;
     if (mode === 'write' && ctx.has_write_all) return;
 
     const row = await this.loadTicketRow(ticketId, ctx.tenant_id);
-    if (!row) throw new ForbiddenException('Ticket not accessible');
+    if (!row) throw AppErrors.forbidden('ticket.read_forbidden', 'Ticket not accessible');
 
     // Participant paths (allow read and write).
     const participantMatch =
@@ -178,7 +179,10 @@ export class TicketVisibilityService {
       if (teamMatch || anyWritableRole) return;
     }
 
-    throw new ForbiddenException('Ticket not accessible');
+    throw AppErrors.forbidden(
+      mode === 'write' ? 'ticket.write_forbidden' : 'ticket.read_forbidden',
+      'Ticket not accessible',
+    );
   }
 
   /**
@@ -197,7 +201,7 @@ export class TicketVisibilityService {
     if (ctx.has_write_all) return;
 
     const row = await this.loadTicketRow(ticketId, ctx.tenant_id);
-    if (!row) throw new ForbiddenException('Ticket not accessible');
+    if (!row) throw AppErrors.forbidden('ticket.plan_forbidden', 'Ticket not accessible');
 
     if (row.assigned_user_id === ctx.user_id) return;
     if (ctx.vendor_id && row.assigned_vendor_id === ctx.vendor_id) return;
@@ -220,7 +224,10 @@ export class TicketVisibilityService {
     });
     if (writableRoleMatch) return;
 
-    throw new ForbiddenException('Not authorized to plan this ticket');
+    throw AppErrors.forbidden(
+      'ticket.plan_forbidden',
+      'Not authorized to plan this ticket',
+    );
   }
 
   /**

@@ -269,6 +269,128 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't pick — vendor not eligible",
   },
 
+  // ─── ticket module migration (Phase 7.A.2.a) ─────────────────────────────
+  'ticket.not_in_tenant': {
+    title: "We can't find that ticket",
+  },
+  'ticket.bulk_cap_exceeded': {
+    title: "Couldn't update — selection too large",
+    detail: 'Bulk updates are capped at 200 tickets per call.',
+  },
+  'ticket.no_writable_in_selection': {
+    title: "You can't update any of those tickets",
+  },
+  'ticket.case_sla_immutable': {
+    title: "Couldn't change SLA — parent SLA is locked",
+  },
+  'ticket.cannot_reassign_to_same': {
+    title: "Couldn't reassign — already assigned there",
+  },
+  'ticket.tags_invalid': {
+    title: "Couldn't save — tags invalid",
+    detail: 'Tags must be an array of strings.',
+  },
+  'ticket.watchers_invalid': {
+    title: "Couldn't save — watchers invalid",
+    detail: 'Watchers must be an array of person identifiers.',
+  },
+  'ticket.no_files_uploaded': {
+    title: "Couldn't upload — no files attached",
+  },
+  'ticket.visibility_trace_forbidden': {
+    title: "You don't have access to this",
+  },
+  'ticket.write_forbidden': {
+    title: "You can't change this ticket",
+  },
+  'ticket.read_forbidden': {
+    title: "You don't have access to this ticket",
+  },
+  'ticket.plan_forbidden': {
+    title: "You can't plan this ticket",
+  },
+  'ticket.bulk_update_invalid': {
+    title: "Couldn't bulk-update — input invalid",
+  },
+  'ticket.reassignment_reason_required': {
+    title: "Couldn't reassign — reason required",
+  },
+  'ticket.children_open_cannot_close': {
+    title: "Couldn't close — open child work orders",
+    detail: 'Resolve or close the work orders first.',
+  },
+  'ticket.priority_change_forbidden': {
+    title: "You can't change ticket priority",
+  },
+  'ticket.assign_forbidden': {
+    title: "You can't change ticket assignment",
+  },
+  'ticket.cannot_reclassify_child': {
+    title: "Couldn't reclassify — reclassify the parent instead",
+  },
+  'ticket.terminal_cannot_reclassify': {
+    title: "Couldn't reclassify — ticket is closed or resolved",
+  },
+
+  // ─── reclassify ──────────────────────────────────────────────────────────
+  'reclassify.target_not_found': {
+    title: "Couldn't reclassify — request type not found",
+  },
+  'reclassify.target_inactive': {
+    title: "Couldn't reclassify — request type is inactive",
+  },
+  'reclassify.target_same': {
+    title: "Couldn't reclassify — same request type",
+  },
+  'reclassify.reason_too_short': {
+    title: "Couldn't reclassify — reason too short",
+    detail: 'Provide at least 3 characters.',
+  },
+  'reclassify.reason_too_long': {
+    title: "Couldn't reclassify — reason too long",
+    detail: 'Keep the reason under 500 characters.',
+  },
+  'reclassify.in_progress_collision': {
+    title: 'Another reclassify is in progress',
+    detail: 'Try again once it finishes.',
+  },
+  'reclassify.in_progress_children_unacked': {
+    title: "Couldn't reclassify — confirm in-progress work orders",
+    detail: 'Acknowledge the in-progress child work orders to continue.',
+  },
+  'reclassify.terminal_state': {
+    title: "Couldn't reclassify — ticket is closed or resolved",
+  },
+  'reclassify.work_order_target': {
+    title: "Couldn't reclassify — pick the parent ticket",
+  },
+  'reclassify.actor_not_resolvable': {
+    title: "Couldn't reclassify — actor not in this workspace",
+  },
+
+  // ─── dispatch ────────────────────────────────────────────────────────────
+  'dispatch.title_required': {
+    title: "Couldn't dispatch — title required",
+  },
+  'dispatch.from_work_order': {
+    title: "Couldn't dispatch from a work order",
+    detail: 'Dispatch from the parent case instead.',
+  },
+  'dispatch.parent_pending_approval': {
+    title: "Couldn't dispatch — parent is pending approval",
+  },
+  'dispatch.assignment_required': {
+    title: "Couldn't dispatch — assignment required",
+  },
+  'dispatch.parent_terminal': {
+    title: "Couldn't dispatch — parent is closed or resolved",
+  },
+
+  // ─── auth ────────────────────────────────────────────────────────────────
+  'auth.no_session': {
+    title: 'Sign in to continue',
+  },
+
   // ─── Phase 1 legacy snake_case (renamed in 7.A.2) ────────────────────────
   insert_failed: {
     title: "Couldn't create the booking",

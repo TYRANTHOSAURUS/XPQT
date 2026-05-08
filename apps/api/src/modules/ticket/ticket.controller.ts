@@ -1,8 +1,6 @@
 import {
-  BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -11,10 +9,10 @@ import {
   Req,
   UploadedFiles,
   UseInterceptors,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import {
   TicketService,
   CreateTicketDto,
@@ -75,7 +73,7 @@ export class TicketController {
     @Query('limit') limit?: string,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const nullable = (v?: string): string | null | undefined =>
       v === undefined ? undefined : v === 'null' ? null : v;
     return this.ticketService.list({
@@ -99,28 +97,28 @@ export class TicketController {
   @Get('tags')
   async listTags(@Req() request: Request) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.listDistinctTags(actorAuthUid);
   }
 
   @Get(':id')
   async getById(@Req() request: Request, @Param('id') id: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.getById(id, actorAuthUid);
   }
 
   @Post()
   async create(@Req() request: Request, @Body() dto: CreateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.create(dto, {}, actorAuthUid);
   }
 
   @Patch(':id')
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: UpdateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     // Type-narrow array fields at the controller boundary (mirrors the WO
     // controller). The service helper does its own pre-flight validation,
     // but rejecting here means a malformed body never reaches the visibility
@@ -132,7 +130,9 @@ export class TicketController {
       dto.tags !== undefined &&
       (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
     ) {
-      throw new BadRequestException('tags must be an array of strings or null');
+      throw AppErrors.validationFailed('ticket.tags_invalid', {
+        detail: 'tags must be an array of strings or null',
+      });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
@@ -140,9 +140,9 @@ export class TicketController {
       dto.watchers !== undefined &&
       (!Array.isArray(dto.watchers) || !dto.watchers.every((w) => typeof w === 'string'))
     ) {
-      throw new BadRequestException(
-        'watchers must be an array of strings (person UUIDs) or null',
-      );
+      throw AppErrors.validationFailed('ticket.watchers_invalid', {
+        detail: 'watchers must be an array of strings (person UUIDs) or null',
+      });
     }
     return this.ticketService.update(id, dto, actorAuthUid);
   }
@@ -153,21 +153,21 @@ export class TicketController {
     @Body() body: { ids: string[]; updates: UpdateTicketDto },
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.bulkUpdate(body.ids, body.updates, actorAuthUid);
   }
 
   @Post(':id/reassign')
   async reassign(@Req() request: Request, @Param('id') id: string, @Body() dto: ReassignDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.reassign(id, dto, actorAuthUid);
   }
 
   @Post(':id/dispatch')
   async dispatch(@Req() request: Request, @Param('id') id: string, @Body() dto: DispatchDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.dispatchService.dispatch(id, dto, actorAuthUid);
   }
 
@@ -178,7 +178,7 @@ export class TicketController {
     @Query('visibility') visibility?: string,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.getActivities(id, visibility, actorAuthUid);
   }
 
@@ -189,7 +189,7 @@ export class TicketController {
     @Req() request: Request,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.addActivity(
       id,
       dto,
@@ -211,9 +211,11 @@ export class TicketController {
     }>,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     if (!files?.length) {
-      throw new BadRequestException('No files uploaded');
+      throw AppErrors.validationFailed('ticket.no_files_uploaded', {
+        detail: 'No files uploaded',
+      });
     }
 
     return this.ticketService.uploadActivityAttachments(id, files, actorAuthUid);
@@ -222,7 +224,7 @@ export class TicketController {
   @Get(':id/children')
   async children(@Req() request: Request, @Param('id') id: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.ticketService.getChildTasks(id, actorAuthUid);
   }
 
@@ -230,10 +232,13 @@ export class TicketController {
   async visibilityTrace(@Req() request: Request, @Param('id') id: string) {
     const tenant = TenantContext.current();
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
     if (!ctx.has_read_all) {
-      throw new ForbiddenException('visibility-trace requires tickets.read_all');
+      throw AppErrors.forbidden(
+        'ticket.visibility_trace_forbidden',
+        'visibility-trace requires tickets.read_all',
+      );
     }
     return this.visibility.trace(id, ctx);
   }

@@ -1,5 +1,5 @@
 import { TicketService, UpdateTicketDto } from './ticket.service';
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 
 type Row = {
   id: string;
@@ -99,7 +99,13 @@ describe('TicketService.update — parent close guard', () => {
     );
     await expect(
       svc.update('c1', { status_category: 'resolved' } as UpdateTicketDto, '__system__'),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
+    await expect(
+      svc.update('c1', { status_category: 'resolved' } as UpdateTicketDto, '__system__'),
+    ).rejects.toMatchObject({
+      code: 'ticket.children_open_cannot_close',
+      status: 400,
+    });
   });
 
   it('allows resolving a case with no open children', async () => {

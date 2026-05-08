@@ -1,5 +1,5 @@
 import { TicketService, UpdateTicketDto } from './ticket.service';
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 
 type Row = {
   id: string;
@@ -98,7 +98,10 @@ describe('TicketService.update — sla_id', () => {
     const svc = makeSvc(deps);
     await expect(
       svc.update('c1', { sla_id: 'sla-new' } as UpdateTicketDto, '__system__'),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
+    await expect(
+      svc.update('c1', { sla_id: 'sla-new' } as UpdateTicketDto, '__system__'),
+    ).rejects.toMatchObject({ code: 'ticket.case_sla_immutable', status: 400 });
     expect(deps.slaService.restartTimers).not.toHaveBeenCalled();
   });
 

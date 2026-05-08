@@ -21,8 +21,14 @@
 
 import type { KnownErrorCode } from '@prequest/shared';
 
-/** Entity prefixes that have a `<entity>.not_found` code registered. */
-type NotFoundEntity = KnownErrorCode extends `${infer E}.not_found` ? E : never;
+/**
+ * Entity prefixes that have a `<entity>.not_found` code registered.
+ * Wrapped in a generic to make the conditional distributive over the
+ * `KnownErrorCode` union (without the wrapper, the conditional matches
+ * the whole union as one and the prefix-extract evaluates to `never`).
+ */
+type ExtractNotFoundEntity<T> = T extends `${infer E}.not_found` ? E : never;
+type NotFoundEntity = ExtractNotFoundEntity<KnownErrorCode>;
 
 export type AppErrorField = {
   field: string;
@@ -143,6 +149,25 @@ export const AppErrors = {
    */
   badRequest: (code: KnownErrorCode, detail?: string): AppError =>
     new AppError(code, 400, { detail }),
+
+  /**
+   * 403 forbidden with a domain-specific code (e.g. `ticket.write_forbidden`,
+   * `ticket.visibility_trace_forbidden`). Prefer `permissionDenied` when the
+   * site is the canonical "missing permission X" case. Use this when the
+   * forbidden state is feature-specific and a targeted code yields better
+   * client copy + audit signal than the catch-all `permission.denied`.
+   */
+  forbidden: (code: KnownErrorCode, detail?: string): AppError =>
+    new AppError(code, 403, { detail }),
+
+  /**
+   * 404 not-found with a domain-specific code (e.g. `ticket.not_in_tenant`,
+   * `reclassify.actor_not_resolvable`). Prefer `notFound(entity, id)` for the
+   * standard `<entity>.not_found` case. Use this when the not-found surface
+   * has a more specific reason that the client renderer should disambiguate.
+   */
+  notFoundWithCode: (code: KnownErrorCode, detail?: string): AppError =>
+    new AppError(code, 404, { detail }),
 } as const;
 
 /**

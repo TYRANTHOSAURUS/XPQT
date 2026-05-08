@@ -1,12 +1,9 @@
 import {
-  BadRequestException,
-  ConflictException,
   Inject,
   Injectable,
-  NotFoundException,
-  UnprocessableEntityException,
   forwardRef,
 } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
@@ -103,9 +100,16 @@ export class ReclassifyService {
       ticket.ticket_type_id ? this.loadRequestType(ticket.ticket_type_id, tenant.id) : Promise.resolve(null),
       this.loadRequestType(newRequestTypeId, tenant.id),
     ]);
-    if (!newType) throw new NotFoundException('new request type not found');
+    if (!newType) {
+      throw AppErrors.notFoundWithCode(
+        'reclassify.target_not_found',
+        'new request type not found',
+      );
+    }
     if (!newType.active) {
-      throw new UnprocessableEntityException('new request type is not active');
+      throw AppErrors.validationFailed('reclassify.target_inactive', {
+        detail: 'new request type is not active',
+      });
     }
 
     const [workflowInstance, newWorkflowDef, children, activeTimers, newPolicy] = await Promise.all([
@@ -210,10 +214,14 @@ export class ReclassifyService {
     const tenant = TenantContext.current();
 
     if (!dto.reason || dto.reason.trim().length < 3) {
-      throw new BadRequestException('reason must be at least 3 characters');
+      throw AppErrors.validationFailed('reclassify.reason_too_short', {
+        detail: 'reason must be at least 3 characters',
+      });
     }
     if (dto.reason.length > 500) {
-      throw new BadRequestException('reason must be at most 500 characters');
+      throw AppErrors.validationFailed('reclassify.reason_too_long', {
+        detail: 'reason must be at most 500 characters',
+      });
     }
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
@@ -226,13 +234,20 @@ export class ReclassifyService {
 
     const hasInProgressChildren = impact.children.some((c) => c.is_in_progress);
     if (hasInProgressChildren && !dto.acknowledgedChildrenInProgress) {
-      throw new BadRequestException('in-progress child work orders require acknowledgement');
+      throw AppErrors.validationFailed('reclassify.in_progress_children_unacked', {
+        detail: 'in-progress child work orders require acknowledgement',
+      });
     }
 
     const ticket = await this.loadTicket(ticketId, tenant.id);
-    if (!ticket) throw new NotFoundException('ticket not found');
+    if (!ticket) throw AppErrors.notFound('ticket', ticketId);
     const newType = await this.loadRequestType(dto.newRequestTypeId, tenant.id);
-    if (!newType) throw new NotFoundException('new request type not found');
+    if (!newType) {
+      throw AppErrors.notFoundWithCode(
+        'reclassify.target_not_found',
+        'new request type not found',
+      );
+    }
 
     const routingContext = this.buildRoutingContext(ticket, newType);
     const evaluation = await this.routingService.evaluate(routingContext);
@@ -246,7 +261,10 @@ export class ReclassifyService {
         // Caller passed assertVisible via visibility.loadContext, so this should
         // be unreachable. If it happens, fail loudly — unattributable audit
         // events are worse than refusing the operation.
-        throw new UnprocessableEntityException('actor user not resolvable in tenant');
+        throw AppErrors.notFoundWithCode(
+          'reclassify.actor_not_resolvable',
+          'actor user not resolvable in tenant',
+        );
       }
       actorPersonId = await this.resolvePersonIdFromAuth(actorAuthUid, tenant.id);
     }
@@ -264,13 +282,17 @@ export class ReclassifyService {
 
     if (rpcError) {
       if (rpcError.code === '55P03') {
-        throw new ConflictException('another reclassify is in progress for this ticket');
+        throw AppErrors.conflict('reclassify.in_progress_collision', {
+          detail: 'another reclassify is in progress for this ticket',
+        });
       }
       if (rpcError.code === 'P0002' || rpcError.message?.includes('ticket_not_found')) {
-        throw new NotFoundException('ticket not found');
+        throw AppErrors.notFound('ticket', ticketId);
       }
       if (rpcError.code === '22023' || rpcError.message?.includes('same_request_type')) {
-        throw new BadRequestException('new request type is the same as current');
+        throw AppErrors.validationFailed('reclassify.target_same', {
+          detail: 'new request type is the same as current',
+        });
       }
       throw rpcError;
     }
@@ -396,15 +418,21 @@ export class ReclassifyService {
   // ─────── Guards ───────
 
   private assertReclassifiable(ticket: TicketRow | null, newRequestTypeId: string): asserts ticket is TicketRow {
-    if (!ticket) throw new NotFoundException('ticket not found');
+    if (!ticket) throw AppErrors.notFound('ticket');
     if (ticket.ticket_kind !== 'case') {
-      throw new BadRequestException('cannot reclassify child work orders — reclassify the parent');
+      throw AppErrors.validationFailed('reclassify.work_order_target', {
+        detail: 'cannot reclassify child work orders — reclassify the parent',
+      });
     }
     if (TERMINAL_CATEGORIES.has(ticket.status_category)) {
-      throw new ConflictException('ticket is closed or resolved; cannot reclassify');
+      throw AppErrors.conflict('reclassify.terminal_state', {
+        detail: 'ticket is closed or resolved; cannot reclassify',
+      });
     }
     if (ticket.ticket_type_id === newRequestTypeId) {
-      throw new BadRequestException('new request type is the same as current');
+      throw AppErrors.validationFailed('reclassify.target_same', {
+        detail: 'new request type is the same as current',
+      });
     }
   }
 
