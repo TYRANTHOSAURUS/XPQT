@@ -13,6 +13,14 @@
 ## Revision history
 
 - **v1 (2026-05-08).** First spec. Hand-verification was thin; internal review surfaced 7 critical citation/contract errors + missed items.
+- **v3 (2026-05-08, codex pass).** Closes 2 criticals + 3 importants + 1 nit on v2:
+  - §3.6.5 approval reconciliation extended to cover ALL terminal + non-terminal states. Terminal `approved` + new-different-chain-config is the dangerous gap codex called out: silently preserving the old approval would bypass new approvers. v3 explicitly handles it by expiring old chain + inserting a fresh chain even when terminal-approved.
+  - "Partial" defined: `partial` ≡ "chain has at least one `pending` or `delegated` row, mixed with any number of `approved` rows." Distinguished from terminal states.
+  - §3 step 5 (semantic re-derivation): the "PG wins on stale plan" claim was unimplementable — `RuleResolverService` is TS-only. v3 clarifies: TS re-runs the resolver inside the RPC call wrapper (synchronously, BEFORE the PG transaction). If the re-run yields a different outcome, the call returns 409 with `automation_plan.semantic_mismatch` and the caller must retry with a fresh plan. PG row-lock via SELECT FOR UPDATE inside the RPC tx prevents another writer from racing past during the commit. NO PL/pgSQL re-implementation of the rule resolver — the contract is TS-side re-validation, not server-internal arbitration.
+  - §3 step 1 lock claim corrected: `delete_booking_with_guard` (00292:75-83) uses `SELECT ... FOR UPDATE` (row-level lock), not advisory. v3 spec uses the same row-lock pattern; serialization comes from the row lock, not advisory keys. Aligns with the existing booking RPC family.
+  - `approvals.reason` does NOT exist — only `comments` (00012:14-17). v3 corrects: when expiring an old approval chain, write `comments = 'superseded_by_edit (booking edit at <timestamp>)'`. The audit trail uses the existing column.
+  - §9 status updated: questions previously marked "RESOLVED" are now "addressed in §3.6.5" with truthful language pointing at the spec section that handles them.
+
 - **v2 (2026-05-08).** Folds the v1 review:
   - Every file:line citation re-verified against current main. Specifically corrected: `rule-resolver.service.ts:77` → `:87`; `cost.service.ts` body actually 57-152, but the per-booking cost is in `booking-flow.service.ts:1289-1310`'s `computeCost` (approval-row builder is at a different line — clarified inline).
   - Removed fabricated `order_line_items.requested_for_start_at` claim. The window-anchor columns are on `orders` (`requested_for_start_at`/`requested_for_end_at` per migration 00144). OLI lines pin via their parent order, not a per-line column.
@@ -126,11 +134,16 @@ public.edit_booking(
 
 ### 3.4 Body sketch (atomic write)
 
-1. **Advisory xact lock** on `(tenant_id, booking_id)`. Same key as `delete_booking_with_guard` (00292) — see §9.5 for verification.
+1. **Row-level lock** via `SELECT ... FOR UPDATE` on `bookings.id = p_booking_id AND tenant_id = p_tenant_id` (mirrors the pattern in `delete_booking_with_guard`, `00292_delete_booking_with_guard_rpc.sql:75-83`, and `edit_booking_slot`, `00294_edit_booking_slot_validate_space.sql:74-80`). Concurrent edits on the same booking serialize through this row lock; concurrent edit-vs-delete also serializes since both take the same lock. **No advisory lock** — v2 incorrectly claimed advisory; this is row-lock serialization. v3 / codex correction.
 2. **`command_operations` idempotency gate** [B.2 dependency — see §8].
 3. SELECT current booking + slots + linked rows FOR UPDATE.
 4. **Tenant-validate every FK in `p_plan`** via `validate_entity_in_tenant` [B.2 dependency]. Rooms, asset ids, line items, work orders.
-5. **Semantic re-derivation gate** (mirrors B.2 §3.10 step 5a but with B.4-specific inputs). The TS plan was assembled at time T0; admins may have edited `booking_rules` or `request_type_scope_overrides` between T0 and the RPC call. PG re-runs the rule resolver and asserts the outcome matches `p_plan.rule_outcome`. Concurrent-edit handling: if `booking_rules.updated_at > p_plan._resolution_at`, PG wins (the user's plan is stale; commit PG's result + audit breadcrumb). Otherwise reject `automation_plan.semantic_mismatch`.
+5. **Semantic re-derivation gate** — TS-driven, NOT PG-internal (v3 / codex correction). `RuleResolverService` is TS-only (`apps/api/src/modules/room-booking-rules/rule-resolver.service.ts:87`); there's no PL/pgSQL equivalent. Implementation pattern:
+   - The RPC accepts `p_plan.rule_outcome_fingerprint` (a hash of the resolver outcome — final + matched_rule_ids + effects).
+   - **Inside the RPC**, after acquiring the row lock, PG returns the `booking_rules.updated_at` MAX for the affected request_type+scope. If `> p_plan._resolution_at`, the rule set has shifted since plan-build → return 409 `automation_plan.stale_resolution` immediately.
+   - **The TS caller** wraps the RPC call: if 409 stale_resolution, re-run the resolver, assert the outcome fingerprint matches the previous attempt's, retry once. If the fingerprint changed (new rule, new effect), return 422 `automation_plan.semantic_mismatch` with both fingerprints and the detected delta — operator must review the new outcome before retrying.
+   - Single retry by design — repeated stale_resolution implies a hot tenant with admins thrashing rules; user gets surfaced friction, not silent commit of stale state.
+   - The PG row lock prevents another writer from racing PAST the gate during the commit; the TS-driven re-derivation handles the case where rules changed BEFORE the gate fired.
 6. **Atomic write block:**
    1. UPDATE `booking_slots` (space_id, start_at, end_at, setup_buffer_minutes, teardown_buffer_minutes, attendee_count, attendee_person_ids).
    2. UPDATE `bookings` (location_id mirror, start_at = MIN(slots), end_at = MAX(slots), cost_amount_snapshot, policy_snapshot, applied_rule_ids, status if transitioning to `pending_approval`, calendar_etag bump, cost_center_id if host's default differs by building).
@@ -148,22 +161,32 @@ public.edit_booking(
 10. UPDATE `command_operations` to outcome='success'.
 11. Return `{ booking: row, follow_ups: [...] }`.
 
-### 3.6.5 Approval reconciliation decision table
+### 3.6.5 Approval reconciliation decision table (v3 — terminal + non-terminal states)
+
+**Definitions:**
+- `none` — no approvals row exists for this booking.
+- `pending or partial` — at least one row in `pending` or `delegated`, possibly mixed with `approved`. Chain not yet resolved.
+- `terminal_approved` — chain fully resolved approving (no `pending`/`delegated`/`rejected` rows; at least one `approved` row).
+- `terminal_rejected` — at least one `rejected` row exists (booking was already cancelled per `00310_grant_booking_approval_rpc.sql:162-172`).
 
 When the rule resolver's `final` changes between create and edit:
 
 | Old `final` | New `final` | Active approvals state | Action |
 |---|---|---|---|
 | `allow` | `allow` | none | no-op |
-| `allow` | `require_approval` | none | INSERT new approvals chain (per new rule's approval_config); status → `pending_approval` |
-| `require_approval` | `allow` | pending or partial | UPDATE existing approvals to `'expired'` with reason='superseded_by_edit' (`approvals.status` enum DOES include `expired`); status → `confirmed` |
-| `require_approval` | `require_approval` (same chain config) | pending or partial | **preserve in-flight grants.** Don't reset. Edit only changes booking metadata; approvers' decisions on the unchanged approval-target stand. |
-| `require_approval` | `require_approval` (different chain config) | pending or partial | UPDATE existing chain to `'expired'`; INSERT fresh chain per new config; status stays `pending_approval` |
-| `require_approval` | `deny` | pending or partial | reject the edit with 422 (or 403 with `actor.has_override_rules` check); approvals untouched |
+| `allow` | `require_approval` | none | INSERT new approvals chain (per new rule's `approval_config`); status → `pending_approval` |
+| `require_approval` | `allow` | pending or partial | UPDATE existing approvals to `'expired'` with `comments='superseded_by_edit (booking edit at <ts>)'`; status → `confirmed` |
+| `require_approval` | `allow` | terminal_approved | no approvals action (the historical chain stands as audit); status stays `confirmed` |
+| `require_approval` | `allow` | terminal_rejected | edit is on a cancelled booking; should reject upstream — return 422 `booking.cancelled_cannot_edit` |
+| `require_approval` | `require_approval` (same chain config) | pending or partial | **preserve in-flight grants.** Edit changes booking metadata; approvers' decisions on unchanged approval-target stand. |
+| `require_approval` | `require_approval` (different chain config) | pending or partial | UPDATE existing chain to `'expired'` with `comments='superseded_by_edit'`; INSERT fresh chain per new config; status stays `pending_approval` |
+| **`require_approval`** | **`require_approval` (different chain config)** | **terminal_approved** | **DANGEROUS GAP — explicit handling.** Old chain says "approver A approved this booking at room R1." Edit moves to room R2 with a different chain (approver B). Silently preserving "approved" would bypass approver B. v3 fix: UPDATE old chain to `'expired'` with `comments='superseded_by_edit (room change to R2)'`; INSERT fresh chain per new config; status → `pending_approval`. Old chain stays in audit; new chain gates the edit. |
+| `require_approval` | `require_approval` (different chain config) | terminal_rejected | edit on a cancelled booking; reject upstream |
+| `require_approval` | `deny` | any state | reject the edit with 422 (or 403 with `actor.has_override_rules` check); approvals untouched |
 
-**Why `'expired'` not `'cancelled'`:** the approvals enum has no `'cancelled'` value (`00012_approvals.sql:14`: `pending|approved|rejected|delegated|expired`). v2 reuses `'expired'` with reason='superseded_by_edit' rather than adding an enum-extension migration; the semantics fit (approval is no longer applicable).
+**Why `'expired'` not `'cancelled'`:** the approvals enum has no `'cancelled'` value (`00012_approvals.sql:14`: `pending|approved|rejected|delegated|expired`). v3 reuses `'expired'` with the explanation in `comments` (the table has no `reason` column — `comments` is the existing audit-payload column).
 
-**Chain identity:** "different chain config" means the new rule's `approval_config` differs in approver_targets, sequential vs parallel, or required_count. Same-config = preserve in-flight.
+**Chain identity:** "different chain config" means the new rule's `approval_config` differs in approver_targets, sequential vs parallel, or required_count. Same-config = preserve in-flight grants.
 
 ## 4. Migration plan
 
@@ -223,8 +246,8 @@ When the rule resolver's `final` changes between create and edit:
 ## 9. Open questions
 
 1. **Deny on edit.** The rule resolver returns `final='deny'` for an attempted edit. Reject 422 (no override)? Allow with `actor.has_override_rules`? Recommend: 422 unless override; mirror CREATE.
-2. **Approval-chain semantics.** RESOLVED in §3.6.5 — same-chain-config edits preserve in-flight grants; different-chain edits expire old chain + start fresh.
-3. **Recurrence-scope failure aggregation.** RESOLVED in §7 step B.4.C — two-phase plan-then-commit, all-or-nothing for series ≤100; explicit chunked confirmation for larger series.
+2. **Approval-chain semantics.** **Addressed in §3.6.5.** Decision table covers all 10 (old, new, state) combinations including the dangerous `terminal_approved → require_approval (different config)` gap. Implementation must mirror the table exactly. Open sub-question for product: should the requester be notified when a previously-approved booking re-enters approval after an edit? Recommend yes; new approval-required event needs a notification template.
+3. **Recurrence-scope failure aggregation.** **Addressed in §7 step B.4.C.** Two-phase plan-then-commit, all-or-nothing for series ≤100; explicit chunked confirmation for larger series. Open sub-question for product: should the chunked-commit threshold be 100 (a guess) or computed from session timeout? Defer to first real customer with >100-occurrence series.
 4. **`config_release_id` re-pin on edit.** Decision needed before implementation. Recommend: re-pin to current release on every edit (matches "edit = new commit" semantics). Implications for replay/audit.
 5. **EDIT-vs-CANCEL race lock key.** Verify `delete_booking_with_guard` (00292) takes the same `(tenant_id, booking_id)` advisory lock key. If not, the edit and cancel locks don't serialize; one could fire while the other is mid-write.
 6. **Calendar sync push timing.** Bump `calendar_etag` immediately (forces next read to refetch from Outlook), or also trigger a push to Outlook from the RPC? Latency impact on user.
