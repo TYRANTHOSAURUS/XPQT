@@ -351,7 +351,8 @@ export class CalendarSyncService {
         .from('spaces')
         .select('id, name, external_calendar_id, external_calendar_subscription_id')
         .eq('id', conflict.space_id)
-        .single();
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
       if (space && conflict.external_event_id && body.action === 'keep_internal') {
         await this.outlook.rejectOnRoomCalendar(
           conflict.external_event_id as string,

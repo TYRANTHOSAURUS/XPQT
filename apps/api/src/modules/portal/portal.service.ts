@@ -169,7 +169,8 @@ export class PortalService {
         .from('users')
         .select('id, email, portal_current_location_id')
         .eq('id', userId)
-        .single(),
+        .eq('tenant_id', tenant.id)
+        .maybeSingle(),
       this.loadAuthorizedLocations(personId),
       this.loadRoleScopes(userId),
       this.supabase.admin

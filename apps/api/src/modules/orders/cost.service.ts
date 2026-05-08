@@ -113,7 +113,7 @@ export class CostService {
     }
 
     const orderIds = ((ordersRes.data ?? []) as Array<{ id: string }>).map((o) => o.id);
-    const lines = orderIds.length > 0 ? await this.loadLineItems(orderIds) : [];
+    const lines = orderIds.length > 0 ? await this.loadLineItems(orderIds, tenantId) : [];
     const attendeeCount = slot?.attendee_count ?? null;
 
     const computedLines = lines.map((l) => {
@@ -151,7 +151,7 @@ export class CostService {
 
   // ── Internals ──────────────────────────────────────────────────────────
 
-  private async loadLineItems(orderIds: string[]): Promise<Array<{
+  private async loadLineItems(orderIds: string[], tenantId: string): Promise<Array<{
     id: string;
     catalog_item_id: string;
     quantity: number;
@@ -162,7 +162,8 @@ export class CostService {
     const { data, error } = await this.supabase.admin
       .from('order_line_items')
       .select('id, catalog_item_id, quantity, unit_price, policy_snapshot')
-      .in('order_id', orderIds);
+      .in('order_id', orderIds)
+      .eq('tenant_id', tenantId);
     if (error) throw error;
     return ((data ?? []) as Array<{
       id: string;

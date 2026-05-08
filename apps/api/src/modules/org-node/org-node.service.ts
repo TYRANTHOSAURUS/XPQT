@@ -61,14 +61,17 @@ export class OrgNodeService {
       this.supabase.admin
         .from('person_org_memberships')
         .select('org_node_id')
+        .eq('tenant_id', tenant.id)
         .in('org_node_id', ids),
       this.supabase.admin
         .from('org_node_location_grants')
         .select('org_node_id')
+        .eq('tenant_id', tenant.id)
         .in('org_node_id', ids),
       this.supabase.admin
         .from('teams')
         .select('org_node_id')
+        .eq('tenant_id', tenant.id)
         .in('org_node_id', ids),
     ]);
     if (members.error) throw members.error;

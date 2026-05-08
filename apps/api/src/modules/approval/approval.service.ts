@@ -768,21 +768,25 @@ export class ApprovalService {
    * Check if a sequential chain is fully approved.
    */
   async isChainComplete(chainId: string): Promise<boolean> {
+    const tenant = TenantContext.current();
     const { data } = await this.supabase.admin
       .from('approvals')
       .select('status')
-      .eq('approval_chain_id', chainId);
+      .eq('approval_chain_id', chainId)
+      .eq('tenant_id', tenant.id);
 
     if (!data || data.length === 0) return false;
     return data.every((a) => a.status === 'approved');
   }
 
   private async advanceChain(chainId: string, _completedStep: number) {
+    const tenant = TenantContext.current();
     // Check if any steps in the chain were rejected
     const { data: chainSteps } = await this.supabase.admin
       .from('approvals')
       .select('*')
       .eq('approval_chain_id', chainId)
+      .eq('tenant_id', tenant.id)
       .order('step_number');
 
     if (!chainSteps) return;

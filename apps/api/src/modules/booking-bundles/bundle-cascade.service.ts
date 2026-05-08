@@ -241,7 +241,7 @@ export class BundleCascadeService {
 
     // Pull every linked line; partition into fulfilled (untouched) +
     // kept (untouched per opt-out) + cancellable.
-    const orderIds = await this.orderIdsForBundle(args.bundle_id);
+    const orderIds = await this.orderIdsForBundle(args.bundle_id, tenantId);
     const { data: lines, error: linesErr } = orderIds.length === 0
       ? { data: [], error: null }
       : await this.supabase.admin
@@ -253,7 +253,8 @@ export class BundleCascadeService {
             linked_ticket_id,
             order_id
           `)
-          .in('order_id', orderIds);
+          .in('order_id', orderIds)
+          .eq('tenant_id', tenantId);
     if (linesErr) throw linesErr;
 
     const fulfilledLineIds: string[] = [];
@@ -479,12 +480,14 @@ export class BundleCascadeService {
 
   private async orderIdsForBundle(
     bundleId: string,
+    tenantId: string,
   ): Promise<string[]> {
     // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
     const { data, error } = await this.supabase.admin
       .from('orders')
       .select('id')
-      .eq('booking_id', bundleId);
+      .eq('booking_id', bundleId)
+      .eq('tenant_id', tenantId);
     if (error) throw error;
     return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
   }

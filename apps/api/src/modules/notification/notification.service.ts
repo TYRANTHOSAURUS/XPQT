@@ -312,8 +312,9 @@ export class NotificationService {
       .from('notification_preferences')
       .select('*')
       .eq('user_id', user.id)
+      .eq('tenant_id', tenant.id)
       .eq('event_type', eventType)
-      .single();
+      .maybeSingle();
 
     if (!pref) return requestedChannels; // No preference = use defaults
 

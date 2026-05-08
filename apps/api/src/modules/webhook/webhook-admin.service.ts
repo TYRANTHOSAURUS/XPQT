@@ -84,7 +84,7 @@ export class WebhookAdminService {
 
     if (error) throw error;
     const webhook = data as Omit<WebhookRow, 'api_key_hash'>;
-    const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook);
+    const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook, tenant.id);
     return { webhook, api_key: apiKey, validation };
   }
 
@@ -100,7 +100,7 @@ export class WebhookAdminService {
       .single();
     if (error) throw error;
     const webhook = data as Omit<WebhookRow, 'api_key_hash'>;
-    const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook);
+    const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook, tenant.id);
     return { webhook, validation };
   }
 
@@ -175,6 +175,7 @@ export class WebhookAdminService {
   private async validateAgainstRequestType(
     requestTypeId: string | null,
     merged: Partial<WebhookRow>,
+    tenantId: string,
   ): Promise<ValidationResult> {
     let requestType: RequestTypeContext | null = null;
     if (requestTypeId) {
@@ -182,6 +183,7 @@ export class WebhookAdminService {
         .from('request_types')
         .select('id, fulfillment_strategy')
         .eq('id', requestTypeId)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       if (data) requestType = data as RequestTypeContext;
     }
