@@ -1,5 +1,11 @@
 # B.0 follow-up: real-DB concurrency harness for advisory-lock tests
 
+> **STATUS: SHIPPED 2026-05-06.** Harness lives at
+> `apps/api/test/concurrency/`; root script `pnpm test:concurrency`;
+> CI gate `.github/workflows/ci.yml` job `concurrency-harness`
+> (path-filtered, runs on PRs that touch the four B.0 RPCs / outbox
+> foundation / approval module / harness itself).
+>
 > Tracked from v8.1 spec §15.5-bis. Required before claiming the
 > advisory-lock behavior is verified end-to-end; deferred from B.0.F to
 > keep the cutover shippable. Created 2026-05-04 alongside the B.0.F
@@ -9,6 +15,24 @@
 > §15.5-bis (harness contract), §15.5 (concurrent handler dispatch),
 > §15.6 (concurrent grants), §11 open question 11, §16.2 #20a (cutover
 > gate).
+>
+> Test files (one spec per RPC):
+> - `apps/api/test/concurrency/create_booking_with_attach_plan.spec.ts`
+>   — §15.2 idempotency-key serialisation.
+> - `apps/api/test/concurrency/grant_booking_approval.spec.ts` — §15.6
+>   concurrent grants on same approval AND on different approvals in
+>   the same parallel-group.
+> - `apps/api/test/concurrency/approve_booking_setup_trigger.spec.ts`
+>   — §15.5 / §15.6 concurrent setup-trigger no-double-emit guarantee.
+> - `apps/api/test/concurrency/create_setup_work_order_from_event.spec.ts`
+>   — §15.5 duplicate-claim race produces exactly one WO.
+>
+> Pool + helpers + jest config in the same directory. The harness
+> uses `pg.Pool` with two real connections (no mocked Supabase), holds
+> `pg_advisory_xact_lock` from one client, asserts via `pg_locks`
+> that the second is blocked (`granted=false`), then commits the
+> first and asserts the second proceeds with the spec-required
+> outcome.
 
 ## What's needed
 

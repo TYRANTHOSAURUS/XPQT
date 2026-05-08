@@ -11,6 +11,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:concurrency": "jest --config test/concurrency/jest.config.cjs --runInBand",
     "smoke:work-orders": "node scripts/smoke-work-orders.mjs",
     "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs"
   },

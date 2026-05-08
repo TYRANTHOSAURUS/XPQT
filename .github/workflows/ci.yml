@@ -107,3 +107,93 @@ jobs:
       - name: Stop Supabase stack
         if: always()
         run: supabase stop --no-backup
+
+  concurrency-harness:
+    name: B.0 concurrency harness (advisory-lock RPCs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Why this job exists: B.0 introduced four advisory-lock-protected
+    # RPCs (create_booking_with_attach_plan, grant_booking_approval,
+    # approve_booking_setup_trigger, create_setup_work_order_from_event).
+    # Mocked-jest specs cover happy paths + error mapping but cannot
+    # simulate Postgres-level lock acquisition order, commit timing, or
+    # for-update row-lock behaviour across two real connections. The
+    # harness at apps/api/test/concurrency/ spins up two pg.Pool clients,
+    # holds the advisory lock on one, asserts via pg_locks that the
+    # second is blocked, releases the first, and asserts the second
+    # proceeds with the spec-required outcome.
+    #
+    # Path filter: only runs on PRs that touch the four RPCs, the outbox
+    # foundation, or the modules that call them. Push events on main
+    # always run (the gate must verify every commit on main).
+    #
+    # Spec ref: docs/follow-ups/b0-real-db-concurrency-harness.md;
+    # docs/superpowers/specs/2026-05-04-domain-outbox-design.md §15.5/§15.6.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          # On `push` events the action evaluates against the previous
+          # commit, so main pushes always trigger when one of the
+          # filtered files changed in the diff. On PRs it diffs against
+          # the base branch.
+          filters: |
+            b0:
+              - 'apps/api/src/modules/outbox/**'
+              - 'apps/api/src/modules/reservations/**'
+              - 'apps/api/src/modules/booking-bundles/**'
+              - 'apps/api/src/modules/approval/**'
+              - 'apps/api/test/concurrency/**'
+              - 'supabase/migrations/00299*'
+              - 'supabase/migrations/0030[0-9]*'
+              - 'supabase/migrations/0031[0-5]*'
+              - '.github/workflows/ci.yml'
+
+      - uses: pnpm/action-setup@v4
+        if: steps.changes.outputs.b0 == 'true'
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.b0 == 'true'
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.changes.outputs.b0 == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        if: steps.changes.outputs.b0 == 'true'
+        run: pnpm --filter @prequest/shared run build
+
+      - uses: supabase/setup-cli@v1
+        if: steps.changes.outputs.b0 == 'true'
+        with:
+          version: 2.54.11
+
+      - name: Boot Supabase local stack
+        if: steps.changes.outputs.b0 == 'true'
+        run: supabase start
+
+      - name: Apply all migrations
+        if: steps.changes.outputs.b0 == 'true'
+        run: supabase db reset
+
+      - name: Run concurrency harness
+        if: steps.changes.outputs.b0 == 'true'
+        env:
+          SUPABASE_DB_HOST: 127.0.0.1
+          SUPABASE_DB_PORT: '54322'
+          SUPABASE_DB_USER: postgres
+          SUPABASE_DB_PASSWORD: postgres
+          SUPABASE_DB_NAME: postgres
+        run: pnpm test:concurrency
+
+      - name: Stop Supabase stack
+        if: always() && steps.changes.outputs.b0 == 'true'
+        run: supabase stop --no-backup
