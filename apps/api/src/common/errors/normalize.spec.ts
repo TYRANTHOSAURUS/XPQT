@@ -17,6 +17,18 @@ const TRACE = 'req_test_0000000000000000000000';
 
 describe('normalize()', () => {
   describe('AppError passthrough', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
     it('preserves code, status, and resolves title from messages.en', () => {
       const err = new AppError('booking.slot_conflict', 409, {
         detail: 'overrides messages.en',
@@ -86,6 +98,7 @@ describe('normalize()', () => {
       expect(result.body.detail).toBe(
         'The selected room is already booked for that time.',
       );
+      expect(JSON.stringify(result.body)).not.toContain('Supabase');
     });
   });
 
@@ -130,13 +143,34 @@ describe('normalize()', () => {
     });
   });
 
-  describe('HttpException with string response → generic.<class>', () => {
-    it('400 BadRequestException(string) → generic.bad_request', () => {
+  describe('HttpException with string response → generic.<class> (string DROPPED)', () => {
+    it('400 BadRequestException(string) → generic.bad_request, detail from messages.en', () => {
       const err = new BadRequestException('Title is required');
       const result = normalize(err, TRACE);
       expect(result.status).toBe(400);
       expect(result.body.code).toBe('generic.bad_request');
-      expect(result.body.detail).toBe('Title is required');
+      // Fix 3: original string is dropped; detail comes from messages.en.
+      expect(result.body.detail).toBe('The request was rejected.');
+      expect(JSON.stringify(result.body)).not.toContain('Title is required');
+    });
+
+    it('drops a Postgres-shaped string the regex would miss', () => {
+      const err = new BadRequestException(
+        'duplicate key value violates unique constraint "tickets_pkey"',
+      );
+      const result = normalize(err, TRACE);
+      expect(result.body.code).toBe('generic.bad_request');
+      // The PG string MUST NOT appear in the body.
+      expect(JSON.stringify(result.body)).not.toContain('duplicate key');
+      expect(JSON.stringify(result.body)).not.toContain('tickets_pkey');
+    });
+
+    it('drops JWT-malformed string on 500', () => {
+      const err = new InternalServerErrorException('JWT malformed');
+      const result = normalize(err, TRACE);
+      expect(result.body.code).toBe('unknown.server_error');
+      expect(JSON.stringify(result.body)).not.toContain('JWT');
+      expect(JSON.stringify(result.body)).not.toContain('malformed');
     });
 
     it('401 UnauthorizedException → generic.unauthorized', () => {
@@ -151,6 +185,7 @@ describe('normalize()', () => {
       const result = normalize(err, TRACE);
       expect(result.status).toBe(403);
       expect(result.body.code).toBe('generic.forbidden');
+      expect(JSON.stringify(result.body)).not.toContain('Missing permission');
     });
 
     it('404 NotFoundException(string) → generic.not_found', () => {
@@ -178,6 +213,74 @@ describe('normalize()', () => {
       const result = normalize(err, TRACE);
       expect(result.body.code).toBe('unknown.server_error');
       expect(result.status).toBe(500);
+    });
+  });
+
+  describe('Fail-closed registry (Fix 2)', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('AppError with unregistered code → wire code unknown.server_error 500, detail dropped', () => {
+      const err = new AppError('totally.invented_code' as string, 418, {
+        detail: 'this should never appear on the wire',
+      });
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(500);
+      expect(result.body.code).toBe('unknown.server_error');
+      // The custom detail must be dropped — fail-closed strips override
+      // when the code is unregistered. Wire body shows messages.en copy.
+      expect(JSON.stringify(result.body)).not.toContain('this should never appear');
+    });
+
+    it('HttpException with unregistered { code } payload → unknown.server_error', () => {
+      const err = new HttpException(
+        { code: 'random.invented', message: 'leak.txt:42' },
+        500,
+      );
+      const result = normalize(err, TRACE);
+      expect(result.body.code).toBe('unknown.server_error');
+      expect(JSON.stringify(result.body)).not.toContain('leak.txt');
+      expect(JSON.stringify(result.body)).not.toContain('random.invented');
+    });
+  });
+
+  describe('Legacy `message` field synthesis (Fix 6)', () => {
+    it('validation.failed → message equals title', () => {
+      const err = AppErrors.validation([
+        { field: 'x', code: 'required', message: 'x is required' },
+      ]);
+      const result = normalize(err, TRACE);
+      // validation.failed has no detail → message falls back to title.
+      expect(result.body.message).toBe(result.body.title);
+    });
+
+    it('not_found → message equals detail', () => {
+      const err = AppErrors.notFound('ticket', 'abc-123');
+      const result = normalize(err, TRACE);
+      expect(result.body.detail).toBe('ticket abc-123 not found');
+      expect(result.body.message).toBe('ticket abc-123 not found');
+    });
+
+    it('permission.denied → message equals detail', () => {
+      const err = AppErrors.permissionDenied('tickets:write_all');
+      const result = normalize(err, TRACE);
+      expect(result.body.message).toBe(result.body.detail);
+    });
+
+    it('500 fallback → message equals messages.en detail', () => {
+      const result = normalize(new Error('boom'), TRACE);
+      expect(result.body.code).toBe('unknown.server_error');
+      // messages.en supplies detail for unknown.server_error.
+      expect(result.body.message).toBe(result.body.detail);
     });
   });
 
@@ -223,11 +326,23 @@ describe('normalize()', () => {
       expect(result.body.code).toBe('permission.denied');
     });
 
+    it('PGRST301 with severity (forwarded by RPC diagnostic) → still permission.denied (Fix 5)', () => {
+      // Real-world shape from supabase-js when an RLS policy raises inside an RPC.
+      const err = {
+        severity: 'ERROR',
+        code: 'PGRST301',
+        message: 'rls denied',
+        details: '',
+        hint: '',
+        schema: 'public',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(403);
+      expect(result.body.code).toBe('permission.denied');
+    });
+
     it('42501 (postgres permission denied) → permission.denied 403', () => {
       const err = { code: '42501', message: 'permission denied for table tickets' };
-      // Note: pg native errors have `severity`. PostgrestError passes through
-      // postgrest, which forwards 42501 without severity. We test the
-      // postgrest path here.
       const result = normalize(err, TRACE);
       expect(result.status).toBe(403);
       expect(result.body.code).toBe('permission.denied');
@@ -250,10 +365,79 @@ describe('normalize()', () => {
       expect(result.body.code).toBe('db.constraint');
       // detail must come from messages.en — the SQL never appears.
       expect(result.body.detail).toBe('A data rule blocked this change.');
+      expect(JSON.stringify(result.body)).not.toContain('INSERT');
     });
   });
 
   describe('pg native error', () => {
+    it('22001 (string truncation) → db.constraint 400 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '22001',
+        message: 'value too long for type character varying(50)',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('db.constraint');
+      expect(JSON.stringify(result.body)).not.toContain('character varying');
+    });
+
+    it('22003 (numeric out-of-range) → db.constraint 400 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '22003',
+        message: 'numeric field overflow',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('db.constraint');
+    });
+
+    it('22023 (invalid parameter value) → db.constraint 400 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '22023',
+        message: 'invalid value',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('db.constraint');
+    });
+
+    it('22P02 (invalid text rep, e.g. uuid) → db.constraint 400 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '22P02',
+        message: 'invalid input syntax for type uuid: "not-a-uuid"',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('db.constraint');
+      expect(JSON.stringify(result.body)).not.toContain('not-a-uuid');
+    });
+
+    it('23502 (not-null violation) → db.constraint 400 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '23502',
+        message: 'null value in column "title" violates not-null constraint',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(400);
+      expect(result.body.code).toBe('db.constraint');
+    });
+
+    it('40001 (serialization_failure) → db.deadlock 409 (Fix 4)', () => {
+      const err = {
+        severity: 'ERROR',
+        code: '40001',
+        message: 'could not serialize access due to concurrent update',
+      };
+      const result = normalize(err, TRACE);
+      expect(result.status).toBe(409);
+      expect(result.body.code).toBe('db.deadlock');
+    });
+
     it('23505 → db.unique_violation 409', () => {
       const err = {
         severity: 'ERROR',
@@ -267,6 +451,7 @@ describe('normalize()', () => {
       expect(result.body.detail).toBe(
         'Something with that identifier already exists.',
       );
+      expect(JSON.stringify(result.body)).not.toContain('tickets_pkey');
     });
 
     it('23503 → db.fk_violation 409', () => {
@@ -403,16 +588,46 @@ describe('normalize()', () => {
       expect(normalize(versioned, TRACE).body.serverVersion).toBe('v2');
       expect(normalize(versioned, TRACE).body.clientVersion).toBe('v1');
     });
+
+    it('legacy `message` field is always present (one-release shim)', () => {
+      const samples: unknown[] = [
+        AppErrors.notFound('ticket'),
+        new BadRequestException('bad'),
+        new Error('boom'),
+        { code: 'PGRST301', message: 'rls' },
+        { severity: 'ERROR', code: '23505', message: 'dupe' },
+        AppErrors.validation([
+          { field: 'x', code: 'required', message: 'x' },
+        ]),
+      ];
+      for (const error of samples) {
+        const { body } = normalize(error, TRACE);
+        expect(typeof body.message).toBe('string');
+        // message must equal detail-or-title.
+        expect(body.message).toBe(body.detail ?? body.title);
+      }
+    });
   });
 
   describe('leak-prevention scrubs', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
     it('does not echo a vendor name in the wire body', () => {
       const err = new BadRequestException('Resend rejected: 429');
       const { body } = normalize(err, TRACE);
-      // We DO let the legacy detail through for HttpException-string when
-      // the message is the user-visible copy — UNLESS it looks like a leak.
-      // The scrub kicks in: detail falls back to messages.en.
-      expect(body.detail).not.toMatch(/resend/i);
+      // Fix 3 drops the string entirely; messages.en supplies detail.
+      expect(JSON.stringify(body)).not.toMatch(/resend/i);
+      expect(JSON.stringify(body)).not.toContain('Resend');
     });
 
     it('does not echo SQL fragments in the wire body', () => {
@@ -421,6 +636,21 @@ describe('normalize()', () => {
       );
       const { body } = normalize(err, TRACE);
       expect(JSON.stringify(body)).not.toContain('INSERT INTO');
+      expect(JSON.stringify(body)).not.toContain('tickets');
+    });
+
+    it('does not echo Supabase / Postgres in any wire body field', () => {
+      const samples = [
+        new BadRequestException('Supabase RPC error'),
+        new InternalServerErrorException('postgres connection refused'),
+        new ConflictException('PostgreSQL constraint X'),
+      ];
+      for (const err of samples) {
+        const { body } = normalize(err, TRACE);
+        const dump = JSON.stringify(body);
+        expect(dump).not.toMatch(/supabase/i);
+        expect(dump).not.toMatch(/postgres/i);
+      }
     });
   });
 });

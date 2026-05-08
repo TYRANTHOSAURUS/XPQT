@@ -5,24 +5,41 @@
  * Spec: docs/superpowers/specs/2026-05-02-error-handling-system-design.md
  *   §3.1 (wire shape), §3.2 (filter behaviour), §5 (registry).
  *
- * Order of branches matters:
- *   1. AppError              → passthrough
- *   2. HttpException w/ {code,...} payload (legacy Phase 1) → preserve code
- *   3. HttpException w/ string → map status → generic.<class>
- *   4. ZodError              → 422 + fields[]
- *   5. PostgrestError        → RLS → permission.denied; else db.constraint
- *   6. pg native error       → 23505/23503/23P01/23514 mapped; never leak SQL
- *   7. AbortError            → 499/400 request.cancelled, no log
- *   8. fallback              → 500 unknown.server_error, log full stack
+ * Order of branches (matches `normalize()` body — keep this comment in sync):
+ *   1. AppError                          → passthrough
+ *   2. ZodError                          → 422 + fields[]
+ *   3. HttpException w/ {code,...}       → preserve code (Phase 1 legacy)
+ *   3b. HttpException w/ string          → map status → generic.<class>;
+ *                                          string detail is DROPPED (no leak)
+ *   4. AbortError                        → 499 request.cancelled, no log
+ *   5. PostgrestError (PGRST*)           → must come BEFORE pg-native because
+ *                                          PostgREST forwards `severity` from
+ *                                          diagnostic context — duck-type on
+ *                                          the `PGRST*` prefix.
+ *   6. pg native error                   → 23xxx / 22xxx / 40xxx mapped;
+ *                                          never leak SQL
+ *   7. fallback                          → 500 unknown.server_error, log full
  *
  * The renderer (Phase 7.B) reads from `code` only; `detail` is a fallback
  * for support tooling. Vendor names (Resend, Supabase, Stripe, Postgres) and
  * SQL fragments NEVER leak into `detail` — decision #13.
+ *
+ * Fail-closed registry (Phase 7.A.1 self-review fix): unregistered codes
+ * are coerced to `unknown.server_error` at body-build time, so a producer
+ * that throws an inflight code never reaches the wire.
+ *
+ * Legacy `body.message` synthesis (one-release shim): set `body.message =
+ * body.detail ?? body.title` so existing frontend `apiFetch` toast logic
+ * (`apps/web/src/lib/api.ts:163-167`) keeps producing user-visible copy
+ * during the Phase 7.A → 7.B migration window. Remove in Phase 7.B once
+ * the renderer reads `code` end-to-end.
  */
 
 import { randomUUID } from 'node:crypto';
 import { HttpException } from '@nestjs/common';
 import { ZodError } from 'zod';
+
+import { isKnownErrorCode } from '@prequest/shared';
 
 import { AppError, isAppError } from './app-error';
 import { resolveMessageEn } from './messages.en';
@@ -33,6 +50,8 @@ export type WireShape = {
   title: string;
   status: number;
   traceId: string;
+  /** One-release compat alias of `detail ?? title`. Removed in Phase 7.B. */
+  message?: string;
   detail?: string;
   fields?: Array<{ field: string; code: string; message: string }>;
   docsUrl?: string;
@@ -55,19 +74,21 @@ export function randomTraceId(): string {
   return `req_${randomUUID()}`;
 }
 
-// ─── Vendor / SQL leakage scrub ──────────────────────────────────────────────
-// Any error message that touches a third-party vendor name, SQL keyword, or
-// stack frame fragment must NOT reach the wire body. We replace `detail` with
-// neutral copy resolved from messages.en. The original message is preserved
-// only on `cause` for the logger.
+// ─── Vendor / pg leakage scrub ──────────────────────────────────────────────
+// Only scrubs fields/details on a small set of indicators that survive the
+// Phase 7.A.1 hardening (Fix 3 dropped HttpException-string details
+// outright). Kept as a defence-in-depth for AppError detail overrides
+// authored by humans who pasted a vendor message.
 
-const VENDOR_NAME_RE = /\b(resend|supabase|stripe|postgres|postgresql|sendgrid|twilio|aws|azure)\b/i;
-const SQL_KEYWORD_RE =
-  /\b(select|insert|update|delete|from|where|join|values|returning|create|drop|alter)\b/i;
+const VENDOR_NAME_RE =
+  /\b(resend|supabase|stripe|postgres|postgresql|sendgrid|twilio|aws|azure)\b/i;
+// SQLSTATE-shaped tokens (`23505`, `40P01`) and `pg_*` system schema names
+// almost always indicate a leaked pg / postgrest error string.
+const SQLSTATE_RE = /\b\d{2}[0-9A-P]\d{2}\b|\bpg_[a-z_]+/i;
 
 function looksLikeLeak(text: string | undefined): boolean {
   if (!text) return false;
-  return VENDOR_NAME_RE.test(text) || SQL_KEYWORD_RE.test(text);
+  return VENDOR_NAME_RE.test(text) || SQLSTATE_RE.test(text);
 }
 
 // ─── Branch helpers ──────────────────────────────────────────────────────────
@@ -82,45 +103,73 @@ function buildBody(args: {
   retryAfter?: number;
   serverVersion?: string;
   clientVersion?: string;
-}): WireShape {
-  const message = resolveMessageEn(args.code);
+}): { body: WireShape; status: number } {
+  // Fail-closed: if the producer threw an unregistered code, replace
+  // before any user-visible copy resolves. The original code is preserved
+  // on the AppError / cause for the logger; the wire body never echoes
+  // it. Spec §3.4 + CLAUDE.md error-handling guidance.
+  let safeArgs = args;
+  let safeStatus = args.status;
+  if (!isKnownErrorCode(safeArgs.code)) {
+    if (process.env.NODE_ENV !== 'production') {
+      // Surface during dev/test so authors notice. Production swallows.
+      // Fix 13 also logs scrub triggers via console.warn.
+      // eslint-disable-next-line no-console
+      console.warn('errors:fail-closed', {
+        unregistered: safeArgs.code,
+        replaced: 'unknown.server_error',
+      });
+    }
+    safeArgs = { ...safeArgs, code: 'unknown.server_error', detailOverride: undefined };
+    safeStatus = 500;
+  }
+
+  const message = resolveMessageEn(safeArgs.code);
   const body: WireShape = {
-    code: args.code,
+    code: safeArgs.code,
     title: message.title,
-    status: args.status,
-    traceId: args.traceId,
+    status: safeStatus,
+    traceId: safeArgs.traceId,
   };
   // Detail precedence: explicit override > messages.en > omit.
-  // Override is dropped if it looks like a leak (vendor name / SQL fragment).
-  const safeOverride = args.detailOverride && !looksLikeLeak(args.detailOverride)
-    ? args.detailOverride
-    : undefined;
+  // Override is dropped if it looks like a leak (vendor name / SQLSTATE).
+  let safeOverride: string | undefined;
+  if (safeArgs.detailOverride && !looksLikeLeak(safeArgs.detailOverride)) {
+    safeOverride = safeArgs.detailOverride;
+  } else if (safeArgs.detailOverride) {
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.warn('errors:detail-scrubbed', { code: safeArgs.code });
+    }
+  }
   const detail = safeOverride ?? message.detail;
   if (detail !== undefined) body.detail = detail;
-  if (args.fields !== undefined) body.fields = args.fields;
-  if (args.docsUrl !== undefined) body.docsUrl = args.docsUrl;
-  if (args.retryAfter !== undefined) body.retryAfter = args.retryAfter;
-  if (args.serverVersion !== undefined) body.serverVersion = args.serverVersion;
-  if (args.clientVersion !== undefined) body.clientVersion = args.clientVersion;
-  return body;
+  if (safeArgs.fields !== undefined) body.fields = safeArgs.fields;
+  if (safeArgs.docsUrl !== undefined) body.docsUrl = safeArgs.docsUrl;
+  if (safeArgs.retryAfter !== undefined) body.retryAfter = safeArgs.retryAfter;
+  if (safeArgs.serverVersion !== undefined) body.serverVersion = safeArgs.serverVersion;
+  if (safeArgs.clientVersion !== undefined) body.clientVersion = safeArgs.clientVersion;
+  // Phase 7.A → 7.B compat shim: synthesise `message` from `detail`/`title`
+  // so legacy `apiFetch` toast logic (apps/web/src/lib/api.ts:163-167)
+  // keeps producing user-visible copy. Remove once Phase 7.B renderer
+  // reads `code` directly.
+  body.message = body.detail ?? body.title;
+  return { body, status: safeStatus };
 }
 
 function fromAppError(error: AppError, traceId: string): NormalizedError {
-  return {
+  const built = buildBody({
+    code: error.code,
     status: error.status,
-    body: buildBody({
-      code: error.code,
-      status: error.status,
-      traceId,
-      detailOverride: error.detail,
-      fields: error.fields,
-      docsUrl: error.docsUrl,
-      retryAfter: error.retryAfter,
-      serverVersion: error.serverVersion,
-      clientVersion: error.clientVersion,
-    }),
-    cause: error,
-  };
+    traceId,
+    detailOverride: error.detail,
+    fields: error.fields,
+    docsUrl: error.docsUrl,
+    retryAfter: error.retryAfter,
+    serverVersion: error.serverVersion,
+    clientVersion: error.clientVersion,
+  });
+  return { status: built.status, body: built.body, cause: error };
 }
 
 function statusToGenericCode(status: number): string {
@@ -148,7 +197,7 @@ function fromHttpException(error: HttpException, traceId: string): NormalizedErr
   const status = error.getStatus();
   const response = error.getResponse();
 
-  // 2: Legacy Phase 1 throw — { code, message, ... } payload.
+  // 3: Legacy Phase 1 throw — { code, message, ... } payload.
   if (
     typeof response === 'object' &&
     response !== null &&
@@ -165,30 +214,20 @@ function fromHttpException(error: HttpException, traceId: string): NormalizedErr
     const fields = Array.isArray(payload.fields)
       ? (payload.fields as WireShape['fields'])
       : undefined;
-    return {
-      status,
-      body: buildBody({ code, status, traceId, detailOverride: detail, fields }),
-      cause: error,
-    };
+    const built = buildBody({ code, status, traceId, detailOverride: detail, fields });
+    return { status: built.status, body: built.body, cause: error };
   }
 
-  // 3: HttpException with string response — map status → generic.<class>.
-  let detail: string | undefined;
-  if (typeof response === 'string') {
-    detail = response;
-  } else if (
-    typeof response === 'object' &&
-    response !== null &&
-    typeof (response as { message?: unknown }).message === 'string'
-  ) {
-    detail = (response as { message: string }).message;
-  }
+  // 3b: HttpException with string OR `{message: string}` response.
+  // Fix 3 (Phase 7.A.1 self-review): DROP the string detail entirely.
+  // The string can be a Postgres `duplicate key value …`, a JWT
+  // `malformed`, or any number of fail-OPEN shapes our regex misses.
+  // Map status → `generic.<class>` and let messages.en supply the
+  // user-visible copy. The original string is logged via the filter
+  // (filter logs `cause` from `normalized.cause`), never wire-bound.
   const code = statusToGenericCode(status);
-  return {
-    status,
-    body: buildBody({ code, status, traceId, detailOverride: detail }),
-    cause: error,
-  };
+  const built = buildBody({ code, status, traceId });
+  return { status: built.status, body: built.body, cause: error };
 }
 
 function fromZodError(error: ZodError, traceId: string): NormalizedError {
@@ -197,11 +236,8 @@ function fromZodError(error: ZodError, traceId: string): NormalizedError {
     code: issue.code,
     message: issue.message,
   }));
-  return {
-    status: 422,
-    body: buildBody({ code: 'validation.failed', status: 422, traceId, fields }),
-    cause: error,
-  };
+  const built = buildBody({ code: 'validation.failed', status: 422, traceId, fields });
+  return { status: built.status, body: built.body, cause: error };
 }
 
 // ─── PostgrestError detection ────────────────────────────────────────────────
@@ -209,8 +245,13 @@ function fromZodError(error: ZodError, traceId: string): NormalizedError {
 // plain object with `{ code: 'PGRSTxxx' | string, message: string, details?,
 // hint? }` — see @supabase/postgrest-js. RLS denials surface as PGRST301
 // (Bearer auth invalid for the row), 42501 from postgres ("permission
-// denied for table foo"), and similar. We map any of those to
-// permission.denied per spec §3.1.
+// denied for table foo"), and similar.
+//
+// Fix 5 (Phase 7.A.1 self-review): detect by `code.startsWith('PGRST')`
+// FIRST, regardless of `severity`. PostgREST forwards the postgres
+// diagnostic `severity` field on errors raised inside RPCs, which used
+// to bounce PGRST301 into the pg-native branch and emit
+// `db.constraint 500` instead of `permission.denied 403`.
 
 function isPostgrestErrorLike(error: unknown): error is {
   code: string;
@@ -218,12 +259,17 @@ function isPostgrestErrorLike(error: unknown): error is {
   details?: string;
   hint?: string;
 } {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    typeof (error as { code?: unknown }).code === 'string' &&
-    !('severity' in (error as object))
-  );
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== 'string') return false;
+  // PGRST*** (PostgREST) — always a postgrest error.
+  if (code.startsWith('PGRST')) return true;
+  // 42501 (postgres permission denied) — postgrest forwards this when
+  // the row-level policy rejects. Treat as postgrest if there's no
+  // `severity`, otherwise let the pg-native branch handle (which also
+  // maps 42501 → permission.denied for symmetry).
+  if (code === '42501' && !('severity' in (error as object))) return true;
+  return false;
 }
 
 function fromPostgrestError(
@@ -233,37 +279,28 @@ function fromPostgrestError(
   const code = error.code;
   // RLS / permission denial surfaces.
   if (code === 'PGRST301' || code === '42501' || code === 'PGRST302') {
-    return {
-      status: 403,
-      body: buildBody({ code: 'permission.denied', status: 403, traceId }),
-      cause: error,
-    };
+    const built = buildBody({ code: 'permission.denied', status: 403, traceId });
+    return { status: built.status, body: built.body, cause: error };
   }
   // PGRST116 = no rows.
   if (code === 'PGRST116') {
-    return {
-      status: 404,
-      body: buildBody({ code: 'generic.not_found', status: 404, traceId }),
-      cause: error,
-    };
+    const built = buildBody({ code: 'generic.not_found', status: 404, traceId });
+    return { status: built.status, body: built.body, cause: error };
   }
   // Default — surface as a db.constraint without leaking the message.
-  return {
-    status: 500,
-    body: buildBody({ code: 'db.constraint', status: 500, traceId }),
-    cause: error,
-  };
+  const built = buildBody({ code: 'db.constraint', status: 500, traceId });
+  return { status: built.status, body: built.body, cause: error };
 }
 
 // ─── pg native error detection ───────────────────────────────────────────────
-// node-postgres errors have `severity` and a sqlstate `code` — see pg's error
-// class. Codes:
-//   23505 unique_violation
-//   23503 foreign_key_violation
-//   23P01 exclusion_violation (GiST overlap, etc.)
-//   23514 check_violation
-// We never echo the pg `message` (contains SQL fragments + table names) —
-// the renderer's messages.en lookup is the only path to user-visible copy.
+// node-postgres errors have `severity` and a sqlstate `code`. We never echo
+// the pg `message` — the renderer's messages.en lookup is the only path to
+// user-visible copy.
+//
+// Fix 4 (Phase 7.A.1 self-review): added 22xxx (string truncation, numeric
+// out-of-range, invalid text rep) + 23502 (not_null_violation) +
+// 40001 (serialization_failure) so user-input issues surface as 4xx rather
+// than 500.
 
 function isPgNativeErrorLike(error: unknown): error is {
   severity: string;
@@ -286,42 +323,54 @@ function fromPgNativeError(
   traceId: string,
 ): NormalizedError {
   switch (error.code) {
-    case '23505':
-      return {
-        status: 409,
-        body: buildBody({ code: 'db.unique_violation', status: 409, traceId }),
-        cause: error,
-      };
-    case '23503':
-      return {
-        status: 409,
-        body: buildBody({ code: 'db.fk_violation', status: 409, traceId }),
-        cause: error,
-      };
-    case '23P01':
-      return {
-        status: 409,
-        body: buildBody({ code: 'db.constraint', status: 409, traceId }),
-        cause: error,
-      };
-    case '23514':
-      return {
-        status: 400,
-        body: buildBody({ code: 'db.constraint', status: 400, traceId }),
-        cause: error,
-      };
-    case '40P01':
-      return {
-        status: 409,
-        body: buildBody({ code: 'db.deadlock', status: 409, traceId }),
-        cause: error,
-      };
-    default:
-      return {
-        status: 500,
-        body: buildBody({ code: 'db.constraint', status: 500, traceId }),
-        cause: error,
-      };
+    // 22xxx — data exception family (user input → 400).
+    case '22001': // string_data_right_truncation
+    case '22003': // numeric_value_out_of_range
+    case '22023': // invalid_parameter_value
+    case '22P02': {
+      // invalid_text_representation (e.g. uuid format error)
+      const built = buildBody({ code: 'db.constraint', status: 400, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    // 23xxx — integrity constraint family.
+    case '23502': {
+      // not_null_violation
+      const built = buildBody({ code: 'db.constraint', status: 400, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    case '23505': {
+      const built = buildBody({ code: 'db.unique_violation', status: 409, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    case '23503': {
+      const built = buildBody({ code: 'db.fk_violation', status: 409, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    case '23P01': {
+      const built = buildBody({ code: 'db.constraint', status: 409, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    case '23514': {
+      const built = buildBody({ code: 'db.constraint', status: 400, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    // 40xxx — transaction rollback (deadlock / serialization → retry).
+    case '40001': // serialization_failure
+    case '40P01': {
+      // deadlock_detected
+      const built = buildBody({ code: 'db.deadlock', status: 409, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    // 42501 — permission denied (postgres). Falls through here only when
+    // `severity` was set; postgrest path also maps this code.
+    case '42501': {
+      const built = buildBody({ code: 'permission.denied', status: 403, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
+    default: {
+      const built = buildBody({ code: 'db.constraint', status: 500, traceId });
+      return { status: built.status, body: built.body, cause: error };
+    }
   }
 }
 
@@ -345,43 +394,42 @@ export function normalize(error: unknown, traceId: string): NormalizedError {
     return fromAppError(error as AppError, traceId);
   }
 
-  // 4. Zod errors (caught explicitly even though they might propagate
+  // 2. Zod errors (caught explicitly even though they might propagate
   // through HttpException in some controllers).
   if (error instanceof ZodError) {
     return fromZodError(error, traceId);
   }
 
-  // 2 + 3. NestJS HttpException — covers Bad/NotFound/Forbidden/Conflict/
+  // 3 / 3b. NestJS HttpException — covers Bad/NotFound/Forbidden/Conflict/
   // Unauthorized/InternalServerError plus custom subclasses.
   if (error instanceof HttpException) {
     return fromHttpException(error, traceId);
   }
 
-  // 7. AbortError — caller cancelled. Don't log.
+  // 4. AbortError — caller cancelled. Don't log.
   if (isAbortError(error)) {
+    const built = buildBody({ code: 'request.cancelled', status: 499, traceId });
     return {
-      status: 499,
-      body: buildBody({ code: 'request.cancelled', status: 499, traceId }),
+      status: built.status,
+      body: built.body,
       silent: true,
       cause: error,
     };
   }
 
-  // 6. pg native error — must check BEFORE PostgrestError because both have
-  // a `code` field but pg native also has `severity`.
-  if (isPgNativeErrorLike(error)) {
-    return fromPgNativeError(error, traceId);
-  }
-
-  // 5. PostgrestError — duck-typed (no class to instanceof against).
+  // 5. PostgrestError — must run BEFORE pg-native because PostgREST forwards
+  // postgres `severity` on errors raised inside RPC calls, which would
+  // otherwise bounce PGRST301 into the pg-native default branch.
   if (isPostgrestErrorLike(error)) {
     return fromPostgrestError(error, traceId);
   }
 
-  // 8. Fallback — unknown.
-  return {
-    status: 500,
-    body: buildBody({ code: 'unknown.server_error', status: 500, traceId }),
-    cause: error,
-  };
+  // 6. pg native error.
+  if (isPgNativeErrorLike(error)) {
+    return fromPgNativeError(error, traceId);
+  }
+
+  // 7. Fallback — unknown.
+  const built = buildBody({ code: 'unknown.server_error', status: 500, traceId });
+  return { status: built.status, body: built.body, cause: error };
 }

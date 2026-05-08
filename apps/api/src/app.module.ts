@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
 import { ClientRequestIdMiddleware } from './common/middleware/client-request-id.middleware';
+import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { SupabaseModule } from './common/supabase/supabase.module';
 import { DbModule } from './common/db/db.module';
@@ -110,6 +111,12 @@ import { OutboxModule } from './modules/outbox/outbox.module';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
+    // RequestIdMiddleware runs FIRST so every other middleware + controller
+    // + the global `AllExceptionsFilter` sees a stable `req.id` / `req.traceId`
+    // for the wire-shape `traceId` field. Spec §6.1 of
+    // docs/superpowers/specs/2026-05-02-error-handling-system-design.md.
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+
     // ClientRequestIdMiddleware runs ahead of TenantMiddleware (and before any
     // controller) so producer services that need the idempotency key get
     // `req.clientRequestId` populated unconditionally. Spec §3.3 of
