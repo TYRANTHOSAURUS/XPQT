@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 /**
  * Vendor fulfillment mode (daily-list spec §2). 'paper_only' / 'hybrid'
@@ -87,6 +88,7 @@ export function useUpsertVendor() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: vendorKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save vendor" }),
   });
 }
 
@@ -95,5 +97,6 @@ export function useDeleteVendor() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/vendors/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: vendorKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete vendor" }),
   });
 }
