@@ -444,6 +444,7 @@ apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:10://     (
 apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:356:    // Phase 1.3: happy path doesn't invoke compensation; the legacy cascade
 apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:371:    // (no longer the legacy "leave booking + cascade cleanup" behavior).
 apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:8://   - `multi_room_groups` table is GONE (00276_drop_legacy_booking_tables).
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:9://   - `reservations` / `booking_bundles` replaced by `bookings` + `booking_slots`
 apps/api/src/modules/reservations/multi-room-booking.service.ts:192:    // 2. Coerce source. The legacy ReservationSource admits 'auto' for
 apps/api/src/modules/reservations/multi-room-booking.service.ts:194:    //    rejects it (00277:56-58).
 apps/api/src/modules/reservations/multi-room-booking.service.ts:214:    // 3. Atomic create_booking RPC with N slots (00277:236-334). The slot
@@ -678,13 +679,21 @@ apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:91:          
 apps/api/src/modules/orders/approval-routing.service.ts:72:    bundle_id: string | null;
 apps/api/src/modules/orders/cost.service.ts:143:      bundle_id: bundleId,
 apps/api/src/modules/orders/cost.service.ts:30:  bundle_id: string;
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:113:  it('rejects when bundle_id is cross-tenant', async () => {
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:120:  it('rejects when bundle_id is cross-tenant', async () => {
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:123:        bundle_id: FOREIGN_UUID,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:131:        bundle_id: FOREIGN_UUID,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:149:        bundle_id: VALID_BOOKING,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:164:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:181:        bundle_id: VALID_BOOKING,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:204:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:205:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:230:        bundle_id: VALID_BOOKING,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:234:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:254:      bundle_id: VALID_BOOKING,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:266:        bundle_id: VALID_BOOKING,
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:297:      bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:81:      bundle_id: string;
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:88:      bundle_id: string;
 apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:9:// caller in one shot. Tests cover bundle_id, requester_person_id,
 apps/api/src/modules/orders/order.service.ts:1029:              // Standalone orders still create a bundle row; carry bundle_id
@@ -716,6 +725,7 @@ apps/api/src/modules/reservations/booking-flow.service.ts:956:          bundle_i
 apps/api/src/modules/reservations/dto/types.ts:272:  // booking_bundle_id was dropped here by slice H6 (migration 00288).
 apps/api/src/modules/reservations/dto/types.ts:317:  // booking_bundle_id input dropped by slice H6 (migration 00288) — the
 apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:205:      attachServicesToBooking: jest.fn(async () => ({ bundle_id: BOOKING_ID, lines: [] })),
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:253:    expect(result.reservations).toHaveLength(3);
 apps/api/src/modules/reservations/reservation-projection.ts:135:    // booking_bundle_id field dropped here by slice H6 (00288); the
 apps/api/src/modules/reservations/reservation-projection.ts:34://   - booking_bundle_id        ← booking.id (under canonicalisation, the booking IS the bundle)
 apps/api/src/modules/reservations/reservation.controller.ts:622:        bundle_id: id,
