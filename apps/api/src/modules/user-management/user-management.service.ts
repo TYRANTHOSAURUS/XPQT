@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { Request } from 'express';
 import {
   expandGranted,
@@ -337,12 +338,16 @@ export class UserManagementService {
     const seen = new Set<string>();
     for (const key of raw) {
       if (typeof key !== 'string') {
-        throw new BadRequestException(`Permission must be a string, got ${typeof key}`);
+        throw AppErrors.validationFailed('user_management.invalid_permission_key', {
+          detail: `Permission must be a string, got ${typeof key}`,
+        });
       }
       const norm = normalisePermission(key);
       const result = validatePermission(norm);
       if (!result.ok) {
-        throw new BadRequestException(result.reason);
+        throw AppErrors.validationFailed('user_management.invalid_permission_key', {
+          detail: result.reason,
+        });
       }
       seen.add(norm);
     }

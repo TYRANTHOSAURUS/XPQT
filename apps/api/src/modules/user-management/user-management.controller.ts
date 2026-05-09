@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UnauthorizedException,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
@@ -9,6 +9,7 @@ import {
   CreatePersonDto,
   CreateUserDto,
 } from './user-management.service';
+import { AppErrors } from '../../common/errors';
 
 @Controller('users')
 export class UsersController {
@@ -21,7 +22,7 @@ export class UsersController {
   @Get('me')
   async me(@Req() request: Request) {
     const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     return this.service.getByAuthUid(authUid);
   }
 

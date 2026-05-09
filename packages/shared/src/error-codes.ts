@@ -327,6 +327,9 @@ export type KnownErrorCode =
   | 'org_node.add_member_failed'
   | 'org_node.add_grant_failed'
 
+  // ─── user-management migration (Phase 7.B-1.user-management) ────────────
+  | 'user_management.invalid_permission_key'
+
   // ─── work-orders module migration (Phase 7.B-1.work-orders) ──────────────
   | 'work_order.not_found'
   | 'work_order.body_required'
@@ -620,6 +623,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'work_order.empty_metadata_update',
   'work_order.reassign_reason_required',
   'work_order.rerun_resolver_unsupported',
+  'user_management.invalid_permission_key',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

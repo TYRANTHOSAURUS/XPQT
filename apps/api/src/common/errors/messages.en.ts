@@ -969,6 +969,12 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't reassign that work order",
     detail: 'Auto-resolver isn\'t supported for work orders yet. Pass an explicit assignee.',
   },
+
+  // ─── user-management (Phase 7.B-1.user-management) ───────────────────────
+  'user_management.invalid_permission_key': {
+    title: "Couldn't save that role",
+    detail: 'One of the permission keys is invalid.',
+  },
 };
 
 /**
