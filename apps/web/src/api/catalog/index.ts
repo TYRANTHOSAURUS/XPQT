@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface CatalogItem {
   id: string;
@@ -118,6 +119,7 @@ export function useUpsertCatalogItem() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: catalogKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save catalog item" }),
   });
 }
 
@@ -126,5 +128,6 @@ export function useDeleteCatalogItem() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/catalog-items/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: catalogKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete catalog item" }),
   });
 }
