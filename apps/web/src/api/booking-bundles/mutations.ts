@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { bundleKeys } from './keys';
 import { approvalKeys } from '@/api/approvals';
 import { roomBookingKeys } from '@/api/room-booking';
@@ -64,6 +65,7 @@ export function useCancelBundle() {
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't cancel booking" }),
   });
 }
 
@@ -115,6 +117,7 @@ export function useAddBundleLines(bundleId: string) {
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't add services" }),
   });
 }
 
@@ -166,6 +169,7 @@ export function useEditBundleLine(bundleId: string, reservationId?: string) {
         qc.invalidateQueries({ queryKey: ticketKeys.all });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update service line" }),
   });
 }
 
@@ -198,5 +202,6 @@ export function useCancelBundleLine(bundleId: string) {
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't cancel service line" }),
   });
 }
