@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface NotificationTemplate {
   id: string;
@@ -41,6 +42,7 @@ export function useUpsertNotificationTemplate() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save notification template" }),
   });
 }
 
@@ -49,5 +51,6 @@ export function useDeleteNotificationTemplate() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/notification-templates/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete notification template" }),
   });
 }
