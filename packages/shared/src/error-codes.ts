@@ -294,7 +294,13 @@ export type KnownErrorCode =
   | 'space_not_found'
   | 'space_inactive'
   | 'space_not_reservable'
-  | 'permission_denied';
+  | 'permission_denied'
+
+  // ─── space module migration (Phase 7.B-1.space) ──────────────────────────
+  | 'space.not_found'
+  | 'space.parent_not_found'
+  | 'space.invalid_root_type'
+  | 'space.invalid_parent_type';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -522,6 +528,10 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'space_inactive',
   'space_not_reservable',
   'permission_denied',
+  'space.not_found',
+  'space.parent_not_found',
+  'space.invalid_root_type',
+  'space.invalid_parent_type',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -803,6 +803,22 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   permission_denied: {
     title: "You don't have access to this",
   },
+
+  // ─── space module migration (Phase 7.B-1.space) ──────────────────────────
+  'space.not_found': {
+    title: "Couldn't find that space",
+  },
+  'space.parent_not_found': {
+    title: "Couldn't find the parent space",
+  },
+  'space.invalid_root_type': {
+    title: "Couldn't create that space at the root",
+    detail: 'That space type needs a parent.',
+  },
+  'space.invalid_parent_type': {
+    title: "Couldn't place that space under that parent",
+    detail: 'That space type isn\'t allowed under that parent.',
+  },
 };
 
 /**

@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { isValidSpaceParent, SpaceType } from '@prequest/shared';
 
 export interface CreateSpaceDto {
@@ -73,7 +74,7 @@ export class SpaceService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !data) throw new NotFoundException('Space not found');
+    if (error || !data) throw AppErrors.notFound('space', id);
     return data;
   }
 
@@ -167,7 +168,9 @@ export class SpaceService {
   private async assertValidParent(parentId: string | null, childType: SpaceType) {
     if (parentId === null) {
       if (!isValidSpaceParent(null, childType)) {
-        throw new BadRequestException(`${childType} cannot be created at root`);
+        throw AppErrors.validationFailed('space.invalid_root_type', {
+          detail: `${childType} cannot be created at root`,
+        });
       }
       return;
     }
@@ -181,13 +184,15 @@ export class SpaceService {
       .single();
 
     if (error || !data) {
-      throw new BadRequestException('Parent space not found');
+      throw AppErrors.validationFailed('space.parent_not_found', {
+        detail: 'Parent space not found',
+      });
     }
 
     if (!isValidSpaceParent(data.type as SpaceType, childType)) {
-      throw new BadRequestException(
-        `${childType} cannot be a child of ${data.type}`,
-      );
+      throw AppErrors.validationFailed('space.invalid_parent_type', {
+        detail: `${childType} cannot be a child of ${data.type}`,
+      });
     }
   }
 
