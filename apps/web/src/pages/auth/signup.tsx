@@ -50,12 +50,20 @@ export function SignUpPage() {
           }),
         });
       } catch {
-        // Person creation may fail if API is not available or record already exists.
-        // The user was still created in Supabase Auth, so we proceed.
+        // Pattern D — bespoke: best-effort person row sync. The Supabase Auth
+        // user was already created upstream; failing to create the matching
+        // person row here must NOT block the signup flow (the API or session
+        // may not yet be reachable on a fresh signup). No user-facing error.
       }
 
       navigate('/login?message=Account created. Please sign in.', { replace: true });
     } catch {
+      // Pattern D — bespoke: unauthenticated flow. The signup page paints
+      // errors into the inline destructive <Alert> above, not a toast — the
+      // user has no session and no app shell to anchor a toast against. Voice
+      // is generic on purpose; the upstream signUp() / apiFetch already
+      // surface specific reasons (invalid email, weak password) via the
+      // signUpError branch above. This catch only handles unexpected throws.
       setError('An unexpected error occurred. Please try again.');
     } finally {
       setLoading(false);
