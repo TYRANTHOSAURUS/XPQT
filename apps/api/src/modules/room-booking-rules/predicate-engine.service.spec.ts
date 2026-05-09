@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import {
   EvaluationContext,
   PredicateEngineService,
@@ -192,10 +192,10 @@ describe('PredicateEngineService', () => {
 
   describe('validate', () => {
     it('rejects unknown op', () => {
-      expect(() => engine.validate({ op: 'wat', left: 1, right: 2 })).toThrow(BadRequestException);
+      expect(() => engine.validate({ op: 'wat', left: 1, right: 2 })).toThrow(AppError);
     });
     it('rejects unknown fn', () => {
-      expect(() => engine.validate({ fn: 'made_up', args: [] })).toThrow(BadRequestException);
+      expect(() => engine.validate({ fn: 'made_up', args: [] })).toThrow(AppError);
     });
     it('accepts a complex valid predicate', () => {
       expect(() =>
@@ -210,7 +210,7 @@ describe('PredicateEngineService', () => {
     it('rejects too-deep nesting', () => {
       let nest: unknown = { op: 'eq', left: 1, right: 1 };
       for (let i = 0; i < 12; i += 1) nest = { not: nest };
-      expect(() => engine.validate(nest)).toThrow(BadRequestException);
+      expect(() => engine.validate(nest)).toThrow(AppError);
     });
   });
 });

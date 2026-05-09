@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { RuleResolverService, RuleRow } from './rule-resolver.service';
 import type { BookingScenario, SaveScenarioDto, SimulateDto } from './dto';
 
@@ -105,7 +106,7 @@ export class SimulationService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`Scenario ${scenarioId} not found`);
+    if (!data) throw AppErrors.notFoundWithCode('room_rule.scenario_not_found', `Scenario ${scenarioId} not found`);
 
     const result = await this.run({
       scenario: (data as { scenario: BookingScenario }).scenario,

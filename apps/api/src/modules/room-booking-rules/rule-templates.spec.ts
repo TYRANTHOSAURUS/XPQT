@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { getTemplate, listTemplates, RULE_TEMPLATES } from './rule-templates';
 import { PredicateEngineService } from './predicate-engine.service';
 
@@ -43,8 +43,8 @@ describe('rule templates', () => {
   });
 
   it('throws on missing required param', () => {
-    expect(() => getTemplate('restrict_to_roles').compile({})).toThrow(BadRequestException);
-    expect(() => getTemplate('min_lead_time').compile({})).toThrow(BadRequestException);
+    expect(() => getTemplate('restrict_to_roles').compile({})).toThrow(AppError);
+    expect(() => getTemplate('min_lead_time').compile({})).toThrow(AppError);
   });
 
   it('capacity_tolerance rejects invalid mode', () => {
@@ -52,6 +52,6 @@ describe('rule templates', () => {
   });
 
   it('getTemplate throws on unknown id', () => {
-    expect(() => getTemplate('nope')).toThrow(BadRequestException);
+    expect(() => getTemplate('nope')).toThrow(AppError);
   });
 });

@@ -374,6 +374,19 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── room-booking-rules migration (Phase 7.B-1.room-booking-rules) ───────
+  | 'room_rule.template_param_required'
+  | 'room_rule.template_invalid'
+  | 'room_rule.invalid_predicate'
+  | 'room_rule.scenario_not_found'
+  | 'room_rule.not_found'
+  | 'room_rule.version_not_found'
+  | 'room_rule.invalid_effect'
+  | 'room_rule.name_required'
+  | 'room_rule.invalid_scope'
+  | 'room_rule.space_not_found'
+  | 'room_rule.impact_failed'
+
   // ─── calendar-sync migration (Phase 7.B-1.calendar-sync) ─────────────────
   | 'calendar_sync.no_auth'
   | 'calendar_sync.invalid_state'
@@ -920,6 +933,17 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'calendar_sync.token_failed',
   'calendar_sync.graph_failed',
   'calendar_sync.config_missing',
+  'room_rule.template_param_required',
+  'room_rule.template_invalid',
+  'room_rule.invalid_predicate',
+  'room_rule.scenario_not_found',
+  'room_rule.not_found',
+  'room_rule.version_not_found',
+  'room_rule.invalid_effect',
+  'room_rule.name_required',
+  'room_rule.invalid_scope',
+  'room_rule.space_not_found',
+  'room_rule.impact_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { RuleResolverService, RuleRow } from './rule-resolver.service';
 import type { ImpactPreviewDraftDto } from './dto';
 
@@ -74,7 +75,7 @@ export class ImpactPreviewService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new Error(`Rule ${ruleId} not found`);
+    if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${ruleId} not found`);
     return this.previewRule(data as RuleRow);
   }
 

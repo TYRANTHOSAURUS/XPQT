@@ -1329,6 +1329,19 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'calendar_sync.token_failed': { title: "Couldn't process tokens" },
   'calendar_sync.graph_failed': { title: "Couldn't reach calendar service" },
   'calendar_sync.config_missing': { title: "Calendar sync isn't configured" },
+
+  // ─── room-booking-rules (Phase 7.B-1.room-booking-rules) ─────────────────
+  'room_rule.template_param_required': { title: "Couldn't apply template", detail: 'A required parameter is missing.' },
+  'room_rule.template_invalid': { title: "Couldn't apply template" },
+  'room_rule.invalid_predicate': { title: "Couldn't save", detail: 'Predicate is invalid.' },
+  'room_rule.scenario_not_found': { title: "Couldn't find that scenario" },
+  'room_rule.not_found': { title: "Couldn't find that rule" },
+  'room_rule.version_not_found': { title: "Couldn't find that version" },
+  'room_rule.invalid_effect': { title: "Couldn't save", detail: 'Effect is invalid.' },
+  'room_rule.name_required': { title: "Couldn't save", detail: 'Name is required.' },
+  'room_rule.invalid_scope': { title: "Couldn't save", detail: 'Scope is invalid.' },
+  'room_rule.space_not_found': { title: "Couldn't find that space" },
+  'room_rule.impact_failed': { title: "Couldn't preview impact" },
 };
 
 /**

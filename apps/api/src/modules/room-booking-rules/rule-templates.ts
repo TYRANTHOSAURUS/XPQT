@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { ApprovalConfig, Predicate, RuleEffect } from './dto';
 
 /**
@@ -47,20 +47,20 @@ export interface TemplateDefinition {
 
 function requireParam<T>(params: Record<string, unknown>, key: string): T {
   if (params[key] === undefined || params[key] === null || params[key] === '') {
-    throw new BadRequestException(`template parameter '${key}' is required`);
+    throw AppErrors.validationFailed('room_rule.template_param_required', { detail: `template parameter '${key}' is required` });
   }
   return params[key] as T;
 }
 
 function toNumber(v: unknown, label: string): number {
   const n = Number(v);
-  if (!Number.isFinite(n)) throw new BadRequestException(`'${label}' must be a finite number`);
+  if (!Number.isFinite(n)) throw AppErrors.validationFailed('room_rule.template_invalid', { detail: `'${label}' must be a finite number` });
   return n;
 }
 
 function toStringArray(v: unknown, label: string): string[] {
   if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) {
-    throw new BadRequestException(`'${label}' must be a string array`);
+    throw AppErrors.validationFailed('room_rule.template_invalid', { detail: `'${label}' must be a string array` });
   }
   return v as string[];
 }
@@ -239,7 +239,7 @@ export const RULE_TEMPLATES: TemplateDefinition[] = [
       const factor = toNumber(requireParam(params, 'factor'), 'factor');
       const mode = String(requireParam(params, 'mode')) as RuleEffect;
       if (!['deny', 'warn', 'require_approval'].includes(mode)) {
-        throw new BadRequestException(`mode must be deny, warn, or require_approval`);
+        throw AppErrors.validationFailed('room_rule.template_invalid', { detail: `mode must be deny, warn, or require_approval` });
       }
       // attendee_count > capacity * factor
       // We build that as: attendee_count * 1 > capacity * factor (no left-side
@@ -388,7 +388,7 @@ const TEMPLATE_BY_ID = new Map(RULE_TEMPLATES.map((t) => [t.id, t]));
 
 export function getTemplate(id: string): TemplateDefinition {
   const t = TEMPLATE_BY_ID.get(id);
-  if (!t) throw new BadRequestException(`unknown template_id: ${id}`);
+  if (!t) throw AppErrors.validationFailed('room_rule.template_invalid', { detail: `unknown template_id: ${id}` });
   return t;
 }
 

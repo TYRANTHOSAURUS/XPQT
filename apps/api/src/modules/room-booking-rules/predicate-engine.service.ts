@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import type { Predicate } from './dto';
 
 /**
@@ -85,18 +86,18 @@ export class PredicateEngineService {
    * runtime mismatches.
    */
   evaluate(predicate: Predicate, ctx: BaseEvaluationContext, depth = 0): boolean {
-    if (depth > 10) throw new BadRequestException('predicate nesting too deep');
+    if (depth > 10) throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'predicate nesting too deep' });
 
     if (!predicate || typeof predicate !== 'object') {
-      throw new BadRequestException('predicate must be an object');
+      throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'predicate must be an object' });
     }
 
     if ('and' in predicate) {
-      if (!Array.isArray(predicate.and)) throw new BadRequestException('and must be an array');
+      if (!Array.isArray(predicate.and)) throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'and must be an array' });
       return predicate.and.every((p) => this.evaluate(p, ctx, depth + 1));
     }
     if ('or' in predicate) {
-      if (!Array.isArray(predicate.or)) throw new BadRequestException('or must be an array');
+      if (!Array.isArray(predicate.or)) throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'or must be an array' });
       // Empty or = false; matches typical predicate-engine semantics.
       return predicate.or.some((p) => this.evaluate(p, ctx, depth + 1));
     }
@@ -109,9 +110,9 @@ export class PredicateEngineService {
     if ('op' in predicate) {
       return this.evalOp(predicate as { op: string; left: unknown; right?: unknown }, ctx);
     }
-    throw new BadRequestException(
-      `predicate must be one of and|or|not|fn|op (got keys: ${Object.keys(predicate).join(',')})`,
-    );
+    throw AppErrors.validationFailed('room_rule.invalid_predicate', {
+      detail: `predicate must be one of and|or|not|fn|op (got keys: ${Object.keys(predicate).join(',')})`,
+    });
   }
 
   /**
@@ -120,21 +121,21 @@ export class PredicateEngineService {
    * service on create/update.
    */
   validate(predicate: unknown, depth = 0): void {
-    if (depth > 10) throw new BadRequestException('predicate nesting too deep');
+    if (depth > 10) throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'predicate nesting too deep' });
     if (!predicate || typeof predicate !== 'object' || Array.isArray(predicate)) {
-      throw new BadRequestException('predicate must be a non-array object');
+      throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'predicate must be a non-array object' });
     }
     const node = predicate as Record<string, unknown>;
     if ('and' in node) {
       if (!Array.isArray(node.and) || node.and.length === 0) {
-        throw new BadRequestException('and must be a non-empty array');
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'and must be a non-empty array' });
       }
       for (const c of node.and) this.validate(c, depth + 1);
       return;
     }
     if ('or' in node) {
       if (!Array.isArray(node.or) || node.or.length === 0) {
-        throw new BadRequestException('or must be a non-empty array');
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'or must be a non-empty array' });
       }
       for (const c of node.or) this.validate(c, depth + 1);
       return;
@@ -145,24 +146,24 @@ export class PredicateEngineService {
     }
     if ('fn' in node) {
       if (typeof node.fn !== 'string' || !KNOWN_FNS.has(node.fn)) {
-        throw new BadRequestException(`unknown predicate fn: ${String(node.fn)}`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `unknown predicate fn: ${String(node.fn)}` });
       }
       if (!Array.isArray(node.args)) {
-        throw new BadRequestException(`fn ${String(node.fn)} requires args[]`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `fn ${String(node.fn)} requires args[]` });
       }
       return;
     }
     if ('op' in node) {
       if (typeof node.op !== 'string' || !KNOWN_OPS.has(node.op)) {
-        throw new BadRequestException(`unknown op: ${String(node.op)}`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `unknown op: ${String(node.op)}` });
       }
-      if (!('left' in node)) throw new BadRequestException(`op ${node.op} requires left`);
+      if (!('left' in node)) throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `op ${node.op} requires left` });
       if (node.op !== 'in' && !('right' in node)) {
-        throw new BadRequestException(`op ${node.op} requires right`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `op ${node.op} requires right` });
       }
       return;
     }
-    throw new BadRequestException('predicate node must have one of and|or|not|fn|op');
+    throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: 'predicate node must have one of and|or|not|fn|op' });
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ export class PredicateEngineService {
         return false;
       }
       default:
-        throw new BadRequestException(`unknown op: ${node.op}`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `unknown op: ${node.op}` });
     }
   }
 
@@ -264,7 +265,7 @@ export class PredicateEngineService {
         return Number(att) < Number(min);
       }
       default:
-        throw new BadRequestException(`unknown fn: ${fn}`);
+        throw AppErrors.validationFailed('room_rule.invalid_predicate', { detail: `unknown fn: ${fn}` });
     }
   }
 

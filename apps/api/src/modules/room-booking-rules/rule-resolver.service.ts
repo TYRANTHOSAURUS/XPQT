@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import {
   loadPermissionMap,
   loadRequesterContext,
@@ -303,7 +304,7 @@ export class RuleResolverService {
     const permissions = await loadPermissionMap(this.supabase, requester.user_id);
     const spaceMap = await this.loadSpacesWithAncestors([scenario.space_id]);
     const space = spaceMap.get(scenario.space_id);
-    if (!space) throw new NotFoundException(`Space ${scenario.space_id} not found`);
+    if (!space) throw AppErrors.notFoundWithCode('room_rule.space_not_found', `Space ${scenario.space_id} not found`);
     return this.assembleContext({ requester, permissions, space, scenario });
   }
 

@@ -1,10 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { PredicateEngineService } from './predicate-engine.service';
 import { getTemplate } from './rule-templates';
 import type {
@@ -97,7 +94,7 @@ export class RoomBookingRulesService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`Rule ${id} not found`);
+    if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${id} not found`);
     return data;
   }
 
@@ -144,7 +141,7 @@ export class RoomBookingRulesService {
     const before = await this.findOne(id);
     if (patch.applies_when !== undefined) this.engine.validate(patch.applies_when);
     if (patch.effect && !VALID_EFFECTS.has(patch.effect)) {
-      throw new BadRequestException(`unknown effect: ${patch.effect}`);
+      throw AppErrors.validationFailed('room_rule.invalid_effect', { detail: `unknown effect: ${patch.effect}` });
     }
 
     const body: Record<string, unknown> = {
@@ -153,7 +150,7 @@ export class RoomBookingRulesService {
     };
     if (patch.name !== undefined) {
       const trimmed = patch.name.trim();
-      if (!trimmed) throw new BadRequestException('name cannot be empty');
+      if (!trimmed) throw AppErrors.validationFailed('room_rule.name_required', { detail: 'name cannot be empty' });
       body.name = trimmed;
     }
     if (patch.description !== undefined) body.description = patch.description?.trim() || null;
@@ -176,7 +173,7 @@ export class RoomBookingRulesService {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`Rule ${id} not found`);
+    if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${id} not found`);
 
     const changeType: ChangeType =
       patch.active === false && before.active
@@ -234,7 +231,7 @@ export class RoomBookingRulesService {
       .eq('version_number', versionNumber)
       .maybeSingle();
     if (error) throw error;
-    if (!version) throw new NotFoundException(`Version ${versionNumber} not found`);
+    if (!version) throw AppErrors.notFoundWithCode('room_rule.version_not_found', `Version ${versionNumber} not found`);
 
     const snap = (version as { snapshot: RuleSnapshot }).snapshot;
     return this.update(
@@ -282,20 +279,20 @@ export class RoomBookingRulesService {
   // ── Internals ──────────────────────────────────────────────────────────
 
   private validateCreateInput(dto: CreateRuleDto) {
-    if (!dto.name?.trim()) throw new BadRequestException('name is required');
+    if (!dto.name?.trim()) throw AppErrors.validationFailed('room_rule.name_required', { detail: 'name is required' });
     if (!VALID_TARGET_SCOPES.has(dto.target_scope)) {
-      throw new BadRequestException(`unknown target_scope: ${dto.target_scope}`);
+      throw AppErrors.validationFailed('room_rule.invalid_scope', { detail: `unknown target_scope: ${dto.target_scope}` });
     }
     if (!VALID_EFFECTS.has(dto.effect)) {
-      throw new BadRequestException(`unknown effect: ${dto.effect}`);
+      throw AppErrors.validationFailed('room_rule.invalid_effect', { detail: `unknown effect: ${dto.effect}` });
     }
     if (dto.target_scope === 'tenant' && dto.target_id) {
-      throw new BadRequestException('tenant scope must not have target_id');
+      throw AppErrors.validationFailed('room_rule.invalid_scope', { detail: 'tenant scope must not have target_id' });
     }
     if (dto.target_scope !== 'tenant' && !dto.target_id && dto.target_scope !== 'room_type') {
       // room_type is allowed to have null target_id (= type-agnostic; the
       // applies_when does the typing).
-      throw new BadRequestException(`${dto.target_scope} scope requires target_id`);
+      throw AppErrors.validationFailed('room_rule.invalid_scope', { detail: `${dto.target_scope} scope requires target_id` });
     }
     this.engine.validate(dto.applies_when);
   }
