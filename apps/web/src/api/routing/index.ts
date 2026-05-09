@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, type ApiFetchOptions } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 /**
  * Routing-studio module. Covers the entire routing namespace:
@@ -120,14 +121,20 @@ export interface RoutingDecision {
  * Generic mutation that invalidates the whole routing namespace on settle.
  * Use for any write against a /routing/* endpoint when per-key targeting
  * isn't worth the extra code.
+ *
+ * The `actionTitle` parameter lets each call site contribute its specific
+ * voice ("Couldn't save routing rule", "Couldn't reorder rules") while the
+ * underlying error classification + toast routing stays uniform.
  */
 export function useRoutingMutation<TVars = unknown, TData = unknown>(
   fn: (vars: TVars) => Promise<TData>,
+  opts: { actionTitle?: string } = {},
 ) {
   const qc = useQueryClient();
   return useMutation<TData, Error, TVars>({
     mutationFn: fn,
     onSettled: () => qc.invalidateQueries({ queryKey: routingKeys.all }),
+    ...withErrorHandling({ actionTitle: opts.actionTitle ?? "Couldn't save routing change" }),
   });
 }
 
