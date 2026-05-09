@@ -1,6 +1,38 @@
 # Phase 7 — implementation plan
 
-> **Status:** v1 plan, scoping. Implementation gated on the user's go-ahead.
+> **Status — 2026-05-09:** Phase 7.A SHIPPED. v1 plan executed
+> autonomously through 7.A.1 → 7.A.5. 12 commits between `08ccbae` and
+> `405b78a` on `main`. 1580 API tests pass; CI ratchet active for the 5
+> migrated modules.
+>
+> What's done:
+> - 7.A.1 foundation (`08ccbae` + `f151653` + `5aa5ed1`): AppError class,
+>   AppErrors factories, KnownErrorCode union (`@prequest/shared`),
+>   messages.en.ts, AllExceptionsFilter, RequestIdMiddleware,
+>   throwZodError. Fail-closed registry. Vendor / SQL leak scrub. Legacy
+>   body.message synthesis for one release cycle.
+> - 7.A.2 first wave (`bcc9885`/`d19b370`/`8f41d99`/`fa43b14`/`99c8b2e`
+>   + `43c4a42` + `2f1489e`): 5 modules migrated. ~210 throw sites
+>   replaced with AppError factories. ~150 new codes registered.
+> - 7.A.3 CI ratchet (`f472cdd`): `scripts/check-app-errors.sh` +
+>   `pnpm errors:check-app-errors` + GitHub Actions step.
+> - 7.A.4 wire-shape smoke matrix (`405b78a`): 29 end-to-end tests
+>   pinning factory→AppError→filter→wire body contract.
+> - 7.A.5 docs (this commit): CLAUDE.md + this plan + error-codes-registry
+>   doc updated to reflect shipped state.
+>
+> What's deferred to **Phase 7.B**:
+> - Frontend `classify()` + ClassifiedError surfaces + per-route
+>   ErrorBoundary integration.
+> - Dutch localisation (`messages.nl.ts`).
+> - AccessRequest button (per design spec decision #8).
+> - Migrating `apps/api/src/common/tenant-validation.ts` and the remaining
+>   ~624 raw throw sites in non-Phase-7.A.2 modules.
+>
+> The scoping below is preserved for historical reference. Implementation
+> details below the line are how 7.A landed.
+
+---
 >
 > **Reading order:**
 > 1. `docs/superpowers/specs/2026-05-02-error-handling-system-design.md` — the contract.

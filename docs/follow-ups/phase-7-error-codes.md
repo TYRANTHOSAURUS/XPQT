@@ -4,6 +4,16 @@
 > Phase 7. Created 2026-05-04 as the /full-review v3 closure I5 fix —
 > codex's flag pointed out that the Phase 1 plan referenced this doc but
 > it didn't exist.
+>
+> **STATUS — 2026-05-09:** All Phase 1 codes in both tables below are
+> **registered in 7.A.1 foundation** (`packages/shared/src/error-codes.ts`
+> + `apps/api/src/common/errors/messages.en.ts`). Throw sites in the 5
+> migrated modules (ticket, sla, booking-bundles, reservations, approval)
+> now use `AppErrors.*` factories. Sites in `tenant-validation.ts` remain
+> as `BadRequestException(string)` and are tracked as Phase 7 follow-up.
+> The Phase 7 open questions (`booking.partial_failure` reclassification,
+> `traceId` surfacing, `invalid_input` split) are resolved in
+> 7.A.2.b-d review fixes (commit `2f1489e`).
 
 ## Why this doc exists
 
