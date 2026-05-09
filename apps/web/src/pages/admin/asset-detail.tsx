@@ -24,11 +24,12 @@ import {
 } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
-  useAsset,
+  assetDetailOptions,
   useAssetTypes,
   useUpsertAsset,
   useDeleteAsset,
 } from '@/api/assets';
+import { usePageQuery } from '@/lib/errors';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 
 const ASSET_ROLES: Array<{ value: 'fixed' | 'personal' | 'pooled'; label: string }> = [
@@ -48,7 +49,8 @@ const ASSET_STATUSES = [
 export function AssetDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: asset, isLoading } = useAsset(id);
+  // Page-primary query — page-class errors throw to RouteErrorBoundary.
+  const { data: asset, isLoading } = usePageQuery(assetDetailOptions(id));
   const { data: types } = useAssetTypes();
   const upsert = useUpsertAsset();
   const del = useDeleteAsset();
