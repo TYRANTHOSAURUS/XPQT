@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import DOMPurify from 'isomorphic-dompurify';
 
 // Explicit allowlist of SVG tags. Anything else is stripped by DOMPurify.
@@ -41,7 +41,7 @@ const ALLOWED_ATTR = [
 
 export function sanitizeSvg(input: string): string {
   if (!/<svg[\s>]/i.test(input)) {
-    throw new BadRequestException('File does not appear to be an SVG');
+    throw AppErrors.validationFailed('tenant.invalid_svg', { detail: 'File does not appear to be an SVG' });
   }
 
   const clean = DOMPurify.sanitize(input, {

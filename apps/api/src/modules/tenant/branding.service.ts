@@ -1,11 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { assertValidHex, assertUsablePrimary, assertValidHexOrNull } from './color-utils';
 import { sanitizeSvg } from './svg-sanitizer';
 
@@ -81,7 +77,7 @@ export class BrandingService {
       .select('name, branding')
       .eq('id', tenant.id)
       .single();
-    if (error || !data) throw new NotFoundException('Tenant not found');
+    if (error || !data) throw AppErrors.notFoundWithCode('tenant.not_found', 'Tenant not found');
     const branding = (data.branding ?? {}) as Omit<Branding, 'name'>;
     return { ...branding, name: data.name as string };
   }
@@ -89,16 +85,20 @@ export class BrandingService {
   async update(dto: UpdateBrandingDto): Promise<Branding> {
     const trimmedName = typeof dto.name === 'string' ? dto.name.trim() : '';
     if (!trimmedName) {
-      throw new BadRequestException('name is required');
+      throw AppErrors.validationFailed('tenant.name_required', { detail: 'name is required' });
     }
     if (trimmedName.length > NAME_MAX_LENGTH) {
-      throw new BadRequestException(`name must be ${NAME_MAX_LENGTH} characters or fewer`);
+      throw AppErrors.validationFailed('tenant.name_too_long', {
+        detail: `name must be ${NAME_MAX_LENGTH} characters or fewer`,
+      });
     }
     assertValidHex(dto.primary_color, 'primary_color');
     assertValidHex(dto.accent_color, 'accent_color');
     assertUsablePrimary(dto.primary_color);
     if (!['light', 'dark', 'system'].includes(dto.theme_mode_default)) {
-      throw new BadRequestException('theme_mode_default must be light, dark, or system');
+      throw AppErrors.validationFailed('tenant.invalid_theme_mode', {
+        detail: 'theme_mode_default must be light, dark, or system',
+      });
     }
     assertValidHexOrNull(dto.background_light, 'background_light');
     assertValidHexOrNull(dto.background_dark,  'background_dark');
@@ -123,7 +123,7 @@ export class BrandingService {
       .from('tenants')
       .update({ name: trimmedName, branding: nextBranding })
       .eq('id', tenant.id);
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('tenant.update_failed', { detail: error.message, cause: error });
 
     await this.writeAuditEvent('tenant.branding.updated', { fields: Object.keys(dto) });
     return { ...nextBranding, name: trimmedName };
@@ -152,7 +152,7 @@ export class BrandingService {
         upsert: true,
         cacheControl: '3600',
       });
-    if (uploadError) throw new InternalServerErrorException(uploadError.message);
+    if (uploadError) throw AppErrors.server('tenant.upload_failed', { detail: uploadError.message, cause: uploadError });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -163,7 +163,7 @@ export class BrandingService {
       .from('tenants')
       .update({ branding: stripName(next) })
       .eq('id', tenant.id);
-    if (updateError) throw new InternalServerErrorException(updateError.message);
+    if (updateError) throw AppErrors.server('tenant.update_failed', { detail: updateError.message, cause: updateError });
 
     await this.writeAuditEvent('tenant.branding.updated', { uploaded: kind });
     return next;
@@ -185,7 +185,7 @@ export class BrandingService {
       .from('tenants')
       .update({ branding: stripName(next) })
       .eq('id', tenant.id);
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('tenant.update_failed', { detail: error.message, cause: error });
 
     await this.writeAuditEvent('tenant.branding.updated', { removed: kind });
     return next;
@@ -197,17 +197,17 @@ export class BrandingService {
   ): void {
     const allowed = kind === 'favicon' ? FAVICON_MIMES : LOGO_MIMES;
     if (!allowed.has(file.mimetype)) {
-      throw new BadRequestException(
-        `Unsupported MIME type for ${kind}: ${file.mimetype}. Allowed: ${[...allowed].join(', ')}`,
-      );
+      throw AppErrors.validationFailed('tenant.invalid_image_kind', {
+        detail: `Unsupported MIME type for ${kind}: ${file.mimetype}. Allowed: ${[...allowed].join(', ')}`,
+      });
     }
     // Trust buffer.byteLength, not the client-reported file.size (from Content-Length).
     const limit = kind === 'favicon' ? FAVICON_MAX_BYTES : LOGO_MAX_BYTES;
     const actualBytes = file.buffer.byteLength;
     if (actualBytes > limit) {
-      throw new BadRequestException(
-        `File too large: ${actualBytes} bytes (max ${limit} bytes for ${kind})`,
-      );
+      throw AppErrors.validationFailed('tenant.file_required', {
+        detail: `File too large: ${actualBytes} bytes (max ${limit} bytes for ${kind})`,
+      });
     }
   }
 

@@ -361,6 +361,18 @@ export type KnownErrorCode =
   | 'webhook.source_ip_unresolvable'
   | 'webhook.source_ip_not_permitted'
 
+  // ─── tenant migration (Phase 7.B-1.tenant) ───────────────────────────────
+  | 'tenant.not_found'
+  | 'tenant.name_required'
+  | 'tenant.name_too_long'
+  | 'tenant.invalid_theme_mode'
+  | 'tenant.invalid_color'
+  | 'tenant.invalid_image_kind'
+  | 'tenant.file_required'
+  | 'tenant.invalid_svg'
+  | 'tenant.update_failed'
+  | 'tenant.upload_failed'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -726,6 +738,16 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'webhook.inactive',
   'webhook.source_ip_unresolvable',
   'webhook.source_ip_not_permitted',
+  'tenant.not_found',
+  'tenant.name_required',
+  'tenant.name_too_long',
+  'tenant.invalid_theme_mode',
+  'tenant.invalid_color',
+  'tenant.invalid_image_kind',
+  'tenant.file_required',
+  'tenant.invalid_svg',
+  'tenant.update_failed',
+  'tenant.upload_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

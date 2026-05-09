@@ -1152,6 +1152,27 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Webhook unavailable',
     detail: 'Source IP is not permitted.',
   },
+
+  // ─── tenant (Phase 7.B-1.tenant) ─────────────────────────────────────────
+  'tenant.not_found': { title: "Couldn't find that tenant" },
+  'tenant.name_required': { title: "Couldn't save", detail: 'Name is required.' },
+  'tenant.name_too_long': { title: "Couldn't save", detail: 'Name is too long.' },
+  'tenant.invalid_theme_mode': {
+    title: "Couldn't save",
+    detail: 'Theme mode must be light, dark, or system.',
+  },
+  'tenant.invalid_color': { title: "Couldn't save", detail: 'Invalid color value.' },
+  'tenant.invalid_image_kind': {
+    title: "Couldn't upload that image",
+    detail: 'Kind must be light, dark, or favicon.',
+  },
+  'tenant.file_required': { title: "Couldn't upload that image", detail: 'A file is required.' },
+  'tenant.invalid_svg': {
+    title: "Couldn't upload that image",
+    detail: 'File doesn\'t appear to be an SVG.',
+  },
+  'tenant.update_failed': { title: "Couldn't update tenant" },
+  'tenant.upload_failed': { title: "Couldn't upload that image" },
 };
 
 /**

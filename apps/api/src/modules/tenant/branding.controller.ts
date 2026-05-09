@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -19,6 +18,7 @@ import {
   LogoKind,
   UpdateBrandingDto,
 } from './branding.service';
+import { AppErrors } from '../../common/errors';
 
 const VALID_KINDS: LogoKind[] = ['light', 'dark', 'favicon'];
 
@@ -46,9 +46,11 @@ export class BrandingController {
     @UploadedFile()
     file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
-    if (!file) throw new BadRequestException('Missing file');
+    if (!file) throw AppErrors.validationFailed('tenant.file_required', { detail: 'Missing file' });
     if (!VALID_KINDS.includes(kind)) {
-      throw new BadRequestException('kind must be light, dark, or favicon');
+      throw AppErrors.validationFailed('tenant.invalid_image_kind', {
+        detail: 'kind must be light, dark, or favicon',
+      });
     }
     return this.branding.uploadLogo(kind, file);
   }
@@ -57,7 +59,9 @@ export class BrandingController {
   @UseGuards(AuthGuard, AdminGuard)
   async deleteLogo(@Param('kind') kind: LogoKind) {
     if (!VALID_KINDS.includes(kind)) {
-      throw new BadRequestException('kind must be light, dark, or favicon');
+      throw AppErrors.validationFailed('tenant.invalid_image_kind', {
+        detail: 'kind must be light, dark, or favicon',
+      });
     }
     return this.branding.removeLogo(kind);
   }

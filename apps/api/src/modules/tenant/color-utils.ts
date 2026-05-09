@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
 
@@ -8,7 +8,9 @@ export function isValidHex(value: string): boolean {
 
 export function assertValidHex(value: string, field: string): void {
   if (!isValidHex(value)) {
-    throw new BadRequestException(`${field} must be a 6-digit hex color (e.g. #2563eb)`);
+    throw AppErrors.validationFailed('tenant.invalid_color', {
+      detail: `${field} must be a 6-digit hex color (e.g. #2563eb)`,
+    });
   }
 }
 
@@ -33,16 +35,18 @@ export function contrastAgainstWhite(hex: string): number {
 export function assertUsablePrimary(hex: string): void {
   const ratio = contrastAgainstWhite(hex);
   if (ratio < 3) {
-    throw new BadRequestException(
-      `Primary color contrast against white is ${ratio.toFixed(2)}:1 (must be at least 3:1 for readability)`,
-    );
+    throw AppErrors.validationFailed('tenant.invalid_color', {
+      detail: `Primary color contrast against white is ${ratio.toFixed(2)}:1 (must be at least 3:1 for readability)`,
+    });
   }
 }
 
 export function assertValidHexOrNull(value: string | null, field: string): void {
   if (value === null) return;
   if (typeof value !== 'string') {
-    throw new BadRequestException(`${field} must be a hex color string or null`);
+    throw AppErrors.validationFailed('tenant.invalid_color', {
+      detail: `${field} must be a hex color string or null`,
+    });
   }
   assertValidHex(value, field);
 }
