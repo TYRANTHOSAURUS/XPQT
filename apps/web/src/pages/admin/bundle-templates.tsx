@@ -36,8 +36,8 @@ import {
   useCreateBundleTemplate,
   type BundleTemplate,
 } from '@/api/bundle-templates';
-import { toastCreated, toastError } from '@/lib/toast';
-
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 /**
  * /admin/bundle-templates — index page.
  *
@@ -181,7 +181,7 @@ function CreateDialog({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Create failed';
       setError(message);
-      toastError("Couldn't create bundle template", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't create bundle template" });
     }
   };
 

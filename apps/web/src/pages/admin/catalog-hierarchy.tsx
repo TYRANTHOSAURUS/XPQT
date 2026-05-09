@@ -34,7 +34,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { toast, toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
+import { toast, toastCreated, toastRemoved, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCatalogTree, catalogKeys } from '@/api/catalog';
 import { apiFetch } from '@/lib/api';
@@ -124,7 +125,7 @@ export function CatalogHierarchyPage() {
       setForm(emptyForm);
       refetch();
     } catch (err) {
-      toastError("Couldn't save category", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save category", retry: handleSave });
     }
   };
 
@@ -144,7 +145,7 @@ export function CatalogHierarchyPage() {
       if (selectedRtId && !tree) setSelectedRtId(null);
       refetch();
     } catch (err) {
-      toastError("Couldn't delete category", { error: err, retry: () => handleDelete(item) });
+      handleMutationError(err, { actionTitle: "Couldn't delete category", retry: () => handleDelete(item) });
     }
   };
 

@@ -19,8 +19,8 @@ import {
 } from '@/components/ui/settings-page';
 import { useBranding, type Branding } from '@/hooks/use-branding';
 import { PortalAppearanceSection } from '@/components/admin/portal/portal-appearance-section';
-import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
-
+import { toastSaved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 type LogoKind = 'light' | 'dark' | 'favicon';
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
@@ -53,7 +53,7 @@ function LogoSlot({
       await onUpload(file);
       toastSuccess(`${label} uploaded`);
     } catch (err) {
-      toastError(`Couldn't upload ${label.toLowerCase()}`, { error: err, retry: () => handlePick(e) });
+      handleMutationError(err, { actionTitle: `Couldn't upload ${label.toLowerCase()}`, retry: () => handlePick(e) });
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
@@ -66,7 +66,7 @@ function LogoSlot({
       await onRemove();
       toastSuccess(`${label} removed`);
     } catch (err) {
-      toastError(`Couldn't remove ${label.toLowerCase()}`, { error: err, retry: handleRemove });
+      handleMutationError(err, { actionTitle: `Couldn't remove ${label.toLowerCase()}`, retry: handleRemove });
     } finally {
       setBusy(false);
     }
@@ -260,7 +260,7 @@ export function BrandingPage() {
       });
       toastSaved('Branding');
     } catch (err) {
-      toastError("Couldn't save branding", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save branding", retry: handleSave });
     } finally {
       setSaving(false);
     }

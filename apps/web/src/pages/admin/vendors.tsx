@@ -28,7 +28,8 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Plus, Pencil, X } from 'lucide-react';
-import { toastCreated, toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVendors, vendorKeys } from '@/api/vendors';
 import { useTeams } from '@/api/teams';
@@ -147,7 +148,7 @@ export function VendorsPage() {
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toastError("Couldn't save vendor", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save vendor", retry: handleSave });
     }
   };
 
@@ -186,7 +187,7 @@ export function VendorsPage() {
       setNewAreaPriority('100');
       await loadAreas(editId);
     } catch (err) {
-      toastError("Couldn't add service area", { error: err, retry: handleAddArea });
+      handleMutationError(err, { actionTitle: "Couldn't add service area", retry: handleAddArea });
     }
   };
 
@@ -211,7 +212,7 @@ export function VendorsPage() {
       });
       await loadAreas(editId);
     } catch (err) {
-      toastError("Couldn't remove service area", { error: err, retry: () => handleRemoveArea(areaId) });
+      handleMutationError(err, { actionTitle: "Couldn't remove service area", retry: () => handleRemoveArea(areaId) });
     }
   };
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -43,7 +44,7 @@ export function OrganisationCreatePage() {
       toastCreated('Organisation', { onView: () => navigate(`/admin/organisations/${created.id}`) });
       navigate(`/admin/organisations/${created.id}`);
     } catch (err) {
-      toastError("Couldn't create organisation", { error: err, retry: submit });
+      handleMutationError(err, { actionTitle: "Couldn't create organisation", retry: submit });
     } finally {
       setSubmitting(false);
     }

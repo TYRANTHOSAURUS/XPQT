@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -217,7 +218,7 @@ function CreateMenuDialog({
       toastCreated('Menu', { onView: () => onCreated(created.id) });
       onCreated(created.id);
     } catch (err) {
-      toastError("Couldn't create menu", { error: err, retry: submit });
+      handleMutationError(err, { actionTitle: "Couldn't create menu", retry: submit });
     } finally {
       setBusy(false);
     }

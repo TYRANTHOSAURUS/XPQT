@@ -27,7 +27,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil, X, UserPlus } from 'lucide-react';
-import { toastCreated, toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeams, teamKeys } from '@/api/teams';
 import { useSpaces } from '@/api/spaces';
@@ -137,7 +138,7 @@ export function TeamsPage() {
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toastError("Couldn't save team", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save team", retry: handleSave });
     }
   };
 
@@ -168,7 +169,7 @@ export function TeamsPage() {
       setAddUserId('');
       await loadMembers(editId);
     } catch (err) {
-      toastError("Couldn't add member", { error: err, retry: handleAddMember });
+      handleMutationError(err, { actionTitle: "Couldn't add member", retry: handleAddMember });
     }
   };
 
@@ -187,7 +188,7 @@ export function TeamsPage() {
       });
       await loadMembers(editTeamId);
     } catch (err) {
-      toastError("Couldn't remove member", { error: err, retry: () => handleRemoveMember(userId) });
+      handleMutationError(err, { actionTitle: "Couldn't remove member", retry: () => handleRemoveMember(userId) });
     }
   };
 

@@ -19,7 +19,8 @@ import {
 } from '@/components/ui/field';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Plus, Ban } from 'lucide-react';
-import { toastCreated, toastError, toastRemoved } from '@/lib/toast';
+import { toastCreated, toastRemoved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDelegations, delegationKeys } from '@/api/delegations';
 import { apiFetch } from '@/lib/api';
@@ -112,7 +113,7 @@ export function DelegationsPage() {
       refetch();
       toastCreated('Delegation');
     } catch (err) {
-      toastError("Couldn't create delegation", { error: err, retry: handleCreate });
+      handleMutationError(err, { actionTitle: "Couldn't create delegation", retry: handleCreate });
     }
   };
 
@@ -133,7 +134,7 @@ export function DelegationsPage() {
         },
       });
     } catch (err) {
-      toastError("Couldn't deactivate delegation", { error: err, retry: () => handleDeactivate(id) });
+      handleMutationError(err, { actionTitle: "Couldn't deactivate delegation", retry: () => handleDeactivate(id) });
     }
   };
 

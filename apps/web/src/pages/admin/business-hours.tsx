@@ -26,7 +26,8 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
-import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useBusinessHoursCalendars, slaPolicyKeys } from '@/api/sla-policies';
 import { apiFetch } from '@/lib/api';
@@ -153,7 +154,7 @@ export function BusinessHoursPage() {
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toastError("Couldn't save calendar", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save calendar", retry: handleSave });
     }
   };
 

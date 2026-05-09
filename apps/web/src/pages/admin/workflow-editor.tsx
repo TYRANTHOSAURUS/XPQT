@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ReactFlowProvider } from 'reactflow';
-import { toastError, toastSaved, toastSuccess } from '@/lib/toast';
+import { toastSaved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useWorkflow, useWorkflowMutations } from '@/hooks/use-workflow';
 import { useGraphStore } from '@/components/workflow-editor/graph-store';
 import { Canvas } from '@/components/workflow-editor/canvas';
@@ -75,7 +76,7 @@ export function WorkflowEditorPage() {
       markSaved();
       toastSaved('Workflow');
     } catch (e) {
-      toastError("Couldn't save workflow", { error: e, retry: handleSave });
+      handleMutationError(e, { actionTitle: "Couldn't save workflow", retry: handleSave });
     } finally {
       setSaving(false);
     }
@@ -91,7 +92,7 @@ export function WorkflowEditorPage() {
       toastSuccess('Workflow published');
       refetch();
     } catch (e) {
-      toastError("Couldn't publish workflow", { error: e, retry: handlePublish });
+      handleMutationError(e, { actionTitle: "Couldn't publish workflow", retry: handlePublish });
     } finally {
       setSaving(false);
     }
@@ -103,7 +104,7 @@ export function WorkflowEditorPage() {
       toastSuccess('Workflow unpublished');
       refetch();
     } catch (e) {
-      toastError("Couldn't unpublish workflow", { error: e, retry: doUnpublish });
+      handleMutationError(e, { actionTitle: "Couldn't unpublish workflow", retry: doUnpublish });
     }
   };
 

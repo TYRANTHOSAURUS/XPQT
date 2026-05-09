@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toastCreated, toastError, toastSuccess } from '@/lib/toast';
+import { toastCreated, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -83,7 +84,7 @@ export function WorkflowTemplatesPage() {
       refetch();
       navigate(`/admin/workflow-templates/${created.id}`);
     } catch (e) {
-      toastError("Couldn't create workflow", { error: e, retry: handleCreate });
+      handleMutationError(e, { actionTitle: "Couldn't create workflow", retry: handleCreate });
     }
   };
 
@@ -94,7 +95,7 @@ export function WorkflowTemplatesPage() {
       toastSuccess('Workflow published');
       refetch();
     } catch (e) {
-      toastError("Couldn't publish workflow", { error: e, retry: () => handlePublish(id) });
+      handleMutationError(e, { actionTitle: "Couldn't publish workflow", retry: () => handlePublish(id) });
     } finally {
       setPublishing(null);
     }
@@ -112,7 +113,7 @@ export function WorkflowTemplatesPage() {
       refetch();
       navigate(`/admin/workflow-templates/${newWf.id}`);
     } catch (e) {
-      toastError("Couldn't clone workflow", { error: e, retry: () => handleClone(id) });
+      handleMutationError(e, { actionTitle: "Couldn't clone workflow", retry: () => handleClone(id) });
     }
   };
 

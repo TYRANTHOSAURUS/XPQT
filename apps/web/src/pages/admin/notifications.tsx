@@ -27,7 +27,8 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Plus, Pencil, Mail, Bell } from 'lucide-react';
-import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNotificationTemplates, notificationKeys } from '@/api/notifications';
 import { apiFetch } from '@/lib/api';
@@ -116,7 +117,7 @@ export function NotificationsPage() {
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toastError("Couldn't save notification template", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save notification template", retry: handleSave });
     }
   };
 

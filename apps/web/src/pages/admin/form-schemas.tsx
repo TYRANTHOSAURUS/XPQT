@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, FileText } from 'lucide-react';
-import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -145,7 +145,7 @@ function CreateFormSchemaDialog({ open, onOpenChange }: CreateFormSchemaDialogPr
       onOpenChange(false);
       navigate(`/admin/form-schemas/${entity.id}`);
     } catch (err) {
-      toastError("Couldn't create form schema", { error: err, retry: handleCreate });
+      handleMutationError(err, { actionTitle: "Couldn't create form schema", retry: handleCreate });
     } finally {
       setCreating(false);
     }

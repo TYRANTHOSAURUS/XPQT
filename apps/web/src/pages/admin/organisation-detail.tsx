@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -61,7 +62,7 @@ export function OrganisationDetailPage() {
       setDescription(data.description ?? '');
       setParentId(data.parent_id);
     } catch (err) {
-      toastError("Couldn't load organisation", { error: err, retry: load });
+      handleMutationError(err, { actionTitle: "Couldn't load organisation", retry: load });
     } finally {
       setLoading(false);
     }
@@ -85,7 +86,7 @@ export function OrganisationDetailPage() {
       await load();
       toastSaved('Organisation');
     } catch (err) {
-      toastError("Couldn't save organisation", { error: err, retry: save });
+      handleMutationError(err, { actionTitle: "Couldn't save organisation", retry: save });
     } finally {
       setSaving(false);
     }
@@ -101,6 +102,9 @@ export function OrganisationDetailPage() {
       toastRemoved('Organisation', { verb: 'deleted' });
       navigate('/admin/organisations');
     } catch (err) {
+      // Custom description hint for the FK-violation case (children must be
+      // moved/deleted first); helper layer doesn't accept a description
+      // override, so this stays as toastError.
       toastError("Couldn't delete organisation", {
         error: err,
         description: "Move or delete this organisation's children first.",

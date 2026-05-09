@@ -24,7 +24,8 @@ import {
   TableInspectorLayout, InspectorPanel,
 } from '@/components/ui/table-inspector-layout';
 import { Plus, UserPlus, Users, Search, ArrowUpRight } from 'lucide-react';
-import { toast, toastCreated, toastError } from '@/lib/toast';
+import { toast, toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 import { userStatusDotClass } from '@/lib/status-tone';
 import { useQueryClient } from '@tanstack/react-query';
@@ -182,7 +183,7 @@ export function PersonsPage() {
       refetch();
       toastCreated('Person', { onView: () => selectPerson(created.id) });
     } catch (err) {
-      toastError("Couldn't save person", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't save person" });
     }
   };
 
@@ -219,7 +220,7 @@ export function PersonsPage() {
       });
       refetch();
     } catch (err) {
-      toastError("Couldn't create account", { error: err, retry: () => handleInvite(person) });
+      handleMutationError(err, { actionTitle: "Couldn't create account", retry: () => handleInvite(person) });
     }
   };
 

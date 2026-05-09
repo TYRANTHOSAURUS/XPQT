@@ -24,7 +24,8 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Plus, Pencil } from 'lucide-react';
-import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAssetsFiltered, useAssetTypes, assetKeys } from '@/api/assets';
 import { apiFetch } from '@/lib/api';
@@ -145,7 +146,7 @@ export function AssetsPage() {
         toastCreated('Asset', { onView: () => savedId && navigate(`/admin/assets/${savedId}`) });
       }
     } catch (err) {
-      toastError("Couldn't save asset", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save asset", retry: handleSave });
     }
   };
 
