@@ -1,6 +1,5 @@
-import {
-  BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, assertTenantOwnedAll } from '../../common/tenant-validation';
@@ -136,7 +135,7 @@ export class ReservationService {
       .eq('booking_id', id)
       .order('display_order', { ascending: true })
       .order('created_at', { ascending: true });
-    if (error) throw new BadRequestException(`group_siblings_failed:${error.message}`);
+    if (error) throw AppErrors.validationFailed('group_siblings_failed', { detail: `group_siblings_failed:${error.message}` });
 
     type Row = { id: string; space_id: string; status: string; space?: { name: string | null } | null };
     const rows = (data ?? []) as unknown as Row[];
@@ -171,7 +170,7 @@ export class ReservationService {
       .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle();
-    if (error || !data) throw new NotFoundException('booking_not_found');
+    if (error || !data) throw AppErrors.notFoundWithCode('booking_not_found', 'Booking not found.');
     return slotWithBookingToReservation(data as unknown as SlotWithBookingEmbed);
   }
 
@@ -242,7 +241,7 @@ export class ReservationService {
     }
 
     const { data, error } = await q;
-    if (error) throw new BadRequestException(`list_failed:${error.message}`);
+    if (error) throw AppErrors.validationFailed('list_failed', { detail: `list_failed:${error.message}` });
 
     type SlotRow = SlotWithBookingEmbed & {
       space?: { id: string; name: string; type: string } | null;
@@ -338,7 +337,7 @@ export class ReservationService {
     if (opts.has_bundle) {
       const { data: rpcData, error: ordersErr } = await this.supabase.admin
         .rpc('bookings_with_orders_for_tenant', { p_tenant_id: tenantId });
-      if (ordersErr) throw new BadRequestException(`list_for_operator_orders:${ordersErr.message}`);
+      if (ordersErr) throw AppErrors.validationFailed('list_for_operator_orders', { detail: `list_for_operator_orders:${ordersErr.message}` });
       const ids = ((rpcData ?? []) as Array<string | { bookings_with_orders_for_tenant: string }>)
         .map((row) => (typeof row === 'string' ? row : row?.bookings_with_orders_for_tenant))
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
@@ -349,7 +348,7 @@ export class ReservationService {
     }
 
     const { data, error } = await q;
-    if (error) throw new BadRequestException(`list_for_operator_failed:${error.message}`);
+    if (error) throw AppErrors.validationFailed('list_for_operator_failed', { detail: `list_for_operator_failed:${error.message}` });
 
     type SlotRow = SlotWithBookingEmbed & {
       space?: { id: string; name: string; type: string } | null;
@@ -392,7 +391,7 @@ export class ReservationService {
     const cappedSpaceIds = spaceIds.slice(0, 200);
 
     if (!args.start_at || !args.end_at) {
-      throw new BadRequestException('scheduler_window_requires_range');
+      throw AppErrors.validationFailed('scheduler_window_requires_range', { detail: 'scheduler_window requires a date range.' });
     }
 
     // Range overlap on slot-level effective_*_at (trigger-maintained per
@@ -408,7 +407,7 @@ export class ReservationService {
       .order('start_at', { ascending: true })
       .limit(2000);
 
-    if (error) throw new BadRequestException(`scheduler_window_failed:${error.message}`);
+    if (error) throw AppErrors.validationFailed('scheduler_window_failed', { detail: `scheduler_window_failed:${error.message}` });
     const items = ((data ?? []) as unknown as SlotWithBookingEmbed[]).map(slotWithBookingToReservation);
     return { items };
   }
@@ -434,17 +433,17 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw AppErrors.forbidden('booking_not_editable', 'You cannot edit this booking.');
     if (r.status === 'cancelled') return r;
-    if (r.status === 'completed') throw new BadRequestException('booking_completed');
+    if (r.status === 'completed') throw AppErrors.validationFailed('booking_completed', { detail: 'Booking is completed.' });
 
     // Recurrence-scoped cancel: fan-out cancel for this and following / series.
     if (opts.scope && opts.scope !== 'this') {
       if (!this.recurrence) {
-        throw new BadRequestException('recurrence_unavailable');
+        throw AppErrors.validationFailed('recurrence_unavailable', { detail: 'Recurrence service not configured.' });
       }
       if (!r.recurrence_series_id) {
-        throw new BadRequestException('not_a_recurring_occurrence');
+        throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
       }
       const result = await this.recurrence.cancelForward(id, opts.scope, { reason: opts.reason });
       if (this.notifications) void this.notifications.onCancelled(r, opts.reason);
@@ -475,7 +474,7 @@ export class ReservationService {
       .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw new BadRequestException(`cancel_failed:${slotsErr.message}`);
+    if (slotsErr) throw AppErrors.validationFailed('cancel_failed', { detail: `cancel_failed:${slotsErr.message}` });
 
     // Mirror to booking-level status so /desk/bookings sees the cancel
     // immediately. Best-effort — the source-of-truth for cell rendering
@@ -521,11 +520,11 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw AppErrors.forbidden('booking_not_editable', 'You cannot edit this booking.');
 
-    if (r.status !== 'cancelled') throw new BadRequestException('booking_not_cancelled');
+    if (r.status !== 'cancelled') throw AppErrors.validationFailed('booking_not_cancelled', { detail: 'Booking is not cancelled.' });
     if (!r.cancellation_grace_until || new Date(r.cancellation_grace_until) < new Date()) {
-      throw new BadRequestException('cancellation_grace_expired');
+      throw AppErrors.validationFailed('cancellation_grace_expired', { detail: 'Cancellation grace window has expired.' });
     }
 
     // Re-check conflict on the slot's effective window; need the slot id
@@ -547,7 +546,7 @@ export class ReservationService {
       exclude_ids: slotIdToExclude ? [slotIdToExclude] : [],
     });
     if (conflicts.length > 0) {
-      throw new BadRequestException('booking_slot_taken');
+      throw AppErrors.validationFailed('booking_slot_taken', { detail: 'The slot is already taken.' });
     }
 
     // Re-confirm both layers.
@@ -556,7 +555,7 @@ export class ReservationService {
       .update({ status: 'confirmed', cancellation_grace_until: null })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw new BadRequestException(`restore_failed:${slotsErr.message}`);
+    if (slotsErr) throw AppErrors.validationFailed('restore_failed', { detail: `restore_failed:${slotsErr.message}` });
 
     await this.supabase.admin
       .from('bookings')
@@ -588,7 +587,7 @@ export class ReservationService {
     const tenantId = TenantContext.current().id;
     const r = await this.findOneForActor(id, actor);
     if (!r.recurrence_series_id) {
-      throw new BadRequestException('not_a_recurring_occurrence');
+      throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
     }
 
     const { error: bookingErr } = await this.supabase.admin
@@ -596,14 +595,14 @@ export class ReservationService {
       .update({ status: 'cancelled', recurrence_skipped: true })
       .eq('tenant_id', tenantId)
       .eq('id', id);
-    if (bookingErr) throw new BadRequestException(`skip_failed:${bookingErr.message}`);
+    if (bookingErr) throw AppErrors.validationFailed('skip_failed', { detail: `skip_failed:${bookingErr.message}` });
 
     const { error: slotsErr } = await this.supabase.admin
       .from('booking_slots')
       .update({ status: 'cancelled' })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw new BadRequestException(`skip_failed:${slotsErr.message}`);
+    if (slotsErr) throw AppErrors.validationFailed('skip_failed', { detail: `skip_failed:${slotsErr.message}` });
 
     return this.findByIdOrThrow(id, tenantId);
   }
@@ -633,7 +632,7 @@ export class ReservationService {
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
-    if (!this.visibility.canEdit(r, ctx)) throw new ForbiddenException('booking_not_editable');
+    if (!this.visibility.canEdit(r, ctx)) throw AppErrors.forbidden('booking_not_editable', 'You cannot edit this booking.');
 
     // /full-review v3 closure I2 — preflight ALL validation before any
     // write. Pre-fix: editOne wrote geometry first (via editSlot RPC),
@@ -681,31 +680,27 @@ export class ReservationService {
         !Number.isInteger(patch.attendee_count) ||
         patch.attendee_count < 0
       ) {
-        throw new BadRequestException({
-          code: 'booking.invalid_attendee_count',
-          message: 'attendee_count must be a non-negative integer.',
+        throw AppErrors.validationFailed('booking.invalid_attendee_count', {
+          detail: 'attendee_count must be a non-negative integer.',
         });
       }
     }
     if (patch.attendee_person_ids !== undefined && !Array.isArray(patch.attendee_person_ids)) {
-      throw new BadRequestException({
-        code: 'booking.invalid_attendee_person_ids',
-        message: 'attendee_person_ids must be an array of person ids.',
+      throw AppErrors.validationFailed('booking.invalid_attendee_person_ids', {
+        detail: 'attendee_person_ids must be an array of person ids.',
       });
     }
     if (patch.start_at !== undefined && patch.end_at !== undefined) {
       const s = new Date(patch.start_at).getTime();
       const e = new Date(patch.end_at).getTime();
       if (!Number.isFinite(s) || !Number.isFinite(e)) {
-        throw new BadRequestException({
-          code: 'booking.invalid_window',
-          message: 'start_at and end_at must be ISO timestamps.',
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at and end_at must be ISO timestamps.',
         });
       }
       if (s >= e) {
-        throw new BadRequestException({
-          code: 'booking.invalid_window',
-          message: 'start_at must be strictly before end_at.',
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be strictly before end_at.',
         });
       }
     }
@@ -835,7 +830,7 @@ export class ReservationService {
         .limit(1)
         .maybeSingle();
       if (slotErr || !primarySlotRow) {
-        throw new BadRequestException(`edit_failed:no_primary_slot`);
+        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: `edit_failed:no_primary_slot` });
       }
       const primarySlotId = (primarySlotRow as { id: string }).id;
       // Delegate. editSlot enforces canEdit (we already checked above —
@@ -861,7 +856,7 @@ export class ReservationService {
         .limit(1)
         .maybeSingle();
       if (slotErr || !primarySlotRow) {
-        throw new BadRequestException(`edit_failed:no_primary_slot`);
+        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: `edit_failed:no_primary_slot` });
       }
       const primarySlotId = (primarySlotRow as { id: string }).id;
 
@@ -871,7 +866,7 @@ export class ReservationService {
         .eq('tenant_id', tenantId)
         .eq('id', primarySlotId);
       if (updErr) {
-        throw new BadRequestException(`edit_failed:${updErr.message}`);
+        throw AppErrors.validationFailed('edit_failed', { detail: `edit_failed:${updErr.message}` });
       }
     }
 
@@ -882,7 +877,7 @@ export class ReservationService {
         .update(bookingMetaPatch)
         .eq('tenant_id', tenantId)
         .eq('id', id);
-      if (bErr) throw new BadRequestException(`edit_failed:${bErr.message}`);
+      if (bErr) throw AppErrors.validationFailed('edit_failed', { detail: `edit_failed:${bErr.message}` });
     }
 
     const updated = await this.findByIdOrThrow(id, tenantId);
@@ -975,22 +970,17 @@ export class ReservationService {
       .eq('id', slotId)
       .maybeSingle();
     if (slotErr) {
-      throw new BadRequestException({
-        code: 'booking.slot_update_failed',
-        message: (slotErr as { message?: string }).message ?? 'Slot pre-flight failed.',
+      throw AppErrors.validationFailed('booking.slot_update_failed', {
+        detail: (slotErr as { message?: string }).message ?? 'Slot pre-flight failed.',
       });
     }
     if (!slotRow) {
-      throw new NotFoundException({
-        code: 'booking_slot.not_found',
-        message: 'Slot not found.',
-      });
+      throw AppErrors.notFoundWithCode('booking_slot.not_found', 'Slot not found.');
     }
     const slotBookingId = (slotRow as { booking_id: string }).booking_id;
     if (slotBookingId !== bookingId) {
-      throw new BadRequestException({
-        code: 'booking_slot.url_mismatch',
-        message: 'slotId does not belong to bookingId.',
+      throw AppErrors.validationFailed('booking_slot.url_mismatch', {
+        detail: 'slotId does not belong to bookingId.',
       });
     }
 
@@ -1002,10 +992,7 @@ export class ReservationService {
     const reservation = await this.findByIdOrThrow(bookingId, tenantId);
     this.visibility.assertVisible(reservation, ctx);
     if (!this.visibility.canEdit(reservation, ctx)) {
-      throw new ForbiddenException({
-        code: 'booking.edit_forbidden',
-        message: 'You do not have permission to edit this booking.',
-      });
+      throw AppErrors.forbidden('booking.edit_forbidden', 'You do not have permission to edit this booking.');
     }
 
     // /full-review v3 closure I1 — load TARGET slot's pre-state for the
@@ -1068,9 +1055,8 @@ export class ReservationService {
     if (rpcErr) {
       // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
       if (this.conflict.isExclusionViolation(rpcErr)) {
-        throw new ConflictException({
-          code: 'booking.slot_conflict',
-          message: 'Slot conflicts with another booking.',
+        throw AppErrors.conflict('booking.slot_conflict', {
+          detail: 'Slot conflicts with another booking.',
         });
       }
       // Slot-not-found from inside the RPC (defense in depth — should be
@@ -1079,10 +1065,7 @@ export class ReservationService {
       const errRecord = rpcErr as { message?: string; hint?: string; details?: string };
       const errMsg = errRecord.message ?? '';
       if (errMsg.includes('booking_slot.not_found')) {
-        throw new NotFoundException({
-          code: 'booking_slot.not_found',
-          message: 'Slot not found.',
-        });
+        throw AppErrors.notFoundWithCode('booking_slot.not_found', 'Slot not found.');
       }
       // /full-review v3 closure C1 — cross-tenant / inactive / non-reservable
       // space target. The 00294 RPC raises P0001 with hint
@@ -1099,14 +1082,12 @@ export class ReservationService {
         errMsg.includes('space_invalid') ||
         errDetails.includes('space.invalid_or_cross_tenant')
       ) {
-        throw new BadRequestException({
-          code: 'booking.slot_space_invalid',
-          message: 'Target space is invalid or in a different tenant.',
+        throw AppErrors.validationFailed('booking.slot_space_invalid', {
+          detail: 'Target space is invalid or in a different tenant.',
         });
       }
-      throw new BadRequestException({
-        code: 'booking.slot_update_failed',
-        message: errMsg || 'Slot update failed.',
+      throw AppErrors.validationFailed('booking.slot_update_failed', {
+        detail: errMsg || 'Slot update failed.',
       });
     }
 
@@ -1216,10 +1197,7 @@ export class ReservationService {
       // /full-review v3 closure Nit 7 — dot-namespacing parity with
       // booking_slot.not_found / booking.slot_conflict / booking.partial_failure.
       // The previous underscore form was inconsistent with neighboring codes.
-      throw new NotFoundException({
-        code: 'booking_slot.not_found',
-        message: 'Slot not found.',
-      });
+      throw AppErrors.notFoundWithCode('booking_slot.not_found', 'Slot not found.');
     }
     return slotWithBookingToReservation(data as unknown as SlotWithBookingEmbed);
   }

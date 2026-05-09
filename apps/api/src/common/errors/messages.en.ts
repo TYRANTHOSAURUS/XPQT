@@ -361,6 +361,236 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   client_line_id_not_unique: {
     title: "Couldn't save — duplicate client line id",
   },
+
+  // ─── reservations module (Phase 7.A.2.c.ii) ──────────────────────────────
+  'booking.idempotency_payload_mismatch': {
+    title: "Couldn't save — idempotency mismatch",
+    detail: 'A retry sent a different payload than the original request.',
+  },
+  'booking.fk_invalid': {
+    title: "Couldn't save — invalid reference",
+    detail: 'A referenced item is missing or in a different workspace.',
+  },
+  'booking.internal_ref_invalid': {
+    title: "Couldn't save — internal reference invalid",
+  },
+  'booking.snapshot_uuid_invalid': {
+    title: "Couldn't save — snapshot reference invalid",
+  },
+  'booking.unexpected_error': {
+    title: "Couldn't save the booking",
+    detail: 'Try again. If it keeps happening, contact support with the trace ID.',
+  },
+  'booking.idempotency_key_required': {
+    title: "Couldn't save — missing idempotency key",
+  },
+  'booking.completed_cannot_edit': {
+    title: "Couldn't edit — booking is completed",
+  },
+  'booking.not_editable': {
+    title: "You can't edit this booking",
+  },
+  'booking.not_cancelled': {
+    title: "Couldn't restore — booking isn't cancelled",
+  },
+  'booking.cancellation_grace_expired': {
+    title: "Couldn't restore — grace window expired",
+  },
+  'booking.slot_taken': {
+    title: "Couldn't restore — slot is taken",
+  },
+  'booking.not_a_recurring_occurrence': {
+    title: "Couldn't update — not a recurring occurrence",
+  },
+  'booking.too_early_to_check_in': {
+    title: "It's too early to check in",
+  },
+  'booking.already_ended': {
+    title: 'This booking has already ended',
+  },
+  'booking.already_checked_in': {
+    title: 'Already checked in',
+  },
+  'booking.not_confirmed': {
+    title: "Couldn't check in — booking not confirmed",
+  },
+  'booking.check_in_failed': {
+    title: "Couldn't check in",
+  },
+  'booking.magic_link_invalid': {
+    title: 'That check-in link is invalid',
+  },
+  'booking.magic_link_booking_mismatch': {
+    title: 'That check-in link is for a different booking',
+  },
+  'booking.magic_link_person_mismatch': {
+    title: 'That check-in link is for a different person',
+  },
+  'booking.scheduler_window_requires_range': {
+    title: "Couldn't load — date range required",
+  },
+  'booking.no_primary_slot': {
+    title: "Couldn't edit — no primary slot",
+  },
+  'booking.edit_failed': {
+    title: "Couldn't save the changes",
+  },
+  'booking.list_failed': {
+    title: "Couldn't load the bookings",
+  },
+  'booking.cancel_failed': {
+    title: "Couldn't cancel the booking",
+  },
+  'booking.skip_failed': {
+    title: "Couldn't skip the occurrence",
+  },
+  'booking.restore_failed': {
+    title: "Couldn't restore the booking",
+  },
+  'booking.scheduler_window_failed': {
+    title: "Couldn't load the scheduler window",
+  },
+  'booking.bundle_not_injected': {
+    title: 'Something went wrong on our end',
+    detail: 'Bundle service not configured. Contact support with the trace ID.',
+  },
+  'booking.recurrence_not_injected': {
+    title: 'Something went wrong on our end',
+    detail: 'Recurrence service not configured. Contact support with the trace ID.',
+  },
+  'booking.recurrence_series_not_found': {
+    title: "Couldn't find that recurrence series",
+  },
+  'booking.master_not_found': {
+    title: "Couldn't find the master booking",
+  },
+  'booking.recurrence_failed': {
+    title: "Couldn't update the recurrence",
+  },
+  'reservation.projection_no_parent': {
+    title: 'Something went wrong on our end',
+    detail: 'A booking row was returned without its parent. Contact support with the trace ID.',
+  },
+  'auth.missing_user': {
+    title: 'Sign in to continue',
+  },
+  'magic_check_in.secret_missing': {
+    title: 'Something went wrong on our end',
+    detail: 'Magic check-in is misconfigured.',
+  },
+  // legacy snake_case codes (already asserted in specs)
+  book_on_behalf_forbidden: {
+    title: "You can't book on behalf of another person",
+  },
+  multi_room_booking_failed: {
+    title: "Couldn't book the rooms",
+  },
+  multi_room_requires_two: {
+    title: "Couldn't book — at least two rooms required",
+  },
+  multi_room_too_many: {
+    title: "Couldn't book — too many rooms",
+    detail: 'Multi-room bookings are limited to 10 spaces.',
+  },
+  multi_room_create_failed: {
+    title: "Couldn't book the rooms",
+  },
+  multi_room_read_failed: {
+    title: "Couldn't load the booking",
+  },
+  rule_deny: {
+    title: "Couldn't book — a rule blocked it",
+  },
+  reservation_not_visible: {
+    title: "You don't have access to this booking",
+  },
+  reservation_operator_required: {
+    title: "You need operator access for this view",
+  },
+  booking_not_found: {
+    title: "We can't find that booking",
+  },
+  booking_not_editable: {
+    title: "You can't edit this booking",
+  },
+  booking_completed: {
+    title: 'That booking is completed',
+  },
+  not_a_recurring_occurrence: {
+    title: "Couldn't update — not a recurring occurrence",
+  },
+  booking_slot_taken: {
+    title: "Couldn't restore — slot is taken",
+  },
+  booking_already_ended: {
+    title: 'This booking has already ended',
+  },
+  booking_too_early_to_check_in: {
+    title: "It's too early to check in",
+  },
+  booking_already_checked_in: {
+    title: 'Already checked in',
+  },
+  booking_not_confirmed: {
+    title: "Couldn't check in — booking not confirmed",
+  },
+  check_in_failed: {
+    title: "Couldn't check in",
+  },
+  magic_link_invalid: {
+    title: 'That check-in link is invalid',
+  },
+  magic_link_booking_mismatch: {
+    title: 'That check-in link is for a different booking',
+  },
+  magic_link_person_mismatch: {
+    title: 'That check-in link is for a different person',
+  },
+  cancellation_grace_expired: {
+    title: "Couldn't restore — grace window expired",
+  },
+  booking_not_cancelled: {
+    title: "Couldn't restore — booking isn't cancelled",
+  },
+  scheduler_window_requires_range: {
+    title: "Couldn't load — date range required",
+  },
+  cancel_failed: {
+    title: "Couldn't cancel the booking",
+  },
+  list_failed: {
+    title: "Couldn't load the bookings",
+  },
+  restore_failed: {
+    title: "Couldn't restore the booking",
+  },
+  skip_failed: {
+    title: "Couldn't skip the occurrence",
+  },
+  edit_failed: {
+    title: "Couldn't save the changes",
+  },
+  group_siblings_failed: {
+    title: "Couldn't load the group siblings",
+  },
+  list_for_operator_failed: {
+    title: "Couldn't load the bookings",
+  },
+  list_for_operator_orders: {
+    title: "Couldn't load related orders",
+  },
+  load_spaces_failed: {
+    title: "Couldn't load the spaces",
+  },
+  scheduler_window_failed: {
+    title: "Couldn't load the scheduler window",
+  },
+  reservation_not_editable: {
+    title: "You can't edit this booking",
+  },
+  missing_user: {
+    title: 'Sign in to continue',
+  },
   'vendor.unavailable': {
     title: 'Vendor unavailable',
   },

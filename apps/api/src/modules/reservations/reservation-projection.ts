@@ -34,6 +34,7 @@
 //   - booking_bundle_id        ← booking.id (under canonicalisation, the booking IS the bundle)
 
 import type { Booking, BookingSlot, Reservation, ReservationSource } from './dto/types';
+import { AppErrors } from '../../common/errors';
 
 /**
  * The PostgREST embed shape returned when querying booking_slots with a join.
@@ -57,9 +58,9 @@ export function slotWithBookingToReservation(
 ): Reservation {
   const booking = Array.isArray(row.bookings) ? row.bookings[0] : row.bookings;
   if (!booking) {
-    throw new Error(
-      `slotWithBookingToReservation: slot ${row.id} has no parent booking — corrupted join`,
-    );
+    throw AppErrors.server('reservation.projection_no_parent', {
+      detail: `slotWithBookingToReservation: slot ${row.id} has no parent booking — corrupted join`,
+    });
   }
   return slotAndBookingToReservation(row, booking);
 }

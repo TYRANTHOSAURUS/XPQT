@@ -1,10 +1,5 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  InternalServerErrorException,
-  Logger,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Phase 1.3 — Bug #1: Atomic Booking + Service via RPC + Boundary.
@@ -113,12 +108,8 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
             (compErr as Error).message
           }; original error: ${(originalErr as Error).message}`,
         );
-        throw new InternalServerErrorException({
-          code: 'booking.compensation_failed',
-          message: 'Service attach failed; rollback failed; booking may persist.',
-          booking_id: bookingId,
-          original_error: (originalErr as Error).message,
-          compensation_error: (compErr as Error).message,
+        throw AppErrors.server('booking.compensation_failed', {
+          detail: `Service attach failed; rollback failed; booking ${bookingId} may persist. original=${(originalErr as Error).message}; compensation=${(compErr as Error).message}`,
         });
       }
 
@@ -145,14 +136,8 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
           ',',
         )}; original error: ${(originalErr as Error).message}`,
       );
-      throw new BadRequestException({
-        code: 'booking.partial_failure',
-        message:
-          'Service attach failed; booking could not be fully rolled back. ' +
-          'Manual recovery required.',
-        booking_id: outcome.bookingId,
-        blocked_by: outcome.blockedBy,
-        original_error: (originalErr as Error).message,
+      throw AppErrors.validationFailed('booking.partial_failure', {
+        detail: `Service attach failed; booking ${outcome.bookingId} could not be fully rolled back (blocked_by=${outcome.blockedBy.join(',')}). Manual recovery required. original=${(originalErr as Error).message}`,
       });
     }
   }

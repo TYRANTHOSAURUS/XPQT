@@ -1,7 +1,5 @@
-import {
-  BadRequestException, ConflictException, ForbiddenException, Inject, Injectable,
-  InternalServerErrorException, Logger, NotFoundException, Optional,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -173,18 +171,10 @@ export class BookingFlowService {
     if (ruleOutcome.final === 'deny') {
       const canOverride = actor.has_override_rules && ruleOutcome.overridable;
       if (!canOverride) {
-        throw new ForbiddenException({
-          code: 'rule_deny',
-          message: ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.',
-          denial_messages: ruleOutcome.denialMessages,
-          matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
-        });
+        throw AppErrors.forbidden('rule_deny', ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.');
       }
       if (!actor.override_reason) {
-        throw new BadRequestException({
-          code: 'override_reason_required',
-          message: 'Service-desk override requires a reason.',
-        });
+        throw AppErrors.validationFailed('override_reason_required', { detail: 'Service-desk override requires a reason.' });
       }
       this.log.warn(`Override applied by user=${actor.user_id} reason="${actor.override_reason}" rules=${
         ruleOutcome.matchedRules.map((r) => r.id).join(',')}`);
@@ -315,15 +305,12 @@ export class BookingFlowService {
             this.log.warn(`alternatives lookup failed: ${(e as Error).message}`);
           }
         }
-        throw new ConflictException({
-          code: 'reservation_slot_conflict',
-          message: 'Just booked — pick another slot.',
-          conflicts: conflicts.map((c) => ({ id: c.id, start_at: c.start_at, end_at: c.end_at })),
-          alternatives,
+        throw AppErrors.conflict('reservation_slot_conflict', {
+          detail: `Just booked — pick another slot. Conflicts=${conflicts.map((c) => c.id).join(',')}; alternatives=${alternatives.map((a) => a.space_id).join(',') || 'none'}`,
         });
       }
       this.log.error(`create_booking RPC failed: ${rpcError.message}`);
-      throw new BadRequestException({ code: 'insert_failed', message: rpcError.message });
+      throw AppErrors.validationFailed('insert_failed', { detail: rpcError.message });
     }
 
     // RPC returns `setof (booking_id uuid, slot_ids uuid[])` — supabase-js
@@ -332,10 +319,7 @@ export class BookingFlowService {
       | { booking_id: string; slot_ids: string[] }
       | undefined;
     if (!rpcRow?.booking_id) {
-      throw new BadRequestException({
-        code: 'insert_failed',
-        message: 'create_booking RPC returned no booking_id',
-      });
+      throw AppErrors.validationFailed('insert_failed', { detail: 'create_booking RPC returned no booking_id' });
     }
     const bookingId = rpcRow.booking_id;
     const slotIds = rpcRow.slot_ids ?? [];
@@ -352,10 +336,7 @@ export class BookingFlowService {
       .maybeSingle();
     if (readErr || !bookingRow) {
       this.log.error(`booking re-read failed: ${readErr?.message ?? 'no row'}`);
-      throw new BadRequestException({
-        code: 'insert_failed',
-        message: readErr?.message ?? 'Booking re-read returned no row',
-      });
+      throw AppErrors.validationFailed('insert_failed', { detail: readErr?.message ?? 'Booking re-read returned no row' });
     }
     const booking = bookingRow as unknown as Booking;
 
@@ -477,10 +458,9 @@ export class BookingFlowService {
     tenantId: string,
   ): Promise<Reservation> {
     if (!this.bundle) {
-      throw new Error(
-        'BundleService not injected — booking-flow cannot build attach plan. ' +
-          'Wire BookingBundlesModule into ReservationsModule.imports.',
-      );
+      throw AppErrors.server('booking.bundle_not_injected', {
+        detail: 'BundleService not injected — booking-flow cannot build attach plan.',
+      });
     }
 
     // Idempotency key — spec §3.3 producer-wiring table. Falls back to a
@@ -532,9 +512,8 @@ export class BookingFlowService {
         }
       | null;
     if (!result?.booking_id) {
-      throw new InternalServerErrorException({
-        code: 'booking.unexpected_error',
-        message: 'create_booking_with_attach_plan returned no booking_id',
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: 'create_booking_with_attach_plan returned no booking_id',
       });
     }
 
@@ -549,9 +528,8 @@ export class BookingFlowService {
       .maybeSingle();
     if (readErr || !bookingRow) {
       this.log.error(`booking re-read failed after combined RPC: ${readErr?.message ?? 'no row'}`);
-      throw new InternalServerErrorException({
-        code: 'booking.unexpected_error',
-        message: readErr?.message ?? 'Booking re-read returned no row',
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: readErr?.message ?? 'Booking re-read returned no row',
       });
     }
     const booking = bookingRow as unknown as Booking;
@@ -689,11 +667,8 @@ export class BookingFlowService {
           this.log.warn(`alternatives lookup failed: ${(e as Error).message}`);
         }
       }
-      return new ConflictException({
-        code: 'booking.slot_conflict',
-        message: 'Just booked — pick another slot.',
-        conflicts: conflicts.map((c) => ({ id: c.id, start_at: c.start_at, end_at: c.end_at })),
-        alternatives,
+      return AppErrors.conflict('booking.slot_conflict', {
+        detail: `Just booked — pick another slot. Conflicts=${conflicts.map((c) => c.id).join(',')}; alternatives=${alternatives.map((a) => a.space_id).join(',') || 'none'}`,
       });
     }
 
@@ -701,9 +676,8 @@ export class BookingFlowService {
     // caller's plan changed between retries; the RPC refuses to silently
     // serve a stale cached_result).
     if (message.includes('attach_operations.payload_mismatch')) {
-      return new ConflictException({
-        code: 'booking.idempotency_payload_mismatch',
-        message:
+      return AppErrors.conflict('booking.idempotency_payload_mismatch', {
+        detail:
           'A retry of this booking attempt arrived with different content. ' +
           'Re-submit with a fresh request id, or refresh and try again.',
       });
@@ -712,9 +686,8 @@ export class BookingFlowService {
     // Tenant-FK validation — `attach_plan.fk_invalid: <field>` raised by
     // `validate_attach_plan_tenant_fks` (00303). Spec §8.1.
     if (message.includes('attach_plan.fk_invalid')) {
-      return new BadRequestException({
-        code: 'booking.fk_invalid',
-        message: this.extractRaiseMessage(message),
+      return AppErrors.validationFailed('booking.fk_invalid', {
+        detail: this.extractRaiseMessage(message),
       });
     }
 
@@ -722,18 +695,16 @@ export class BookingFlowService {
     // approvals.reasons[].rule_id all raise with errcode 42501 from
     // `validate_attach_plan_internal_refs` (00304). Spec §8.2.
     if (message.includes('attach_plan.internal_refs') && code === '42501') {
-      return new BadRequestException({
-        code: 'booking.snapshot_uuid_invalid',
-        message: this.extractRaiseMessage(message),
+      return AppErrors.validationFailed('booking.snapshot_uuid_invalid', {
+        detail: this.extractRaiseMessage(message),
       });
     }
 
     // Internal cross-reference validation — order_line_items[].order_id
     // not in plan.orders[], etc. Spec §8.2.
     if (message.includes('attach_plan.internal_refs')) {
-      return new BadRequestException({
-        code: 'booking.internal_ref_invalid',
-        message: this.extractRaiseMessage(message),
+      return AppErrors.validationFailed('booking.internal_ref_invalid', {
+        detail: this.extractRaiseMessage(message),
       });
     }
 
@@ -742,9 +713,8 @@ export class BookingFlowService {
     // 00309 migration uses P0001 which is what plpgsql RAISE defaults
     // to). String-match defensively.
     if (message.includes('service_rule_deny')) {
-      return new BadRequestException({
-        code: 'service_rule_deny',
-        message: this.extractRaiseMessage(message),
+      return AppErrors.validationFailed('service_rule_deny', {
+        detail: this.extractRaiseMessage(message),
       });
     }
 
@@ -752,9 +722,8 @@ export class BookingFlowService {
     this.log.error(
       `create_booking_with_attach_plan unexpected error: code=${code} message=${message}`,
     );
-    return new InternalServerErrorException({
-      code: 'booking.unexpected_error',
-      message: message || 'Unexpected error during booking creation.',
+    return AppErrors.server('booking.unexpected_error', {
+      detail: message || 'Unexpected error during booking creation.',
     });
   }
 
@@ -803,9 +772,8 @@ export class BookingFlowService {
     idempotencyKey: string,
   ): Promise<{ bookingInput: BookingInput; attachPlan: AttachPlan }> {
     if (!idempotencyKey || idempotencyKey.length === 0) {
-      throw new BadRequestException({
-        code: 'idempotency_key_required',
-        message: 'buildAttachPlan: idempotencyKey required.',
+      throw AppErrors.validationFailed('booking.idempotency_key_required', {
+        detail: 'buildAttachPlan: idempotencyKey required.',
       });
     }
     this.assertValid(input);
@@ -838,18 +806,10 @@ export class BookingFlowService {
     if (ruleOutcome.final === 'deny') {
       const canOverride = actor.has_override_rules && ruleOutcome.overridable;
       if (!canOverride) {
-        throw new ForbiddenException({
-          code: 'rule_deny',
-          message: ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.',
-          denial_messages: ruleOutcome.denialMessages,
-          matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
-        });
+        throw AppErrors.forbidden('rule_deny', ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.');
       }
       if (!actor.override_reason) {
-        throw new BadRequestException({
-          code: 'override_reason_required',
-          message: 'Service-desk override requires a reason.',
-        });
+        throw AppErrors.validationFailed('override_reason_required', { detail: 'Service-desk override requires a reason.' });
       }
     }
 
@@ -946,10 +906,9 @@ export class BookingFlowService {
     let attachPlan: AttachPlan;
     if (input.services && input.services.length > 0) {
       if (!this.bundle) {
-        throw new Error(
-          'BundleService not injected — booking-flow cannot build attach plan. ' +
-            'Wire BookingBundlesModule into ReservationsModule.imports.',
-        );
+        throw AppErrors.server('booking.bundle_not_injected', {
+          detail: 'BundleService not injected — booking-flow cannot build attach plan.',
+        });
       }
       attachPlan = await this.bundle.buildAttachPlan({
         booking_id: bookingId,
@@ -1089,16 +1048,10 @@ export class BookingFlowService {
   ): Promise<{ scope: RecurrenceScope; new_series_id?: string; updated: number }> {
     if (scope === 'this') {
       // Caller should use ReservationService.editOne; we don't duplicate it here.
-      throw new BadRequestException({
-        code: 'wrong_endpoint',
-        message: "Use the regular edit endpoint for scope='this'.",
-      });
+      throw AppErrors.validationFailed('wrong_endpoint', { detail: "Use the regular edit endpoint for scope='this'." });
     }
     if (!this.recurrence) {
-      throw new BadRequestException({
-        code: 'recurrence_unavailable',
-        message: 'Recurrence service not configured.',
-      });
+      throw AppErrors.validationFailed('recurrence_unavailable', { detail: 'Recurrence service not configured.' });
     }
 
     const tenantId = TenantContext.current().id;
@@ -1130,7 +1083,7 @@ export class BookingFlowService {
           .eq('tenant_id', tenantId)
           .eq('recurrence_series_id', newSeriesId)
           .select('id');
-        if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
+        if (error) throw AppErrors.validationFailed('edit_scope_failed', { detail: error.message });
         updated = (data ?? []).length;
       }
       if (Object.keys(slotPatch).length > 0) {
@@ -1140,7 +1093,7 @@ export class BookingFlowService {
           .select('id')
           .eq('tenant_id', tenantId)
           .eq('recurrence_series_id', newSeriesId);
-        if (bErr) throw new BadRequestException({ code: 'edit_scope_failed', message: bErr.message });
+        if (bErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: bErr.message });
         const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
         if (bookingIds.length > 0) {
           const { data: slotsRows, error: sErr } = await this.supabase.admin
@@ -1149,7 +1102,7 @@ export class BookingFlowService {
             .eq('tenant_id', tenantId)
             .in('booking_id', bookingIds)
             .select('id');
-          if (sErr) throw new BadRequestException({ code: 'edit_scope_failed', message: sErr.message });
+          if (sErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: sErr.message });
           updated = Math.max(updated, (slotsRows ?? []).length);
         }
       }
@@ -1166,7 +1119,7 @@ export class BookingFlowService {
       .maybeSingle();
     const seriesId = (pivot as { recurrence_series_id?: string } | null)?.recurrence_series_id;
     if (!seriesId) {
-      throw new BadRequestException({ code: 'not_recurring', message: 'Not part of a series.' });
+      throw AppErrors.validationFailed('not_recurring', { detail: 'Not part of a series.' });
     }
     if (Object.keys(bookingPatch).length === 0 && Object.keys(slotPatch).length === 0) {
       return { scope, updated: 0 };
@@ -1180,7 +1133,7 @@ export class BookingFlowService {
         .eq('tenant_id', tenantId)
         .eq('recurrence_series_id', seriesId)
         .select('id');
-      if (error) throw new BadRequestException({ code: 'edit_scope_failed', message: error.message });
+      if (error) throw AppErrors.validationFailed('edit_scope_failed', { detail: error.message });
       updated = (data ?? []).length;
     }
     if (Object.keys(slotPatch).length > 0) {
@@ -1189,7 +1142,7 @@ export class BookingFlowService {
         .select('id')
         .eq('tenant_id', tenantId)
         .eq('recurrence_series_id', seriesId);
-      if (bErr) throw new BadRequestException({ code: 'edit_scope_failed', message: bErr.message });
+      if (bErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: bErr.message });
       const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
       if (bookingIds.length > 0) {
         const { data: slotsRows, error: sErr } = await this.supabase.admin
@@ -1198,7 +1151,7 @@ export class BookingFlowService {
           .eq('tenant_id', tenantId)
           .in('booking_id', bookingIds)
           .select('id');
-        if (sErr) throw new BadRequestException({ code: 'edit_scope_failed', message: sErr.message });
+        if (sErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: sErr.message });
         updated = Math.max(updated, (slotsRows ?? []).length);
       }
     }
@@ -1248,15 +1201,15 @@ export class BookingFlowService {
 
   private assertValid(input: CreateReservationInput): void {
     if (!input.space_id || !input.requester_person_id) {
-      throw new BadRequestException({ code: 'invalid_input', message: 'space_id and requester_person_id required' });
+      throw AppErrors.validationFailed('invalid_input', { detail: 'space_id and requester_person_id required' });
     }
     const start = new Date(input.start_at).getTime();
     const end = new Date(input.end_at).getTime();
     if (!Number.isFinite(start) || !Number.isFinite(end)) {
-      throw new BadRequestException({ code: 'invalid_input', message: 'invalid dates' });
+      throw AppErrors.validationFailed('invalid_input', { detail: 'invalid dates' });
     }
     if (end <= start) {
-      throw new BadRequestException({ code: 'invalid_input', message: 'end_at must be after start_at' });
+      throw AppErrors.validationFailed('invalid_input', { detail: 'end_at must be after start_at' });
     }
   }
 
@@ -1278,10 +1231,10 @@ export class BookingFlowService {
       .eq('tenant_id', tenantId)
       .eq('id', spaceId)
       .maybeSingle();
-    if (error || !data) throw new NotFoundException({ code: 'space_not_found' });
-    if (!(data as { active: boolean }).active) throw new BadRequestException({ code: 'space_inactive' });
+    if (error || !data) throw AppErrors.notFoundWithCode('space_not_found', 'Space not found.');
+    if (!(data as { active: boolean }).active) throw AppErrors.validationFailed('space_inactive');
     if (!(data as { reservable: boolean }).reservable) {
-      throw new BadRequestException({ code: 'space_not_reservable' });
+      throw AppErrors.validationFailed('space_not_reservable');
     }
     return data as never;
   }

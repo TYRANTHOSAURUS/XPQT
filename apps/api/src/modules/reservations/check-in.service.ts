@@ -1,6 +1,5 @@
-import {
-  Injectable, Logger, NotFoundException, BadRequestException, Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -63,7 +62,7 @@ export class CheckInService {
       .maybeSingle();
 
     if (slotErr || !slotData) {
-      throw new NotFoundException('booking_not_found');
+      throw AppErrors.notFoundWithCode('booking_not_found', 'Booking not found.');
     }
 
     const slot = slotData as {
@@ -72,19 +71,17 @@ export class CheckInService {
     };
 
     if (slot.status !== 'confirmed') {
-      throw new BadRequestException(
-        slot.status === 'checked_in'
-          ? 'booking_already_checked_in'
-          : `booking_not_confirmed:${slot.status}`,
-      );
+      throw slot.status === 'checked_in'
+        ? AppErrors.validationFailed('booking_already_checked_in', { detail: 'Already checked in.' })
+        : AppErrors.validationFailed('booking_not_confirmed', { detail: `booking_not_confirmed:${slot.status}` });
     }
 
     const now = new Date();
     const start = new Date(slot.start_at);
     const end = new Date(slot.end_at);
     const earliestCheckIn = new Date(start.getTime() - 15 * 60 * 1000);
-    if (now < earliestCheckIn) throw new BadRequestException('booking_too_early_to_check_in');
-    if (now > end) throw new BadRequestException('booking_already_ended');
+    if (now < earliestCheckIn) throw AppErrors.validationFailed('booking_too_early_to_check_in', { detail: 'It is too early to check in.' });
+    if (now > end) throw AppErrors.validationFailed('booking_already_ended', { detail: 'This booking has already ended.' });
 
     const checkedInAt = now.toISOString();
     const updated = await this.supabase.admin
@@ -97,7 +94,7 @@ export class CheckInService {
 
     if (updated.error) {
       this.log.error(`checkIn failed: ${updated.error.message}`);
-      throw new BadRequestException('check_in_failed');
+      throw AppErrors.validationFailed('check_in_failed', { detail: 'Check-in failed.' });
     }
 
     // Mirror to booking-level status so list endpoints reflect the change.
@@ -260,10 +257,10 @@ export class CheckInService {
     const { verifyMagicCheckInToken } = await import('./magic-check-in.token');
     const verified = verifyMagicCheckInToken(token);
     if (!verified.ok) {
-      throw new BadRequestException(`magic_link_${verified.reason}`);
+      throw AppErrors.validationFailed('magic_link_invalid', { detail: `magic_link_${verified.reason}` });
     }
     if (verified.payload.reservationId !== bookingId) {
-      throw new BadRequestException('magic_link_booking_mismatch');
+      throw AppErrors.validationFailed('magic_link_booking_mismatch', { detail: 'Magic check-in link is for a different booking.' });
     }
 
     // Look up the booking + primary slot to verify the requester binding.
@@ -275,13 +272,13 @@ export class CheckInService {
       .maybeSingle();
 
     if (error || !data) {
-      throw new NotFoundException('booking_not_found');
+      throw AppErrors.notFoundWithCode('booking_not_found', 'Booking not found.');
     }
     const b = data as {
       id: string; tenant_id: string; status: string; requester_person_id: string;
     };
     if (b.requester_person_id !== verified.payload.requesterPersonId) {
-      throw new BadRequestException('magic_link_person_mismatch');
+      throw AppErrors.validationFailed('magic_link_person_mismatch', { detail: 'Magic check-in link is for a different person.' });
     }
     return this.checkIn(b.id, b.tenant_id);
   }

@@ -1,5 +1,6 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Three-tier visibility for reservations (mirrors the ticket pattern but
@@ -109,7 +110,7 @@ export class ReservationVisibilityService {
     booked_by_user_id: string | null;
   }, ctx: ReservationVisibilityContext): void {
     if (this.canSee(reservation, ctx)) return;
-    throw new ForbiddenException('reservation_not_visible');
+    throw AppErrors.forbidden('reservation_not_visible');
   }
 
   canSee(reservation: {
@@ -143,7 +144,7 @@ export class ReservationVisibilityService {
    */
   assertOperatorOrAdmin(ctx: ReservationVisibilityContext): void {
     if (ctx.has_admin || ctx.has_read_all) return;
-    throw new ForbiddenException('reservation_operator_required');
+    throw AppErrors.forbidden('reservation_operator_required');
   }
 
   /**

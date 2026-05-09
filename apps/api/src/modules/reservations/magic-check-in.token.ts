@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Magic-link check-in token.
@@ -29,9 +30,9 @@ function secret(): string {
     return s && s.length > 0 ? s : 'test-magic-secret-32-chars-padding-padding';
   }
   if (s && s.length >= 32) return s;
-  throw new Error(
-    `${SECRET_ENV} env var must be set (>=32 chars). Magic check-in tokens cannot be issued or verified safely without it — failing closed.`,
-  );
+  throw AppErrors.server('magic_check_in.secret_missing', {
+    detail: `${SECRET_ENV} env var must be set (>=32 chars). Magic check-in tokens cannot be issued or verified safely without it — failing closed.`,
+  });
 }
 
 function sign(payload: string): string {

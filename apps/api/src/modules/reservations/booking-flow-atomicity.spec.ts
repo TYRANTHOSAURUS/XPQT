@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, InternalServerErrorException } from '@nestjs/common';
+import { AppError } from "../../common/errors";
 import { BookingFlowService } from './booking-flow.service';
 import { InProcessBookingTransactionBoundary } from './booking-transaction-boundary';
 import { TenantContext } from '../../common/tenant-context';
@@ -424,7 +424,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
 
   // ─── Error mapping ──────────────────────────────────────────────────
 
-  it('maps attach_operations.payload_mismatch to ConflictException', async () => {
+  it('maps attach_operations.payload_mismatch to AppError', async () => {
     const rpcStub: RpcStub = (fn) => {
       if (fn === 'create_booking_with_attach_plan') {
         return Promise.resolve({
@@ -457,13 +457,13 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(ConflictException);
-    expect((caught as ConflictException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.idempotency_payload_mismatch',
     });
   });
 
-  it('maps attach_plan.fk_invalid to BadRequestException(booking.fk_invalid)', async () => {
+  it('maps attach_plan.fk_invalid to AppError(booking.fk_invalid)', async () => {
     const rpcStub: RpcStub = (fn) => {
       if (fn === 'create_booking_with_attach_plan') {
         return Promise.resolve({
@@ -496,8 +496,8 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.fk_invalid',
     });
   });
@@ -535,8 +535,8 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.internal_ref_invalid',
     });
   });
@@ -575,13 +575,13 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.snapshot_uuid_invalid',
     });
   });
 
-  it('maps service_rule_deny to BadRequestException(service_rule_deny)', async () => {
+  it('maps service_rule_deny to AppError(service_rule_deny)', async () => {
     const rpcStub: RpcStub = (fn) => {
       if (fn === 'create_booking_with_attach_plan') {
         return Promise.resolve({
@@ -614,14 +614,14 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'service_rule_deny',
       message: 'This catering vendor is not bookable on weekends.',
     });
   });
 
-  it('maps GiST exclusion (23P01) to ConflictException(booking.slot_conflict)', async () => {
+  it('maps GiST exclusion (23P01) to AppError(booking.slot_conflict)', async () => {
     const rpcStub: RpcStub = (fn) => {
       if (fn === 'create_booking_with_attach_plan') {
         return Promise.resolve({
@@ -659,13 +659,13 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(ConflictException);
-    expect((caught as ConflictException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.slot_conflict',
     });
   });
 
-  it('maps an unrecognised error to InternalServerErrorException(booking.unexpected_error)', async () => {
+  it('maps an unrecognised error to AppError(booking.unexpected_error)', async () => {
     const rpcStub: RpcStub = (fn) => {
       if (fn === 'create_booking_with_attach_plan') {
         return Promise.resolve({
@@ -695,8 +695,8 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(InternalServerErrorException);
-    expect((caught as InternalServerErrorException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.unexpected_error',
     });
   });

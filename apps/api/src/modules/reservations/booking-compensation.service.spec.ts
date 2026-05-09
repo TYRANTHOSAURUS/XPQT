@@ -1,4 +1,4 @@
-import { InternalServerErrorException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { BookingCompensationService } from './booking-compensation.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -81,14 +81,14 @@ describe('BookingCompensationService', () => {
 
     // /full-review v3 fix — the compensation RPC failing is server-class
     // (booking persists in unknown state, user can't fix via input changes)
-    // per CLAUDE.md error-handling spec §3.3. Was BadRequestException (400);
-    // now InternalServerErrorException (500). Code unchanged.
-    expect(caught).toBeInstanceOf(InternalServerErrorException);
-    expect((caught as InternalServerErrorException).getResponse()).toMatchObject({
-      code: 'booking.compensation_failed',
-      booking_id: BOOKING_ID,
-      rpc_error: 'connection lost',
-    });
+    // per CLAUDE.md error-handling spec §3.3. Phase 7.A.2.c.ii: AppError
+    // replaces InternalServerErrorException; structured booking_id +
+    // rpc_error fields are now folded into `detail` (the wire shape only
+    // carries detail / fields[]).
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({ code: 'booking.compensation_failed', status: 500 });
+    expect((caught as AppError).detail).toContain(BOOKING_ID);
+    expect((caught as AppError).detail).toContain('connection lost');
   });
 
   it('surfaces a malformed RPC payload as InternalServerErrorException(booking.compensation_failed)', async () => {
@@ -108,10 +108,8 @@ describe('BookingCompensationService', () => {
     // /full-review v3 fix — same severity promotion as the connection-lost
     // path above. Malformed payload from the compensation RPC is server-
     // class data corruption.
-    expect(caught).toBeInstanceOf(InternalServerErrorException);
-    expect((caught as InternalServerErrorException).getResponse()).toMatchObject({
-      code: 'booking.compensation_failed',
-      booking_id: BOOKING_ID,
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({ code: 'booking.compensation_failed', status: 500 });
+    expect((caught as AppError).detail).toContain(BOOKING_ID);
   });
 });

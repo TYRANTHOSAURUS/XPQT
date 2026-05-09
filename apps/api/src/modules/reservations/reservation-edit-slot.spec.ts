@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { ReservationService } from './reservation.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext } from './dto/types';
@@ -311,8 +311,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(NotFoundException);
-    expect((caught as NotFoundException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking_slot.not_found',
     });
     // RPC is never called when the pre-flight finds nothing — saves a
@@ -341,8 +341,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(ConflictException);
-    expect((caught as ConflictException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.slot_conflict',
     });
   });
@@ -365,8 +365,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking_slot.url_mismatch',
     });
     expect(supabase.calls.rpc).toHaveLength(0);
@@ -415,8 +415,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.slot_space_invalid',
     });
   });
@@ -451,8 +451,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.slot_space_invalid',
     });
   });
@@ -505,8 +505,8 @@ describe('ReservationService.editSlot', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(ForbiddenException);
-    expect((caught as ForbiddenException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.edit_forbidden',
     });
     expect(supabase.calls.rpc).toHaveLength(0);
@@ -845,8 +845,8 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.invalid_attendee_count',
     });
 
@@ -880,8 +880,8 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
       code: 'booking.invalid_window',
     });
     expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);

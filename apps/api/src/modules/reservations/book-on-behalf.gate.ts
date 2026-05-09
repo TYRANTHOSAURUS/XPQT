@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { ActorContext } from './dto/types';
 
 /**
@@ -27,10 +27,7 @@ export function resolveRequesterForActor(
     return actor.person_id ?? '';
   }
   if (!actor.is_service_desk) {
-    throw new ForbiddenException({
-      code: 'book_on_behalf_forbidden',
-      message: 'You do not have permission to book on behalf of another person.',
-    });
+    throw AppErrors.forbidden('book_on_behalf_forbidden', 'You do not have permission to book on behalf of another person.');
   }
   return requested;
 }

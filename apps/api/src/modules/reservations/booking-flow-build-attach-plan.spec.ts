@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { BookingFlowService } from './booking-flow.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext, CreateReservationInput } from './dto/types';
@@ -249,7 +249,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
     });
   });
 
-  it('honours rule deny: throws ForbiddenException when actor cannot override', async () => {
+  it('honours rule deny: throws AppError when actor cannot override', async () => {
     const svc = new BookingFlowService(
       makeSupabase() as never,
       makeConflict() as never,
@@ -257,7 +257,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
     );
     await TenantContext.run(TENANT, async () => {
       await expect(svc.buildAttachPlan(baseInput(), makeActor(), 'idem-1')).rejects.toThrow(
-        ForbiddenException,
+        AppError,
       );
     });
   });
@@ -276,7 +276,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
           makeActor({ has_override_rules: true }),
           'idem-1',
         ),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(AppError);
     });
   });
 
@@ -347,7 +347,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
           makeActor(),
           'idem-1',
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
   });
 });

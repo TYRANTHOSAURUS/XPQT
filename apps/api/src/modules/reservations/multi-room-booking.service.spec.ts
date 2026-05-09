@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { InProcessBookingTransactionBoundary } from './booking-transaction-boundary';
 import { TenantContext } from '../../common/tenant-context';
@@ -315,12 +315,7 @@ describe('MultiRoomBookingService.createGroup', () => {
           makeActor(),
         ),
       ),
-    ).rejects.toMatchObject({
-      response: {
-        code: 'multi_room_booking_failed',
-        failed_space_ids: ['S1', 'S2', 'S3'],
-      },
-    });
+    ).rejects.toMatchObject({ code: 'multi_room_booking_failed', status: 409 });
     // No audit emission on failure — the booking never landed.
   });
 
@@ -458,12 +453,10 @@ describe('MultiRoomBookingService.createGroup', () => {
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
-      code: 'booking.partial_failure',
-      booking_id: BOOKING_ID,
-      blocked_by: ['recurrence_series'],
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({ code: 'booking.partial_failure', status: 400 });
+    expect((caught as AppError).detail).toContain(BOOKING_ID);
+    expect((caught as AppError).detail).toContain('recurrence_series');
   });
 
   it('marks status pending_approval when any room rule requires approval', async () => {

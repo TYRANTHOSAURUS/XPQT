@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { resolveRequesterForActor } from './book-on-behalf.gate';
 import type { ActorContext } from './dto/types';
 
@@ -26,15 +26,13 @@ describe('resolveRequesterForActor', () => {
 
   it('throws book_on_behalf_forbidden when a non-service-desk caller requests for someone else', () => {
     expect(() => resolveRequesterForActor(OTHER, actor({ is_service_desk: false }))).toThrow(
-      ForbiddenException,
+      AppError,
     );
     try {
       resolveRequesterForActor(OTHER, actor({ is_service_desk: false }));
-      fail('expected ForbiddenException');
+      fail('expected AppError');
     } catch (e) {
-      expect((e as ForbiddenException).getResponse()).toMatchObject({
-        code: 'book_on_behalf_forbidden',
-      });
+      expect(e).toMatchObject({ code: 'book_on_behalf_forbidden', status: 403 });
     }
   });
 

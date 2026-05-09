@@ -1,7 +1,8 @@
 import {
-  BadRequestException, Body, Controller, Delete, Get, Header, Headers, Param,
-  Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards,
+  Body, Controller, Delete, Get, Header, Headers, Param,
+  Patch, Post, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import type { Request, Response } from 'express';
 import { createHash } from 'node:crypto';
@@ -160,9 +161,8 @@ export class ReservationController {
       'recurrence_rule' in dto &&
       (dto as { recurrence_rule?: unknown }).recurrence_rule != null
     ) {
-      throw new BadRequestException({
-        code: 'multi_room_recurrence_unsupported',
-        message: 'Recurrence on multi-room bookings is not supported. Book a single room or turn off recurrence.',
+      throw AppErrors.validationFailed('multi_room_recurrence_unsupported', {
+        detail: 'Recurrence on multi-room bookings is not supported. Book a single room or turn off recurrence.',
       });
     }
     return this.multiRoom.createGroup(
@@ -373,7 +373,7 @@ export class ReservationController {
     const pivot = await this.service.findOneForActor(id, actor);
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     if (!this.visibility.canEdit(pivot, ctx)) {
-      throw new UnauthorizedException('reservation_not_editable');
+      throw AppErrors.forbidden('reservation_not_editable', 'You cannot edit this booking.');
     }
     return this.bookingFlow.editScope(id, dto.scope, {
       space_id: dto.space_id,
@@ -681,15 +681,12 @@ export class ReservationController {
     ) {
       return;
     }
-    throw new UnauthorizedException({
-      code: 'reservation_write_forbidden',
-      message: 'Only the requester, host, booker, or an admin can change this booking.',
-    });
+    throw AppErrors.forbidden('reservation_write_forbidden', 'Only the requester, host, booker, or an admin can change this booking.');
   }
 
   private getAuthUid(req: Request): string {
     const u = (req as unknown as { user?: { id?: string } }).user;
-    if (!u?.id) throw new UnauthorizedException('missing_user');
+    if (!u?.id) throw AppErrors.unauthorized('missing_user');
     return u.id;
   }
 

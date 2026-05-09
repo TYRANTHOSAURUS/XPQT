@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -303,7 +304,7 @@ export class RecurrenceService {
     throughDate?: Date,
   ): Promise<{ created: string[]; skipped_conflicts: number }> {
     if (!this.supabase || !this.bookingFlow) {
-      throw new Error('RecurrenceService.materialize requires Supabase + BookingFlowService injection');
+      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.materialize requires Supabase + BookingFlowService injection' });
     }
 
     // /full-review v3 closure I3 — tenant_id on every read/write.
@@ -324,7 +325,7 @@ export class RecurrenceService {
     if (ctxTenantId) seriesQuery.eq('tenant_id', ctxTenantId);
     const { data: seriesRow, error: seriesErr } = await seriesQuery.maybeSingle();
     if (seriesErr || !seriesRow) {
-      throw new Error(`recurrence_series ${seriesId} not found`);
+      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${seriesId} not found` });
     }
     const series = seriesRow as {
       id: string;
@@ -341,7 +342,7 @@ export class RecurrenceService {
     };
 
     if (!series.parent_booking_id) {
-      throw new Error(`recurrence_series ${seriesId} has no parent_booking_id`);
+      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${seriesId} has no parent_booking_id` });
     }
 
     // Defensive: if there's a TenantContext, the series we loaded MUST
@@ -366,7 +367,7 @@ export class RecurrenceService {
       .limit(1)
       .maybeSingle();
     if (masterErr || !masterSlotRow) {
-      throw new Error(`master booking ${masterBookingId} not found`);
+      throw AppErrors.server('booking.master_not_found', { detail: `master booking ${masterBookingId} not found` });
     }
     const master = slotWithBookingToReservation(
       masterSlotRow as unknown as SlotWithBookingEmbed,
@@ -681,9 +682,9 @@ export class RecurrenceService {
     if (error) {
       // Throw rather than swallow — caller wraps this in
       // runWithCompensation so the orphan booking gets cleaned up.
-      throw new Error(
-        `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
-      );
+      throw AppErrors.server('booking.recurrence_failed', {
+        detail: `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
+      });
     }
     for (const o of (orders ?? []) as Array<{ id: string }>) {
       // Per-order errors propagate. With compensation wrapping at the
@@ -761,7 +762,7 @@ export class RecurrenceService {
    */
   async splitSeries(bookingId: string): Promise<string> {
     if (!this.supabase) {
-      throw new Error('RecurrenceService.splitSeries requires Supabase injection');
+      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.splitSeries requires Supabase injection' });
     }
 
     // /full-review v3 closure I3 — tenant_id filter on every read/write.
@@ -774,7 +775,7 @@ export class RecurrenceService {
       .eq('id', bookingId);
     if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
     const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw new Error(`booking ${bookingId} not found`);
+    if (!pivot) throw AppErrors.notFound('booking', bookingId);
     const p = pivot as {
       id: string;
       tenant_id: string;
@@ -783,7 +784,7 @@ export class RecurrenceService {
       recurrence_index: number | null;
     };
     if (!p.recurrence_series_id) {
-      throw new Error('booking is not part of a recurring series');
+      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
     }
 
     // Tenant scope authoritative source: the pivot's tenant_id (already
@@ -797,7 +798,7 @@ export class RecurrenceService {
       .eq('tenant_id', tenantId);
     const { data: srcSeriesRow } = await seriesQuery.maybeSingle();
     if (!srcSeriesRow) {
-      throw new Error(`recurrence_series ${p.recurrence_series_id} not found`);
+      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${p.recurrence_series_id} not found` });
     }
     const srcSeries = srcSeriesRow as {
       id: string;
@@ -828,7 +829,7 @@ export class RecurrenceService {
       .select('id')
       .single();
     if (seriesErr || !newSeriesRow) {
-      throw new Error(`splitSeries failed: ${seriesErr?.message ?? 'unknown'}`);
+      throw AppErrors.server('booking.recurrence_failed', { detail: `splitSeries failed: ${seriesErr?.message ?? 'unknown'}` });
     }
     const newSeriesId = (newSeriesRow as { id: string }).id;
 
@@ -841,7 +842,7 @@ export class RecurrenceService {
       .eq('tenant_id', srcSeries.tenant_id)
       .eq('recurrence_series_id', srcSeries.id)
       .gte('start_at', p.start_at);
-    if (updErr) throw new Error(`splitSeries reseat failed: ${updErr.message}`);
+    if (updErr) throw AppErrors.server('booking.recurrence_failed', { detail: `splitSeries reseat failed: ${updErr.message}` });
 
     // Cap the source series so no more occurrences materialise past the pivot.
     // /full-review v3 closure I3 — tenant filter on the update.
@@ -882,7 +883,7 @@ export class RecurrenceService {
     _opts: { reason?: string } = {},
   ): Promise<{ cancelled: number }> {
     if (!this.supabase) {
-      throw new Error('RecurrenceService.cancelForward requires Supabase injection');
+      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.cancelForward requires Supabase injection' });
     }
     // Pivot is a BOOKING (each occurrence is its own booking post-rewrite).
     // /full-review v3 closure I3 — tenant filter on the pivot read.
@@ -893,12 +894,12 @@ export class RecurrenceService {
       .eq('id', bookingId);
     if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
     const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw new Error(`booking ${bookingId} not found`);
+    if (!pivot) throw AppErrors.notFound('booking', bookingId);
     const p = pivot as {
       id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
     };
     if (!p.recurrence_series_id) {
-      throw new Error('booking is not part of a recurring series');
+      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
     }
 
     // Cancel the booking-level rows (status enum on bookings = 00277:49-51).
@@ -915,7 +916,7 @@ export class RecurrenceService {
     // 'series' → no time gate; cancels everything in the series.
 
     const { data, error } = await q.select('id');
-    if (error) throw new Error(`cancelForward failed: ${error.message}`);
+    if (error) throw AppErrors.server('booking.recurrence_failed', { detail: `cancelForward failed: ${error.message}` });
 
     const cancelledBookingIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
 

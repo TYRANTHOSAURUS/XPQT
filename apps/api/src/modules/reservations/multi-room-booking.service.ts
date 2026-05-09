@@ -1,7 +1,5 @@
-import {
-  ConflictException, Inject, Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException,
-  Optional,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleService } from '../booking-bundles/bundle.service';
@@ -97,15 +95,13 @@ export class MultiRoomBookingService {
     const tenantId = TenantContext.current().id;
     const spaceIds = Array.from(new Set(input.space_ids ?? []));
     if (spaceIds.length < 2) {
-      throw new BadRequestException({
-        code: 'multi_room_requires_two',
-        message: 'Multi-room bookings require at least two spaces.',
+      throw AppErrors.validationFailed('multi_room_requires_two', {
+        detail: 'Multi-room bookings require at least two spaces.',
       });
     }
     if (spaceIds.length > 10) {
-      throw new BadRequestException({
-        code: 'multi_room_too_many',
-        message: 'Multi-room bookings are limited to 10 spaces.',
+      throw AppErrors.validationFailed('multi_room_too_many', {
+        detail: 'Multi-room bookings are limited to 10 spaces.',
       });
     }
 
@@ -135,13 +131,13 @@ export class MultiRoomBookingService {
     for (const spaceId of spaceIds) {
       const space = spaceRows.get(spaceId);
       if (!space) {
-        throw new NotFoundException({ code: 'space_not_found', message: `Space ${spaceId}` });
+        throw AppErrors.notFoundWithCode('space_not_found', `Space ${spaceId}`);
       }
       if (!space.active) {
-        throw new BadRequestException({ code: 'space_inactive', message: `Space ${spaceId}` });
+        throw AppErrors.validationFailed('space_inactive', { detail: `Space ${spaceId}` });
       }
       if (!space.reservable) {
-        throw new BadRequestException({ code: 'space_not_reservable', message: `Space ${spaceId}` });
+        throw AppErrors.validationFailed('space_not_reservable', { detail: `Space ${spaceId}` });
       }
 
       const buffers = await this.conflict.snapshotBuffersForBooking({
@@ -165,17 +161,11 @@ export class MultiRoomBookingService {
       if (ruleOutcome.final === 'deny') {
         const overridable = actor.has_override_rules && ruleOutcome.overridable;
         if (!overridable) {
-          throw new ForbiddenException({
-            code: 'rule_deny',
-            message: ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.',
-            denial_messages: ruleOutcome.denialMessages,
-            failed_space_id: spaceId,
-          });
+          throw AppErrors.forbidden('rule_deny', ruleOutcome.denialMessages[0] || `Booking denied by booking rules (space ${spaceId}).`);
         }
         if (!actor.override_reason) {
-          throw new BadRequestException({
-            code: 'override_reason_required',
-            message: 'Service-desk override requires a reason.',
+          throw AppErrors.validationFailed('override_reason_required', {
+            detail: 'Service-desk override requires a reason.',
           });
         }
         denialMessages.push(...ruleOutcome.denialMessages);
@@ -252,20 +242,12 @@ export class MultiRoomBookingService {
 
     if (rpcError) {
       if (this.conflict.isExclusionViolation(rpcError)) {
-        throw new ConflictException({
-          code: 'multi_room_booking_failed',
-          message: 'One or more rooms are no longer available. No partial bookings created.',
-          // The RPC inserts N slots in a single tx; on race the GiST
-          // exclusion fails for whichever slot collided. We don't get
-          // the offending space_id back from Postgres, so report all
-          // requested rooms — the client picker will surface
-          // alternatives.
-          failed_space_ids: spaceIds,
+        throw AppErrors.conflict('multi_room_booking_failed', {
+          detail: `One or more rooms are no longer available (rooms=${spaceIds.join(',')}). No partial bookings created.`,
         });
       }
-      throw new BadRequestException({
-        code: 'multi_room_create_failed',
-        message: rpcError.message,
+      throw AppErrors.validationFailed('multi_room_create_failed', {
+        detail: rpcError.message,
       });
     }
 
@@ -273,9 +255,8 @@ export class MultiRoomBookingService {
       | { booking_id: string; slot_ids: string[] }
       | undefined;
     if (!rpcRow?.booking_id) {
-      throw new BadRequestException({
-        code: 'multi_room_create_failed',
-        message: 'create_booking returned no booking_id',
+      throw AppErrors.validationFailed('multi_room_create_failed', {
+        detail: 'create_booking returned no booking_id',
       });
     }
     const bookingId = rpcRow.booking_id;
@@ -299,10 +280,11 @@ export class MultiRoomBookingService {
     //    are already gone; the SET NULL is harmless).
     if (input.services && input.services.length > 0) {
       if (!this.txBoundary || !this.compensation) {
-        throw new Error(
-          'BookingTransactionBoundary + BookingCompensationService not injected — ' +
-            'multi-room cannot atomically attach services. Wire both into ReservationsModule.providers.',
-        );
+        throw AppErrors.server('booking.bundle_not_injected', {
+          detail:
+            'BookingTransactionBoundary + BookingCompensationService not injected — ' +
+            'multi-room cannot atomically attach services.',
+        });
       }
       // AttachServicesArgs shape verified at bundle.service.ts:58 (Phase 1.3
       // Read first #6): { booking_id, requester_person_id, bundle?, services }.
@@ -336,9 +318,8 @@ export class MultiRoomBookingService {
       .eq('booking_id', bookingId)
       .order('display_order', { ascending: true });
     if (readErr || !slotRows) {
-      throw new BadRequestException({
-        code: 'multi_room_read_failed',
-        message: readErr?.message ?? 'no slots returned',
+      throw AppErrors.validationFailed('multi_room_read_failed', {
+        detail: readErr?.message ?? 'no slots returned',
       });
     }
     const reservations = (slotRows as unknown as SlotWithBookingEmbed[]).map(
@@ -381,7 +362,7 @@ export class MultiRoomBookingService {
       .select('id, type, reservable, active, setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes')
       .eq('tenant_id', tenantId)
       .in('id', spaceIds);
-    if (error) throw new BadRequestException(`load_spaces_failed:${error.message}`);
+    if (error) throw AppErrors.validationFailed('load_spaces_failed', { detail: `load_spaces_failed:${error.message}` });
     const out = new Map<string, {
       id: string; type: string; reservable: boolean; active: boolean;
       setup_buffer_minutes: number | null; teardown_buffer_minutes: number | null;

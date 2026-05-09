@@ -1,5 +1,6 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import type { CompensationOutcome } from './booking-transaction-boundary';
 
@@ -76,11 +77,8 @@ export class BookingCompensationService {
       // failing is server-class: the booking persists in an unknown
       // post-attach state, the user can't fix it via input changes,
       // ops needs a 500 + traceId per CLAUDE.md error-handling spec §3.3.
-      throw new InternalServerErrorException({
-        code: 'booking.compensation_failed',
-        message: 'Compensation RPC failed.',
-        booking_id: bookingId,
-        rpc_error: error.message,
+      throw AppErrors.server('booking.compensation_failed', {
+        detail: `Compensation RPC failed for booking ${bookingId}: ${error.message}`,
       });
     }
 
@@ -102,10 +100,8 @@ export class BookingCompensationService {
         rpc_error: 'malformed_payload',
         rpc_data: data,
       });
-      throw new InternalServerErrorException({
-        code: 'booking.compensation_failed',
-        message: 'Compensation RPC returned no/malformed outcome.',
-        booking_id: bookingId,
+      throw AppErrors.server('booking.compensation_failed', {
+        detail: `Compensation RPC returned no/malformed outcome for booking ${bookingId}.`,
       });
     }
 

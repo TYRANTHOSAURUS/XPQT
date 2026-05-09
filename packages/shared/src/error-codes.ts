@@ -188,6 +188,83 @@ export type KnownErrorCode =
   | 'line_already_fulfilled'
   | 'client_line_id_required'
   | 'client_line_id_not_unique'
+
+  // ─── reservations module migration (Phase 7.A.2.c.ii) ────────────────────
+  // namespaced (preferred form for new codes)
+  | 'booking.idempotency_payload_mismatch'
+  | 'booking.fk_invalid'
+  | 'booking.internal_ref_invalid'
+  | 'booking.snapshot_uuid_invalid'
+  | 'booking.unexpected_error'
+  | 'booking.idempotency_key_required'
+  | 'booking.completed_cannot_edit'
+  | 'booking.not_editable'
+  | 'booking.not_cancelled'
+  | 'booking.cancellation_grace_expired'
+  | 'booking.slot_taken'
+  | 'booking.not_a_recurring_occurrence'
+  | 'booking.too_early_to_check_in'
+  | 'booking.already_ended'
+  | 'booking.already_checked_in'
+  | 'booking.not_confirmed'
+  | 'booking.check_in_failed'
+  | 'booking.magic_link_invalid'
+  | 'booking.magic_link_booking_mismatch'
+  | 'booking.magic_link_person_mismatch'
+  | 'booking.scheduler_window_requires_range'
+  | 'booking.no_primary_slot'
+  | 'booking.edit_failed'
+  | 'booking.list_failed'
+  | 'booking.cancel_failed'
+  | 'booking.skip_failed'
+  | 'booking.restore_failed'
+  | 'booking.scheduler_window_failed'
+  | 'booking.bundle_not_injected'
+  | 'booking.recurrence_not_injected'
+  | 'booking.recurrence_series_not_found'
+  | 'booking.master_not_found'
+  | 'booking.recurrence_failed'
+  | 'reservation.projection_no_parent'
+  | 'auth.missing_user'
+  | 'magic_check_in.secret_missing'
+  // legacy snake_case codes (already asserted in specs / wire shape)
+  | 'book_on_behalf_forbidden'
+  | 'multi_room_booking_failed'
+  | 'multi_room_requires_two'
+  | 'multi_room_too_many'
+  | 'multi_room_create_failed'
+  | 'multi_room_read_failed'
+  | 'rule_deny'
+  | 'reservation_not_visible'
+  | 'reservation_operator_required'
+  | 'booking_not_found'
+  | 'booking_not_editable'
+  | 'booking_completed'
+  | 'not_a_recurring_occurrence'
+  | 'booking_slot_taken'
+  | 'booking_already_ended'
+  | 'booking_too_early_to_check_in'
+  | 'booking_already_checked_in'
+  | 'booking_not_confirmed'
+  | 'check_in_failed'
+  | 'magic_link_invalid'
+  | 'magic_link_booking_mismatch'
+  | 'magic_link_person_mismatch'
+  | 'cancellation_grace_expired'
+  | 'booking_not_cancelled'
+  | 'scheduler_window_requires_range'
+  | 'cancel_failed'
+  | 'list_failed'
+  | 'restore_failed'
+  | 'skip_failed'
+  | 'edit_failed'
+  | 'group_siblings_failed'
+  | 'list_for_operator_failed'
+  | 'list_for_operator_orders'
+  | 'load_spaces_failed'
+  | 'scheduler_window_failed'
+  | 'reservation_not_editable'
+  | 'missing_user'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -335,6 +412,79 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'line_already_fulfilled',
   'client_line_id_required',
   'client_line_id_not_unique',
+  'booking.idempotency_payload_mismatch',
+  'booking.fk_invalid',
+  'booking.internal_ref_invalid',
+  'booking.snapshot_uuid_invalid',
+  'booking.unexpected_error',
+  'booking.idempotency_key_required',
+  'booking.completed_cannot_edit',
+  'booking.not_editable',
+  'booking.not_cancelled',
+  'booking.cancellation_grace_expired',
+  'booking.slot_taken',
+  'booking.not_a_recurring_occurrence',
+  'booking.too_early_to_check_in',
+  'booking.already_ended',
+  'booking.already_checked_in',
+  'booking.not_confirmed',
+  'booking.check_in_failed',
+  'booking.magic_link_invalid',
+  'booking.magic_link_booking_mismatch',
+  'booking.magic_link_person_mismatch',
+  'booking.scheduler_window_requires_range',
+  'booking.no_primary_slot',
+  'booking.edit_failed',
+  'booking.list_failed',
+  'booking.cancel_failed',
+  'booking.skip_failed',
+  'booking.restore_failed',
+  'booking.scheduler_window_failed',
+  'booking.bundle_not_injected',
+  'booking.recurrence_not_injected',
+  'booking.recurrence_series_not_found',
+  'booking.master_not_found',
+  'booking.recurrence_failed',
+  'reservation.projection_no_parent',
+  'auth.missing_user',
+  'magic_check_in.secret_missing',
+  'book_on_behalf_forbidden',
+  'multi_room_booking_failed',
+  'multi_room_requires_two',
+  'multi_room_too_many',
+  'multi_room_create_failed',
+  'multi_room_read_failed',
+  'rule_deny',
+  'reservation_not_visible',
+  'reservation_operator_required',
+  'booking_not_found',
+  'booking_not_editable',
+  'booking_completed',
+  'not_a_recurring_occurrence',
+  'booking_slot_taken',
+  'booking_already_ended',
+  'booking_too_early_to_check_in',
+  'booking_already_checked_in',
+  'booking_not_confirmed',
+  'check_in_failed',
+  'magic_link_invalid',
+  'magic_link_booking_mismatch',
+  'magic_link_person_mismatch',
+  'cancellation_grace_expired',
+  'booking_not_cancelled',
+  'scheduler_window_requires_range',
+  'cancel_failed',
+  'list_failed',
+  'restore_failed',
+  'skip_failed',
+  'edit_failed',
+  'group_siblings_failed',
+  'list_for_operator_failed',
+  'list_for_operator_orders',
+  'load_spaces_failed',
+  'scheduler_window_failed',
+  'reservation_not_editable',
+  'missing_user',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',
