@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { serviceRoutingKeys } from './keys';
 import type { ServiceCategory, ServiceRoutingRow } from './types';
 
@@ -31,6 +32,7 @@ export function useCreateServiceRouting() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: serviceRoutingKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create service routing" }),
   });
 }
 
@@ -46,6 +48,7 @@ export function useUpdateServiceRouting() {
       qc.invalidateQueries({ queryKey: serviceRoutingKeys.detail(id) });
       qc.invalidateQueries({ queryKey: serviceRoutingKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update service routing" }),
   });
 }
 
@@ -58,5 +61,6 @@ export function useDeleteServiceRouting() {
       qc.invalidateQueries({ queryKey: serviceRoutingKeys.detail(id) });
       qc.invalidateQueries({ queryKey: serviceRoutingKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete service routing" }),
   });
 }
