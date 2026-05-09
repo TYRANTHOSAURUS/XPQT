@@ -1,5 +1,6 @@
-import { BadRequestException, type ExecutionContext } from '@nestjs/common';
+import { type ExecutionContext } from '@nestjs/common';
 import { RequireClientRequestIdGuard } from './require-client-request-id.guard';
+import { AppError } from '../errors';
 
 /**
  * B.0.E.4 — `RequireClientRequestIdGuard` rejects producer-route requests
@@ -17,8 +18,7 @@ import { RequireClientRequestIdGuard } from './require-client-request-id.guard';
 
 function makeContext(req: Record<string, unknown>): ExecutionContext {
   return {
-    switchToHttp: () => ({ getRequest: () => req }),
-  } as unknown as ExecutionContext;
+    switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
 }
 
 describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
@@ -27,8 +27,7 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
   it('passes when clientRequestId is present AND source is "client"', () => {
     const ctx = makeContext({
       clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      clientRequestIdSource: 'client',
-    });
+      clientRequestIdSource: 'client' });
     expect(guard.canActivate(ctx)).toBe(true);
   });
 
@@ -38,8 +37,8 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
       guard.canActivate(ctx);
       throw new Error('expected guard to throw');
     } catch (err) {
-      expect(err).toBeInstanceOf(BadRequestException);
-      const body = (err as BadRequestException).getResponse() as {
+      expect(err).toBeInstanceOf(AppError);
+      const body = (err as AppError) as {
         code: string;
         message: string;
       };
@@ -50,23 +49,21 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
   it('rejects (400) when source is "server_default" (header missing → middleware filled in)', () => {
     const ctx = makeContext({
       clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      clientRequestIdSource: 'server_default',
-    });
+      clientRequestIdSource: 'server_default' });
     try {
       guard.canActivate(ctx);
       throw new Error('expected guard to throw');
     } catch (err) {
-      expect(err).toBeInstanceOf(BadRequestException);
-      const body = (err as BadRequestException).getResponse() as { code: string };
+      expect(err).toBeInstanceOf(AppError);
+      const body = (err as AppError) as { code: string };
       expect(body.code).toBe('client_request_id.required');
     }
   });
 
   it('rejects (400) when source is missing/undefined entirely', () => {
     const ctx = makeContext({
-      clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    });
-    expect(() => guard.canActivate(ctx)).toThrow(BadRequestException);
+      clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(() => guard.canActivate(ctx)).toThrow(AppError);
   });
 
   it('error response carries the structured code (no prose-only message)', () => {
@@ -74,13 +71,12 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
     try {
       guard.canActivate(ctx);
     } catch (err) {
-      const body = (err as BadRequestException).getResponse() as {
+      const body = (err as AppError) as {
         code: string;
         message: string;
       };
       expect(body).toMatchObject({
-        code: 'client_request_id.required',
-      });
+        code: 'client_request_id.required' });
       expect(body.message).toContain('X-Client-Request-Id');
     }
   });

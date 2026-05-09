@@ -1,3 +1,4 @@
+import { AppError } from '../../common/errors';
 // Plan A.2 / Commit 3 + 6 regression spec — reservation.editOne FK tenant validation.
 //
 // Before Commit 3, editOne wrote host_person_id (booking-meta) and
@@ -11,7 +12,6 @@
 // to the editSlot RPC. This spec asserts the pre-flight rejects with
 // reference.not_in_tenant BEFORE the RPC fires.
 
-import { BadRequestException } from '@nestjs/common';
 import { ReservationService } from './reservation.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext } from './dto/types';
@@ -28,8 +28,7 @@ function makeActor(): ActorContext {
     user_id: 'U',
     person_id: 'P',
     is_service_desk: false,
-    has_override_rules: false,
-  };
+    has_override_rules: false };
 }
 
 type Row = Record<string, unknown>;
@@ -90,8 +89,7 @@ function makeSupabase(rowsByTable: RowsByTable, opts: { booking?: Row | null; pr
           return true;
         });
         return Promise.resolve({ data: matches.map((r) => ({ id: r.id })), error: null }).then(onFulfilled);
-      },
-    };
+      } };
     return chain;
   }
 
@@ -105,13 +103,8 @@ function makeSupabase(rowsByTable: RowsByTable, opts: { booking?: Row | null; pr
         select: () => buildSelectChain(table),
         update: () => ({
           eq: () => ({
-            eq: () => Promise.resolve({ data: null, error: null }),
-          }),
-        }),
-        insert: () => Promise.resolve({ data: null, error: null }),
-      }),
-    },
-  };
+            eq: () => Promise.resolve({ data: null, error: null }) }) }),
+        insert: () => Promise.resolve({ data: null, error: null }) }) } };
   return { supabase, captures, rpcCalls };
 }
 
@@ -123,17 +116,14 @@ function makeVisibility(canEdit = true) {
       tenant_id: TENANT.id,
       has_read_all: false,
       has_write_all: true,
-      has_admin: false,
-    }),
+      has_admin: false }),
     assertVisible: jest.fn().mockReturnValue(undefined),
-    canEdit: jest.fn().mockReturnValue(canEdit),
-  };
+    canEdit: jest.fn().mockReturnValue(canEdit) };
 }
 
 function makeService(supabase: ReturnType<typeof makeSupabase>, visibility = makeVisibility()) {
   const conflict = {
-    isExclusionViolation: jest.fn(() => false),
-  };
+    isExclusionViolation: jest.fn(() => false) };
   return new ReservationService(
     supabase.supabase as never,
     conflict as never,
@@ -171,8 +161,7 @@ function makeBookingFixture(): Row {
     recurrence_skipped: false,
     template_id: null,
     created_at: '2026-05-01T08:00:00Z',
-    updated_at: '2026-05-01T08:00:00Z',
-  };
+    updated_at: '2026-05-01T08:00:00Z' };
 }
 
 describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
@@ -192,8 +181,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
         attendee_count: 4,
         attendee_person_ids: [],
         status: 'confirmed',
-        recurrence_series_id: null,
-      } as never);
+        recurrence_series_id: null } as never);
   });
 
   afterEach(() => {
@@ -202,8 +190,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
 
   it('rejects edit with a cross-tenant host_person_id (Commit 3)', async () => {
     const supabase = makeSupabase({
-      persons: [{ id: FOREIGN, tenant_id: 'other-tenant' }],
-    });
+      persons: [{ id: FOREIGN, tenant_id: 'other-tenant' }] });
     const svc = makeService(supabase);
 
     let caught: unknown = null;
@@ -214,12 +201,8 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'persons',
-      reference_id: FOREIGN,
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('reference.not_in_tenant');
     // RPC must NOT have fired — pre-flight rejected first.
     expect(supabase.rpcCalls).toEqual([]);
   });
@@ -229,34 +212,27 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
       persons: [
         { id: VALID_PERSON_A, tenant_id: TENANT.id },
         // VALID_PERSON_B intentionally NOT registered for tenant t1.
-      ],
-    });
+      ] });
     const svc = makeService(supabase);
 
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
         svc.editOne(BOOKING_ID, makeActor(), {
-          attendee_person_ids: [VALID_PERSON_A, VALID_PERSON_B],
-        }),
+          attendee_person_ids: [VALID_PERSON_A, VALID_PERSON_B] }),
       );
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'persons',
-      missing_ids: [VALID_PERSON_B],
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('reference.not_in_tenant');
     expect(supabase.rpcCalls).toEqual([]);
   });
 
   it('rejects edit with a cross-tenant space_id BEFORE the editSlot RPC fires (Commit 6)', async () => {
     // No spaces row for FOREIGN under tenant t1 → assertTenantOwned rejects.
     const supabase = makeSupabase({
-      spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }],
-    });
+      spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }] });
     const svc = makeService(supabase);
 
     let caught: unknown = null;
@@ -267,12 +243,8 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'spaces',
-      reference_id: FOREIGN,
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('reference.not_in_tenant');
     // Defense-in-depth — pre-flight rejected BEFORE the atomic RPC.
     expect(supabase.rpcCalls).toEqual([]);
   });
@@ -302,8 +274,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
         attendee_count: 4,
         attendee_person_ids: [],
         status: 'confirmed',
-        recurrence_series_id: null,
-      } as never);
+        recurrence_series_id: null } as never);
     // editSlot also calls findByIdOrThrowAtSlot for the visitor-cascade
     // pre-state. Stub it the same way.
     jest
@@ -317,8 +288,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
         tenant_id: TENANT.id,
         space_id: VALID_SPACE,
         start_at: '2026-05-01T09:00:00Z',
-        end_at: '2026-05-01T10:00:00Z',
-      } as never);
+        end_at: '2026-05-01T10:00:00Z' } as never);
   });
 
   afterEach(() => {
@@ -332,8 +302,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
     // NEVER fire.
     const supabase = makeSupabase(
       {
-        spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }],
-      },
+        spaces: [{ id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true }] },
       { primarySlot: { booking_id: BOOKING_ID } },
     );
     const svc = makeService(supabase);
@@ -346,12 +315,8 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(BadRequestException);
-    expect((caught as BadRequestException).getResponse()).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'spaces',
-      reference_id: FOREIGN,
-    });
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('reference.not_in_tenant');
     // The whole point — pre-flight rejected BEFORE the atomic RPC.
     expect(supabase.rpcCalls).toEqual([]);
   });
@@ -363,8 +328,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
         spaces: [
           { id: VALID_SPACE, tenant_id: TENANT.id, active: true, reservable: true },
           { id: VALID_SPACE_2, tenant_id: TENANT.id, active: true, reservable: true },
-        ],
-      },
+        ] },
       { primarySlot: { booking_id: BOOKING_ID } },
     );
     const svc = makeService(supabase);

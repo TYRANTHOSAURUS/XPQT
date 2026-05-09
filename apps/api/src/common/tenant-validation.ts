@@ -1,5 +1,5 @@
-import { BadRequestException } from '@nestjs/common';
 import type { SupabaseService } from './supabase/supabase.service';
+import { AppErrors } from './errors';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -80,26 +80,21 @@ export async function assertTenantOwned(
   // succeeds for any global row that happens to have that string —
   // catastrophic.
   if (typeof tenantId !== 'string' || tenantId.length === 0) {
-    throw new Error(
-      `invariant: tenantId required for assertTenantOwned(${table}, ${id})`,
-    );
+    throw AppErrors.server('reference.lookup_failed', {
+      detail: `invariant: tenantId required for assertTenantOwned(${table}, ${id})`,
+    });
   }
 
   const entity = options.entityName ?? table;
 
   if (typeof id !== 'string') {
-    throw new BadRequestException({
-      code: 'reference.invalid_uuid',
-      message: `${entity} reference must be a string uuid`,
-      reference_table: table,
+    throw AppErrors.validationFailed('reference.invalid_uuid', {
+      detail: `${entity} reference must be a string uuid`,
     });
   }
   if (!UUID_RE.test(id)) {
-    throw new BadRequestException({
-      code: 'reference.invalid_uuid',
-      message: `${entity} reference is not a valid uuid: ${id}`,
-      reference_table: table,
-      reference_id: id,
+    throw AppErrors.validationFailed('reference.invalid_uuid', {
+      detail: `${entity} reference is not a valid uuid: ${id}`,
     });
   }
 
@@ -124,19 +119,13 @@ export async function assertTenantOwned(
 
   const { data, error } = await q.maybeSingle();
   if (error) {
-    throw new BadRequestException({
-      code: 'reference.lookup_failed',
-      message: `${entity} reference lookup failed: ${error.message}`,
-      reference_table: table,
-      reference_id: id,
+    throw AppErrors.validationFailed('reference.lookup_failed', {
+      detail: `${entity} reference lookup failed: ${error.message}`,
     });
   }
   if (!data) {
-    throw new BadRequestException({
-      code: 'reference.not_in_tenant',
-      message: `${entity} ${id} is not accessible in this tenant`,
-      reference_table: table,
-      reference_id: id,
+    throw AppErrors.validationFailed('reference.not_in_tenant', {
+      detail: `${entity} ${id} is not accessible in this tenant`,
     });
   }
 }
@@ -170,38 +159,32 @@ export async function assertTenantOwnedAll(
   // bug). Skip the guard when `skipForSystemActor` short-circuits above
   // (system-actor paths legitimately pass empty tenant context).
   if (typeof tenantId !== 'string' || tenantId.length === 0) {
-    throw new Error(
-      `invariant: tenantId required for assertTenantOwnedAll(${table}, ${ids.length} ids)`,
-    );
+    throw AppErrors.server('reference.lookup_failed', {
+      detail: `invariant: tenantId required for assertTenantOwnedAll(${table}, ${ids.length} ids)`,
+    });
   }
 
   const entity = options.entityName ?? table;
 
   if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) {
-    throw new BadRequestException({
-      code: 'reference.invalid_uuid',
-      message: `${entity} references must be an array of string uuids`,
-      reference_table: table,
+    throw AppErrors.validationFailed('reference.invalid_uuid', {
+      detail: `${entity} references must be an array of string uuids`,
     });
   }
 
   const unique = [...new Set(ids)];
 
   if (unique.length > MAX_TENANT_OWNED_IDS_PER_QUERY) {
-    throw new BadRequestException({
-      code: 'reference.too_many',
-      message: `${entity} references array too large (${unique.length}); maximum is ${MAX_TENANT_OWNED_IDS_PER_QUERY}`,
-      reference_table: table,
+    throw AppErrors.validationFailed('reference.too_many', {
+      detail: `${entity} references array too large (${unique.length}); maximum is ${MAX_TENANT_OWNED_IDS_PER_QUERY}`,
     });
   }
 
   const malformed = unique.filter((x) => !UUID_RE.test(x));
   if (malformed.length > 0) {
     const sample = malformed.slice(0, 5).join(', ');
-    throw new BadRequestException({
-      code: 'reference.invalid_uuid',
-      message: `${entity} references contain ${malformed.length} malformed uuid(s): ${sample}${malformed.length > 5 ? ', ...' : ''}`,
-      reference_table: table,
+    throw AppErrors.validationFailed('reference.invalid_uuid', {
+      detail: `${entity} references contain ${malformed.length} malformed uuid(s): ${sample}${malformed.length > 5 ? ', ...' : ''}`,
     });
   }
 
@@ -220,10 +203,8 @@ export async function assertTenantOwnedAll(
   }
   const { data, error } = await q;
   if (error) {
-    throw new BadRequestException({
-      code: 'reference.lookup_failed',
-      message: `${entity} reference lookup failed: ${error.message}`,
-      reference_table: table,
+    throw AppErrors.validationFailed('reference.lookup_failed', {
+      detail: `${entity} reference lookup failed: ${error.message}`,
     });
   }
 
@@ -231,11 +212,8 @@ export async function assertTenantOwnedAll(
   const missing = unique.filter((id) => !found.has(id));
   if (missing.length > 0) {
     const sample = missing.slice(0, 5).join(', ');
-    throw new BadRequestException({
-      code: 'reference.not_in_tenant',
-      message: `${entity} references contain ${missing.length} id(s) not accessible in this tenant: ${sample}${missing.length > 5 ? ', ...' : ''}`,
-      reference_table: table,
-      missing_ids: missing,
+    throw AppErrors.validationFailed('reference.not_in_tenant', {
+      detail: `${entity} references contain ${missing.length} id(s) not accessible in this tenant: ${sample}${missing.length > 5 ? ', ...' : ''}`,
     });
   }
   return unique;
@@ -279,17 +257,15 @@ export async function validateWatcherIdsInTenant(
   if (!watchers || watchers.length === 0) return;
 
   if (!Array.isArray(watchers) || !watchers.every((w) => typeof w === 'string')) {
-    throw new BadRequestException(
-      'watchers must be an array of strings (person UUIDs) or null',
-    );
+    throw AppErrors.validationFailed('reference.invalid_uuid', {
+      detail: 'watchers must be an array of strings (person UUIDs) or null',
+    });
   }
 
   const unique = [...new Set(watchers)];
 
   if (unique.length > MAX_WATCHER_IDS_PER_QUERY) {
-    throw new BadRequestException(
-      `watchers array too large (${unique.length}); maximum is ${MAX_WATCHER_IDS_PER_QUERY} unique uuids per request`,
-    );
+    throw AppErrors.validationFailed('reference.field_invalid', { detail: `watchers array too large (${unique.length}); maximum is ${MAX_WATCHER_IDS_PER_QUERY} unique uuids per request` });
   }
 
   // Pre-filter malformed uuids. Without this, supabase-js + PostgREST send
@@ -299,9 +275,7 @@ export async function validateWatcherIdsInTenant(
   const malformed = unique.filter((id) => !UUID_RE.test(id));
   if (malformed.length > 0) {
     const sample = malformed.slice(0, 5).join(', ');
-    throw new BadRequestException(
-      `watchers contain ${malformed.length} malformed uuid(s): ${sample}${malformed.length > 5 ? ', ...' : ''}`,
-    );
+    throw AppErrors.validationFailed('reference.field_invalid', { detail: `watchers contain ${malformed.length} malformed uuid(s): ${sample}${malformed.length > 5 ? ', ...' : ''}` });
   }
 
   // Filter to persons in good standing:
@@ -328,9 +302,7 @@ export async function validateWatcherIdsInTenant(
   const invalid = unique.filter((id) => !found.has(id));
   if (invalid.length > 0) {
     const sample = invalid.slice(0, 5).join(', ');
-    throw new BadRequestException(
-      `watchers contain ${invalid.length} person id(s) that are unknown, deactivated, anonymized, or off-boarded in this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''} (note: watchers expects persons.id, not users.id)`,
-    );
+    throw AppErrors.validationFailed('reference.field_invalid', { detail: `watchers contain ${invalid.length} person id(s) that are unknown, deactivated, anonymized, or off-boarded in this tenant: ${sample}${invalid.length > 5 ? ', ...' : ''} (note: watchers expects persons.id, not users.id)` });
   }
 }
 
@@ -372,12 +344,10 @@ export async function validateAssigneesInTenant(
   for (const c of checks) {
     if (c.id === null || c.id === undefined) continue;
     if (typeof c.id !== 'string') {
-      throw new BadRequestException(`${c.field} must be a string or null`);
+      throw AppErrors.validationFailed('reference.field_invalid', { detail: `${c.field} must be a string or null` });
     }
     if (!UUID_RE.test(c.id)) {
-      throw new BadRequestException(
-        `${c.field} is not a valid uuid: ${c.id}`,
-      );
+      throw AppErrors.validationFailed('reference.field_invalid', { detail: `${c.field} is not a valid uuid: ${c.id}` });
     }
     const { data, error } = await supabase.admin
       .from(c.table)
@@ -387,9 +357,7 @@ export async function validateAssigneesInTenant(
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new BadRequestException(
-        `${c.field} ${c.id} does not reference a known ${c.singular} in this tenant`,
-      );
+      throw AppErrors.validationFailed('reference.field_invalid', { detail: `${c.field} ${c.id} does not reference a known ${c.singular} in this tenant` });
     }
   }
 }

@@ -1,7 +1,8 @@
-import { Injectable, NestMiddleware, NotFoundException } from '@nestjs/common';
+import { Injectable, NestMiddleware } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { TenantContext, TenantInfo } from '../tenant-context';
 import { TenantService } from '../../modules/tenant/tenant.service';
+import { AppErrors } from '../errors';
 
 @Injectable()
 export class TenantMiddleware implements NestMiddleware {
@@ -10,7 +11,7 @@ export class TenantMiddleware implements NestMiddleware {
   async use(req: Request, _res: Response, next: NextFunction) {
     const tenant = await this.resolveTenant(req);
     if (!tenant) {
-      throw new NotFoundException('Unknown tenant');
+      throw AppErrors.notFoundWithCode('tenant.unknown', 'Unknown tenant');
     }
 
     TenantContext.run(tenant, () => next());

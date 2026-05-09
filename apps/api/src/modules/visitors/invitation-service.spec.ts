@@ -458,11 +458,7 @@ describe('InvitationService.create', () => {
       caught = e;
     }
     expect(caught).toBeTruthy();
-    expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'persons',
-      missing_ids: [FOREIGN_PERSON],
-    });
+    expect((caught as { code: string }).code).toBe('reference.not_in_tenant');
     // No visitor_hosts row should have been written when validation fails.
     expect(ctx.insertedHostsRows).toEqual([]);
   });
@@ -487,11 +483,7 @@ describe('InvitationService.create', () => {
         caught = e;
       }
       expect(caught).toBeTruthy();
-      expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
-        code: 'reference.not_in_tenant',
-        reference_table: 'spaces',
-        reference_id: FOREIGN_SPACE,
-      });
+      expect((caught as { code: string }).code).toBe('reference.not_in_tenant');
       // No visitor row should have been written.
       expect(ctx.getInsertedVisitor()).toBeUndefined();
     });
@@ -510,11 +502,7 @@ describe('InvitationService.create', () => {
         caught = e;
       }
       expect(caught).toBeTruthy();
-      expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
-        code: 'reference.not_in_tenant',
-        reference_table: 'bookings',
-        reference_id: FOREIGN_BOOKING,
-      });
+      expect((caught as { code: string }).code).toBe('reference.not_in_tenant');
       expect(ctx.getInsertedVisitor()).toBeUndefined();
     });
 

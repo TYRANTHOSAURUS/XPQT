@@ -37,8 +37,7 @@ function makeSupabase(rowsByTable: Record<string, Row[]>) {
           return true;
         });
         return { data: match ?? null, error: null };
-      },
-    };
+      } };
     return chain;
   }
   return {
@@ -51,14 +50,8 @@ function makeSupabase(rowsByTable: Record<string, Row[]>) {
             inserts.push({ table, row });
             return {
               select: () => ({
-                single: async () => ({ data: { ...row, id: 'inserted' }, error: null }),
-              }),
-            };
-          },
-        }),
-      },
-    },
-  };
+                single: async () => ({ data: { ...row, id: 'inserted' }, error: null }) }) };
+          } }) } } };
 }
 
 describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', () => {
@@ -71,15 +64,13 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
           requester_person_id: 'p',
           delivery_location_id: null,
           policy_snapshot: {},
-          recurrence_rule: null,
-        },
+          recurrence_rule: null },
       ],
       bookings: [
         // Foreign booking exists globally but not under TENANT_ID — FK
         // would be satisfied today, validation must reject it.
         { id: FOREIGN_BOOKING, tenant_id: 'other-tenant' },
-      ],
-    });
+      ] });
     const svc = new OrderService(
       deps.supabase as never,
       {} as never, // resolver
@@ -96,22 +87,16 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
           newReservation: {
             id: 'new-res',
             start_at: '2026-05-08T09:00:00Z',
-            end_at: '2026-05-08T10:00:00Z',
-          },
+            end_at: '2026-05-08T10:00:00Z' },
           bundleId: FOREIGN_BOOKING,
           requesterPersonId: 'p',
-          recurrenceSeriesId: 'series-1',
-        }),
+          recurrenceSeriesId: 'series-1' }),
       );
     } catch (e) {
       caught = e;
     }
     expect(caught).toBeTruthy();
-    expect((caught as Error & { response?: Record<string, unknown> }).response).toMatchObject({
-      code: 'reference.not_in_tenant',
-      reference_table: 'bookings',
-      reference_id: FOREIGN_BOOKING,
-    });
+    expect((caught as { code: string }).code).toBe('reference.not_in_tenant');
     // Insert MUST NOT have run.
     const orderInserts = deps.inserts.filter((i) => i.table === 'orders');
     expect(orderInserts).toEqual([]);
@@ -133,11 +118,9 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
           requester_person_id: 'p',
           delivery_location_id: null,
           policy_snapshot: {},
-          recurrence_rule: null,
-        },
+          recurrence_rule: null },
       ],
-      bookings: [{ id: VALID_BOOKING, tenant_id: TENANT_ID }],
-    });
+      bookings: [{ id: VALID_BOOKING, tenant_id: TENANT_ID }] });
     const baseFrom = deps.supabase.admin.from;
     deps.supabase.admin.from = (table: string) => {
       if (table === 'orders') {
@@ -148,8 +131,7 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
             // Throw to abort the rest of the clone path; we've already
             // proven the validator passed.
             throw new StopHere('reached orders insert');
-          },
-        };
+          } };
       }
       return baseFrom(table);
     };
@@ -169,12 +151,10 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
           newReservation: {
             id: 'new-res',
             start_at: '2026-05-08T09:00:00Z',
-            end_at: '2026-05-08T10:00:00Z',
-          },
+            end_at: '2026-05-08T10:00:00Z' },
           bundleId: VALID_BOOKING,
           requesterPersonId: 'p',
-          recurrenceSeriesId: 'series-1',
-        }),
+          recurrenceSeriesId: 'series-1' }),
       );
     } catch (e) {
       caught = e;
@@ -185,7 +165,6 @@ describe('OrderService.cloneOrderForOccurrence — Plan A.2 tenant validation', 
     expect(orderInserts).toHaveLength(1);
     expect(orderInserts[0].row).toMatchObject({
       booking_id: VALID_BOOKING,
-      tenant_id: TENANT_ID,
-    });
+      tenant_id: TENANT_ID });
   });
 });

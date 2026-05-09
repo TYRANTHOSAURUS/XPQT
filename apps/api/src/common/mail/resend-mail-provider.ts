@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { AppErrors } from '../errors';
 import {
   type MailAttachment,
   type MailMessage,
@@ -46,10 +47,10 @@ export class ResendMailProvider implements MailProvider {
 
   async send(message: MailMessage): Promise<MailSendResult> {
     if (!this.apiKey) {
-      throw new BadRequestException('RESEND_API_KEY not configured — cannot dispatch mail.');
+      throw AppErrors.server('mail.config_missing', { detail: 'API key not configured — cannot dispatch mail.' });
     }
     if (!this.defaultFrom) {
-      throw new BadRequestException('RESEND_DEFAULT_FROM_EMAIL not configured — cannot dispatch mail.');
+      throw AppErrors.server('mail.config_missing', { detail: 'Default from-email not configured — cannot dispatch mail.' });
     }
 
     const fromHeader = `${escapeQuoted(message.fromName ?? this.defaultName)} <${message.from || this.defaultFrom}>`;
@@ -96,19 +97,19 @@ export class ResendMailProvider implements MailProvider {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new BadRequestException(`Resend request failed: ${msg}`);
+      throw AppErrors.server('mail.dispatch_failed', { detail: `Mail request failed: ${msg}` });
     }
 
     let body: unknown;
     try {
       body = await res.json();
     } catch {
-      throw new BadRequestException(`Resend returned non-JSON (${res.status})`);
+      throw AppErrors.server('mail.dispatch_failed', { detail: `Mail provider returned non-JSON (${res.status})` });
     }
     if (!res.ok) {
       const errorName = (body as { name?: string })?.name ?? 'unknown';
       const errorMsg  = (body as { message?: string })?.message ?? `Resend ${res.status}`;
-      throw new BadRequestException(`Resend ${res.status} (${errorName}): ${errorMsg}`);
+      throw AppErrors.server('mail.dispatch_failed', { detail: `Mail provider ${res.status} (${errorName}): ${errorMsg}` });
     }
     const ok = body as { id: string };
     return {
@@ -130,7 +131,7 @@ export class ResendMailProvider implements MailProvider {
    */
   verifyWebhook(args: VerifyWebhookArgs): MailWebhookEvent[] {
     if (!this.webhookSecretRaw) {
-      throw new UnauthorizedException('RESEND_WEBHOOK_SECRET not configured');
+      throw AppErrors.server('mail.config_missing', { detail: 'Webhook secret not configured' });
     }
     const secret = parseSvixSecret(this.webhookSecretRaw);
 
@@ -138,16 +139,16 @@ export class ResendMailProvider implements MailProvider {
     const ts = headerValue(args.headers, 'svix-timestamp');
     const sigList = headerValue(args.headers, 'svix-signature');
     if (!id || !ts || !sigList) {
-      throw new UnauthorizedException('missing svix-id / svix-timestamp / svix-signature header');
+      throw AppErrors.unauthorized('missing svix-id / svix-timestamp / svix-signature header');
     }
 
     const tsNum = Number(ts);
     if (!Number.isFinite(tsNum)) {
-      throw new UnauthorizedException('invalid svix-timestamp');
+      throw AppErrors.unauthorized('invalid svix-timestamp');
     }
     const ageSec = Math.abs(Math.floor(Date.now() / 1000) - tsNum);
     if (ageSec > ResendMailProvider.WEBHOOK_TOLERANCE_SECONDS) {
-      throw new UnauthorizedException(`svix-timestamp out of tolerance (${ageSec}s)`);
+      throw AppErrors.unauthorized(`svix-timestamp out of tolerance (${ageSec}s)`);
     }
 
     const raw = typeof args.rawBody === 'string'
@@ -169,14 +170,14 @@ export class ResendMailProvider implements MailProvider {
       return timingSafeEqual(provided, expected);
     });
     if (!matched) {
-      throw new UnauthorizedException('invalid Svix signature');
+      throw AppErrors.unauthorized('invalid Svix signature');
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString('utf8'));
     } catch {
-      throw new BadRequestException('webhook body is not valid JSON');
+      throw AppErrors.validationFailed('mail.webhook_invalid', { detail: 'webhook body is not valid JSON' });
     }
     /* Resend sends one event per webhook POST. */
     const ev = this.translateResendEvent(parsed);
@@ -268,7 +269,7 @@ function escapeQuoted(s: string): string {
 
 function assertNoCommaOrLineBreak(addr: string): string {
   if (/[\r\n,]/.test(addr)) {
-    throw new BadRequestException(`mail recipient contains illegal character: ${addr}`);
+    throw AppErrors.validationFailed('mail.invalid_recipient', { detail: `mail recipient contains illegal character: ${addr}` });
   }
   return addr.trim();
 }
@@ -290,7 +291,7 @@ function parseSvixSecret(raw: string): Buffer {
   try {
     return Buffer.from(trimmed, 'base64');
   } catch {
-    throw new UnauthorizedException('RESEND_WEBHOOK_SECRET is not valid base64');
+    throw AppErrors.server('mail.config_missing', { detail: 'Webhook secret is not valid base64' });
   }
 }
 

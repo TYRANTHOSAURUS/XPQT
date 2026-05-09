@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Headers,
@@ -10,6 +9,7 @@ import {
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../errors';
 import { Public } from '../../modules/auth/public.decorator';
 import { DbService } from '../db/db.service';
 import {
@@ -65,9 +65,9 @@ export class MailWebhookController {
        via verify + rawBody hook; pull it from req. */
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     if (!raw) {
-      throw new BadRequestException(
-        'rawBody not captured — register the bodyParser verify hook in main.ts',
-      );
+      throw AppErrors.server('mail.webhook_invalid', {
+        detail: 'rawBody not captured — register the bodyParser verify hook in main.ts',
+      });
     }
 
     let events: MailWebhookEvent[];

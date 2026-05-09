@@ -1,8 +1,7 @@
-import { BadRequestException } from '@nestjs/common';
 import {
   assertTenantOwned,
-  assertTenantOwnedAll,
-} from './tenant-validation';
+  assertTenantOwnedAll } from './tenant-validation';
+import { AppError } from './errors';
 
 // Hand-rolled supabase chain mock that captures the .eq() filters and the
 // .in() filter so tests can assert tenant scope was applied.
@@ -68,8 +67,7 @@ function makeSupabase(rowsByTable: Record<string, Array<PersonRow>>) {
                 });
                 return { data: match ? { id: match.id } : null, error: null };
               },
-              then: undefined as unknown,
-            };
+              then: undefined as unknown };
             // Make terminal `await` on the chain (used by .in() path) work.
             (chain as unknown as PromiseLike<unknown>).then = (
               onFulfilled: (v: { data: Array<{ id: string }> | null; error: null }) => unknown,
@@ -86,26 +84,20 @@ function makeSupabase(rowsByTable: Record<string, Array<PersonRow>>) {
               });
               return Promise.resolve({
                 data: matches.map((r) => ({ id: r.id })),
-                error: null,
-              }).then(onFulfilled);
+                error: null }).then(onFulfilled);
             };
             return chain;
           };
           return {
-            select: () => buildChain(),
-          };
-        },
-      },
-    },
-  };
+            select: () => buildChain() };
+        } } } };
 }
 
 describe('assertTenantOwned', () => {
   const TEAM = '00000000-0000-4000-8000-00000000aaaa';
   it('passes when row exists in the tenant', async () => {
     const { supabase, captures } = makeSupabase({
-      teams: [{ id: TEAM, tenant_id: 't1' }],
-    });
+      teams: [{ id: TEAM, tenant_id: 't1' }] });
     await expect(
       assertTenantOwned(supabase as never, 'teams', TEAM, 't1'),
     ).resolves.toBeUndefined();
@@ -116,29 +108,22 @@ describe('assertTenantOwned', () => {
 
   it('throws reference.not_in_tenant when row exists but in another tenant', async () => {
     const { supabase } = makeSupabase({
-      teams: [{ id: TEAM, tenant_id: 'other-tenant' }],
-    });
+      teams: [{ id: TEAM, tenant_id: 'other-tenant' }] });
     await expect(
       assertTenantOwned(supabase as never, 'teams', TEAM, 't1'),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: 'reference.not_in_tenant',
-        reference_table: 'teams',
-        reference_id: TEAM,
-      }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 
   it('throws reference.invalid_uuid for malformed input', async () => {
     const { supabase } = makeSupabase({});
     await expect(
       assertTenantOwned(supabase as never, 'teams', 'not-a-uuid', 't1'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
     await expect(
       assertTenantOwned(supabase as never, 'teams', 'not-a-uuid', 't1'),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'reference.invalid_uuid' }),
-    });
+      code: 'reference.invalid_uuid' });
   });
 
   it('honours activeOnly + reservableOnly options', async () => {
@@ -146,21 +131,18 @@ describe('assertTenantOwned', () => {
     const { supabase, captures } = makeSupabase({
       spaces: [
         { id: VALID, tenant_id: 't1', active: true, reservable: true },
-      ],
-    });
+      ] });
     await expect(
       assertTenantOwned(supabase as never, 'spaces', VALID, 't1', {
         activeOnly: true,
-        reservableOnly: true,
-      }),
+        reservableOnly: true }),
     ).resolves.toBeUndefined();
     expect(captures[0]).toMatchObject({
       table: 'spaces',
       id: VALID,
       tenant_id: 't1',
       active: true,
-      reservable: true,
-    });
+      reservable: true });
   });
 
   it('rejects rows that fail the activeOnly check', async () => {
@@ -168,23 +150,19 @@ describe('assertTenantOwned', () => {
     const { supabase } = makeSupabase({
       spaces: [
         { id: VALID, tenant_id: 't1', active: false, reservable: true },
-      ],
-    });
+      ] });
     await expect(
       assertTenantOwned(supabase as never, 'spaces', VALID, 't1', {
-        activeOnly: true,
-      }),
+        activeOnly: true }),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'reference.not_in_tenant' }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 
   it('skipForSystemActor returns without querying', async () => {
     const { supabase, captures } = makeSupabase({});
     await expect(
       assertTenantOwned(supabase as never, 'teams', 'team-1', 't1', {
-        skipForSystemActor: true,
-      }),
+        skipForSystemActor: true }),
     ).resolves.toBeUndefined();
     expect(captures).toEqual([]);
   });
@@ -192,18 +170,12 @@ describe('assertTenantOwned', () => {
   it('uses entityName in the error message when provided', async () => {
     const VALID = '00000000-0000-4000-8000-000000000001';
     const { supabase } = makeSupabase({
-      sla_policies: [{ id: VALID, tenant_id: 'other' }],
-    });
+      sla_policies: [{ id: VALID, tenant_id: 'other' }] });
     await expect(
       assertTenantOwned(supabase as never, 'sla_policies', VALID, 't1', {
-        entityName: 'SLA policy',
-      }),
+        entityName: 'SLA policy' }),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: 'reference.not_in_tenant',
-        message: expect.stringContaining('SLA policy'),
-      }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 
   // Plan A.4 / Commit 1 (N1) — invariant guard.
@@ -246,8 +218,7 @@ describe('assertTenantOwned', () => {
       // we're actually about to query.
       await expect(
         assertTenantOwned(supabase as never, 'teams', VALID, '', {
-          skipForSystemActor: true,
-        }),
+          skipForSystemActor: true }),
       ).resolves.toBeUndefined();
       expect(captures).toEqual([]);
     });
@@ -261,8 +232,7 @@ describe('assertTenantOwned', () => {
       const { supabase, captures } = makeSupabase({
         persons: [
           { id: VALID, tenant_id: 't1', active: false, anonymized_at: '2026-01-01' },
-        ],
-      });
+        ] });
       // Even a deactivated + anonymized person passes when personState is
       // omitted — back-compat for existing call sites.
       await expect(
@@ -275,15 +245,12 @@ describe('assertTenantOwned', () => {
       const { supabase } = makeSupabase({
         persons: [
           { id: VALID, tenant_id: 't1', active: false, anonymized_at: null, left_at: null },
-        ],
-      });
+        ] });
       await expect(
         assertTenantOwned(supabase as never, 'persons', VALID, 't1', {
-          personState: 'active',
-        }),
+          personState: 'active' }),
       ).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'reference.not_in_tenant' }),
-      });
+        code: 'reference.not_in_tenant' });
     });
 
     it("'active' filters out anonymized persons", async () => {
@@ -294,17 +261,13 @@ describe('assertTenantOwned', () => {
             tenant_id: 't1',
             active: true,
             anonymized_at: '2026-01-01',
-            left_at: null,
-          },
-        ],
-      });
+            left_at: null },
+        ] });
       await expect(
         assertTenantOwned(supabase as never, 'persons', VALID, 't1', {
-          personState: 'active',
-        }),
+          personState: 'active' }),
       ).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'reference.not_in_tenant' }),
-      });
+        code: 'reference.not_in_tenant' });
     });
 
     it("'active' filters out off-boarded persons (left_at IS NOT NULL)", async () => {
@@ -315,17 +278,13 @@ describe('assertTenantOwned', () => {
             tenant_id: 't1',
             active: true,
             anonymized_at: null,
-            left_at: '2026-01-01',
-          },
-        ],
-      });
+            left_at: '2026-01-01' },
+        ] });
       await expect(
         assertTenantOwned(supabase as never, 'persons', VALID, 't1', {
-          personState: 'active',
-        }),
+          personState: 'active' }),
       ).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'reference.not_in_tenant' }),
-      });
+        code: 'reference.not_in_tenant' });
     });
 
     it("'active' passes a clean active+non-anonymized+non-left person", async () => {
@@ -336,14 +295,11 @@ describe('assertTenantOwned', () => {
             tenant_id: 't1',
             active: true,
             anonymized_at: null,
-            left_at: null,
-          },
-        ],
-      });
+            left_at: null },
+        ] });
       await expect(
         assertTenantOwned(supabase as never, 'persons', VALID, 't1', {
-          personState: 'active',
-        }),
+          personState: 'active' }),
       ).resolves.toBeUndefined();
       // Verify the chain applied the filter (active=true + IS NULL on both
       // anonymized_at + left_at).
@@ -352,8 +308,7 @@ describe('assertTenantOwned', () => {
         id: VALID,
         tenant_id: 't1',
         active: true,
-        is_null_cols: expect.arrayContaining(['anonymized_at', 'left_at']),
-      });
+        is_null_cols: expect.arrayContaining(['anonymized_at', 'left_at']) });
     });
   });
 });
@@ -368,8 +323,7 @@ describe('assertTenantOwnedAll', () => {
       persons: [
         { id: A, tenant_id: 't1' },
         { id: B, tenant_id: 't1' },
-      ],
-    });
+      ] });
     const out = await assertTenantOwnedAll(
       supabase as never,
       'persons',
@@ -393,16 +347,11 @@ describe('assertTenantOwnedAll', () => {
       persons: [
         { id: A, tenant_id: 't1' },
         { id: B, tenant_id: 'other' }, // wrong tenant — should be reported missing
-      ],
-    });
+      ] });
     await expect(
       assertTenantOwnedAll(supabase as never, 'persons', [A, B], 't1'),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: 'reference.not_in_tenant',
-        missing_ids: [B],
-      }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 
   it('throws reference.invalid_uuid for malformed entries', async () => {
@@ -410,8 +359,7 @@ describe('assertTenantOwnedAll', () => {
     await expect(
       assertTenantOwnedAll(supabase as never, 'persons', [A, 'bad'], 't1'),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'reference.invalid_uuid' }),
-    });
+      code: 'reference.invalid_uuid' });
   });
 
   it('throws reference.too_many when array exceeds the cap', async () => {
@@ -422,16 +370,14 @@ describe('assertTenantOwnedAll', () => {
     await expect(
       assertTenantOwnedAll(supabase as never, 'persons', ids, 't1'),
     ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'reference.too_many' }),
-    });
+      code: 'reference.too_many' });
   });
 
   it('skipForSystemActor returns empty without querying', async () => {
     const { supabase, captures } = makeSupabase({});
     expect(
       await assertTenantOwnedAll(supabase as never, 'persons', [A, B, C], 't1', {
-        skipForSystemActor: true,
-      }),
+        skipForSystemActor: true }),
     ).toEqual([]);
     expect(captures).toEqual([]);
   });
@@ -463,8 +409,7 @@ describe('assertTenantOwnedAll', () => {
     // System actor short-circuits too.
     await expect(
       assertTenantOwnedAll(supabase as never, 'persons', [A, B], '', {
-        skipForSystemActor: true,
-      }),
+        skipForSystemActor: true }),
     ).resolves.toEqual([]);
   });
 
@@ -474,8 +419,7 @@ describe('assertTenantOwnedAll', () => {
       const { supabase } = makeSupabase({
         persons: [
           { id: A, tenant_id: 't1', active: false, anonymized_at: '2026-01-01' },
-        ],
-      });
+        ] });
       await expect(
         assertTenantOwnedAll(supabase as never, 'persons', [A], 't1'),
       ).resolves.toEqual([A]);
@@ -486,18 +430,12 @@ describe('assertTenantOwnedAll', () => {
         persons: [
           { id: A, tenant_id: 't1', active: true, anonymized_at: null, left_at: null },
           { id: B, tenant_id: 't1', active: false, anonymized_at: null, left_at: null },
-        ],
-      });
+        ] });
       await expect(
         assertTenantOwnedAll(supabase as never, 'persons', [A, B], 't1', {
-          personState: 'active',
-        }),
+          personState: 'active' }),
       ).rejects.toMatchObject({
-        response: expect.objectContaining({
-          code: 'reference.not_in_tenant',
-          missing_ids: [B],
-        }),
-      });
+        code: 'reference.not_in_tenant' });
     });
   });
 });

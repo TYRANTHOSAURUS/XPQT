@@ -1,10 +1,10 @@
 import {
-  BadRequestException,
   CanActivate,
   ExecutionContext,
   Injectable,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../errors';
 
 /**
  * Producer-route guard — requires `X-Client-Request-Id` to be present
@@ -42,9 +42,8 @@ export class RequireClientRequestIdGuard implements CanActivate {
       Request & { clientRequestId?: string; clientRequestIdSource?: 'client' | 'server_default' }
     >();
     if (!req.clientRequestId || req.clientRequestIdSource !== 'client') {
-      throw new BadRequestException({
-        code: 'client_request_id.required',
-        message:
+      throw AppErrors.validationFailed('client_request_id.required', {
+        detail:
           'X-Client-Request-Id header is required for this mutation. ' +
           'Generate a UUID per attempt on the client and thread it through ' +
           'your useMutation variables shape (see spec §3.3).',

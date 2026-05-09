@@ -1,8 +1,9 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { PermissionKey } from '@prequest/shared';
 import type { Request } from 'express';
 import { SupabaseService } from './supabase/supabase.service';
 import { TenantContext } from './tenant-context';
+import { AppErrors } from './errors';
 
 /**
  * Resolves authUid → userId, then checks user_has_permission() for the given
@@ -22,7 +23,7 @@ export class PermissionGuard {
 
   async requirePermission(request: Request, permission: PermissionKey): Promise<{ userId: string }> {
     const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     const tenant = TenantContext.current();
 
     const userLookup = await this.supabase.admin
@@ -32,7 +33,7 @@ export class PermissionGuard {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const userId = (userLookup.data as { id: string } | null)?.id;
-    if (!userId) throw new UnauthorizedException('No linked user in this tenant');
+    if (!userId) throw AppErrors.unauthorized('No linked user in this tenant');
 
     const { data, error } = await this.supabase.admin.rpc('user_has_permission', {
       p_user_id: userId,
@@ -42,7 +43,7 @@ export class PermissionGuard {
     if (error) throw error;
 
     if (!data) {
-      throw new ForbiddenException({ code: 'permission_denied', permission });
+      throw AppErrors.permissionDenied(permission);
     }
 
     return { userId };

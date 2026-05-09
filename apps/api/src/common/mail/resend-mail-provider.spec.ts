@@ -1,5 +1,5 @@
-import { UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
+import { AppError } from '../errors';
 import { ResendMailProvider } from './resend-mail-provider';
 
 const ORIG_ENV = { ...process.env };
@@ -43,8 +43,7 @@ describe('ResendMailProvider — send', () => {
       tags: { entity_type: 'vendor_daily_list', daily_list_id: 'abc' },
       attachments: [
         { filename: 'list.pdf', contentType: 'application/pdf', contents: Buffer.from('%PDF-1.4 ...') },
-      ],
-    });
+      ] });
     expect(result.messageId).toBe('resend-msg-123');
 
     const call = (global.fetch as jest.Mock).mock.calls[0];
@@ -78,8 +77,7 @@ describe('ResendMailProvider — send', () => {
       fromName: 'Acme\r\n"BCC: attacker@evil.com"',
       to: 'orders@vendor.example',
       subject: 's',
-      textBody: 't',
-    });
+      textBody: 't' });
     const body = JSON.parse(((global.fetch as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
     expect(body.from).not.toMatch(/[\r\n]/);
     expect(body.from).not.toContain('"BCC:');
@@ -92,16 +90,14 @@ describe('ResendMailProvider — send', () => {
       from: 'noreply@example.com',
       to: 'a@b.com,c@d.com',
       subject: 's',
-      textBody: 't',
-    })).rejects.toBeInstanceOf(BadRequestException);
+      textBody: 't' })).rejects.toBeInstanceOf(AppError);
   });
 
   it('throws BadRequest when RESEND_API_KEY is missing', async () => {
     delete process.env.RESEND_API_KEY;
     const provider = new ResendMailProvider();
     await expect(provider.send({
-      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't',
-    })).rejects.toBeInstanceOf(BadRequestException);
+      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toBeInstanceOf(AppError);
   });
 
   it('surfaces Resend errors with name + message', async () => {
@@ -113,8 +109,7 @@ describe('ResendMailProvider — send', () => {
     ) as unknown as typeof fetch;
     const provider = new ResendMailProvider();
     await expect(provider.send({
-      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't',
-    })).rejects.toThrow(/Resend 422.*validation_error.*invalid_to_address/);
+      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toThrow(/Mail provider 422.*validation_error.*invalid_to_address/);
   });
 });
 
@@ -135,8 +130,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     return {
       'svix-id':        id,
       'svix-timestamp': tsv,
-      'svix-signature': `v1,${sig}`,
-    };
+      'svix-signature': `v1,${sig}` };
   }
 
   it('translates email.delivered to a normalised delivered event', () => {
@@ -148,8 +142,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
         email_id: 'resend-msg-123',
         to: ['orders@vendor.example'],
         created_at: '2026-04-30T11:50:00Z',                // email creation time (older)
-      },
-    });
+      } });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('delivered');
@@ -170,9 +163,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
       data: {
         email_id: 'resend-msg-456',
         to: ['bad@example.com'],
-        bounce: { subType: 'General', message: 'mailbox does not exist' },
-      },
-    });
+        bounce: { subType: 'General', message: 'mailbox does not exist' } } });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
     expect(events[0].type).toBe('bounced');
     if (events[0].type === 'bounced') {
@@ -186,16 +177,14 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     const rawSup = JSON.stringify({
       type: 'email.bounced',
       created_at: '2026-04-30T12:05:00Z',
-      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Suppressed', message: 'on suppression list' } },
-    });
+      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Suppressed', message: 'on suppression list' } } });
     const sup = provider.verifyWebhook({ rawBody: rawSup, headers: svixHeaders(rawSup) });
     if (sup[0].type === 'bounced') expect(sup[0].bounceType).toBe('block');
 
     const rawTrans = JSON.stringify({
       type: 'email.bounced',
       created_at: '2026-04-30T12:05:00Z',
-      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Transient', message: 'temporary' } },
-    });
+      data: { email_id: 'm', to: ['r'], bounce: { subType: 'Transient', message: 'temporary' } } });
     const trans = provider.verifyWebhook({ rawBody: rawTrans, headers: svixHeaders(rawTrans) });
     if (trans[0].type === 'bounced') expect(trans[0].bounceType).toBe('soft');
   });
@@ -211,9 +200,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
       data: {
         email_id: 'resend-msg-fail',
         to: ['x@y.example'],
-        failed: { reason: 'Mailbox quota exceeded' },
-      },
-    });
+        failed: { reason: 'Mailbox quota exceeded' } } });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
     expect(events[0].type).toBe('failed');
     if (events[0].type === 'failed') {
@@ -225,8 +212,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     const provider = new ResendMailProvider();
     const raw = JSON.stringify({
       type: 'email.complained',
-      data: { email_id: 'resend-msg-789', to: ['spammer@example.com'], created_at: '2026-04-30T12:05:00Z' },
-    });
+      data: { email_id: 'resend-msg-789', to: ['spammer@example.com'], created_at: '2026-04-30T12:05:00Z' } });
     const events = provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) });
     expect(events[0].type).toBe('complained');
   });
@@ -245,14 +231,14 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     /* Sign with a DIFFERENT key — verification must fail. */
     const tamperedHeaders = svixHeaders(raw, undefined, Buffer.from('wrong-key', 'utf8'));
     expect(() => provider.verifyWebhook({ rawBody: raw, headers: tamperedHeaders }))
-      .toThrow(UnauthorizedException);
+      .toThrow(AppError);
   });
 
   it('rejects missing svix headers with 401', () => {
     const provider = new ResendMailProvider();
     const raw = JSON.stringify({ type: 'email.delivered', data: { email_id: 'm' } });
     expect(() => provider.verifyWebhook({ rawBody: raw, headers: {} }))
-      .toThrow(UnauthorizedException);
+      .toThrow(AppError);
   });
 
   it('rejects when RESEND_WEBHOOK_SECRET is unset', () => {
@@ -260,7 +246,7 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     const provider = new ResendMailProvider();
     const raw = JSON.stringify({ type: 'email.delivered', data: { email_id: 'm' } });
     expect(() => provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) }))
-      .toThrow(UnauthorizedException);
+      .toThrow(AppError);
   });
 
   it('rejects timestamp older than 5 minute tolerance', () => {
@@ -275,6 +261,6 @@ describe('ResendMailProvider — verifyWebhook (Svix-signed)', () => {
     const provider = new ResendMailProvider();
     const raw = 'not-json';
     expect(() => provider.verifyWebhook({ rawBody: raw, headers: svixHeaders(raw) }))
-      .toThrow(BadRequestException);
+      .toThrow(AppError);
   });
 });

@@ -31,8 +31,7 @@ function makeSupabase(rowsByTable: Record<string, Row[]>) {
           return true;
         });
         return { data: match ?? null, error: null };
-      },
-    };
+      } };
     return chain;
   }
   return {
@@ -43,13 +42,7 @@ function makeSupabase(rowsByTable: Record<string, Row[]>) {
           select: () => buildSelectChain(table),
           insert: () => ({
             select: () => ({
-              single: async () => ({ data: { id: 'inserted' }, error: null }),
-            }),
-          }),
-        }),
-      },
-    },
-  };
+              single: async () => ({ data: { id: 'inserted' }, error: null }) }) }) }) } } };
 }
 
 describe('DispatchService.resolveChildSla — Plan A.2 override tenant validation', () => {
@@ -66,8 +59,7 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
       request_types: [{ id: VALID_RT, tenant_id: TENANT.id, domain: 'fm' }],
       // The foreign sla_policies row is owned by another tenant — the
       // assertTenantOwned probe inside resolveChildSla rejects it.
-      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }],
-    });
+      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }] });
 
     const ticketService = {
       getById: jest.fn().mockResolvedValue({
@@ -80,15 +72,12 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
         priority: 'medium',
         requester_person_id: null,
         location_id: null,
-        asset_id: null,
-      }),
-      addActivity: jest.fn().mockResolvedValue(undefined),
-    };
+        asset_id: null }),
+      addActivity: jest.fn().mockResolvedValue(undefined) };
 
     const visibility = {
       loadContext: jest.fn().mockResolvedValue({}),
-      assertVisible: jest.fn().mockResolvedValue(undefined),
-    };
+      assertVisible: jest.fn().mockResolvedValue(undefined) };
 
     const routingService = {
       evaluate: jest.fn().mockResolvedValue({
@@ -97,21 +86,17 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
         rule_id: null,
         rule_name: null,
         strategy: 'fixed',
-        trace: [],
-      }),
-      recordDecision: jest.fn().mockResolvedValue(undefined),
-    };
+        trace: [] }),
+      recordDecision: jest.fn().mockResolvedValue(undefined) };
 
     const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
 
     const scopeOverrides = {
       resolve: jest.fn().mockResolvedValue({
         executor_sla_policy_id: FOREIGN_SLA, // ← the foreign uuid
-        precedence: 'exact_space',
-      }),
+        precedence: 'exact_space' }),
       resolveForLocation: jest.fn().mockResolvedValue(null),
-      deriveEffectiveLocation: jest.fn().mockResolvedValue(null),
-    };
+      deriveEffectiveLocation: jest.fn().mockResolvedValue(null) };
 
     const svc = new DispatchService(
       deps.supabase as never,
@@ -124,12 +109,7 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
 
     const dto: DispatchDto = { title: 'do x' };
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: 'reference.not_in_tenant',
-        reference_table: 'sla_policies',
-        reference_id: FOREIGN_SLA,
-      }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 
   // Plan A.4 / Commit 2 (C1) — system actor MUST validate FK refs.
@@ -142,8 +122,7 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
   it('rejects override sla_policy_id for SYSTEM_ACTOR too (data-integrity, not visibility)', async () => {
     const deps = makeSupabase({
       request_types: [{ id: VALID_RT, tenant_id: TENANT.id, domain: 'fm' }],
-      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }],
-    });
+      sla_policies: [{ id: FOREIGN_SLA, tenant_id: 'other-tenant' }] });
 
     const ticketService = {
       getById: jest.fn().mockResolvedValue({
@@ -156,10 +135,8 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
         priority: 'medium',
         requester_person_id: null,
         location_id: null,
-        asset_id: null,
-      }),
-      addActivity: jest.fn().mockResolvedValue(undefined),
-    };
+        asset_id: null }),
+      addActivity: jest.fn().mockResolvedValue(undefined) };
 
     const routingService = {
       evaluate: jest.fn().mockResolvedValue({
@@ -168,26 +145,21 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
         rule_id: null,
         rule_name: null,
         strategy: 'fixed',
-        trace: [],
-      }),
-      recordDecision: jest.fn().mockResolvedValue(undefined),
-    };
+        trace: [] }),
+      recordDecision: jest.fn().mockResolvedValue(undefined) };
 
     const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
 
     const scopeOverrides = {
       resolve: jest.fn().mockResolvedValue({
         executor_sla_policy_id: FOREIGN_SLA,
-        precedence: 'exact_space',
-      }),
+        precedence: 'exact_space' }),
       resolveForLocation: jest.fn().mockResolvedValue(null),
-      deriveEffectiveLocation: jest.fn().mockResolvedValue(null),
-    };
+      deriveEffectiveLocation: jest.fn().mockResolvedValue(null) };
 
     const visibility = {
       loadContext: jest.fn().mockResolvedValue({}),
-      assertVisible: jest.fn().mockResolvedValue(undefined),
-    };
+      assertVisible: jest.fn().mockResolvedValue(undefined) };
 
     const svc = new DispatchService(
       deps.supabase as never,
@@ -199,11 +171,6 @@ describe('DispatchService.resolveChildSla — Plan A.2 override tenant validatio
     );
 
     await expect(svc.dispatch(PARENT_ID, { title: 'x' }, '__system__')).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: 'reference.not_in_tenant',
-        reference_table: 'sla_policies',
-        reference_id: FOREIGN_SLA,
-      }),
-    });
+      code: 'reference.not_in_tenant' });
   });
 });

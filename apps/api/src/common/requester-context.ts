@@ -1,6 +1,6 @@
-import { NotFoundException } from '@nestjs/common';
 import { SupabaseService } from './supabase/supabase.service';
 import { TenantContext } from './tenant-context';
+import { AppErrors } from './errors';
 
 /**
  * Shared requester profile used by predicate engines (room rules + service
@@ -49,7 +49,7 @@ export async function loadRequesterContext(
   if (pErr) throw pErr;
   if (mErr) throw mErr;
   if (uErr) throw uErr;
-  if (!person) throw new NotFoundException(`Person ${personId} not found`);
+  if (!person) throw AppErrors.notFound('person', personId);
   const userId = (user as { id: string } | null)?.id ?? null;
 
   let roleIds: string[] = [];

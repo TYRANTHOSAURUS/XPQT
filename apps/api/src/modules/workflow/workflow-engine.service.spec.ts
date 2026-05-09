@@ -340,7 +340,7 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
       caught = e;
     }
     expect(caught).toBeTruthy();
-    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+    expect((caught as { code?: string }).code).toBe(
       'reference.not_in_tenant',
     );
     // No approvals row should have been inserted.
@@ -370,7 +370,7 @@ describe('WorkflowEngineService.executeNode (approval) — Plan A.4 / Commit 3 (
       caught = e;
     }
     expect(caught).toBeTruthy();
-    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+    expect((caught as { code?: string }).code).toBe(
       'reference.not_in_tenant',
     );
     expect(inserts).toEqual([]);
@@ -628,7 +628,7 @@ describe('WorkflowEngineService.executeNode (update_ticket) — Plan A.4 / Commi
     } catch (e) {
       caught = e;
     }
-    expect((caught as { response?: { code?: string } }).response?.code).toBe(
+    expect((caught as { code?: string }).code).toBe(
       'reference.not_in_tenant',
     );
     expect(updateCalls).toEqual([]);

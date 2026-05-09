@@ -384,6 +384,19 @@ export type KnownErrorCode =
   | 'routing.duplicate'
   | 'routing.v2_not_implemented'
 
+  // ─── common migration (Phase 7.B-1.common) ───────────────────────────────
+  | 'person.not_found'
+  | 'tenant.unknown'
+  | 'mail.config_missing'
+  | 'mail.dispatch_failed'
+  | 'mail.invalid_recipient'
+  | 'mail.webhook_unauthorized'
+  | 'mail.webhook_invalid'
+  | 'reference.field_invalid'
+  | 'reference.invalid_array_size'
+  | 'client_request_id.required'
+  | 'client_request_id.invalid'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1026,6 +1039,17 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'routing.invalid_state',
   'routing.duplicate',
   'routing.v2_not_implemented',
+  'person.not_found',
+  'tenant.unknown',
+  'mail.config_missing',
+  'mail.dispatch_failed',
+  'mail.invalid_recipient',
+  'mail.webhook_unauthorized',
+  'mail.webhook_invalid',
+  'reference.field_invalid',
+  'reference.invalid_array_size',
+  'client_request_id.required',
+  'client_request_id.invalid',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

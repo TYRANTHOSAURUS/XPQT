@@ -1392,6 +1392,25 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'routing.invalid_state': { title: "Couldn't process", detail: 'Invalid state for this action.' },
   'routing.duplicate': { title: "Couldn't save", detail: 'A duplicate already exists.' },
   'routing.v2_not_implemented': { title: "That feature isn't available yet" },
+
+  // ─── common (Phase 7.B-1.common) ─────────────────────────────────────────
+  'person.not_found': { title: "Couldn't find that person" },
+  'tenant.unknown': { title: "Couldn't find that workspace" },
+  'mail.config_missing': { title: "Couldn't send that email", detail: 'Mail provider is not configured.' },
+  'mail.dispatch_failed': { title: "Couldn't send that email" },
+  'mail.invalid_recipient': { title: "Couldn't send that email", detail: 'Recipient address is invalid.' },
+  'mail.webhook_unauthorized': { title: 'Webhook authentication failed' },
+  'mail.webhook_invalid': { title: 'Webhook request invalid' },
+  'reference.field_invalid': { title: "Couldn't save", detail: 'A referenced field is invalid.' },
+  'reference.invalid_array_size': { title: "Couldn't save", detail: 'Array exceeds the allowed size.' },
+  'client_request_id.required': {
+    title: "Couldn't process",
+    detail: 'A client request id is required for this operation.',
+  },
+  'client_request_id.invalid': {
+    title: "Couldn't process",
+    detail: 'Client request id is invalid.',
+  },
 };
 
 /**

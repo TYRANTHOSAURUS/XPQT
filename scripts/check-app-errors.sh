@@ -53,6 +53,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/vendor-portal"
   "apps/api/src/modules/privacy-compliance"
   "apps/api/src/modules/routing"
+  "apps/api/src/common"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,
@@ -70,7 +71,9 @@ for module in "${MIGRATED_MODULES[@]}"; do
   # Exclude .spec.ts files — tests may instantiate Nest exceptions for
   # legacy-shape assertions while the underlying production code still
   # throws raw exceptions (e.g. tenant-validation.ts, not yet migrated).
-  matches=$(grep -rEn "$FORBIDDEN" "$module" --include='*.ts' --exclude='*.spec.ts' || true)
+  # Exclude common/errors/ — those are foundation files that legitimately
+  # throw raw exceptions (the filter normalizes them).
+  matches=$(grep -rEn "$FORBIDDEN" "$module" --include='*.ts' --exclude='*.spec.ts' --exclude-dir='errors' || true)
   if [ -n "$matches" ]; then
     echo "[FAIL] Raw NestJS exception throws found in migrated module: $module"
     echo "$matches"
