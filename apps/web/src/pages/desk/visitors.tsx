@@ -1043,7 +1043,7 @@ function DeskVisitorsInner() {
 
       {isError && !isLoading && (
         <div className="mx-6 mb-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          Couldn’t load visitors. Refresh to retry.
+          Couldn't load visitors. Refresh to retry.
         </div>
       )}
 
@@ -1231,7 +1231,7 @@ function LooseEndsPanel({
       {
         onSuccess: () => toastSaved('pass', { silent: true }),
         onError: (err) =>
-          handleMutationError(err, { actionTitle: "Couldn’t mark returned", retry: () => handleReturn(passId) }),
+          handleMutationError(err, { actionTitle: "Couldn't mark returned", retry: () => handleReturn(passId) }),
       },
     );
   };
@@ -1242,7 +1242,7 @@ function LooseEndsPanel({
       {
         onSuccess: () => toastSaved('pass', { silent: true }),
         onError: (err) =>
-          handleMutationError(err, { actionTitle: "Couldn’t mark lost", retry: () => handleMarkLost(passId) }),
+          handleMutationError(err, { actionTitle: "Couldn't mark lost", retry: () => handleMarkLost(passId) }),
       },
     );
   };

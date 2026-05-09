@@ -223,6 +223,8 @@ export function BookingComposerModal({
     // Refuse to submit until the cache is resolved (validateDraft already
     // gates spaceId presence; this gates room-name lookup).
     if (composer.draft.spaceId && !pickedRoom) {
+      // Pattern E (deferred): booking-composer error UX renders alternatives
+      // inline + tracks per-attempt requestId. Migrate when ConflictModal v2 ships.
       toastError("Couldn't book the room", {
         description: 'Room details still loading — try again in a moment.',
       });
@@ -319,6 +321,8 @@ export function BookingComposerModal({
       onOpenChange(false);
       onBooked?.(bookingId);
     } catch (err) {
+      // Pattern E (deferred): booking-composer error UX renders alternatives
+      // inline + tracks per-attempt requestId. Migrate when ConflictModal v2 ships.
       toastError("Couldn't book the room", {
         error: err,
         retry: () => void handleSubmit(),

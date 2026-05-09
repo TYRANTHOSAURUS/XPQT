@@ -137,7 +137,7 @@ export function ServiceSection(props: ServiceSectionProps) {
             </div>
           ) : query.error ? (
             <p className="text-xs text-destructive">
-              Couldn’t load options. {(query.error as Error).message}
+              Couldn't load options. {(query.error as Error).message}
             </p>
           ) : items.length === 0 ? (
             <p className="text-xs text-muted-foreground">

@@ -71,6 +71,7 @@ import {
 import { useSpaces } from '@/api/spaces';
 import { PersonPicker, type Person } from '@/components/person-picker';
 import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -369,6 +370,7 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
     const finalMeetingRoom = meetingRoomId;
 
     if (!finalBuildingId || !finalExpectedAt) {
+      // Pattern D: pre-validation guard, not an API error path
       toastError("Couldn't send the invite", {
         description: 'Pick a building and an expected arrival time first.',
       });
@@ -393,11 +395,12 @@ export function VisitorInviteForm(props: VisitorInviteFormProps) {
     } catch (err) {
       const status = (err as { status?: number })?.status;
       if (status === 403) {
+        // Pattern D: bespoke 403 copy specific to invite-flow permission semantics
         toastError("You don't have access to invite at this building", {
           description: 'Contact your admin to extend your location grants.',
         });
       } else {
-        toastError("Couldn't send the invite", { error: err, retry: handleSubmit });
+        handleMutationError(err, { actionTitle: "Couldn't send the invite", retry: handleSubmit });
       }
     }
   };

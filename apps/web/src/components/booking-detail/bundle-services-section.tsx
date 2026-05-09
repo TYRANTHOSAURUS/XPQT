@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { CheckCircle2, Clock, Radio, Truck, Pencil, Plus, Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -161,16 +161,22 @@ function BundleServicesContent({
   );
   useRealtimeBundle(bundleId, orderIds, { enabled: orderIds.length > 0 });
 
+  // Surface load failures via the central error helper (per the
+  // error-handling spec — never paint raw error.message into the UI).
+  // The inline strip stays as a low-key fallback so the section doesn't
+  // collapse silently on a non-page-class failure. Using useEffect here
+  // keeps the toast tied to the error transition rather than firing on
+  // every re-render while the error persists.
+  useEffect(() => {
+    if (!error) return;
+    handleQueryError(error, { callSite: 'query', actionTitle: "Couldn't load services" });
+  }, [error]);
+
   if (isLoading) {
     return <div className="border-t px-5 py-3 text-xs text-muted-foreground">Loading services…</div>;
   }
 
   if (error) {
-    // Surface load failures via the central error helper (per the
-    // error-handling spec — never paint raw error.message into the UI).
-    // The inline strip stays as a low-key fallback so the section doesn't
-    // collapse silently on a non-page-class failure.
-    handleQueryError(error, { callSite: 'query', actionTitle: "Couldn't load services" });
     return (
       <div className="border-t px-5 py-3 text-xs text-muted-foreground">
         Services unavailable.

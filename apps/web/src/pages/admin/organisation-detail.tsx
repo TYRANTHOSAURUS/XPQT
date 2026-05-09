@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
-import { handleMutationError } from '@/lib/errors';
+import { handleMutationError, handleQueryError } from '@/lib/errors';
 import {
   SettingsPageShell,
   SettingsPageHeader,
@@ -62,7 +62,7 @@ export function OrganisationDetailPage() {
       setDescription(data.description ?? '');
       setParentId(data.parent_id);
     } catch (err) {
-      handleMutationError(err, { actionTitle: "Couldn't load organisation", retry: load });
+      handleQueryError(err, { callSite: 'query', actionTitle: "Couldn't load organisation" });
     } finally {
       setLoading(false);
     }
@@ -101,14 +101,26 @@ export function OrganisationDetailPage() {
       await apiFetch(`/org-nodes/${id}`, { method: 'DELETE' });
       toastRemoved('Organisation', { verb: 'deleted' });
       navigate('/admin/organisations');
-    } catch (err) {
-      // Custom description hint for the FK-violation case (children must be
-      // moved/deleted first); helper layer doesn't accept a description
-      // override, so this stays as toastError.
-      toastError("Couldn't delete organisation", {
-        error: err,
-        description: "Move or delete this organisation's children first.",
-      });
+    } catch (err: unknown) {
+      // The API emits a single `org_node.delete_failed` for every delete
+      // failure today (no FK-specific code), so the only honest narrowing
+      // is "did the server reject with this delete code?". When it does,
+      // the most common cause in practice is unmoved children — surface
+      // the hint inline. Anything else (network, 5xx, auth) routes
+      // through the standard mutation-error surface so the user gets a
+      // retry affordance instead of a misleading "move children first"
+      // toast.
+      // TODO(api): introduce a dedicated `org_node.has_children` code so
+      // we can branch precisely (today's hint is a heuristic).
+      const errAny = err as { body?: { code?: string }; status?: number };
+      if (errAny?.body?.code === 'org_node.delete_failed') {
+        toastError("Couldn't delete organisation", {
+          error: err,
+          description: "Move or delete this organisation's children first.",
+        });
+        return;
+      }
+      handleMutationError(err, { actionTitle: "Couldn't delete organisation", retry: remove });
     }
   };
 

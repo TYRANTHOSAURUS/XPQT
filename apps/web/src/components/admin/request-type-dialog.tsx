@@ -18,7 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
-import { handleMutationError } from '@/lib/errors';
+import { handleMutationError, handleQueryError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useSlaPolicies } from '@/api/sla-policies';
@@ -166,7 +166,7 @@ export function RequestTypeDialog({
         setApprovalApproverTeamId(rt.approval_approver_team_id ?? '');
       } catch (err) {
         if (cancelled) return;
-        handleMutationError(err, { actionTitle: "Couldn't load request type" });
+        handleQueryError(err, { callSite: 'query', actionTitle: "Couldn't load request type" });
         onOpenChange(false);
       }
     })();

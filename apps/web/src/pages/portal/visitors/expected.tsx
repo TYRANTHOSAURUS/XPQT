@@ -149,7 +149,7 @@ export function PortalVisitorsExpectedPage() {
 
       {isError && !isLoading && (
         <p role="alert" className="text-sm text-destructive">
-          Couldn’t load your visitors. Try refreshing.
+          Couldn't load your visitors. Try refreshing.
         </p>
       )}
 
@@ -215,7 +215,7 @@ function VisitorRow({ visitor, onOpen }: VisitorRowProps) {
       toastSuccess('Reference copied');
     } catch {
       // Browser-permission failure (clipboard API blocked); not an API error.
-      toastError("Couldn’t copy to clipboard", {
+      toastError("Couldn't copy to clipboard", {
         description: 'Your browser blocked clipboard access.',
       });
     }
@@ -311,7 +311,7 @@ function VisitorDetailDialog({ visitorId, onOpenChange }: VisitorDetailDialogPro
 
         {isError && !isLoading && (
           <p className="text-sm text-destructive">
-            Couldn’t load this visitor. Try refreshing.
+            Couldn't load this visitor. Try refreshing.
           </p>
         )}
 

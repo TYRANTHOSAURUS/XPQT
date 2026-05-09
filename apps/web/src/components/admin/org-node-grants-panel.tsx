@@ -6,7 +6,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { LocationCombobox } from '@/components/location-combobox';
 import { apiFetch } from '@/lib/api';
 import { toastRemoved, toastSuccess } from '@/lib/toast';
-import { handleMutationError } from '@/lib/errors';
+import { handleMutationError, handleQueryError } from '@/lib/errors';
 interface Grant {
   id: string;
   space_id: string;
@@ -28,7 +28,7 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
       const rows = await apiFetch<Grant[]>(`/org-nodes/${nodeId}/location-grants`);
       setGrants(rows);
     } catch (err) {
-      handleMutationError(err, { actionTitle: "Couldn't load grants", retry: reload });
+      handleQueryError(err, { callSite: 'query', actionTitle: "Couldn't load grants" });
     } finally {
       setLoading(false);
     }

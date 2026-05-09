@@ -554,6 +554,8 @@ function KioskProvisioningGroup({ spaceId }: { spaceId: string }) {
           });
           setShowProvision(null);
         },
+        // Admin-side kiosk pool provisioning — Pattern A migration is correct.
+        // (Pattern E only applies to public kiosk UI under /pages/kiosk/*.)
         onError: (err) =>
           handleMutationError(err, { actionTitle: "Couldn't provision kiosk" }),
       },

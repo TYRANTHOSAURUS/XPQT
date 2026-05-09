@@ -210,6 +210,8 @@ export function QuickBookPopover({
       onOpenChange(false);
       if (reservationId) onBooked?.(reservationId);
     } catch (err) {
+      // Pattern E (deferred): booking-composer error UX renders alternatives
+      // inline + tracks per-attempt requestId. Migrate when ConflictModal v2 ships.
       toastError("Couldn't book the room", {
         error: err,
         retry: () => handleBook(),

@@ -6,7 +6,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { PersonPicker } from '@/components/person-picker';
 import { apiFetch } from '@/lib/api';
 import { toastRemoved, toastSuccess } from '@/lib/toast';
-import { handleMutationError } from '@/lib/errors';
+import { handleMutationError, handleQueryError } from '@/lib/errors';
 interface Member {
   id: string;
   person_id: string;
@@ -26,7 +26,7 @@ export function OrgNodeMembersPanel({ nodeId }: { nodeId: string }) {
       const rows = await apiFetch<Member[]>(`/org-nodes/${nodeId}/members`);
       setMembers(rows);
     } catch (err) {
-      handleMutationError(err, { actionTitle: "Couldn't load members", retry: reload });
+      handleQueryError(err, { callSite: 'query', actionTitle: "Couldn't load members" });
     } finally {
       setLoading(false);
     }
