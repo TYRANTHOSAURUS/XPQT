@@ -27,6 +27,7 @@
 import {
   useQuery,
   type DefinedUseQueryResult,
+  type QueryKey,
   type UseQueryOptions,
   type UseQueryResult,
 } from '@tanstack/react-query';
@@ -38,8 +39,13 @@ const PAGE_CLASSES = new Set(['not_found', 'permission', 'server', 'unknown']);
 /** Hidden symbol for the cached classification — not exported on purpose. */
 export const STASHED_CLASSIFIED = Symbol.for('prequest.classified');
 
-export function usePageQuery<TQueryFnData, TError = unknown, TData = TQueryFnData>(
-  options: UseQueryOptions<TQueryFnData, TError, TData>,
+export function usePageQuery<
+  TQueryFnData = unknown,
+  TError = unknown,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+>(
+  options: UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
 ): UseQueryResult<TData, TError> | DefinedUseQueryResult<TData, TError> {
   const result = useQuery(options);
   if (result.isError) {

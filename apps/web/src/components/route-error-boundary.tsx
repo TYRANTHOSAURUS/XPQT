@@ -198,8 +198,14 @@ export class RouteErrorBoundary extends Component<Props, State> {
           actions={
             <>
               <Button onClick={this.handleReload} size="sm">Reload</Button>
-              <Button asChild size="sm" variant="outline">
-                <a href="mailto:support@prequest.app">Contact support</a>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  window.location.href = 'mailto:support@prequest.app';
+                }}
+              >
+                Contact support
               </Button>
             </>
           }
