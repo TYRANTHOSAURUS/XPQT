@@ -14,7 +14,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
 import {
-  Field, FieldError, FieldGroup, FieldLabel,
+  Field, FieldGroup, FieldLabel,
 } from '@/components/ui/field';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -26,6 +26,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useUsers, userKeys } from '@/api/users';
 import { usePersons } from '@/api/persons';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError } from '@/lib/errors';
 import { userStatusDotClass } from '@/lib/status-tone';
 import { PersonAvatar } from '@/components/person-avatar';
 import { UserDetailBody, userDisplayName } from './user-detail';
@@ -70,7 +71,6 @@ export function UsersPage() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserUsername, setNewUserUsername] = useState('');
   const [newUserStatus, setNewUserStatus] = useState('active');
-  const [createError, setCreateError] = useState<string | null>(null);
 
   const linkedPersonIds = new Set(
     (users ?? []).map((u) => u.person_id ?? u.person?.id).filter(Boolean) as string[],
@@ -101,7 +101,6 @@ export function UsersPage() {
     setNewUserEmail('');
     setNewUserUsername('');
     setNewUserStatus('active');
-    setCreateError(null);
   };
 
   const handlePersonPick = (id: string) => {
@@ -113,7 +112,6 @@ export function UsersPage() {
   const handleCreate = async () => {
     if (!newUserPersonId || !newUserEmail.trim()) return;
     try {
-      setCreateError(null);
       await apiFetch('/users', {
         method: 'POST',
         body: JSON.stringify({
@@ -128,7 +126,7 @@ export function UsersPage() {
       refetchUsers();
       toastCreated('User');
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Failed to create user');
+      handleMutationError(err, { actionTitle: "Couldn't create user", retry: handleCreate });
     }
   };
 
@@ -256,7 +254,6 @@ export function UsersPage() {
                 </SelectContent>
               </Select>
             </Field>
-            {createError && <FieldError>{createError}</FieldError>}
           </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>

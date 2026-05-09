@@ -183,7 +183,7 @@ export function PersonsPage() {
       refetch();
       toastCreated('Person', { onView: () => selectPerson(created.id) });
     } catch (err) {
-      handleMutationError(err, { actionTitle: "Couldn't save person" });
+      handleMutationError(err, { actionTitle: "Couldn't save person", retry: handleCreate });
     }
   };
 
