@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 // ====================================================================
 // Types — mirror apps/api/src/modules/privacy-compliance/*.ts
@@ -121,6 +122,7 @@ export function useUpdateRetention(category: string) {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: gdprKeys.retention() }),
+    ...withErrorHandling({ actionTitle: "Couldn't update retention" }),
   });
 }
 
@@ -158,6 +160,7 @@ export function useInitiateAccessRequest() {
         body: JSON.stringify({ fulfill: fulfill ?? true }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: gdprKeys.requests() }),
+    ...withErrorHandling({ actionTitle: "Couldn't initiate access request" }),
   });
 }
 
@@ -178,6 +181,7 @@ export function useInitiateErasureRequest() {
         }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: gdprKeys.requests() }),
+    ...withErrorHandling({ actionTitle: "Couldn't initiate erasure request" }),
   });
 }
 
@@ -210,6 +214,7 @@ export function usePlaceLegalHold() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: gdprKeys.legalHolds() }),
+    ...withErrorHandling({ actionTitle: "Couldn't place legal hold" }),
   });
 }
 
@@ -222,6 +227,7 @@ export function useReleaseLegalHold() {
         body: JSON.stringify({ reason }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: gdprKeys.legalHolds() }),
+    ...withErrorHandling({ actionTitle: "Couldn't release legal hold" }),
   });
 }
 
