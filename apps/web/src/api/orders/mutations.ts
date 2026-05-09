@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { bundleKeys } from '@/api/booking-bundles';
 import { orderKeys } from './keys';
 import type { ServiceLinePayload } from './types';
@@ -24,5 +25,6 @@ export function useCreateStandaloneOrder() {
       qc.invalidateQueries({ queryKey: orderKeys.lists() });
       qc.invalidateQueries({ queryKey: bundleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create order" }),
   });
 }
