@@ -20,6 +20,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { visitorKeys, type VisitorType } from './keys';
 import type { ReceptionPass } from './reception';
 
@@ -138,6 +139,7 @@ export function useCreateVisitorType() {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.typesAdmin() });
       qc.invalidateQueries({ queryKey: visitorKeys.types() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create visitor type" }),
   });
 }
 
@@ -162,6 +164,7 @@ export function useUpdateVisitorType(id: string) {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.typesAdmin() });
       qc.invalidateQueries({ queryKey: visitorKeys.types() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update visitor type" }),
   });
 }
 
@@ -178,6 +181,7 @@ export function useDeleteVisitorType() {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.typesAdmin() });
       qc.invalidateQueries({ queryKey: visitorKeys.types() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete visitor type" }),
   });
 }
 
@@ -252,6 +256,7 @@ export function useCreatePool() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchors() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create pool" }),
   });
 }
 
@@ -273,6 +278,7 @@ export function useAddPass(spaceId: string) {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchor(spaceId) });
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchors() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't add pass" }),
   });
 }
 
@@ -294,6 +300,7 @@ export function useUpdatePass(spaceId: string) {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchor(spaceId) });
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchors() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update pass" }),
   });
 }
 
@@ -309,6 +316,7 @@ export function useMarkPassRecoveredAdmin(spaceId: string) {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchor(spaceId) });
       qc.invalidateQueries({ queryKey: visitorAdminKeys.poolAnchors() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't mark pass recovered" }),
   });
 }
 
@@ -343,6 +351,7 @@ export function useProvisionKiosk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't provision kiosk" }),
   });
 }
 
@@ -357,6 +366,7 @@ export function useRotateKiosk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't rotate kiosk token" }),
   });
 }
 
@@ -371,6 +381,7 @@ export function useRevokeKiosk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: visitorAdminKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't revoke kiosk token" }),
   });
 }
 
