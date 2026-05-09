@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError } from '@/lib/errors';
 
 export interface Approval {
   id: string;
@@ -75,10 +76,16 @@ export function useRespondApproval(personId: string | null | undefined) {
       }
       return { previous };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, vars, ctx) => {
       if (ctx?.previous && personId) {
         qc.setQueryData(approvalKeys.pendingFor(personId), ctx.previous);
       }
+      handleMutationError(err, {
+        actionTitle:
+          vars.status === 'approved'
+            ? "Couldn't approve request"
+            : "Couldn't reject request",
+      });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: approvalKeys.all }),
   });
