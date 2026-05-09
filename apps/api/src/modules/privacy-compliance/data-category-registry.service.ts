@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { DataCategoryAdapter } from './data-category.adapter';
 
 /**
@@ -22,9 +23,9 @@ export class DataCategoryRegistry {
    */
   register(adapter: DataCategoryAdapter): void {
     if (this.byCategory.has(adapter.category)) {
-      throw new Error(
-        `DataCategoryRegistry: duplicate registration for "${adapter.category}"`,
-      );
+      throw AppErrors.server('privacy.unknown_data_category', {
+        detail: `DataCategoryRegistry: duplicate registration for "${adapter.category}"`,
+      });
     }
     this.byCategory.set(adapter.category, adapter);
     this.log.log(`registered category: ${adapter.category}`);

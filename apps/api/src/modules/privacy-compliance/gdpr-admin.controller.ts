@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,6 +9,7 @@ import {
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import { PermissionGuard } from '../../common/permission-guard';
 import { TenantContext } from '../../common/tenant-context';
 import { DataSubjectService } from './data-subject.service';
@@ -69,7 +69,7 @@ export class GdprAdminController {
     @Body() body: { retention_days?: number; lia_text?: string | null; reason: string },
   ) {
     const { userId } = await this.permission.requirePermission(req, GdprPermission.Configure);
-    if (!body?.reason) throw new BadRequestException('reason is required');
+    if (!body?.reason) throw AppErrors.validationFailed('privacy.reason_required', { detail: 'reason is required' });
 
     const tenant = TenantContext.current();
     const patch: SetCategorySettingsInput = {
@@ -203,8 +203,8 @@ export class GdprAdminController {
     },
   ) {
     const { userId } = await this.permission.requirePermission(req, GdprPermission.PlaceLegalHold);
-    if (!body?.hold_type) throw new BadRequestException('hold_type is required');
-    if (!body?.reason)    throw new BadRequestException('reason is required');
+    if (!body?.hold_type) throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'hold_type is required' });
+    if (!body?.reason)    throw AppErrors.validationFailed('privacy.reason_required', { detail: 'reason is required' });
 
     const tenant = TenantContext.current();
     return this.legalHold.place({
@@ -225,7 +225,7 @@ export class GdprAdminController {
     @Body() body: { reason: string },
   ) {
     const { userId } = await this.permission.requirePermission(req, GdprPermission.PlaceLegalHold);
-    if (!body?.reason) throw new BadRequestException('reason is required');
+    if (!body?.reason) throw AppErrors.validationFailed('privacy.reason_required', { detail: 'reason is required' });
 
     const tenant = TenantContext.current();
     return this.legalHold.release({

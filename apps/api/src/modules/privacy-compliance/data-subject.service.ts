@@ -1,10 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AuditOutboxService } from './audit-outbox.service';
 import { DataCategoryRegistry } from './data-category-registry.service';
@@ -50,7 +46,7 @@ export class DataSubjectService {
       [input.tenantId, input.subjectPersonId],
     );
     if (!subject) {
-      throw new NotFoundException(`Person ${input.subjectPersonId} not found in tenant ${input.tenantId}`);
+      throw AppErrors.notFoundWithCode('privacy.subject_not_found', `Person ${input.subjectPersonId} not found in tenant ${input.tenantId}`);
     }
 
     const dsr = await this.db.queryOne<DsrRow>(
@@ -61,7 +57,7 @@ export class DataSubjectService {
       [input.tenantId, input.subjectPersonId, input.initiatedByUserId],
     );
     if (!dsr) {
-      throw new BadRequestException('Failed to create DSR row');
+      throw AppErrors.server('privacy.dsr_create_failed', { detail: 'Failed to create DSR row' });
     }
 
     await this.auditOutbox.emit({
@@ -88,9 +84,9 @@ export class DataSubjectService {
         where tenant_id = $1 and id = $2`,
       [input.tenantId, input.requestId],
     );
-    if (!dsr) throw new NotFoundException('DSR not found');
+    if (!dsr) throw AppErrors.notFoundWithCode('privacy.dsr_not_found', 'DSR not found');
     if (dsr.status === 'completed') {
-      throw new BadRequestException('DSR already completed');
+      throw AppErrors.validationFailed('privacy.dsr_invalid_state', { detail: 'DSR already completed' });
     }
 
     const adapters = this.registry.all();
@@ -138,14 +134,14 @@ export class DataSubjectService {
         upsert: true,
       });
     if (uploadErr) {
-      throw new BadRequestException(`Bundle upload failed: ${uploadErr.message}`);
+      throw AppErrors.server('privacy.bundle_upload_failed', { detail: `Bundle upload failed: ${uploadErr.message}`, cause: uploadErr });
     }
 
     const { data: signed, error: signErr } = await this.supabase.admin.storage
       .from(DataSubjectService.EXPORT_BUCKET)
       .createSignedUrl(path, DataSubjectService.SIGNED_URL_TTL_SECONDS);
     if (signErr || !signed) {
-      throw new BadRequestException(`Signed URL mint failed: ${signErr?.message ?? 'unknown'}`);
+      throw AppErrors.server('privacy.signed_url_failed', { detail: `Signed URL mint failed: ${signErr?.message ?? 'unknown'}` });
     }
 
     const expiresAt = new Date(Date.now() + DataSubjectService.SIGNED_URL_TTL_SECONDS * 1000);
@@ -209,10 +205,10 @@ export class DataSubjectService {
       [input.tenantId, input.subjectPersonId],
     );
     if (!subject) {
-      throw new NotFoundException(`Person ${input.subjectPersonId} not found in tenant ${input.tenantId}`);
+      throw AppErrors.notFoundWithCode('privacy.subject_not_found', `Person ${input.subjectPersonId} not found in tenant ${input.tenantId}`);
     }
     if (!input.reason || input.reason.trim().length < 8) {
-      throw new BadRequestException('Reason required (>=8 chars) for erasure requests.');
+      throw AppErrors.validationFailed('privacy.reason_required', { detail: 'Reason required (>=8 chars) for erasure requests.' });
     }
 
     // Check person-level + tenant-wide active holds.
@@ -242,7 +238,7 @@ export class DataSubjectService {
           `Denied: ${activeHold.hold_type} legal hold active. Hold reason: ${activeHold.reason}`,
         ],
       );
-      if (!dsr) throw new BadRequestException('Failed to create denied DSR row');
+      if (!dsr) throw AppErrors.server('privacy.dsr_create_failed', { detail: 'Failed to create denied DSR row' });
 
       await this.auditOutbox.emit({
         tenantId: input.tenantId,
@@ -268,7 +264,7 @@ export class DataSubjectService {
        returning *`,
       [input.tenantId, input.subjectPersonId, input.initiatedByUserId, input.reason],
     );
-    if (!dsr) throw new BadRequestException('Failed to create DSR row');
+    if (!dsr) throw AppErrors.server('privacy.dsr_create_failed', { detail: 'Failed to create DSR row' });
 
     await this.auditOutbox.emit({
       tenantId: input.tenantId,
@@ -299,9 +295,9 @@ export class DataSubjectService {
         where tenant_id = $1 and id = $2`,
       [input.tenantId, input.requestId],
     );
-    if (!dsr) throw new NotFoundException('DSR not found');
-    if (dsr.status === 'denied') throw new BadRequestException('DSR already denied');
-    if (dsr.status === 'completed') throw new BadRequestException('DSR already completed');
+    if (!dsr) throw AppErrors.notFoundWithCode('privacy.dsr_not_found', 'DSR not found');
+    if (dsr.status === 'denied') throw AppErrors.validationFailed('privacy.dsr_invalid_state', { detail: 'DSR already denied' });
+    if (dsr.status === 'completed') throw AppErrors.validationFailed('privacy.dsr_invalid_state', { detail: 'DSR already completed' });
 
     // Re-check legal holds at fulfillment time. createErasureRequest checks
     // them at intake; if a hold was placed in the gap, we must NOT scrub.

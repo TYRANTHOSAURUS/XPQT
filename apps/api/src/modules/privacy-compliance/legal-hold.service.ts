@@ -1,9 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { AuditOutboxService } from './audit-outbox.service';
 import { GdprEventType } from './event-types';
 
@@ -23,25 +20,25 @@ export class LegalHoldService {
 
   async place(input: PlaceHoldInput): Promise<LegalHoldRow> {
     if (!input.reason || input.reason.trim().length < 8) {
-      throw new BadRequestException('Reason required (>=8 chars) for placing a legal hold.');
+      throw AppErrors.validationFailed('privacy.reason_required', { detail: 'Reason required (>=8 chars) for placing a legal hold.' });
     }
 
     // Enforce scope rules at the app layer too (DB also has a CHECK constraint
     // but we want a clean 400 not a 500 on invalid input).
     if (input.holdType === 'person' && !input.subjectPersonId) {
-      throw new BadRequestException('subject_person_id required for person-level hold.');
+      throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'subject_person_id required for person-level hold.' });
     }
     if (input.holdType === 'category' && !input.dataCategory) {
-      throw new BadRequestException('data_category required for category-level hold.');
+      throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'data_category required for category-level hold.' });
     }
     if (input.holdType === 'tenant_wide' && (input.subjectPersonId || input.dataCategory)) {
-      throw new BadRequestException('tenant_wide hold cannot specify subject or category.');
+      throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'tenant_wide hold cannot specify subject or category.' });
     }
     if (input.holdType === 'person' && input.dataCategory) {
-      throw new BadRequestException('person hold cannot specify data_category.');
+      throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'person hold cannot specify data_category.' });
     }
     if (input.holdType === 'category' && input.subjectPersonId) {
-      throw new BadRequestException('category hold cannot specify subject_person_id.');
+      throw AppErrors.validationFailed('privacy.invalid_payload', { detail: 'category hold cannot specify subject_person_id.' });
     }
 
     const row = await this.db.queryOne<LegalHoldRow>(
@@ -60,7 +57,7 @@ export class LegalHoldService {
         input.expiresAt ?? null,
       ],
     );
-    if (!row) throw new BadRequestException('Failed to create legal hold');
+    if (!row) throw AppErrors.server('privacy.hold_create_failed', { detail: 'Failed to create legal hold' });
 
     await this.auditOutbox.emit({
       tenantId: input.tenantId,
@@ -82,7 +79,7 @@ export class LegalHoldService {
 
   async release(input: ReleaseHoldInput): Promise<LegalHoldRow> {
     if (!input.reason || input.reason.trim().length < 8) {
-      throw new BadRequestException('Reason required (>=8 chars) for releasing a legal hold.');
+      throw AppErrors.validationFailed('privacy.reason_required', { detail: 'Reason required (>=8 chars) for releasing a legal hold.' });
     }
 
     const row = await this.db.queryOne<LegalHoldRow>(
@@ -93,7 +90,7 @@ export class LegalHoldService {
         returning *`,
       [input.tenantId, input.holdId, input.releasedByUserId],
     );
-    if (!row) throw new NotFoundException('Active hold not found (already released?)');
+    if (!row) throw AppErrors.notFoundWithCode('privacy.hold_not_found', 'Active hold not found (already released?)');
 
     await this.auditOutbox.emit({
       tenantId: input.tenantId,

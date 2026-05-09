@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from './audit-outbox.service';
 import { DataCategoryRegistry } from './data-category-registry.service';
 import { RetentionService } from './retention.service';
@@ -423,7 +423,7 @@ describe('RetentionService.setCategorySettings', () => {
     const { service } = makeSubject({ retention_days: 180, cap_retention_days: 365 });
     await expect(
       service.setCategorySettings(TENANT, 'visitor_records', { retentionDays: 100 }, ACTOR, 'short'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('shortening retention is allowed without LIA text', async () => {

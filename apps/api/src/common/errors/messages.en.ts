@@ -1367,6 +1367,21 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't decline",
     detail: 'A reason of at least 8 characters is required.',
   },
+
+  // ─── privacy-compliance (Phase 7.B-1.privacy-compliance) ─────────────────
+  'privacy.invalid_payload': { title: "Couldn't process that request" },
+  'privacy.reason_required': { title: "Couldn't process", detail: 'A reason is required.' },
+  'privacy.hold_create_failed': { title: "Couldn't create that legal hold" },
+  'privacy.hold_not_found': { title: "Couldn't find that legal hold" },
+  'privacy.retention_not_found': { title: "Couldn't find those retention settings" },
+  'privacy.retention_invalid': { title: "Couldn't update retention" },
+  'privacy.dsr_not_found': { title: "Couldn't find that DSR" },
+  'privacy.dsr_invalid_state': { title: "Couldn't update that DSR" },
+  'privacy.dsr_create_failed': { title: "Couldn't create that DSR" },
+  'privacy.bundle_upload_failed': { title: "Couldn't upload bundle" },
+  'privacy.signed_url_failed': { title: "Couldn't generate signed link" },
+  'privacy.subject_not_found': { title: "Couldn't find that subject" },
+  'privacy.unknown_data_category': { title: "Couldn't process", detail: 'Unknown data category.' },
 };
 
 /**

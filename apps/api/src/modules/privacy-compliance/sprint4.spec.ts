@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from './audit-outbox.service';
 import { LegalHoldService } from './legal-hold.service';
 
@@ -38,7 +38,7 @@ describe('LegalHoldService.place', () => {
     const { svc } = build();
     await expect(
       svc.place({ tenantId: TENANT, holdType: 'person', subjectPersonId: USER, reason: 'short', initiatedByUserId: USER }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects person hold without subject_person_id', async () => {
@@ -82,7 +82,7 @@ describe('LegalHoldService.release', () => {
     const svc = new LegalHoldService(db as any, new AuditOutboxService(db as any));
     await expect(
       svc.release({ tenantId: TENANT, holdId: HOLD_ID, releasedByUserId: USER, reason: 'dispute resolved' }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects short reasons', async () => {
@@ -90,7 +90,7 @@ describe('LegalHoldService.release', () => {
     const svc = new LegalHoldService(db as any, new AuditOutboxService(db as any));
     await expect(
       svc.release({ tenantId: TENANT, holdId: HOLD_ID, releasedByUserId: USER, reason: 'x' }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('emits release audit when successful', async () => {

@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import type { EntityRef } from './data-category.adapter';
 import { DataCategoryRegistry } from './data-category-registry.service';
 import { AuditOutboxService } from './audit-outbox.service';
@@ -61,9 +62,7 @@ export class RetentionService {
       [tenantId, category],
     );
     if (!row) {
-      throw new NotFoundException(
-        `Retention settings missing for tenant=${tenantId} category=${category} — run seedDefaultsForTenant`,
-      );
+      throw AppErrors.notFoundWithCode('privacy.retention_not_found', `Retention settings missing for tenant=${tenantId} category=${category}`);
     }
     return row;
   }
@@ -93,19 +92,19 @@ export class RetentionService {
     reason: string,
   ): Promise<TenantRetentionSettings> {
     if (!reason || reason.trim().length < 8) {
-      throw new BadRequestException('Reason required (>=8 chars) for retention setting changes.');
+      throw AppErrors.validationFailed('privacy.reason_required', { detail: 'Reason required (>=8 chars) for retention setting changes.' });
     }
 
     const current = await this.getCategorySettings(tenantId, category);
 
     const nextRetentionDays = patch.retentionDays ?? current.retention_days;
     if (nextRetentionDays < 0) {
-      throw new BadRequestException('retention_days must be >= 0.');
+      throw AppErrors.validationFailed('privacy.retention_invalid', { detail: 'retention_days must be >= 0.' });
     }
     if (current.cap_retention_days !== null && nextRetentionDays > current.cap_retention_days) {
-      throw new BadRequestException(
-        `Retention exceeds cap (${current.cap_retention_days} days). Contact support to discuss legal exception.`,
-      );
+      throw AppErrors.validationFailed('privacy.retention_invalid', {
+        detail: `Retention exceeds cap (${current.cap_retention_days} days). Contact support to discuss legal exception.`,
+      });
     }
 
     // LIA enforcement: when extending past the registry default, require text.
@@ -115,9 +114,9 @@ export class RetentionService {
     const liaText = patch.liaText ?? current.lia_text;
 
     if (isExtendingPastDefault && (!liaText || liaText.trim().length < 32)) {
-      throw new BadRequestException(
-        'LIA (Legitimate Interest Assessment) text required (>=32 chars) when extending retention past the system default.',
-      );
+      throw AppErrors.validationFailed('privacy.retention_invalid', {
+        detail: 'LIA (Legitimate Interest Assessment) text required (>=32 chars) when extending retention past the system default.',
+      });
     }
 
     const updated = await this.db.queryOne<TenantRetentionSettings>(
@@ -132,7 +131,7 @@ export class RetentionService {
     );
 
     if (!updated) {
-      throw new NotFoundException(`Retention settings disappeared mid-update (tenant=${tenantId} category=${category}).`);
+      throw AppErrors.notFoundWithCode('privacy.retention_not_found', `Retention settings disappeared mid-update (tenant=${tenantId} category=${category}).`);
     }
 
     await this.auditOutbox.emit({

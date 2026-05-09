@@ -374,6 +374,21 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
+  | 'privacy.invalid_payload'
+  | 'privacy.reason_required'
+  | 'privacy.hold_create_failed'
+  | 'privacy.hold_not_found'
+  | 'privacy.retention_not_found'
+  | 'privacy.retention_invalid'
+  | 'privacy.dsr_not_found'
+  | 'privacy.dsr_invalid_state'
+  | 'privacy.dsr_create_failed'
+  | 'privacy.bundle_upload_failed'
+  | 'privacy.signed_url_failed'
+  | 'privacy.subject_not_found'
+  | 'privacy.unknown_data_category'
+
   // ─── vendor-portal migration (Phase 7.B-1.vendor-portal) ─────────────────
   | 'vendor_portal.order_not_found'
   | 'vendor_portal.invalid_email'
@@ -980,6 +995,19 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'vendor_portal.invalid_status',
   'vendor_portal.invalid_transition',
   'vendor_portal.decline_reason_required',
+  'privacy.invalid_payload',
+  'privacy.reason_required',
+  'privacy.hold_create_failed',
+  'privacy.hold_not_found',
+  'privacy.retention_not_found',
+  'privacy.retention_invalid',
+  'privacy.dsr_not_found',
+  'privacy.dsr_invalid_state',
+  'privacy.dsr_create_failed',
+  'privacy.bundle_upload_failed',
+  'privacy.signed_url_failed',
+  'privacy.subject_not_found',
+  'privacy.unknown_data_category',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
