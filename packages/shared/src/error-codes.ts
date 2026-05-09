@@ -344,6 +344,13 @@ export type KnownErrorCode =
   | 'invalid_services'
   | 'invalid_service_line'
 
+  // ─── auth migration (Phase 7.B-1.auth) ───────────────────────────────────
+  | 'auth.missing_header'
+  | 'auth.invalid_token'
+  | 'auth.role_lookup_failed'
+  | 'auth.user_not_in_tenant'
+  | 'auth.admin_required'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -696,6 +703,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'bundle_template_not_found',
   'invalid_services',
   'invalid_service_line',
+  'auth.missing_header',
+  'auth.invalid_token',
+  'auth.role_lookup_failed',
+  'auth.user_not_in_tenant',
+  'auth.admin_required',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

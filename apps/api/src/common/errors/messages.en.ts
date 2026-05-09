@@ -1100,6 +1100,26 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save that template",
     detail: 'Each service line needs a catalog item.',
   },
+
+  // ─── auth (Phase 7.B-1.auth) ─────────────────────────────────────────────
+  'auth.missing_header': {
+    title: 'Sign in to continue',
+    detail: 'Authentication is required.',
+  },
+  'auth.invalid_token': {
+    title: 'Sign in to continue',
+    detail: 'Your session is no longer valid.',
+  },
+  'auth.role_lookup_failed': {
+    title: "Couldn't verify access",
+  },
+  'auth.user_not_in_tenant': {
+    title: "You don't have access here",
+  },
+  'auth.admin_required': {
+    title: "You don't have access to this",
+    detail: 'An admin role is required.',
+  },
 };
 
 /**

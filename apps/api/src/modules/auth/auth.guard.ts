@@ -1,7 +1,8 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
+import { AppErrors } from '../../common/errors';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -21,14 +22,14 @@ export class AuthGuard implements CanActivate {
     const authHeader = request.headers['authorization'];
 
     if (!authHeader?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing authorization header');
+      throw AppErrors.unauthorized('Missing authorization header');
     }
 
     const token = authHeader.slice(7);
     const { data, error } = await this.supabase.admin.auth.getUser(token);
 
     if (error || !data.user) {
-      throw new UnauthorizedException('Invalid token');
+      throw AppErrors.unauthorized('Invalid token');
     }
 
     request.user = data.user;

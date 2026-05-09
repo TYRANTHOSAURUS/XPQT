@@ -1,13 +1,11 @@
 import {
   CanActivate,
   ExecutionContext,
-  ForbiddenException,
   Injectable,
-  InternalServerErrorException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 @Injectable()
 export class AdminGuard implements CanActivate {
@@ -16,7 +14,7 @@ export class AdminGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<{ user?: { id?: string } }>();
     const authUid = request.user?.id;
-    if (!authUid) throw new UnauthorizedException('Missing user context');
+    if (!authUid) throw AppErrors.unauthorized('Missing user context');
 
     const tenant = TenantContext.current();
 
@@ -27,13 +25,13 @@ export class AdminGuard implements CanActivate {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
 
-    if (error) throw new InternalServerErrorException('Role lookup failed');
-    if (!data) throw new ForbiddenException('User not found in tenant');
+    if (error) throw AppErrors.server('auth.role_lookup_failed', { detail: 'Role lookup failed', cause: error });
+    if (!data) throw AppErrors.forbidden('auth.user_not_in_tenant', 'User not found in tenant');
 
     const roleAssignments = (data as { role_assignments?: { role?: { type?: string } | null }[] })
       .role_assignments ?? [];
     const isAdmin = roleAssignments.some((ra) => ra.role?.type === 'admin');
-    if (!isAdmin) throw new ForbiddenException('Admin role required');
+    if (!isAdmin) throw AppErrors.forbidden('auth.admin_required', 'Admin role required');
 
     return true;
   }
