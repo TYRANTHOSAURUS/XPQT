@@ -12,6 +12,7 @@ import type {
 } from './sla-threshold.types';
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
+import { AppErrors } from '../../common/errors';
 
 @Injectable()
 export class SlaService {
@@ -51,9 +52,9 @@ export class SlaService {
     const { data: woHit, error } = await q2.select('id').maybeSingle();
     if (error) throw error;
     if (!woHit) {
-      throw new Error(
-        `updateTicketOrWorkOrder: id ${id} not found in tickets or work_orders`,
-      );
+      throw AppErrors.server('sla.target_missing', {
+        detail: `updateTicketOrWorkOrder: id ${id} not found in tickets or work_orders`,
+      });
     }
   }
 
@@ -535,7 +536,9 @@ export class SlaService {
       .maybeSingle();
     if (woRes.error) throw woRes.error;
     if (!woRes.data) {
-      throw new Error(`SLA target ${ticketId} not found in tickets or work_orders`);
+      throw AppErrors.server('sla.target_missing', {
+        detail: `SLA target ${ticketId} not found in tickets or work_orders`,
+      });
     }
     return woRes.data as {
       id: string;

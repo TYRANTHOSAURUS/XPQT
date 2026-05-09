@@ -1,8 +1,9 @@
-import { Controller, Get, Param, Req, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Param, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { SlaService } from './sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 @Controller('sla')
 export class SlaController {
@@ -20,7 +21,7 @@ export class SlaController {
     // pattern: load tenant + visibility ctx, assertVisible('read'), then
     // pass tenantId to the service so the supabase.admin read is scoped.
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const tenant = TenantContext.current();
     const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
     await this.visibility.assertVisible(ticketId, ctx, 'read');
@@ -30,7 +31,7 @@ export class SlaController {
   @Get('tickets/:ticketId/crossings')
   async getTicketSlaCrossings(@Req() request: Request, @Param('ticketId') ticketId: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const tenant = TenantContext.current();
     const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
     await this.visibility.assertVisible(ticketId, ctx, 'read');

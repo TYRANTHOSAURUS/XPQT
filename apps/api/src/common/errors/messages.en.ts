@@ -262,6 +262,13 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'sla.policy_invalid': {
     title: "Couldn't apply SLA — policy invalid",
   },
+  'sla.threshold_invalid': {
+    title: "Couldn't save — escalation threshold invalid",
+    detail: 'Check the threshold values and try again.',
+  },
+  'sla.target_missing': {
+    title: "Couldn't update SLA — target not found",
+  },
   'vendor.unavailable': {
     title: 'Vendor unavailable',
   },

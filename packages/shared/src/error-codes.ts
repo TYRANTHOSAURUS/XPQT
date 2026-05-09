@@ -157,6 +157,8 @@ export type KnownErrorCode =
   | 'routing.no_match'
   | 'routing.cycle_detected'
   | 'sla.policy_invalid'
+  | 'sla.threshold_invalid'
+  | 'sla.target_missing'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -276,6 +278,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'routing.no_match',
   'routing.cycle_detected',
   'sla.policy_invalid',
+  'sla.threshold_invalid',
+  'sla.target_missing',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',
