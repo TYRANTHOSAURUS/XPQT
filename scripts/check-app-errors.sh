@@ -27,6 +27,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/reservations"
   "apps/api/src/modules/approval"
   "apps/api/src/modules/space"
+  "apps/api/src/modules/search"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

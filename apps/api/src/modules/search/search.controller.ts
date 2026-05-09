@@ -3,10 +3,10 @@ import {
   Get,
   Query,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { SearchKind, SearchService } from './search.service';
+import { AppErrors } from '../../common/errors';
 
 const ALLOWED_KINDS: SearchKind[] = [
   'ticket',
@@ -32,7 +32,7 @@ export class SearchController {
     @Query('limit') limit?: string,
   ) {
     const user = (request as Request & { user?: { id?: string } }).user;
-    if (!user?.id) throw new UnauthorizedException();
+    if (!user?.id) throw AppErrors.unauthorized('No auth user');
 
     const parsedTypes = types
       ? (types
