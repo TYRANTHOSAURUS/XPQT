@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
 export interface ConfigEntity {
@@ -73,6 +74,7 @@ export function useUpsertConfigEntity() {
         },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: configEntityKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save config entity" }),
   });
 }
 
@@ -81,5 +83,6 @@ export function useDeleteConfigEntity() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/config-entities/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: configEntityKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete config entity" }),
   });
 }
