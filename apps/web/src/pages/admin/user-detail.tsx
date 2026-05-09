@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { queryOptions } from '@tanstack/react-query';
 import { usePageQuery } from '@/lib/errors';
 import { Shield, AlertTriangle, Clock, MapPin, Building2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
