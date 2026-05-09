@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Param, Body, Req, UnauthorizedException, ForbiddenException, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import { ApprovalService, CreateApprovalDto, RespondDto } from './approval.service';
+import { AppErrors } from '../../common/errors';
 
 @Controller('approvals')
 export class ApprovalController {
@@ -17,7 +18,7 @@ export class ApprovalController {
   @Get('pending/me/count')
   async getMyPendingCount(@Req() request: Request) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
     if (!actor) {
       // No linked person → an empty queue rather than 403; the caller is a
@@ -30,14 +31,14 @@ export class ApprovalController {
   @Get('pending/:personId')
   async getPending(@Req() request: Request, @Param('personId') personId: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     // The :personId path param is retained for cache-key continuity on the
     // frontend, but the server only ever lists the caller's own queue. A
     // mismatch is treated as a permission error rather than silently swapped.
     const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
-    if (!actor) throw new ForbiddenException('No person record linked to caller');
+    if (!actor) throw AppErrors.forbidden('approval.no_person_record', 'No person record linked to caller');
     if (actor.personId !== personId) {
-      throw new ForbiddenException('Cannot read another user\'s pending approvals');
+      throw AppErrors.forbidden('approval.cross_actor_pending', "Cannot read another user's pending approvals");
     }
     return this.approvalService.getPendingForActor(actor);
   }
@@ -83,9 +84,9 @@ export class ApprovalController {
     @Body() dto: RespondDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     const actor = await this.approvalService.resolveActorPerson(actorAuthUid);
-    if (!actor) throw new ForbiddenException('No person record linked to caller');
+    if (!actor) throw AppErrors.forbidden('approval.no_person_record', 'No person record linked to caller');
     // Body's responding_person_id is now ignored — server-derived only.
     // clientRequestId is threaded from ClientRequestIdMiddleware (B.0.D.1)
     // and used by the grant_booking_approval RPC as the idempotency key

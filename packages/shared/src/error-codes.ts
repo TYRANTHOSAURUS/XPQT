@@ -265,6 +265,18 @@ export type KnownErrorCode =
   | 'scheduler_window_failed'
   | 'reservation_not_editable'
   | 'missing_user'
+
+  // ─── approval module migration (Phase 7.A.2.d) ───────────────────────────
+  | 'approval.not_found'
+  | 'approval.already_responded'
+  | 'approval.not_an_approver'
+  | 'approval.no_person_record'
+  | 'approval.cross_actor_pending'
+  | 'approval.responding_user_required'
+  | 'approval.grant_failed'
+  | 'approval.non_booking_approved'
+  | 'approval.cas_lost'
+  | 'approval.invalid_decision'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -485,6 +497,16 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'scheduler_window_failed',
   'reservation_not_editable',
   'missing_user',
+  'approval.not_found',
+  'approval.already_responded',
+  'approval.not_an_approver',
+  'approval.no_person_record',
+  'approval.cross_actor_pending',
+  'approval.responding_user_required',
+  'approval.grant_failed',
+  'approval.non_booking_approved',
+  'approval.cas_lost',
+  'approval.invalid_decision',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',

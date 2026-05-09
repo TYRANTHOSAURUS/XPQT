@@ -591,6 +591,42 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   missing_user: {
     title: 'Sign in to continue',
   },
+
+  // ─── approval module (Phase 7.A.2.d) ─────────────────────────────────────
+  'approval.not_found': {
+    title: "We can't find that approval",
+  },
+  'approval.already_responded': {
+    title: 'Approval already responded to',
+  },
+  'approval.not_an_approver': {
+    title: "You're not an approver for this request",
+  },
+  'approval.no_person_record': {
+    title: "You don't have access to this",
+    detail: 'No person record is linked to your account.',
+  },
+  'approval.cross_actor_pending': {
+    title: "You don't have access to this",
+    detail: "You can only see your own pending approvals.",
+  },
+  'approval.responding_user_required': {
+    title: "Couldn't approve — internal user reference missing",
+  },
+  'approval.grant_failed': {
+    title: "Couldn't grant the approval",
+    detail: 'Try again. If it keeps happening, contact support with the trace ID.',
+  },
+  'approval.non_booking_approved': {
+    title: "Couldn't grant — wrong approval path for this target",
+  },
+  'approval.cas_lost': {
+    title: 'Approval state changed during grant attempt',
+    detail: 'Please retry.',
+  },
+  'approval.invalid_decision': {
+    title: "Couldn't grant — decision must be approved or rejected",
+  },
   'vendor.unavailable': {
     title: 'Vendor unavailable',
   },

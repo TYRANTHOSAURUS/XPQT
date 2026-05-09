@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Inject, InternalServerErrorException, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -442,13 +443,13 @@ export class ApprovalService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (findError || !approval) throw new NotFoundException('Approval not found');
-    if (approval.status !== 'pending') throw new BadRequestException('Approval already responded to');
+    if (findError || !approval) throw AppErrors.notFound('approval', approvalId);
+    if (approval.status !== 'pending') throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
 
     // Authorization: caller must be a permitted approver for this row.
     const allowed = await this.callerCanRespond(approval, respondingPersonId, respondingUserId);
     if (!allowed) {
-      throw new ForbiddenException('You are not an approver for this request');
+      throw AppErrors.forbidden('approval.not_an_approver', 'You are not an approver for this request');
     }
 
     // ── Booking branch — B.0.D.3 cutover to grant_booking_approval RPC ──
@@ -497,7 +498,7 @@ export class ApprovalService {
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) throw new BadRequestException('Approval already responded to');
+    if (!data) throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
 
     await this.logDomainEvent(approval.target_entity_id, `approval_${dto.status}`, {
       approval_id: approvalId,
@@ -541,9 +542,9 @@ export class ApprovalService {
         // user uuid. Better to fail fast: the controller always passes
         // `actor.userId`; a missing value here is a real bug.
         if (!respondingUserId) {
-          throw new BadRequestException(
-            'respondingUserId is required for visitor_invite approval dispatch',
-          );
+          throw AppErrors.validationFailed('approval.responding_user_required', {
+            detail: 'respondingUserId is required for visitor_invite approval dispatch',
+          });
         }
         await this.visitorService.onApprovalDecided(
           approval.target_entity_id,
@@ -626,9 +627,8 @@ export class ApprovalService {
 
     const result = (data ?? null) as GrantBookingApprovalResult | null;
     if (!result) {
-      throw new InternalServerErrorException({
-        code: 'approval.grant_failed',
-        message: 'grant_booking_approval RPC returned no result',
+      throw AppErrors.server('approval.grant_failed', {
+        detail: 'grant_booking_approval RPC returned no result',
       });
     }
 
@@ -636,15 +636,14 @@ export class ApprovalService {
     // pre-cutover UX is preserved (the FE already renders
     // "Approval already responded to" for this case).
     if (result.kind === 'already_responded') {
-      throw new BadRequestException('Approval already responded to');
+      throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
     }
     if (result.kind === 'non_booking_approved') {
       // Defensive — should not happen because respond() routed only
       // booking-targets here. If it does, an admin re-typed an
       // approval row and the RPC bailed out cleanly.
-      throw new BadRequestException({
-        code: 'approval.non_booking_approved',
-        message: 'Cannot grant approval on non-booking target via this path.',
+      throw AppErrors.validationFailed('approval.non_booking_approved', {
+        detail: 'Cannot grant approval on non-booking target via this path.',
       });
     }
 
@@ -693,7 +692,7 @@ export class ApprovalService {
     // between our pre-RPC read and the RPC's FOR UPDATE select. Rare
     // but possible. Map to NotFoundException so it surfaces consistently.
     if (message.includes('approval.not_found')) {
-      return new NotFoundException('Approval not found');
+      return AppErrors.notFoundWithCode('approval.not_found', 'Approval not found');
     }
 
     // approval.cas_lost — the RPC's CAS update missed despite the
@@ -702,18 +701,16 @@ export class ApprovalService {
     // not a normal user race. Surface as 500 + log.
     if (message.includes('approval.cas_lost')) {
       console.error('[approval] grant_booking_approval cas_lost — concurrent grant raced past lock', rpcError);
-      return new ConflictException({
-        code: 'approval.cas_lost',
-        message: 'Approval state changed during grant attempt — please retry.',
+      return AppErrors.conflict('approval.cas_lost', {
+        detail: 'Approval state changed during grant attempt — please retry.',
       });
     }
 
     // p_decision validation — defensive (we control dto.status; the RPC
     // raises only if a future caller passes garbage).
     if (message.includes('p_decision must be approved or rejected')) {
-      return new BadRequestException({
-        code: 'approval.invalid_decision',
-        message: 'Decision must be approved or rejected.',
+      return AppErrors.validationFailed('approval.invalid_decision', {
+        detail: 'Decision must be approved or rejected.',
       });
     }
 
@@ -721,9 +718,8 @@ export class ApprovalService {
     // structured prefix. Preserve the message for ops triage but
     // surface as 500 with a stable code.
     console.error('[approval] grant_booking_approval unexpected error:', rpcError);
-    return new InternalServerErrorException({
-      code: 'approval.grant_failed',
-      message: message || 'Approval grant failed unexpectedly.',
+    return AppErrors.server('approval.grant_failed', {
+      detail: message || 'Approval grant failed unexpectedly.',
     });
   }
 
