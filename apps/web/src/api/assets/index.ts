@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface Asset {
   id: string;
@@ -95,6 +96,7 @@ export function useUpsertAsset() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save asset" }),
   });
 }
 
@@ -103,5 +105,6 @@ export function useDeleteAsset() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/assets/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: assetKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete asset" }),
   });
 }
