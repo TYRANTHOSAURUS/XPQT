@@ -18,10 +18,11 @@ import {
 import { PersonPicker } from '@/components/person-picker';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import {
-  useCostCenter,
+  costCenterDetailOptions,
   useDeleteCostCenter,
   useUpdateCostCenter,
 } from '@/api/cost-centers';
+import { usePageQuery } from '@/lib/errors';
 import { toastError, toastRemoved } from '@/lib/toast';
 
 /**
@@ -39,7 +40,10 @@ import { toastError, toastRemoved } from '@/lib/toast';
 export function CostCenterDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useCostCenter(id ?? '');
+  // Page-primary query — Phase 7.B-2 light migration. usePageQuery
+  // escalates 404/403/500 to RouteErrorBoundary so the page replaces
+  // instead of toasting over a half-rendered detail (spec §3.4).
+  const { data, isLoading } = usePageQuery(costCenterDetailOptions(id ?? ''));
   const update = useUpdateCostCenter();
   const remove = useDeleteCostCenter();
 
