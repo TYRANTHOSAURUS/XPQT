@@ -5,7 +5,8 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Checkbox } from '@/components/ui/checkbox';
-import { toast, toastError, toastSuccess } from '@/lib/toast';
+import { toast, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useBulkUpdateSpaces, type BulkUpdateResult } from '@/api/spaces';
 
 interface Props {
@@ -39,7 +40,7 @@ export function SpaceChildrenBulkBar({ selectedIds, onClear }: Props) {
       setDialogOpen(false);
       onClear();
     } catch (err) {
-      toastError("Couldn't apply bulk update", { error: err, retry: apply });
+      handleMutationError(err, { actionTitle: "Couldn't apply bulk update", retry: apply });
     }
   };
 

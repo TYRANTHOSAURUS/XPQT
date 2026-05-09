@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, Minus, Play, Plus, X } from 'lucide-react';
-import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -90,7 +90,7 @@ export function CriteriaSetExpressionDialog({ open, onOpenChange, value, onSave,
     if (validationError) return;
     preview.mutate(simplifyForSave(node), {
       onSuccess: (res) => setPreviewResult(res),
-      onError: (err) => toastError("Couldn't preview matches", { error: err, retry: handlePreview }),
+      onError: (err) => handleMutationError(err, { actionTitle: "Couldn't preview matches", retry: handlePreview }),
     });
   };
 

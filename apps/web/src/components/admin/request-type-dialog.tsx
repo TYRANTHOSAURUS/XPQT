@@ -18,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useSlaPolicies } from '@/api/sla-policies';
@@ -165,7 +166,7 @@ export function RequestTypeDialog({
         setApprovalApproverTeamId(rt.approval_approver_team_id ?? '');
       } catch (err) {
         if (cancelled) return;
-        toastError("Couldn't load request type", { error: err });
+        handleMutationError(err, { actionTitle: "Couldn't load request type" });
         onOpenChange(false);
       }
     })();
@@ -251,6 +252,8 @@ export function RequestTypeDialog({
             try {
               await apiFetch(`/request-types/${createdId}`, { method: 'DELETE' });
             } catch {
+              // Custom description naming the rollback failure; helper layer
+              // doesn't accept a description override, so this stays as toastError.
               toastError("Couldn't sync form schema and rollback failed", {
                 description: 'A stray request type may exist — check /admin/request-types.',
               });
@@ -277,7 +280,7 @@ export function RequestTypeDialog({
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toastError("Couldn't save request type", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save request type", retry: handleSave });
     } finally {
       setSaving(false);
     }

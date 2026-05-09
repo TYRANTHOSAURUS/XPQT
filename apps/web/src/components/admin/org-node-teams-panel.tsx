@@ -1,8 +1,8 @@
 import { Wrench, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiFetch } from '@/lib/api';
-import { toastError, toastRemoved } from '@/lib/toast';
-
+import { toastRemoved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface Team { id: string; name: string; domain_scope: string | null; }
 
 interface Props {
@@ -25,7 +25,7 @@ export function OrgNodeTeamsPanel({ teams, onChanged }: Props) {
         // and the parent doesn't expose it. Detach skips Undo by design here.
       });
     } catch (err) {
-      toastError("Couldn't detach team", { error: err, retry: () => detach(teamId) });
+      handleMutationError(err, { actionTitle: "Couldn't detach team", retry: () => detach(teamId) });
     }
   };
 

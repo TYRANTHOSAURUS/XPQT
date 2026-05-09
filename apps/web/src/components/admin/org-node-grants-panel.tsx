@@ -5,8 +5,8 @@ import { Input } from '@/components/ui/input';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { LocationCombobox } from '@/components/location-combobox';
 import { apiFetch } from '@/lib/api';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
-
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface Grant {
   id: string;
   space_id: string;
@@ -28,7 +28,7 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
       const rows = await apiFetch<Grant[]>(`/org-nodes/${nodeId}/location-grants`);
       setGrants(rows);
     } catch (err) {
-      toastError("Couldn't load grants", { error: err, retry: reload });
+      handleMutationError(err, { actionTitle: "Couldn't load grants", retry: reload });
     } finally {
       setLoading(false);
     }
@@ -49,7 +49,7 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
       await reload();
       toastSuccess('Location granted');
     } catch (err) {
-      toastError("Couldn't add grant", { error: err, retry: add });
+      handleMutationError(err, { actionTitle: "Couldn't add grant", retry: add });
     } finally {
       setAdding(false);
     }
@@ -75,7 +75,7 @@ export function OrgNodeGrantsPanel({ nodeId }: { nodeId: string }) {
           : undefined,
       });
     } catch (err) {
-      toastError("Couldn't revoke grant", { error: err, retry: () => remove(id) });
+      handleMutationError(err, { actionTitle: "Couldn't revoke grant", retry: () => remove(id) });
     }
   };
 

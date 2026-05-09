@@ -15,8 +15,8 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { LocationCombobox } from '@/components/location-combobox';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
-
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 type AuthSource = 'default' | 'grant' | 'org_grant';
 interface EffectiveAuth {
   source: AuthSource;
@@ -81,7 +81,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
       toastSuccess('Grant added');
       await reload();
     } catch (e) {
-      toastError("Couldn't add grant", { error: e, retry: onAdd });
+      handleMutationError(e, { actionTitle: "Couldn't add grant", retry: onAdd });
     } finally {
       setAdding(false);
     }
@@ -93,7 +93,7 @@ export function PersonLocationGrantsPanel({ personId }: Props) {
       toastRemoved('Grant', { verb: 'revoked' });
       await reload();
     } catch (e) {
-      toastError("Couldn't revoke grant", { error: e, retry: () => onRemove(grantId) });
+      handleMutationError(e, { actionTitle: "Couldn't revoke grant", retry: () => onRemove(grantId) });
     }
   };
 

@@ -43,7 +43,8 @@ import {
   type ServiceType,
 } from '@/api/daily-list';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
-import { toastError, toastSuccess, toastSaved } from '@/lib/toast';
+import { toastSuccess, toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { apiFetch } from '@/lib/api';
 
@@ -77,7 +78,7 @@ export function VendorFulfillmentSection({ vendor }: { vendor: Vendor }) {
       { id: vendor.id, payload: { name: vendor.name, fulfillment_mode: next } },
       {
         onSuccess: () => toastSaved('Fulfillment mode'),
-        onError: (err) => toastError("Couldn't save fulfillment mode", { error: err }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't save fulfillment mode" }),
       },
     );
   };
@@ -300,7 +301,7 @@ function DailyListHistorySection({ vendor }: { vendor: Vendor }) {
                     if (/list_cancelled/.test(msg)) {
                       toastSuccess('No live lines for this bucket — nothing to send.');
                     } else {
-                      toastError("Couldn't regenerate", { error: err });
+                      handleMutationError(err, { actionTitle: "Couldn't regenerate" });
                     }
                   },
                 },
@@ -364,7 +365,7 @@ function HistoryRow({ row, vendorId }: { row: DailyListHistoryItem; vendorId: st
       );
       window.open(r.url, '_blank', 'noopener,noreferrer');
     } catch (err) {
-      toastError("Couldn't download PDF", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't download PDF" });
     } finally {
       setDownloading(false);
     }
@@ -412,7 +413,7 @@ function HistoryRow({ row, vendorId }: { row: DailyListHistoryItem; vendorId: st
                 { vendorId, daglijstId: row.id, force: true },
                 {
                   onSuccess: () => toastSuccess('Resent'),
-                  onError: (err) => toastError("Couldn't resend", { error: err }),
+                  onError: (err) => handleMutationError(err, { actionTitle: "Couldn't resend" }),
                 },
               )
             }
@@ -463,7 +464,7 @@ function PreviewDialog({
       { vendorId: vendor.id, listDate, buildingId: null, serviceType },
       {
         onSuccess: setPayload,
-        onError: (err) => toastError("Couldn't preview", { error: err }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't preview" }),
       },
     );
   }, [open, listDate, serviceType, vendor.id]);  // eslint-disable-line react-hooks/exhaustive-deps

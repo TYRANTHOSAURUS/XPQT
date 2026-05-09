@@ -5,7 +5,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import type { SpaceType } from '@prequest/shared';
 import {
@@ -72,7 +73,7 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
       const parent = path.at(-2)?.id ?? null;
       onNavigate(parent);
     } catch (err) {
-      toastError(`Couldn't archive ${space.name}`, { error: err, retry: handleArchive });
+      handleMutationError(err, { actionTitle: `Couldn't archive ${space.name}`, retry: handleArchive });
     }
   };
 
@@ -82,7 +83,7 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
       toastSuccess(`${space.name} moved`);
       setMoveOpen(false);
     } catch (err) {
-      toastError(`Couldn't move ${space.name}`, { error: err, retry: handleMoveSubmit });
+      handleMutationError(err, { actionTitle: `Couldn't move ${space.name}`, retry: handleMoveSubmit });
     }
   };
 

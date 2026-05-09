@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Percent, Trash2, Plus, Clipboard, X, Euro } from 'lucide-react';
-import { toast, toastError, toastSuccess } from '@/lib/toast';
+import { toast, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -77,7 +78,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toastError("Couldn't update item", { error: err, retry: () => updateItem(itemId, patch) });
+      handleMutationError(err, { actionTitle: "Couldn't update item", retry: () => updateItem(itemId, patch) });
     }
   };
 
@@ -91,7 +92,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toastError("Couldn't remove item", { error: err, retry: () => removeItem(itemId) });
+      handleMutationError(err, { actionTitle: "Couldn't remove item", retry: () => removeItem(itemId) });
     }
   };
 
@@ -114,7 +115,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       setSelected(new Set());
       onChange();
     } catch (err) {
-      toastError("Couldn't apply bulk update", { error: err, retry: applyBulk });
+      handleMutationError(err, { actionTitle: "Couldn't apply bulk update", retry: applyBulk });
     }
   };
 
@@ -129,7 +130,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       setSelected(new Set());
       onChange();
     } catch (err) {
-      toastError("Couldn't bulk-delete items", { error: err, retry: bulkDelete });
+      handleMutationError(err, { actionTitle: "Couldn't bulk-delete items", retry: bulkDelete });
     }
   };
 
@@ -145,7 +146,7 @@ export function MenuItemsGrid({ menuId, items, onChange }: Props) {
       });
       onChange();
     } catch (err) {
-      toastError("Couldn't add item", { error: err, retry: () => addItem(catalogItem) });
+      handleMutationError(err, { actionTitle: "Couldn't add item", retry: () => addItem(catalogItem) });
     }
   };
 

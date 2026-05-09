@@ -6,7 +6,8 @@ import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet, FieldSeparator } 
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import type { SpaceType } from '@prequest/shared';
 import { useCreateSpace, useUpdateSpace, type Space } from '@/api/spaces';
 import { SpaceTypePicker } from './space-type-picker';
@@ -114,7 +115,7 @@ export function SpaceFormDialog({ open, onOpenChange, mode }: Props) {
       }
       onOpenChange(false);
     } catch (err) {
-      toastError("Couldn't save space", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save space", retry: handleSave });
     }
   };
 
