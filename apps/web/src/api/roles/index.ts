@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { permissionKeys } from '@/api/permissions';
 
 export type RoleType = 'admin' | 'agent' | 'employee';
@@ -98,6 +99,7 @@ export function useCreateRole() {
       // A new role can't yet affect effective-permissions (it has no
       // assignments), so no per-user invalidation.
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create role" }),
   });
 }
 
@@ -142,5 +144,6 @@ export function useUpdateRole(id: string) {
       // know locally which users hold the role.
       qc.invalidateQueries({ queryKey: [...permissionKeys.all, 'effective'] });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update role" }),
   });
 }
