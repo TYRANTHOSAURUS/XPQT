@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -105,6 +106,7 @@ export function useCalendarSyncMe() {
 export function useStartConnect() {
   return useMutation<ConnectStartResponse, Error, void>({
     mutationFn: () => apiFetch<ConnectStartResponse>('/calendar-sync/connect', { method: 'POST' }),
+    ...withErrorHandling({ actionTitle: "Couldn't start calendar connection" }),
   });
 }
 
@@ -117,6 +119,7 @@ export function useFinishConnect() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: calendarSyncKeys.me() }),
+    ...withErrorHandling({ actionTitle: "Couldn't finish calendar connection" }),
   });
 }
 
@@ -125,6 +128,7 @@ export function useDisconnectCalendar() {
   return useMutation<{ ok: true }, Error, void>({
     mutationFn: () => apiFetch<{ ok: true }>('/calendar-sync/outlook', { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: calendarSyncKeys.me() }),
+    ...withErrorHandling({ actionTitle: "Couldn't disconnect calendar" }),
   });
 }
 
@@ -136,6 +140,7 @@ export function useForceResync() {
         method: 'POST',
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: calendarSyncKeys.me() }),
+    ...withErrorHandling({ actionTitle: "Couldn't force resync" }),
   });
 }
 
@@ -180,5 +185,6 @@ export function useResolveConflict() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: calendarSyncKeys.admin() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't resolve conflict" }),
   });
 }
