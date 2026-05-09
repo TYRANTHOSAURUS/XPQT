@@ -26,7 +26,8 @@ import {
 } from '@/components/ui/select';
 import { Plus, Send } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { PersonPicker, type Person } from '@/components/person-picker';
 import { AssetCombobox } from '@/components/asset-combobox';
 import { LocationCombobox } from '@/components/location-combobox';
@@ -129,7 +130,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
       onCreated?.();
       toastCreated('Ticket', { onView: () => navigate(`/desk/tickets/${created.id}`) });
     } catch (err) {
-      toastError("Couldn't create ticket", { error: err, retry: handleSubmit });
+      handleMutationError(err, { actionTitle: "Couldn't create ticket", retry: handleSubmit });
     } finally {
       setSubmitting(false);
     }

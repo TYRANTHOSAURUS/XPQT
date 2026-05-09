@@ -83,7 +83,8 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { formatFullTimestamp } from '@/lib/format';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import type { FormField } from '@/components/admin/form-builder/premade-fields';
 
 function formatFormValue(field: FormField | undefined, value: unknown): string {
@@ -333,10 +334,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
       },
       {
         onError: (err) =>
-          toastError("Couldn't update plan", {
-            error: err,
-            retry: () => handlePlanChange(next),
-          }),
+          handleMutationError(err, { actionTitle: "Couldn't update plan", retry: () => handlePlanChange(next) }),
       },
     );
   };
@@ -357,10 +355,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     updateTicket.mutate(updates as UpdateTicketPayload, {
       onError: (err) => {
         const field = Object.keys(updates)[0] ?? 'field';
-        toastError(`Couldn't update ${field}`, {
-          error: err,
-          retry: () => patch(updates),
-        });
+        handleMutationError(err, { actionTitle: `Couldn't update ${field}`, retry: () => patch(updates) });
       },
     });
   };
@@ -395,10 +390,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     updateWorkOrder.mutate(woUpdates, {
       onError: (err) => {
         const field = Object.keys(woUpdates)[0] ?? 'field';
-        toastError(`Couldn't update ${field}`, {
-          error: err,
-          retry: () => updateWorkOrder.mutate(woUpdates),
-        });
+        handleMutationError(err, { actionTitle: `Couldn't update ${field}`, retry: () => updateWorkOrder.mutate(woUpdates) });
       },
     });
   };
@@ -425,17 +417,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     if (target.previousLabel === null) {
       if (isWorkOrder) {
         updateWorkOrder.mutate({ [field]: target.id } as UpdateWorkOrderPayload, {
-          onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
-            error: err,
-            retry: () => updateAssignment(target),
-          }),
+          onError: (err) => handleMutationError(err, { actionTitle: `Couldn't assign ${target.kind}`, retry: () => updateAssignment(target) }),
         });
       } else {
         updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
-          onError: (err) => toastError(`Couldn't assign ${target.kind}`, {
-            error: err,
-            retry: () => updateAssignment(target),
-          }),
+          onError: (err) => handleMutationError(err, { actionTitle: `Couldn't assign ${target.kind}`, retry: () => updateAssignment(target) }),
         });
       }
       return;
@@ -454,10 +440,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
       actorPersonId: person?.id,
     };
     const reassignOpts = {
-      onError: (err: Error) => toastError(`Couldn't reassign ${target.kind}`, {
-        error: err,
-        retry: () => updateAssignment(target),
-      }),
+      onError: (err: Error) => handleMutationError(err, { actionTitle: `Couldn't reassign ${target.kind}`, retry: () => updateAssignment(target) }),
     };
 
     if (isWorkOrder) {
@@ -483,10 +466,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
           closeMentionMenu();
           toastSuccess(commentVisibility === 'internal' ? 'Note added' : 'Reply sent');
         },
-        onError: (err) => toastError(
-          commentVisibility === 'internal' ? "Couldn't add note" : "Couldn't send reply",
-          { error: err, retry: handleSubmitComment },
-        ),
+        onError: (err) => handleMutationError(err, {
+          actionTitle: commentVisibility === 'internal' ? "Couldn't add note" : "Couldn't send reply",
+          retry: handleSubmitComment,
+        }),
       },
     );
   };
@@ -1159,8 +1142,8 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                     // updateSla).
                     updateWorkOrder.mutate({ sla_id: next }, {
                       onError: (err) =>
-                        toastError("Couldn't update SLA", {
-                          error: err,
+                        handleMutationError(err, {
+                          actionTitle: "Couldn't update SLA",
                           retry: () => updateWorkOrder.mutate({ sla_id: next }),
                         }),
                     });

@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactElement } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toastError, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   ExternalLink,
   PanelRightOpen,
@@ -182,10 +183,7 @@ export function TicketContextMenu({
       { status_category, status: status_category },
       {
         onSuccess: () => toastSuccess(`Status set to ${label}`),
-        onError: (err) => toastError("Couldn't update status", {
-          error: err,
-          retry: () => setStatus(status_category),
-        }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update status", retry: () => setStatus(status_category) }),
         // Guard against a stale completion clearing the spinner of a newer
         // in-flight click — only clear if our value is still the pending one.
         onSettled: () => holdAtLeast(start, () => {
@@ -206,10 +204,7 @@ export function TicketContextMenu({
         : { status_category: 'waiting', status: 'waiting', waiting_reason },
       {
         onSuccess: () => toastSuccess(`Status set to Waiting · ${label}`),
-        onError: (err) => toastError("Couldn't update status", {
-          error: err,
-          retry: () => setWaitingReason(waiting_reason),
-        }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update status", retry: () => setWaitingReason(waiting_reason) }),
         onSettled: () => holdAtLeast(start, () => {
           setPendingStatus((prev) => (prev === 'waiting' ? null : prev));
           setPendingWaitingReason((prev) => (prev === waiting_reason ? null : prev));
@@ -227,10 +222,7 @@ export function TicketContextMenu({
       { priority },
       {
         onSuccess: () => toastSuccess(`Priority set to ${label}`),
-        onError: (err) => toastError("Couldn't update priority", {
-          error: err,
-          retry: () => setPriority(priority),
-        }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update priority", retry: () => setPriority(priority) }),
         onSettled: () => holdAtLeast(start, () => {
           setPendingPriority((prev) => (prev === priority ? null : prev));
         }),
@@ -255,7 +247,7 @@ export function TicketContextMenu({
         { assigned_user_id: appUser.id },
         {
           onSuccess: () => toastSuccess('Assigned to you'),
-          onError: (err) => toastError("Couldn't assign to you", { error: err, retry: assignToMe }),
+          onError: (err) => handleMutationError(err, { actionTitle: "Couldn't assign to you", retry: assignToMe }),
         },
       );
       return;
@@ -272,7 +264,7 @@ export function TicketContextMenu({
       },
       {
         onSuccess: () => toastSuccess('Assigned to you'),
-        onError: (err) => toastError("Couldn't reassign to you", { error: err, retry: assignToMe }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't reassign to you", retry: assignToMe }),
       },
     );
   };
@@ -320,7 +312,7 @@ export function TicketContextMenu({
       await Promise.all(tasks);
       toastSuccess('Unassigned');
     } catch (err) {
-      toastError("Couldn't unassign", { error: err, retry: unassign });
+      handleMutationError(err, { actionTitle: "Couldn't unassign", retry: unassign });
     }
   };
 
@@ -340,7 +332,7 @@ export function TicketContextMenu({
       { watchers: next },
       {
         onSuccess: () => toastSuccess(willWatch ? 'Now watching' : 'Stopped watching'),
-        onError: (err) => toastError("Couldn't update watchers", { error: err, retry: toggleWatch }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update watchers", retry: toggleWatch }),
       },
     );
   };
@@ -354,10 +346,7 @@ export function TicketContextMenu({
       { tags: next },
       {
         onSuccess: () => toastSuccess(has ? `Removed label "${tag}"` : `Added label "${tag}"`),
-        onError: (err) => toastError("Couldn't update labels", {
-          error: err,
-          retry: () => toggleLabel(tag),
-        }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update labels", retry: () => toggleLabel(tag) }),
         onSettled: () => holdAtLeast(start, () => setPendingTags((prev) => {
           const nextSet = new Set(prev);
           nextSet.delete(tag);

@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/context-menu';
 import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
 import { toastError, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   formatReceptionRowName,
   useMarkArrived,
@@ -96,10 +97,7 @@ export function VisitorContextMenu({
         {
           onSuccess: () => toastSuccess(`${visitorLabel} marked arrived`),
           onError: (err) =>
-            toastError("Couldn't mark arrived", {
-              error: err,
-              retry: () => handleArrive(minutesAgo),
-            }),
+            handleMutationError(err, { actionTitle: "Couldn't mark arrived", retry: () => handleArrive(minutesAgo) }),
         },
       );
     },
@@ -117,10 +115,7 @@ export function VisitorContextMenu({
         {
           onSuccess: () => toastSuccess(`${visitorLabel} checked out`),
           onError: (err) =>
-            toastError("Couldn't check out", {
-              error: err,
-              retry: () => handleCheckout(passReturned),
-            }),
+            handleMutationError(err, { actionTitle: "Couldn't check out", retry: () => handleCheckout(passReturned) }),
         },
       );
     },
@@ -133,7 +128,7 @@ export function VisitorContextMenu({
       {
         onSuccess: () => toastSuccess(`${visitorLabel} marked no-show`),
         onError: (err) =>
-          toastError("Couldn't mark no-show", { error: err, retry: handleNoShow }),
+          handleMutationError(err, { actionTitle: "Couldn't mark no-show", retry: handleNoShow }),
       },
     );
   }, [markNoShow, row.visitor_id, visitorLabel]);

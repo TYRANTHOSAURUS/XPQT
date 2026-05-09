@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { PhoneCall, Check, Clock, AlertTriangle } from 'lucide-react';
 import { usePostCutoffList, useConfirmPhoned, type PostCutoffGroup } from '@/api/post-cutoff';
 import { Button } from '@/components/ui/button';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 
 /**
@@ -58,7 +59,7 @@ function VendorCard({ group }: { group: PostCutoffGroup }) {
     try {
       await confirmPhoned.mutateAsync({ lineId });
     } catch (err) {
-      toastError("Couldn't mark as phoned", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't mark as phoned" });
     }
   };
 
@@ -70,7 +71,7 @@ function VendorCard({ group }: { group: PostCutoffGroup }) {
       }
       toastSuccess(`${group.vendor_name} marked as phoned`);
     } catch (err) {
-      toastError("Couldn't mark all as phoned", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't mark all as phoned" });
     } finally {
       setConfirmingAll(false);
     }

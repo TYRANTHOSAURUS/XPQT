@@ -59,7 +59,8 @@ import { usePerson, personFullName } from '@/api/persons';
 import { useReservationDetail } from '@/api/room-booking';
 import { useReceptionBuilding } from '@/components/desk/desk-building-context';
 import { CheckoutDialog } from '@/components/desk/visitor-checkout-dialog';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   formatFullTimestamp,
   formatRelativeTime,
@@ -157,7 +158,7 @@ export function VisitorDetail({
       {
         onSuccess: () => toastSuccess(`${visitorName} marked arrived`),
         onError: (err) =>
-          toastError("Couldn't mark arrived", { error: err, retry: handleArrive }),
+          handleMutationError(err, { actionTitle: "Couldn't mark arrived", retry: handleArrive }),
       },
     );
   };
@@ -173,7 +174,7 @@ export function VisitorDetail({
       {
         onSuccess: () => toastSuccess(`${visitorName} marked no-show`),
         onError: (err) =>
-          toastError("Couldn't mark no-show", { error: err, retry: handleNoShow }),
+          handleMutationError(err, { actionTitle: "Couldn't mark no-show", retry: handleNoShow }),
       },
     );
   };

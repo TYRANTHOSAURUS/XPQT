@@ -24,8 +24,8 @@ import {
   useReceptionPasses,
   type ReceptionPass,
 } from '@/api/visitors/reception';
-import { toastError, toastSuccess } from '@/lib/toast';
-
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface AssignPassDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -58,7 +58,7 @@ export function AssignPassDialog({
       toastSuccess('Pass assigned');
       onOpenChange(false);
     } catch (err) {
-      toastError("Couldn't assign the pass", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't assign the pass" });
     } finally {
       setPendingId(null);
     }

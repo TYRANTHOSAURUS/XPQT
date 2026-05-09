@@ -25,8 +25,8 @@ import {
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { useMarkCheckedOut } from '@/api/visitors/reception';
-import { toastError, toastSuccess } from '@/lib/toast';
-
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 type PassDecision = 'returned' | 'missing' | 'skip';
 
 interface CheckoutDialogProps {
@@ -63,10 +63,7 @@ export function CheckoutDialog({
       toastSuccess(`${visitorLabel} checked out`);
       onOpenChange(false);
     } catch (err) {
-      toastError("Couldn't check out the visitor", {
-        error: err,
-        retry: handleConfirm,
-      });
+      handleMutationError(err, { actionTitle: "Couldn't check out the visitor", retry: handleConfirm });
     }
   };
 

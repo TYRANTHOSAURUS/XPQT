@@ -40,8 +40,8 @@ import {
   useQuickAddWalkup,
   type QuickAddWalkupPayload,
 } from '@/api/visitors/reception';
-import { toastError, toastCreated } from '@/lib/toast';
-
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface WalkupFormProps {
   buildingId: string;
   onClose: () => void;
@@ -159,7 +159,7 @@ export function WalkupForm({ buildingId, onClose }: WalkupFormProps) {
       setTouched({});
       focusFirstInput();
     } catch (err) {
-      toastError("Couldn't add the walk-up", { error: err, retry: handleSubmit });
+      handleMutationError(err, { actionTitle: "Couldn't add the walk-up", retry: handleSubmit });
     }
   };
 
