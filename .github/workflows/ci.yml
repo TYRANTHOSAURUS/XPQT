@@ -60,6 +60,14 @@ jobs:
         # in docs/follow-ups/b2-config-reads-triage.md.
         run: pnpm b2:check-config-reads
 
+      - name: Phase 7 AppError ratchet
+        # Per docs/follow-ups/phase-7-implementation-plan.md §7.A.3.
+        # Once a module has been migrated to AppError factories, raw
+        # `throw new <Nest>Exception(...)` is a regression. The script
+        # lists migrated modules; adding to that list is a one-way
+        # ratchet enforced going forward.
+        run: pnpm errors:check-app-errors
+
       - name: Typecheck web
         run: pnpm --filter @prequest/web run lint
 

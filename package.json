@@ -19,6 +19,7 @@
     "test:concurrency": "pnpm --filter @prequest/api run test:concurrency",
     "design:check": "bash scripts/check-design.sh",
     "b2:check-config-reads": "bash scripts/check-b2-config-reads.sh",
+    "errors:check-app-errors": "bash scripts/check-app-errors.sh",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
