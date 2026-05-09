@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 /**
  * Vendor daily-list (Dutch "daglijst") API client.
@@ -136,6 +137,7 @@ export function useDailyListPreview() {
           }),
         },
       ),
+    ...withErrorHandling({ actionTitle: "Couldn't preview daily list" }),
   });
 }
 
@@ -157,6 +159,7 @@ export function useDailyListRegenerate() {
     onSuccess: (_, args) => {
       qc.invalidateQueries({ queryKey: dailyListKeys.byVendor(args.vendorId) });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't regenerate daily list" }),
   });
 }
 
@@ -180,6 +183,7 @@ export function useDailyListResend() {
     onSuccess: (_, args) => {
       qc.invalidateQueries({ queryKey: dailyListKeys.byVendor(args.vendorId) });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't resend daily list" }),
   });
 }
 
