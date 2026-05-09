@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface WorkflowInstance {
   id: string;
@@ -80,6 +81,7 @@ export function useUpsertWorkflow() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save workflow" }),
   });
 }
 
@@ -88,5 +90,6 @@ export function useDeleteWorkflow() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/workflows/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: workflowKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete workflow" }),
   });
 }
