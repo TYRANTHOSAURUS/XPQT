@@ -1,9 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable} from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import {
   parsePolicyDefinition,
   ROUTING_STUDIO_SCHEMAS,
-  type RoutingStudioConfigType,
-} from './policy-validators';
+  type RoutingStudioConfigType} from './policy-validators';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 
 /**
@@ -69,9 +69,7 @@ export class PolicyStoreService {
 
   private assertRoutingStudioType(config_type: string): asserts config_type is RoutingStudioConfigType {
     if (!(config_type in ROUTING_STUDIO_SCHEMAS)) {
-      throw new BadRequestException(
-        `config_type "${config_type}" is not a routing-studio policy type`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `config_type "${config_type}" is not a routing-studio policy type` });
     }
   }
 
@@ -84,19 +82,16 @@ export class PolicyStoreService {
         tenant_id: input.tenant_id,
         config_type: input.config_type,
         slug: input.slug,
-        display_name: input.display_name,
-      })
+        display_name: input.display_name})
       .select('*')
       .single();
 
     if (error) {
       // (tenant_id, config_type, slug) unique — duplicate slug is user error.
       if (error.code === '23505') {
-        throw new BadRequestException(
-          `config entity with slug "${input.slug}" already exists for ${input.config_type}`,
-        );
+        throw AppErrors.validationFailed('routing.invalid_definition', { detail: `config entity with slug "${input.slug}" already exists for ${input.config_type}` });
       }
-      throw new BadRequestException(`failed to create config entity: ${error.message}`);
+      throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create config entity: ${error.message}` });
     }
     return data as PolicyEntityRow;
   }
@@ -109,8 +104,8 @@ export class PolicyStoreService {
       .eq('id', entity_id)
       .maybeSingle();
 
-    if (error) throw new BadRequestException(error.message);
-    if (!data) throw new NotFoundException(`config entity ${entity_id} not found`);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.validationFailed('routing.db_failed', { detail: `config entity ${entity_id} not found` });
     return data as PolicyEntityRow;
   }
 
@@ -124,7 +119,7 @@ export class PolicyStoreService {
       parsePolicyDefinition(entity.config_type, input.definition);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'invalid definition';
-      throw new BadRequestException(`definition failed validation: ${msg}`);
+      throw AppErrors.validationFailed('routing.db_failed', { detail: `definition failed validation: ${msg}` });
     }
 
     const nextVersionNumber = await this.nextVersionNumber(input.entity_id);
@@ -137,12 +132,11 @@ export class PolicyStoreService {
         version_number: nextVersionNumber,
         status: 'draft',
         definition: input.definition,
-        created_by: input.created_by ?? null,
-      })
+        created_by: input.created_by ?? null})
       .select('*')
       .single();
 
-    if (error) throw new BadRequestException(`failed to create draft version: ${error.message}`);
+    if (error) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create draft version: ${error.message}` });
     return data as PolicyVersionRow;
   }
 
@@ -155,13 +149,11 @@ export class PolicyStoreService {
       .eq('id', input.version_id)
       .maybeSingle();
 
-    if (verErr) throw new BadRequestException(verErr.message);
-    if (!version) throw new NotFoundException(`config version ${input.version_id} not found`);
+    if (verErr) throw AppErrors.server('routing.db_failed', { detail: verErr.message, cause: verErr });
+    if (!version) throw AppErrors.validationFailed('routing.db_failed', { detail: `config version ${input.version_id} not found` });
     const ver = version as PolicyVersionRow;
     if (ver.status !== 'draft') {
-      throw new BadRequestException(
-        `version ${input.version_id} is ${ver.status}, only draft versions can be published`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `version ${input.version_id} is ${ver.status}, only draft versions can be published` });
     }
 
     const entity = await this.getEntity(input.tenant_id, ver.config_entity_id);
@@ -173,7 +165,7 @@ export class PolicyStoreService {
       parsePolicyDefinition(entity.config_type, ver.definition);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'invalid definition';
-      throw new BadRequestException(`cannot publish — definition is invalid: ${msg}`);
+      throw AppErrors.validationFailed('routing.db_failed', { detail: `cannot publish — definition is invalid: ${msg}` });
     }
 
     // Archive any previously published version for this entity. Then mark this
@@ -196,14 +188,13 @@ export class PolicyStoreService {
       .update({
         status: 'published',
         published_at: nowIso,
-        published_by: input.published_by ?? null,
-      })
+        published_by: input.published_by ?? null})
       .eq('tenant_id', input.tenant_id)
       .eq('id', ver.id)
       .select('*')
       .single();
 
-    if (pubErr) throw new BadRequestException(`failed to publish version: ${pubErr.message}`);
+    if (pubErr) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to publish version: ${pubErr.message}` });
 
     const { error: entErr } = await this.supabase.admin
       .from('config_entities')
@@ -211,7 +202,7 @@ export class PolicyStoreService {
       .eq('tenant_id', input.tenant_id)
       .eq('id', entity.id);
 
-    if (entErr) throw new BadRequestException(`failed to point entity at published version: ${entErr.message}`);
+    if (entErr) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to point entity at published version: ${entErr.message}` });
 
     return published as PolicyVersionRow;
   }
@@ -236,15 +227,14 @@ export class PolicyStoreService {
       .eq('id', entity.current_published_version_id)
       .maybeSingle();
 
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     if (!data) return null;
 
     const parsed = parsePolicyDefinition(entity.config_type, data.definition);
     return {
       config_type: entity.config_type as T,
       definition: parsed,
-      version_id: data.id as string,
-    };
+      version_id: data.id as string};
   }
 
   async listEntities(
@@ -260,7 +250,7 @@ export class PolicyStoreService {
       .eq('status', 'active')
       .order('display_name', { ascending: true });
 
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return (data ?? []) as PolicyEntityRow[];
   }
 
@@ -273,7 +263,7 @@ export class PolicyStoreService {
       .limit(1)
       .maybeSingle();
 
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return (data?.version_number ?? 0) + 1;
   }
 }

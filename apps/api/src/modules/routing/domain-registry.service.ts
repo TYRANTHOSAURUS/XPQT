@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable} from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 
 /**
@@ -52,7 +53,7 @@ export class DomainRegistryService {
       .select('*')
       .eq('tenant_id', tenant_id)
       .order('display_name', { ascending: true });
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return (data ?? []) as DomainRow[];
   }
 
@@ -63,8 +64,8 @@ export class DomainRegistryService {
       .eq('tenant_id', tenant_id)
       .eq('id', id)
       .maybeSingle();
-    if (error) throw new BadRequestException(error.message);
-    if (!data) throw new NotFoundException(`domain ${id} not found`);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.validationFailed('routing.db_failed', { detail: `domain ${id} not found` });
     return data as DomainRow;
   }
 
@@ -75,16 +76,14 @@ export class DomainRegistryService {
       .eq('tenant_id', tenant_id)
       .eq('key', key)
       .maybeSingle();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return (data as DomainRow) ?? null;
   }
 
   async create(input: CreateDomainInput): Promise<DomainRow> {
     const key = normalizeKey(input.key);
     if (!KEY_PATTERN.test(key)) {
-      throw new BadRequestException(
-        `domain key "${input.key}" is invalid — must match [a-z0-9][a-z0-9_-]*`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `domain key "${input.key}" is invalid — must match [a-z0-9][a-z0-9_-]*` });
     }
     if (input.parent_domain_id) {
       // Only check parent existence; circular detection not needed on create
@@ -98,16 +97,15 @@ export class DomainRegistryService {
         tenant_id: input.tenant_id,
         key,
         display_name: input.display_name,
-        parent_domain_id: input.parent_domain_id ?? null,
-      })
+        parent_domain_id: input.parent_domain_id ?? null})
       .select('*')
       .single();
 
     if (error) {
       if (error.code === '23505') {
-        throw new BadRequestException(`domain key "${key}" already exists for this tenant`);
+        throw AppErrors.validationFailed('routing.db_failed', { detail: `domain key "${key}" already exists for this tenant` });
       }
-      throw new BadRequestException(`failed to create domain: ${error.message}`);
+      throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create domain: ${error.message}` });
     }
     return data as DomainRow;
   }
@@ -116,7 +114,7 @@ export class DomainRegistryService {
     const current = await this.get(input.tenant_id, input.id);
 
     if (input.parent_domain_id === current.id) {
-      throw new BadRequestException('a domain cannot be its own parent');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'a domain cannot be its own parent' });
     }
 
     if (input.parent_domain_id && input.parent_domain_id !== current.parent_domain_id) {
@@ -138,7 +136,7 @@ export class DomainRegistryService {
       .select('*')
       .single();
 
-    if (error) throw new BadRequestException(`failed to update domain: ${error.message}`);
+    if (error) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to update domain: ${error.message}` });
     return data as DomainRow;
   }
 
@@ -163,9 +161,7 @@ export class DomainRegistryService {
     let cursor: string | null = candidateParentId;
     for (let hop = 0; cursor && hop < MAX_PARENT_WALK; hop++) {
       if (cursor === domainId) {
-        throw new BadRequestException(
-          `setting parent ${candidateParentId} on domain ${domainId} would create a cycle`,
-        );
+        throw AppErrors.validationFailed('routing.invalid_definition', { detail: `setting parent ${candidateParentId} on domain ${domainId} would create a cycle` });
       }
       const result: { data: { parent_domain_id: string | null } | null; error: { message: string } | null } =
         await this.supabase.admin
@@ -174,13 +170,11 @@ export class DomainRegistryService {
           .eq('tenant_id', tenant_id)
           .eq('id', cursor)
           .maybeSingle();
-      if (result.error) throw new BadRequestException(result.error.message);
+      if (result.error) throw AppErrors.server('routing.db_failed', { detail: result.error.message, cause: result.error });
       cursor = result.data?.parent_domain_id ?? null;
     }
     if (cursor) {
-      throw new BadRequestException(
-        `domain parentage chain exceeded ${MAX_PARENT_WALK} hops — likely a cycle`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `domain parentage chain exceeded ${MAX_PARENT_WALK} hops — likely a cycle` });
     }
   }
 }

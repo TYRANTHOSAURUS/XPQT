@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type {
   CaseOwnerPolicyDefinition,
   ChildDispatchPolicyDefinition,
@@ -6,8 +7,7 @@ import type {
   IntakeContext,
   OwnerDecision,
   ResolverOutput,
-  RoutingV2Mode,
-} from '@prequest/shared';
+  RoutingV2Mode} from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { CaseOwnerEngineService } from './case-owner-engine.service';
 import { ChildExecutionResolverService } from './child-execution-resolver.service';
@@ -20,8 +20,7 @@ import {
   AssignmentTarget,
   ChosenBy,
   ResolverContext,
-  ResolverDecision,
-} from './resolver.types';
+  ResolverDecision} from './resolver.types';
 
 /**
  * Workstream 0 / Artifact E: dual-run hook point.
@@ -116,9 +115,9 @@ export class RoutingEvaluatorService {
 
     if (mode === 'v2_only') {
       if (!v2) {
-        throw new Error(
-          `routing_v2_mode=v2_only for tenant ${context.tenant_id} but v2 evaluation failed: ${v2Error ?? 'unknown'}`,
-        );
+        throw AppErrors.server('routing.invalid_state', {
+          detail: `routing_v2_mode=v2_only for tenant ${context.tenant_id} but v2 evaluation failed: ${v2Error ?? 'unknown'}`,
+        });
       }
       return v2;
     }
@@ -184,8 +183,7 @@ export class RoutingEvaluatorService {
       selected_location_id: context.location_id,
       asset_id: context.asset_id,
       priority: normalizePriority(context.priority),
-      evaluated_at: new Date().toISOString(),
-    };
+      evaluated_at: new Date().toISOString()};
     const normalized = await this.intakeScoping.normalize(intake);
     const decision = this.caseOwnerEngine.evaluate(
       normalized,
@@ -287,8 +285,7 @@ export class RoutingEvaluatorService {
       selected_location_id: context.location_id,
       asset_id: context.asset_id,
       priority: normalizePriority(context.priority),
-      evaluated_at: new Date().toISOString(),
-    };
+      evaluated_at: new Date().toISOString()};
     const normalized = await this.intakeScoping.normalize(intake);
     const plans = this.splitOrchestration.plan(normalized, policy);
 
@@ -351,8 +348,7 @@ export class RoutingEvaluatorService {
         v2_output: v2 as unknown as Record<string, unknown> | null,
         target_match,
         chosen_by_match,
-        diff_summary: v2Error ? { v2_error: v2Error } : {},
-      });
+        diff_summary: v2Error ? { v2_error: v2Error } : {}});
 
       if (error) {
         this.logger.warn(`Failed to write routing_dualrun_logs row: ${error.message}`);
@@ -381,8 +377,7 @@ function unassignedDecision(reason: string): ResolverDecision {
     target: null,
     chosen_by: 'unassigned',
     strategy: 'fixed',
-    trace: [{ step: 'unassigned', matched: true, reason, target: null }],
-  };
+    trace: [{ step: 'unassigned', matched: true, reason, target: null }]};
 }
 
 function adaptOwnerDecisionToResolver(decision: OwnerDecision): ResolverDecision {
@@ -392,8 +387,7 @@ function adaptOwnerDecisionToResolver(decision: OwnerDecision): ResolverDecision
     target: decision.target as AssignmentTarget,
     chosen_by,
     strategy: 'fixed',
-    trace: decision.trace,
-  };
+    trace: decision.trace};
 }
 
 /**
@@ -418,15 +412,13 @@ function adaptChildDispatchToResolver(
       step: r.output.chosen_by as ChosenBy,
       matched: false,
       reason: `additional plan ${r.plan.plan_id} → ${r.output.chosen_by} ${r.output.target ? `${r.output.target.kind}` : 'null'} (not served to legacy callsite)`,
-      target: r.output.target,
-    });
+      target: r.output.target});
   }
   return {
     target: (first.output.target as AssignmentTarget | null) ?? null,
     chosen_by: first.output.chosen_by as ChosenBy,
     strategy: 'fixed',
-    trace,
-  };
+    trace};
 }
 
 function targetsEqual(a: ResolverDecision['target'], b: ResolverDecision['target']): boolean {

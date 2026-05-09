@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger} from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ResolverService } from './resolver.service';
@@ -8,8 +9,7 @@ import {
   ChosenBy,
   FulfillmentShape,
   ResolverContext,
-  TraceEntry,
-} from './resolver.types';
+  TraceEntry} from './resolver.types';
 
 export interface SimulatorInput {
   request_type_id: string;
@@ -140,7 +140,7 @@ export class RoutingSimulatorService {
     const tenant = TenantContext.current();
 
     const requestType = await this.loadRequestTypeMeta(input.request_type_id, tenant.id);
-    if (!requestType) throw new NotFoundException('Request type not found');
+    if (!requestType) throw AppErrors.validationFailed('routing.field_required', { detail: 'Request type not found' });
 
     // Portal-scope: acting_for_location drives routing; current_location is diagnostic.
     // Fallback order when acting_for is unset: legacy `location_id` → `current_location_id`.
@@ -163,8 +163,7 @@ export class RoutingSimulatorService {
       priority: input.priority ?? 'normal',
       asset_id: input.asset_id ?? null,
       location_id: actingForLocation,
-      excluded_rule_ids: input.disabled_rule_ids,
-    };
+      excluded_rule_ids: input.disabled_rule_ids};
 
     const decision = await this.resolver.resolve(context);
     const targetName = await this.resolveTargetName(decision.target, tenant.id);
@@ -196,16 +195,14 @@ export class RoutingSimulatorService {
         rule_name: decision.rule_name ?? null,
         target_kind: decision.target?.kind ?? null,
         target_id: targetKindId(decision.target),
-        target_name: targetName,
-      },
+        target_name: targetName},
       effects: {
         sla_policy_id: requestType.sla_policy_id,
         sla_policy_name: requestType.sla_policy_name,
         workflow_definition_id: requestType.workflow_definition_id,
         workflow_definition_name: requestType.workflow_definition_name,
         fulfillment_strategy: requestType.fulfillment_strategy,
-        domain: requestType.domain,
-      },
+        domain: requestType.domain},
       trace: decision.trace,
       v2,
       context_snapshot: {
@@ -215,11 +212,9 @@ export class RoutingSimulatorService {
         priority: context.priority ?? 'normal',
         location_id: actingForLocation,
         asset_id: input.asset_id ?? null,
-        excluded_rule_ids: input.disabled_rule_ids ?? [],
-      },
+        excluded_rule_ids: input.disabled_rule_ids ?? []},
       portal_availability,
-      duration_ms,
-    };
+      duration_ms};
   }
 
   private async evaluatePortalAvailability(
@@ -240,8 +235,7 @@ export class RoutingSimulatorService {
         p_requested_for_person_id: personId,
         p_effective_space_id: actingForLocationId,
         p_asset_id: null,
-        p_tenant_id: tenantId,
-      },
+        p_tenant_id: tenantId},
     );
     if (traceError) throw traceError;
     const fullTrace = traceData as unknown as Record<string, unknown>;
@@ -257,14 +251,12 @@ export class RoutingSimulatorService {
       granularity: (fullTrace.granularity as string | null) ?? null,
       granularity_ok: Boolean(fullTrace.granularity_ok),
       overall_valid: Boolean(fullTrace.overall_valid),
-      failure_reason: (fullTrace.failure_reason as string | null) ?? null,
-    };
+      failure_reason: (fullTrace.failure_reason as string | null) ?? null};
 
     // Load the authorized-roots summary so admin can see what IS available when auth fails.
     const { data: rootRows } = await this.supabase.admin.rpc('portal_authorized_root_matches', {
       p_person_id: personId,
-      p_tenant_id: tenantId,
-    });
+      p_tenant_id: tenantId});
     const rows =
       ((rootRows ?? []) as Array<{ root_id: string; source: 'default' | 'grant'; grant_id: string | null }>) ?? [];
 
@@ -293,8 +285,7 @@ export class RoutingSimulatorService {
       current_location_id: currentLocationId,
       acting_for_location_id: actingForLocationId,
       trace,
-      authorized_locations_summary,
-    };
+      authorized_locations_summary};
   }
 
   private async runV2Preview(
@@ -316,8 +307,7 @@ export class RoutingSimulatorService {
         target_name: name,
         trace: decision?.trace ?? [],
         error,
-        matches_legacy_target: targetsEqual(target, legacyTarget),
-      });
+        matches_legacy_target: targetsEqual(target, legacyTarget)});
     }
     return results;
   }
@@ -355,8 +345,7 @@ export class RoutingSimulatorService {
       sla_policy_id: (raw.sla_policy_id as string | null) ?? null,
       sla_policy_name: (sla as { name?: string } | null)?.name ?? null,
       workflow_definition_id: (raw.workflow_definition_id as string | null) ?? null,
-      workflow_definition_name: (wf as { name?: string } | null)?.name ?? null,
-    };
+      workflow_definition_name: (wf as { name?: string } | null)?.name ?? null};
   }
 
   private async resolveTargetName(target: AssignmentTarget | null, tenantId: string): Promise<string | null> {

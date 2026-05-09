@@ -1382,6 +1382,16 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'privacy.signed_url_failed': { title: "Couldn't generate signed link" },
   'privacy.subject_not_found': { title: "Couldn't find that subject" },
   'privacy.unknown_data_category': { title: "Couldn't process", detail: 'Unknown data category.' },
+
+  // ─── routing (Phase 7.B-1.routing) ───────────────────────────────────────
+  'routing.field_required': { title: "Couldn't process", detail: 'A required field is missing.' },
+  'routing.body_required': { title: "Couldn't process", detail: 'Request body is required.' },
+  'routing.db_failed': { title: "Couldn't process that request" },
+  'routing.not_found': { title: "Couldn't find that record" },
+  'routing.invalid_definition': { title: "Couldn't save", detail: 'Invalid definition.' },
+  'routing.invalid_state': { title: "Couldn't process", detail: 'Invalid state for this action.' },
+  'routing.duplicate': { title: "Couldn't save", detail: 'A duplicate already exists.' },
+  'routing.v2_not_implemented': { title: "That feature isn't available yet" },
 };
 
 /**

@@ -1,14 +1,13 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Param,
   Patch,
-  Post,
-} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 
 interface CreateLocationTeamDto {
@@ -31,13 +30,13 @@ function validateScope(space_id: string | null | undefined, space_group_id: stri
   const hasSpace = !!space_id;
   const hasGroup = !!space_group_id;
   if (hasSpace === hasGroup) {
-    throw new BadRequestException('Exactly one of space_id or space_group_id must be set.');
+    throw AppErrors.validationFailed('routing.field_required', { detail: 'Exactly one of space_id or space_group_id must be set.' });
   }
 }
 
 function validateAssignee(team_id: string | null | undefined, vendor_id: string | null | undefined) {
   if (!team_id && !vendor_id) {
-    throw new BadRequestException('At least one of team_id or vendor_id must be set.');
+    throw AppErrors.validationFailed('routing.field_required', { detail: 'At least one of team_id or vendor_id must be set.' });
   }
 }
 
@@ -66,7 +65,7 @@ export class LocationTeamsController {
   @Post()
   async create(@Body() dto: CreateLocationTeamDto) {
     const tenant = TenantContext.current();
-    if (!dto.domain?.trim()) throw new BadRequestException('domain is required');
+    if (!dto.domain?.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'domain is required' });
     validateScope(dto.space_id, dto.space_group_id);
     validateAssignee(dto.team_id, dto.vendor_id);
 
@@ -78,11 +77,10 @@ export class LocationTeamsController {
         space_group_id: dto.space_group_id ?? null,
         domain: dto.domain.trim(),
         team_id: dto.team_id ?? null,
-        vendor_id: dto.vendor_id ?? null,
-      })
+        vendor_id: dto.vendor_id ?? null})
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -103,7 +101,7 @@ export class LocationTeamsController {
         .eq('id', id)
         .eq('tenant_id', tenant.id)
         .single();
-      if (cerr) throw new BadRequestException(cerr.message);
+      if (cerr) throw AppErrors.server('routing.db_failed', { detail: cerr.message, cause: cerr });
       const merged = { ...current, ...patch };
       validateScope(merged.space_id as string | null, merged.space_group_id as string | null);
       validateAssignee(merged.team_id as string | null, merged.vendor_id as string | null);
@@ -116,7 +114,7 @@ export class LocationTeamsController {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -128,7 +126,7 @@ export class LocationTeamsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return { ok: true };
   }
 }

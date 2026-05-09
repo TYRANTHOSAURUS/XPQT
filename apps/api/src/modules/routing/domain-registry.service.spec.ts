@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { DomainRegistryService } from './domain-registry.service';
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
@@ -175,7 +175,7 @@ describe('DomainRegistryService', () => {
   it('get 404s when missing', async () => {
     const sb = buildSupabase({ domains: [] });
     const svc = new DomainRegistryService(sb as any);
-    await expect(svc.get(TENANT, D_FM)).rejects.toThrow(NotFoundException);
+    await expect(svc.get(TENANT, D_FM)).rejects.toThrow(AppError);
   });
 
   it('create validates parent exists before insert', async () => {
@@ -184,6 +184,6 @@ describe('DomainRegistryService', () => {
 
     await expect(
       svc.create({ tenant_id: TENANT, key: 'doors', display_name: 'Doors', parent_domain_id: D_FM }),
-    ).rejects.toThrow(NotFoundException);
+    ).rejects.toThrow(AppError);
   });
 });

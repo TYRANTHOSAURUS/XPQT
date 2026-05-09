@@ -1,14 +1,13 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Param,
   Patch,
-  Post,
-} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 
 interface CreateSpaceGroupDto {
@@ -40,24 +39,23 @@ export class SpaceGroupsController {
       `)
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
   @Post()
   async create(@Body() dto: CreateSpaceGroupDto) {
     const tenant = TenantContext.current();
-    if (!dto.name?.trim()) throw new BadRequestException('name is required');
+    if (!dto.name?.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'name is required' });
     const { data, error } = await this.supabase.admin
       .from('space_groups')
       .insert({
         tenant_id: tenant.id,
         name: dto.name.trim(),
-        description: dto.description?.trim() ?? null,
-      })
+        description: dto.description?.trim() ?? null})
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -66,7 +64,7 @@ export class SpaceGroupsController {
     const tenant = TenantContext.current();
     const patch: Record<string, unknown> = {};
     if (dto.name !== undefined) {
-      if (!dto.name.trim()) throw new BadRequestException('name cannot be empty');
+      if (!dto.name.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'name cannot be empty' });
       patch.name = dto.name.trim();
     }
     if (dto.description !== undefined) patch.description = dto.description?.trim() || null;
@@ -78,7 +76,7 @@ export class SpaceGroupsController {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -90,24 +88,23 @@ export class SpaceGroupsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return { ok: true };
   }
 
   @Post(':id/members')
   async addMember(@Param('id') groupId: string, @Body() dto: AddMemberDto) {
     const tenant = TenantContext.current();
-    if (!dto.space_id) throw new BadRequestException('space_id is required');
+    if (!dto.space_id) throw AppErrors.validationFailed('routing.field_required', { detail: 'space_id is required' });
     const { data, error } = await this.supabase.admin
       .from('space_group_members')
       .insert({
         tenant_id: tenant.id,
         space_group_id: groupId,
-        space_id: dto.space_id,
-      })
+        space_id: dto.space_id})
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -120,7 +117,7 @@ export class SpaceGroupsController {
       .eq('tenant_id', tenant.id)
       .eq('space_group_id', groupId)
       .eq('space_id', spaceId);
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return { ok: true };
   }
 }

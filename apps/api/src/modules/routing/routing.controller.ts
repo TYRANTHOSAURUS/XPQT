@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingRuleCreateSchema, RoutingRuleUpdateSchema } from './routing-rule-validators';
@@ -23,7 +24,7 @@ export class RoutingRuleController {
   async create(@Body() body: unknown) {
     const parsed = RoutingRuleCreateSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -39,7 +40,7 @@ export class RoutingRuleController {
   async update(@Param('id') id: string, @Body() body: unknown) {
     const parsed = RoutingRuleUpdateSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin

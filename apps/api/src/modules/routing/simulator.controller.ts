@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { Request } from 'express';
 import type { RoutingV2Mode } from '@prequest/shared';
 import { RoutingSimulatorService, SimulatorInput, SimulatorResult } from './simulator.service';
@@ -49,7 +50,7 @@ export class RoutingSimulatorController {
       .select('feature_flags')
       .eq('id', tenant.id)
       .maybeSingle();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     const raw = (data?.feature_flags as Record<string, unknown> | null)?.routing_v2_mode;
     const mode: RoutingV2Mode =
       raw === 'dualrun' || raw === 'shadow' || raw === 'v2_only' ? raw : 'off';
@@ -64,9 +65,7 @@ export class RoutingSimulatorController {
     await this.assertStudioAccess(request);
     const tenant = TenantContext.current();
     if (!body?.mode || !VALID_MODES.includes(body.mode as RoutingV2Mode)) {
-      throw new BadRequestException(
-        `mode must be one of: ${VALID_MODES.join(', ')}`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `mode must be one of: ${VALID_MODES.join(', ')}` });
     }
     const mode = body.mode as RoutingV2Mode;
 
@@ -76,7 +75,7 @@ export class RoutingSimulatorController {
       .select('feature_flags')
       .eq('id', tenant.id)
       .maybeSingle();
-    if (readErr) throw new BadRequestException(readErr.message);
+    if (readErr) throw AppErrors.server('routing.db_failed', { detail: readErr.message, cause: readErr });
     const currentFlags = (tenantRow?.feature_flags as Record<string, unknown>) ?? {};
     const nextFlags = mode === 'off'
       ? Object.fromEntries(Object.entries(currentFlags).filter(([k]) => k !== 'routing_v2_mode'))
@@ -86,7 +85,7 @@ export class RoutingSimulatorController {
       .from('tenants')
       .update({ feature_flags: nextFlags })
       .eq('id', tenant.id);
-    if (writeErr) throw new BadRequestException(writeErr.message);
+    if (writeErr) throw AppErrors.server('routing.db_failed', { detail: writeErr.message, cause: writeErr });
 
     return { mode };
   }
@@ -99,10 +98,10 @@ export class RoutingSimulatorController {
     await this.assertStudioAccess(request);
 
     if (!body || typeof body !== 'object') {
-      throw new BadRequestException('Body required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'Body required' });
     }
     if (!body.request_type_id) {
-      throw new BadRequestException('request_type_id is required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'request_type_id is required' });
     }
 
     const input: SimulatorInput = {
@@ -115,8 +114,7 @@ export class RoutingSimulatorController {
       // Portal-scope extension (docs/portal-scope-slice.md §5.6)
       simulate_as_person_id: body.simulate_as_person_id ?? null,
       current_location_id: body.current_location_id ?? null,
-      acting_for_location_id: body.acting_for_location_id ?? null,
-    };
+      acting_for_location_id: body.acting_for_location_id ?? null};
     return this.simulator.simulate(input);
   }
 
@@ -135,8 +133,7 @@ export class RoutingSimulatorController {
       offset: offset ? Number.parseInt(offset, 10) : undefined,
       chosen_by: chosenBy as ChosenBy | undefined,
       ticket_id: ticketId,
-      since,
-    });
+      since});
   }
 
   @Get('dualrun-logs')
@@ -154,8 +151,7 @@ export class RoutingSimulatorController {
       offset: offset ? Number.parseInt(offset, 10) : undefined,
       hook: hook === 'case_owner' || hook === 'child_dispatch' ? hook : undefined,
       only_divergent: onlyDivergent === 'true' || onlyDivergent === '1',
-      since,
-    });
+      since});
   }
 
   @Get('coverage')
@@ -169,16 +165,15 @@ export class RoutingSimulatorController {
     return this.coverage.getCoverage({
       space_root_id: spaceRootId,
       domains: domainsCsv ? domainsCsv.split(',').map((d) => d.trim()).filter(Boolean) : undefined,
-      max_cells: maxCells ? Number.parseInt(maxCells, 10) : undefined,
-    });
+      max_cells: maxCells ? Number.parseInt(maxCells, 10) : undefined});
   }
 
   @Put('coverage/cell')
   async setCoverageCell(@Req() request: Request, @Body() body: SetCellRequestBody) {
     await this.assertStudioAccess(request);
-    if (!body || typeof body !== 'object') throw new BadRequestException('Body required');
+    if (!body || typeof body !== 'object') throw AppErrors.validationFailed('routing.field_required', { detail: 'Body required' });
     if (!body.space_id || !body.domain) {
-      throw new BadRequestException('space_id and domain are required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'space_id and domain are required' });
     }
     const assignee =
       body.assignee && body.assignee.kind && body.assignee.id
@@ -187,8 +182,7 @@ export class RoutingSimulatorController {
     return this.coverage.setCell({
       space_id: body.space_id,
       domain: body.domain,
-      assignee,
-    });
+      assignee});
   }
 }
 

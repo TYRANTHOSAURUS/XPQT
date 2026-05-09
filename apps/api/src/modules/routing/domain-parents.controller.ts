@@ -1,13 +1,12 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Param,
-  Post,
-} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 
 interface CreateDomainParentDto {
@@ -27,7 +26,7 @@ export class DomainParentsController {
       .select('id, domain, parent_domain, created_at, updated_at')
       .eq('tenant_id', tenant.id)
       .order('domain');
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -36,20 +35,19 @@ export class DomainParentsController {
     const tenant = TenantContext.current();
     const domain = dto.domain?.trim();
     const parent = dto.parent_domain?.trim();
-    if (!domain) throw new BadRequestException('domain is required');
-    if (!parent) throw new BadRequestException('parent_domain is required');
-    if (domain === parent) throw new BadRequestException('domain and parent_domain must differ');
+    if (!domain) throw AppErrors.validationFailed('routing.field_required', { detail: 'domain is required' });
+    if (!parent) throw AppErrors.validationFailed('routing.field_required', { detail: 'parent_domain is required' });
+    if (domain === parent) throw AppErrors.validationFailed('routing.field_required', { detail: 'domain and parent_domain must differ' });
 
     const { data, error } = await this.supabase.admin
       .from('domain_parents')
       .insert({
         tenant_id: tenant.id,
         domain,
-        parent_domain: parent,
-      })
+        parent_domain: parent})
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return data;
   }
 
@@ -61,7 +59,7 @@ export class DomainParentsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return { ok: true };
   }
 }

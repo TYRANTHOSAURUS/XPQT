@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -93,8 +94,7 @@ export class RoutingCoverageService {
     const { data, error } = await this.supabase.admin.rpc('resolve_coverage', {
       p_tenant_id: tenant.id,
       p_space_ids: effectiveSpaces.map((s) => s.id),
-      p_domains: domains,
-    });
+      p_domains: domains});
     if (error) throw error;
 
     const rawCells = (data ?? []) as Array<{
@@ -136,8 +136,7 @@ export class RoutingCoverageService {
       via_parent_space_id: c.via_parent_space_id,
       via_space_group_id: c.via_space_group_id,
       via_space_group_name: c.via_space_group_id ? groups.get(c.via_space_group_id) ?? null : null,
-      via_parent_domain: c.via_parent_domain,
-    }));
+      via_parent_domain: c.via_parent_domain}));
 
     const duration = Date.now() - started;
     this.logger.log(
@@ -149,8 +148,7 @@ export class RoutingCoverageService {
       spaces: effectiveSpaces,
       domains,
       cells,
-      truncated,
-    };
+      truncated};
   }
 
   private async listActiveDomains(tenantId: string): Promise<string[]> {
@@ -208,8 +206,7 @@ export class RoutingCoverageService {
           name: r.name,
           parent_id: r.parent_id,
           depth,
-          path,
-        };
+          path};
       });
     // Sort by path so hierarchy renders naturally.
     withDepth.sort((a, b) => a.path.join('/').localeCompare(b.path.join('/')));
@@ -226,8 +223,8 @@ export class RoutingCoverageService {
     assignee: { kind: 'team' | 'vendor'; id: string } | null;
   }): Promise<{ deleted: boolean; row?: unknown }> {
     const tenant = TenantContext.current();
-    if (!input.space_id) throw new BadRequestException('space_id required');
-    if (!input.domain?.trim()) throw new BadRequestException('domain required');
+    if (!input.space_id) throw AppErrors.validationFailed('routing.field_required', { detail: 'space_id required' });
+    if (!input.domain?.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'domain required' });
 
     const domain = input.domain.trim();
 
@@ -238,7 +235,7 @@ export class RoutingCoverageService {
       .eq('space_id', input.space_id)
       .eq('domain', domain)
       .maybeSingle();
-    if (findErr) throw new BadRequestException(findErr.message);
+    if (findErr) throw AppErrors.server('routing.db_failed', { detail: findErr.message, cause: findErr });
 
     // Clear case
     if (!input.assignee) {
@@ -248,7 +245,7 @@ export class RoutingCoverageService {
         .delete()
         .eq('id', (existing as { id: string }).id)
         .eq('tenant_id', tenant.id);
-      if (error) throw new BadRequestException(error.message);
+      if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
       return { deleted: true };
     }
 
@@ -258,21 +255,19 @@ export class RoutingCoverageService {
       space_group_id: null,
       domain,
       team_id: input.assignee.kind === 'team' ? input.assignee.id : null,
-      vendor_id: input.assignee.kind === 'vendor' ? input.assignee.id : null,
-    };
+      vendor_id: input.assignee.kind === 'vendor' ? input.assignee.id : null};
 
     if (existing) {
       const { data, error } = await this.supabase.admin
         .from('location_teams')
         .update({
           team_id: patch.team_id,
-          vendor_id: patch.vendor_id,
-        })
+          vendor_id: patch.vendor_id})
         .eq('id', (existing as { id: string }).id)
         .eq('tenant_id', tenant.id)
         .select()
         .single();
-      if (error) throw new BadRequestException(error.message);
+      if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
       return { deleted: false, row: data };
     }
     const { data, error } = await this.supabase.admin
@@ -280,7 +275,7 @@ export class RoutingCoverageService {
       .insert(patch)
       .select()
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
     return { deleted: false, row: data };
   }
 

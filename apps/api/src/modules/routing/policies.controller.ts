@@ -1,12 +1,11 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
   Param,
-  Post,
-} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { ROUTING_STUDIO_SCHEMAS, type RoutingStudioConfigType } from './policy-validators';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { PolicyStoreService } from './policy-store.service';
 
@@ -48,9 +47,7 @@ export class RoutingPoliciesController {
     const tenant = TenantContext.current();
     const entity = await this.store.getEntity(tenant.id, entityId);
     if (entity.config_type !== type) {
-      throw new BadRequestException(
-        `entity ${entityId} is ${entity.config_type}, not ${type}`,
-      );
+      throw AppErrors.validationFailed('routing.invalid_definition', { detail: `entity ${entityId} is ${entity.config_type}, not ${type}` });
     }
     const published = await this.store.getPublishedDefinition(tenant.id, entityId);
     return { entity, published };
@@ -63,18 +60,17 @@ export class RoutingPoliciesController {
   ) {
     const type = assertRoutingType(configType);
     if (!body?.slug || typeof body.slug !== 'string') {
-      throw new BadRequestException('slug (string) is required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'slug (string) is required' });
     }
     if (!body.display_name || typeof body.display_name !== 'string') {
-      throw new BadRequestException('display_name (string) is required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'display_name (string) is required' });
     }
     const tenant = TenantContext.current();
     return this.store.createEntity({
       tenant_id: tenant.id,
       config_type: type,
       slug: body.slug,
-      display_name: body.display_name,
-    });
+      display_name: body.display_name});
   }
 
   @Post(':config_type/:entity_id/versions')
@@ -85,15 +81,14 @@ export class RoutingPoliciesController {
   ) {
     assertRoutingType(configType); // sanity — the store re-checks via the entity
     if (!body || body.definition === undefined) {
-      throw new BadRequestException('definition is required');
+      throw AppErrors.validationFailed('routing.field_required', { detail: 'definition is required' });
     }
     const tenant = TenantContext.current();
     return this.store.createDraftVersion({
       tenant_id: tenant.id,
       entity_id: entityId,
       definition: body.definition,
-      created_by: body.created_by ?? null,
-    });
+      created_by: body.created_by ?? null});
   }
 
   @Post('versions/:version_id/publish')
@@ -105,16 +100,13 @@ export class RoutingPoliciesController {
     return this.store.publishVersion({
       tenant_id: tenant.id,
       version_id: versionId,
-      published_by: body?.published_by ?? null,
-    });
+      published_by: body?.published_by ?? null});
   }
 }
 
 function assertRoutingType(raw: string): RoutingStudioConfigType {
   if (raw in ROUTING_STUDIO_SCHEMAS) return raw as RoutingStudioConfigType;
-  throw new BadRequestException(
-    `config_type "${raw}" is not a routing-studio policy type`,
-  );
+  throw AppErrors.validationFailed('routing.invalid_definition', { detail: `config_type "${raw}" is not a routing-studio policy type` });
 }
 
 interface CreateEntityBody {

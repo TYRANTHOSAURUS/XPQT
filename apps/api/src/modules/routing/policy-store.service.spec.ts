@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { PolicyStoreService } from './policy-store.service';
 
 const TENANT = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
@@ -135,7 +135,7 @@ describe('PolicyStoreService', () => {
         slug: 'x',
         display_name: 'x',
       }),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
   });
 
   it('createDraftVersion validates the payload and assigns the next version number', async () => {
@@ -191,7 +191,7 @@ describe('PolicyStoreService', () => {
         entity_id: ENTITY,
         definition: { schema_version: 99 }, // wildly wrong
       }),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     expect(sb._inserts.config_versions ?? []).toHaveLength(0);
   });
@@ -269,6 +269,6 @@ describe('PolicyStoreService', () => {
   it('getEntity 404s when entity does not exist', async () => {
     const sb = buildSupabase({ config_entities: [] });
     const svc = new PolicyStoreService(sb as any);
-    await expect(svc.getEntity(TENANT, ENTITY)).rejects.toThrow(NotFoundException);
+    await expect(svc.getEntity(TENANT, ENTITY)).rejects.toThrow(AppError);
   });
 });

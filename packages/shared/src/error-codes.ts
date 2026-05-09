@@ -374,6 +374,16 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── routing migration (Phase 7.B-1.routing) ─────────────────────────────
+  | 'routing.field_required'
+  | 'routing.body_required'
+  | 'routing.db_failed'
+  | 'routing.not_found'
+  | 'routing.invalid_definition'
+  | 'routing.invalid_state'
+  | 'routing.duplicate'
+  | 'routing.v2_not_implemented'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1008,6 +1018,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'privacy.signed_url_failed',
   'privacy.subject_not_found',
   'privacy.unknown_data_category',
+  'routing.field_required',
+  'routing.body_required',
+  'routing.db_failed',
+  'routing.not_found',
+  'routing.invalid_definition',
+  'routing.invalid_state',
+  'routing.duplicate',
+  'routing.v2_not_implemented',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

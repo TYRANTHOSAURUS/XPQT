@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,9 +6,9 @@ import {
   Param,
   Patch,
   Post,
-  Query,
-} from '@nestjs/common';
+  Query} from '@nestjs/common';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { DomainRegistryService } from './domain-registry.service';
 
 /**
@@ -32,7 +31,7 @@ export class RoutingDomainsController {
 
   @Get('lookup')
   async lookup(@Query('key') key?: string) {
-    if (!key) throw new BadRequestException('key query param is required');
+    if (!key) throw AppErrors.validationFailed('routing.field_required', { detail: 'key query param is required' });
     const tenant = TenantContext.current();
     const hit = await this.registry.findByKey(tenant.id, key);
     return { domain: hit };
@@ -46,15 +45,14 @@ export class RoutingDomainsController {
 
   @Post()
   async create(@Body() body: CreateDomainBody) {
-    if (!body?.key) throw new BadRequestException('key is required');
-    if (!body.display_name) throw new BadRequestException('display_name is required');
+    if (!body?.key) throw AppErrors.validationFailed('routing.field_required', { detail: 'key is required' });
+    if (!body.display_name) throw AppErrors.validationFailed('routing.field_required', { detail: 'display_name is required' });
     const tenant = TenantContext.current();
     return this.registry.create({
       tenant_id: tenant.id,
       key: body.key,
       display_name: body.display_name,
-      parent_domain_id: body.parent_domain_id ?? null,
-    });
+      parent_domain_id: body.parent_domain_id ?? null});
   }
 
   @Patch(':id')
@@ -65,8 +63,7 @@ export class RoutingDomainsController {
       id,
       display_name: body?.display_name,
       parent_domain_id: body?.parent_domain_id,
-      active: body?.active,
-    });
+      active: body?.active});
   }
 
   @Delete(':id')
