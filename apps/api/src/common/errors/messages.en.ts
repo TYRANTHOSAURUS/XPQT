@@ -836,6 +836,24 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't run that report",
     detail: 'Use a YYYY-MM-DD date.',
   },
+
+  // ─── portal-announcements (Phase 7.B-1.portal-announcements) ─────────────
+  'announcement.list_failed': {
+    title: "Couldn't load announcements",
+  },
+  'announcement.publish_failed': {
+    title: "Couldn't publish that announcement",
+  },
+  'announcement.unpublish_failed': {
+    title: "Couldn't unpublish that announcement",
+  },
+  'announcement.invalid_payload': {
+    title: "Couldn't publish that announcement",
+    detail: 'Location, title, and body are required.',
+  },
+  'announcement.insert_no_row': {
+    title: "Couldn't save that announcement",
+  },
 };
 
 /**

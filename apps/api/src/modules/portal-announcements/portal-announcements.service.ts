@@ -1,12 +1,8 @@
 // apps/api/src/modules/portal-announcements/portal-announcements.service.ts
-import {
-  BadRequestException,
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { Announcement, PublishAnnouncementDto } from './dto';
 
 @Injectable()
@@ -27,8 +23,8 @@ export class PortalAnnouncementsService {
         .select('id, parent_id')
         .eq('tenant_id', tenant.id),
     ]);
-    if (aErr) throw new InternalServerErrorException(aErr.message);
-    if (sErr) throw new InternalServerErrorException(sErr.message);
+    if (aErr) throw AppErrors.server('announcement.list_failed', { detail: aErr.message, cause: aErr });
+    if (sErr) throw AppErrors.server('announcement.list_failed', { detail: sErr.message, cause: sErr });
 
     const byLoc = new Map<string, Announcement>();
     for (const a of anns ?? []) byLoc.set(a.location_id, a as Announcement);
@@ -51,14 +47,16 @@ export class PortalAnnouncementsService {
       .select('id, location_id, title, body, published_at, expires_at, created_by')
       .eq('tenant_id', tenant.id)
       .order('published_at', { ascending: false });
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('announcement.list_failed', { detail: error.message, cause: error });
     return (data ?? []) as Announcement[];
   }
 
   /** Publish retires any existing active announcement for the same location. */
   async publish(dto: PublishAnnouncementDto, authUid: string): Promise<Announcement> {
     if (!dto.location_id || !dto.title?.trim() || !dto.body?.trim()) {
-      throw new BadRequestException('location_id, title, body are required');
+      throw AppErrors.validationFailed('announcement.invalid_payload', {
+        detail: 'location_id, title, body are required',
+      });
     }
     const tenant = TenantContext.current();
 
@@ -92,8 +90,8 @@ export class PortalAnnouncementsService {
       })
       .select('id, location_id, title, body, published_at, expires_at, created_by')
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    if (!data) throw new NotFoundException('Insert returned no row');
+    if (error) throw AppErrors.server('announcement.publish_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.server('announcement.insert_no_row', { detail: 'Insert returned no row' });
     return data as Announcement;
   }
 
@@ -104,6 +102,6 @@ export class PortalAnnouncementsService {
       .update({ expires_at: new Date().toISOString() })
       .eq('tenant_id', tenant.id)
       .eq('id', id);
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('announcement.unpublish_failed', { detail: error.message, cause: error });
   }
 }

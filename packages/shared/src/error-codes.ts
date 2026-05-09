@@ -306,7 +306,14 @@ export type KnownErrorCode =
   | 'report.invalid_date_range'
   | 'report.window_too_large'
   | 'report.rpc_failed'
-  | 'report.invalid_date';
+  | 'report.invalid_date'
+
+  // ─── portal-announcements migration (Phase 7.B-1.portal-announcements) ───
+  | 'announcement.list_failed'
+  | 'announcement.publish_failed'
+  | 'announcement.unpublish_failed'
+  | 'announcement.invalid_payload'
+  | 'announcement.insert_no_row';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -542,6 +549,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'report.window_too_large',
   'report.rpc_failed',
   'report.invalid_date',
+  'announcement.list_failed',
+  'announcement.publish_failed',
+  'announcement.unpublish_failed',
+  'announcement.invalid_payload',
+  'announcement.insert_no_row',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

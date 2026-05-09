@@ -29,6 +29,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/space"
   "apps/api/src/modules/search"
   "apps/api/src/modules/reporting"
+  "apps/api/src/modules/portal-announcements"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,
