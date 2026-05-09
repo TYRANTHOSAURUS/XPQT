@@ -283,7 +283,6 @@ export type KnownErrorCode =
   // ─── Phase 1 legacy snake_case codes (renamed in Phase 7.A.2) ────────────
   | 'insert_failed'
   | 'reservation_slot_conflict'
-  | 'rule_deny'
   | 'override_reason_required'
   | 'multi_room_recurrence_unsupported'
   | 'wrong_endpoint'
@@ -511,7 +510,6 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'vendor.not_in_scope',
   'insert_failed',
   'reservation_slot_conflict',
-  'rule_deny',
   'override_reason_required',
   'multi_room_recurrence_unsupported',
   'wrong_endpoint',

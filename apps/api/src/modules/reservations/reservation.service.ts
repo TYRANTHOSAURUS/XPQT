@@ -241,7 +241,8 @@ export class ReservationService {
     }
 
     const { data, error } = await q;
-    if (error) throw AppErrors.validationFailed('list_failed', { detail: `list_failed:${error.message}` });
+    // C3: DB-side read failure → server-class (5xx). I4: drop pgErr.message interpolation (logged via filter cause serializer).
+    if (error) throw AppErrors.server('list_failed');
 
     type SlotRow = SlotWithBookingEmbed & {
       space?: { id: string; name: string; type: string } | null;
@@ -337,7 +338,8 @@ export class ReservationService {
     if (opts.has_bundle) {
       const { data: rpcData, error: ordersErr } = await this.supabase.admin
         .rpc('bookings_with_orders_for_tenant', { p_tenant_id: tenantId });
-      if (ordersErr) throw AppErrors.validationFailed('list_for_operator_orders', { detail: `list_for_operator_orders:${ordersErr.message}` });
+      // C3+I4: DB-side RPC failure → server-class, no pgErr.message interpolation.
+      if (ordersErr) throw AppErrors.server('list_for_operator_orders');
       const ids = ((rpcData ?? []) as Array<string | { bookings_with_orders_for_tenant: string }>)
         .map((row) => (typeof row === 'string' ? row : row?.bookings_with_orders_for_tenant))
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
@@ -474,7 +476,8 @@ export class ReservationService {
       .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw AppErrors.validationFailed('cancel_failed', { detail: `cancel_failed:${slotsErr.message}` });
+    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+    if (slotsErr) throw AppErrors.server('cancel_failed');
 
     // Mirror to booking-level status so /desk/bookings sees the cancel
     // immediately. Best-effort — the source-of-truth for cell rendering
@@ -555,7 +558,8 @@ export class ReservationService {
       .update({ status: 'confirmed', cancellation_grace_until: null })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw AppErrors.validationFailed('restore_failed', { detail: `restore_failed:${slotsErr.message}` });
+    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+    if (slotsErr) throw AppErrors.server('restore_failed');
 
     await this.supabase.admin
       .from('bookings')
@@ -595,14 +599,16 @@ export class ReservationService {
       .update({ status: 'cancelled', recurrence_skipped: true })
       .eq('tenant_id', tenantId)
       .eq('id', id);
-    if (bookingErr) throw AppErrors.validationFailed('skip_failed', { detail: `skip_failed:${bookingErr.message}` });
+    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+    if (bookingErr) throw AppErrors.server('skip_failed');
 
     const { error: slotsErr } = await this.supabase.admin
       .from('booking_slots')
       .update({ status: 'cancelled' })
       .eq('tenant_id', tenantId)
       .eq('booking_id', id);
-    if (slotsErr) throw AppErrors.validationFailed('skip_failed', { detail: `skip_failed:${slotsErr.message}` });
+    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+    if (slotsErr) throw AppErrors.server('skip_failed');
 
     return this.findByIdOrThrow(id, tenantId);
   }
@@ -866,7 +872,8 @@ export class ReservationService {
         .eq('tenant_id', tenantId)
         .eq('id', primarySlotId);
       if (updErr) {
-        throw AppErrors.validationFailed('edit_failed', { detail: `edit_failed:${updErr.message}` });
+        // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+        throw AppErrors.server('edit_failed');
       }
     }
 
@@ -877,7 +884,8 @@ export class ReservationService {
         .update(bookingMetaPatch)
         .eq('tenant_id', tenantId)
         .eq('id', id);
-      if (bErr) throw AppErrors.validationFailed('edit_failed', { detail: `edit_failed:${bErr.message}` });
+      // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
+      if (bErr) throw AppErrors.server('edit_failed');
     }
 
     const updated = await this.findByIdOrThrow(id, tenantId);

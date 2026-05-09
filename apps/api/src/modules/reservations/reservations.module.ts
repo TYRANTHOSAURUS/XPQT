@@ -6,6 +6,7 @@
 //   - NotificationModule for BookingNotificationsService
 
 import { ConflictException, ForbiddenException, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { ReservationController } from './reservation.controller';
 import { ReservationService } from './reservation.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -201,6 +202,28 @@ export class ReservationsModule implements OnModuleInit {
       await this.bookingFlow.create(input, actor);
       return { outcome: 'accepted' };
     } catch (err) {
+      // I1 (Phase 7.A.2.b-d review): bookingFlow.create() now throws AppError,
+      // not ForbiddenException/ConflictException. Dispatch on code, not class,
+      // so deny + conflict don't get silently routed to "deferred".
+      if (err instanceof AppError) {
+        if (err.code === 'rule_deny' || err.code === 'service_rule_deny') {
+          // detail carries the admin-authored denial prose for rule_deny;
+          // service_rule_deny may stash structured deny payload in fields[].
+          return {
+            outcome: 'denied',
+            denialMessage: err.detail ?? 'Booking denied by rules.',
+          };
+        }
+        if (
+          err.code === 'reservation_slot_conflict' ||
+          err.code === 'booking.slot_conflict' ||
+          err.code === 'asset_conflict'
+        ) {
+          return { outcome: 'conflict' };
+        }
+      }
+      // Legacy code paths (BookingTransactionBoundary etc.) may still throw
+      // Nest exceptions; keep the old class checks as a fallback.
       if (err instanceof ForbiddenException) {
         const e = err.getResponse() as { code?: string; message?: string };
         return { outcome: 'denied', denialMessage: e?.message ?? 'Booking denied by rules.' };

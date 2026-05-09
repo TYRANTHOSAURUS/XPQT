@@ -158,8 +158,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "You can't edit this booking",
   },
   'booking.partial_failure': {
-    title: 'Booking partially failed',
-    detail: 'Some parts of the booking didn\'t save. Refresh and try again.',
+    // I3: reclassified to server-class per phase-7-error-codes.md line 101.
+    title: "Couldn't fully save the booking",
+    detail: 'Some parts didn\'t save and rollback was blocked. Contact support with the trace ID.',
   },
   'booking.compensation_failed': {
     title: "Couldn't fully roll back the booking",
@@ -494,9 +495,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   multi_room_create_failed: {
     title: "Couldn't book the rooms",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   multi_room_read_failed: {
     title: "Couldn't load the booking",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   rule_deny: {
     title: "Couldn't book — a rule blocked it",
@@ -557,18 +560,23 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   cancel_failed: {
     title: "Couldn't cancel the booking",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   list_failed: {
     title: "Couldn't load the bookings",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   restore_failed: {
     title: "Couldn't restore the booking",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   skip_failed: {
     title: "Couldn't skip the occurrence",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   edit_failed: {
     title: "Couldn't save the changes",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   group_siblings_failed: {
     title: "Couldn't load the group siblings",
@@ -578,9 +586,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   list_for_operator_orders: {
     title: "Couldn't load related orders",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   load_spaces_failed: {
     title: "Couldn't load the spaces",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   scheduler_window_failed: {
     title: "Couldn't load the scheduler window",
@@ -751,13 +761,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   // ─── Phase 1 legacy snake_case (renamed in 7.A.2) ────────────────────────
   insert_failed: {
     title: "Couldn't create the booking",
+    detail: 'Try again. If it keeps happening, contact support.',
   },
   reservation_slot_conflict: {
     title: "Couldn't book — time conflict",
     detail: 'The selected room is already booked for that time.',
-  },
-  rule_deny: {
-    title: "Couldn't book — a rule blocked it",
   },
   override_reason_required: {
     title: "Couldn't book — override reason required",

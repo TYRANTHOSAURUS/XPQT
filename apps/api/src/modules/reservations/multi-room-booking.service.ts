@@ -246,18 +246,16 @@ export class MultiRoomBookingService {
           detail: `One or more rooms are no longer available (rooms=${spaceIds.join(',')}). No partial bookings created.`,
         });
       }
-      throw AppErrors.validationFailed('multi_room_create_failed', {
-        detail: rpcError.message,
-      });
+      // C3+I4: DB-side RPC failure → server-class, no rpcError.message interpolation.
+      throw AppErrors.server('multi_room_create_failed');
     }
 
     const rpcRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
       | { booking_id: string; slot_ids: string[] }
       | undefined;
     if (!rpcRow?.booking_id) {
-      throw AppErrors.validationFailed('multi_room_create_failed', {
-        detail: 'create_booking returned no booking_id',
-      });
+      // C3: DB-side RPC returned no row → server-class.
+      throw AppErrors.server('multi_room_create_failed');
     }
     const bookingId = rpcRow.booking_id;
 
@@ -318,9 +316,8 @@ export class MultiRoomBookingService {
       .eq('booking_id', bookingId)
       .order('display_order', { ascending: true });
     if (readErr || !slotRows) {
-      throw AppErrors.validationFailed('multi_room_read_failed', {
-        detail: readErr?.message ?? 'no slots returned',
-      });
+      // C3+I4: DB-side read failure → server-class, no readErr.message interpolation.
+      throw AppErrors.server('multi_room_read_failed');
     }
     const reservations = (slotRows as unknown as SlotWithBookingEmbed[]).map(
       slotWithBookingToReservation,
@@ -362,7 +359,8 @@ export class MultiRoomBookingService {
       .select('id, type, reservable, active, setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes')
       .eq('tenant_id', tenantId)
       .in('id', spaceIds);
-    if (error) throw AppErrors.validationFailed('load_spaces_failed', { detail: `load_spaces_failed:${error.message}` });
+    // C3+I4: DB-side read failure → server-class, no pgErr.message interpolation.
+    if (error) throw AppErrors.server('load_spaces_failed');
     const out = new Map<string, {
       id: string; type: string; reservable: boolean; active: boolean;
       setup_buffer_minutes: number | null; teardown_buffer_minutes: number | null;

@@ -108,8 +108,10 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
             (compErr as Error).message
           }; original error: ${(originalErr as Error).message}`,
         );
+        // I4: drop pgErr/originalErr.message interpolation — full context already
+        // logged above and forwarded via filter cause serializer (Phase 7.A.1).
         throw AppErrors.server('booking.compensation_failed', {
-          detail: `Service attach failed; rollback failed; booking ${bookingId} may persist. original=${(originalErr as Error).message}; compensation=${(compErr as Error).message}`,
+          cause: originalErr,
         });
       }
 
@@ -136,8 +138,12 @@ export class InProcessBookingTransactionBoundary implements BookingTransactionBo
           ',',
         )}; original error: ${(originalErr as Error).message}`,
       );
-      throw AppErrors.validationFailed('booking.partial_failure', {
-        detail: `Service attach failed; booking ${outcome.bookingId} could not be fully rolled back (blocked_by=${outcome.blockedBy.join(',')}). Manual recovery required. original=${(originalErr as Error).message}`,
+      // I3: per phase-7-error-codes.md line 101, this is server-class data
+      // corruption (booking persists in unknown state), not user input — flip
+      // 400 → 500. I4: drop originalErr.message interpolation — logged above
+      // and forwarded via filter cause serializer.
+      throw AppErrors.server('booking.partial_failure', {
+        cause: originalErr,
       });
     }
   }

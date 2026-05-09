@@ -410,7 +410,7 @@ describe('MultiRoomBookingService.createGroup', () => {
     // is no longer wired into the service so the assertion is moot.
   });
 
-  it('throws BadRequestException(booking.partial_failure) when compensation reports a blocker (Phase 1.3)', async () => {
+  it('throws server-class AppError(booking.partial_failure) when compensation reports a blocker (Phase 7.A.2.b-d: 400→500)', async () => {
     const supabase = makeSupabase({
       spaces: [{ id: 'S1' }, { id: 'S2' }],
     });
@@ -454,9 +454,10 @@ describe('MultiRoomBookingService.createGroup', () => {
     }
 
     expect(caught).toBeInstanceOf(AppError);
-    expect(caught).toMatchObject({ code: 'booking.partial_failure', status: 400 });
-    expect((caught as AppError).detail).toContain(BOOKING_ID);
-    expect((caught as AppError).detail).toContain('recurrence_series');
+    // I3+I4: 400→500 (server-class data corruption per phase-7-error-codes.md
+    // line 101); detail no longer interpolates pgErr/originalErr.message —
+    // ops context is in logs + filter cause serializer.
+    expect(caught).toMatchObject({ code: 'booking.partial_failure', status: 500 });
   });
 
   it('marks status pending_approval when any room rule requires approval', async () => {

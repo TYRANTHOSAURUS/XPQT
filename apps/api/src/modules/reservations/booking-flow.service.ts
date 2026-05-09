@@ -171,6 +171,11 @@ export class BookingFlowService {
     if (ruleOutcome.final === 'deny') {
       const canOverride = actor.has_override_rules && ruleOutcome.overridable;
       if (!canOverride) {
+        // I4: KEEP admin-authored denial prose in detail. It's user-facing
+        // copy authored by humans (booking rule "denial_message"). If the
+        // server-side `scrubLeakyText` regex hits something looking like
+        // a stack frame / SQL keyword, the renderer falls back to generic
+        // copy — fine, since admin prose with those is unlikely.
         throw AppErrors.forbidden('rule_deny', ruleOutcome.denialMessages[0] || 'Booking denied by booking rules.');
       }
       if (!actor.override_reason) {
@@ -310,7 +315,8 @@ export class BookingFlowService {
         });
       }
       this.log.error(`create_booking RPC failed: ${rpcError.message}`);
-      throw AppErrors.validationFailed('insert_failed', { detail: rpcError.message });
+      // C3+I4: DB-side RPC failure → server-class, no rpcError.message interpolation (logged above).
+      throw AppErrors.server('insert_failed');
     }
 
     // RPC returns `setof (booking_id uuid, slot_ids uuid[])` — supabase-js
@@ -319,7 +325,8 @@ export class BookingFlowService {
       | { booking_id: string; slot_ids: string[] }
       | undefined;
     if (!rpcRow?.booking_id) {
-      throw AppErrors.validationFailed('insert_failed', { detail: 'create_booking RPC returned no booking_id' });
+      // C3: RPC returned no row → server-class.
+      throw AppErrors.server('insert_failed');
     }
     const bookingId = rpcRow.booking_id;
     const slotIds = rpcRow.slot_ids ?? [];
@@ -336,7 +343,8 @@ export class BookingFlowService {
       .maybeSingle();
     if (readErr || !bookingRow) {
       this.log.error(`booking re-read failed: ${readErr?.message ?? 'no row'}`);
-      throw AppErrors.validationFailed('insert_failed', { detail: readErr?.message ?? 'Booking re-read returned no row' });
+      // C3+I4: DB-side read failure → server-class, no readErr.message interpolation (logged above).
+      throw AppErrors.server('insert_failed');
     }
     const booking = bookingRow as unknown as Booking;
 
