@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 const BUCKET = 'portal-assets';
 const COVER_MAX_BYTES = 2 * 1024 * 1024;
@@ -118,10 +119,10 @@ export class ServiceCatalogService {
   private rethrowCategoryError(error: { message: string; code?: string }): never {
     const msg = error.message ?? '';
     if (msg.includes('category_depth_exceeded')) {
-      throw new BadRequestException('Catalog hierarchy is capped at 3 levels.');
+      throw AppErrors.validationFailed('config_engine.invalid_hierarchy', { detail: 'Catalog hierarchy is capped at 3 levels.' });
     }
     if (msg.includes('category_cycle') || msg.includes('category_self_parent')) {
-      throw new BadRequestException('This parent assignment would create a cycle.');
+      throw AppErrors.validationFailed('config_engine.invalid_hierarchy', { detail: 'This parent assignment would create a cycle.' });
     }
     throw error;
   }
@@ -152,7 +153,7 @@ export class ServiceCatalogService {
     },
   ) {
     if (dto.cover_source !== undefined && dto.cover_source !== null && dto.cover_source !== 'image' && dto.cover_source !== 'icon') {
-      throw new BadRequestException(`cover_source must be 'image', 'icon', or null`);
+      throw AppErrors.validationFailed('config_engine.invalid_cover_source', { detail: `cover_source must be 'image', 'icon', or null` });
     }
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -171,12 +172,12 @@ export class ServiceCatalogService {
     categoryId: string,
     file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
-    if (!file) throw new BadRequestException('Missing file');
+    if (!file) throw AppErrors.validationFailed('config_engine.file_required', { detail: 'Missing file' });
     if (!COVER_MIMES.has(file.mimetype)) {
-      throw new BadRequestException(`Unsupported mime: ${file.mimetype}. Allowed: jpeg, png, webp`);
+      throw AppErrors.validationFailed('config_engine.unsupported_mime', { detail: `Unsupported mime: ${file.mimetype}. Allowed: jpeg, png, webp` });
     }
     if (file.buffer.byteLength > COVER_MAX_BYTES) {
-      throw new BadRequestException(`File too large: ${file.buffer.byteLength} bytes (max ${COVER_MAX_BYTES})`);
+      throw AppErrors.validationFailed('config_engine.file_too_large', { detail: `File too large: ${file.buffer.byteLength} bytes (max ${COVER_MAX_BYTES})` });
     }
 
     const tenant = TenantContext.current();
@@ -188,7 +189,7 @@ export class ServiceCatalogService {
     const { error: uploadErr } = await this.supabase.admin.storage
       .from(BUCKET)
       .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
-    if (uploadErr) throw new InternalServerErrorException(uploadErr.message);
+    if (uploadErr) throw AppErrors.server('config_engine.upload_failed', { detail: uploadErr.message, cause: uploadErr });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -200,8 +201,8 @@ export class ServiceCatalogService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    if (!data) throw new NotFoundException('Category not found');
+    if (error) throw AppErrors.server('config_engine.update_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.notFoundWithCode('config_engine.category_not_found', 'Category not found');
     return data;
   }
 

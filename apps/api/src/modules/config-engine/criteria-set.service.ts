@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 /**
  * criteria_sets authoring. The canonical evaluator is plpgsql —
@@ -39,17 +40,17 @@ const MAX_DEPTH = 3;
 
 function validateExpression(expr: unknown, depth = 0): asserts expr is Node {
   if (depth > MAX_DEPTH) {
-    throw new BadRequestException(`expression nesting exceeds max depth ${MAX_DEPTH}`);
+    throw AppErrors.validationFailed('config_engine.invalid_expression', { detail: `expression nesting exceeds max depth ${MAX_DEPTH}` });
   }
   if (expr === null || typeof expr !== 'object' || Array.isArray(expr)) {
-    throw new BadRequestException('expression must be an object');
+    throw AppErrors.validationFailed('config_engine.invalid_expression', { detail: 'expression must be an object' });
   }
   const obj = expr as Record<string, unknown>;
 
   if ('all_of' in obj) {
     const val = obj.all_of;
     if (!Array.isArray(val) || val.length === 0) {
-      throw new BadRequestException('all_of must be a non-empty array');
+      throw AppErrors.validationFailed('config_engine.invalid_expression', { detail: 'all_of must be a non-empty array' });
     }
     for (const child of val) validateExpression(child, depth + 1);
     return;
@@ -57,7 +58,7 @@ function validateExpression(expr: unknown, depth = 0): asserts expr is Node {
   if ('any_of' in obj) {
     const val = obj.any_of;
     if (!Array.isArray(val) || val.length === 0) {
-      throw new BadRequestException('any_of must be a non-empty array');
+      throw AppErrors.validationFailed('config_engine.invalid_expression', { detail: 'any_of must be a non-empty array' });
     }
     for (const child of val) validateExpression(child, depth + 1);
     return;
@@ -69,30 +70,30 @@ function validateExpression(expr: unknown, depth = 0): asserts expr is Node {
 
   // Leaf node.
   if (!('attr' in obj) || !('op' in obj)) {
-    throw new BadRequestException(
-      'leaf node must have `attr` and `op` (or use all_of / any_of / not)',
-    );
+    throw AppErrors.validationFailed('config_engine.invalid_expression', {
+      detail: 'leaf node must have `attr` and `op` (or use all_of / any_of / not)',
+    });
   }
   if (typeof obj.attr !== 'string' || !ALLOWED_ATTRS.has(obj.attr)) {
-    throw new BadRequestException(
-      `attr '${String(obj.attr)}' not supported. Allowed: ${[...ALLOWED_ATTRS].join(', ')}`,
-    );
+    throw AppErrors.validationFailed('config_engine.invalid_expression', {
+      detail: `attr '${String(obj.attr)}' not supported. Allowed: ${[...ALLOWED_ATTRS].join(', ')}`,
+    });
   }
   const op = obj.op;
   if (typeof op !== 'string' || (!SCALAR_OPS.has(op) && !LIST_OPS.has(op))) {
-    throw new BadRequestException(
-      `op '${String(op)}' not supported. Allowed: eq, neq, in, not_in`,
-    );
+    throw AppErrors.validationFailed('config_engine.invalid_expression', {
+      detail: `op '${String(op)}' not supported. Allowed: eq, neq, in, not_in`,
+    });
   }
   if (SCALAR_OPS.has(op)) {
     if (!('value' in obj)) {
-      throw new BadRequestException(`op '${op}' requires a \`value\` field`);
+      throw AppErrors.validationFailed('config_engine.invalid_expression', { detail: `op '${op}' requires a \`value\` field` });
     }
   } else {
     if (!('values' in obj) || !Array.isArray(obj.values) || obj.values.length === 0) {
-      throw new BadRequestException(
-        `op '${op}' requires a non-empty \`values\` array`,
-      );
+      throw AppErrors.validationFailed('config_engine.invalid_expression', {
+        detail: `op '${op}' requires a non-empty \`values\` array`,
+      });
     }
   }
 }
@@ -128,14 +129,14 @@ export class CriteriaSetService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException('Criteria set not found');
+    if (!data) throw AppErrors.notFoundWithCode('config_engine.criteria_set_not_found', 'Criteria set not found');
     return data;
   }
 
   async create(input: CriteriaSetInput) {
     const tenant = TenantContext.current();
     if (!input.name?.trim()) {
-      throw new BadRequestException('name is required');
+      throw AppErrors.validationFailed('name_required', { detail: 'name is required' });
     }
     validateExpression(input.expression);
     const { data, error } = await this.supabase.admin
@@ -157,7 +158,7 @@ export class CriteriaSetService {
     const tenant = TenantContext.current();
     const body: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (patch.name !== undefined) {
-      if (!patch.name.trim()) throw new BadRequestException('name cannot be empty');
+      if (!patch.name.trim()) throw AppErrors.validationFailed('name_required', { detail: 'name cannot be empty' });
       body.name = patch.name.trim();
     }
     if (patch.description !== undefined) body.description = patch.description?.trim() || null;
@@ -174,7 +175,7 @@ export class CriteriaSetService {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException('Criteria set not found');
+    if (!data) throw AppErrors.notFoundWithCode('config_engine.criteria_set_not_found', 'Criteria set not found');
     return data;
   }
 

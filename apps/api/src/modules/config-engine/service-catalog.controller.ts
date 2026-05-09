@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -12,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ServiceCatalogService } from './service-catalog.service';
+import { AppErrors } from '../../common/errors';
 
 interface UpdateCategoryDto {
   name?: string;
@@ -54,7 +54,7 @@ export class ServiceCatalogController {
     @Param('id') id: string,
     @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
-    if (!file) throw new BadRequestException('file is required');
+    if (!file) throw AppErrors.validationFailed('config_engine.file_required', { detail: 'file is required' });
     return this.catalogService.uploadCategoryCover(id, file);
   }
 

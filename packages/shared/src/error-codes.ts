@@ -374,6 +374,25 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── config-engine migration (Phase 7.B-1.config-engine) ─────────────────
+  | 'config_engine.invalid_expression'
+  | 'config_engine.criteria_set_not_found'
+  | 'config_engine.entity_not_found'
+  | 'config_engine.draft_not_found'
+  | 'config_engine.no_draft_to_publish'
+  | 'config_engine.version_not_found'
+  | 'config_engine.invalid_hierarchy'
+  | 'config_engine.invalid_cover_source'
+  | 'config_engine.file_required'
+  | 'config_engine.unsupported_mime'
+  | 'config_engine.file_too_large'
+  | 'config_engine.upload_failed'
+  | 'config_engine.update_failed'
+  | 'config_engine.category_not_found'
+  | 'config_engine.invalid_request_type'
+  | 'config_engine.invalid_scope'
+  | 'config_engine.invalid_handler'
+
   // ─── daily-list migration (Phase 7.B-1.daily-list) ───────────────────────
   | 'daily_list.pdf_renderer_unavailable'
   | 'daily_list.line_not_found'
@@ -860,6 +879,23 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'daily_list.no_email',
   'daily_list.send_failed',
   'daily_list.pdf_missing',
+  'config_engine.invalid_expression',
+  'config_engine.criteria_set_not_found',
+  'config_engine.entity_not_found',
+  'config_engine.draft_not_found',
+  'config_engine.no_draft_to_publish',
+  'config_engine.version_not_found',
+  'config_engine.invalid_hierarchy',
+  'config_engine.invalid_cover_source',
+  'config_engine.file_required',
+  'config_engine.unsupported_mime',
+  'config_engine.file_too_large',
+  'config_engine.upload_failed',
+  'config_engine.update_failed',
+  'config_engine.category_not_found',
+  'config_engine.invalid_request_type',
+  'config_engine.invalid_scope',
+  'config_engine.invalid_handler',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

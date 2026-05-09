@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 type ScopeKind = 'tenant' | 'space' | 'space_group';
 
@@ -235,9 +236,8 @@ export class RequestTypeService {
 
     const defaults = variants.filter((v) => v.criteria_set_id === null);
     if (defaults.length > 1) {
-      throw new BadRequestException({
-        code: 'form_variants_multiple_defaults',
-        message: 'At most one default form variant (criteria_set_id = null) is allowed per request type',
+      throw AppErrors.validationFailed('config_engine.invalid_request_type', {
+        detail: 'At most one default form variant (criteria_set_id = null) is allowed per request type',
       });
     }
     await this.assertIdsInTenant(
@@ -599,7 +599,7 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new BadRequestException('Request type not found in this tenant');
+    if (!data) throw AppErrors.validationFailed('config_engine.invalid_request_type', { detail: 'Request type not found in this tenant' });
   }
 
   /**
@@ -629,9 +629,9 @@ export class RequestTypeService {
     const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));
     const missing = nonEmpty.filter((id) => !found.has(id));
     if (missing.length > 0) {
-      throw new BadRequestException(
-        `${label}: ${missing.length} referenced id(s) not found in this tenant — ${missing.join(', ')}`,
-      );
+      throw AppErrors.validationFailed('reference.not_in_tenant', {
+        detail: `${label}: ${missing.length} referenced id(s) not found in this tenant — ${missing.join(', ')}`,
+      });
     }
   }
 
@@ -669,9 +669,9 @@ export class RequestTypeService {
       }
     }
     if (problems.length > 0) {
-      throw new BadRequestException(
-        `${label}: ${problems.length} invalid id(s) — ${problems.join(', ')}`,
-      );
+      throw AppErrors.validationFailed('reference.lookup_failed', {
+        detail: `${label}: ${problems.length} invalid id(s) — ${problems.join(', ')}`,
+      });
     }
   }
 
@@ -679,13 +679,13 @@ export class RequestTypeService {
     const has_space = !!space_id;
     const has_group = !!space_group_id;
     if (scope_kind === 'tenant' && (has_space || has_group)) {
-      throw new BadRequestException('tenant scope cannot carry space_id or space_group_id');
+      throw AppErrors.validationFailed('config_engine.invalid_scope', { detail: 'tenant scope cannot carry space_id or space_group_id' });
     }
     if (scope_kind === 'space' && (!has_space || has_group)) {
-      throw new BadRequestException('space scope requires space_id and must not set space_group_id');
+      throw AppErrors.validationFailed('config_engine.invalid_scope', { detail: 'space scope requires space_id and must not set space_group_id' });
     }
     if (scope_kind === 'space_group' && (has_space || !has_group)) {
-      throw new BadRequestException('space_group scope requires space_group_id and must not set space_id');
+      throw AppErrors.validationFailed('config_engine.invalid_scope', { detail: 'space_group scope requires space_group_id and must not set space_id' });
     }
   }
 
@@ -694,16 +694,16 @@ export class RequestTypeService {
     const hasTeam = !!o.handler_team_id;
     const hasVendor = !!o.handler_vendor_id;
     if (k === null && (hasTeam || hasVendor)) {
-      throw new BadRequestException('handler_kind is required when handler_team_id or handler_vendor_id is set');
+      throw AppErrors.validationFailed('config_engine.invalid_handler', { detail: 'handler_kind is required when handler_team_id or handler_vendor_id is set' });
     }
     if (k === 'team' && (!hasTeam || hasVendor)) {
-      throw new BadRequestException('handler_kind=team requires handler_team_id and forbids handler_vendor_id');
+      throw AppErrors.validationFailed('config_engine.invalid_handler', { detail: 'handler_kind=team requires handler_team_id and forbids handler_vendor_id' });
     }
     if (k === 'vendor' && (hasTeam || !hasVendor)) {
-      throw new BadRequestException('handler_kind=vendor requires handler_vendor_id and forbids handler_team_id');
+      throw AppErrors.validationFailed('config_engine.invalid_handler', { detail: 'handler_kind=vendor requires handler_vendor_id and forbids handler_team_id' });
     }
     if (k === 'none' && (hasTeam || hasVendor)) {
-      throw new BadRequestException('handler_kind=none forbids both handler_team_id and handler_vendor_id');
+      throw AppErrors.validationFailed('config_engine.invalid_handler', { detail: 'handler_kind=none forbids both handler_team_id and handler_vendor_id' });
     }
   }
 
@@ -744,9 +744,8 @@ export class RequestTypeService {
           const bEnd = toMs(b.ends_at, Infinity);
           // Overlap iff aStart < bEnd && bStart < aEnd.
           if (aStart < bEnd && bStart < aEnd) {
-            throw new BadRequestException({
-              code: 'scope_override_temporal_overlap',
-              message:
+            throw AppErrors.validationFailed('config_engine.invalid_scope', {
+              detail:
                 `Two active overrides on ${key} have overlapping windows. ` +
                 `Adjust starts_at/ends_at so they don't intersect, or mark one active=false.`,
             });
@@ -765,7 +764,9 @@ export class RequestTypeService {
       !!o.child_dispatch_policy_entity_id ||
       !!o.executor_sla_policy_id;
     if (!hasAny) {
-      throw new BadRequestException('Scope override must set at least one of: handler_kind, workflow_definition_id, case_sla_policy_id, case_owner_policy_entity_id, child_dispatch_policy_entity_id, executor_sla_policy_id');
+      throw AppErrors.validationFailed('config_engine.invalid_scope', {
+        detail: 'Scope override must set at least one of: handler_kind, workflow_definition_id, case_sla_policy_id, case_owner_policy_entity_id, child_dispatch_policy_entity_id, executor_sla_policy_id',
+      });
     }
   }
 }

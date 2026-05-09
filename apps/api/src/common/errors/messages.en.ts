@@ -1285,6 +1285,37 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   'daily_list.send_failed': { title: "Couldn't send daily list" },
   'daily_list.pdf_missing': { title: "Couldn't render daily list", detail: 'PDF storage path is missing.' },
+
+  // ─── config-engine (Phase 7.B-1.config-engine) ───────────────────────────
+  'config_engine.invalid_expression': { title: "Couldn't save", detail: 'Invalid expression.' },
+  'config_engine.criteria_set_not_found': { title: "Couldn't find that criteria set" },
+  'config_engine.entity_not_found': { title: "Couldn't find that config entity" },
+  'config_engine.draft_not_found': { title: "Couldn't find a draft" },
+  'config_engine.no_draft_to_publish': { title: "Couldn't publish", detail: 'No draft to publish.' },
+  'config_engine.version_not_found': { title: "Couldn't find that version" },
+  'config_engine.invalid_hierarchy': {
+    title: "Couldn't save",
+    detail: 'Invalid catalog hierarchy.',
+  },
+  'config_engine.invalid_cover_source': {
+    title: "Couldn't save",
+    detail: 'cover_source must be image, icon, or null.',
+  },
+  'config_engine.file_required': { title: "Couldn't upload that image", detail: 'A file is required.' },
+  'config_engine.unsupported_mime': { title: "Couldn't upload that image", detail: 'Unsupported file type.' },
+  'config_engine.file_too_large': { title: "Couldn't upload that image", detail: 'File is too large.' },
+  'config_engine.upload_failed': { title: "Couldn't upload that image" },
+  'config_engine.update_failed': { title: "Couldn't update" },
+  'config_engine.category_not_found': { title: "Couldn't find that category" },
+  'config_engine.invalid_request_type': { title: "Couldn't save that request type" },
+  'config_engine.invalid_scope': {
+    title: "Couldn't save",
+    detail: 'Scope is invalid.',
+  },
+  'config_engine.invalid_handler': {
+    title: "Couldn't save",
+    detail: 'Handler configuration is invalid.',
+  },
 };
 
 /**

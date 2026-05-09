@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { assertTenantOwned } from '../../common/tenant-validation';
 
 export interface CreateConfigEntityDto {
@@ -40,7 +41,7 @@ export class ConfigEngineService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !data) throw new NotFoundException('Config entity not found');
+    if (error || !data) throw AppErrors.notFoundWithCode('config_engine.entity_not_found', 'Config entity not found');
     return data;
   }
 
@@ -135,7 +136,7 @@ export class ConfigEngineService {
       .limit(1)
       .single();
 
-    if (findError || !draft) throw new NotFoundException('No draft version found');
+    if (findError || !draft) throw AppErrors.notFoundWithCode('config_engine.draft_not_found', 'No draft version found');
 
     const { data, error } = await this.supabase.admin
       .from('config_versions')
@@ -163,7 +164,7 @@ export class ConfigEngineService {
       .limit(1)
       .single();
 
-    if (findError || !draft) throw new BadRequestException('No draft version to publish');
+    if (findError || !draft) throw AppErrors.validationFailed('config_engine.no_draft_to_publish', { detail: 'No draft version to publish' });
 
     // Mark as published. Tenant filter is defense-in-depth — draft.id was
     // resolved from a tenant-filtered SELECT above.
@@ -211,7 +212,7 @@ export class ConfigEngineService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !version) throw new NotFoundException('Version not found');
+    if (error || !version) throw AppErrors.notFoundWithCode('config_engine.version_not_found', 'Version not found');
 
     // Update entity to point to the target version. Tenant filter:
     // defense-in-depth (codex post-fix review 2026-05-08).
