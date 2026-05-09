@@ -140,6 +140,8 @@ export function VisitorContextMenu({
       await navigator.clipboard.writeText(text);
       toastSuccess(`${label} copied`);
     } catch {
+      // Browser-permission failure with a custom recovery hint; helper layer
+      // doesn't accept a description override, so this stays as toastError.
       toastError("Couldn't copy to clipboard", {
         description:
           'Your browser blocked clipboard access. Select the text and copy manually.',

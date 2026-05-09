@@ -168,6 +168,8 @@ export function TicketContextMenu({
       await navigator.clipboard.writeText(text);
       toastSuccess(`${label} copied`);
     } catch {
+      // Browser-permission failure with a custom recovery hint; helper layer
+      // doesn't accept a description override, so this stays as toastError.
       toastError("Couldn't copy to clipboard", {
         description: 'Your browser blocked clipboard access. Select the text and copy manually.',
       });
@@ -232,6 +234,7 @@ export function TicketContextMenu({
 
   const assignToMe = () => {
     if (!appUser?.id) {
+      // Local pre-mutation guard; not an API error from the helper layer's POV.
       toastError("Couldn't assign", {
         description: "Your account isn't linked to a desk user yet. Ask an admin.",
       });
@@ -318,6 +321,7 @@ export function TicketContextMenu({
 
   const toggleWatch = () => {
     if (!person?.id) {
+      // Local pre-mutation guard; not an API error from the helper layer's POV.
       toastError("Couldn't update watchers", {
         description: "Your account isn't linked to a person record. Ask an admin.",
       });

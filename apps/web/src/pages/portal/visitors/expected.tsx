@@ -214,6 +214,7 @@ function VisitorRow({ visitor, onOpen }: VisitorRowProps) {
       await navigator.clipboard.writeText(visitor.visitor_id);
       toastSuccess('Reference copied');
     } catch {
+      // Browser-permission failure (clipboard API blocked); not an API error.
       toastError("Couldn’t copy to clipboard", {
         description: 'Your browser blocked clipboard access.',
       });

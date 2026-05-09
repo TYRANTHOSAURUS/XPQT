@@ -140,12 +140,14 @@ function ProfileHero({
     event.target.value = '';
     if (!file) return;
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      // Local pre-upload validation; not an API error from the helper layer's POV.
       toastError('Unsupported image type', {
         description: 'Choose a JPG, PNG, or WebP image.',
       });
       return;
     }
     if (file.size > 2 * 1024 * 1024) {
+      // Local pre-upload validation; not an API error from the helper layer's POV.
       toastError('Image is too large', { description: 'Keep it under 2 MB.' });
       return;
     }
