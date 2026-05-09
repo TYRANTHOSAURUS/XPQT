@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { ticketKeys } from '@/api/tickets';
 
 export interface WorkOrderRow {
@@ -84,6 +85,7 @@ export function useDispatchWorkOrder(parentId: string) {
         qc.invalidateQueries({ queryKey: ticketKeys.detail(parentId) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
       ]),
+    ...withErrorHandling({ actionTitle: "Couldn't dispatch work order" }),
   });
 
   return {
