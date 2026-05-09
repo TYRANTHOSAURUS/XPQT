@@ -6,6 +6,7 @@ export * from './format';
 
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { spaceKeys } from './keys';
 import type { Space } from './types';
 
@@ -37,5 +38,6 @@ export function useUpsertSpace() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: spaceKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save space" }),
   });
 }

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { spaceKeys } from './keys';
 import type {
   BulkUpdateResult,
@@ -17,6 +18,7 @@ export function useCreateSpace() {
       qc.invalidateQueries({ queryKey: spaceKeys.tree() });
       qc.invalidateQueries({ queryKey: spaceKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create space" }),
   });
 }
 
@@ -29,6 +31,7 @@ export function useUpdateSpace(id: string) {
       qc.setQueryData(spaceKeys.detail(id), updated);
       qc.invalidateQueries({ queryKey: spaceKeys.tree() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update space" }),
   });
 }
 
@@ -40,6 +43,7 @@ export function useMoveSpace(id: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: spaceKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't move space" }),
   });
 }
 
@@ -54,6 +58,7 @@ export function useDeleteSpace() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: spaceKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete space" }),
   });
 }
 
@@ -68,5 +73,6 @@ export function useBulkUpdateSpaces() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: spaceKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update spaces" }),
   });
 }
