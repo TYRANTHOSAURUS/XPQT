@@ -1,0 +1,177 @@
+# Phase 8.B — frontend naming canonicalization allowlist
+# -------------------------------------------------------
+# Each line is the EXACT ripgrep output (path:line:source) for a
+# reference to a legacy table/column name that is INTENTIONAL —
+# either a wire-shape pin (response field name, request payload key,
+# URL path string, audit/approval entity_type literal, query-key
+# segment that doubles as a cross-hook cache bridge), a backwards-
+# compat field name still accepted by the backend, or a historical
+# comment documenting the 2026-05-02 booking-canonicalisation
+# column renames.
+#
+# Why this exists: docs/follow-ups/phase-8-frontend-rename-triage.md.
+# The audit found 142 raw refs (139 unique lines after dedup; 3 lines
+# match both the bundle and reservation patterns) and ZERO are safe
+# to mechanically rename — every ref is wire-shape pinned or a
+# historical comment. This file pins them so a future CI guard
+# catches new unblessed refs (drift) without false-failing on the
+# intentional set.
+#
+# Categories (per the triage doc §2):
+#   KEEP_WIRE_SHAPE             - response field, request payload key,
+#                                  URL path string, audit/approval literal,
+#                                  React Query cache key segment
+#   KEEP_BACKWARDS_COMPAT_FIELD - request payload alias the backend still
+#                                  accepts, command-palette user-facing alias
+#   KEEP_HISTORICAL_COMMENT     - rationale comment / English label string /
+#                                  doc fragment, no code identifier
+#
+# Lifecycle:
+#   - This is a SNAPSHOT generated 2026-05-09 against main @ b53f44e.
+#   - Lines may shift if files are re-numbered. Regenerate via:
+#       scripts/check-naming-allowlist.sh --gen
+#     Comparison is content-keyed (path+content, line-number-agnostic)
+#     so refactors that shift lines without changing content pass cleanly.
+#
+# Format: <path>:<line>:<exact source line>
+# Sorted with sort -u.
+# === BASELINE: all 139 unique refs from rg, classified per the triage doc §2 ===
+apps/web/src/api/booking-bundles/mutations.ts:106:      apiFetch<AddBundleLinesResult>(`/reservations/${bundleId}/services`, {
+apps/web/src/api/booking-bundles/mutations.ts:11: * endpoints now live under `/reservations/*` because the booking IS the
+apps/web/src/api/booking-bundles/mutations.ts:150:        `/reservations/${bundleId}/services/${lineId}`,
+apps/web/src/api/booking-bundles/mutations.ts:15: *   - `POST /reservations/:id/services`               — append lines (also used by `useAttachReservationServices`)
+apps/web/src/api/booking-bundles/mutations.ts:16: *   - `PATCH /reservations/:id/services/:lineId`      — edit a single line
+apps/web/src/api/booking-bundles/mutations.ts:17: *   - `DELETE /reservations/:id/services/:lineId`     — cancel a single line
+apps/web/src/api/booking-bundles/mutations.ts:187:        `/reservations/${bundleId}/services/${lineId}`,
+apps/web/src/api/booking-bundles/mutations.ts:18: *   - `DELETE /reservations/:id/bundle`               — cancel the whole bundle
+apps/web/src/api/booking-bundles/mutations.ts:34:  bundle_id: string;
+apps/web/src/api/booking-bundles/mutations.ts:51:      apiFetch<CancelBundleResult>(`/reservations/${id}/bundle`, {
+apps/web/src/api/booking-bundles/mutations.ts:79:  bundle_id: string;
+apps/web/src/api/booking-bundles/mutations.ts:90: * underlying `POST /reservations/:id/services` endpoint, sibling cache
+apps/web/src/api/booking-bundles/queries.ts:12: *     `GET /reservations/:id/bundle-detail` (apps/api/src/modules/reservations/
+apps/web/src/api/booking-bundles/queries.ts:46: * `GET /reservations/:id/bundle-detail` — the booking's services + cascaded
+apps/web/src/api/booking-bundles/queries.ts:48: * predicate used by `GET /reservations/:id`, so an out-of-scope read
+apps/web/src/api/booking-bundles/queries.ts:55:    queryFn: () => apiFetch<BookingBundle>(`/reservations/${id}/bundle-detail`),
+apps/web/src/api/booking-bundles/queries.ts:8: *   - The `booking_bundles` table was dropped — the `bookings` row IS the
+apps/web/src/api/booking-bundles/types.ts:101:  /** Populated by `GET /reservations/:id/bundle-detail` (the read endpoint
+apps/web/src/api/booking-bundles/types.ts:40:  linked_asset_reservation_id: string | null;
+apps/web/src/api/booking-bundles/types.ts:69: *   - `booking_bundles` was dropped; the booking IS the bundle now.
+apps/web/src/api/booking-bundles/types.ts:71: *   - `primary_reservation_id` was removed (the bundle's id is the
+apps/web/src/api/booking-reports/types.ts:183:    reservation_id: string;
+apps/web/src/api/booking-reports/types.ts:60:  reservation_id: string;
+apps/web/src/api/gdpr/index.ts:250:    past_bookings:                  'Historical reservations (accounting)',
+apps/web/src/api/orders/keys.ts:3:  bundle_id?: string;
+apps/web/src/api/orders/mutations.ts:17:  return useMutation<{ id: string; bundle_id: string | null }, Error, StandaloneOrderPayload>({
+apps/web/src/api/orders/types.ts:12:  /** Renamed from `booking_bundle_id` post-canonicalisation
+apps/web/src/api/orders/types.ts:13:   *  (00278:109 — orders.booking_bundle_id → orders.booking_id). FK now
+apps/web/src/api/orders/types.ts:16:  /** Renamed from `linked_reservation_id` post-canonicalisation
+apps/web/src/api/orders/types.ts:17:   *  (00278:115 — orders.linked_reservation_id → orders.linked_slot_id).
+apps/web/src/api/orders/types.ts:45:  linked_asset_reservation_id: string | null;
+apps/web/src/api/room-booking-rules/types.ts:171:    reservation_id: string;
+apps/web/src/api/room-booking/keys.ts:103:  // Unified scheduler-data bucket. One round-trip returns rooms + reservations.
+apps/web/src/api/room-booking/keys.ts:132:  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
+apps/web/src/api/room-booking/mutations.ts:113:      // `{ group_id, reservations[] }` where `group_id` is the booking
+apps/web/src/api/room-booking/mutations.ts:116:      // Each `reservations[i].id` also equals the booking id, so any
+apps/web/src/api/room-booking/mutations.ts:118:      apiFetch<{ group_id: string; reservations: Reservation[] }>(
+apps/web/src/api/room-booking/mutations.ts:119:        '/reservations/multi-room',
+apps/web/src/api/room-booking/mutations.ts:133: * the legacy `PATCH /reservations/:id` which only edits the booking's
+apps/web/src/api/room-booking/mutations.ts:148:      apiFetch<Reservation>(`/reservations/${id}`, {
+apps/web/src/api/room-booking/mutations.ts:164: * to `PATCH /reservations/:bookingId/slots/:slotId` so a non-primary
+apps/web/src/api/room-booking/mutations.ts:184:      apiFetch<Reservation>(`/reservations/${bookingId}/slots/${slotId}`, {
+apps/web/src/api/room-booking/mutations.ts:203:      apiFetch<Reservation>(`/reservations/${id}/cancel`, {
+apps/web/src/api/room-booking/mutations.ts:218:      apiFetch<Reservation>(`/reservations/${id}/restore`, { method: 'POST' }),
+apps/web/src/api/room-booking/mutations.ts:236: * booking_bundle on first attach; appends to it on subsequent calls.
+apps/web/src/api/room-booking/mutations.ts:249:      bundle_id: string;
+apps/web/src/api/room-booking/mutations.ts:260:      apiFetch(`/reservations/${reservationId}/services`, {
+apps/web/src/api/room-booking/mutations.ts:267:      // attaching services doesn't flip a `booking_bundle_id` field on
+apps/web/src/api/room-booking/mutations.ts:274:      queryClient.invalidateQueries({ queryKey: ['booking-bundles', 'detail', data.bundle_id] as const });
+apps/web/src/api/room-booking/mutations.ts:284:      apiFetch<{ id: string; checked_in_at: string }>(`/reservations/${id}/check-in`, {
+apps/web/src/api/room-booking/mutations.ts:37:  // Unified scheduler-data bucket (rooms + reservations in one round-trip).
+apps/web/src/api/room-booking/mutations.ts:70:      apiFetch<Reservation>('/reservations', {
+apps/web/src/api/room-booking/mutations.ts:92:      }>('/reservations/dry-run', {
+apps/web/src/api/room-booking/queries.ts:103:    queryFn: ({ signal }) => apiFetch<Reservation>(`/reservations/${id}`, { signal }),
+apps/web/src/api/room-booking/queries.ts:124:      apiFetch<{ items: GroupSibling[] }>(`/reservations/${id}/group-siblings`, {
+apps/web/src/api/room-booking/queries.ts:14: * Slim room shape returned by `/reservations/scheduler-data` — drops
+apps/web/src/api/room-booking/queries.ts:158:      apiFetch<PickerResponse>('/reservations/picker', {
+apps/web/src/api/room-booking/queries.ts:181:      apiFetch<FindTimeResponse>('/reservations/find-time', {
+apps/web/src/api/room-booking/queries.ts:220:      apiFetch<SchedulerWindowResponse>('/reservations/scheduler-window', {
+apps/web/src/api/room-booking/queries.ts:237:  reservations: Reservation[];
+apps/web/src/api/room-booking/queries.ts:278: * Unified desk-scheduler load — one round-trip returns rooms + reservations.
+apps/web/src/api/room-booking/queries.ts:327:      return apiFetch<SchedulerDataResponse>('/reservations/scheduler-data', {
+apps/web/src/api/room-booking/queries.ts:58:      apiFetch<ReservationListResponse>('/reservations', {
+apps/web/src/api/room-booking/types.ts:126: * (apps/api/src/modules/reservations/dto/types.ts:137).
+apps/web/src/api/room-booking/types.ts:155: * from every reservations endpoint (apps/api/src/modules/reservations/
+apps/web/src/api/room-booking/types.ts:15://   - `Reservation.id` is now a `bookings.id` (was `reservations.id`).
+apps/web/src/api/room-booking/types.ts:162:   * legacy `reservations.id`. Multi-room bookings produce N projection
+apps/web/src/api/room-booking/types.ts:16://   - `Reservation.booking_bundle_id`, `multi_room_group_id`, and
+apps/web/src/api/room-booking/types.ts:171:   * Reservation interface (apps/api/src/modules/reservations/dto/types.ts).
+apps/web/src/api/room-booking/types.ts:184:  // The legacy `reservations.module_number` column lived on the dropped
+apps/web/src/api/room-booking/types.ts:185:  // `reservations` table (00139:147); the new `bookings` table (00277:27)
+apps/web/src/api/room-booking/types.ts:1:// Mirrors the API's reservations DTOs (apps/api/src/modules/reservations/dto/types.ts).
+apps/web/src/api/room-booking/types.ts:223:  // `multi_room_group_id` and `booking_bundle_id` were dropped from this
+apps/web/src/api/room-booking/types.ts:4://   `bookings`        replaces `booking_bundles`  (00277:27)
+apps/web/src/api/room-booking/types.ts:5://   `booking_slots`   replaces `reservations`     (00277:116)
+apps/web/src/api/room-booking/types.ts:86: * (apps/api/src/modules/reservations/dto/types.ts:87). Use this for any
+apps/web/src/api/room-booking/types.ts:9:// `slotWithBookingToReservation` (apps/api/src/modules/reservations/
+apps/web/src/api/tickets/types.ts:32:  // on insert. This is NOT the dropped reservations.module_number
+apps/web/src/api/visitors/admin.ts:391:  /** Renamed from `booking_bundle_id` post-canonicalisation (00278:41). */
+apps/web/src/api/visitors/index.ts:108:  /** Canonical link post-rewrite (00278:41 — visitors.booking_bundle_id
+apps/web/src/api/visitors/index.ts:114:  booking_bundle_id?: string;
+apps/web/src/api/visitors/index.ts:143: *    - `reservation_id` is gone (column dropped 00278:38).
+apps/web/src/api/visitors/index.ts:144: *    - `booking_bundle_id` was renamed to `booking_id` (00278:41).
+apps/web/src/components/booking-composer-v2/booking-composer-modal.tsx:252:      // `booking_bundle_id` was dropped from the Reservation type in
+apps/web/src/components/booking-composer-v2/booking-composer-modal.tsx:253:      // slice H3 (migration 00286); `reservation_id` was dropped from
+apps/web/src/components/booking-composer/submit.ts:77: * `POST /reservations/multi-room` payload. Services attach to the PRIMARY
+apps/web/src/components/booking-composer/submit.ts:9: * Map a composer state + caller context into the `POST /reservations`
+apps/web/src/components/booking-detail/booking-detail-page.tsx:50:  // `reservations.module_number`, dropped in 00276). The relative-time
+apps/web/src/components/desk/visitor-detail.tsx:324:           *  (the dropped `reservation_id` and `booking_bundle_id`
+apps/web/src/components/desk/visitor-detail.tsx:509: *  was a dual-link (`reservation_id` + `booking_bundle_id`); both
+apps/web/src/components/desk/visitor-detail.tsx:511: *  `useReservationDetail` because `/reservations/:id` now accepts a
+apps/web/src/components/portal/portal-approvals-lane.tsx:23:type EntityKind = 'reservation' | 'booking_bundle' | 'ticket' | 'order' | 'other';
+apps/web/src/components/portal/portal-approvals-lane.tsx:27:  booking_bundle: 'Booking + services',
+apps/web/src/components/portal/portal-approvals-lane.tsx:35:  booking_bundle: Package,
+apps/web/src/components/portal/portal-approvals-lane.tsx:43:  booking_bundle: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+apps/web/src/components/portal/portal-approvals-lane.tsx:50:  if (type === 'reservation' || type === 'booking_bundle' || type === 'ticket' || type === 'order') {
+apps/web/src/components/portal/visitor-invite-form.tsx:85:   *  from the legacy dual-link (`booking_bundle_id` + `reservation_id`)
+apps/web/src/lib/command-palette/routes.ts:76:    aliases: ['reservations'],
+apps/web/src/pages/admin/room-booking-reports/components/no-show-watchlist.tsx:33:                <TableRow key={r.reservation_id}>
+apps/web/src/pages/admin/room-booking-reports/no-shows.tsx:240:function Watchlist({ rows }: { rows: Array<{ reservation_id: string; room_name: string; organizer_name: string; organizer_email: string | null; start_at: string; released_at: string | null; attendee_count: number | null }> }) {
+apps/web/src/pages/admin/room-booking-reports/no-shows.tsx:260:              <TableRow key={r.reservation_id}>
+apps/web/src/pages/admin/room-booking-rules/components/rule-impact-preview-card.tsx:110:            key={b.reservation_id}
+apps/web/src/pages/admin/room-booking-rules/components/rule-impact-preview-card.tsx:115:                <code className="chip text-xs">{b.reservation_id.slice(0, 8)}…</code>
+apps/web/src/pages/desk/approvals.tsx:214: * Renders the entity column. For reservations, fetches the booking detail
+apps/web/src/pages/desk/approvals.tsx:221:  // 'booking' (booking-flow.service.ts:733). Legacy 'booking_bundle'
+apps/web/src/pages/desk/approvals.tsx:224:  if (type === 'booking' || type === 'booking_bundle') return <BundleEntityCell id={id} />;
+apps/web/src/pages/desk/approvals.tsx:252: * 'booking_bundle' value still arrives for in-flight pending approvals
+apps/web/src/pages/desk/bookings.tsx:400:              chip used to gate on `item.booking_bundle_id`, which under
+apps/web/src/pages/desk/bookings.tsx:610:      'No reservations have catering, AV, or setup attached. Anyone can add services from the booking dialog or place a standalone order.';
+apps/web/src/pages/desk/bookings.tsx:69:  // even a tenant with thousands of room-only reservations stays cheap.
+apps/web/src/pages/desk/bookings.tsx:71:  // forced the API to ship up to 200 reservations only to drop most of them.
+apps/web/src/pages/desk/scheduler/components/scheduler-grid-row.tsx:101:   * over this one). The reservation isn't part of this row's `reservations`
+apps/web/src/pages/desk/scheduler/components/scheduler-grid-row.tsx:138:  reservations,
+apps/web/src/pages/desk/scheduler/components/scheduler-grid-row.tsx:170:    return reservations
+apps/web/src/pages/desk/scheduler/components/scheduler-grid-row.tsx:179:  }, [reservations, windowStartMs, msPerCell, totalColumns]);
+apps/web/src/pages/desk/scheduler/components/scheduler-grid-row.tsx:62:  reservations: Reservation[];
+apps/web/src/pages/desk/scheduler/components/scheduler-grid.tsx:189:          const reservations = reservationsBySpaceId.get(room.space_id) ?? [];
+apps/web/src/pages/desk/scheduler/components/scheduler-grid.tsx:232:                reservations={reservations}
+apps/web/src/pages/desk/scheduler/hooks/use-drag-move.ts:24: * `/reservations/:bookingId/slots/:slotId`, so both ids are needed in
+apps/web/src/pages/desk/scheduler/hooks/use-drag-resize.ts:17: * PATCHes `/reservations/:bookingId/slots/:slotId`, so both ids are
+apps/web/src/pages/desk/scheduler/hooks/use-realtime-scheduler.ts:9: * Subscribes to `public.reservations` changefeeds and invalidates the
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:123:  // Index reservations by space_id for cheap row paints. Sorted by
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:129:    for (const r of query.data?.reservations ?? []) {
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:150:    query.data?.reservations_total ?? query.data?.reservations?.length ?? 0;
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:32: * round-trip via `POST /reservations/scheduler-data`.
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:36: * before the scheduler-window query could ask for reservations on those
+apps/web/src/pages/desk/scheduler/hooks/use-scheduler-data.ts:39: * | reservations | optional rules) in parallel, dropping ranking + mini-
+apps/web/src/pages/desk/scheduler/index.tsx:122:  // Realtime — debounced cache invalidation when reservations change on
+apps/web/src/pages/desk/scheduler/index.tsx:219:  // stay around for collision math against existing reservations,
+apps/web/src/pages/desk/scheduler/index.tsx:354:  // the dragged block. We loop the row's reservations and compare by
+apps/web/src/pages/desk/scheduler/index.tsx:38: *   - `useSchedulerData` joins picker (rooms) + window (reservations) into
+apps/web/src/pages/desk/scheduler/index.tsx:398:  // also checked against the target's reservations so the block goes red
+apps/web/src/pages/desk/scheduler/index.tsx:581:      // the drag mutation hits PATCH /reservations/:bookingId/slots/:slotId.
+apps/web/src/pages/portal/book-room/components/mini-timeline-strip.tsx:6:  /** Day-block summary returned by /reservations/picker for this room. */
+apps/web/src/pages/portal/book-room/hooks/use-realtime-availability.ts:14: * the canonical channel pattern is `reservations:tenant_<id>:space_<id>`. We
+apps/web/src/pages/portal/book-room/hooks/use-realtime-availability.ts:9: * Subscribes to inserts/updates/deletes on `public.reservations` for the
+apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:205: * Bucket reservations into calendar-friendly day groups for the Upcoming
+apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:44:  // reservations"), so we dedup by `booking_id`, keeping the first
+packages/shared/src/error-codes.ts:192:  // ─── reservations module migration (Phase 7.A.2.c.ii) ────────────────────
