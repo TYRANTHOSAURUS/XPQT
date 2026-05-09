@@ -313,7 +313,10 @@ export type KnownErrorCode =
   | 'announcement.publish_failed'
   | 'announcement.unpublish_failed'
   | 'announcement.invalid_payload'
-  | 'announcement.insert_no_row';
+  | 'announcement.insert_no_row'
+
+  // ─── person module migration (Phase 7.B-1.person) ────────────────────────
+  | 'person.org_change_in_progress';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -554,6 +557,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'announcement.unpublish_failed',
   'announcement.invalid_payload',
   'announcement.insert_no_row',
+  'person.org_change_in_progress',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

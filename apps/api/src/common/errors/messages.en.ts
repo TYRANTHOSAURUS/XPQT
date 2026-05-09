@@ -854,6 +854,12 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'announcement.insert_no_row': {
     title: "Couldn't save that announcement",
   },
+
+  // ─── person (Phase 7.B-1.person) ─────────────────────────────────────────
+  'person.org_change_in_progress': {
+    title: "Couldn't change that person's organisation",
+    detail: 'Another organisation change for this person is in progress. Reload and try again.',
+  },
 };
 
 /**

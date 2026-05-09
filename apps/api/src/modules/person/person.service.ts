@@ -1,6 +1,7 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -157,9 +158,9 @@ export class PersonService {
       );
     if (error) {
       if (isUniqueViolation(error)) {
-        throw new ConflictException(
-          'Another organisation change for this person is in progress. Reload and try again.',
-        );
+        throw AppErrors.conflict('person.org_change_in_progress', {
+          detail: 'Another organisation change for this person is in progress. Reload and try again.',
+        });
       }
       throw error;
     }
