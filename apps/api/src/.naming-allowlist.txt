@@ -1,0 +1,790 @@
+# Phase 8 — naming canonicalization allowlist
+# ----------------------------------------------
+# Each line is the EXACT ripgrep output (path:line:source) for a
+# reference to a legacy table/column name that is INTENTIONAL —
+# either a historical comment, a backwards-compat field name, a
+# legitimate column on a non-renamed sibling table, or an audit/
+# outbox entity_type literal preserved for row compatibility.
+#
+# Why this exists: docs/follow-ups/phase-8-naming-audit.md.
+# Phase 8.A.2 commit 6 will add a CI script that diffs the live
+# rg output against this list and fails on unexpected new refs.
+#
+# Categories (per the audit doc §2):
+#   KEEP_HISTORICAL_COMMENT     - rename/rationale docstring
+#   KEEP_BACKWARDS_COMPAT_FIELD - field name retained on method arg / wire shape
+#   KEEP_LEGITIMATE_OTHER_TABLE - column on a non-renamed sibling table
+#                                  (asset_reservations, recurrence_series, etc.)
+#   KEEP_AUDIT_ENTITY_TYPE      - 'booking_bundle' string literal preserved
+#                                  in audit_events / outbox / approvals
+#
+# Lifecycle:
+#   - This is a SNAPSHOT generated 2026-05-09 against main @ 0690803.
+#   - Lines may shift if files are re-numbered. Regenerate on each PR
+#     that touches a Phase 8 module via:
+#       scripts/check-naming-allowlist.sh --gen   (Phase 8.A.2 commit 6)
+#   - INVESTIGATE-class refs from the audit are NOT in this file —
+#     they will be triaged in 8.A.2 and either renamed or added here.
+#
+# Format: <path>:<line>:<exact source line>
+# Sorted with sort -u.
+# === KEEP_LEGITIMATE_OTHER_TABLE — asset_reservations, recurrence_series ===
+apps/api/src/common/errors/messages.en.ts:462:  'booking.recurrence_series_not_found': {
+apps/api/src/modules/approval/approval.service.spec.ts:367:        recurrence_series_id: null,
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:119:      asset_reservation_ids: [],
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:131:    asset_reservations: [],
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:139:      asset_reservation_ids: [],
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:194:      asset_reservation_ids: [],
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:39:    recurrence_series_id: null,
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:95:    linked_asset_reservation_id: null,
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:160:  /** FK into AttachPlan.asset_reservations[].id. */
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:161:  linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:220:  asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:236:  asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:250:  asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:45:  recurrence_series_id: string | null;
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:91:  asset_reservations: AttachPlanAssetReservation[];
+apps/api/src/modules/booking-bundles/bundle-build-attach-plan.spec.ts:80:      asset_reservations: [],
+apps/api/src/modules/booking-bundles/bundle-build-attach-plan.spec.ts:88:        asset_reservation_ids: [],
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:214:          linked_asset_reservation_id: ASSET_RES,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:280:          linked_asset_reservation_id: null,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:324:            linked_asset_reservation_id: null,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:32:  linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:363:            linked_asset_reservation_id: null,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:401:            linked_asset_reservation_id: null,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:113:    const cascaded = { ticket_ids: [] as string[], asset_reservation_ids: [] as string[] };
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:114:    if (line.linked_asset_reservation_id) {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:116:        .from('asset_reservations')
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:118:        .eq('id', line.linked_asset_reservation_id)
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:120:      cascaded.asset_reservation_ids.push(line.linked_asset_reservation_id);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:175:      cascaded.asset_reservation_ids,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:182:      asset_reservation_ids: cascaded.asset_reservation_ids,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:213:    cancelled_asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:228:    cancelled_asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:251:            linked_asset_reservation_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:262:      linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:268:      linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:281:      .map((l) => l.linked_asset_reservation_id)
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:286:        .from('asset_reservations')
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:29: * is the same as cancelling the recurrence_series_id reservations chain.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:362:          line.linked_asset_reservation_id ? [line.linked_asset_reservation_id] : [],
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:375:      cancelled_asset_reservation_ids: cancelledAssetReservationIds,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:407:      cancelled_asset_reservation_ids: cancelledAssetReservationIds,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:418:    linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:425:      .select('id, fulfillment_status, linked_asset_reservation_id, linked_ticket_id, order_id')
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:434:      linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:549:        asset_reservation_ids?: string[];
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:554:      const newAssets = (scope.asset_reservation_ids ?? []).filter(
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:561:        asset_reservation_ids: newAssets,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:686:  'asset_reservation_ids',
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:78:    cascaded: { ticket_ids: string[]; asset_reservation_ids: string[] };
+apps/api/src/modules/booking-bundles/bundle.service.ts:109:  /** When set, an `asset_reservations` row is created in the same transaction. */
+apps/api/src/modules/booking-bundles/bundle.service.ts:1406:      linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle.service.ts:1416:            'updated_at, fulfillment_status, linked_ticket_id, linked_asset_reservation_id, ' +
+apps/api/src/modules/booking-bundles/bundle.service.ts:1438:          linked_asset_reservation_id: row.linked_asset_reservation_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:1740:    linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle.service.ts:1756:        linked_asset_reservation_id: args.linked_asset_reservation_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:1796:      .from('asset_reservations')
+apps/api/src/modules/booking-bundles/bundle.service.ts:187:  asset_reservation_ids: string[];
+apps/api/src/modules/booking-bundles/bundle.service.ts:2120:  linked_asset_reservation_id: string | null;
+apps/api/src/modules/booking-bundles/bundle.service.ts:2221:// service-attach-side artefacts — order_line_items, asset_reservations,
+apps/api/src/modules/booking-bundles/bundle.service.ts:2280:          .from('asset_reservations')
+apps/api/src/modules/booking-bundles/bundle.service.ts:2285:        failures.push(`asset_reservations: ${(err as Error).message}`);
+apps/api/src/modules/booking-bundles/bundle.service.ts:270:      const perLineScopes = new Map<string, { order_id: string; oli_id: string; asset_reservation_id: string | null; ticket_id: string | null }>();
+apps/api/src/modules/booking-bundles/bundle.service.ts:316:            linked_asset_reservation_id: assetReservationId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:331:            asset_reservation_id: assetReservationId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:402:            asset_reservation_ids: scope.asset_reservation_id ? [scope.asset_reservation_id] : [],
+apps/api/src/modules/booking-bundles/bundle.service.ts:40: *   - Insert asset_reservations when a line linked an asset (GiST exclusion
+apps/api/src/modules/booking-bundles/bundle.service.ts:537:        asset_reservation_ids: assetReservationIds,
+apps/api/src/modules/booking-bundles/bundle.service.ts:546:        asset_reservation_ids: assetReservationIds,
+apps/api/src/modules/booking-bundles/bundle.service.ts:615:        asset_reservations: [],
+apps/api/src/modules/booking-bundles/bundle.service.ts:623:          asset_reservation_ids: [],
+apps/api/src/modules/booking-bundles/bundle.service.ts:725:    // ── 6. Build OLIs + asset_reservations (per-line) ──────────────────────
+apps/api/src/modules/booking-bundles/bundle.service.ts:778:          linked_asset_reservation_id: assetReservationId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:872:          asset_reservation_ids: oli.linked_asset_reservation_id
+apps/api/src/modules/booking-bundles/bundle.service.ts:873:            ? [oli.linked_asset_reservation_id]
+apps/api/src/modules/booking-bundles/bundle.service.ts:948:      asset_reservation_ids: planAssetReservations.map((a) => a.id),
+apps/api/src/modules/booking-bundles/bundle.service.ts:959:      asset_reservations: planAssetReservations,
+apps/api/src/modules/booking-bundles/plan-sort.spec.ts:68:  describe('asset_reservations', () => {
+apps/api/src/modules/booking-bundles/plan-sort.ts:23: *   - `asset_reservations` → derived from the OLI it's attached to (sorted
+apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts:158:  it('site 8: bundle-cascade cancelLine — asset_reservations.update filters by tenant_id', async () => {
+apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts:162:      .from('asset_reservations')
+apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts:25://   8. bundle-cascade.service.ts:120         — asset_reservations.update
+apps/api/src/modules/orders/approval-routing.service.ts:146:   * orders + OLIs + asset_reservations.
+apps/api/src/modules/orders/approval-routing.service.ts:215:          asset_reservation_ids: entry.scope.asset_reservation_ids ?? [],
+apps/api/src/modules/orders/approval-routing.service.ts:449:    'asset_reservation_ids',
+apps/api/src/modules/orders/approval-routing.service.ts:81:  asset_reservation_ids?: string[];
+apps/api/src/modules/orders/asset-reservation.service.spec.ts:5:  it.todo('creates an asset_reservations row tied to an order line item');
+apps/api/src/modules/orders/cost.service.ts:103:    if (booking?.recurrence_series_id) {
+apps/api/src/modules/orders/cost.service.ts:105:        .from('recurrence_series')
+apps/api/src/modules/orders/cost.service.ts:107:        .eq('id', booking.recurrence_series_id)
+apps/api/src/modules/orders/cost.service.ts:24: * tables. Recurrence rule lives on `bookings.recurrence_series_id` (00277:74),
+apps/api/src/modules/orders/cost.service.ts:61:    // booking row for cost_amount_snapshot + recurrence_series_id (00277:62,74),
+apps/api/src/modules/orders/cost.service.ts:67:        .select('id, cost_amount_snapshot, recurrence_series_id')
+apps/api/src/modules/orders/cost.service.ts:92:          recurrence_series_id: string | null;
+apps/api/src/modules/orders/cost.service.ts:97:    // Recurrence rule moved to `recurrence_series.recurrence_rule` (00124).
+apps/api/src/modules/orders/order.service.ts:1056:        asset_reservation_ids: assetReservationIds,
+apps/api/src/modules/orders/order.service.ts:1064:        asset_reservation_ids: assetReservationIds,
+apps/api/src/modules/orders/order.service.ts:1083:   * `orders` / `asset_reservations` rather than walking slots.
+apps/api/src/modules/orders/order.service.ts:124:   * asset_reservations row too. The GiST exclusion fires per occurrence;
+apps/api/src/modules/orders/order.service.ts:1273:    // Column rename: asset_reservations.booking_bundle_id → booking_id
+apps/api/src/modules/orders/order.service.ts:1276:      .from('asset_reservations')
+apps/api/src/modules/orders/order.service.ts:1300:    linked_asset_reservation_id: string | null;
+apps/api/src/modules/orders/order.service.ts:1317:        linked_asset_reservation_id: args.linked_asset_reservation_id,
+apps/api/src/modules/orders/order.service.ts:1396:          .from('asset_reservations')
+apps/api/src/modules/orders/order.service.ts:1401:        failures.push(`asset_reservations: ${(err as Error).message}`);
+apps/api/src/modules/orders/order.service.ts:185:        recurrence_series_id: args.recurrenceSeriesId,
+apps/api/src/modules/orders/order.service.ts:232:      asset_reservation_id: string | null;
+apps/api/src/modules/orders/order.service.ts:262:        // Column rename: asset_reservations.booking_bundle_id → booking_id
+apps/api/src/modules/orders/order.service.ts:265:          .from('asset_reservations')
+apps/api/src/modules/orders/order.service.ts:305:          linked_asset_reservation_id: clonedAssetReservationId,
+apps/api/src/modules/orders/order.service.ts:332:        asset_reservation_id: clonedAssetReservationId,
+apps/api/src/modules/orders/order.service.ts:364:      cloned_asset_reservation_ids: clonedAssetReservationIds,
+apps/api/src/modules/orders/order.service.ts:374:      cloned_asset_reservation_ids: clonedAssetReservationIds,
+apps/api/src/modules/orders/order.service.ts:408:      asset_reservation_id: string | null;
+apps/api/src/modules/orders/order.service.ts:54:  cloned_asset_reservation_ids: string[];
+apps/api/src/modules/orders/order.service.ts:585:          asset_reservation_ids: string[];
+apps/api/src/modules/orders/order.service.ts:605:            asset_reservation_ids: meta.asset_reservation_id
+apps/api/src/modules/orders/order.service.ts:606:              ? [meta.asset_reservation_id]
+apps/api/src/modules/orders/order.service.ts:625:        if (meta.asset_reservation_id) {
+apps/api/src/modules/orders/order.service.ts:627:            .from('asset_reservations')
+apps/api/src/modules/orders/order.service.ts:629:            .eq('id', meta.asset_reservation_id)
+apps/api/src/modules/orders/order.service.ts:800:        asset_reservation_id: string | null;
+apps/api/src/modules/orders/order.service.ts:840:          linked_asset_reservation_id: assetReservationId,
+apps/api/src/modules/orders/order.service.ts:858:          asset_reservation_id: assetReservationId,
+apps/api/src/modules/orders/order.service.ts:930:            asset_reservation_ids: meta.asset_reservation_id ? [meta.asset_reservation_id] : [],
+apps/api/src/modules/orders/order.service.ts:98:  asset_reservation_ids: string[];
+apps/api/src/modules/reservations/booking-compensation.service.spec.ts:54:        data: { kind: 'partial_failure', blocked_by: ['recurrence_series'] },
+apps/api/src/modules/reservations/booking-compensation.service.spec.ts:65:      blockedBy: ['recurrence_series'],
+apps/api/src/modules/reservations/booking-compensation.service.ts:45:   *                          (recurrence_series, today) is present.
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:14:// asset_reservations + OLIs + approvals + outbox emissions). No
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:197:        asset_reservations: [],
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:205:          asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:303:            asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:353:            asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:391:      asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:64:      recurrence_series_id: null,
+apps/api/src/modules/reservations/booking-flow-build-attach-plan.spec.ts:117:      asset_reservations: [],
+apps/api/src/modules/reservations/booking-flow-build-attach-plan.spec.ts:125:        asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow.service.ts:1013:    // dropped — the only canonical link is recurrence_series_id on bookings.
+apps/api/src/modules/reservations/booking-flow.service.ts:1020:        recurrence_series_id: seriesId,
+apps/api/src/modules/reservations/booking-flow.service.ts:1068:    //   - `recurrence_series_id` lives on `bookings` (00277:74), not slots
+apps/api/src/modules/reservations/booking-flow.service.ts:1092:          .eq('recurrence_series_id', newSeriesId)
+apps/api/src/modules/reservations/booking-flow.service.ts:1103:          .eq('recurrence_series_id', newSeriesId);
+apps/api/src/modules/reservations/booking-flow.service.ts:1124:      .select('recurrence_series_id')
+apps/api/src/modules/reservations/booking-flow.service.ts:1128:    const seriesId = (pivot as { recurrence_series_id?: string } | null)?.recurrence_series_id;
+apps/api/src/modules/reservations/booking-flow.service.ts:1142:        .eq('recurrence_series_id', seriesId)
+apps/api/src/modules/reservations/booking-flow.service.ts:1152:        .eq('recurrence_series_id', seriesId);
+apps/api/src/modules/reservations/booking-flow.service.ts:135:    // slots + orders + asset_reservations + OLIs + approvals + outbox
+apps/api/src/modules/reservations/booking-flow.service.ts:1388:    recurrence_series_id: booking.recurrence_series_id,
+apps/api/src/modules/reservations/booking-flow.service.ts:1390:    // canonical series link is recurrence_series_id (one direction).
+apps/api/src/modules/reservations/booking-flow.service.ts:277:      p_recurrence_series_id: input.recurrence_series_id ?? null,
+apps/api/src/modules/reservations/booking-flow.service.ts:413:    //   `reservations` / `parent_reservation_id` and will fail at runtime
+apps/api/src/modules/reservations/booking-flow.service.ts:418:      !input.recurrence_series_id &&  // not itself an occurrence being materialised
+apps/api/src/modules/reservations/booking-flow.service.ts:436:   * commits booking + slots + orders + asset_reservations + OLIs +
+apps/api/src/modules/reservations/booking-flow.service.ts:517:          asset_reservation_ids: string[];
+apps/api/src/modules/reservations/booking-flow.service.ts:589:      asset_reservation_ids: result.asset_reservation_ids,
+apps/api/src/modules/reservations/booking-flow.service.ts:605:      !input.recurrence_series_id &&
+apps/api/src/modules/reservations/booking-flow.service.ts:906:      recurrence_series_id: input.recurrence_series_id ?? null,
+apps/api/src/modules/reservations/booking-flow.service.ts:952:        asset_reservations: [],
+apps/api/src/modules/reservations/booking-flow.service.ts:960:          asset_reservation_ids: [],
+apps/api/src/modules/reservations/booking-flow.service.ts:971:   * Create the recurrence_series row + materialise the next 90 days.
+apps/api/src/modules/reservations/booking-flow.service.ts:977:   *   - `recurrence_series.parent_reservation_id` was renamed to
+apps/api/src/modules/reservations/booking-flow.service.ts:994:      .from('recurrence_series')
+apps/api/src/modules/reservations/booking-transaction-boundary.ts:131:      // (recurrence_series, today) prevents safe deletion. Surface
+apps/api/src/modules/reservations/booking-transaction-boundary.ts:88:      // 'partial_failure' (a recurrence_series exists; manual recovery
+apps/api/src/modules/reservations/dto/types.ts:125:  recurrence_series_id: string | null;     // 00277:74
+apps/api/src/modules/reservations/dto/types.ts:239:  recurrence_series_id: string | null;
+apps/api/src/modules/reservations/dto/types.ts:242:  // series via recurrence_series_id; there is no reverse "master row"
+apps/api/src/modules/reservations/dto/types.ts:310:  recurrence_series_id?: string;            // when materialising
+apps/api/src/modules/reservations/dto/types.ts:312:  // recurrence_master_id input dropped — recurrence_series_id is the
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:139:                recurrence_series_id: null,
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:426:        blockedBy: ['recurrence_series'],
+apps/api/src/modules/reservations/multi-room-booking.service.ts:238:      p_recurrence_series_id: null,
+apps/api/src/modules/reservations/multi-room-booking.service.ts:269:    //    only recurrence_series can block compensation, and multi-room
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:131:          //   .eq('tenant_id', T).eq('recurrence_series_id', SER)
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:159:    // `parent_booking_id` replaced legacy `parent_reservation_id` (00278:179-181).
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:265:          if (table === 'recurrence_series') {
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:34:      // recurrence_series_id mirrors the series being materialised so
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:354:      recurrence_series_id: 'SER',
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:36:      recurrence_series_id: 'SER',
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:461:  it('partial_failure (recurrence_series blocker) is logged + skipped', async () => {
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:496:        blockedBy: ['recurrence_series'],
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:572:      recurrence_series_id: 'SER',
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:585:   *   - tracks `recurrence_series.update({ materialized_through })` calls
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:639:            if (table === 'recurrence_series') {
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:726:        blockedBy: ['recurrence_series'],
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:88:          if (table === 'recurrence_series') {
+apps/api/src/modules/reservations/recurrence.service.ts:322:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:328:      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${seriesId} not found` });
+apps/api/src/modules/reservations/recurrence.service.ts:339:      // Renamed from parent_reservation_id (00278:179-181). Now points at
+apps/api/src/modules/reservations/recurrence.service.ts:345:      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${seriesId} has no parent_booking_id` });
+apps/api/src/modules/reservations/recurrence.service.ts:425:      .eq('recurrence_series_id', seriesId);
+apps/api/src/modules/reservations/recurrence.service.ts:454:    //   - booking.partial_failure (recurrence_series blocker). The
+apps/api/src/modules/reservations/recurrence.service.ts:483:            recurrence_series_id: seriesId,
+apps/api/src/modules/reservations/recurrence.service.ts:494:        // orders + lines + asset_reservations onto the new occurrence.
+apps/api/src/modules/reservations/recurrence.service.ts:574:        //     because compensation was blocked (recurrence_series, etc).
+apps/api/src/modules/reservations/recurrence.service.ts:57:   * clone its orders + lines + asset_reservations for each new occurrence.
+apps/api/src/modules/reservations/recurrence.service.ts:625:        .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:719:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:761:   * recurrence_series row, cloned from the source). Returns the new series id.
+apps/api/src/modules/reservations/recurrence.service.ts:774:      .select('id, tenant_id, start_at, recurrence_series_id, recurrence_index')
+apps/api/src/modules/reservations/recurrence.service.ts:783:      recurrence_series_id: string | null;
+apps/api/src/modules/reservations/recurrence.service.ts:786:    if (!p.recurrence_series_id) {
+apps/api/src/modules/reservations/recurrence.service.ts:795:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:797:      .eq('id', p.recurrence_series_id)
+apps/api/src/modules/reservations/recurrence.service.ts:801:      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${p.recurrence_series_id} not found` });
+apps/api/src/modules/reservations/recurrence.service.ts:812:      // Renamed from parent_reservation_id (00278:179-181).
+apps/api/src/modules/reservations/recurrence.service.ts:818:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:838:    // schema — the only link is recurrence_series_id.
+apps/api/src/modules/reservations/recurrence.service.ts:841:      .update({ recurrence_series_id: newSeriesId })
+apps/api/src/modules/reservations/recurrence.service.ts:843:      .eq('recurrence_series_id', srcSeries.id)
+apps/api/src/modules/reservations/recurrence.service.ts:850:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:862:        entity_type: 'recurrence_series',
+apps/api/src/modules/reservations/recurrence.service.ts:893:      .select('id, tenant_id, start_at, recurrence_series_id')
+apps/api/src/modules/reservations/recurrence.service.ts:899:      id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
+apps/api/src/modules/reservations/recurrence.service.ts:901:    if (!p.recurrence_series_id) {
+apps/api/src/modules/reservations/recurrence.service.ts:910:      .eq('recurrence_series_id', p.recurrence_series_id)
+apps/api/src/modules/reservations/recurrence.service.ts:954:      .from('recurrence_series')
+apps/api/src/modules/reservations/recurrence.service.ts:957:      .eq('id', p.recurrence_series_id);
+apps/api/src/modules/reservations/recurrence.service.ts:964:        entity_type: 'recurrence_series',
+apps/api/src/modules/reservations/recurrence.service.ts:965:        entity_id: p.recurrence_series_id,
+apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:106:      recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:602:        recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-edit-tenant-validation.spec.ts:168:    recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-edit-tenant-validation.spec.ts:195:        recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-edit-tenant-validation.spec.ts:305:        recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-list-pagination.spec.ts:82:        recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation-projection.ts:105:    // recurrence_series.recurrence_rule). Keep null in the shim.
+apps/api/src/modules/reservations/reservation-projection.ts:107:    recurrence_series_id: booking.recurrence_series_id,
+apps/api/src/modules/reservations/reservation-projection.ts:109:    // canonical link is recurrence_series_id (one direction).
+apps/api/src/modules/reservations/reservation-projection.ts:156:    recurrence_series_id, recurrence_index, recurrence_overridden, recurrence_skipped,
+apps/api/src/modules/reservations/reservation.controller.ts:358:   * client (RLS bypass) and only filters by `recurrence_series_id`.
+apps/api/src/modules/reservations/reservation.controller.ts:637:  // `visitors.booking_bundle_id`); the `reservation_visitors` junction
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:103:  recurrence_series_id: null,
+apps/api/src/modules/reservations/reservation.service.ts:447:      if (!r.recurrence_series_id) {
+apps/api/src/modules/reservations/reservation.service.ts:593:    if (!r.recurrence_series_id) {
+apps/api/src/modules/reservations/reservation.service.ts:808:    if (r.recurrence_series_id && (hasGeometryChange || Object.keys(bookingMetaPatch).length > 0 || Object.keys(slotMetaPatch).length > 0)) {
+apps/api/src/modules/reservations/reservations.module.ts:104:    // materialiser fans out orders + lines + asset_reservations onto each
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:193:    recurrence_series_id: null,
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:432:        // ── work_orders / asset_reservations / approvals ────────────────
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:434:        // asset_reservations.update (286), approvals.select+update (584-596).
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:437:          table === 'asset_reservations' ||
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:52:  bundleLines?: Array<{ id: string; fulfillment_status: string | null; linked_asset_reservation_id: string | null; linked_ticket_id: string | null; order_id: string }>;
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:655:          linked_asset_reservation_id: null,
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:700:          linked_asset_reservation_id: null,
+# === KEEP_HISTORICAL_COMMENT — rename rationale + column-rename docs ===
+apps/api/src/modules/calendar-sync/__tests__/reconciler.diff.spec.ts:15: * `reservations` table is dropped. `loadReservations` now queries
+apps/api/src/modules/orders/cost.service.ts:15: * legacy `reservations` pre-canonicalisation).
+apps/api/src/modules/orders/cost.service.ts:23: * `booking_slots` instead of the dropped `booking_bundles` / `reservations`
+apps/api/src/modules/calendar-sync/reconciler.service.ts:189:    // Post-canonicalisation (2026-05-02): the legacy `reservations` table
+apps/api/src/modules/orders/order.service.ts:640:        // for booking-anchored approvals (was 'booking_bundle' pre-rewrite).
+apps/api/src/modules/orders/order.service.ts:746:   * The legacy "services-only booking_bundles row with primary_reservation_id
+apps/api/src/modules/orders/order.service.ts:950:        // for booking-anchored approvals (was 'booking_bundle' pre-rewrite).
+apps/api/src/modules/orders/order.service.ts:1080:   * so the legacy "services-only booking_bundles row" becomes "a bookings
+apps/api/src/modules/orders/order.service.ts:1087:   *   - `primary_reservation_id` dropped (00277:15-17)
+apps/api/src/modules/orders/order.service.ts:1176:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/orders/order.service.ts:1274:    // (00278:136). bundle_id is the booking id post-canonicalisation.
+apps/api/src/modules/orders/order.service.ts:1417:      // `bookings` (00277:27); legacy `booking_bundles` table was dropped
+apps/api/src/modules/orders/approval-routing.service.ts:44:   * any legacy `'booking_bundle'` rows are backfilled to `'booking'` by
+apps/api/src/modules/reservations/conflict-guard.service.spec.ts:38:  // that shape — flat `requester_person_id` was the legacy reservations
+apps/api/src/modules/reservations/multi-attendee.service.ts:62:    // arrays live on `booking_slots` (00277:127-128, 139); requester is on
+apps/api/src/modules/reservations/multi-attendee.service.ts:63:    // the parent `bookings` row (00277:36). Join both via the embedded
+apps/api/src/modules/reservations/multi-attendee.service.ts:65:    // `idx_slots_space_time_active` (00277:181-184) covers the time
+apps/api/src/modules/reservations/multi-attendee.service.ts:66:    // predicate; `idx_slots_attendee_persons` GIN (00277:188-190) the
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:277:    // 00296 result shape: data + pagination meta in one jsonb. The legacy
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:527:    // `booking_slots` (00277:116), not the dropped `reservations` table.
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:530:    // partial-index `idx_slots_space_time_active` (00277:181-184) covers
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:102:    // legacy 'booking_bundle' discriminator was retired in the same slice
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:103:    // that dropped the dto/types.ts:229 booking_bundle_id field.
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:106:    // Column was renamed booking_bundle_id -> booking_id in 00278:87.
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:207:    // Canonical key: `booking_id` (00278:87). The legacy `booking_bundle_id`
+apps/api/src/modules/reservations/reservation.service.ts:28: * is now a read of `booking_slots` joined with `bookings` (00277:27,116).
+apps/api/src/modules/reservations/reservation.service.ts:29: * The legacy flat `Reservation` shape is preserved in API responses via
+apps/api/src/modules/reservations/reservation.service.ts:31: * slice. The `id` field on returned rows is now the BOOKING id (00278 +
+apps/api/src/modules/reservations/reservation.service.ts:38: *     cancelled while others continue per 00277:142-144).
+apps/api/src/modules/reservations/reservation.service.ts:115:   * (00277:119) instead of the dropped `multi_room_group_id` column. The
+apps/api/src/modules/reservations/reservation.service.ts:155:   * Internal: load a booking by id and return the legacy `Reservation`
+apps/api/src/modules/reservations/reservation.service.ts:157:   * 00277:154) for slot-level fields. Multi-slot bookings still get a
+apps/api/src/modules/reservations/reservation.service.ts:163:    // resolves through the booking_slots → bookings FK (00277:119).
+apps/api/src/modules/reservations/reservation.service.ts:191:    // per-slot start_at + status that matches what the legacy reservations
+apps/api/src/modules/reservations/reservation.service.ts:281:   * — implemented as a join filter rather than the dropped column.
+apps/api/src/modules/reservations/reservation.service.ts:321:    // pointing back via orders.booking_id (00278:109). Pre-rewrite this was
+apps/api/src/modules/reservations/reservation.service.ts:335:    // idx_orders_booking from 00278:120-122). The TS layer just receives
+apps/api/src/modules/reservations/reservation.service.ts:400:    // 00277:194-201).
+apps/api/src/modules/reservations/reservation.service.ts:423:   * Post-canonicalisation: per-slot status (00277:142-144) is the
+apps/api/src/modules/reservations/reservation.service.ts:472:    // (legacy behaviour preserved). Per-slot cancel within a multi-slot
+apps/api/src/modules/reservations/reservation.service.ts:505:    // helper now resolves orders via orders.booking_id (00278:109);
+apps/api/src/modules/reservations/reservation.service.ts:588:   * (00277:77), so we toggle it there and cancel the slot(s).
+apps/api/src/modules/reservations/reservation.service.ts:623:   * "my bookings" reads stay consistent (00277:41/44/45).
+apps/api/src/modules/reservations/reservation.service.ts:745:    //      (the meta-only legacy path here doesn't hit the RPC at all
+apps/api/src/modules/reservations/reservation.service.ts:772:    // where the legacy editOne path bypassed the RPC entirely).
+apps/api/src/modules/reservations/reservation.service.ts:782:    // stay on the legacy path — they're not in the RPC's contract and
+apps/api/src/modules/reservations/reservation.service.ts:1064:      // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
+apps/api/src/modules/reservations/reservation.service.ts:1190:   * the PRIMARY slot for the legacy projection; here we pick the SPECIFIC
+apps/api/src/modules/reservations/reservation.service.ts:1217:   * Walks `visitors.booking_id` (00278:41 — column renamed from
+apps/api/src/modules/reservations/multi-room-booking.service.ts:21: * Multi-room atomic create — post-canonicalisation (2026-05-02).
+apps/api/src/modules/reservations/multi-room-booking.service.ts:25: * collapses that into ONE atomic `create_booking` RPC call (00277:236-334)
+apps/api/src/modules/reservations/multi-room-booking.service.ts:27: * group; the N slots are the rooms. The dropped `multi_room_groups` /
+apps/api/src/modules/reservations/multi-room-booking.service.ts:54:    // legacy `bundleCascade.cancelOrdersForReservation` cleanup onto the
+apps/api/src/modules/reservations/multi-room-booking.service.ts:192:    // 2. Coerce source. The legacy ReservationSource admits 'auto' for
+apps/api/src/modules/reservations/multi-room-booking.service.ts:194:    //    rejects it (00277:56-58).
+apps/api/src/modules/reservations/multi-room-booking.service.ts:214:    // 3. Atomic create_booking RPC with N slots (00277:236-334). The slot
+apps/api/src/modules/reservations/multi-room-booking.service.ts:263:    //    the booking id (the bundle, post-canonicalisation).
+apps/api/src/modules/reservations/multi-room-booking.service.ts:273:    //    The legacy `bundleCascade.cancelOrdersForReservation` cleanup is
+apps/api/src/modules/reservations/multi-room-booking.service.ts:275:    //    booking which cascades order rows via 00278:116 (SET NULL —
+apps/api/src/modules/reservations/booking-flow.service.ts:36: * Pipeline (post-canonicalisation 2026-05-02):
+apps/api/src/modules/reservations/booking-flow.service.ts:44: *      booking row + N slot rows atomically (00277:236-334). The slot
+apps/api/src/modules/reservations/booking-flow.service.ts:45: *      `booking_slots_no_overlap` GiST exclusion (00277:211-217) catches
+apps/api/src/modules/reservations/booking-flow.service.ts:53: * the legacy `Reservation`-flat shape is still synthesized for transitional
+apps/api/src/modules/reservations/booking-flow.service.ts:82:     * unchanged, and so the legacy compensation primitive stays
+apps/api/src/modules/reservations/booking-flow.service.ts:98:   * via the `create_booking` RPC (00277:236-334), or throw a structured error.
+apps/api/src/modules/reservations/booking-flow.service.ts:115:   *     `'reservation'` (00278:172).
+apps/api/src/modules/reservations/booking-flow.service.ts:120:   *     exclusion (00277:211-217) rejected; alternatives populated via picker
+apps/api/src/modules/reservations/booking-flow.service.ts:189:    //    mirrors the booking-level status onto each created slot, 00277:323).
+apps/api/src/modules/reservations/booking-flow.service.ts:218:    //    Source-narrowing: the legacy `ReservationSource` admits 'auto' for
+apps/api/src/modules/reservations/booking-flow.service.ts:220:    //    does not (00277:56-58, FIX#2).
+apps/api/src/modules/reservations/booking-flow.service.ts:235:    // Map legacy reservation_type 'other' → 'asset' (the new schema's
+apps/api/src/modules/reservations/booking-flow.service.ts:236:    // closest analogue; 00277:122 lists room/desk/asset/parking only).
+apps/api/src/modules/reservations/booking-flow.service.ts:257:      // Ordering matches the RPC parameter list (00277:236-292).
+apps/api/src/modules/reservations/booking-flow.service.ts:353:    //   target_entity_type changed from 'reservation' → 'booking' (00278:172).
+apps/api/src/modules/reservations/booking-flow.service.ts:388:    //   immutable per 00278:18.
+apps/api/src/modules/reservations/booking-flow.service.ts:402:    // for the canonical create path; the legacy `attachServicesToBooking`
+apps/api/src/modules/reservations/booking-flow.service.ts:475:    // local randomUUID when the actor has no client_request_id (legacy
+apps/api/src/modules/reservations/booking-flow.service.ts:546:    // bookingInput; reuse those for the legacy projection (no need to
+apps/api/src/modules/reservations/booking-flow.service.ts:764:   *      00277:236-292).
+apps/api/src/modules/reservations/booking-flow.service.ts:848:    // constraint at 00277:56-58 doesn't admit 'auto'; coerce based on
+apps/api/src/modules/reservations/booking-flow.service.ts:856:    // Map legacy 'other' → 'asset' (00277:122 admits room/desk/asset/parking).
+apps/api/src/modules/reservations/booking-flow.service.ts:867:    //    expects (00277:236-292), shaped as the §7.4 BookingInput jsonb.
+apps/api/src/modules/reservations/booking-flow.service.ts:978:   *     `parent_booking_id` (00278:179-181). FK now targets `bookings.id`.
+apps/api/src/modules/reservations/booking-flow.service.ts:981:   *     it now writes to `bookings`. `recurrence_master_id` was dropped from
+apps/api/src/modules/reservations/booking-flow.service.ts:1002:        parent_booking_id: master.id,            // renamed 00278:179-181
+apps/api/src/modules/reservations/booking-flow.service.ts:1013:    // dropped — the only canonical link is recurrence_series_id on bookings.
+apps/api/src/modules/reservations/booking-flow.service.ts:1068:    //   - `recurrence_series_id` lives on `bookings` (00277:74), not slots
+apps/api/src/modules/reservations/booking-flow.service.ts:1069:    //   - `host_person_id` lives on `bookings` (00277:37)
+apps/api/src/modules/reservations/booking-flow.service.ts:1071:    //     `booking_slots` (00277:124, 138-139)
+apps/api/src/modules/reservations/booking-flow.service.ts:1262:   * constraint added in 00278:170-172 enforces this at the DB layer; the
+apps/api/src/modules/reservations/booking-flow.service.ts:1317:// Transitional projection: Booking + slotSpec → Reservation (legacy shape)
+apps/api/src/modules/reservations/booking-flow.service.ts:1329:// `booking_slots_compute_effective_window` (00277:194-201).
+apps/api/src/modules/reservations/booking-flow.service.ts:1372:    // The legacy `reservation_type` is `'room' | 'desk' | 'parking' | 'other'`;
+apps/api/src/modules/reservations/booking-flow.service.ts:1389:    // recurrence_master_id field dropped from the projection — the
+apps/api/src/modules/reservations/booking-flow.service.ts:1410:    // multi_room_group_id field dropped from the projection — multi-room
+apps/api/src/modules/reservations/booking-flow.service.ts:1416:    // booking_bundle_id was dropped from the Reservation projection by
+apps/api/src/modules/reservations/booking-flow.service.ts:1417:    // slice H6 (00288). The booking IS the bundle (00277:27); readers
+apps/api/src/modules/reservations/recurrence.service.ts:37: * holiday calendar, it is dropped from the materialised set.
+apps/api/src/modules/reservations/recurrence.service.ts:61:   * Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27),
+apps/api/src/modules/reservations/recurrence.service.ts:339:      // Renamed from parent_reservation_id (00278:179-181). Now points at
+apps/api/src/modules/reservations/recurrence.service.ts:350:    // called outside a context (legacy ad-hoc callers), trust series.tenant_id
+apps/api/src/modules/reservations/recurrence.service.ts:356:    // read through `bookings` + `booking_slots` (00277:27,116). The legacy
+apps/api/src/modules/reservations/recurrence.service.ts:420:    // BOOKING (00277:75) post-canonicalisation, not the slot.
+apps/api/src/modules/reservations/recurrence.service.ts:484:            // recurrence_master_id dropped from canonical schema — series
+apps/api/src/modules/reservations/recurrence.service.ts:485:            // → bookings is one-direction (00277). The series row's
+apps/api/src/modules/reservations/recurrence.service.ts:486:            // parent_booking_id (00278:179-181) is the only link.
+apps/api/src/modules/reservations/recurrence.service.ts:497:        // (00277:27). We pass the OCCURRENCE's booking id (created_row.id)
+apps/api/src/modules/reservations/recurrence.service.ts:666:    // `orders.booking_id` (00278:109) is the canonical column tying an
+apps/api/src/modules/reservations/recurrence.service.ts:672:    // unset (legacy callers), skip the filter rather than throw — the
+apps/api/src/modules/reservations/recurrence.service.ts:769:    // The pivot is a BOOKING row (00277:74-77). Recurrence linkage lives on
+apps/api/src/modules/reservations/recurrence.service.ts:812:      // Renamed from parent_reservation_id (00278:179-181).
+apps/api/src/modules/reservations/recurrence.service.ts:827:        parent_booking_id: p.id,                  // renamed 00278:179-181
+apps/api/src/modules/reservations/recurrence.service.ts:837:    // series_id. recurrence_master_id was dropped from the canonical
+apps/api/src/modules/reservations/recurrence.service.ts:878:   * job won't re-materialise the dropped occurrences.
+apps/api/src/modules/reservations/recurrence.service.ts:905:    // Cancel the booking-level rows (status enum on bookings = 00277:49-51).
+apps/api/src/modules/reservations/recurrence.service.ts:941:    // via orders.booking_id (00278:109).
+apps/api/src/modules/reservations/check-in.service.ts:19: * (00277:142-151). For v1 single-slot bookings the slot id and the
+apps/api/src/modules/reservations/check-in.service.ts:126:   * (00277:209-213) keeps the working set tiny.
+apps/api/src/modules/reservations/check-in.service.ts:134:    // booking_slots holds per-slot check-in state (00277:147-151). Embed the
+apps/api/src/modules/reservations/check-in.service.ts:196:      // The notifications service consumes the legacy `Reservation` shape;
+apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:908:    // The slot meta update DOES happen (legacy path stays).
+apps/api/src/modules/ticket/ticket.service.ts:1851:   * `booking_bundle_id` in 00278:87) and `linked_order_line_item_id`
+apps/api/src/modules/ticket/ticket.service.ts:1910:    // the CHECK from the legacy 'booking_bundle' label). The FK column is
+apps/api/src/modules/ticket/ticket.service.ts:1948:    // System event for audit + activity feed. The legacy `booking_bundle_id`
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:47:   * directly. The legacy `linked_reservation_id` filter has no semantic
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:330:    // The pre-rewrite indirection through `bundle.primary_reservation_id`
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:440:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:457:   * bundle (00277:27). `primary_reservation_id` is dropped — the booking's
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:486:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle.service.edit-line.events.spec.ts:113:          // from `booking_bundle_id` in 00278:109; service:1691).
+apps/api/src/modules/reservations/conflict-guard.service.ts:9: * `booking_slots_no_overlap` (00277:211-217 — was `reservations_no_overlap`
+apps/api/src/modules/reservations/conflict-guard.service.ts:25: *   - Reads happen against `booking_slots` (00277:116). The slot row carries
+apps/api/src/modules/reservations/conflict-guard.service.ts:28: *     (00277:36). The buffer-collapse query joins via PostgREST embedding.
+apps/api/src/modules/reservations/conflict-guard.service.ts:30: *     legacy reservations.id. Callers (multi-room, edit) that previously
+apps/api/src/modules/reservations/conflict-guard.service.ts:107:   * `booking_slots_no_overlap` (00277:212). We match either pattern so
+apps/api/src/modules/booking-bundles/bundle.service.ts:67:   * Field renamed from `reservation_id` post-canonicalisation; the legacy
+apps/api/src/modules/booking-bundles/bundle.service.ts:180:   * backwards-compat with controllers/UI that still read `bundle_id` —
+apps/api/src/modules/booking-bundles/bundle.service.ts:205:   * Deprecated legacy entry-point. Translates the old `reservation_id` field
+apps/api/src/modules/booking-bundles/bundle.service.ts:340:      // legacy field names (`reservation.id`, etc.) — that's a context-shape
+apps/api/src/modules/booking-bundles/bundle.service.ts:395:            // ApprovalScope.reservation_ids is the legacy field name — the
+apps/api/src/modules/booking-bundles/bundle.service.ts:1302:   *   pre-rewrite this came from the `booking_bundle_status_v` view (dropped
+apps/api/src/modules/booking-bundles/bundle.service.ts:1498:   * Reproduces the rollup the dropped `booking_bundle_status_v` view used to
+apps/api/src/modules/booking-bundles/bundle.service.ts:1536:   * (00277:27); the legacy `loadReservation` against `reservations` was
+apps/api/src/modules/booking-bundles/bundle.service.ts:1721:        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:109
+apps/api/src/modules/booking-bundles/bundle.service.ts:1804:        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:136
+apps/api/src/modules/booking-bundles/bundle.service.ts:2032:   * Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle.service.ts:2181: * `booking_slots.attendee_count` (00277:138). `booking_bundle_id` is set to
+apps/api/src/modules/booking-bundles/bundle.service.ts:2193:  booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
+apps/api/src/modules/booking-bundles/bundle-visibility.service.spec.ts:215:    // Column rename per 00278:87: work_orders.booking_bundle_id → booking_id.
+apps/api/src/modules/reservations/list-bookable-rooms.scheduler-pagination.spec.ts:7:// Pre-fix (00286_scheduler_data_drop_legacy_keys.sql:65, 156, 217):
+apps/api/src/modules/booking-bundles/bundle-visibility.service.ts:117:    // tenants used `'booking_bundle'`; those legacy rows are backfilled to
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:6: *   - `reservations` was dropped; reads/writes go through `booking_slots`
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:9: *     (00278:41 retarget). The cascade lookup now keys on `booking_id`
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:11: *   - Under canonicalisation the booking IS the bundle, so the legacy
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:197:                          // Backward-compat: the legacy .order().limit() (no second order)
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:8:  // legacy single-row `reservations` read no longer exists.
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:159:    // `parent_booking_id` replaced legacy `parent_reservation_id` (00278:179-181).
+apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts:189:        // BookingFlowService.create returns a `Reservation` (legacy projection)
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:8://   - `multi_room_groups` table is GONE (00276_drop_legacy_booking_tables).
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:10://     (00277_create_canonical_booking_schema, 00278_retarget_sibling_tables).
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:356:    // Phase 1.3: happy path doesn't invoke compensation; the legacy cascade
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:371:    // (no longer the legacy "leave booking + cascade cleanup" behavior).
+apps/api/src/modules/reservations/booking-transaction-boundary.ts:8: *   1. `create_booking` RPC (00277:236-334) — inserts booking + slots atomically.
+apps/api/src/modules/reservations/reservation-list-has-bundle.spec.ts:144:    // The legacy .from('orders').select('booking_id') path must NOT
+apps/api/src/modules/reservations/reservation-projection.ts:4:// `bookings` row (00277:116, 00277:27) into the legacy flat `Reservation`
+apps/api/src/modules/reservations/reservation-projection.ts:10://   - id                       ← booking.id  (BREAKING: legacy = reservations.id, new = bookings.id)
+apps/api/src/modules/reservations/reservation-projection.ts:12://   - reservation_type         ← slot.slot_type (00277:122) mapped 'asset' → 'other'
+apps/api/src/modules/reservations/reservation-projection.ts:13://   - space_id                 ← slot.space_id (00277:124)
+apps/api/src/modules/reservations/reservation-projection.ts:14://   - requester_person_id      ← booking.requester_person_id (00277:36)
+apps/api/src/modules/reservations/reservation-projection.ts:15://   - host_person_id           ← booking.host_person_id (00277:37)
+apps/api/src/modules/reservations/reservation-projection.ts:16://   - start_at / end_at        ← slot.start_at / slot.end_at (00277:127-128)
+apps/api/src/modules/reservations/reservation-projection.ts:17://   - attendee_count           ← slot.attendee_count (00277:138)
+apps/api/src/modules/reservations/reservation-projection.ts:18://   - attendee_person_ids      ← slot.attendee_person_ids (00277:139)
+apps/api/src/modules/reservations/reservation-projection.ts:19://   - status                   ← slot.status (00277:142-144)
+apps/api/src/modules/reservations/reservation-projection.ts:20://   - recurrence_*             ← booking.recurrence_* (00277:74-77)
+apps/api/src/modules/reservations/reservation-projection.ts:21://   - recurrence_master_id     ← null (column dropped — series link is one-direction)
+apps/api/src/modules/reservations/reservation-projection.ts:23://   - linked_order_id          ← null (legacy field; nothing in tree reads it)
+apps/api/src/modules/reservations/reservation-projection.ts:24://   - setup/teardown buffers   ← slot.{setup,teardown}_buffer_minutes (00277:131-132)
+apps/api/src/modules/reservations/reservation-projection.ts:25://   - effective_*_at           ← slot.effective_*_at (00277:133-134, trigger-maintained)
+apps/api/src/modules/reservations/reservation-projection.ts:26://   - check_in_*               ← slot.check_in_* (00277:147-151)
+apps/api/src/modules/reservations/reservation-projection.ts:27://   - policy_snapshot          ← booking.policy_snapshot (00277:63)
+apps/api/src/modules/reservations/reservation-projection.ts:28://   - applied_rule_ids         ← booking.applied_rule_ids (00277:64)
+apps/api/src/modules/reservations/reservation-projection.ts:29://   - source                   ← booking.source (00277:56-58)
+apps/api/src/modules/reservations/reservation-projection.ts:30://   - booked_by_user_id        ← booking.booked_by_user_id (00277:38)
+apps/api/src/modules/reservations/reservation-projection.ts:31://   - cost_amount_snapshot     ← booking.cost_amount_snapshot (00277:62)
+apps/api/src/modules/reservations/reservation-projection.ts:32://   - multi_room_group_id      ← null (column dropped — replaced by booking_id grouping)
+apps/api/src/modules/reservations/reservation-projection.ts:33://   - calendar_*               ← booking.calendar_* (00277:68-71)
+apps/api/src/modules/reservations/reservation-projection.ts:50: * Project a slot+booking embed into the legacy `Reservation` shape.
+apps/api/src/modules/reservations/reservation-projection.ts:52: * BREAKING: `id` is the BOOKING id (was the reservation id pre-rewrite).
+apps/api/src/modules/reservations/reservation-projection.ts:69: * Project a slot row + an explicit booking row into the legacy shape.
+apps/api/src/modules/reservations/reservation-projection.ts:91:    // 00277:122 enumerates room/desk/asset/parking; legacy ReservationType
+apps/api/src/modules/reservations/reservation-projection.ts:104:    // never persisted in the legacy schema either (it lives on
+apps/api/src/modules/reservations/reservation-projection.ts:108:    // recurrence_master_id field dropped from the projection — the
+apps/api/src/modules/reservations/reservation-projection.ts:129:    // multi_room_group_id field dropped from the projection — multi-room
+apps/api/src/modules/reservations/reservation-projection.ts:135:    // booking_bundle_id field dropped here by slice H6 (00288); the
+apps/api/src/modules/reservations/reservation-projection.ts:137:    // directly — the booking IS the bundle (00277:27).
+apps/api/src/modules/reservations/reservation-projection.ts:145: * booking fields needed to reconstruct the legacy Reservation shape".
+apps/api/src/modules/reservations/dto/dtos.ts:15:   * Booking-level identity (NEW post-canonicalisation, 00277:32-33).
+apps/api/src/modules/reservations/dto/dtos.ts:16:   * Optional in the DTO so legacy callers don't break; the controller
+apps/api/src/modules/reservations/dto/dtos.ts:21:  /** IANA tz. Defaults to 'UTC' at the RPC if omitted (00277:46). */
+apps/api/src/modules/reservations/reservation.controller.ts:236:   * round-trip via the `scheduler_data` plpgsql RPC. Replaces the legacy
+apps/api/src/modules/reservations/reservation.controller.ts:307:   * actually moves that slot, not the primary (which the legacy
+apps/api/src/modules/reservations/reservation.controller.ts:462:   * Replaces the dropped `GET /booking-bundles/:id` endpoint
+apps/api/src/modules/reservations/reservation.controller.ts:464:   * IS the bundle now (00277:27), so the same id segment that `findOne`
+apps/api/src/modules/reservations/reservation.controller.ts:491:   * Replaces the dropped `PATCH /booking-bundles/:bundleId/lines/:lineId`
+apps/api/src/modules/reservations/reservation.controller.ts:492:   * endpoint. The booking IS the bundle now (00277:27) so the URL `:id`
+apps/api/src/modules/reservations/reservation.controller.ts:548:   * Replaces the dropped `POST /booking-bundles/:bundleId/lines/:lineId/cancel`.
+apps/api/src/modules/reservations/reservation.controller.ts:593:   * Replaces the dropped `POST /booking-bundles/:bundleId/cancel`. The URL
+apps/api/src/modules/reservations/reservation.controller.ts:633:  // The legacy `/reservations/:id/visitors` GET / POST / DELETE endpoints
+apps/api/src/modules/reservations/reservation.controller.ts:635:  // migration 00280). Visitors now link to their booking via the canonical
+apps/api/src/modules/reservations/reservation.controller.ts:636:  // `visitors.booking_id` column (00278:41 — renamed from
+apps/api/src/modules/reservations/reservation.controller.ts:638:  // table is dropped (00280). Visitor management lives in the visitors
+apps/api/src/modules/visitors/reception.controller.ts:185:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
+apps/api/src/modules/visitors/invitation.service.ts:153:    // DTO `booking_bundle_id` alias was retired in the post-canonical
+apps/api/src/modules/visitors/invitation.service.ts:175:        booking_id: bookingId,                      // 00278:41 (renamed from booking_bundle_id)
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:30:// reservations.id ≠ booking.id. Post-rewrite (00277:27) the booking IS
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:132:  // Post-canonicalisation (00276-00281): `reservations` + `booking_bundles`
+apps/api/src/modules/reservations/reservations.module.ts:177:      // Best-effort attendee resolution; missing emails dropped silently.
+apps/api/src/modules/reservations/dto/types.ts:4://   `bookings`        replaces `booking_bundles`  (00277:27)
+apps/api/src/modules/reservations/dto/types.ts:5://   `booking_slots`   replaces `reservations`     (00277:116)
+apps/api/src/modules/reservations/dto/types.ts:8:// `SlotType`. The legacy `Reservation` interface is RETAINED (in shim form) so
+apps/api/src/modules/reservations/dto/types.ts:24:// 'auto' is intentionally excluded — see 00277:53-58 (FIX#2). Today's
+apps/api/src/modules/reservations/dto/types.ts:41:// 'parking' is on the new schema; 'other' is dropped (the new check
+apps/api/src/modules/reservations/dto/types.ts:42:// constraint accepts only room/desk/asset/parking — 00277:122).
+apps/api/src/modules/reservations/dto/types.ts:82:// supabase/migrations/00277_create_canonical_booking_schema.sql.
+apps/api/src/modules/reservations/dto/types.ts:90: * Source: 00277:27-88 (table) + draft contract at
+apps/api/src/modules/reservations/dto/types.ts:96:  // Identity (NEW — 00277:32-33)
+apps/api/src/modules/reservations/dto/types.ts:100:  requester_person_id: string;             // 00277:36
+apps/api/src/modules/reservations/dto/types.ts:101:  host_person_id: string | null;           // 00277:37
+apps/api/src/modules/reservations/dto/types.ts:102:  booked_by_user_id: string | null;        // 00277:38
+apps/api/src/modules/reservations/dto/types.ts:104:  location_id: string;                     // 00277:41 (FIX#1)
+apps/api/src/modules/reservations/dto/types.ts:106:  start_at: string;                        // 00277:44
+apps/api/src/modules/reservations/dto/types.ts:107:  end_at: string;                          // 00277:45
+apps/api/src/modules/reservations/dto/types.ts:108:  timezone: string;                        // 00277:46 (NEW)
+apps/api/src/modules/reservations/dto/types.ts:110:  status: BookingStatus;                   // 00277:49-51
+apps/api/src/modules/reservations/dto/types.ts:112:  source: BookingSource;                   // 00277:56-58
+apps/api/src/modules/reservations/dto/types.ts:114:  cost_center_id: string | null;           // 00277:61
+apps/api/src/modules/reservations/dto/types.ts:115:  cost_amount_snapshot: string | null;     // 00277:62 — numeric(10,2) → string to preserve precision
+apps/api/src/modules/reservations/dto/types.ts:116:  policy_snapshot: PolicySnapshot;         // 00277:63
+apps/api/src/modules/reservations/dto/types.ts:117:  applied_rule_ids: string[];              // 00277:64
+apps/api/src/modules/reservations/dto/types.ts:118:  config_release_id: string | null;        // 00277:65
+apps/api/src/modules/reservations/dto/types.ts:120:  calendar_event_id: string | null;        // 00277:68
+apps/api/src/modules/reservations/dto/types.ts:121:  calendar_provider: CalendarProvider | null; // 00277:69
+apps/api/src/modules/reservations/dto/types.ts:122:  calendar_etag: string | null;            // 00277:70
+apps/api/src/modules/reservations/dto/types.ts:123:  calendar_last_synced_at: string | null;  // 00277:71
+apps/api/src/modules/reservations/dto/types.ts:125:  recurrence_series_id: string | null;     // 00277:74
+apps/api/src/modules/reservations/dto/types.ts:126:  recurrence_index: number | null;         // 00277:75
+apps/api/src/modules/reservations/dto/types.ts:127:  recurrence_overridden: boolean;          // 00277:76
+apps/api/src/modules/reservations/dto/types.ts:128:  recurrence_skipped: boolean;             // 00277:77
+apps/api/src/modules/reservations/dto/types.ts:130:  template_id: string | null;              // 00277:80
+apps/api/src/modules/reservations/dto/types.ts:141: * Source: 00277:116-160.
+apps/api/src/modules/reservations/dto/types.ts:146:  booking_id: string;                      // 00277:119 (FK to bookings.id, on delete cascade)
+apps/api/src/modules/reservations/dto/types.ts:147:  slot_type: SlotType;                     // 00277:122 (was `reservation_type`)
+apps/api/src/modules/reservations/dto/types.ts:148:  space_id: string;                        // 00277:124
+apps/api/src/modules/reservations/dto/types.ts:149:  start_at: string;                        // 00277:127
+apps/api/src/modules/reservations/dto/types.ts:150:  end_at: string;                          // 00277:128
+apps/api/src/modules/reservations/dto/types.ts:152:  setup_buffer_minutes: number;            // 00277:131
+apps/api/src/modules/reservations/dto/types.ts:153:  teardown_buffer_minutes: number;         // 00277:132
+apps/api/src/modules/reservations/dto/types.ts:154:  effective_start_at: string;              // 00277:133 (trigger-maintained)
+apps/api/src/modules/reservations/dto/types.ts:155:  effective_end_at: string;                // 00277:134
+apps/api/src/modules/reservations/dto/types.ts:158:  attendee_count: number | null;           // 00277:138
+apps/api/src/modules/reservations/dto/types.ts:159:  attendee_person_ids: string[];           // 00277:139
+apps/api/src/modules/reservations/dto/types.ts:161:  status: BookingStatus;                   // 00277:142-144
+apps/api/src/modules/reservations/dto/types.ts:163:  check_in_required: boolean;              // 00277:147
+apps/api/src/modules/reservations/dto/types.ts:164:  check_in_grace_minutes: number;          // 00277:148
+apps/api/src/modules/reservations/dto/types.ts:165:  checked_in_at: string | null;            // 00277:149
+apps/api/src/modules/reservations/dto/types.ts:166:  released_at: string | null;              // 00277:150
+apps/api/src/modules/reservations/dto/types.ts:167:  cancellation_grace_until: string | null; // 00277:151
+apps/api/src/modules/reservations/dto/types.ts:168:  display_order: number;                   // 00277:154 (NEW — was implicit via primary_reservation_id)
+apps/api/src/modules/reservations/dto/types.ts:213:   * non-null post-canonicalization (every projection row is built from
+apps/api/src/modules/reservations/dto/types.ts:240:  // recurrence_master_id was dropped here (post-canonicalization).
+apps/api/src/modules/reservations/dto/types.ts:264:  // multi_room_group_id was dropped here (post-canonicalization).
+apps/api/src/modules/reservations/dto/types.ts:266:  // slots — `BookingSlot.booking_id` (00277:152). Verified zero
+apps/api/src/modules/reservations/dto/types.ts:272:  // booking_bundle_id was dropped here by slice H6 (migration 00288).
+apps/api/src/modules/reservations/dto/types.ts:273:  // Post-canonicalization the booking IS the bundle (00277:27) — there
+apps/api/src/modules/reservations/dto/types.ts:298:   * `bookings.title` / `bookings.description` (00277:32-33).
+apps/api/src/modules/reservations/dto/types.ts:304:   * (00277:46) but recurrence and Outlook intercept will need this populated.
+apps/api/src/modules/reservations/dto/types.ts:312:  // recurrence_master_id input dropped — recurrence_series_id is the
+apps/api/src/modules/reservations/dto/types.ts:313:  // canonical link (00277).
+apps/api/src/modules/reservations/dto/types.ts:315:  // multi_room_group_id input dropped — multi-room atomicity uses
+apps/api/src/modules/reservations/dto/types.ts:317:  // booking_bundle_id input dropped by slice H6 (migration 00288) — the
+apps/api/src/modules/reservations/dto/types.ts:358:   * Optional only because some unit tests (and legacy callers like
+apps/api/src/modules/visitors/dto/create-invitation.dto.ts:45:   * Visitors no longer carry a `reservation_id` (column dropped 00278:38).
+apps/api/src/modules/visitors/dto/schemas.ts:42:  // The legacy `booking_bundle_id` and `reservation_id` aliases were
+apps/api/src/modules/reservations/booking-notifications.service.ts:220:    // booking_slots (00277:147-151). Embed the parent booking for
+apps/api/src/modules/reservations/booking-notifications.service.ts:222:    // (00277:63) — we read it through the embed and update it on the
+apps/api/src/modules/reservations/booking-notifications.service.ts:256:        // (00277:63). The conditional `is('...->>reminder_sent_at', null)`
+apps/api/src/modules/reservations/booking-notifications.service.ts:258:        // legacy `reservation_merge_policy_snapshot` RPC was bound to the
+apps/api/src/modules/reservations/booking-notifications.service.ts:259:        // dropped `reservations` table; the spec defers function rewrites,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:313:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
+apps/api/src/modules/visitors/visitors.controller.ts:406:    // renamed to visitors.booking_id and visitors.reservation_id was dropped
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:40:  // Post-canonicalisation (00278:109): orders.booking_bundle_id → booking_id.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:47:  // primary_reservation_id was dropped — slots resolve via booking_slots.booking_id.
+# === KEEP_AUDIT_ENTITY_TYPE — 'booking_bundle' string literal in audit/outbox/approvals ===
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:370:    void this.audit(tenantId, 'bundle.cancelled', 'booking_bundle', args.bundle_id, {
+apps/api/src/modules/booking-bundles/bundle-visibility.service.spec.ts:7:// defensive `.eq('target_entity_type', 'booking_bundle')` filter exists to
+apps/api/src/modules/booking-bundles/bundle-visibility.service.ts:117:    // tenants used `'booking_bundle'`; those legacy rows are backfilled to
+apps/api/src/modules/booking-bundles/bundle.service.ts:1827:   * once a `target_entity_type='booking_bundle'` approval row has resolved
+apps/api/src/modules/booking-bundles/bundle.service.ts:1829:   * the bundle and standalone-order paths use `'booking_bundle'` as the
+apps/api/src/modules/booking-bundles/bundle.service.ts:1937:        'booking_bundle',
+apps/api/src/modules/booking-bundles/bundle.service.ts:1967:        'booking_bundle',
+apps/api/src/modules/booking-bundles/bundle.service.ts:527:      // Audit entity_type stays 'booking_bundle' on existing event_types so
+apps/api/src/modules/booking-bundles/bundle.service.ts:530:      // 'booking.services_attached' marker. Historical 'booking_bundle' rows
+apps/api/src/modules/booking-bundles/bundle.service.ts:532:      void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundleId, {
+apps/api/src/modules/orders/approval-routing.service.ts:44:   * any legacy `'booking_bundle'` rows are backfilled to `'booking'` by
+apps/api/src/modules/orders/approval-routing.service.ts:46:   * longer admits `'booking_bundle'` so neither does the type system.
+apps/api/src/modules/orders/order.service.ts:640:        // for booking-anchored approvals (was 'booking_bundle' pre-rewrite).
+apps/api/src/modules/orders/order.service.ts:950:        // for booking-anchored approvals (was 'booking_bundle' pre-rewrite).
+apps/api/src/modules/reservations/booking-flow.service.ts:1264:   * 'booking_bundle' | 'order' (see approval-routing.service.ts:37) and
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:102:    // legacy 'booking_bundle' discriminator was retired in the same slice
+apps/api/src/modules/ticket/ticket.service.ts:1910:    // the CHECK from the legacy 'booking_bundle' label). The FK column is
+# === KEEP_BACKWARDS_COMPAT_FIELD — bundle_id retained as method-arg / return-shape field name ===
+apps/api/src/modules/booking-bundles/attach-plan.types.spec.ts:135:      bundle_id: fixedBookingInput.booking_id,
+apps/api/src/modules/booking-bundles/attach-plan.types.ts:231:  bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle-build-attach-plan.spec.ts:84:        bundle_id: BOOKING_ID,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:10: *   - cancelBundle emits `bundle.cancelled` with bundle_id + tenant_id.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:244:        expect(evt.bundle_id).toBe(BUNDLE);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:334:            svc.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:344:        expect(evt.bundle_id).toBe(BUNDLE);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:373:            svc.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:40:  // Post-canonicalisation (00278:109): orders.booking_bundle_id → booking_id.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:412:            svc.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:9: *     bundle_id, tenant_id after the DB mutations succeed.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:172:      line.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:180:      bundle_id: line.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:194:      bundle_id: line.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:209:    bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:20: *   - cancelBundle(bundle_id)     — full cascade. The bundle = "this whole
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:224:    bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:233:    const bundle = await this.loadBundle(args.bundle_id, tenantId);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:234:    if (!bundle) throw AppErrors.notFound('bundle', args.bundle_id);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:243:    const orderIds = await this.orderIdsForBundle(args.bundle_id, tenantId);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:332:    // `args.bundle_id` (= the booking id). The `args.reservation_id` opt-out
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:341:        .eq('booking_id', args.bundle_id)
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:347:        .eq('id', args.bundle_id);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:348:      cancelledReservationIds.push(args.bundle_id);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:359:          args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:367:      closedApprovalIds = await this.cancelPendingApprovalsForBundle(args.bundle_id);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:370:    void this.audit(tenantId, 'bundle.cancelled', 'booking_bundle', args.bundle_id, {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:371:      bundle_id: args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:397:        bundle_id: args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:403:      bundle_id: args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:41:  bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:421:    bundle_id: string | null;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:438:    // Walk to bundle_id via orders. Tenant-filter as defence-in-depth in
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:440:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:450:      bundle_id: (order as { booking_id: string | null } | null)?.booking_id ?? null,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:486:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:517:        { bundle_id: args.reservation_id, reason: args.reason },
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:51:   * with the occurrence's booking id as `bundle_id`, so this field is
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:88:    if (!line.bundle_id) {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:91:    const bundle = await this.loadBundle(line.bundle_id, tenantId);
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:93:      throw AppErrors.notFound('bundle', line.bundle_id);
+apps/api/src/modules/booking-bundles/bundle-event-bus.ts:37:  bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle-visibility.service.spec.ts:215:    // Column rename per 00278:87: work_orders.booking_bundle_id → booking_id.
+apps/api/src/modules/booking-bundles/bundle-visibility.service.ts:134:    // Column rename: work_orders.booking_bundle_id → work_orders.booking_id
+apps/api/src/modules/booking-bundles/bundle.service.edit-line.events.spec.ts:113:          // from `booking_bundle_id` in 00278:109; service:1691).
+apps/api/src/modules/booking-bundles/bundle.service.edit-line.events.spec.ts:189:      expect(evt.bundle_id).toBe(BUNDLE_ID);
+apps/api/src/modules/booking-bundles/bundle.service.edit-line.events.spec.ts:227:      bundleId: null, // order has no booking_bundle_id
+apps/api/src/modules/booking-bundles/bundle.service.edit-line.events.spec.ts:9: *     with old/new times + tenant_id + bundle_id + line_kind from policy
+apps/api/src/modules/booking-bundles/bundle.service.ts:1011:      .eq('id', args.bundle_id)
+apps/api/src/modules/booking-bundles/bundle.service.ts:1016:      throw AppErrors.notFound('bundle', args.bundle_id);
+apps/api/src/modules/booking-bundles/bundle.service.ts:1020:      booking_id: args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:1259:    // Resolve bundle_id by walking line → order → bundle. Skipped (no emit)
+apps/api/src/modules/booking-bundles/bundle.service.ts:1267:          bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:1590:      booking_bundle_id: row.id,                  // booking IS the bundle now
+apps/api/src/modules/booking-bundles/bundle.service.ts:1700:   *   - orders.booking_bundle_id  → orders.booking_id     (FK to bookings.id)
+apps/api/src/modules/booking-bundles/bundle.service.ts:1713:    bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle.service.ts:1721:        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:109
+apps/api/src/modules/booking-bundles/bundle.service.ts:1779:    bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle.service.ts:179:   * Equals `args.booking_id`. Kept under the `bundle_id` field name for
+apps/api/src/modules/booking-bundles/bundle.service.ts:1804:        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:136
+apps/api/src/modules/booking-bundles/bundle.service.ts:180:   * backwards-compat with controllers/UI that still read `bundle_id` —
+apps/api/src/modules/booking-bundles/bundle.service.ts:184:  bundle_id: string;
+apps/api/src/modules/booking-bundles/bundle.service.ts:1939:        { bundle_id: bundleId, decision },
+apps/api/src/modules/booking-bundles/bundle.service.ts:1970:          bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:2028:   * Resolve bundle_id (= booking_id under canonicalisation) from an order
+apps/api/src/modules/booking-bundles/bundle.service.ts:2032:   * Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/booking-bundles/bundle.service.ts:2181: * `booking_slots.attendee_count` (00277:138). `booking_bundle_id` is set to
+apps/api/src/modules/booking-bundles/bundle.service.ts:2193:  booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
+apps/api/src/modules/booking-bundles/bundle.service.ts:288:          bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:305:              bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:417:          bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:502:                bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:517:              bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:533:        bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:543:        bundle_id: bundleId,
+apps/api/src/modules/booking-bundles/bundle.service.ts:619:          bundle_id: args.booking_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:662:      booking_bundle_id: args.booking_id,         // booking IS the bundle
+apps/api/src/modules/booking-bundles/bundle.service.ts:902:            bundle_id: args.booking_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:944:      bundle_id: args.booking_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:996:    bundle_id: string;
+apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:119:        bundle_id: BOOKING_ID,
+apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:165:          bundle_id: BOOKING_ID,
+apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:198:          bundle_id: BOOKING_ID,
+apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:228:        bundle_id: BOOKING_ID,
+apps/api/src/modules/orders/approval-routing.assemble-plan.spec.ts:91:          bundle_id: BOOKING_ID,
+apps/api/src/modules/orders/approval-routing.service.ts:72:    bundle_id: string | null;
+apps/api/src/modules/orders/cost.service.ts:143:      bundle_id: bundleId,
+apps/api/src/modules/orders/cost.service.ts:30:  bundle_id: string;
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:120:  it('rejects when bundle_id is cross-tenant', async () => {
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:131:        bundle_id: FOREIGN_UUID,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:164:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:204:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:234:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:266:        bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:297:      bundle_id: VALID_BOOKING,
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:88:      bundle_id: string;
+apps/api/src/modules/orders/order-service-create-tenant-validation.spec.ts:9:// caller in one shot. Tests cover bundle_id, requester_person_id,
+apps/api/src/modules/orders/order.service.ts:1029:              // Standalone orders still create a bundle row; carry bundle_id
+apps/api/src/modules/orders/order.service.ts:1031:              // lookup (`details->>bundle_id = bundleId`) finds it. Without
+apps/api/src/modules/orders/order.service.ts:1034:              bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:1054:        bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:1062:        bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:1124:    bundle_id: string;
+apps/api/src/modules/orders/order.service.ts:1146:      args.bundle_id,
+apps/api/src/modules/orders/order.service.ts:1176:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
+apps/api/src/modules/orders/order.service.ts:1177:    // bundle_id is the booking id under canonicalisation.
+apps/api/src/modules/orders/order.service.ts:1183:        booking_id: args.bundle_id,
+apps/api/src/modules/orders/order.service.ts:1255:    bundle_id: string;
+apps/api/src/modules/orders/order.service.ts:1273:    // Column rename: asset_reservations.booking_bundle_id → booking_id
+apps/api/src/modules/orders/order.service.ts:1274:    // (00278:136). bundle_id is the booking id post-canonicalisation.
+apps/api/src/modules/orders/order.service.ts:1284:        booking_id: args.bundle_id,
+apps/api/src/modules/orders/order.service.ts:163:    //   orders.booking_bundle_id    → orders.booking_id     (FK to bookings.id)
+apps/api/src/modules/orders/order.service.ts:262:        // Column rename: asset_reservations.booking_bundle_id → booking_id
+apps/api/src/modules/orders/order.service.ts:362:      bundle_id: args.bundleId,
+apps/api/src/modules/orders/order.service.ts:648:            bundle_id: args.bundleId,
+apps/api/src/modules/orders/order.service.ts:779:        bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:826:            bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:957:          bundle_id: bundle.id,
+apps/api/src/modules/orders/order.service.ts:96:  bundle_id: string;
+apps/api/src/modules/reservations/booking-flow-atomicity.spec.ts:201:          bundle_id: RPC_BOOKING_ID,
+apps/api/src/modules/reservations/booking-flow-build-attach-plan.spec.ts:121:        bundle_id: bookingId,
+apps/api/src/modules/reservations/booking-flow.service.ts:1416:    // booking_bundle_id was dropped from the Reservation projection by
+apps/api/src/modules/reservations/booking-flow.service.ts:956:          bundle_id: bookingId,
+apps/api/src/modules/reservations/dto/types.ts:272:  // booking_bundle_id was dropped here by slice H6 (migration 00288).
+apps/api/src/modules/reservations/dto/types.ts:317:  // booking_bundle_id input dropped by slice H6 (migration 00288) — the
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:205:      attachServicesToBooking: jest.fn(async () => ({ bundle_id: BOOKING_ID, lines: [] })),
+apps/api/src/modules/reservations/reservation-projection.ts:135:    // booking_bundle_id field dropped here by slice H6 (00288); the
+apps/api/src/modules/reservations/reservation-projection.ts:34://   - booking_bundle_id        ← booking.id (under canonicalisation, the booking IS the bundle)
+apps/api/src/modules/reservations/reservation.controller.ts:622:        bundle_id: id,
+apps/api/src/modules/reservations/reservation.controller.ts:637:  // `visitors.booking_bundle_id`); the `reservation_visitors` junction
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:12: *     `Reservation.booking_bundle_id` field equals `bookings.id`
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:13: *     (reservation-projection.ts:34, 121). The `bundle_id` carried on
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:379:        // (reservation-projection.ts:121), so `bundle_id` on the event
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:381:        expect(evt.bundle_id).toBe(BOOKING_ID);
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:38:// returned Reservation projection has booking_bundle_id === booking.id
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:408:        expect(evt.bundle_id).toBe(BOOKING_ID);
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:40:// as `bundle_id`.
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:526:          expect(evt.bundle_id).toBe(BOOKING_ID);
+apps/api/src/modules/reservations/reservation.service.events.spec.ts:8: *   - `visitors.booking_bundle_id` was renamed to `visitors.booking_id`
+apps/api/src/modules/reservations/reservation.service.ts:1218:   * `booking_bundle_id`).
+apps/api/src/modules/reservations/reservation.service.ts:1249:            bundle_id: args.bundleId,
+apps/api/src/modules/reservations/reservation.service.ts:1261:            bundle_id: args.bundleId,
+apps/api/src/modules/reservations/reservation.service.ts:277:   * service line attached" (the booking_bundle_id was nullable on
+apps/api/src/modules/reservations/reservation.service.ts:322:    // a `booking_bundle_id IS NOT NULL` check on reservations; under
+apps/api/src/modules/service-routing/setup-work-order-trigger.service.ts:105:          booking_bundle_id: args.bundleId,
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:103:    // that dropped the dto/types.ts:229 booking_bundle_id field.
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:106:    // Column was renamed booking_bundle_id -> booking_id in 00278:87.
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:107:    // ticket.service.ts:1813 writes args.booking_bundle_id into row.booking_id.
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:119:        booking_bundle_id: 'b',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:137:        booking_bundle_id: 'b',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:150:        booking_bundle_id: 'b',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:164:        booking_bundle_id: 'b',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:182:        booking_bundle_id: 'b',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:195:        booking_bundle_id: 'bundle-XYZ',
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:207:    // Canonical key: `booking_id` (00278:87). The legacy `booking_bundle_id`
+apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:92:        booking_bundle_id: 'bundle-1',
+apps/api/src/modules/ticket/ticket.service.ts:1851:   * `booking_bundle_id` in 00278:87) and `linked_order_line_item_id`
+apps/api/src/modules/ticket/ticket.service.ts:1862:   * Argument name `booking_bundle_id` kept for caller-signature stability
+apps/api/src/modules/ticket/ticket.service.ts:1870:    booking_bundle_id: string;
+apps/api/src/modules/ticket/ticket.service.ts:1916:      booking_id: args.booking_bundle_id,
+apps/api/src/modules/ticket/ticket.service.ts:1948:    // System event for audit + activity feed. The legacy `booking_bundle_id`
+apps/api/src/modules/ticket/ticket.service.ts:1950:    // consumers of metadata.booking_bundle_id across apps/api + apps/web).
+apps/api/src/modules/ticket/ticket.service.ts:1957:        booking_id: args.booking_bundle_id,
+apps/api/src/modules/ticket/ticket.service.ts:1965:      booking_id: args.booking_bundle_id,
+apps/api/src/modules/ticket/ticket.service.ts:257:    // both live in work_orders now, so the booking_bundle_id IS NULL guard is
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:109:      // booking_bundle_id was renamed to booking_id; reservation_id was
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:136:  // r.booking_bundle_id = booking.id.
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:674:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:710:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:743:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:105:      // the canonicalization rename visitors.booking_bundle_id -> booking_id
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:160:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:191:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:218:          bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:235:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:263:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:290:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:318:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:341:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:367:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:38:  visitorsForBundle?: Record<string, string[]>;             // bundle_id → visitor_ids
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:395:        bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:423:          bundle_id: BUNDLE_ID,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:151:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:169:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:204:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:221:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:282:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:300:            bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:313:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:314:    // Under canonicalisation `event.bundle_id` is the booking id.
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:321:        [event.tenant_id, event.bundle_id],
+apps/api/src/modules/visitors/bundle-cascade.adapter.ts:333:        bundle_id: event.bundle_id,
+apps/api/src/modules/visitors/dto/create-invitation.dto.ts:42:   * (2026-05-02): `booking_id` is the canonical name; `booking_bundle_id`
+apps/api/src/modules/visitors/dto/create-invitation.dto.ts:49:  booking_bundle_id?: string;
+apps/api/src/modules/visitors/dto/schemas.ts:42:  // The legacy `booking_bundle_id` and `reservation_id` aliases were
+apps/api/src/modules/visitors/invitation.service.ts:152:    // (booking_bundle_id + reservation_id, 00252:36-37) is gone. The
+apps/api/src/modules/visitors/invitation.service.ts:153:    // DTO `booking_bundle_id` alias was retired in the post-canonical
+apps/api/src/modules/visitors/invitation.service.ts:175:        booking_id: bookingId,                      // 00278:41 (renamed from booking_bundle_id)
+apps/api/src/modules/visitors/reception.controller.ts:182:       booking_bundle_id (the booking-bundle cascade links visitor lines
+apps/api/src/modules/visitors/reception.controller.ts:185:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
+apps/api/src/modules/visitors/visitors.controller.ts:405:    // Post-canonicalisation (2026-05-02): visitors.booking_bundle_id was
