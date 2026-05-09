@@ -23,6 +23,7 @@
  */
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError, withErrorHandling } from '@/lib/errors';
 import { visitorKeys, type VisitorStatus, type VisitorType } from './keys';
 
 // Re-export the shared keys + types so existing `import { visitorKeys } from
@@ -322,6 +323,7 @@ export function useCreateInvitation() {
       // /desk/visitors stale until the 15s poll catches up.
       qc.invalidateQueries({ queryKey: visitorKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't invite visitor" }),
   });
 }
 
@@ -355,11 +357,12 @@ export function useCancelInvitationViaToken() {
       }
       return { previous };
     },
-    onError: (_err, vars, ctx) => {
+    onError: (err, vars, ctx) => {
       const snap = (ctx as { previous?: VisitorDetail } | undefined)?.previous;
       if (snap && vars.visitorIdHint) {
         qc.setQueryData(visitorKeys.detail(vars.visitorIdHint), snap);
       }
+      handleMutationError(err, { actionTitle: "Couldn't cancel invitation" });
     },
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: visitorKeys.expected() });
