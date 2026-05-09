@@ -27,7 +27,8 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
 import { PersonAvatar } from '@/components/person-avatar';
 import { SaveIndicator } from '@/components/save-indicator';
-import { usePerson, useUpdatePerson, personFullName, type Person } from '@/api/persons';
+import { personDetailOptions, useUpdatePerson, personFullName, type Person } from '@/api/persons';
+import { usePageQuery } from '@/lib/errors';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { userStatusDotClass } from '@/lib/status-tone';
@@ -57,7 +58,9 @@ export function PersonDetailBody({
   personId: string;
   onDeactivated?: () => void;
 }) {
-  const { data: person, isLoading } = usePerson(personId);
+  // Page-primary fetch for the editor pane — page-class errors throw to
+  // RouteErrorBoundary so a missing/forbidden person replaces the page.
+  const { data: person, isLoading } = usePageQuery(personDetailOptions(personId));
   const { data: costCenters } = useCostCenters({ active: true });
   const update = useUpdatePerson(personId);
 
@@ -315,7 +318,8 @@ export function PersonDetailBody({
 export function PersonDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: person, isLoading } = usePerson(id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data: person, isLoading } = usePageQuery(personDetailOptions(id));
 
   const headline = useMemo(() => {
     if (!person) return 'Loading…';
