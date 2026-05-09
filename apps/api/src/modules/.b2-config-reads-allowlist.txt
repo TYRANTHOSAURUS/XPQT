@@ -31,6 +31,7 @@ apps/api/src/modules/sla/sla.service.ts:      set.add(t.sla_policy_id);
 apps/api/src/modules/sla/sla.service.ts:    // bypasses RLS, so a smuggled cross-tenant sla_policy_id on a timer would
 apps/api/src/modules/sla/sla.service.ts:    const policyName = await this.loadPolicyName(timer.sla_policy_id, timer.tenant_id);
 apps/api/src/modules/ticket/dispatch.service.ts:   * Resolve which sla_policy_id to attach to a child work order.
+apps/api/src/modules/ticket/dispatch.service.ts: * `workflow_definition_id`, `sla_policy_id`.
 apps/api/src/modules/ticket/reclassify.service.ts:          .update({ sla_id: newType.sla_policy_id })
 apps/api/src/modules/ticket/reclassify.service.ts:        ? this.loadWorkflowDefinition(newType.workflow_definition_id, tenant.id)
 apps/api/src/modules/ticket/reclassify.service.ts:        await this.slaService.startTimers(ticketId, tenant.id, newType.sla_policy_id);
@@ -49,6 +50,7 @@ apps/api/src/modules/ticket/ticket.service.ts:      scopeOverride?.workflow_defi
 apps/api/src/modules/ticket/ticket.service.ts:      sla_id: args.sla_policy_id ?? null,
 apps/api/src/modules/ticket/ticket.service.ts:    // Same precedence: scope override's workflow_definition_id wins.
 apps/api/src/modules/ticket/ticket.service.ts:    // Scope override's case_sla_policy_id wins over request_types.sla_policy_id
+apps/api/src/modules/ticket/ticket.service.ts: * `workflow_definition_id`, `sla_policy_id`.
 apps/api/src/modules/workflow/workflow-engine.service.ts:                  ? { sla_id: task.sla_policy_id ?? null }
 apps/api/src/modules/workflow/workflow-engine.service.ts:                ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
 apps/api/src/modules/workflow/workflow-engine.service.ts:        workflow_definition_id: workflowDefinitionId,

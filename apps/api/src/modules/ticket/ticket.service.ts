@@ -15,6 +15,21 @@ import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { ApprovalService } from '../approval/approval.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
 
+/**
+ * Naming asymmetry — intentional (B.2 §0.1).
+ *
+ * Runtime row columns use the SHORT form: `tickets.ticket_type_id`,
+ * `tickets.workflow_id`, `tickets.sla_id`. Configuration tables and
+ * the public API use the LONG form: `request_type_id`,
+ * `workflow_definition_id`, `sla_policy_id`.
+ *
+ * This file uses both forms — short when reading/writing the runtime
+ * row, long when reading/writing config (request_types,
+ * workflow_definitions, sla_policies). DO NOT "normalise" them.
+ *
+ * Audit: docs/follow-ups/phase-8-naming-audit.md §2.C/D/E.
+ */
+
 export const SYSTEM_ACTOR = '__system__';
 
 /**
