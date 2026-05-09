@@ -127,16 +127,19 @@ describe('VisitorsAdminController', () => {
       expect(Array.isArray(result)).toBe(true);
     });
 
-    it('createType rejects missing type_key', async () => {
+    it('createType rejects missing type_key (400)', async () => {
       const h = makeHarness();
-      await expect(h.controller.createType({ display_name: 'X' })).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.createType({ display_name: 'X' })).rejects.toMatchObject({
+        code: 'visitor.invalid_payload',
+        status: 400,
+      });
     });
 
-    it('createType rejects type_key with capitals', async () => {
+    it('createType rejects type_key with capitals (400)', async () => {
       const h = makeHarness();
       await expect(
         h.controller.createType({ type_key: 'BadKey', display_name: 'X' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('createType happy path', async () => {
@@ -150,42 +153,51 @@ describe('VisitorsAdminController', () => {
       expect(result.tenant_id).toBe(TENANT_ID);
     });
 
-    it('updateType rejects malformed body (out of range minutes)', async () => {
+    it('updateType rejects malformed body (out of range minutes) — 400', async () => {
       const h = makeHarness();
       await expect(
         h.controller.updateType('type-1', { default_expected_until_offset_minutes: 9999 }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('updateType returns 404 when row missing', async () => {
       const h = makeHarness({ visitorTypeUpdated: null });
-      await expect(h.controller.updateType('missing', { display_name: 'X' })).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.updateType('missing', { display_name: 'X' })).rejects.toMatchObject({
+        code: 'visitor_type.not_found',
+        status: 404,
+      });
     });
 
     it('deactivateType returns 404 when row missing', async () => {
       const h = makeHarness({ visitorTypeUpdated: null });
-      await expect(h.controller.deactivateType('missing')).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.deactivateType('missing')).rejects.toMatchObject({
+        code: 'visitor_type.not_found',
+        status: 404,
+      });
     });
   });
 
   describe('pools', () => {
-    it('createPool rejects non-building/site space type', async () => {
+    it('createPool rejects non-building/site space type (400)', async () => {
       const h = makeHarness({ spaceRow: { id: BUILDING_ID, type: 'floor' } });
       await expect(
         h.controller.createPool({ space_id: BUILDING_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'pool_anchor.invalid', status: 400 });
     });
 
     it('createPool returns 404 when space missing', async () => {
       const h = makeHarness({ spaceRow: null });
       await expect(
         h.controller.createPool({ space_id: BUILDING_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'space.not_found', status: 404 });
     });
 
-    it('addPass requires pass_number', async () => {
+    it('addPass requires pass_number (400)', async () => {
       const h = makeHarness();
-      await expect(h.controller.addPass(BUILDING_ID, {})).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.addPass(BUILDING_ID, {})).rejects.toMatchObject({
+        code: 'visitor.invalid_payload',
+        status: 400,
+      });
     });
 
     it('addPass via space_id falls through to space lookup', async () => {
@@ -222,9 +234,9 @@ describe('VisitorsAdminController', () => {
   });
 
   describe('listAll (visibility-bypass)', () => {
-    it('rejects without visitors.read_all', async () => {
+    it('rejects without visitors.read_all (403)', async () => {
       const h = makeHarness({ permissionDenied: true });
-      await expect(h.controller.listAll(makeReq())).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.listAll(makeReq())).rejects.toMatchObject({ status: 403 });
     });
 
     it('happy path: filters on tenant', async () => {

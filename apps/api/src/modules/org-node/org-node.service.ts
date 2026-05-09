@@ -123,7 +123,7 @@ export class OrgNodeService {
       })
       .select('*')
       .single();
-    if (error) throw AppErrors.validationFailed('org_node.create_failed', { detail: error.message });
+    if (error) throw AppErrors.server('org_node.create_failed', { cause: error });
     return data as OrgNodeRow;
   }
 
@@ -145,7 +145,7 @@ export class OrgNodeService {
       .eq('tenant_id', tenant.id)
       .select('*')
       .single();
-    if (error) throw AppErrors.validationFailed('org_node.update_failed', { detail: error.message });
+    if (error) throw AppErrors.server('org_node.update_failed', { cause: error });
     return data as OrgNodeRow;
   }
 
@@ -156,7 +156,7 @@ export class OrgNodeService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.validationFailed('org_node.delete_failed', { detail: error.message });
+    if (error) throw AppErrors.server('org_node.delete_failed', { cause: error });
     return { ok: true };
   }
 
@@ -211,7 +211,7 @@ export class OrgNodeService {
           detail: 'Another organisation change for this person is in progress. Reload and try again.',
         });
       }
-      throw AppErrors.validationFailed('org_node.add_member_failed', { detail: error.message });
+      throw AppErrors.server('org_node.add_member_failed', { cause: error });
     }
     return data;
   }
@@ -259,7 +259,7 @@ export class OrgNodeService {
       })
       .select('id, space_id, granted_by_user_id, granted_at, note')
       .single();
-    if (error) throw AppErrors.validationFailed('org_node.add_grant_failed', { detail: error.message });
+    if (error) throw AppErrors.server('org_node.add_grant_failed', { cause: error });
     return data;
   }
 

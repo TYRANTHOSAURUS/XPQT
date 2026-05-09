@@ -599,7 +599,7 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('config_engine.invalid_request_type', { detail: 'Request type not found in this tenant' });
+    if (!data) throw AppErrors.notFoundWithCode('config_engine.request_type_not_found', 'Request type not found in this tenant');
   }
 
   /**

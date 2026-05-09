@@ -155,7 +155,7 @@ export class OrdersController {
       throw AppErrors.unauthorized('no user record for this auth uid');
     }
     if (!lineRow) {
-      throw AppErrors.validationFailed('line_not_found', { detail: 'order line not found' });
+      throw AppErrors.notFoundWithCode('line_not_found', 'order line not found');
     }
 
     const orderRes = await this.supabase.admin
@@ -167,7 +167,7 @@ export class OrdersController {
     if (orderRes.error) throw orderRes.error;
     const order = orderRes.data as { requester_person_id: string } | null;
     if (!order) {
-      throw AppErrors.validationFailed('order_not_found', { detail: 'order not found' });
+      throw AppErrors.notFoundWithCode('order_not_found', 'order not found');
     }
 
     if (userRow.person_id && order.requester_person_id === userRow.person_id) return;

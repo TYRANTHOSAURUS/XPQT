@@ -95,7 +95,7 @@ export class ProviderDailyListMailer implements DailyListMailer {
     const dl = await this.supabase.admin.storage.from(bucket).download(input.pdfStoragePath);
     if (dl.error || !dl.data) {
       throw AppErrors.server('daily_list.mailer_failed', {
-        detail: `daily-list PDF download failed for path=${input.pdfStoragePath}: ${dl.error?.message ?? 'no data'}`,
+        cause: { storage_path: input.pdfStoragePath, error: dl.error },
       });
     }
     const buffer = Buffer.from(await dl.data.arrayBuffer());

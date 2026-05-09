@@ -218,7 +218,13 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     // msal-node exposes the refresh token through the in-memory cache.
     const refreshToken = await this.extractRefreshToken();
     if (!refreshToken) {
-      throw AppErrors.server('calendar_sync.graph_failed', { detail: 'Calendar service did not issue a refresh token (offline_access scope missing?)' });
+      // Codex I2 (Phase 7.B-1 review): `offline_access` is Microsoft
+      // Graph scope terminology and leaks past the central scrubber.
+      // Replace with neutral copy; log the actual reason via `cause`.
+      throw AppErrors.server('calendar_sync.graph_failed', {
+        detail: 'Calendar service rejected the connection. Re-authorise to continue.',
+        cause: { reason: 'no_refresh_token_in_msal_cache' },
+      });
     }
 
     // Resolve the user's primary calendar id.

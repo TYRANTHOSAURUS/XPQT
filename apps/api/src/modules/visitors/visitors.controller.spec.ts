@@ -141,18 +141,18 @@ describe('VisitorsController', () => {
   afterEach(() => jest.restoreAllMocks());
 
   describe('createInvitation', () => {
-    it('rejects without permission', async () => {
+    it('rejects without permission (403)', async () => {
       const h = makeHarness({ permissionDenied: true });
       await expect(
         h.controller.createInvitation(makeReq(), { first_name: 'X' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ status: 403 });
     });
 
     it('rejects malformed body (zod 400)', async () => {
       const h = makeHarness();
       await expect(
         h.controller.createInvitation(makeReq(), { first_name: '' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('happy path — does NOT leak cancel_token in response', async () => {
@@ -167,7 +167,7 @@ describe('VisitorsController', () => {
       expect(result).not.toHaveProperty('cancel_token');
     });
 
-    it('rejects when no auth user', async () => {
+    it('rejects when no auth user (401)', async () => {
       const h = makeHarness();
       await expect(
         h.controller.createInvitation(makeReq(null), {
@@ -175,10 +175,10 @@ describe('VisitorsController', () => {
           visitor_type_id: '44444444-4444-4444-8444-444444444444',
           expected_at: '2026-05-02T09:00:00.000Z',
           building_id: '33333333-3333-4333-8333-333333333333' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'auth.unauthorized', status: 401 });
     });
 
-    it('rejects when user has no linked person row', async () => {
+    it('rejects when user has no linked person row (401)', async () => {
       const h = makeHarness({ userRow: { id: USER_ID, person_id: null } });
       await expect(
         h.controller.createInvitation(makeReq(), {
@@ -186,7 +186,7 @@ describe('VisitorsController', () => {
           visitor_type_id: '44444444-4444-4444-8444-444444444444',
           expected_at: '2026-05-02T09:00:00.000Z',
           building_id: '33333333-3333-4333-8333-333333333333' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'auth.unauthorized', status: 401 });
     });
   });
 
@@ -203,56 +203,66 @@ describe('VisitorsController', () => {
       );
     });
 
-    it('cross-tenant defence: token from tenant B accessed via tenant A → 410', async () => {
+    it('cross-tenant defence: token from tenant B accessed via tenant A → 404', async () => {
       const h = makeHarness({
         tokenResolves: { visitor_id: VISITOR_ID, tenant_id: OTHER_TENANT_ID } });
-      await expect(h.controller.cancelByToken('plaintext-token')).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.cancelByToken('plaintext-token')).rejects.toMatchObject({
+        code: 'visitor.invalid_token',
+        status: 404,
+      });
       expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
     });
 
     it('rejects empty token (400)', async () => {
       const h = makeHarness();
-      await expect(h.controller.cancelByToken('')).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.cancelByToken('')).rejects.toMatchObject({
+        code: 'visitor.invalid_payload',
+        status: 400,
+      });
     });
 
-    it('SQLSTATE 45001 → 410 invalid_token', async () => {
+    it('SQLSTATE 45001 → 404 invalid_token', async () => {
       const h = makeHarness({ tokenError: { code: '45001' } });
       const err = await h.controller.cancelByToken('bad-token').catch((e) => e);
       expect(err).toBeInstanceOf(AppError);
       expect((err as AppError).code).toBe('visitor.invalid_token');
+      expect((err as AppError).status).toBe(404);
     });
 
-    it('SQLSTATE 45002 → 410 token_already_used', async () => {
+    it('SQLSTATE 45002 → 404 token_already_used', async () => {
       const h = makeHarness({ tokenError: { code: '45002' } });
       const err = await h.controller.cancelByToken('used-token').catch((e) => e);
       expect(err).toBeInstanceOf(AppError);
       expect((err as AppError).code).toBe('visitor.invalid_token');
+      expect((err as AppError).status).toBe(404);
     });
 
-    it('SQLSTATE 45003 → 410 token_expired', async () => {
+    it('SQLSTATE 45003 → 404 token_expired', async () => {
       const h = makeHarness({ tokenError: { code: '45003' } });
       const err = await h.controller.cancelByToken('expired-token').catch((e) => e);
       expect(err).toBeInstanceOf(AppError);
       expect((err as AppError).code).toBe('visitor.invalid_token');
+      expect((err as AppError).status).toBe(404);
     });
 
-    it('transitionStatus 400 (e.g. already arrived) → 410 transition_not_allowed', async () => {
+    it('transitionStatus 400 (e.g. already arrived) → 404 transition_not_allowed', async () => {
       const h = makeHarness({
         tokenResolves: { visitor_id: VISITOR_ID, tenant_id: TENANT_ID },
         transitionError: AppErrors.validationFailed('visitor.invalid_state', { detail: 'invalid_transition: arrived -> cancelled' }) });
       const err = await h.controller.cancelByToken('plaintext-token').catch((e) => e);
       expect(err).toBeInstanceOf(AppError);
       expect((err as AppError).code).toBe('visitor.invalid_token');
+      expect((err as AppError).status).toBe(404);
     });
   });
 
   describe('acknowledge', () => {
-    it('rejects when actor is not a host on the visit', async () => {
+    it('rejects when actor is not a host on the visit (403)', async () => {
       const h = makeHarness({
         queryOneResults: new Map([['visitor_hosts', { exists: false }]]) });
       await expect(
         h.controller.acknowledge(makeReq(), VISITOR_ID),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.host_required', status: 403 });
     });
 
     it('happy path: delegates to HostNotificationService.acknowledge', async () => {
@@ -271,16 +281,22 @@ describe('VisitorsController', () => {
     it('returns 404 when visibility function does not include the id', async () => {
       const h = makeHarness({
         queryOneResults: new Map([['visible', null]]) });
-      await expect(h.controller.getOne(makeReq(), VISITOR_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.getOne(makeReq(), VISITOR_ID)).rejects.toMatchObject({
+        code: 'visitor.not_found',
+        status: 404,
+      });
     });
   });
 });
 
 describe('mapTokenError', () => {
-  it('maps 45001 / 45002 / 45003 to ', () => {
-    expect(mapTokenError({ code: '45001' })).toBeInstanceOf(AppError);
-    expect(mapTokenError({ code: '45002' })).toBeInstanceOf(AppError);
-    expect(mapTokenError({ code: '45003' })).toBeInstanceOf(AppError);
+  it('maps 45001 / 45002 / 45003 to 404 visitor.invalid_token', () => {
+    for (const sqlstate of ['45001', '45002', '45003']) {
+      const err = mapTokenError({ code: sqlstate });
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).code).toBe('visitor.invalid_token');
+      expect((err as AppError).status).toBe(404);
+    }
   });
 
   it('passes other errors through', () => {

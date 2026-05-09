@@ -50,7 +50,7 @@ export class RoutingSimulatorController {
       .select('feature_flags')
       .eq('id', tenant.id)
       .maybeSingle();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     const raw = (data?.feature_flags as Record<string, unknown> | null)?.routing_v2_mode;
     const mode: RoutingV2Mode =
       raw === 'dualrun' || raw === 'shadow' || raw === 'v2_only' ? raw : 'off';
@@ -75,7 +75,7 @@ export class RoutingSimulatorController {
       .select('feature_flags')
       .eq('id', tenant.id)
       .maybeSingle();
-    if (readErr) throw AppErrors.server('routing.db_failed', { detail: readErr.message, cause: readErr });
+    if (readErr) throw AppErrors.server('routing.db_failed', { cause: readErr });
     const currentFlags = (tenantRow?.feature_flags as Record<string, unknown>) ?? {};
     const nextFlags = mode === 'off'
       ? Object.fromEntries(Object.entries(currentFlags).filter(([k]) => k !== 'routing_v2_mode'))
@@ -85,7 +85,7 @@ export class RoutingSimulatorController {
       .from('tenants')
       .update({ feature_flags: nextFlags })
       .eq('id', tenant.id);
-    if (writeErr) throw AppErrors.server('routing.db_failed', { detail: writeErr.message, cause: writeErr });
+    if (writeErr) throw AppErrors.server('routing.db_failed', { cause: writeErr });
 
     return { mode };
   }

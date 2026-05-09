@@ -171,7 +171,8 @@ export class VisitorReminderWorker {
 
   private async processCandidate(c: ReminderCandidate): Promise<'sent' | 'skipped'> {
     if (!this.mail || !this.mailDelivery || !this.supabase) {
-      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorReminderWorker requires MAIL_PROVIDER, VisitorMailDeliveryAdapter, and SupabaseService' });
+      // I3: neutral copy; class names in detail are scrubber-spam.
+      throw AppErrors.server('visitor.config_missing');
     }
 
     const idempotencyKey = `visitor-reminder:${c.id}:${normaliseExpectedAt(c.expected_at)}`;

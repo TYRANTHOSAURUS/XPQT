@@ -235,7 +235,7 @@ export class RoutingCoverageService {
       .eq('space_id', input.space_id)
       .eq('domain', domain)
       .maybeSingle();
-    if (findErr) throw AppErrors.server('routing.db_failed', { detail: findErr.message, cause: findErr });
+    if (findErr) throw AppErrors.server('routing.db_failed', { cause: findErr });
 
     // Clear case
     if (!input.assignee) {
@@ -245,7 +245,7 @@ export class RoutingCoverageService {
         .delete()
         .eq('id', (existing as { id: string }).id)
         .eq('tenant_id', tenant.id);
-      if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+      if (error) throw AppErrors.server('routing.db_failed', { cause: error });
       return { deleted: true };
     }
 
@@ -267,7 +267,7 @@ export class RoutingCoverageService {
         .eq('tenant_id', tenant.id)
         .select()
         .single();
-      if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+      if (error) throw AppErrors.server('routing.db_failed', { cause: error });
       return { deleted: false, row: data };
     }
     const { data, error } = await this.supabase.admin
@@ -275,7 +275,7 @@ export class RoutingCoverageService {
       .insert(patch)
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return { deleted: false, row: data };
   }
 

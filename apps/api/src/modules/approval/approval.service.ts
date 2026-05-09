@@ -444,7 +444,7 @@ export class ApprovalService {
       .single();
 
     if (findError || !approval) throw AppErrors.notFound('approval', approvalId);
-    if (approval.status !== 'pending') throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
+    if (approval.status !== 'pending') throw AppErrors.conflict('approval.already_responded', { detail: 'Approval already responded to' });
 
     // Authorization: caller must be a permitted approver for this row.
     const allowed = await this.callerCanRespond(approval, respondingPersonId, respondingUserId);
@@ -498,7 +498,7 @@ export class ApprovalService {
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
+    if (!data) throw AppErrors.conflict('approval.already_responded', { detail: 'Approval already responded to' });
 
     await this.logDomainEvent(approval.target_entity_id, `approval_${dto.status}`, {
       approval_id: approvalId,
@@ -636,7 +636,7 @@ export class ApprovalService {
     // pre-cutover UX is preserved (the FE already renders
     // "Approval already responded to" for this case).
     if (result.kind === 'already_responded') {
-      throw AppErrors.validationFailed('approval.already_responded', { detail: 'Approval already responded to' });
+      throw AppErrors.conflict('approval.already_responded', { detail: 'Approval already responded to' });
     }
     if (result.kind === 'non_booking_approved') {
       // Defensive — should not happen because respond() routed only

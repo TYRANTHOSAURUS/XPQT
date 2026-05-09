@@ -172,9 +172,16 @@ describe('SetupWorkOrderRowBuilder.build (B.0.C.5)', () => {
     const builder = new SetupWorkOrderRowBuilder(
       makeSupabase({ routingError: { message: 'connection refused' } }),
     );
-    await expect(builder.build(baseArgs())).rejects.toThrow(
-      /resolve_setup_routing: connection refused/,
-    );
+    // Phase 7.B-1 review I4: vendor error.message is now logged via cause,
+    // not embedded in user-facing detail. Assert structure (code+status+cause)
+    // rather than the leaked-message regex.
+    const err = await builder.build(baseArgs()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { code: string }).code).toBe('setup_routing_failed');
+    expect((err as { status: number }).status).toBe(500);
+    expect((err as { cause: { message: string } }).cause).toMatchObject({
+      message: 'connection refused',
+    });
   });
 
   it('uses booking_id from event.payload, not aggregate_id, in buildFromEvent', async () => {

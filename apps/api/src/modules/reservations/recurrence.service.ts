@@ -682,9 +682,7 @@ export class RecurrenceService {
     if (error) {
       // Throw rather than swallow — caller wraps this in
       // runWithCompensation so the orphan booking gets cleaned up.
-      throw AppErrors.server('booking.recurrence_failed', {
-        detail: `bundle fan-out: list master orders for ${args.masterReservationId} failed: ${error.message}`,
-      });
+      throw AppErrors.server('booking.recurrence_failed', { cause: error });
     }
     for (const o of (orders ?? []) as Array<{ id: string }>) {
       // Per-order errors propagate. With compensation wrapping at the
@@ -829,7 +827,7 @@ export class RecurrenceService {
       .select('id')
       .single();
     if (seriesErr || !newSeriesRow) {
-      throw AppErrors.server('booking.recurrence_failed', { detail: `splitSeries failed: ${seriesErr?.message ?? 'unknown'}` });
+      throw AppErrors.server('booking.recurrence_failed', { cause: seriesErr });
     }
     const newSeriesId = (newSeriesRow as { id: string }).id;
 
@@ -842,7 +840,7 @@ export class RecurrenceService {
       .eq('tenant_id', srcSeries.tenant_id)
       .eq('recurrence_series_id', srcSeries.id)
       .gte('start_at', p.start_at);
-    if (updErr) throw AppErrors.server('booking.recurrence_failed', { detail: `splitSeries reseat failed: ${updErr.message}` });
+    if (updErr) throw AppErrors.server('booking.recurrence_failed', { cause: updErr });
 
     // Cap the source series so no more occurrences materialise past the pivot.
     // /full-review v3 closure I3 — tenant filter on the update.
@@ -916,7 +914,7 @@ export class RecurrenceService {
     // 'series' → no time gate; cancels everything in the series.
 
     const { data, error } = await q.select('id');
-    if (error) throw AppErrors.server('booking.recurrence_failed', { detail: `cancelForward failed: ${error.message}` });
+    if (error) throw AppErrors.server('booking.recurrence_failed', { cause: error });
 
     const cancelledBookingIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
 

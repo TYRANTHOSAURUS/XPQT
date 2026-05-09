@@ -424,13 +424,13 @@ export class ReceptionService {
       [dto.visitor_type_id, tenantId],
     );
     if (!type) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
+      throw AppErrors.notFound('visitor_type', dto.visitor_type_id);
     }
     if (!type.allow_walk_up) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Walk-ups are disabled for this visitor type' });
+      throw AppErrors.validationFailed('visitor.invalid_state', { detail: 'Walk-ups are disabled for this visitor type' });
     }
     if (type.requires_approval) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'This visitor type requires approval — walk-ups disabled. Ask the host to pre-invite.' });
+      throw AppErrors.validationFailed('visitor.invalid_state', { detail: 'This visitor type requires approval — walk-ups disabled. Ask the host to pre-invite.' });
     }
 
     // 2. Create the invitation (visitor + visitor_hosts + cancel token).

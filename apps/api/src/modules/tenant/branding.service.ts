@@ -123,7 +123,7 @@ export class BrandingService {
       .from('tenants')
       .update({ name: trimmedName, branding: nextBranding })
       .eq('id', tenant.id);
-    if (error) throw AppErrors.server('tenant.update_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('tenant.update_failed', { cause: error });
 
     await this.writeAuditEvent('tenant.branding.updated', { fields: Object.keys(dto) });
     return { ...nextBranding, name: trimmedName };
@@ -152,7 +152,7 @@ export class BrandingService {
         upsert: true,
         cacheControl: '3600',
       });
-    if (uploadError) throw AppErrors.server('tenant.upload_failed', { detail: uploadError.message, cause: uploadError });
+    if (uploadError) throw AppErrors.server('tenant.upload_failed', { cause: uploadError });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -185,7 +185,7 @@ export class BrandingService {
       .from('tenants')
       .update({ branding: stripName(next) })
       .eq('id', tenant.id);
-    if (error) throw AppErrors.server('tenant.update_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('tenant.update_failed', { cause: error });
 
     await this.writeAuditEvent('tenant.branding.updated', { removed: kind });
     return next;

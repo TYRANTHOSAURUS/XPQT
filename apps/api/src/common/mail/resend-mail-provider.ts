@@ -107,9 +107,21 @@ export class ResendMailProvider implements MailProvider {
       throw AppErrors.server('mail.dispatch_failed', { detail: `Mail provider returned non-JSON (${res.status})` });
     }
     if (!res.ok) {
-      const errorName = (body as { name?: string })?.name ?? 'unknown';
-      const errorMsg  = (body as { message?: string })?.message ?? `Resend ${res.status}`;
-      throw AppErrors.server('mail.dispatch_failed', { detail: `Mail provider ${res.status} (${errorName}): ${errorMsg}` });
+      // Codex I1 (Phase 7.B-1 review): the body's `name` / `message`
+      // are vendor-shaped (`validation_error`, `invalid_to_address`)
+      // and the central scrubber doesn't match those tokens. Surface
+      // a neutral detail to the user; log the full body via `cause`
+      // so ops can still see what Resend actually said.
+      const cause = {
+        provider: 'mail',
+        status: res.status,
+        name: (body as { name?: string })?.name,
+        message: (body as { message?: string })?.message,
+      };
+      throw AppErrors.server('mail.dispatch_failed', {
+        detail: 'The mail provider rejected the request. Try again later.',
+        cause,
+      });
     }
     const ok = body as { id: string };
     return {

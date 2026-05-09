@@ -78,7 +78,7 @@ export class VisitorPassPoolService {
   ): Promise<VisitorPassPool | null> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     // The SQL function returns `setof public.visitor_pass_pool` and is
@@ -142,7 +142,7 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     await this.db.tx(async (client) => {
@@ -150,7 +150,8 @@ export class VisitorPassPoolService {
       if (pass.tenant_id !== tenantId) {
         // Cross-tenant defence — the composite FK would also block this on
         // the UPDATE, but we want a clean 400 before the DB raises.
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
+        // Cross-tenant pass: surface as not-found to avoid leaking existence.
+        throw AppErrors.notFound('visitor_pass', passId);
       }
 
       // Visitor must also be in this tenant. The composite FK
@@ -165,14 +166,16 @@ export class VisitorPassPoolService {
           break;
         case 'reserved':
           if (pass.reserved_for_visitor_id !== visitorId) {
-            throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is reserved for another visitor` });
+            // 409 — pass is reserved for someone else; the conflict is
+            // with existing state, not bad input.
+            throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is reserved for another visitor` });
           }
           break;
         case 'in_use':
-          throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is already in use` });
+          throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is already in use` });
         case 'lost':
         case 'retired':
-          throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status} and cannot be assigned` });
+          throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is ${pass.status} and cannot be assigned` });
       }
 
       const nowIso = new Date().toISOString();
@@ -216,19 +219,20 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
+        // Cross-tenant pass: surface as not-found to avoid leaking existence.
+        throw AppErrors.notFound('visitor_pass', passId);
       }
       const visitor = await this.lockVisitor(client, visitorId, tenantId);
       void visitor;
 
       if (pass.status !== 'available') {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'available' passes can be reserved` });
+        throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'available' passes can be reserved` });
       }
 
       await client.query(
@@ -257,16 +261,17 @@ export class VisitorPassPoolService {
   async returnPass(passId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
+        // Cross-tenant pass: surface as not-found to avoid leaking existence.
+        throw AppErrors.notFound('visitor_pass', passId);
       }
       if (pass.status !== 'in_use') {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'in_use' passes can be returned` });
+        throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'in_use' passes can be returned` });
       }
 
       const previousVisitorId = pass.current_visitor_id;
@@ -317,16 +322,17 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
+        // Cross-tenant pass: surface as not-found to avoid leaking existence.
+        throw AppErrors.notFound('visitor_pass', passId);
       }
       if (pass.status === 'retired') {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is retired; cannot mark missing` });
+        throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is retired; cannot mark missing` });
       }
 
       // Capture pre-update state for the audit payload before we mutate.
@@ -369,16 +375,17 @@ export class VisitorPassPoolService {
   async markPassRecovered(passId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
+        // Cross-tenant pass: surface as not-found to avoid leaking existence.
+        throw AppErrors.notFound('visitor_pass', passId);
       }
       if (pass.status !== 'lost') {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'lost' passes can be recovered` });
+        throw AppErrors.conflict('visitor.pass_unavailable', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'lost' passes can be recovered` });
       }
 
       await client.query(
@@ -408,7 +415,7 @@ export class VisitorPassPoolService {
   ): Promise<VisitorPassPool[]> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
 
     const anchor = await this.passPoolForSpace(buildingId, tenantId);
@@ -443,7 +450,7 @@ export class VisitorPassPoolService {
     );
     const pass = result.rows[0];
     if (!pass) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_pass_pool ${passId} not found` });
+      throw AppErrors.notFound('visitor_pass', passId);
     }
     return pass;
   }
@@ -459,10 +466,11 @@ export class VisitorPassPoolService {
     );
     const v = result.rows[0];
     if (!v) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
     if (v.tenant_id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'visitor not in current tenant' });
+      // Cross-tenant: surface as not-found so we don't leak existence.
+      throw AppErrors.notFound('visitor', visitorId);
     }
     return v;
   }

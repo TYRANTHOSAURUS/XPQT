@@ -217,9 +217,7 @@ export class ReportingService {
     if (error) {
       // Underlying RPC error is logged via filter; user-visible copy comes
       // from messages.en.ts (no SQL leak).
-      throw AppErrors.validationFailed('report.rpc_failed', {
-        detail: error.message,
-      });
+      throw AppErrors.server('report.rpc_failed', { cause: error });
     }
     return data;
   }

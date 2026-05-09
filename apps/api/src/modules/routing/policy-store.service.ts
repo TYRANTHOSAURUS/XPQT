@@ -91,7 +91,7 @@ export class PolicyStoreService {
       if (error.code === '23505') {
         throw AppErrors.validationFailed('routing.invalid_definition', { detail: `config entity with slug "${input.slug}" already exists for ${input.config_type}` });
       }
-      throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create config entity: ${error.message}` });
+      throw AppErrors.server('routing.db_failed', { cause: error });
     }
     return data as PolicyEntityRow;
   }
@@ -104,8 +104,8 @@ export class PolicyStoreService {
       .eq('id', entity_id)
       .maybeSingle();
 
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
-    if (!data) throw AppErrors.validationFailed('routing.db_failed', { detail: `config entity ${entity_id} not found` });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
+    if (!data) throw AppErrors.notFoundWithCode('routing.not_found', `config entity ${entity_id} not found`);
     return data as PolicyEntityRow;
   }
 
@@ -136,7 +136,7 @@ export class PolicyStoreService {
       .select('*')
       .single();
 
-    if (error) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create draft version: ${error.message}` });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data as PolicyVersionRow;
   }
 
@@ -149,8 +149,8 @@ export class PolicyStoreService {
       .eq('id', input.version_id)
       .maybeSingle();
 
-    if (verErr) throw AppErrors.server('routing.db_failed', { detail: verErr.message, cause: verErr });
-    if (!version) throw AppErrors.validationFailed('routing.db_failed', { detail: `config version ${input.version_id} not found` });
+    if (verErr) throw AppErrors.server('routing.db_failed', { cause: verErr });
+    if (!version) throw AppErrors.notFoundWithCode('routing.not_found', `config version ${input.version_id} not found`);
     const ver = version as PolicyVersionRow;
     if (ver.status !== 'draft') {
       throw AppErrors.validationFailed('routing.invalid_definition', { detail: `version ${input.version_id} is ${ver.status}, only draft versions can be published` });
@@ -194,7 +194,7 @@ export class PolicyStoreService {
       .select('*')
       .single();
 
-    if (pubErr) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to publish version: ${pubErr.message}` });
+    if (pubErr) throw AppErrors.server('routing.db_failed', { cause: pubErr });
 
     const { error: entErr } = await this.supabase.admin
       .from('config_entities')
@@ -202,7 +202,7 @@ export class PolicyStoreService {
       .eq('tenant_id', input.tenant_id)
       .eq('id', entity.id);
 
-    if (entErr) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to point entity at published version: ${entErr.message}` });
+    if (entErr) throw AppErrors.server('routing.db_failed', { cause: entErr });
 
     return published as PolicyVersionRow;
   }
@@ -227,7 +227,7 @@ export class PolicyStoreService {
       .eq('id', entity.current_published_version_id)
       .maybeSingle();
 
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     if (!data) return null;
 
     const parsed = parsePolicyDefinition(entity.config_type, data.definition);
@@ -250,7 +250,7 @@ export class PolicyStoreService {
       .eq('status', 'active')
       .order('display_name', { ascending: true });
 
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return (data ?? []) as PolicyEntityRow[];
   }
 
@@ -263,7 +263,7 @@ export class PolicyStoreService {
       .limit(1)
       .maybeSingle();
 
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return (data?.version_number ?? 0) + 1;
   }
 }

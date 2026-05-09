@@ -461,7 +461,7 @@ export class DailyListService {
         upsert: true,                                    // re-render replaces in place
       });
     if (uploadErr) {
-      throw AppErrors.server('daily_list.upload_failed', { detail: `PDF upload failed: ${uploadErr.message}` });
+      throw AppErrors.server('daily_list.upload_failed', { cause: uploadErr });
     }
 
     const updated = await this.db.queryOne<VendorDailyListRow>(
@@ -499,7 +499,7 @@ export class DailyListService {
       .from(DailyListService.PDF_BUCKET)
       .createSignedUrl(dl.pdf_storage_path!, ttlSec);
     if (error || !data) {
-      throw AppErrors.server('daily_list.signed_url_failed', { detail: `Signed URL mint failed: ${error?.message ?? 'unknown'}` });
+      throw AppErrors.server('daily_list.signed_url_failed', { cause: error });
     }
 
     const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();

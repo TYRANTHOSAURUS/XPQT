@@ -374,7 +374,10 @@ export class VisitorsController {
       [visitorId, actor.person_id, tenant.id],
     );
     if (!isHost?.exists) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'You are not a host on this visit' });
+      // Codex C1 (Phase 7.B-1 review): host-only acknowledge surfaces a
+      // clean 403 rather than a 400, so the UI distinguishes "not your
+      // visit" from "no such visit". Spec §9.2.
+      throw AppErrors.forbidden('visitor.host_required', 'You are not a host on this visit');
     }
 
     await this.hostNotifications.acknowledge(visitorId, actor.person_id, tenant.id);
@@ -417,7 +420,9 @@ export class VisitorsController {
     `;
     const row = await this.db.queryOne(sql, [actor.user_id, tenant.id, visitorId]);
     if (!row) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      // Visibility miss → 404. RouteErrorBoundary fires page replacement
+      // rather than toasting "Couldn't process" over a stale detail page.
+      throw AppErrors.notFound('visitor', visitorId);
     }
     return row;
   }
@@ -433,7 +438,7 @@ export class VisitorsController {
     req: Request,
   ): Promise<{ user_id: string; person_id: string }> {
     const authUid = (req as { user?: { id: string } }).user?.id;
-    if (!authUid) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No auth user' });
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     const tenant = TenantContext.current();
 
     const lookup = await this.supabase.admin
@@ -443,9 +448,9 @@ export class VisitorsController {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string; person_id: string | null } | null;
-    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No linked user in this tenant' });
+    if (!row) throw AppErrors.unauthorized('No linked user in this tenant');
     if (!row.person_id) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Your user account is not linked to a person — contact your admin' });
+      throw AppErrors.unauthorized('Your user account is not linked to a person — contact your admin');
     }
     return { user_id: row.id, person_id: row.person_id };
   }

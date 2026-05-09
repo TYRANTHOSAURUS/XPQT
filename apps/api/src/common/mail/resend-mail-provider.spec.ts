@@ -100,7 +100,7 @@ describe('ResendMailProvider — send', () => {
       tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toBeInstanceOf(AppError);
   });
 
-  it('surfaces Resend errors with name + message', async () => {
+  it('does not leak Resend vendor tokens in user-facing detail (Codex I1)', async () => {
     global.fetch = jest.fn(async () =>
       new Response(
         JSON.stringify({ name: 'validation_error', message: 'invalid_to_address' }),
@@ -108,8 +108,25 @@ describe('ResendMailProvider — send', () => {
       ),
     ) as unknown as typeof fetch;
     const provider = new ResendMailProvider();
-    await expect(provider.send({
-      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toThrow(/Mail provider 422.*validation_error.*invalid_to_address/);
+    const err = await provider.send({
+      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe('mail.dispatch_failed');
+    expect((err as AppError).status).toBe(500);
+    // Detail must be neutral — vendor tokens (`validation_error`, `invalid_to_address`,
+    // `Resend`, `422`) must not leak past the central scrubber.
+    const detail = (err as AppError).detail ?? '';
+    expect(detail).not.toMatch(/validation_error/);
+    expect(detail).not.toMatch(/invalid_to_address/);
+    expect(detail).not.toMatch(/Resend/i);
+    expect(detail).not.toMatch(/422/);
+    // Vendor info must still be available on `cause` for ops.
+    const cause = (err as AppError).cause as { provider: string; status: number; name?: string; message?: string };
+    expect(cause.provider).toBe('mail');
+    expect(cause.status).toBe(422);
+    expect(cause.name).toBe('validation_error');
+    expect(cause.message).toBe('invalid_to_address');
   });
 });
 

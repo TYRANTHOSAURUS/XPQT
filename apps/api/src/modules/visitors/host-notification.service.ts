@@ -388,12 +388,12 @@ export class HostNotificationService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
     const row = data as VisitorRow;
     if (row.tenant_id !== tenantId) {
       // Cross-tenant defence — present as not-found so we don't leak existence.
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
     return row;
   }

@@ -165,14 +165,13 @@ export class VisitorEmailWorker implements OnModuleInit {
    *     is moot per spec §10.2
    */
   async processOne(event: DomainEventRow): Promise<'sent' | 'skipped'> {
-    if (!this.mail) {
-      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires MAIL_PROVIDER' });
-    }
-    if (!this.mailDelivery) {
-      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires VisitorMailDeliveryAdapter' });
-    }
-    if (!this.supabase) {
-      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires SupabaseService' });
+    // Codex I3 (Phase 7.B-1 review): startup-time wiring guard. Naming
+    // class identifiers (VisitorEmailWorker / SupabaseService) in
+    // user-visible detail spammed scrub-warning logs — the central
+    // scrubber catches `Supabase` and renders unknown.server_error
+    // anyway. Use neutral copy; the user sees the registered message.
+    if (!this.mail || !this.mailDelivery || !this.supabase) {
+      throw AppErrors.server('visitor.config_missing');
     }
 
     const visitorId = event.entity_id;

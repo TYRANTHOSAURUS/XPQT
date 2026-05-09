@@ -252,36 +252,45 @@ describe('VisitorService.transitionStatus', () => {
   });
 
   describe('invalid transitions', () => {
-    it('expected → checked_out (skipping arrived) throws ', async () => {
+    it('expected → checked_out (skipping arrived) throws 400 invalid_state', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'expected' }));
       const svc = new VisitorService(ctx.db as never);
       await expect(
         svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, { checkout_source: 'reception' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
     });
 
-    it('checked_out → arrived (terminal state) throws ', async () => {
+    it('checked_out → arrived (terminal state) throws 400 invalid_state', async () => {
       tenantCtx();
       const ctx = makeFakeDb(
         baseVisitor({ status: 'checked_out', arrived_at: '2026-05-01T09:00:00Z', checkout_source: 'reception' }),
       );
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toMatchObject({
+        code: 'visitor.invalid_state',
+        status: 400,
+      });
     });
 
-    it('denied → expected throws ', async () => {
+    it('denied → expected throws 400 invalid_state', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'denied' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'expected', ACTOR)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.transitionStatus(VISITOR_ID, 'expected', ACTOR)).rejects.toMatchObject({
+        code: 'visitor.invalid_state',
+        status: 400,
+      });
     });
 
-    it('pending_approval → arrived (must go through expected first) throws ', async () => {
+    it('pending_approval → arrived (must go through expected first) throws 400 invalid_state', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'pending_approval' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toMatchObject({
+        code: 'visitor.invalid_state',
+        status: 400,
+      });
     });
   });
 
@@ -299,11 +308,15 @@ describe('VisitorService.transitionStatus', () => {
   });
 
   describe('cross-tenant', () => {
-    it('throws when the locked row is in a different tenant than TenantContext', async () => {
+    it('throws 404 not_found when the locked row is in a different tenant than TenantContext', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'expected', tenant_id: '99999999-9999-4999-8999-999999999999' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
+      // Cross-tenant defence: surface as not-found so we don't leak existence.
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toMatchObject({
+        code: 'visitor.not_found',
+        status: 404,
+      });
     });
   });
 
@@ -482,7 +495,7 @@ describe('VisitorService.onApprovalDecided', () => {
     expect(ctx.insertedDomainEvents).toHaveLength(0);
   });
 
-  it('rejected on already-approved visitor throws BadRequest (state-machine bug)', async () => {
+  it('rejected on already-approved visitor throws 400 invalid_state (state-machine bug)', async () => {
     // The dispatcher should not be able to flip an approved visitor into
     // denied — that would mean two conflicting approval grants on the
     // same target. Surface clearly.
@@ -490,17 +503,17 @@ describe('VisitorService.onApprovalDecided', () => {
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'rejected', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
     expect(ctx.dbCtx.getRow().status).toBe('expected');
     expect(ctx.notifyDeniedSpy).not.toHaveBeenCalled();
   });
 
-  it('throws BadRequest when visitor is in a non-pending_approval state (e.g. cancelled)', async () => {
+  it('throws 400 invalid_state when visitor is in a non-pending_approval state (e.g. cancelled)', async () => {
     const ctx = makeApprovalCtx('cancelled');
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
   });
 
   it('cross-tenant: tenantId param mismatching TenantContext is rejected', async () => {
@@ -513,7 +526,7 @@ describe('VisitorService.onApprovalDecided', () => {
         APPROVER_USER_ID,
         '99999999-9999-4999-8999-999999999999',
       ),
-    ).rejects.toThrow(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.not_found', status: 404 });
     // No transition fired.
     expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
   });
@@ -527,7 +540,7 @@ describe('VisitorService.onApprovalDecided', () => {
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toThrow(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.not_found', status: 404 });
     expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
   });
 });

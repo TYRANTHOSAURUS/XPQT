@@ -1308,6 +1308,7 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'config_engine.update_failed': { title: "Couldn't update" },
   'config_engine.category_not_found': { title: "Couldn't find that category" },
   'config_engine.invalid_request_type': { title: "Couldn't save that request type" },
+  'config_engine.request_type_not_found': { title: "Couldn't find that request type" },
   'config_engine.invalid_scope': {
     title: "Couldn't save",
     detail: 'Scope is invalid.',
@@ -1431,6 +1432,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'visitor.notification_failed': { title: "Couldn't send notification" },
   'visitor.invalid_token': { title: 'Invitation link is invalid', detail: 'This link has expired or is no longer valid.' },
   'visitor.config_missing': { title: "Couldn't process", detail: 'Visitor service is not configured.' },
+  // Phase 7.B-1 review fixes (status-class drift)
+  'visitor.host_required': { title: "You don't have access to this", detail: 'You are not a host on this visit.' },
+  'visitor.tenant_mismatch': { title: "Couldn't find that visitor" },
+  'visitor_type.not_found': { title: "Couldn't find that visitor type" },
+  'visitor_pass.not_found': { title: "Couldn't find that pass" },
+  'kiosk_token.not_found': { title: "Couldn't find that kiosk" },
+  'pool_anchor.not_found': { title: "Couldn't find that anchor space" },
+  'pool_anchor.invalid': { title: "Couldn't process", detail: 'Pool anchor must be a site or building.' },
 };
 
 /**

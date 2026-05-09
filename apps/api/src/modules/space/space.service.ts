@@ -184,9 +184,7 @@ export class SpaceService {
       .single();
 
     if (error || !data) {
-      throw AppErrors.validationFailed('space.parent_not_found', {
-        detail: 'Parent space not found',
-      });
+      throw AppErrors.notFoundWithCode('space.parent_not_found', 'Parent space not found');
     }
 
     if (!isValidSpaceParent(data.type as SpaceType, childType)) {

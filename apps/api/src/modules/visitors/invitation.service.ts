@@ -118,7 +118,7 @@ export class InvitationService {
     // 2. Visitor type lookup.
     const visitorType = await this.loadVisitorType(dto.visitor_type_id);
     if (!visitorType) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
+      throw AppErrors.notFound('visitor_type', dto.visitor_type_id);
     }
 
     // 3. Persons row resolution (dedup or create).

@@ -189,7 +189,7 @@ export class ServiceCatalogService {
     const { error: uploadErr } = await this.supabase.admin.storage
       .from(BUCKET)
       .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
-    if (uploadErr) throw AppErrors.server('config_engine.upload_failed', { detail: uploadErr.message, cause: uploadErr });
+    if (uploadErr) throw AppErrors.server('config_engine.upload_failed', { cause: uploadErr });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -201,7 +201,7 @@ export class ServiceCatalogService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw AppErrors.server('config_engine.update_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('config_engine.update_failed', { cause: error });
     if (!data) throw AppErrors.notFoundWithCode('config_engine.category_not_found', 'Category not found');
     return data;
   }

@@ -58,12 +58,7 @@ export class TokenEncryptionService implements OnModuleInit {
     if (error) {
       // Fallback: if the RPC isn't installed yet, do a raw SQL query through the
       // pg-meta-style endpoint. Keeping a single shape so callers don't branch.
-      throw AppErrors.server('calendar_sync.token_failed', {
-        detail: `Token encryption failed: ${error.message}. ` +
-          `Make sure the calendar_sync_encrypt/decrypt SQL functions are installed (see calendar-sync-rpc.sql) ` +
-          `or run them inline via the Supabase SQL editor.`,
-        cause: error,
-      });
+      throw AppErrors.server('calendar_sync.token_failed', { cause: error });
     }
     if (typeof data !== 'string') {
       throw AppErrors.server('calendar_sync.token_failed', { detail: 'Token encryption returned non-string data' });
@@ -81,11 +76,7 @@ export class TokenEncryptionService implements OnModuleInit {
       p_key: this.key,
     });
     if (error) {
-      throw AppErrors.server('calendar_sync.token_failed', {
-        detail: `Token decryption failed: ${error.message}. ` +
-          `Confirm the encryption key has not rotated unexpectedly.`,
-        cause: error,
-      });
+      throw AppErrors.server('calendar_sync.token_failed', { cause: error });
     }
     if (typeof data !== 'string') {
       throw AppErrors.server('calendar_sync.token_failed', { detail: 'Token decryption returned non-string data' });

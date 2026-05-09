@@ -146,7 +146,7 @@ export class SetupWorkOrderRowBuilder {
       },
     );
     if (routingErr) {
-      throw AppErrors.server('setup_routing_failed', { detail: `resolve_setup_routing: ${routingErr.message}`, cause: routingErr });
+      throw AppErrors.server('setup_routing_failed', { cause: routingErr });
     }
     const row = (routing as Array<{
       internal_team_id: string | null;

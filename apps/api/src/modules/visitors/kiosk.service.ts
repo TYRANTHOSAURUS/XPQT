@@ -138,7 +138,7 @@ export class KioskService {
     this.assertTenant(tenantId);
     const existing = await this.loadKioskToken(kioskTokenId, tenantId);
     if (!existing) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `kiosk_token ${kioskTokenId} not found` });
+      throw AppErrors.notFound('kiosk_token', kioskTokenId);
     }
 
     const plaintext = randomBytes(KIOSK_TOKEN_BYTES).toString('hex');
@@ -177,7 +177,7 @@ export class KioskService {
     this.assertTenant(tenantId);
     const existing = await this.loadKioskToken(kioskTokenId, tenantId);
     if (!existing) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `kiosk_token ${kioskTokenId} not found` });
+      throw AppErrors.notFound('kiosk_token', kioskTokenId);
     }
     const { error } = await this.supabase.admin
       .from('kiosk_tokens')
@@ -455,14 +455,14 @@ export class KioskService {
       [dto.visitor_type_id, kioskContext.tenantId],
     );
     if (!type) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
+      throw AppErrors.notFound('visitor_type', dto.visitor_type_id);
     }
     if (!type.allow_walk_up) {
       // Distinct error string so the kiosk UI can route to "see reception".
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'walk_up_disabled' });
+      throw AppErrors.validationFailed('visitor.invalid_state', { detail: 'walk_up_disabled' });
     }
     if (type.requires_approval) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'approval_required' });
+      throw AppErrors.validationFailed('visitor.invalid_state', { detail: 'approval_required' });
     }
 
     // 2. Host person sanity. Visitors aren't valid hosts; vendors aren't
@@ -480,7 +480,7 @@ export class KioskService {
       [dto.primary_host_person_id, kioskContext.tenantId],
     );
     if (!host || !host.active) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Host not found at this tenant' });
+      throw AppErrors.notFoundWithCode('visitor.host_not_found', `host ${dto.primary_host_person_id} not found at this tenant`);
     }
     if (host.type === 'visitor' || host.type === 'vendor_contact') {
       throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Selected host cannot host visitors' });
@@ -574,7 +574,10 @@ export class KioskService {
       return;
     }
     if (ctx.id !== tenantId) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      // Cross-tenant defence — caller's resolved tenant doesn't match
+      // the explicit tenantId. Surface as not-found to avoid leaking
+      // existence in another tenant.
+      throw AppErrors.notFoundWithCode('visitor.tenant_mismatch', 'tenant context mismatch');
     }
   }
 
@@ -588,10 +591,10 @@ export class KioskService {
       [buildingId, tenantId],
     );
     if (!row) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `building ${buildingId} not found` });
+      throw AppErrors.notFound('space', buildingId);
     }
     if (row.type !== 'building' && row.type !== 'site') {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Kiosk can only be provisioned for a building or site' });
+      throw AppErrors.validationFailed('pool_anchor.invalid', { detail: 'Kiosk can only be provisioned for a building or site' });
     }
   }
 
@@ -640,7 +643,7 @@ export class KioskService {
       tenantId,
     ]);
     if (!row) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
     return row;
   }

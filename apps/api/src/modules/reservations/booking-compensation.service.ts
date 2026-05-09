@@ -78,7 +78,7 @@ export class BookingCompensationService {
       // post-attach state, the user can't fix it via input changes,
       // ops needs a 500 + traceId per CLAUDE.md error-handling spec §3.3.
       throw AppErrors.server('booking.compensation_failed', {
-        detail: `Compensation RPC failed for booking ${bookingId}: ${error.message}`,
+        cause: { booking_id: bookingId, error },
       });
     }
 

@@ -140,7 +140,7 @@ export class RoutingSimulatorService {
     const tenant = TenantContext.current();
 
     const requestType = await this.loadRequestTypeMeta(input.request_type_id, tenant.id);
-    if (!requestType) throw AppErrors.validationFailed('routing.field_required', { detail: 'Request type not found' });
+    if (!requestType) throw AppErrors.notFoundWithCode('routing.not_found', 'Request type not found');
 
     // Portal-scope: acting_for_location drives routing; current_location is diagnostic.
     // Fallback order when acting_for is unset: legacy `location_id` → `current_location_id`.

@@ -26,7 +26,7 @@ export class DomainParentsController {
       .select('id, domain, parent_domain, created_at, updated_at')
       .eq('tenant_id', tenant.id)
       .order('domain');
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -47,7 +47,7 @@ export class DomainParentsController {
         parent_domain: parent})
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -59,7 +59,7 @@ export class DomainParentsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return { ok: true };
   }
 }

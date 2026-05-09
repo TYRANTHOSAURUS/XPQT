@@ -536,9 +536,7 @@ export class BookingFlowService {
       .maybeSingle();
     if (readErr || !bookingRow) {
       this.log.error(`booking re-read failed after combined RPC: ${readErr?.message ?? 'no row'}`);
-      throw AppErrors.server('booking.unexpected_error', {
-        detail: readErr?.message ?? 'Booking re-read returned no row',
-      });
+      throw AppErrors.server('booking.unexpected_error', { cause: readErr });
     }
     const booking = bookingRow as unknown as Booking;
 
@@ -1091,7 +1089,7 @@ export class BookingFlowService {
           .eq('tenant_id', tenantId)
           .eq('recurrence_series_id', newSeriesId)
           .select('id');
-        if (error) throw AppErrors.validationFailed('edit_scope_failed', { detail: error.message });
+        if (error) throw AppErrors.server('edit_scope_failed', { cause: error });
         updated = (data ?? []).length;
       }
       if (Object.keys(slotPatch).length > 0) {
@@ -1101,7 +1099,7 @@ export class BookingFlowService {
           .select('id')
           .eq('tenant_id', tenantId)
           .eq('recurrence_series_id', newSeriesId);
-        if (bErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: bErr.message });
+        if (bErr) throw AppErrors.server('edit_scope_failed', { cause: bErr });
         const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
         if (bookingIds.length > 0) {
           const { data: slotsRows, error: sErr } = await this.supabase.admin
@@ -1110,7 +1108,7 @@ export class BookingFlowService {
             .eq('tenant_id', tenantId)
             .in('booking_id', bookingIds)
             .select('id');
-          if (sErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: sErr.message });
+          if (sErr) throw AppErrors.server('edit_scope_failed', { cause: sErr });
           updated = Math.max(updated, (slotsRows ?? []).length);
         }
       }
@@ -1141,7 +1139,7 @@ export class BookingFlowService {
         .eq('tenant_id', tenantId)
         .eq('recurrence_series_id', seriesId)
         .select('id');
-      if (error) throw AppErrors.validationFailed('edit_scope_failed', { detail: error.message });
+      if (error) throw AppErrors.server('edit_scope_failed', { cause: error });
       updated = (data ?? []).length;
     }
     if (Object.keys(slotPatch).length > 0) {
@@ -1150,7 +1148,7 @@ export class BookingFlowService {
         .select('id')
         .eq('tenant_id', tenantId)
         .eq('recurrence_series_id', seriesId);
-      if (bErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: bErr.message });
+      if (bErr) throw AppErrors.server('edit_scope_failed', { cause: bErr });
       const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
       if (bookingIds.length > 0) {
         const { data: slotsRows, error: sErr } = await this.supabase.admin
@@ -1159,7 +1157,7 @@ export class BookingFlowService {
           .eq('tenant_id', tenantId)
           .in('booking_id', bookingIds)
           .select('id');
-        if (sErr) throw AppErrors.validationFailed('edit_scope_failed', { detail: sErr.message });
+        if (sErr) throw AppErrors.server('edit_scope_failed', { cause: sErr });
         updated = Math.max(updated, (slotsRows ?? []).length);
       }
     }

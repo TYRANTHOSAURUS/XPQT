@@ -80,7 +80,7 @@ export class LocationTeamsController {
         vendor_id: dto.vendor_id ?? null})
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -101,7 +101,7 @@ export class LocationTeamsController {
         .eq('id', id)
         .eq('tenant_id', tenant.id)
         .single();
-      if (cerr) throw AppErrors.server('routing.db_failed', { detail: cerr.message, cause: cerr });
+      if (cerr) throw AppErrors.server('routing.db_failed', { cause: cerr });
       const merged = { ...current, ...patch };
       validateScope(merged.space_id as string | null, merged.space_group_id as string | null);
       validateAssignee(merged.team_id as string | null, merged.vendor_id as string | null);
@@ -114,7 +114,7 @@ export class LocationTeamsController {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -126,7 +126,7 @@ export class LocationTeamsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return { ok: true };
   }
 }

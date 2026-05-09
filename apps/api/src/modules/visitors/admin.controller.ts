@@ -97,7 +97,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${id} not found` });
+    if (!data) throw AppErrors.notFound('visitor_type', id);
     return data;
   }
 
@@ -115,7 +115,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${id} not found` });
+    if (!data) throw AppErrors.notFound('visitor_type', id);
     return { ok: true };
   }
 
@@ -187,9 +187,9 @@ export class VisitorsAdminController {
         where id = $1 and tenant_id = $2`,
       [spaceId, tenant.id],
     );
-    if (!anchor) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${spaceId} not found` });
+    if (!anchor) throw AppErrors.notFound('space', spaceId);
     if (anchor.type !== 'site' && anchor.type !== 'building') {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pool anchor must be a site or building' });
+      throw AppErrors.validationFailed('pool_anchor.invalid', { detail: 'Pool anchor must be a site or building' });
     }
     const passes = await this.db.queryMany(
       `select id, tenant_id, space_id, space_kind, pass_number, pass_type,
@@ -228,7 +228,7 @@ export class VisitorsAdminController {
         where id = $1 and tenant_id = $2`,
       [spaceId, tenant.id],
     );
-    if (!anchor) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${spaceId} not found` });
+    if (!anchor) throw AppErrors.notFound('space', spaceId);
 
     // Descendants — buildings/sites under the anchor (or anchor itself).
     const descendants = await this.db.queryMany<{
@@ -298,10 +298,10 @@ export class VisitorsAdminController {
       [parsed.data.space_id, tenant.id],
     );
     if (!space) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${parsed.data.space_id} not found` });
+      throw AppErrors.notFound('space', parsed.data.space_id);
     }
     if (space.type !== 'site' && space.type !== 'building') {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pass pool must be anchored to a site or building' });
+      throw AppErrors.validationFailed('pool_anchor.invalid', { detail: 'Pass pool must be anchored to a site or building' });
     }
 
     return this.db.queryOne(
@@ -348,7 +348,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${id} not found` });
+    if (!data) throw AppErrors.notFound('visitor_pass', id);
     return data;
   }
 
@@ -380,9 +380,9 @@ export class VisitorsAdminController {
         `select id, type from public.spaces where id = $1 and tenant_id = $2`,
         [poolId, tenant.id],
       );
-      if (!space) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pool/space ${poolId} not found` });
+      if (!space) throw AppErrors.notFound('pool_anchor', poolId);
       if (space.type !== 'site' && space.type !== 'building') {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pass pool must be anchored to site or building' });
+        throw AppErrors.validationFailed('pool_anchor.invalid', { detail: 'Pass pool must be anchored to site or building' });
       }
       spaceId = space.id;
       spaceKind = space.type;
@@ -423,7 +423,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${passId} not found` });
+    if (!data) throw AppErrors.notFound('visitor_pass', passId);
     return data;
   }
 
@@ -566,7 +566,7 @@ export class VisitorsAdminController {
    */
   private async resolveAdminUserId(req: Request): Promise<string> {
     const authUid = (req as { user?: { id: string } }).user?.id;
-    if (!authUid) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No auth user' });
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     const tenant = TenantContext.current();
     const lookup = await this.supabase.admin
       .from('users')
@@ -575,7 +575,7 @@ export class VisitorsAdminController {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string } | null;
-    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No linked user in this tenant' });
+    if (!row) throw AppErrors.unauthorized('No linked user in this tenant');
     return row.id;
   }
 }

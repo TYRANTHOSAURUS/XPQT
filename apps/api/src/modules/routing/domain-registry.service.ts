@@ -53,7 +53,7 @@ export class DomainRegistryService {
       .select('*')
       .eq('tenant_id', tenant_id)
       .order('display_name', { ascending: true });
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return (data ?? []) as DomainRow[];
   }
 
@@ -64,8 +64,8 @@ export class DomainRegistryService {
       .eq('tenant_id', tenant_id)
       .eq('id', id)
       .maybeSingle();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
-    if (!data) throw AppErrors.validationFailed('routing.db_failed', { detail: `domain ${id} not found` });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
+    if (!data) throw AppErrors.notFoundWithCode('routing.not_found', `domain ${id} not found`);
     return data as DomainRow;
   }
 
@@ -76,7 +76,7 @@ export class DomainRegistryService {
       .eq('tenant_id', tenant_id)
       .eq('key', key)
       .maybeSingle();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return (data as DomainRow) ?? null;
   }
 
@@ -105,7 +105,7 @@ export class DomainRegistryService {
       if (error.code === '23505') {
         throw AppErrors.validationFailed('routing.db_failed', { detail: `domain key "${key}" already exists for this tenant` });
       }
-      throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to create domain: ${error.message}` });
+      throw AppErrors.server('routing.db_failed', { cause: error });
     }
     return data as DomainRow;
   }
@@ -136,7 +136,7 @@ export class DomainRegistryService {
       .select('*')
       .single();
 
-    if (error) throw AppErrors.validationFailed('routing.db_failed', { detail: `failed to update domain: ${error.message}` });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data as DomainRow;
   }
 
@@ -170,7 +170,7 @@ export class DomainRegistryService {
           .eq('tenant_id', tenant_id)
           .eq('id', cursor)
           .maybeSingle();
-      if (result.error) throw AppErrors.server('routing.db_failed', { detail: result.error.message, cause: result.error });
+      if (result.error) throw AppErrors.server('routing.db_failed', { cause: result.error });
       cursor = result.data?.parent_domain_id ?? null;
     }
     if (cursor) {

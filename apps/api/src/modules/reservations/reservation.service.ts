@@ -135,7 +135,7 @@ export class ReservationService {
       .eq('booking_id', id)
       .order('display_order', { ascending: true })
       .order('created_at', { ascending: true });
-    if (error) throw AppErrors.validationFailed('group_siblings_failed', { detail: `group_siblings_failed:${error.message}` });
+    if (error) throw AppErrors.server('group_siblings_failed', { cause: error });
 
     type Row = { id: string; space_id: string; status: string; space?: { name: string | null } | null };
     const rows = (data ?? []) as unknown as Row[];
@@ -350,7 +350,7 @@ export class ReservationService {
     }
 
     const { data, error } = await q;
-    if (error) throw AppErrors.validationFailed('list_for_operator_failed', { detail: `list_for_operator_failed:${error.message}` });
+    if (error) throw AppErrors.server('list_for_operator_failed', { cause: error });
 
     type SlotRow = SlotWithBookingEmbed & {
       space?: { id: string; name: string; type: string } | null;
@@ -409,7 +409,7 @@ export class ReservationService {
       .order('start_at', { ascending: true })
       .limit(2000);
 
-    if (error) throw AppErrors.validationFailed('scheduler_window_failed', { detail: `scheduler_window_failed:${error.message}` });
+    if (error) throw AppErrors.server('scheduler_window_failed', { cause: error });
     const items = ((data ?? []) as unknown as SlotWithBookingEmbed[]).map(slotWithBookingToReservation);
     return { items };
   }
@@ -978,9 +978,7 @@ export class ReservationService {
       .eq('id', slotId)
       .maybeSingle();
     if (slotErr) {
-      throw AppErrors.validationFailed('booking.slot_update_failed', {
-        detail: (slotErr as { message?: string }).message ?? 'Slot pre-flight failed.',
-      });
+      throw AppErrors.server('booking.slot_update_failed', { cause: slotErr });
     }
     if (!slotRow) {
       throw AppErrors.notFoundWithCode('booking_slot.not_found', 'Slot not found.');

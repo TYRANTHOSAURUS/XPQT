@@ -23,8 +23,8 @@ export class PortalAnnouncementsService {
         .select('id, parent_id')
         .eq('tenant_id', tenant.id),
     ]);
-    if (aErr) throw AppErrors.server('announcement.list_failed', { detail: aErr.message, cause: aErr });
-    if (sErr) throw AppErrors.server('announcement.list_failed', { detail: sErr.message, cause: sErr });
+    if (aErr) throw AppErrors.server('announcement.list_failed', { cause: aErr });
+    if (sErr) throw AppErrors.server('announcement.list_failed', { cause: sErr });
 
     const byLoc = new Map<string, Announcement>();
     for (const a of anns ?? []) byLoc.set(a.location_id, a as Announcement);
@@ -47,7 +47,7 @@ export class PortalAnnouncementsService {
       .select('id, location_id, title, body, published_at, expires_at, created_by')
       .eq('tenant_id', tenant.id)
       .order('published_at', { ascending: false });
-    if (error) throw AppErrors.server('announcement.list_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('announcement.list_failed', { cause: error });
     return (data ?? []) as Announcement[];
   }
 
@@ -90,7 +90,7 @@ export class PortalAnnouncementsService {
       })
       .select('id, location_id, title, body, published_at, expires_at, created_by')
       .single();
-    if (error) throw AppErrors.server('announcement.publish_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('announcement.publish_failed', { cause: error });
     if (!data) throw AppErrors.server('announcement.insert_no_row', { detail: 'Insert returned no row' });
     return data as Announcement;
   }
@@ -102,6 +102,6 @@ export class PortalAnnouncementsService {
       .update({ expires_at: new Date().toISOString() })
       .eq('tenant_id', tenant.id)
       .eq('id', id);
-    if (error) throw AppErrors.server('announcement.unpublish_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('announcement.unpublish_failed', { cause: error });
   }
 }

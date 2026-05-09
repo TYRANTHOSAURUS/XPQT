@@ -296,8 +296,8 @@ export class DataSubjectService {
       [input.tenantId, input.requestId],
     );
     if (!dsr) throw AppErrors.notFoundWithCode('privacy.dsr_not_found', 'DSR not found');
-    if (dsr.status === 'denied') throw AppErrors.validationFailed('privacy.dsr_invalid_state', { detail: 'DSR already denied' });
-    if (dsr.status === 'completed') throw AppErrors.validationFailed('privacy.dsr_invalid_state', { detail: 'DSR already completed' });
+    if (dsr.status === 'denied') throw AppErrors.conflict('privacy.dsr_invalid_state', { detail: 'DSR already denied' });
+    if (dsr.status === 'completed') throw AppErrors.conflict('privacy.dsr_invalid_state', { detail: 'DSR already completed' });
 
     // Re-check legal holds at fulfillment time. createErasureRequest checks
     // them at intake; if a hold was placed in the gap, we must NOT scrub.

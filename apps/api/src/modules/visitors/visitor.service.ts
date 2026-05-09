@@ -125,14 +125,14 @@ export class VisitorService {
       );
       const row = lockResult.rows[0];
       if (!row) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+        throw AppErrors.notFound('visitor', visitorId);
       }
 
       if (row.tenant_id !== tenant.id) {
         // Cross-tenant defence — same shape as a missing row to the caller.
         // Logging is intentionally omitted so we don't leak the existence of
         // a visitor in another tenant.
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'visitor not in current tenant' });
+        throw AppErrors.notFound('visitor', visitorId);
       }
 
       // Idempotent same-status: no UPDATE, no audit, no downstream events.
@@ -142,7 +142,7 @@ export class VisitorService {
 
       const allowed = ALLOWED_TRANSITIONS.get(row.status);
       if (!allowed || !allowed.has(toStatus)) {
-        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `invalid_transition: ${row.status} -> ${toStatus}` });
+        throw AppErrors.validationFailed('visitor.invalid_state', { detail: `invalid_transition: ${row.status} -> ${toStatus}` });
       }
 
       // Build the SET clause incrementally per target status. Order matters
@@ -298,11 +298,16 @@ export class VisitorService {
     const ctx = TenantContext.current();
     if (ctx.id !== tenantId) {
       // Cross-tenant defence — never let approver context drift.
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
+      throw AppErrors.notFound('visitor', visitorId);
     }
 
     if (!this.supabase) {
-      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorService.onApprovalDecided requires SupabaseService' });
+      // Codex I3 (Phase 7.B-1 review): startup-time invariant — the
+      // detail used to name the class (`SupabaseService`); the central
+      // scrubber catches `Supabase` and the user sees `unknown.server_error`
+      // (fail-closed). Replace with neutral copy. Cause is not available
+      // at this site (it's a wiring guard, not a vendor failure).
+      throw AppErrors.server('visitor.config_missing');
     }
 
     // Read the visitor — we can't piggy-back on transitionStatus's
@@ -317,12 +322,12 @@ export class VisitorService {
       .maybeSingle();
     if (readErr) throw readErr;
     if (!visitorRow) {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
     const row = visitorRow as { id: string; tenant_id: string; status: VisitorStatus };
     if (row.tenant_id !== tenantId) {
       // Cross-tenant: surface as not-found so we don't leak existence.
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+      throw AppErrors.notFound('visitor', visitorId);
     }
 
     // SEAM: approval module uses 'rejected'; visitor module uses 'denied'.
@@ -341,7 +346,7 @@ export class VisitorService {
     // outcomes, or the visitor was cancelled between approval grant and
     // dispatcher firing. Surface clearly rather than silently no-op'ing.
     if (row.status !== 'pending_approval') {
-      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} is not pending approval (status=${row.status})` });
+      throw AppErrors.validationFailed('visitor.invalid_state', { detail: `visitor ${visitorId} is not pending approval (status=${row.status})` });
     }
 
     const actor: TransitionStatusActor = {

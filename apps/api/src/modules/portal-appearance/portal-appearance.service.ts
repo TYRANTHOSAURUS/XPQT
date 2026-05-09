@@ -59,8 +59,8 @@ export class PortalAppearanceService {
           .select('id, parent_id')
           .eq('tenant_id', tenant.id),
       ]);
-    if (rowsErr) throw AppErrors.server('portal_appearance.list_failed', { detail: rowsErr.message, cause: rowsErr });
-    if (spacesErr) throw AppErrors.server('portal_appearance.list_failed', { detail: spacesErr.message, cause: spacesErr });
+    if (rowsErr) throw AppErrors.server('portal_appearance.list_failed', { cause: rowsErr });
+    if (spacesErr) throw AppErrors.server('portal_appearance.list_failed', { cause: spacesErr });
 
     const resolved = resolveAppearance(locationId, rows ?? [], spaces ?? []);
     return resolved;
@@ -72,7 +72,7 @@ export class PortalAppearanceService {
       .from('portal_appearance')
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.server('portal_appearance.list_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('portal_appearance.list_failed', { cause: error });
     return data ?? [];
   }
 
@@ -90,7 +90,7 @@ export class PortalAppearanceService {
       .upsert(payload, { onConflict: 'tenant_id,location_id' })
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .single();
-    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { cause: error });
     if (!data) throw AppErrors.server('portal_appearance.upsert_no_row', { detail: 'Upsert returned no row' });
     return data as PortalAppearance;
   }
@@ -117,7 +117,7 @@ export class PortalAppearanceService {
     const { error: uploadErr } = await this.supabase.admin.storage
       .from(BUCKET)
       .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
-    if (uploadErr) throw AppErrors.server('portal_appearance.upload_failed', { detail: uploadErr.message, cause: uploadErr });
+    if (uploadErr) throw AppErrors.server('portal_appearance.upload_failed', { cause: uploadErr });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -130,7 +130,7 @@ export class PortalAppearanceService {
       )
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .single();
-    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { cause: error });
     if (!data) throw AppErrors.server('portal_appearance.upsert_no_row', { detail: 'Upsert returned no row' });
     return data as PortalAppearance;
   }
@@ -147,7 +147,7 @@ export class PortalAppearanceService {
       .eq('location_id', locationId)
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .maybeSingle();
-    if (error) throw AppErrors.server('portal_appearance.delete_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('portal_appearance.delete_failed', { cause: error });
     return (data ?? null) as PortalAppearance | null;
   }
 }

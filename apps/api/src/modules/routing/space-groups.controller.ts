@@ -39,7 +39,7 @@ export class SpaceGroupsController {
       `)
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -55,7 +55,7 @@ export class SpaceGroupsController {
         description: dto.description?.trim() ?? null})
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -76,7 +76,7 @@ export class SpaceGroupsController {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -88,7 +88,7 @@ export class SpaceGroupsController {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return { ok: true };
   }
 
@@ -104,7 +104,7 @@ export class SpaceGroupsController {
         space_id: dto.space_id})
       .select()
       .single();
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return data;
   }
 
@@ -117,7 +117,7 @@ export class SpaceGroupsController {
       .eq('tenant_id', tenant.id)
       .eq('space_group_id', groupId)
       .eq('space_id', spaceId);
-    if (error) throw AppErrors.server('routing.db_failed', { detail: error.message, cause: error });
+    if (error) throw AppErrors.server('routing.db_failed', { cause: error });
     return { ok: true };
   }
 }

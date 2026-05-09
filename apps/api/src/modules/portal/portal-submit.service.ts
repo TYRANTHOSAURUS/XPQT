@@ -99,7 +99,7 @@ export class PortalSubmitService {
         | { id: string; asset_type_id: string | null; assigned_space_id: string | null }
         | null;
       if (!asset) {
-        throw AppErrors.validationFailed('portal.asset_not_found', { detail: 'Asset does not exist or is not accessible' });
+        throw AppErrors.notFoundWithCode('portal.asset_not_found', 'Asset does not exist or is not accessible');
       }
       assetAssignedSpaceId = asset.assigned_space_id;
     }

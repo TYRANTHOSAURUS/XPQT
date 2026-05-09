@@ -295,23 +295,23 @@ describe('KioskService', () => {
       expect(auditInserts.find((a) => a.event_type === 'kiosk.token_provisioned')).toBeTruthy();
     });
 
-    it('refuses when building is not a building/site', async () => {
+    it('refuses when building is not a building/site (400 pool_anchor.invalid)', async () => {
       jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({ id: TENANT_ID } as never);
       jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
       const { svc } = makeHarness({
         buildingRow: { id: BUILDING_ID, type: 'room' } });
       await expect(
         svc.provisionKioskToken(TENANT_ID, BUILDING_ID, { user_id: 'admin' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'pool_anchor.invalid', status: 400 });
     });
 
-    it('refuses when building does not exist', async () => {
+    it('refuses when building does not exist (404)', async () => {
       jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({ id: TENANT_ID } as never);
       jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
       const { svc } = makeHarness({ buildingRow: null });
       await expect(
         svc.provisionKioskToken(TENANT_ID, BUILDING_ID, { user_id: 'admin' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'space.not_found', status: 404 });
     });
   });
 
@@ -436,7 +436,7 @@ describe('KioskService', () => {
       expect(transitionCalls).toHaveLength(0);
     });
 
-    it('maps SQLSTATE 45003 (token_expired) to ', async () => {
+    it('maps SQLSTATE 45003 (token_expired) to AppError', async () => {
       const { svc } = makeHarness({
         tokenError: { code: '45003', message: 'token_expired' } });
       await expect(
@@ -444,7 +444,7 @@ describe('KioskService', () => {
       ).rejects.toBeInstanceOf(AppError);
     });
 
-    it('maps SQLSTATE 45002 (token_already_used) to ', async () => {
+    it('maps SQLSTATE 45002 (token_already_used) to AppError', async () => {
       const { svc } = makeHarness({
         tokenError: { code: '45002', message: 'token_already_used' } });
       await expect(
@@ -452,7 +452,7 @@ describe('KioskService', () => {
       ).rejects.toBeInstanceOf(AppError);
     });
 
-    it('maps SQLSTATE 45001 (invalid_token) to ', async () => {
+    it('maps SQLSTATE 45001 (invalid_token) to AppError', async () => {
       const { svc } = makeHarness({
         tokenError: { code: '45001', message: 'invalid_token' } });
       await expect(
@@ -557,7 +557,7 @@ describe('KioskService', () => {
       expect(notifyCalls).toEqual([{ visitor_id: VISITOR_ID, tenant_id: TENANT_ID }]);
     });
 
-    it('rejects when allow_walk_up=false', async () => {
+    it('rejects when allow_walk_up=false (400 invalid_state)', async () => {
       const { svc } = makeHarness({
         visitorType: {
           id: TYPE_NO_WALKUP,
@@ -568,10 +568,10 @@ describe('KioskService', () => {
           active: true } });
       await expect(
         svc.walkupAtKiosk(KIOSK_CONTEXT, { ...dto, visitor_type_id: TYPE_NO_WALKUP }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
     });
 
-    it('rejects when requires_approval=true', async () => {
+    it('rejects when requires_approval=true (400 invalid_state)', async () => {
       const { svc } = makeHarness({
         visitorType: {
           id: TYPE_REQUIRES_APPROVAL,
@@ -582,7 +582,7 @@ describe('KioskService', () => {
           active: true } });
       await expect(
         svc.walkupAtKiosk(KIOSK_CONTEXT, { ...dto, visitor_type_id: TYPE_REQUIRES_APPROVAL }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
     });
 
     it('rejects when host is a visitor-typed person', async () => {
@@ -600,7 +600,12 @@ describe('KioskService', () => {
           type: 'visitor', // visitor cannot host
           first_name: 'Bob',
           active: true } });
-      await expect(svc.walkupAtKiosk(KIOSK_CONTEXT, dto)).rejects.toBeInstanceOf(AppError);
+      // visitor-typed person can't host → 400 invalid_payload (selected host
+      // cannot host visitors).
+      await expect(svc.walkupAtKiosk(KIOSK_CONTEXT, dto)).rejects.toMatchObject({
+        code: 'visitor.invalid_payload',
+        status: 400,
+      });
     });
 
     // Regression for slice 2 review Fix #1 — walk-up arrived-transition

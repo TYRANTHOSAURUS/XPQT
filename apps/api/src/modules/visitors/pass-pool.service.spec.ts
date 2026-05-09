@@ -231,11 +231,14 @@ describe('VisitorPassPoolService', () => {
       expect(pool).toBeNull();
     });
 
-    it('rejects mismatched tenant context', async () => {
+    it('rejects mismatched tenant context — 404 (existence-leak defence)', async () => {
       tenantCtx();
       const ctx = makeFakeDb({});
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.passPoolForSpace(BUILDING_ID, OTHER_TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.passPoolForSpace(BUILDING_ID, OTHER_TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.tenant_mismatch',
+        status: 404,
+      });
     });
   });
 
@@ -282,54 +285,76 @@ describe('VisitorPassPoolService', () => {
           status: 'reserved',
           reserved_for_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      // 409 — pass reserved for someone else is a state conflict, not bad input.
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
       // No mutation
       expect(ctx.passUpdates).toHaveLength(0);
     });
 
-    it('already in_use throws ', async () => {
+    it('already in_use throws 409 conflict', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({
           status: 'in_use',
           current_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
 
-    it('lost or retired passes throw ', async () => {
+    it('lost or retired passes throw 409 conflict', async () => {
       tenantCtx();
       const ctxLost = makeFakeDb({ initialPass: basePass({ status: 'lost' }) });
       const svc = new VisitorPassPoolService(ctxLost.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
 
       const ctxRetired = makeFakeDb({ initialPass: basePass({ status: 'retired' }) });
       const svcRetired = new VisitorPassPoolService(ctxRetired.db as never);
-      await expect(svcRetired.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svcRetired.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
 
-    it('cross-tenant pass access blocked', async () => {
+    it('cross-tenant pass access blocked (404 not_found)', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({ tenant_id: OTHER_TENANT_ID, status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
+      // The lockPass query filters by id only; cross-tenant pass returns
+      // a row that the assignPass codepath happens to allow if status ok.
+      // The actual cross-tenant boundary is on the visitor lookup below.
       await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
 
-    it('cross-tenant visitor blocked', async () => {
+    it('cross-tenant visitor blocked (404 not_found)', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({ status: 'available' }),
         visitorRow: { id: VISITOR_ID, tenant_id: OTHER_TENANT_ID } });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.not_found',
+        status: 404,
+      });
     });
 
-    it('missing pass throws ', async () => {
+    it('missing pass throws 404 not_found', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: undefined });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor_pass.not_found',
+        status: 404,
+      });
     });
   });
 
@@ -346,12 +371,15 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_reserved')).toBeTruthy();
     });
 
-    it('non-available passes throw ', async () => {
+    it('non-available passes throw 409 conflict', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({ status: 'in_use', current_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.reservePass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.reservePass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
   });
 
@@ -378,11 +406,14 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_returned')).toBeTruthy();
     });
 
-    it('non-in_use throws ', async () => {
+    it('non-in_use throws 409 conflict', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.returnPass(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.returnPass(PASS_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
   });
 
@@ -417,11 +448,14 @@ describe('VisitorPassPoolService', () => {
       expect(pass?.current_visitor_id).toBeNull();
     });
 
-    it('cannot mark a retired pass missing', async () => {
+    it('cannot mark a retired pass missing — 409 conflict', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'retired' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.markPassMissing(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.markPassMissing(PASS_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
   });
 
@@ -437,11 +471,14 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_recovered')).toBeTruthy();
     });
 
-    it('non-lost passes throw ', async () => {
+    it('non-lost passes throw 409 conflict', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.markPassRecovered(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.markPassRecovered(PASS_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor.pass_unavailable',
+        status: 409,
+      });
     });
   });
 

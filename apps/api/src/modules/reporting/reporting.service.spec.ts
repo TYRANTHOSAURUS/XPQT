@@ -103,16 +103,18 @@ describe('ReportingService.getBookings* (canonical RPC pass-through)', () => {
       expect(result).toEqual(expected);
     });
 
-    it('surfaces RPC errors as BadRequestException with the underlying message', async () => {
+    it('surfaces RPC errors as 500 report.rpc_failed with cause', async () => {
+      // Phase 7.B-1 review I4: vendor RPC error.message no longer leaks
+      // into user-facing detail; ops gets the original error via `cause`.
       const rpc = jest.fn().mockResolvedValue({ data: null, error: { message: 'window too large (> 365 days)' } });
       const { svc } = makeService(rpc);
-      await expect(
-        withTenant(() =>
-          svc.getBookingsOverview({
-            from: '2026-04-01', to: '2026-04-30', buildingId: null, tz: 'UTC',
-          }),
-        ),
-      ).rejects.toMatchObject({
+      const err = await withTenant(() =>
+        svc.getBookingsOverview({
+          from: '2026-04-01', to: '2026-04-30', buildingId: null, tz: 'UTC',
+        }),
+      ).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'report.rpc_failed', status: 500 });
+      expect((err as { cause: { message: string } }).cause).toMatchObject({
         message: 'window too large (> 365 days)',
       });
     });

@@ -416,6 +416,14 @@ export type KnownErrorCode =
   | 'visitor.notification_failed'
   | 'visitor.invalid_token'
   | 'visitor.config_missing'
+  // Phase 7.B-1 review fixes (status-class drift)
+  | 'visitor.host_required'
+  | 'visitor.tenant_mismatch'
+  | 'visitor_type.not_found'
+  | 'visitor_pass.not_found'
+  | 'kiosk_token.not_found'
+  | 'pool_anchor.not_found'
+  | 'pool_anchor.invalid'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -493,6 +501,7 @@ export type KnownErrorCode =
   | 'config_engine.update_failed'
   | 'config_engine.category_not_found'
   | 'config_engine.invalid_request_type'
+  | 'config_engine.request_type_not_found'
   | 'config_engine.invalid_scope'
   | 'config_engine.invalid_handler'
 
@@ -997,6 +1006,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'config_engine.update_failed',
   'config_engine.category_not_found',
   'config_engine.invalid_request_type',
+  'config_engine.request_type_not_found',
   'config_engine.invalid_scope',
   'config_engine.invalid_handler',
   'calendar_sync.no_auth',
@@ -1088,6 +1098,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'visitor.notification_failed',
   'visitor.invalid_token',
   'visitor.config_missing',
+  'visitor.host_required',
+  'visitor.tenant_mismatch',
+  'visitor_type.not_found',
+  'visitor_pass.not_found',
+  'kiosk_token.not_found',
+  'pool_anchor.not_found',
+  'pool_anchor.invalid',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

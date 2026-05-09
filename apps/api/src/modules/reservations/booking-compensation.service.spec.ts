@@ -82,13 +82,17 @@ describe('BookingCompensationService', () => {
     // /full-review v3 fix — the compensation RPC failing is server-class
     // (booking persists in unknown state, user can't fix via input changes)
     // per CLAUDE.md error-handling spec §3.3. Phase 7.A.2.c.ii: AppError
-    // replaces InternalServerErrorException; structured booking_id +
-    // rpc_error fields are now folded into `detail` (the wire shape only
-    // carries detail / fields[]).
+    // replaces InternalServerErrorException.
+    //
+    // Phase 7.B-1 review I4: vendor `error.message` is no longer embedded
+    // in user-facing detail (the central scrubber doesn't match Postgres
+    // RPC strings reliably). booking_id + the original error live on
+    // `cause` for ops; the user sees the registered messages.en copy.
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({ code: 'booking.compensation_failed', status: 500 });
-    expect((caught as AppError).detail).toContain(BOOKING_ID);
-    expect((caught as AppError).detail).toContain('connection lost');
+    const cause = (caught as AppError).cause as { booking_id: string; error: { message: string } };
+    expect(cause.booking_id).toBe(BOOKING_ID);
+    expect(cause.error.message).toBe('connection lost');
   });
 
   it('surfaces a malformed RPC payload as InternalServerErrorException(booking.compensation_failed)', async () => {
