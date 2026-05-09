@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { roomBookingRuleKeys } from './keys';
 import type {
   CreateRulePayload,
@@ -101,6 +102,7 @@ export function useCreateRoomBookingRule() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create rule" }),
   });
 }
 
@@ -117,6 +119,7 @@ export function useUpdateRoomBookingRule(id: string) {
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.lists() });
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.versions(id) });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update rule" }),
   });
 }
 
@@ -129,6 +132,7 @@ export function useDeleteRoomBookingRule() {
       qc.setQueryData(roomBookingRuleKeys.detail(id), rule);
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete rule" }),
   });
 }
 
@@ -141,6 +145,7 @@ export function useCreateRuleFromTemplate() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: roomBookingRuleKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't create rule from template" }),
   });
 }
 
@@ -157,6 +162,7 @@ export function useRestoreRoomBookingRuleVersion(id: string) {
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.lists() });
       qc.invalidateQueries({ queryKey: roomBookingRuleKeys.versions(id) });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't restore version" }),
   });
 }
 
@@ -185,6 +191,7 @@ export function useSimulateRoomBookingRule() {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't simulate rule" }),
   });
 }
 
@@ -196,6 +203,7 @@ export function useRoomBookingRuleImpactPreview() {
       apiFetch<ImpactPreviewResult>(`/room-booking-rules/${id}/impact-preview`, {
         method: 'POST',
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't preview impact" }),
   });
 }
 
@@ -206,6 +214,7 @@ export function useRoomBookingRuleImpactPreviewDraft() {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't preview impact" }),
   });
 }
 
@@ -233,6 +242,7 @@ export function useCreateRoomBookingScenario() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: roomBookingRuleKeys.scenarios() }),
+    ...withErrorHandling({ actionTitle: "Couldn't save scenario" }),
   });
 }
 
@@ -244,5 +254,6 @@ export function useRunRoomBookingScenario() {
         method: 'POST',
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: roomBookingRuleKeys.scenarios() }),
+    ...withErrorHandling({ actionTitle: "Couldn't run scenario" }),
   });
 }
