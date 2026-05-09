@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { roomBookingKeys } from './keys';
 import type { BookingPayload, MultiRoomBookingPayload, Reservation } from './types';
 
@@ -65,6 +66,12 @@ export interface CreateBookingVariables {
  */
 export function useCreateBooking() {
   const queryClient = useQueryClient();
+  // No `withErrorHandling` here: the 409-conflict path returns alternatives
+  // in the error body and the booking composer renders them inline as a
+  // re-book affordance. A generic toast for that class would compete with
+  // the bespoke alternatives panel. Other classes (auth/transport/server)
+  // are surfaced by the calling page's withErrorHandling on the
+  // submit-handler wrapper. (Pattern E — custom branched error UI.)
   return useMutation({
     mutationFn: ({ payload, requestId }: CreateBookingVariables) =>
       apiFetch<Reservation>('/reservations', {
@@ -93,6 +100,7 @@ export function useDryRunBooking() {
         method: 'POST',
         body: JSON.stringify(payload),
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't preview booking" }),
   });
 }
 
@@ -107,6 +115,8 @@ export interface MultiRoomBookingVariables {
 
 export function useMultiRoomBooking() {
   const queryClient = useQueryClient();
+  // Same Pattern E rationale as useCreateBooking — 409 has alternatives;
+  // composer renders inline. No withErrorHandling here.
   return useMutation({
     mutationFn: ({ payload, requestId }: MultiRoomBookingVariables) =>
       // Post-canonicalisation (2026-05-02): the response shape is
@@ -153,6 +163,7 @@ export function useEditBooking() {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
       invalidateAfterWrite(queryClient);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update booking" }),
   });
 }
 
@@ -189,6 +200,7 @@ export function useEditBookingSlot() {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.bookingId) });
       invalidateAfterWrite(queryClient);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't move booking" }),
   });
 }
 
@@ -208,6 +220,7 @@ export function useCancelBooking() {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
       invalidateAfterWrite(queryClient);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't cancel booking" }),
   });
 }
 
@@ -220,6 +233,7 @@ export function useRestoreBooking() {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
       invalidateAfterWrite(queryClient);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't restore booking" }),
   });
 }
 
@@ -274,6 +288,7 @@ export function useAttachReservationServices(reservationId: string) {
       queryClient.invalidateQueries({ queryKey: ['booking-bundles', 'detail', data.bundle_id] as const });
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't add services" }),
   });
 }
 
@@ -288,5 +303,6 @@ export function useCheckInBooking() {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
       invalidateAfterWrite(queryClient);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't check in booking" }),
   });
 }
