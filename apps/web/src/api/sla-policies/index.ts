@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export type ThresholdTimerScope = 'response' | 'resolution' | 'both';
 export type ThresholdAction = 'notify' | 'escalate';
@@ -82,6 +83,7 @@ export function useCreateSlaPolicy() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: slaPolicyKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't create SLA policy" }),
   });
 }
 
@@ -94,6 +96,7 @@ export function useUpdateSlaPolicy(id: string) {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: slaPolicyKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't update SLA policy" }),
   });
 }
 
