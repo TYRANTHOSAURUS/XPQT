@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export type CriteriaAttr =
   | 'type'
@@ -122,6 +123,7 @@ export function useCreateCriteriaSet() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: criteriaSetKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't create criteria set" }),
   });
 }
 
@@ -137,6 +139,7 @@ export function useUpdateCriteriaSet(id: string) {
       qc.invalidateQueries({ queryKey: criteriaSetKeys.lists() });
       qc.setQueryData(criteriaSetKeys.detail(id), cs);
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update criteria set" }),
   });
 }
 
@@ -145,9 +148,13 @@ export function useDeleteCriteriaSet() {
   return useMutation<CriteriaSet, Error, string>({
     mutationFn: (id) => apiFetch<CriteriaSet>(`/criteria-sets/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: criteriaSetKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete criteria set" }),
   });
 }
 
+// Preview mutation — the test surface displays the response inline. Errors
+// are still toasted (helper handles transport/permission/server) so a 500
+// or offline doesn't fail silently in the inspector.
 export function usePreviewCriteriaExpression(limit = 10) {
   return useMutation<CriteriaPreviewResult, Error, CriteriaNode>({
     mutationFn: (expression) =>
@@ -155,6 +162,7 @@ export function usePreviewCriteriaExpression(limit = 10) {
         method: 'POST',
         body: JSON.stringify({ expression, limit }),
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't preview criteria" }),
   });
 }
 
