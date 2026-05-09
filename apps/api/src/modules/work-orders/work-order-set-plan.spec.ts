@@ -10,7 +10,7 @@
 // service's own logic (validation, no-op fast-path, update payload, activity
 // emission).
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -232,25 +232,25 @@ describe('WorkOrderService.setPlan', () => {
 
     await expect(
       svc.setPlan('wo1', 'not-a-date', 60, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     await expect(
       svc.setPlan('wo1', '2026-05-02T09:00:00.000Z', 0, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     await expect(
       svc.setPlan('wo1', '2026-05-02T09:00:00.000Z', -5, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     await expect(
       svc.setPlan('wo1', '2026-05-02T09:00:00.000Z', 1.5, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     // Codex round 2: Number.isInteger(1e15) is true; without a cap a caller
     // could pass a value that overflows the int4 column. Service rejects.
     await expect(
       svc.setPlan('wo1', '2026-05-02T09:00:00.000Z', 60 * 24 * 365 + 1, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     // Confirm validation stopped before any side effects.
     expect(deps.updates).toHaveLength(0);

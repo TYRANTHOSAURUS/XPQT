@@ -884,6 +884,91 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'org_node.add_grant_failed': {
     title: "Couldn't add that location grant",
   },
+
+  // ─── work-orders (Phase 7.B-1.work-orders) ───────────────────────────────
+  'work_order.not_found': {
+    title: "Couldn't find that work order",
+  },
+  'work_order.body_required': {
+    title: "Couldn't update that work order",
+    detail: 'Request body is required.',
+  },
+  'work_order.empty_update': {
+    title: "Couldn't update that work order",
+    detail: 'At least one field must change.',
+  },
+  'work_order.field_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'One of the fields has the wrong type.',
+  },
+  'work_order.title_empty': {
+    title: "Couldn't update that work order",
+    detail: 'Title must not be empty.',
+  },
+  'work_order.priority_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Priority must be low, medium, high, or critical.',
+  },
+  'work_order.cost_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Cost must be a finite number or null.',
+  },
+  'work_order.tags_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Tags must be a list of strings.',
+  },
+  'work_order.watchers_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Watchers must be a list of person ids.',
+  },
+  'work_order.duration_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Planned duration must be a positive whole number of minutes.',
+  },
+  'work_order.planned_start_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Planned start must be a valid timestamp.',
+  },
+  'work_order.sla_unknown': {
+    title: "Couldn't update that work order",
+    detail: 'That SLA policy isn\'t in this tenant.',
+  },
+  'work_order.assignee_uuid_invalid': {
+    title: "Couldn't update that work order",
+    detail: 'Assignee id is not a valid UUID.',
+  },
+  'work_order.no_longer_accessible': {
+    title: "You don't have access to this work order",
+  },
+  'work_order.permission_sla_override': {
+    title: "You can't change SLA on this work order",
+  },
+  'work_order.permission_priority_change': {
+    title: "You can't change priority on this work order",
+  },
+  'work_order.permission_assign': {
+    title: "You can't assign this work order",
+  },
+  'work_order.empty_status_update': {
+    title: "Couldn't update that work order",
+    detail: 'At least one of status, status_category, waiting_reason is required.',
+  },
+  'work_order.empty_assignment_update': {
+    title: "Couldn't update that work order",
+    detail: 'At least one of assigned_team_id, assigned_user_id, assigned_vendor_id is required.',
+  },
+  'work_order.empty_metadata_update': {
+    title: "Couldn't update that work order",
+    detail: 'At least one of title, description, cost, tags, watchers is required.',
+  },
+  'work_order.reassign_reason_required': {
+    title: "Couldn't reassign that work order",
+    detail: 'Reassignment reason is required.',
+  },
+  'work_order.rerun_resolver_unsupported': {
+    title: "Couldn't reassign that work order",
+    detail: 'Auto-resolver isn\'t supported for work orders yet. Pass an explicit assignee.',
+  },
 };
 
 /**

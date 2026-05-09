@@ -4,7 +4,7 @@
 // hand-rolled Supabase chain, dispatch on table name in `from()`. SYSTEM_ACTOR
 // is used to skip the visibility/permission gates for success-path tests.
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -317,7 +317,7 @@ describe('WorkOrderService.updateStatus', () => {
     const svc = makeSvc(deps);
 
     await expect(svc.updateStatus('wo1', {}, SYSTEM_ACTOR)).rejects.toThrow(
-      BadRequestException,
+      AppError,
     );
     expect(deps.updates).toHaveLength(0);
     expect(deps.activities).toHaveLength(0);

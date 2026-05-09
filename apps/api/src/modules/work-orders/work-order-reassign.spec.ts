@@ -2,7 +2,7 @@
 // reason. Distinct from updateAssignment because it writes a routing_decisions
 // row (entity_kind='work_order') and an internal-visibility activity.
 
-import { BadRequestException, NotImplementedException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -275,7 +275,7 @@ describe('WorkOrderService.reassign', () => {
         { assigned_team_id: 'team-new' } as any,
         SYSTEM_ACTOR,
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     await expect(
       svc.reassign(
@@ -283,7 +283,7 @@ describe('WorkOrderService.reassign', () => {
         { assigned_team_id: 'team-new', reason: '   ' },
         SYSTEM_ACTOR,
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     expect(deps.updates).toHaveLength(0);
     expect(deps.routingDecisions).toHaveLength(0);
@@ -356,7 +356,7 @@ describe('WorkOrderService.reassign', () => {
         },
         SYSTEM_ACTOR,
       ),
-    ).rejects.toThrow(NotImplementedException);
+    ).rejects.toThrow(AppError);
 
     await expect(
       svc.reassign(

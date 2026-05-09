@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,7 +6,6 @@ import {
   Patch,
   Post,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
@@ -17,6 +15,7 @@ import {
   WorkOrderService,
   type UpdateWorkOrderDto,
 } from './work-order.service';
+import { AppErrors } from '../../common/errors';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -60,9 +59,9 @@ export class WorkOrderController {
     @Body() dto: UpdateWorkOrderDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException('body required');
+      throw AppErrors.validationFailed('work_order.body_required', { detail: 'body required' });
     }
 
     // Type-narrowing per-field — the orchestrator delegates the empty-DTO
@@ -73,37 +72,37 @@ export class WorkOrderController {
       dto.sla_id !== null &&
       typeof dto.sla_id !== 'string'
     ) {
-      throw new BadRequestException('sla_id must be a string or null');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'sla_id must be a string or null' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'planned_start_at') &&
       dto.planned_start_at !== null &&
       typeof dto.planned_start_at !== 'string'
     ) {
-      throw new BadRequestException('planned_start_at must be a string or null');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'planned_start_at must be a string or null' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'planned_duration_minutes') &&
       dto.planned_duration_minutes !== null &&
       typeof dto.planned_duration_minutes !== 'number'
     ) {
-      throw new BadRequestException('planned_duration_minutes must be a number or null');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'planned_duration_minutes must be a number or null' });
     }
     if (dto.status !== undefined && typeof dto.status !== 'string') {
-      throw new BadRequestException('status must be a string');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'status must be a string' });
     }
     if (dto.status_category !== undefined && typeof dto.status_category !== 'string') {
-      throw new BadRequestException('status_category must be a string');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'status_category must be a string' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'waiting_reason') &&
       dto.waiting_reason !== null &&
       typeof dto.waiting_reason !== 'string'
     ) {
-      throw new BadRequestException('waiting_reason must be a string or null');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'waiting_reason must be a string or null' });
     }
     if (dto.priority !== undefined && !VALID_PRIORITIES.includes(dto.priority)) {
-      throw new BadRequestException(ERR_PRIORITY_INVALID);
+      throw AppErrors.validationFailed('work_order.priority_invalid', { detail: ERR_PRIORITY_INVALID });
     }
     for (const k of ASSIGNMENT_FIELDS) {
       if (
@@ -111,45 +110,45 @@ export class WorkOrderController {
         dto[k] !== null &&
         typeof dto[k] !== 'string'
       ) {
-        throw new BadRequestException(`${k} must be a string or null`);
+        throw AppErrors.validationFailed('work_order.field_invalid', { detail: `${k} must be a string or null` });
       }
     }
     // Slice 3.1 fields
     if (dto.title !== undefined && typeof dto.title !== 'string') {
-      throw new BadRequestException('title must be a string');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'title must be a string' });
     }
     if (dto.title !== undefined && dto.title.trim() === '') {
-      throw new BadRequestException(ERR_TITLE_EMPTY);
+      throw AppErrors.validationFailed('work_order.title_empty', { detail: ERR_TITLE_EMPTY });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'description') &&
       dto.description !== null &&
       typeof dto.description !== 'string'
     ) {
-      throw new BadRequestException('description must be a string or null');
+      throw AppErrors.validationFailed('work_order.field_invalid', { detail: 'description must be a string or null' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'cost') &&
       dto.cost !== null &&
       (typeof dto.cost !== 'number' || !Number.isFinite(dto.cost))
     ) {
-      throw new BadRequestException('cost must be a finite number or null');
+      throw AppErrors.validationFailed('work_order.cost_invalid', { detail: 'cost must be a finite number or null' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'tags') &&
       dto.tags !== null &&
       (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
     ) {
-      throw new BadRequestException('tags must be an array of strings or null');
+      throw AppErrors.validationFailed('work_order.tags_invalid', { detail: 'tags must be an array of strings or null' });
     }
     if (
       Object.prototype.hasOwnProperty.call(dto, 'watchers') &&
       dto.watchers !== null &&
       (!Array.isArray(dto.watchers) || !dto.watchers.every((w) => typeof w === 'string'))
     ) {
-      throw new BadRequestException(
-        'watchers must be an array of strings (person UUIDs) or null',
-      );
+      throw AppErrors.validationFailed('work_order.watchers_invalid', {
+        detail: 'watchers must be an array of strings (person UUIDs) or null',
+      });
     }
 
     return this.workOrderService.update(id, dto, actorAuthUid);
@@ -158,7 +157,7 @@ export class WorkOrderController {
   @Get(':id/can-plan')
   async getCanPlan(@Req() request: Request, @Param('id') id: string) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     return this.workOrderService.canPlan(id, actorAuthUid);
   }
 
@@ -169,17 +168,17 @@ export class WorkOrderController {
     @Body() dto: ReassignWorkOrderDto,
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
-    if (!actorAuthUid) throw new UnauthorizedException('No auth user');
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException('body required');
+      throw AppErrors.validationFailed('work_order.body_required', { detail: 'body required' });
     }
     if (typeof dto.reason !== 'string' || !dto.reason.trim()) {
-      throw new BadRequestException('reason is required (non-empty string)');
+      throw AppErrors.validationFailed('work_order.reassign_reason_required', { detail: 'reason is required (non-empty string)' });
     }
     for (const k of ASSIGNMENT_FIELDS) {
       const v = dto[k];
       if (v !== undefined && v !== null && typeof v !== 'string') {
-        throw new BadRequestException(`${k} must be a string or null`);
+        throw AppErrors.validationFailed('work_order.field_invalid', { detail: `${k} must be a string or null` });
       }
     }
     return this.workOrderService.reassign(id, dto, actorAuthUid);

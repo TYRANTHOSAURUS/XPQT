@@ -325,7 +325,31 @@ export type KnownErrorCode =
   | 'org_node.update_failed'
   | 'org_node.delete_failed'
   | 'org_node.add_member_failed'
-  | 'org_node.add_grant_failed';
+  | 'org_node.add_grant_failed'
+
+  // ─── work-orders module migration (Phase 7.B-1.work-orders) ──────────────
+  | 'work_order.not_found'
+  | 'work_order.body_required'
+  | 'work_order.empty_update'
+  | 'work_order.field_invalid'
+  | 'work_order.title_empty'
+  | 'work_order.priority_invalid'
+  | 'work_order.cost_invalid'
+  | 'work_order.tags_invalid'
+  | 'work_order.watchers_invalid'
+  | 'work_order.duration_invalid'
+  | 'work_order.planned_start_invalid'
+  | 'work_order.sla_unknown'
+  | 'work_order.assignee_uuid_invalid'
+  | 'work_order.no_longer_accessible'
+  | 'work_order.permission_sla_override'
+  | 'work_order.permission_priority_change'
+  | 'work_order.permission_assign'
+  | 'work_order.empty_status_update'
+  | 'work_order.empty_assignment_update'
+  | 'work_order.empty_metadata_update'
+  | 'work_order.reassign_reason_required'
+  | 'work_order.rerun_resolver_unsupported';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -574,6 +598,28 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'org_node.delete_failed',
   'org_node.add_member_failed',
   'org_node.add_grant_failed',
+  'work_order.not_found',
+  'work_order.body_required',
+  'work_order.empty_update',
+  'work_order.field_invalid',
+  'work_order.title_empty',
+  'work_order.priority_invalid',
+  'work_order.cost_invalid',
+  'work_order.tags_invalid',
+  'work_order.watchers_invalid',
+  'work_order.duration_invalid',
+  'work_order.planned_start_invalid',
+  'work_order.sla_unknown',
+  'work_order.assignee_uuid_invalid',
+  'work_order.no_longer_accessible',
+  'work_order.permission_sla_override',
+  'work_order.permission_priority_change',
+  'work_order.permission_assign',
+  'work_order.empty_status_update',
+  'work_order.empty_assignment_update',
+  'work_order.empty_metadata_update',
+  'work_order.reassign_reason_required',
+  'work_order.rerun_resolver_unsupported',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

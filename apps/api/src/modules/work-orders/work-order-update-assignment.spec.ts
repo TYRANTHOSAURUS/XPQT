@@ -2,7 +2,7 @@
 // path for child work_orders post-1c.10c. Mock pattern mirrors the other
 // work-order specs.
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -323,7 +323,7 @@ describe('WorkOrderService.updateAssignment', () => {
         { assigned_team_id: '99999999-9999-9999-9999-999999999999' },
         'real-uid',
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(/does not reference a known team/);
 
     expect(deps.updates).toHaveLength(0);
   });

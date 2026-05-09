@@ -2,7 +2,7 @@
 // child work_orders post-1c.10c. Mock pattern mirrors the other work-order
 // specs.
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -169,7 +169,7 @@ describe('WorkOrderService.updatePriority', () => {
     await expect(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       svc.updatePriority('wo1', 'urgent' as any, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
 
     expect(deps.updates).toHaveLength(0);
     expect(deps.activities).toHaveLength(0);

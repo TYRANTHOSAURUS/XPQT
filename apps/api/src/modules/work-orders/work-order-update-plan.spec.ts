@@ -22,7 +22,7 @@
 //   { dur: 90 }                 | start=null, dur=null → 400 plan_invalid
 //   { start: null, dur: 90 }    | any                  → 400 plan_invalid
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -239,11 +239,8 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(BadRequestException);
-    const response = (caught as BadRequestException).getResponse() as {
-      code?: string;
-    };
-    expect(response.code).toBe('work_order.plan_invalid');
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('work_order.plan_invalid');
     expect(setPlanSpy).not.toHaveBeenCalled();
   });
 
@@ -268,11 +265,8 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(BadRequestException);
-    const response = (caught as BadRequestException).getResponse() as {
-      code?: string;
-    };
-    expect(response.code).toBe('work_order.plan_invalid');
+    expect(caught).toBeInstanceOf(AppError);
+    expect((caught as AppError).code).toBe('work_order.plan_invalid');
     expect(setPlanSpy).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@
 // cost / tags / watchers edit path. Slice 3.1 of the work-order command
 // surface. Mock pattern mirrors the other work-order specs.
 
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
 
 type WorkOrderRow = {
@@ -395,7 +395,7 @@ describe('WorkOrderService.updateMetadata', () => {
     const svc = makeSvc(deps);
 
     await expect(svc.updateMetadata('wo1', {}, SYSTEM_ACTOR)).rejects.toThrow(
-      BadRequestException,
+      AppError,
     );
   });
 
@@ -416,7 +416,7 @@ describe('WorkOrderService.updateMetadata', () => {
 
     await expect(
       svc.updateMetadata('wo-missing', { title: 'x' }, SYSTEM_ACTOR),
-    ).rejects.toThrow(NotFoundException);
+    ).rejects.toThrow(AppError);
   });
 
   // ── visibility gate ───────────────────────────────────────────────
@@ -473,7 +473,7 @@ describe('WorkOrderService.updateMetadata', () => {
 
     await expect(
       svc.updateMetadata('wo1', { title: '   ' }, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
     expect(deps.updates).toHaveLength(0);
   });
 
@@ -486,10 +486,10 @@ describe('WorkOrderService.updateMetadata', () => {
 
     await expect(
       svc.updateMetadata('wo1', { cost: Number.POSITIVE_INFINITY }, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
     await expect(
       svc.updateMetadata('wo1', { cost: Number.NaN }, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
   });
 
   it('rejects tags with non-string elements at the service layer', async () => {
@@ -501,7 +501,7 @@ describe('WorkOrderService.updateMetadata', () => {
 
     await expect(
       svc.updateMetadata('wo1', { tags: ['ok', 123 as unknown as string] }, SYSTEM_ACTOR),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(AppError);
   });
 
   // ── cost float normalization (full-review #5: NUMERIC round-trip) ─

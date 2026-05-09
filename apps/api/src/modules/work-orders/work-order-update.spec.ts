@@ -12,7 +12,7 @@
 // per-field specs already prove the underlying behavior. This spec is the
 // dispatch contract.
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import {
   WorkOrderService,
   SYSTEM_ACTOR,
@@ -250,7 +250,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
 
   it('rejects an empty DTO', async () => {
     const { svc, spies } = makeSvc();
-    await expect(svc.update('wo1', {}, SYSTEM_ACTOR)).rejects.toThrow(BadRequestException);
+    await expect(svc.update('wo1', {}, SYSTEM_ACTOR)).rejects.toThrow(AppError);
     expect(spies.updateSla).not.toHaveBeenCalled();
     expect(spies.setPlan).not.toHaveBeenCalled();
     expect(spies.updateStatus).not.toHaveBeenCalled();
@@ -363,7 +363,7 @@ describe('WorkOrderService.update (orchestrator)', () => {
     const { svc } = makeSvc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(svc.update('wo1', null as any, SYSTEM_ACTOR)).rejects.toThrow(
-      BadRequestException,
+      AppError,
     );
   });
 

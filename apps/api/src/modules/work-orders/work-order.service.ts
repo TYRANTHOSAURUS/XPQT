@@ -1,10 +1,6 @@
 import {
-  BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
-  NotFoundException,
-  NotImplementedException,
   forwardRef,
 } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -15,6 +11,7 @@ import {
 } from '../../common/tenant-validation';
 import { SlaService } from '../sla/sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
+import { AppErrors } from '../../common/errors';
 
 export const SYSTEM_ACTOR = '__system__';
 
@@ -161,7 +158,7 @@ export class WorkOrderService {
     actorAuthUid: string,
   ): Promise<WorkOrderRow> {
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException('body required');
+      throw AppErrors.validationFailed('work_order.body_required', { detail: 'body required' });
     }
 
     // A key is "present" when set to any value other than undefined. We
@@ -183,9 +180,10 @@ export class WorkOrderService {
     const hasMetadata = METADATA_FIELDS.some((f) => present(f));
 
     if (!hasSla && !hasPlan && !hasStatus && !hasPriority && !hasAssignment && !hasMetadata) {
-      throw new BadRequestException(
-        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
-      );
+      throw AppErrors.validationFailed('work_order.empty_update', {
+        detail:
+          'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
+      });
     }
 
     // Pre-flight validation — closes the partial-commit-on-validation-
@@ -276,7 +274,7 @@ export class WorkOrderService {
           .maybeSingle();
         if (curErr) throw curErr;
         if (!cur) {
-          throw new NotFoundException(`Work order ${workOrderId} not found`);
+          throw AppErrors.notFound('work_order', workOrderId);
         }
         const curRow = cur as {
           planned_start_at: string | null;
@@ -314,9 +312,8 @@ export class WorkOrderService {
       //   1. duration-only patch when current start is null
       //   2. simultaneous { start: null, duration: N } patch
       if (finalDuration !== null && finalStart === null) {
-        throw new BadRequestException({
-          code: 'work_order.plan_invalid',
-          message: 'planned_duration_minutes requires planned_start_at',
+        throw AppErrors.validationFailed('work_order.plan_invalid', {
+          detail: 'planned_duration_minutes requires planned_start_at',
         });
       }
 
@@ -389,7 +386,7 @@ export class WorkOrderService {
         .maybeSingle();
       if (refetchErr) throw refetchErr;
       if (!refreshed) {
-        throw new ForbiddenException('Work order no longer accessible');
+        throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
       }
       return refreshed as WorkOrderRow;
     }
@@ -398,9 +395,10 @@ export class WorkOrderService {
     // `last` is always set here. The `!` would be unsafe-looking; throw
     // explicitly for clarity instead.
     if (!last) {
-      throw new BadRequestException(
-        'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
-      );
+      throw AppErrors.validationFailed('work_order.empty_update', {
+        detail:
+          'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
+      });
     }
     return last;
   }
@@ -469,7 +467,7 @@ export class WorkOrderService {
       ) {
         const ts = Date.parse(dto.planned_start_at);
         if (Number.isNaN(ts)) {
-          throw new BadRequestException(ERR_PLANNED_START_INVALID);
+          throw AppErrors.validationFailed('work_order.planned_start_invalid', { detail: ERR_PLANNED_START_INVALID });
         }
       }
       if (
@@ -484,18 +482,18 @@ export class WorkOrderService {
           d <= 0 ||
           d > MAX_DURATION_MINUTES
         ) {
-          throw new BadRequestException(ERR_DURATION_INVALID());
+          throw AppErrors.validationFailed('work_order.duration_invalid', { detail: ERR_DURATION_INVALID() });
         }
       }
     }
     if (flags.hasPriority) {
       if (!VALID_PRIORITIES.includes(dto.priority as Priority)) {
-        throw new BadRequestException(ERR_PRIORITY_INVALID);
+        throw AppErrors.validationFailed('work_order.priority_invalid', { detail: ERR_PRIORITY_INVALID });
       }
     }
     if (flags.hasMetadata) {
       if (dto.title !== undefined && dto.title.trim() === '') {
-        throw new BadRequestException(ERR_TITLE_EMPTY);
+        throw AppErrors.validationFailed('work_order.title_empty', { detail: ERR_TITLE_EMPTY });
       }
       if (
         Object.prototype.hasOwnProperty.call(dto, 'cost') &&
@@ -503,7 +501,7 @@ export class WorkOrderService {
         dto.cost !== undefined &&
         !Number.isFinite(dto.cost)
       ) {
-        throw new BadRequestException(ERR_COST_NOT_FINITE);
+        throw AppErrors.validationFailed('work_order.cost_invalid', { detail: ERR_COST_NOT_FINITE });
       }
       if (
         Object.prototype.hasOwnProperty.call(dto, 'tags') &&
@@ -511,7 +509,7 @@ export class WorkOrderService {
         dto.tags !== undefined &&
         (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string'))
       ) {
-        throw new BadRequestException(ERR_TAGS_INVALID);
+        throw AppErrors.validationFailed('work_order.tags_invalid', { detail: ERR_TAGS_INVALID });
       }
       // Watchers SHAPE check (full-review #2 critical fix). Pre-fix this
       // wasn't in tier-1; SYSTEM_ACTOR with `watchers: "foo"` would commit
@@ -525,7 +523,7 @@ export class WorkOrderService {
         (!Array.isArray(dto.watchers) ||
           !dto.watchers.every((w) => typeof w === 'string'))
       ) {
-        throw new BadRequestException(ERR_WATCHERS_SHAPE_INVALID);
+        throw AppErrors.validationFailed('work_order.watchers_invalid', { detail: ERR_WATCHERS_SHAPE_INVALID });
       }
     }
 
@@ -536,7 +534,7 @@ export class WorkOrderService {
       for (const f of ASSIGNMENT_FIELDS) {
         const v = (dto as Record<string, unknown>)[f];
         if (typeof v === 'string' && !UUID_RE.test(v)) {
-          throw new BadRequestException(`${f} is not a valid uuid: ${v}`);
+          throw AppErrors.validationFailed('work_order.assignee_uuid_invalid', { detail: `${f} is not a valid uuid: ${v}` });
         }
       }
     }
@@ -562,9 +560,9 @@ export class WorkOrderService {
         .maybeSingle();
       if (error) throw error;
       if (!policy) {
-        throw new BadRequestException(
-          `sla_id ${dto.sla_id} does not reference a known SLA policy in this tenant`,
-        );
+        throw AppErrors.validationFailed('work_order.sla_unknown', {
+          detail: `sla_id ${dto.sla_id} does not reference a known SLA policy in this tenant`,
+        });
       }
     }
 
@@ -592,17 +590,17 @@ export class WorkOrderService {
 
     if (flags.hasSla && !ctx.has_write_all) {
       if (!(await checkPermission('sla.override'))) {
-        throw new ForbiddenException(ERR_PERM_SLA_OVERRIDE);
+        throw AppErrors.forbidden('work_order.permission_sla_override', ERR_PERM_SLA_OVERRIDE);
       }
     }
     if (flags.hasPriority && !ctx.has_write_all) {
       if (!(await checkPermission('tickets.change_priority'))) {
-        throw new ForbiddenException(ERR_PERM_PRIORITY_CHANGE);
+        throw AppErrors.forbidden('work_order.permission_priority_change', ERR_PERM_PRIORITY_CHANGE);
       }
     }
     if (flags.hasAssignment && !ctx.has_write_all) {
       if (!(await checkPermission('tickets.assign'))) {
-        throw new ForbiddenException(ERR_PERM_ASSIGN);
+        throw AppErrors.forbidden('work_order.permission_assign', ERR_PERM_ASSIGN);
       }
     }
 
@@ -680,9 +678,7 @@ export class WorkOrderService {
         );
         if (permErr) throw permErr;
         if (!hasOverride) {
-          throw new ForbiddenException(
-            ERR_PERM_SLA_OVERRIDE,
-          );
+          throw AppErrors.forbidden('work_order.permission_sla_override', ERR_PERM_SLA_OVERRIDE);
         }
       }
     }
@@ -695,7 +691,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as { id: string; tenant_id: string; sla_id: string | null };
     const previousSlaId = currentRow.sla_id;
@@ -725,9 +721,9 @@ export class WorkOrderService {
         .maybeSingle();
       if (policyErr) throw policyErr;
       if (!policy) {
-        throw new BadRequestException(
-          `sla_id ${slaId} does not reference a known SLA policy in this tenant`,
-        );
+        throw AppErrors.validationFailed('work_order.sla_unknown', {
+          detail: `sla_id ${slaId} does not reference a known SLA policy in this tenant`,
+        });
       }
     }
 
@@ -800,7 +796,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -846,9 +842,9 @@ export class WorkOrderService {
     if (plannedStartAt !== null) {
       const ts = Date.parse(plannedStartAt);
       if (Number.isNaN(ts)) {
-        throw new BadRequestException(
-          'planned_start_at must be a valid ISO 8601 timestamp',
-        );
+        throw AppErrors.validationFailed('work_order.planned_start_invalid', {
+          detail: 'planned_start_at must be a valid ISO 8601 timestamp',
+        });
       }
     }
     // Upper bound: 1 year of minutes (module-level MAX_DURATION_MINUTES;
@@ -861,7 +857,7 @@ export class WorkOrderService {
         plannedDurationMinutes <= 0 ||
         plannedDurationMinutes > MAX_DURATION_MINUTES)
     ) {
-      throw new BadRequestException(ERR_DURATION_INVALID());
+      throw AppErrors.validationFailed('work_order.duration_invalid', { detail: ERR_DURATION_INVALID() });
     }
     // Duration without a start makes no sense — clear them together.
     // Mirror of the legacy method's behavior; the FE relies on this.
@@ -877,7 +873,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -976,7 +972,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -999,7 +995,14 @@ export class WorkOrderService {
       await this.visibility.assertCanPlan(workOrderId, ctx);
       return { canPlan: true };
     } catch (err) {
-      if (err instanceof ForbiddenException) return { canPlan: false };
+      // Visibility helpers throw AppError (status 403). Anything else
+      // (DB error, etc) re-throws unchanged.
+      if (
+        err instanceof Error &&
+        (err as { status?: number }).status === 403
+      ) {
+        return { canPlan: false };
+      }
       throw err;
     }
   }
@@ -1049,9 +1052,9 @@ export class WorkOrderService {
     if (dto.status_category !== undefined) provided.push('status_category');
     if (dto.waiting_reason !== undefined) provided.push('waiting_reason');
     if (provided.length === 0) {
-      throw new BadRequestException(
-        'updateStatus requires at least one of: status, status_category, waiting_reason',
-      );
+      throw AppErrors.validationFailed('work_order.empty_status_update', {
+        detail: 'updateStatus requires at least one of: status, status_category, waiting_reason',
+      });
     }
 
     const { data: current, error: loadErr } = await this.supabase.admin
@@ -1062,7 +1065,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -1194,7 +1197,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -1216,7 +1219,7 @@ export class WorkOrderService {
     const tenant = TenantContext.current();
 
     if (!VALID_PRIORITIES.includes(priority)) {
-      throw new BadRequestException(ERR_PRIORITY_INVALID);
+      throw AppErrors.validationFailed('work_order.priority_invalid', { detail: ERR_PRIORITY_INVALID });
     }
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
@@ -1237,9 +1240,7 @@ export class WorkOrderService {
         );
         if (permErr) throw permErr;
         if (!hasChange) {
-          throw new ForbiddenException(
-            ERR_PERM_PRIORITY_CHANGE,
-          );
+          throw AppErrors.forbidden('work_order.permission_priority_change', ERR_PERM_PRIORITY_CHANGE);
         }
       }
     }
@@ -1252,7 +1253,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -1307,7 +1308,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -1344,9 +1345,9 @@ export class WorkOrderService {
     if (dto.assigned_user_id !== undefined) provided.push('assigned_user_id');
     if (dto.assigned_vendor_id !== undefined) provided.push('assigned_vendor_id');
     if (provided.length === 0) {
-      throw new BadRequestException(
-        'updateAssignment requires at least one of: assigned_team_id, assigned_user_id, assigned_vendor_id',
-      );
+      throw AppErrors.validationFailed('work_order.empty_assignment_update', {
+        detail: 'updateAssignment requires at least one of: assigned_team_id, assigned_user_id, assigned_vendor_id',
+      });
     }
 
     const { data: current, error: loadErr } = await this.supabase.admin
@@ -1357,7 +1358,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -1447,7 +1448,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -1489,23 +1490,23 @@ export class WorkOrderService {
     // SYSTEM_ACTOR paths) bypass the controller. Service layer is the
     // trust boundary.
     if (Object.keys(dto).length === 0) {
-      throw new BadRequestException(
-        'updateMetadata requires at least one of: title, description, cost, tags, watchers',
-      );
+      throw AppErrors.validationFailed('work_order.empty_metadata_update', {
+        detail: 'updateMetadata requires at least one of: title, description, cost, tags, watchers',
+      });
     }
     if (dto.title !== undefined && dto.title.trim() === '') {
-      throw new BadRequestException(ERR_TITLE_EMPTY);
+      throw AppErrors.validationFailed('work_order.title_empty', { detail: ERR_TITLE_EMPTY });
     }
     if (
       dto.cost !== undefined &&
       dto.cost !== null &&
       !Number.isFinite(dto.cost)
     ) {
-      throw new BadRequestException(ERR_COST_NOT_FINITE);
+      throw AppErrors.validationFailed('work_order.cost_invalid', { detail: ERR_COST_NOT_FINITE });
     }
     if (dto.tags !== undefined && dto.tags !== null) {
       if (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string')) {
-        throw new BadRequestException(ERR_TAGS_INVALID);
+        throw AppErrors.validationFailed('work_order.tags_invalid', { detail: ERR_TAGS_INVALID });
       }
     }
     if (dto.watchers !== undefined && dto.watchers !== null) {
@@ -1513,9 +1514,7 @@ export class WorkOrderService {
         !Array.isArray(dto.watchers) ||
         !dto.watchers.every((w) => typeof w === 'string')
       ) {
-        throw new BadRequestException(
-          ERR_WATCHERS_SHAPE_INVALID,
-        );
+        throw AppErrors.validationFailed('work_order.watchers_invalid', { detail: ERR_WATCHERS_SHAPE_INVALID });
       }
     }
 
@@ -1545,7 +1544,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -1665,7 +1664,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -1711,7 +1710,7 @@ export class WorkOrderService {
     const tenant = TenantContext.current();
 
     if (!dto.reason || !dto.reason.trim()) {
-      throw new BadRequestException('reassignment reason is required');
+      throw AppErrors.validationFailed('work_order.reassign_reason_required', { detail: 'reassignment reason is required' });
     }
 
     if (dto.rerun_resolver) {
@@ -1722,9 +1721,9 @@ export class WorkOrderService {
       // context). 501 (not 400) — the request is well-formed; the resource
       // just doesn't implement that mode yet. Surface explicitly so callers
       // know it's missing rather than silently degrade to manual mode.
-      throw new NotImplementedException(
-        'rerun_resolver is not yet supported for work_order reassign — pass an explicit assignee instead',
-      );
+      throw AppErrors.validationFailed('work_order.rerun_resolver_unsupported', {
+        detail: 'rerun_resolver is not yet supported for work_order reassign — pass an explicit assignee instead',
+      });
     }
 
     await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
@@ -1737,7 +1736,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!current) {
-      throw new NotFoundException(`Work order ${workOrderId} not found`);
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     const currentRow = current as {
       id: string;
@@ -1864,7 +1863,7 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw new ForbiddenException('Work order no longer accessible');
+      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
     }
     return refreshed as WorkOrderRow;
   }
@@ -1896,9 +1895,7 @@ export class WorkOrderService {
     );
     if (permErr) throw permErr;
     if (!hasAssign) {
-      throw new ForbiddenException(
-        ERR_PERM_ASSIGN,
-      );
+      throw AppErrors.forbidden('work_order.permission_assign', ERR_PERM_ASSIGN);
     }
   }
 
