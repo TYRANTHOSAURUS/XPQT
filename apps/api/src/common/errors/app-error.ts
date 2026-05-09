@@ -161,8 +161,8 @@ export const AppErrors = {
     new AppError(code, 403, { detail }),
 
   /**
-   * 404 not-found with a domain-specific code (e.g. `ticket.not_in_tenant`,
-   * `reclassify.actor_not_resolvable`). Prefer `notFound(entity, id)` for the
+   * 404 not-found with a domain-specific code (e.g.
+   * `reclassify.target_not_found`). Prefer `notFound(entity, id)` for the
    * standard `<entity>.not_found` case. Use this when the not-found surface
    * has a more specific reason that the client renderer should disambiguate.
    */

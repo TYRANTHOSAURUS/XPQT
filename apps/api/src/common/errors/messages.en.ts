@@ -270,9 +270,6 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
 
   // ─── ticket module migration (Phase 7.A.2.a) ─────────────────────────────
-  'ticket.not_in_tenant': {
-    title: "We can't find that ticket",
-  },
   'ticket.bulk_cap_exceeded': {
     title: "Couldn't update — selection too large",
     detail: 'Bulk updates are capped at 200 tickets per call.',
@@ -351,7 +348,7 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Keep the reason under 500 characters.',
   },
   'reclassify.in_progress_collision': {
-    title: 'Another reclassify is in progress',
+    title: "Couldn't reclassify — another change in progress",
     detail: 'Try again once it finishes.',
   },
   'reclassify.in_progress_children_unacked': {
@@ -384,11 +381,6 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   'dispatch.parent_terminal': {
     title: "Couldn't dispatch — parent is closed or resolved",
-  },
-
-  // ─── auth ────────────────────────────────────────────────────────────────
-  'auth.no_session': {
-    title: 'Sign in to continue',
   },
 
   // ─── Phase 1 legacy snake_case (renamed in 7.A.2) ────────────────────────

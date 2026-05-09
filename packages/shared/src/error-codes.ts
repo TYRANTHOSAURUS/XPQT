@@ -110,7 +110,6 @@ export type KnownErrorCode =
   | 'ticket.routing_no_match'
 
   // ─── ticket module migration (Phase 7.A.2.a) ─────────────────────────────
-  | 'ticket.not_in_tenant'
   | 'ticket.bulk_cap_exceeded'
   | 'ticket.no_writable_in_selection'
   | 'ticket.case_sla_immutable'
@@ -149,8 +148,6 @@ export type KnownErrorCode =
   | 'dispatch.assignment_required'
   | 'dispatch.parent_terminal'
 
-  // ─── auth ────────────────────────────────────────────────────────────────
-  | 'auth.no_session'
   | 'booking.conflict'
   | 'booking.window_closed'
   | 'booking.capacity_exceeded'
@@ -237,7 +234,6 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'ticket.title_required',
   'ticket.assignment_invalid',
   'ticket.routing_no_match',
-  'ticket.not_in_tenant',
   'ticket.bulk_cap_exceeded',
   'ticket.no_writable_in_selection',
   'ticket.case_sla_immutable',
@@ -271,7 +267,6 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'dispatch.parent_pending_approval',
   'dispatch.assignment_required',
   'dispatch.parent_terminal',
-  'auth.no_session',
   'booking.conflict',
   'booking.window_closed',
   'booking.capacity_exceeded',

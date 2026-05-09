@@ -261,10 +261,9 @@ export class ReclassifyService {
         // Caller passed assertVisible via visibility.loadContext, so this should
         // be unreachable. If it happens, fail loudly — unattributable audit
         // events are worse than refusing the operation.
-        throw AppErrors.notFoundWithCode(
-          'reclassify.actor_not_resolvable',
-          'actor user not resolvable in tenant',
-        );
+        throw AppErrors.validationFailed('reclassify.actor_not_resolvable', {
+          detail: 'actor user not resolvable in tenant',
+        });
       }
       actorPersonId = await this.resolvePersonIdFromAuth(actorAuthUid, tenant.id);
     }

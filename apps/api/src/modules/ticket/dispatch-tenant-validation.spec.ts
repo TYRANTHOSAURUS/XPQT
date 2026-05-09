@@ -11,7 +11,13 @@
 // '__system__' which intentionally short-circuits the validators). The
 // dispatch flow is mocked enough to reach the validation; the asserts
 // check that the BadRequestException carries a `reference.not_in_tenant`
-// code.
+// code (or — for the legacy string throw paths inside
+// `assertTenantOwnedRef` — that the message contains the expected field
+// name).
+//
+// Phase 7 follow-up: when `apps/api/src/common/tenant-validation.ts`
+// migrates to AppError, swap the `instanceof BadRequestException` assert
+// for `error.code === 'reference.not_in_tenant'`.
 
 import { BadRequestException } from '@nestjs/common';
 import { DispatchService, DispatchDto } from './dispatch.service';
