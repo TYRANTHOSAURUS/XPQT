@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { queryOptions, useQuery } from '@tanstack/react-query';
+import { usePageQuery } from '@/lib/errors';
 import { Shield, AlertTriangle, Clock, MapPin, Building2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
@@ -74,7 +75,8 @@ export function userDisplayName(user: Pick<UserDetail, 'email' | 'person'>): str
  * (UserDetailPage) and the inspector panel on /admin/users.
  */
 export function UserDetailBody({ userId }: { userId: string }) {
-  const userQuery = useQuery(userDetailOptions(userId));
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const userQuery = usePageQuery(userDetailOptions(userId));
   const effectiveQuery = useEffectivePermissions(userId);
   const auditQuery = useUserAudit(userId);
 
@@ -152,7 +154,8 @@ export function UserDetailBody({ userId }: { userId: string }) {
 
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const userQuery = useQuery(userDetailOptions(id));
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const userQuery = usePageQuery(userDetailOptions(id));
   const user = userQuery.data;
 
   if (userQuery.isLoading) {
