@@ -332,7 +332,8 @@ describe('VisitorPassPoolService', () => {
       // The lockPass query filters by id only; cross-tenant pass returns
       // a row that the assignPass codepath happens to allow if status ok.
       // The actual cross-tenant boundary is on the visitor lookup below.
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toMatchObject({
+        code: 'visitor_pass.not_found', status: 404 });
     });
 
     it('cross-tenant visitor blocked (404 not_found)', async () => {

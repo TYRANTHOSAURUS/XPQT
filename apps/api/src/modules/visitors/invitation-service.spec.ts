@@ -380,7 +380,8 @@ describe('InvitationService.create', () => {
 
   it('cross-building scope: actor without scope on building_id throws ', async () => {
     const ctx = makeService({ authorizedSpaces: ['SOME-OTHER-BUILDING-ID'] });
-    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(AppError);
+    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toMatchObject({
+      code: 'visitor.forbidden', status: 403 });
   });
 
   it('multi-host: creates one visitor_hosts row per co_host + one for primary', async () => {
@@ -495,7 +496,8 @@ describe('InvitationService.create', () => {
 
   it('unknown visitor_type: throws ', async () => {
     const ctx = makeService({ visitorTypes: {} });
-    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(AppError);
+    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toMatchObject({
+      code: 'visitor_type.not_found', status: 404 });
   });
 
   it('emits visitor.invitation.expected domain_event with plaintext cancel_token in payload', async () => {

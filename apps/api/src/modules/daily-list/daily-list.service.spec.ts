@@ -165,7 +165,7 @@ describe('DailyListService.assemble', () => {
     const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'daily_list.vendor_not_found', status: 404 });
   });
 
   it('rejects portal-only vendor', async () => {
@@ -173,7 +173,7 @@ describe('DailyListService.assemble', () => {
     const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'daily_list.invalid_vendor', status: 400 });
   });
 
   it('produces a payload with first-name-only requester (privacy)', async () => {

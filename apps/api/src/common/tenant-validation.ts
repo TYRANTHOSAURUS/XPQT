@@ -119,9 +119,9 @@ export async function assertTenantOwned(
 
   const { data, error } = await q.maybeSingle();
   if (error) {
-    throw AppErrors.validationFailed('reference.lookup_failed', {
-      detail: `${entity} reference lookup failed: ${error.message}`,
-    });
+    // Drop interpolation — Supabase/Postgrest error.message can carry vendor
+    // names + SQL fragments. messages.en.ts owns the user-visible detail.
+    throw AppErrors.validationFailed('reference.lookup_failed');
   }
   if (!data) {
     throw AppErrors.validationFailed('reference.not_in_tenant', {
@@ -203,9 +203,9 @@ export async function assertTenantOwnedAll(
   }
   const { data, error } = await q;
   if (error) {
-    throw AppErrors.validationFailed('reference.lookup_failed', {
-      detail: `${entity} reference lookup failed: ${error.message}`,
-    });
+    // Drop interpolation — Supabase/Postgrest error.message can carry vendor
+    // names + SQL fragments. messages.en.ts owns the user-visible detail.
+    throw AppErrors.validationFailed('reference.lookup_failed');
   }
 
   const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));

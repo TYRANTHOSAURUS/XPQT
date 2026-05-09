@@ -415,7 +415,7 @@ describe('KioskService', () => {
         tokenResult: { visitor_id: VISITOR_ID, tenant_id: OTHER_TENANT_ID } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       expect(transitionCalls).toHaveLength(0);
     });
 
@@ -432,7 +432,7 @@ describe('KioskService', () => {
           primary_host_last_name: null } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       expect(transitionCalls).toHaveLength(0);
     });
 
@@ -441,7 +441,7 @@ describe('KioskService', () => {
         tokenError: { code: '45003', message: 'token_expired' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
     });
 
     it('maps SQLSTATE 45002 (token_already_used) to AppError', async () => {
@@ -449,7 +449,7 @@ describe('KioskService', () => {
         tokenError: { code: '45002', message: 'token_already_used' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
     });
 
     it('maps SQLSTATE 45001 (invalid_token) to AppError', async () => {
@@ -457,7 +457,7 @@ describe('KioskService', () => {
         tokenError: { code: '45001', message: 'invalid_token' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
     });
   });
 
@@ -496,7 +496,7 @@ describe('KioskService', () => {
           primary_host_last_name: null } });
       await expect(
         svc.checkInByName(KIOSK_CONTEXT, VISITOR_ID, 'wrongname'),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       expect(auditInserts.find((a) => a.event_type === 'kiosk.checkin_failed')).toBeTruthy();
     });
 
@@ -512,7 +512,7 @@ describe('KioskService', () => {
           primary_host_last_name: null } });
       await expect(
         svc.checkInByName(KIOSK_CONTEXT, VISITOR_ID, 'anne'),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
   });
 
@@ -813,37 +813,37 @@ describe('KioskAuthGuard', () => {
   it('rejects missing Authorization header', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext(undefined);
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('rejects malformed Authorization header', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext('Basic foo');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('rejects on SQLSTATE 45011 (invalid_token)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45011' });
     const { ctx } = makeContext('Bearer wrong-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('rejects on SQLSTATE 45012 (token_inactive / revoked)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45012' });
     const { ctx } = makeContext('Bearer revoked-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('rejects on SQLSTATE 45013 (token_expired)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45013' });
     const { ctx } = makeContext('Bearer expired-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('rejects on empty result (defensive)', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext('Bearer something');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
   });
 
   it('does not swallow non-token-error exceptions', async () => {

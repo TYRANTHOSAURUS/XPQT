@@ -103,20 +103,21 @@ describe('ReceptionController', () => {
       const h = makeHarness({ permissionDenied: true });
       await expect(
         h.controller.today(makeReq(), BUILDING_ID),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'permission.denied', status: 403 });
     });
     it('rejects walkup without visitors.reception', async () => {
       const h = makeHarness({ permissionDenied: true });
       await expect(
         h.controller.walkup(makeReq(AUTH_UID, { 'x-building-id': BUILDING_ID }), {}),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'permission.denied', status: 403 });
     });
   });
 
   describe('today / search / daglijst (read)', () => {
     it('today requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.today(makeReq(), undefined)).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.today(makeReq(), undefined)).rejects.toMatchObject({
+        code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('today delegates to ReceptionService.today with tenant + actor', async () => {
@@ -127,12 +128,14 @@ describe('ReceptionController', () => {
 
     it('search requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.search(makeReq(), undefined, 'q')).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.search(makeReq(), undefined, 'q')).rejects.toMatchObject({
+        code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('daglijst requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.daglijst(makeReq(), undefined)).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.daglijst(makeReq(), undefined)).rejects.toMatchObject({
+        code: 'visitor.invalid_payload', status: 400 });
     });
   });
 
@@ -141,7 +144,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.walkup(makeReq(AUTH_UID, { 'x-building-id': BUILDING_ID }), { first_name: '' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('rejects missing X-Building-Id header', async () => {
@@ -151,7 +154,7 @@ describe('ReceptionController', () => {
           first_name: 'X',
           visitor_type_id: VISITOR_TYPE_ID,
           primary_host_person_id: PERSON_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('happy path: delegates with X-Building-Id header', async () => {
@@ -180,7 +183,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.checkOut(makeReq(), VISITOR_ID, { pass_returned: true }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('check-out happy path passes through pass_returned', async () => {
@@ -208,7 +211,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.assignPass(makeReq(), PASS_ID, {}),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('assignPass delegates with tenant', async () => {
@@ -221,7 +224,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.reservePass(makeReq(), PASS_ID, {}),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('returnPass / markRecovered delegate', async () => {
@@ -244,7 +247,8 @@ describe('ReceptionController', () => {
   describe('SSE host-arrivals', () => {
     it('rejects when no auth user', async () => {
       const h = makeHarness();
-      await expect(h.controller.hostArrivals(makeReq(null))).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.hostArrivals(makeReq(null))).rejects.toMatchObject({
+        code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('emits only this host\'s events for this tenant', async () => {

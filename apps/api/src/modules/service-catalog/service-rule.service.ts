@@ -302,6 +302,11 @@ export class ServiceRuleService {
       try {
         this.engine.validate(dto.applies_when);
       } catch (err) {
+        // The predicate compiler error message IS the user-actionable detail —
+        // they pasted a malformed predicate and need the parser's complaint to
+        // fix their input. NOT a Supabase / Postgres / vendor leak path; the
+        // scrub regex in normalize.ts catches anything PG-shaped that slips
+        // past the predicate compiler.
         throw AppErrors.validationFailed('invalid_predicate', { detail: (err as Error).message });
       }
     }
@@ -464,6 +469,11 @@ export class ServiceRuleService {
     try {
       this.engine.validate(compiled);
     } catch (err) {
+      // The predicate compiler error message IS the user-actionable detail —
+      // they pasted a malformed predicate and need the parser's complaint to
+      // fix their input. NOT a Supabase / Postgres / vendor leak path; the
+      // scrub regex in normalize.ts catches anything PG-shaped that slips
+      // past the predicate compiler.
       throw AppErrors.validationFailed('invalid_compiled_predicate', {
         detail: `Template compiled to an invalid predicate: ${(err as Error).message}`,
       });
@@ -516,6 +526,11 @@ export class ServiceRuleService {
       try {
         this.engine.validate(dto.applies_when);
       } catch (err) {
+        // The predicate compiler error message IS the user-actionable detail —
+        // they pasted a malformed predicate and need the parser's complaint to
+        // fix their input. NOT a Supabase / Postgres / vendor leak path; the
+        // scrub regex in normalize.ts catches anything PG-shaped that slips
+        // past the predicate compiler.
         throw AppErrors.validationFailed('invalid_predicate', { detail: (err as Error).message });
       }
     }

@@ -460,6 +460,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.idempotency_payload_mismatch',
+      status: 409,
     });
   });
 
@@ -499,6 +500,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.fk_invalid',
+      status: 400,
     });
   });
 
@@ -538,6 +540,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.internal_ref_invalid',
+      status: 400,
     });
   });
 
@@ -578,6 +581,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.snapshot_uuid_invalid',
+      status: 400,
     });
   });
 
@@ -617,6 +621,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'service_rule_deny',
+      status: 400,
       message: 'This catering vendor is not bookable on weekends.',
     });
   });
@@ -662,6 +667,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.slot_conflict',
+      status: 409,
     });
   });
 
@@ -698,6 +704,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.unexpected_error',
+      status: 500,
     });
   });
 });

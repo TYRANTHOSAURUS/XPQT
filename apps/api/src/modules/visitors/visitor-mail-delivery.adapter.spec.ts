@@ -71,7 +71,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await expect(
         adapter.recordSent(VISITOR_ID, OTHER_TENANT_ID, 'msg-1'),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
   });
 
@@ -199,7 +199,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await expect(
         adapter.bouncedInvitesForBuildingSince(BUILDING_ID, OTHER_TENANT_ID, new Date()),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
   });
 });

@@ -328,7 +328,8 @@ describe('ReceptionService', () => {
 
     it('rejects when tenant context does not match', async () => {
       const ctx = makeHarness({});
-      await expect(ctx.svc.today(OTHER_TENANT_ID, BUILDING_ID, USER_ID)).rejects.toBeInstanceOf(AppError);
+      await expect(ctx.svc.today(OTHER_TENANT_ID, BUILDING_ID, USER_ID)).rejects.toMatchObject({
+        code: 'visitor.invalid_payload', status: 400 });
     });
   });
 
@@ -397,7 +398,7 @@ describe('ReceptionService', () => {
       const ctx = makeHarness({});
       await expect(
         ctx.svc.search(OTHER_TENANT_ID, BUILDING_ID, USER_ID, 'x'),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
   });
 
@@ -441,7 +442,7 @@ describe('ReceptionService', () => {
           allow_walk_up: false } });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, visitor_type_id: TYPE_DELIVERY_NO_WALKUP }, ACTOR),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
       expect(ctx.inviteCalls).toHaveLength(0);
     });
 
@@ -453,7 +454,7 @@ describe('ReceptionService', () => {
           requires_approval: true } });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, visitor_type_id: TYPE_INTERVIEW }, ACTOR),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_state', status: 400 });
       expect(ctx.inviteCalls).toHaveLength(0);
     });
 
@@ -461,7 +462,7 @@ describe('ReceptionService', () => {
       const ctx = makeHarness({ visitorType: TYPE_GUEST_ROW });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, dto, { ...ACTOR, tenant_id: OTHER_TENANT_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('rejects future arrived_at', async () => {
@@ -469,14 +470,14 @@ describe('ReceptionService', () => {
       const future = new Date(Date.now() + 10 * 60_000).toISOString();
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, arrived_at: future }, ACTOR),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('returns NotFound when visitor type is missing', async () => {
       const ctx = makeHarness({ visitorType: null });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, dto, ACTOR),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor_type.not_found', status: 404 });
     });
   });
 
@@ -511,7 +512,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { arrived_at: future },
         ),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('rejects arrived_at more than 24h before expected_at', async () => {
@@ -536,7 +537,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { arrived_at: tooEarly },
         ),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       expect(fakeArrived).toBeTruthy(); // silence unused
     });
   });
@@ -607,7 +608,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { checkout_source: 'eod_sweep' as never },
         ),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
 
     it('throws NotFound when visitor is missing', async () => {
@@ -619,7 +620,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { checkout_source: 'reception' },
         ),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
   });
 

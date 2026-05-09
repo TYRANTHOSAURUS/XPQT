@@ -163,7 +163,10 @@ export class BrandingService {
       .from('tenants')
       .update({ branding: stripName(next) })
       .eq('id', tenant.id);
-    if (updateError) throw AppErrors.server('tenant.update_failed', { detail: updateError.message, cause: updateError });
+    // Drop detail interpolation — Supabase update error.message can carry
+    // vendor / Postgres prose. messages.en.ts owns user-visible copy; the
+    // raw error is preserved on `cause` for ops logs.
+    if (updateError) throw AppErrors.server('tenant.update_failed', { cause: updateError });
 
     await this.writeAuditEvent('tenant.branding.updated', { uploaded: kind });
     return next;

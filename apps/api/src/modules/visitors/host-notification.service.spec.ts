@@ -252,7 +252,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyArrival(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(AppError);
+        ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       } finally {
         ctx.cleanup();
       }
@@ -262,7 +262,7 @@ describe('HostNotificationService', () => {
       const ctx = makeHarness({
         visitor: { tenant_id: OTHER_TENANT_ID } as never });
       try {
-        await expect(ctx.svc.notifyArrival(VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
+        await expect(ctx.svc.notifyArrival(VISITOR_ID, TENANT_ID)).rejects.toMatchObject({ code: 'visitor.not_found', status: 404 });
       } finally {
         ctx.cleanup();
       }
@@ -332,7 +332,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.acknowledge(VISITOR_ID, '00000000-0000-0000-0000-000000000000', TENANT_ID),
-        ).rejects.toBeInstanceOf(AppError);
+        ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       } finally {
         ctx.cleanup();
       }
@@ -344,7 +344,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.acknowledge(VISITOR_ID, COHOST_A, TENANT_ID),
-        ).rejects.toBeInstanceOf(AppError);
+        ).rejects.toMatchObject({ code: 'visitor.not_found', status: 404 });
       } finally {
         ctx.cleanup();
       }
@@ -400,7 +400,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyInvitationDenied(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(AppError);
+        ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       } finally {
         ctx.cleanup();
       }
@@ -454,7 +454,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyVisitorCancelled(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(AppError);
+        ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       } finally {
         ctx.cleanup();
       }

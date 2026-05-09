@@ -90,14 +90,15 @@ describe('ResendMailProvider — send', () => {
       from: 'noreply@example.com',
       to: 'a@b.com,c@d.com',
       subject: 's',
-      textBody: 't' })).rejects.toBeInstanceOf(AppError);
+      textBody: 't' })).rejects.toMatchObject({ code: 'mail.invalid_recipient', status: 400 });
   });
 
   it('throws BadRequest when RESEND_API_KEY is missing', async () => {
     delete process.env.RESEND_API_KEY;
     const provider = new ResendMailProvider();
     await expect(provider.send({
-      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toBeInstanceOf(AppError);
+      tenantId: 't', from: 'a@b', to: 'c@d', subject: 's', textBody: 't' })).rejects.toMatchObject({
+      code: 'mail.config_missing', status: 500 });
   });
 
   it('does not leak Resend vendor tokens in user-facing detail (Codex I1)', async () => {

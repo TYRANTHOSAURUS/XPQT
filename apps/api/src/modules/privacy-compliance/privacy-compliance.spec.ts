@@ -423,7 +423,7 @@ describe('RetentionService.setCategorySettings', () => {
     const { service } = makeSubject({ retention_days: 180, cap_retention_days: 365 });
     await expect(
       service.setCategorySettings(TENANT, 'visitor_records', { retentionDays: 100 }, ACTOR, 'short'),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'privacy.reason_required', status: 400 });
   });
 
   it('shortening retention is allowed without LIA text', async () => {

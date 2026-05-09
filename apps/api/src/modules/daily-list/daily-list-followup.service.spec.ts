@@ -224,7 +224,7 @@ describe('DailyListFollowupService.confirmPhoned', () => {
     const { svc } = buildSvc({ preState: null });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'daily_list.line_not_found', status: 404 });
   });
 
   it('throws BadRequest when the line exists, has never been flagged, and is not currently flagged', async () => {
@@ -233,6 +233,6 @@ describe('DailyListFollowupService.confirmPhoned', () => {
     });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'daily_list.invalid_payload', status: 400 });
   });
 });

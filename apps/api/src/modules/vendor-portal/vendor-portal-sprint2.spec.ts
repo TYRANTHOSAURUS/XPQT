@@ -38,13 +38,13 @@ describe('VendorPortalGuard', () => {
   it('rejects when the session cookie is missing', async () => {
     const guard = new VendorPortalGuard(makeAuth());
     const { ctx } = makeCtx(undefined);
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'auth.unauthorized', status: 401 });
   });
 
   it('rejects when validate returns null', async () => {
     const guard = new VendorPortalGuard(makeAuth(null));
     const { ctx } = makeCtx(`prequest_vendor_session=invalid-token`);
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
+    await expect(guard.canActivate(ctx)).rejects.toMatchObject({ code: 'auth.unauthorized', status: 401 });
   });
 
   it('attaches vendorSession + fires sliding-TTL touch on success', async () => {

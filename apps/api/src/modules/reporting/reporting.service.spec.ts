@@ -54,12 +54,13 @@ describe('ReportingService.getBookings* (canonical RPC pass-through)', () => {
         })),
       ).rejects.toMatchObject({
         code: 'report.invalid_date',
+        status: 400,
       });
       await expect(
         withTenant(() => svc.getBookingsOverview({
           from: '04/01/2026', to: '04/30/2026', buildingId: null, tz: 'UTC',
         })),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'report.invalid_date', status: 400 });
       expect(rpc).not.toHaveBeenCalled();
     });
 

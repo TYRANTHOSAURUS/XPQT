@@ -110,7 +110,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx({ user_id: '', person_id: null })),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'bundle.forbidden', status: 403 });
 
     // No queries — must short-circuit before any I/O.
     expect(deps.supabase.admin.from).not.toHaveBeenCalled();
@@ -191,7 +191,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx()),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'bundle.forbidden', status: 403 });
 
     // The defensive filter MUST have been applied. If a future refactor drops
     // it, this assertion fails and the leak is caught at unit-test time.
@@ -250,7 +250,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx()),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'bundle.forbidden', status: 403 });
 
     expect(deps.log.tablesAccessed).not.toContain('team_members');
   });

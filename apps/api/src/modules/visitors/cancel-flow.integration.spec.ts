@@ -242,7 +242,8 @@ describe('Visitor cancel-link flow — slice 5', () => {
       building_id: BUILDING_ID });
 
     await h.controller.cancelByToken(TOKEN_OK);
-    await expect(h.controller.cancelByToken(TOKEN_OK)).rejects.toBeInstanceOf(AppError);
+    await expect(h.controller.cancelByToken(TOKEN_OK)).rejects.toMatchObject({
+      code: 'visitor.invalid_token', status: 404 });
   });
 
   it('wrong tenant context (token issued for tenant B) returns 410', async () => {
@@ -255,7 +256,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
 
     await expect(
       h.controller.cancelByToken(TOKEN_CROSS_TENANT),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
     expect(h.hostNotifications.notifyVisitorCancelled).not.toHaveBeenCalled();
@@ -272,7 +273,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
 
     await expect(
       h.controller.cancelByToken(TOKEN_EXPIRED),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
     expect(h.hostNotifications.notifyVisitorCancelled).not.toHaveBeenCalled();
@@ -282,7 +283,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
     const h = build();
     await expect(
       h.controller.cancelByToken('garbage'),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
   });
@@ -310,7 +311,8 @@ describe('Visitor cancel-link flow — slice 5', () => {
 
   it('preview returns 410 for invalid tokens', async () => {
     const h = build();
-    await expect(h.controller.previewCancel('garbage')).rejects.toBeInstanceOf(AppError);
+    await expect(h.controller.previewCancel('garbage')).rejects.toMatchObject({
+      code: 'visitor.invalid_token', status: 404 });
   });
 
   it('preview returns 410 for expired tokens', async () => {
@@ -320,7 +322,8 @@ describe('Visitor cancel-link flow — slice 5', () => {
       tenant_id: TENANT_A,
       used: false,
       expired: true });
-    await expect(h.controller.previewCancel(TOKEN_EXPIRED)).rejects.toBeInstanceOf(AppError);
+    await expect(h.controller.previewCancel(TOKEN_EXPIRED)).rejects.toMatchObject({
+      code: 'visitor.invalid_token', status: 404 });
   });
 
   it('preview returns 410 for cross-tenant tokens', async () => {
@@ -332,7 +335,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       expired: false });
     await expect(
       h.controller.previewCancel(TOKEN_CROSS_TENANT),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
   });
 
   it('preview after cancel returns visitor_status=cancelled with tombstoned PII (I12)', async () => {

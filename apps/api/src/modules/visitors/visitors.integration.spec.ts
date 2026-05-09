@@ -268,7 +268,7 @@ describe('Visitor management — cross-controller integration', () => {
     // The token is single-use — re-using it returns 410.
     await expect(
       h.visitorsController.cancelByToken(CANCEL_TOKEN),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
 
     // ── 3. Reception today-view does NOT include the cancelled visit ──
     const today = await h.receptionController.today(makeReq(), BUILDING_ID);
@@ -316,7 +316,7 @@ describe('Visitor management — cross-controller integration', () => {
 
     await expect(
       h.visitorsController.cancelByToken('cross-tenant-token'),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'visitor.invalid_token', status: 404 });
 
     // transitionStatus MUST NOT be called when cross-tenant defence trips.
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();

@@ -134,14 +134,18 @@ export class DataSubjectService {
         upsert: true,
       });
     if (uploadErr) {
-      throw AppErrors.server('privacy.bundle_upload_failed', { detail: `Bundle upload failed: ${uploadErr.message}`, cause: uploadErr });
+      // Drop detail interpolation — Supabase storage error.message can carry
+      // vendor prose. messages.en.ts owns user-visible copy; raw error is
+      // preserved on `cause` for ops logs.
+      throw AppErrors.server('privacy.bundle_upload_failed', { cause: uploadErr });
     }
 
     const { data: signed, error: signErr } = await this.supabase.admin.storage
       .from(DataSubjectService.EXPORT_BUCKET)
       .createSignedUrl(path, DataSubjectService.SIGNED_URL_TTL_SECONDS);
     if (signErr || !signed) {
-      throw AppErrors.server('privacy.signed_url_failed', { detail: `Signed URL mint failed: ${signErr?.message ?? 'unknown'}` });
+      // Same vendor-leak guard as bundle_upload_failed above.
+      throw AppErrors.server('privacy.signed_url_failed', { cause: signErr ?? undefined });
     }
 
     const expiresAt = new Date(Date.now() + DataSubjectService.SIGNED_URL_TTL_SECONDS * 1000);

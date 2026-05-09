@@ -65,11 +65,11 @@ describe('KioskController', () => {
   describe('checkInQr', () => {
     it('rejects empty body', async () => {
       const h = makeHarness();
-      await expect(h.controller.checkInQr(makeReq(), {})).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.checkInQr(makeReq(), {})).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
     it('rejects too-short token', async () => {
       const h = makeHarness();
-      await expect(h.controller.checkInQr(makeReq(), { token: 'abc' })).rejects.toBeInstanceOf(AppError);
+      await expect(h.controller.checkInQr(makeReq(), { token: 'abc' })).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
     it('happy path delegates with kioskContext + token', async () => {
       const h = makeHarness();
@@ -83,13 +83,13 @@ describe('KioskController', () => {
       const h = makeHarness();
       await expect(
         h.controller.checkInByName(makeReq(), { host_first_name_confirmation: 'Jan' }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
     it('rejects missing host_first_name_confirmation', async () => {
       const h = makeHarness();
       await expect(
         h.controller.checkInByName(makeReq(), { visitor_id: VISITOR_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
     it('happy path delegates', async () => {
       const h = makeHarness();
@@ -107,7 +107,7 @@ describe('KioskController', () => {
         h.controller.walkup(makeReq(), {
           visitor_type_id: VISITOR_TYPE_ID,
           primary_host_person_id: HOST_PERSON_ID }),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
     });
     it('happy path delegates', async () => {
       const h = makeHarness();

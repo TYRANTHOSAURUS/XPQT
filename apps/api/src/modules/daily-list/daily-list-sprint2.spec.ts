@@ -233,7 +233,7 @@ describe('DailyListService.renderAndUpload', () => {
     const { svc } = buildSvc({ uploadError: 'bucket missing' });
     await expect(
       svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST }),
-    ).rejects.toBeInstanceOf(AppError);
+    ).rejects.toMatchObject({ code: 'daily_list.upload_failed', status: 500 });
   });
 });
 
@@ -293,7 +293,8 @@ describe('DailyListService.send', () => {
 
   it('captures email_error + emits SendFailed + clears sending_acquired_at on mailer failure', async () => {
     const { svc, db } = buildSvc({ mailerFails: true });
-    await expect(svc.send({ tenantId: TENANT, dailyListId: DAGLIJST })).rejects.toThrow(/send failed/);
+    await expect(svc.send({ tenantId: TENANT, dailyListId: DAGLIJST })).rejects.toMatchObject({
+      code: 'daily_list.send_failed', status: 500 });
     const failureUpdate = db.captured.find((c) =>
       c.sql.includes('update vendor_daily_lists') && c.sql.includes("'failed'"),
     );

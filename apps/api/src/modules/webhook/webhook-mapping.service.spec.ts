@@ -64,14 +64,14 @@ describe('WebhookMappingService', () => {
     const svc = make();
     const webhook = baseWebhook({ default_requester_person_id: 'p1' });
     await expect(svc.map(webhook, {}, { externalSystem: null, externalId: null }))
-      .rejects.toBeInstanceOf(AppError);
+      .rejects.toMatchObject({ code: 'webhook.invalid_mapping', status: 400 });
   });
 
   it('rejects payloads with no resolvable requester', async () => {
     const svc = make();
     const webhook = baseWebhook({ default_request_type_id: 'rt1' });
     await expect(svc.map(webhook, {}, { externalSystem: null, externalId: null }))
-      .rejects.toBeInstanceOf(AppError);
+      .rejects.toMatchObject({ code: 'webhook.invalid_mapping', status: 400 });
   });
 
   it('picks ticket_type_id from a matching request_type_rule', async () => {

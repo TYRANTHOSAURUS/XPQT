@@ -314,6 +314,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking_slot.not_found',
+      status: 404,
     });
     // RPC is never called when the pre-flight finds nothing — saves a
     // round-trip and prevents leaking nonexistent ids into the audit.
@@ -344,6 +345,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.slot_conflict',
+      status: 409,
     });
   });
 
@@ -368,6 +370,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking_slot.url_mismatch',
+      status: 400,
     });
     expect(supabase.calls.rpc).toHaveLength(0);
   });
@@ -418,6 +421,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.slot_space_invalid',
+      status: 400,
     });
   });
 
@@ -454,6 +458,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.slot_space_invalid',
+      status: 400,
     });
   });
 
@@ -508,6 +513,7 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.edit_forbidden',
+      status: 403,
     });
     expect(supabase.calls.rpc).toHaveLength(0);
   });
@@ -848,6 +854,7 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.invalid_attendee_count',
+      status: 400,
     });
 
     // Critical: NEITHER geometry NOR meta committed. The pre-fix bug
@@ -883,6 +890,7 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.invalid_window',
+      status: 400,
     });
     expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
     expect(supabase.calls.bookingSlotsUpdate).toHaveLength(0);

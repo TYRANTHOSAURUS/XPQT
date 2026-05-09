@@ -301,7 +301,7 @@ describe('VisitorService.transitionStatus', () => {
       const svc = new VisitorService(ctx.db as never);
       await expect(
         svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR),
-      ).rejects.toBeInstanceOf(AppError);
+      ).rejects.toMatchObject({ code: 'visitor.invalid_payload', status: 400 });
       // Defense-in-depth: the visitors_checkout_source_required CHECK
       // would also catch this in the DB. Both layers in agreement.
     });

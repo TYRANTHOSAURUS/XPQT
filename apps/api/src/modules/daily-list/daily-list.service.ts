@@ -699,7 +699,10 @@ export class DailyListService {
           details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
         });
       }
-      throw AppErrors.server('daily_list.send_failed', { detail: `Daily-list send failed: ${errMsg}` });
+      // Drop interpolation — errMsg comes from the mailer (Resend) and can
+      // carry vendor names. messages.en.ts owns user-visible copy; the raw
+      // error is preserved in audit_outbox + the rollback row's `email_error`.
+      throw AppErrors.server('daily_list.send_failed');
     }
 
     // Successful send — lock the lines + update the row + audit.
