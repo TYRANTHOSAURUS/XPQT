@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { TenantService } from '../tenant/tenant.service';
 import { TicketService } from '../ticket/ticket.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
@@ -53,7 +54,7 @@ export class WebhookIngestService {
         payload,
         headers: meta.rawHeaders,
       });
-      throw new Error('Tenant resolution failed');
+      throw AppErrors.server('webhook.tenant_resolution_failed', { detail: 'Tenant resolution failed' });
     }
 
     return TenantContext.run(tenant, async () => {

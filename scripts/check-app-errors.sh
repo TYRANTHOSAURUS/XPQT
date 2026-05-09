@@ -40,6 +40,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/cost-centers"
   "apps/api/src/modules/bundle-templates"
   "apps/api/src/modules/auth"
+  "apps/api/src/modules/webhook"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { WebhookMappingService } from './webhook-mapping.service';
 import { validateWebhookMapping } from './webhook-mapping-validator';
 import type { RequestTypeContext } from './webhook-mapping-validator';
@@ -162,7 +163,7 @@ export class WebhookAdminService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException('Webhook not found');
+    if (!data) throw AppErrors.notFoundWithCode('webhook.not_found', 'Webhook not found');
     return data as Omit<WebhookRow, 'api_key_hash'>;
   }
 

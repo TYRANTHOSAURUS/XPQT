@@ -1120,6 +1120,38 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "You don't have access to this",
     detail: 'An admin role is required.',
   },
+
+  // ─── webhook (Phase 7.B-1.webhook) ───────────────────────────────────────
+  'webhook.not_found': {
+    title: "Couldn't find that webhook",
+  },
+  'webhook.tenant_resolution_failed': {
+    title: "Couldn't process that webhook",
+    detail: 'Tenant resolution failed.',
+  },
+  'webhook.invalid_mapping': {
+    title: "Couldn't save that webhook mapping",
+  },
+  'webhook.missing_api_key': {
+    title: 'Authentication required',
+    detail: 'Missing Bearer API key.',
+  },
+  'webhook.invalid_api_key': {
+    title: 'Authentication failed',
+    detail: 'Invalid API key.',
+  },
+  'webhook.inactive': {
+    title: 'Webhook unavailable',
+    detail: 'That webhook is inactive.',
+  },
+  'webhook.source_ip_unresolvable': {
+    title: 'Webhook unavailable',
+    detail: 'Source IP is unresolvable.',
+  },
+  'webhook.source_ip_not_permitted': {
+    title: 'Webhook unavailable',
+    detail: 'Source IP is not permitted.',
+  },
 };
 
 /**

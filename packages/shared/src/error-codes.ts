@@ -351,6 +351,16 @@ export type KnownErrorCode =
   | 'auth.user_not_in_tenant'
   | 'auth.admin_required'
 
+  // ─── webhook migration (Phase 7.B-1.webhook) ─────────────────────────────
+  | 'webhook.not_found'
+  | 'webhook.tenant_resolution_failed'
+  | 'webhook.invalid_mapping'
+  | 'webhook.missing_api_key'
+  | 'webhook.invalid_api_key'
+  | 'webhook.inactive'
+  | 'webhook.source_ip_unresolvable'
+  | 'webhook.source_ip_not_permitted'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -708,6 +718,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'auth.role_lookup_failed',
   'auth.user_not_in_tenant',
   'auth.admin_required',
+  'webhook.not_found',
+  'webhook.tenant_resolution_failed',
+  'webhook.invalid_mapping',
+  'webhook.missing_api_key',
+  'webhook.invalid_api_key',
+  'webhook.inactive',
+  'webhook.source_ip_unresolvable',
+  'webhook.source_ip_not_permitted',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

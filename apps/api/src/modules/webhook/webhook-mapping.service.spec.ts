@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { WebhookMappingService } from './webhook-mapping.service';
 import type { WebhookRow } from './webhook-types';
 
@@ -64,14 +64,14 @@ describe('WebhookMappingService', () => {
     const svc = make();
     const webhook = baseWebhook({ default_requester_person_id: 'p1' });
     await expect(svc.map(webhook, {}, { externalSystem: null, externalId: null }))
-      .rejects.toBeInstanceOf(BadRequestException);
+      .rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects payloads with no resolvable requester', async () => {
     const svc = make();
     const webhook = baseWebhook({ default_request_type_id: 'rt1' });
     await expect(svc.map(webhook, {}, { externalSystem: null, externalId: null }))
-      .rejects.toBeInstanceOf(BadRequestException);
+      .rejects.toBeInstanceOf(AppError);
   });
 
   it('picks ticket_type_id from a matching request_type_rule', async () => {

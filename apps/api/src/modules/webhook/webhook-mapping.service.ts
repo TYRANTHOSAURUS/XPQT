@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { evalJsonPath } from './json-path';
 import type { CreateTicketDto } from '../ticket/ticket.service';
 import type { RequestTypeRule, RequestTypeRuleCondition, WebhookRow } from './webhook-types';
@@ -28,16 +29,16 @@ export class WebhookMappingService {
 
     const ticketTypeId = await this.resolveRequestType(webhook, payload, mapped);
     if (!ticketTypeId) {
-      throw new BadRequestException(
-        'Webhook payload does not resolve to a ticket_type_id. Add a default_request_type_id, request_type_rules entry, or map ticket_type_id in field_mapping.',
-      );
+      throw AppErrors.validationFailed('webhook.invalid_mapping', {
+        detail: 'Webhook payload does not resolve to a ticket_type_id. Add a default_request_type_id, request_type_rules entry, or map ticket_type_id in field_mapping.',
+      });
     }
 
     const requesterPersonId = await this.resolveRequester(webhook, payload, mapped);
     if (!requesterPersonId) {
-      throw new BadRequestException(
-        'Webhook payload does not resolve to a requester_person_id. Add a default_requester_person_id, requester_lookup, or map requester_person_id in field_mapping.',
-      );
+      throw AppErrors.validationFailed('webhook.invalid_mapping', {
+        detail: 'Webhook payload does not resolve to a requester_person_id. Add a default_requester_person_id, requester_lookup, or map requester_person_id in field_mapping.',
+      });
     }
 
     const externalSystem = headers.externalSystem ?? (mapped.external_system as string | null) ?? null;

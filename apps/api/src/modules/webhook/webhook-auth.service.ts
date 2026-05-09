@@ -1,6 +1,7 @@
-import { Injectable, UnauthorizedException, ForbiddenException, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import type { WebhookRow } from './webhook-types';
 
 interface Bucket {
@@ -23,7 +24,7 @@ export class WebhookAuthService {
    */
   async verify(authorizationHeader: string | undefined, sourceIp: string | undefined): Promise<WebhookRow> {
     const key = this.extractBearerKey(authorizationHeader);
-    if (!key) throw new UnauthorizedException('Missing Bearer API key');
+    if (!key) throw AppErrors.unauthorized('Missing Bearer API key');
 
     const hash = createHash('sha256').update(key).digest('hex');
     const { data, error } = await this.supabase.admin
@@ -33,10 +34,10 @@ export class WebhookAuthService {
       .maybeSingle();
 
     if (error) throw error;
-    if (!data) throw new UnauthorizedException('Invalid API key');
+    if (!data) throw AppErrors.unauthorized('Invalid API key');
 
     const webhook = data as WebhookRow;
-    if (!webhook.active) throw new ForbiddenException('Webhook is inactive');
+    if (!webhook.active) throw AppErrors.forbidden('webhook.inactive', 'Webhook is inactive');
 
     this.assertIpAllowed(webhook, sourceIp);
     this.assertRateLimit(webhook);
@@ -52,9 +53,9 @@ export class WebhookAuthService {
 
   private assertIpAllowed(webhook: WebhookRow, sourceIp: string | undefined) {
     if (!webhook.allowed_cidrs?.length) return;
-    if (!sourceIp) throw new ForbiddenException('Source IP unresolvable');
+    if (!sourceIp) throw AppErrors.forbidden('webhook.source_ip_unresolvable', 'Source IP unresolvable');
     const ok = webhook.allowed_cidrs.some(cidr => ipMatchesCidr(sourceIp, cidr));
-    if (!ok) throw new ForbiddenException('Source IP not permitted');
+    if (!ok) throw AppErrors.forbidden('webhook.source_ip_not_permitted', 'Source IP not permitted');
   }
 
   private assertRateLimit(webhook: WebhookRow) {
@@ -67,7 +68,8 @@ export class WebhookAuthService {
     b.updatedAt = now;
     if (b.tokens < 1) {
       this.buckets.set(webhook.id, b);
-      throw new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
+      // Standard 60s retry window — tune via webhook config if needed.
+      throw AppErrors.rateLimited(60, { detail: 'Rate limit exceeded' });
     }
     b.tokens -= 1;
     this.buckets.set(webhook.id, b);
