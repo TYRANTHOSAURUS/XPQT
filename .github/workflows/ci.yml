@@ -68,6 +68,17 @@ jobs:
         # ratchet enforced going forward.
         run: pnpm errors:check-app-errors
 
+      - name: Phase 8 naming-allowlist drift gate
+        # Per docs/follow-ups/phase-8-naming-audit.md + §3 commit 6.
+        # Greps for legacy `booking_bundle*` / `bundle_id` /
+        # `reservation_id` / bare `reservations` refs in apps/api/src and
+        # asserts every match is on the pinned allowlist at
+        # apps/api/src/.naming-allowlist.txt. New refs require either
+        # a rename (preferred) or an allowlist entry classified as
+        # KEEP_HISTORICAL_COMMENT / KEEP_LEGITIMATE_OTHER_TABLE /
+        # KEEP_BACKWARDS_COMPAT_FIELD / KEEP_AUDIT_ENTITY_TYPE.
+        run: pnpm naming:check-allowlist
+
       - name: Typecheck web
         run: pnpm --filter @prequest/web run lint
 

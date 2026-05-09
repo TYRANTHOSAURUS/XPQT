@@ -826,3 +826,167 @@ apps/api/src/modules/visitors/invitation.service.ts:175:        booking_id: book
 apps/api/src/modules/visitors/reception.controller.ts:182:       booking_bundle_id (the booking-bundle cascade links visitor lines
 apps/api/src/modules/visitors/reception.controller.ts:185:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
 apps/api/src/modules/visitors/visitors.controller.ts:405:    // Post-canonicalisation (2026-05-02): visitors.booking_bundle_id was
+
+
+# === KEEP_BASELINE_PINNED — Phase 8.A.2.6 CI-guard baseline ===
+# Refs not classified individually in §2 above but verified against
+# docs/follow-ups/phase-8-naming-audit.md classification rules during
+# the 8.A.2.6 commit. Mostly: legacy module-path imports (the
+# `apps/api/src/modules/reservations/` directory still exists), comments
+# documenting historical names, method-arg keys retained for API
+# stability (e.g. `cancelBundle({ bundle_id })`), test descriptions,
+# and bare 'reservations' in route paths / docstrings.
+#
+# These are pinned so the CI guard catches future drift; future audit
+# can re-classify them into the named KEEP_* buckets without behaviour
+# change.
+apps/api/src/app.module.ts:39:import { ReservationsModule } from './modules/reservations/reservations.module';
+apps/api/src/common/errors/messages.en.ts:366:  // ─── reservations module (Phase 7.A.2.c.ii) ──────────────────────────────
+apps/api/src/common/errors/messages.nl.ts:366:  // ─── reservations module (Phase 7.A.2.c.ii) ──────────────────────────────
+apps/api/src/common/errors/wire-shape-matrix.spec.ts:254:        message: 'duplicate key value violates unique constraint reservations_pkey; INSERT INTO reservations',
+apps/api/src/common/guards/require-client-request-id.guard.ts:24: * Producer routes — `POST /reservations`, `POST /reservations/multi-room`,
+apps/api/src/common/guards/require-client-request-id.guard.ts:25: * `POST /reservations/:id/services`, `POST /approvals/:id/respond` — need
+apps/api/src/modules/approval/approval.module.ts:5:import { ReservationsModule } from '../reservations/reservations.module';
+apps/api/src/modules/approval/approval.service.ts:14:} from '../reservations/reservation-projection';
+apps/api/src/modules/approval/approval.service.ts:534:    // gate the booking_bundle branch uses.
+apps/api/src/modules/approval/approval.service.ts:7:import { BookingNotificationsService } from '../reservations/booking-notifications.service';
+apps/api/src/modules/booking-bundles/booking-bundles.module.ts:21: * canonical `/reservations/*` and a future `/bookings/*` surface. This
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:336:    if (everythingCancelled && !args.reservation_id) {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:356:    if (args.reservation_id) {
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:384:    // (`reservation_id` set) AND nothing was actually cancelled — the cascade
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:456:   * read from `booking_bundles`; under canonicalisation the booking IS the
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:502:   * caller's `reservation_id` is already the bundle id. Pre-rewrite this
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:503:   * walked `orders.linked_reservation_id` to find the parent bundle; under
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:504:   * the new schema there's no walk — `args.reservation_id` IS the booking id
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:505:   * (Slice A return-shape contract). The argument is named `reservation_id`
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:512:    reservation_id: string;
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:522:        `cancelOrdersForReservation ${args.reservation_id} failed: ${(err as Error).message}`,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:55:  reservation_id?: string;
+apps/api/src/modules/booking-bundles/bundle.service.spec.ts:7:  it.todo('cancel cascades to linked entities (reservation, orders, work-order tickets, asset reservations)');
+apps/api/src/modules/booking-bundles/bundle.service.ts:1701:   *   - orders.linked_reservation_id → orders.linked_slot_id (FK to booking_slots.id)
+apps/api/src/modules/booking-bundles/bundle.service.ts:211:   * `reservation_id`; that param is now semantically a booking id (the
+apps/api/src/modules/booking-bundles/bundle.service.ts:221:      booking_id: args.reservation_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:248:      // `booking_bundles` row to lazy-create. Use the booking's id as the
+apps/api/src/modules/booking-bundles/bundle.service.ts:33: * Post-canonicalisation (2026-05-02): there is no separate `booking_bundles`
+apps/api/src/modules/booking-bundles/bundle.service.ts:35: * attaches service orders/lines/asset-reservations to an existing booking.
+apps/api/src/modules/booking-bundles/bundle.service.ts:425:        // asset reservations + line items + bundle.
+apps/api/src/modules/booking-bundles/bundle.service.ts:59: *     translating the renamed `reservation_id` field to `booking_id`. Per the
+apps/api/src/modules/booking-bundles/bundle.service.ts:727:    // Sort the asset reservations by `client_line_id` (the immutable OLI
+apps/api/src/modules/booking-bundles/bundle.service.ts:88:  reservation_id: string;
+apps/api/src/modules/booking-bundles/bundle.service.ts:989:   * `primary_reservation_id` indirection is gone — we delegate straight to
+apps/api/src/modules/booking-bundles/dto/types.ts:15:// BookingSource (apps/api/src/modules/reservations/dto/types.ts:28-37).
+apps/api/src/modules/booking-bundles/plan-sort.ts:92: * tests + by the plan-builder when assembling the reservations array.
+apps/api/src/modules/bundle-templates/bundle-templates.service.ts:56: * (FK ON DELETE SET NULL on booking_bundles.template_id keeps existing
+apps/api/src/modules/calendar-sync/__tests__/reconciler.diff.spec.ts:119:  it('raises orphan_internal for reservations whose external event vanished', async () => {
+apps/api/src/modules/calendar-sync/__tests__/reconciler.diff.spec.ts:25:    // to be `reservations:` when the legacy table existed; renamed to
+apps/api/src/modules/calendar-sync/reconciler.service.ts:146:    for (const r of reservations) {
+apps/api/src/modules/calendar-sync/reconciler.service.ts:23: * Heartbeat reconciler — hourly diff between Prequest reservations and the
+apps/api/src/modules/calendar-sync/reconciler.service.ts:94:    const reservations = await this.loadReservations(space.tenant_id, space.id, now, horizon);
+apps/api/src/modules/calendar-sync/reconciler.service.ts:97:    for (const r of reservations) {
+apps/api/src/modules/cost-centers/cost-centers.service.ts:134:    // FK on booking_bundles.cost_center_id is `ON DELETE SET NULL` — bundles
+apps/api/src/modules/orders/asset-reservation.service.spec.ts:7:  it.todo('lets cancelled reservations not block new ones (status="confirmed" only is in the GiST predicate)');
+apps/api/src/modules/orders/order-service-clone-tenant-validation.spec.ts:107:    // (line-item iteration, asset reservations, status re-evaluation)
+apps/api/src/modules/orders/order.service.ts:116:   * Clone an order + its line items + their asset reservations for a new
+apps/api/src/modules/orders/order.service.ts:162:    //   orders.linked_reservation_id → orders.linked_slot_id (FK to booking_slots.id)
+apps/api/src/modules/orders/order.service.ts:70: *     and asset reservations require sub-project 2.5+)
+apps/api/src/modules/orders/order.service.ts:740:   * slots), one order with N line items, asset reservations for any line
+apps/api/src/modules/orders/orders.controller.ts:24:    // The composite path goes through POST /reservations with `services`.
+apps/api/src/modules/orders/orders.controller.ts:27:      detail: 'orders.create is reserved for composite flow via POST /reservations',
+apps/api/src/modules/orders/orders.controller.ts:33:   * Creates a services-only `booking_bundles` row that owns the order +
+apps/api/src/modules/privacy-compliance/adapters/concrete-adapters.ts:93:      description: 'Historical reservations — 7-year accounting retention.',
+apps/api/src/modules/privacy-compliance/log-personal-data-access.decorator.ts:13: *     resourceType: 'reservations',
+apps/api/src/modules/privacy-compliance/log-personal-data-access.decorator.ts:28:  /** Source table/resource (e.g. 'reservations', 'persons', 'visitors'). */
+apps/api/src/modules/privacy-compliance/sprint3.spec.ts:107:      resourceType: 'reservations',
+apps/api/src/modules/privacy-compliance/sprint3.spec.ts:60:      resourceType: 'reservations',
+apps/api/src/modules/privacy-compliance/sprint3.spec.ts:73:      dataCategory: 'past_bookings', resourceType: 'reservations', resourceId: 'r1',
+apps/api/src/modules/privacy-compliance/sprint3.spec.ts:78:      dataCategory: 'past_bookings', resourceType: 'reservations', resourceId: 'r2',
+apps/api/src/modules/reservations/book-on-behalf.gate.ts:6: * multi-room. The reservations API has historically accepted this field
+apps/api/src/modules/reservations/booking-flow.service.ts:109:   *     not a `reservations.id`. Multi-room/recurrence/check-in services
+apps/api/src/modules/reservations/booking-flow.service.ts:110:   *     that use the returned id to look up the row in `reservations` will
+apps/api/src/modules/reservations/booking-flow.service.ts:364:    // reservations.id. Other slices (multi-room, recurrence, check-in,
+apps/api/src/modules/reservations/booking-flow.service.ts:365:    // reservation.service) that assumed `id` = `reservations.id` will
+apps/api/src/modules/reservations/booking-flow.service.ts:978:   *   - The follow-up update of the master row used to write to `reservations`;
+apps/api/src/modules/reservations/booking-flow.service.ts:982:   *     reads/writes `reservations` and will fail at runtime until rewritten
+apps/api/src/modules/reservations/booking-notifications.service.ts:120:        reservation_id: reservation.id, kind: 'released',
+apps/api/src/modules/reservations/booking-notifications.service.ts:162:        reservation_id: reservation.id, kind: 'approval_requested',
+apps/api/src/modules/reservations/booking-notifications.service.ts:199:        reservation_id: reservation.id, kind: `approval_${decision}`,
+apps/api/src/modules/reservations/booking-notifications.service.ts:296:      reservation_id: reservation.id, kind: 'check_in_reminder',
+apps/api/src/modules/reservations/booking-notifications.service.ts:348:    return `${base}/api/reservations/${r.id}/check-in/magic?token=${encodeURIComponent(token)}`;
+apps/api/src/modules/reservations/booking-notifications.service.ts:357:        entity_id: (details.reservation_id as string) ?? null,
+apps/api/src/modules/reservations/booking-notifications.service.ts:62:        reservation_id: reservation.id,
+apps/api/src/modules/reservations/booking-notifications.service.ts:90:        reservation_id: reservation.id, kind: 'cancelled', reason: reason ?? null,
+apps/api/src/modules/reservations/booking-transaction-boundary.ts:10: *      reservations + approvals across many sequential supabase-js calls.
+apps/api/src/modules/reservations/booking-transaction-boundary.ts:59: *  reservations.module.ts for the `{ provide: BOOKING_TX_BOUNDARY, useClass:
+apps/api/src/modules/reservations/check-in.service.ts:249:   * carries a BOOKING id (Slice A — the magic-link email's reservation_id
+apps/api/src/modules/reservations/conflict-guard.service.ts:117:      /(?:reservations|booking_slots)_no_overlap/.test(e.message)
+apps/api/src/modules/reservations/conflict-guard.service.ts:31: *     used it to look up reservations.id directly will need to walk through
+apps/api/src/modules/reservations/dto/dtos.ts:157: * candidate rooms, then runs parent-chain + reservations + (optional) rule
+apps/api/src/modules/reservations/dto/dtos.ts:177:  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
+apps/api/src/modules/reservations/dto/dtos.ts:1:// DTOs for the reservations REST surface.
+apps/api/src/modules/reservations/dto/dtos.ts:33:   * /reservations/:id/services endpoint so the composer can submit either
+apps/api/src/modules/reservations/dto/types.ts:198:   * `reservations.id` (the old reservations table is gone). Multi-room
+apps/api/src/modules/reservations/dto/types.ts:1:// Shared types for the reservations module.
+apps/api/src/modules/reservations/dto/types.ts:395:   * When true, rooms with conflicting reservations in [start_at, end_at) are
+apps/api/src/modules/reservations/dto/types.ts:86: * `Booking` — the canonical entity (was `booking_bundles`).
+apps/api/src/modules/reservations/list-bookable-rooms.scheduler-pagination.spec.ts:126:    expect(result.reservations).toHaveLength(BOUNDED);
+apps/api/src/modules/reservations/list-bookable-rooms.scheduler-pagination.spec.ts:38:    const reservations = Array.from({ length: opts.reservationCount }, (_, i) => ({
+apps/api/src/modules/reservations/list-bookable-rooms.scheduler-pagination.spec.ts:50:      reservations,
+apps/api/src/modules/reservations/list-bookable-rooms.scheduler-pagination.spec.ts:95:    expect(result.reservations).toHaveLength(12);
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:261:    reservations: Reservation[];
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:278:    // shape (rooms + reservations only) was widened — older callers
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:282:      reservations: Reservation[];
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:324:      reservations: [],
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:365:    const tag = `scheduler-data tenant=${tenantId} returned=${rooms.length} reservations=${result.reservations.length}/${result.reservations_total ?? '?'} rooms_total=${result.rooms_total ?? '?'}${truncated ? ' truncated' : ''} rules=${wantsRules ? 'on' : 'off'} elapsed_ms=${elapsedMs.toFixed(1)}`;
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:371:      reservations: result.reservations,
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:374:      reservations_total: result.reservations_total ?? result.reservations.length,
+apps/api/src/modules/reservations/list-bookable-rooms.service.ts:43:  /** Cap on reservations payload. Default 2000. Truncation surfaces via the response shape. */
+apps/api/src/modules/reservations/magic-check-in.token.ts:10: * Format: base64url(`${reservation_id}.${requester_person_id}.${expiry_ms}.${sig}`)
+apps/api/src/modules/reservations/magic-check-in.token.ts:7: * The token is a compact, URL-safe HMAC over (reservation_id,
+apps/api/src/modules/reservations/multi-attendee.service.ts:11: *   1. Load every attendee's reservations within [windowStart, windowEnd).
+apps/api/src/modules/reservations/multi-room-booking.service.ts:28: * `primary_reservation_id` machinery is replaced by the booking_id grouping.
+apps/api/src/modules/reservations/multi-room-booking.service.ts:322:    const reservations = (slotRows as unknown as SlotWithBookingEmbed[]).map(
+apps/api/src/modules/reservations/multi-room-booking.service.ts:344:    return { group_id: bookingId, reservations };
+apps/api/src/modules/reservations/multi-room-booking.service.ts:39: * Returns shape: `{ group_id, reservations[] }`. Under canonicalisation
+apps/api/src/modules/reservations/multi-room-booking.service.ts:94:  ): Promise<{ group_id: string; reservations: Reservation[] }> {
+apps/api/src/modules/reservations/recurrence.service.ts:127:   * `setBookingFlow`. When unset, recurrence materialises reservations
+apps/api/src/modules/reservations/recurrence.service.ts:25: * starting at a given anchor. Materialisation (writing reservations rows)
+apps/api/src/modules/reservations/recurrence.service.ts:355:    // Pre-rewrite this was one read of `reservations`; now it's a 2-step
+apps/api/src/modules/reservations/recurrence.service.ts:80:   * bundle's orders + lines + tickets + asset reservations + pending
+apps/api/src/modules/reservations/recurrence.service.ts:86:      reservation_id: string;
+apps/api/src/modules/reservations/recurrence.service.ts:937:    // Caller signature kept as `reservation_id` for now — the
+apps/api/src/modules/reservations/recurrence.service.ts:943:          reservation_id: id,
+apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:9:// replaces the booking-id PATCH /reservations/:id when geometry is being
+apps/api/src/modules/reservations/reservation-projection.ts:78:    id: booking.id,                                // BREAKING — was reservations.id
+apps/api/src/modules/reservations/reservation-visibility.service.ts:151:   * Apply a visibility filter to a Supabase query for reservations list.
+apps/api/src/modules/reservations/reservation-visibility.service.ts:6: * Three-tier visibility for reservations (mirrors the ticket pattern but
+apps/api/src/modules/reservations/reservation.controller.ts:235:   * Unified desk-scheduler load — returns rooms + reservations in ONE
+apps/api/src/modules/reservations/reservation.controller.ts:29:@Controller('reservations')
+apps/api/src/modules/reservations/reservation.controller.ts:304:   * `PATCH /reservations/:bookingId/slots/:slotId` — edit ONE slot's
+apps/api/src/modules/reservations/reservation.controller.ts:308:   * `PATCH /reservations/:id` would do).
+apps/api/src/modules/reservations/reservation.controller.ts:310:   * The booking-level `PATCH /reservations/:id` (`editOne`) STAYS for
+apps/api/src/modules/reservations/reservation.controller.ts:402:   * reservation_id + requester_person_id + expiry). Public — no Bearer
+apps/api/src/modules/reservations/reservation.controller.ts:417:   * `POST /reservations/:id/services` — attach (or append) service lines
+apps/api/src/modules/reservations/reservation.controller.ts:458:   * `GET /reservations/:id/bundle-detail` — returns the booking's services
+apps/api/src/modules/reservations/reservation.controller.ts:465:   * accepts is also a valid booking id here. Mounted under `/reservations`
+apps/api/src/modules/reservations/reservation.controller.ts:468:   * detail surface (`/reservations/:id/visitors`, `/reservations/:id/services`).
+apps/api/src/modules/reservations/reservation.controller.ts:484:   * `PATCH /reservations/:id/services/:lineId` — edit a single service line
+apps/api/src/modules/reservations/reservation.controller.ts:541:   * `DELETE /reservations/:id/services/:lineId` — cancel a single service
+apps/api/src/modules/reservations/reservation.controller.ts:585:   * `DELETE /reservations/:id/bundle` — cancel every active line on the
+apps/api/src/modules/reservations/reservation.controller.ts:86:   * `GET /reservations/:id/group-siblings` — every reservation in the
+apps/api/src/modules/reservations/reservation.service.ts:278:   * reservations). Under canonicalisation every booking IS a bundle, so
+apps/api/src/modules/reservations/reservation.service.ts:27: * Booking-canonicalisation rewrite (2026-05-02): every read of `reservations`
+apps/api/src/modules/reservations/reservation.service.ts:509:        reservation_id: updated.id,                   // = booking id under canonicalisation
+apps/api/src/modules/reservations/reservation.service.ts:925:   * The desk scheduler PATCHed `/reservations/:id` with `id = booking.id`,
+apps/api/src/modules/reservations/reservation.service.ts:954:   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
+apps/api/src/modules/reservations/reservations.module.ts:103:    // Sub-project 2: when a master reservation has a booking_bundle, the
+apps/api/src/modules/reservations/reservations.module.ts:1:// Reservations module — owns the reservations table lifecycle.
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:108:    // Pre-filter reservations by scope when feasible. For room scope we can
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:111:    // reservations in the window (capped at REPLAY_LIMIT).
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:112:    const reservations = await this.loadCandidateReservations(rule, since);
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:114:    const truncated = reservations.length >= REPLAY_LIMIT;
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:123:    for (const r of reservations) {
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:148:          reservation_id: r.id,
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:17: * We bound the work at 1 000 reservations per preview — past that we still
+apps/api/src/modules/room-booking-rules/impact-preview.service.ts:38:    reservation_id: string;
+apps/api/src/modules/room-booking-rules/room-booking-rules.module.ts:20: *   - impact preview (replay against last 30 days of reservations)
+apps/api/src/modules/visitors/approval-integration.spec.ts:23: *     booking_bundle) — `target_entity_type='visitor_invite'` is the
