@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface UserOption {
   id: string;
@@ -54,5 +55,6 @@ export function useUpsertUser() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: userKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save user" }),
   });
 }
