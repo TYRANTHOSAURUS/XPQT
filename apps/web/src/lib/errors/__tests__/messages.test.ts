@@ -7,6 +7,7 @@ import {
   INTERNAL_ONLY_PREFIXES,
   resolveMessage,
 } from '../messages.en';
+import { ERROR_MESSAGES_NL, resolveMessageNl } from '../messages.nl';
 
 describe('resolveMessage', () => {
   it('returns title + detail for a registered code', () => {
@@ -108,5 +109,65 @@ describe('coverage drift — server vs client', () => {
 
   it('client message count clears the 350 floor', () => {
     expect(Object.keys(ERROR_MESSAGES_EN).length).toBeGreaterThanOrEqual(350);
+  });
+});
+
+describe('resolveMessageNl', () => {
+  it('returns title + detail for a registered code', () => {
+    const m = resolveMessageNl('auth.unauthorized');
+    expect(m.title).toBe('Meld je opnieuw aan');
+    expect(m.detail).toMatch(/sessie/i);
+  });
+
+  it('falls back to unknown.server_error for unregistered codes', () => {
+    const fallback = resolveMessageNl('unknown.server_error');
+    const m = resolveMessageNl('totally-fake-code-xyz');
+    expect(m).toEqual(fallback);
+  });
+
+  it('every registered NL entry has a non-empty title', () => {
+    for (const [code, entry] of Object.entries(ERROR_MESSAGES_NL)) {
+      expect(entry.title.length, `code ${code}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('always registers the three bedrock codes', () => {
+    for (const code of [
+      'unknown.server_error',
+      'auth.unauthorized',
+      'permission.denied',
+    ]) {
+      expect(ERROR_MESSAGES_NL[code]).toBeDefined();
+    }
+  });
+});
+
+describe('coverage drift — EN vs NL (client)', () => {
+  it('every client EN code has a NL translation', () => {
+    const missing: string[] = [];
+    for (const code of Object.keys(ERROR_MESSAGES_EN)) {
+      if (!ERROR_MESSAGES_NL[code]) missing.push(code);
+    }
+    expect(
+      missing,
+      `missing NL translation for ${missing.length} client code(s)`,
+    ).toEqual([]);
+  });
+
+  it('NL has no extra codes beyond EN (drift in the other direction)', () => {
+    const extra: string[] = [];
+    for (const code of Object.keys(ERROR_MESSAGES_NL)) {
+      if (!ERROR_MESSAGES_EN[code]) extra.push(code);
+    }
+    expect(
+      extra,
+      `NL has ${extra.length} code(s) not in EN — keep the catalogs in lockstep`,
+    ).toEqual([]);
+  });
+
+  it('NL message count matches EN', () => {
+    expect(Object.keys(ERROR_MESSAGES_NL).length).toBe(
+      Object.keys(ERROR_MESSAGES_EN).length,
+    );
   });
 });

@@ -1,7 +1,7 @@
 import { Component, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { classify, type ClassifiedError } from '@/lib/errors/classify';
-import { resolveMessage } from '@/lib/errors/messages.en';
+import { resolveMessage } from '@/lib/errors/messages';
 import { STASHED_CLASSIFIED } from '@/lib/errors/use-page-query';
 
 interface Props {

@@ -12,5 +12,13 @@ export { classify, type CallSite, type ClassifyContext, type ClassifiedError, ty
 export { handleMutationError, handleQueryError, withErrorHandling, type HandleMutationErrorOptions, type HandleQueryErrorOptions } from './handlers';
 export { throwToBoundary } from './throw-to-boundary';
 export { usePageQuery } from './use-page-query';
-export { resolveMessage, ERROR_MESSAGES_EN, type ErrorMessage, type Surface } from './messages.en';
+export {
+  resolveMessage,
+  ERROR_MESSAGES_EN,
+  ERROR_MESSAGES_NL,
+  pickLocale,
+  type ErrorMessage,
+  type Surface,
+  type Locale,
+} from './messages';
 export { RouteErrorBoundary } from '@/components/route-error-boundary';

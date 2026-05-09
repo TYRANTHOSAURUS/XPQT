@@ -42,7 +42,7 @@
 import type { FieldError } from 'react-hook-form';
 import { toastError } from '@/lib/toast';
 import { classify, type CallSite, type ClassifiedField, type ClassifiedError } from './classify';
-import { resolveMessage } from './messages.en';
+import { resolveMessage } from './messages';
 
 /**
  * Loose-typed setter for compatibility with `react-hook-form`'s
