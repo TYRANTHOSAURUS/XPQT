@@ -20,7 +20,11 @@ import type { GraphEvent } from '../outlook-sync.adapter';
  */
 describe('ReconcilerService.reconcileSpace', () => {
   function buildSvc(opts: {
-    reservations: Array<{ id: string; start_at: string; end_at: string; external_event_id: string | null }>;
+    // Post-canonicalisation row shape — these are `booking_slots` rows
+    // joined with their parent `bookings` (the local helper option used
+    // to be `reservations:` when the legacy table existed; renamed to
+    // `slots:` in Phase 8.A.2.3 to match the actual row source).
+    slots: Array<{ id: string; start_at: string; end_at: string; external_event_id: string | null }>;
     graphEvents: GraphEvent[] | null;
   }): { svc: ReconcilerService; insertedTypes: string[] } {
     const insertedTypes: string[] = [];
@@ -31,7 +35,7 @@ describe('ReconcilerService.reconcileSpace', () => {
             // Service select shape (reconciler.service.ts:195):
             //   'id, start_at, end_at, status, bookings!inner(calendar_event_id)'
             // Chain: select → eq(tenant) → eq(space) → gte(start) → lte(start) → in(status)
-            const rows = opts.reservations.map((r) => ({
+            const rows = opts.slots.map((r) => ({
               id: r.id,
               start_at: r.start_at,
               end_at: r.end_at,
@@ -99,7 +103,7 @@ describe('ReconcilerService.reconcileSpace', () => {
 
   it('raises webhook_miss_recovered for orphan external events', async () => {
     const { svc, insertedTypes } = buildSvc({
-      reservations: [],
+      slots: [],
       graphEvents: [makeGraphEvent('ext-1', '2026-05-12T14:00:00Z', '2026-05-12T15:00:00Z')],
     });
     await svc.reconcileSpace({
@@ -114,7 +118,7 @@ describe('ReconcilerService.reconcileSpace', () => {
 
   it('raises orphan_internal for reservations whose external event vanished', async () => {
     const { svc, insertedTypes } = buildSvc({
-      reservations: [
+      slots: [
         { id: 'r1', start_at: '2026-05-12T14:00:00Z', end_at: '2026-05-12T15:00:00Z', external_event_id: 'ext-1' },
       ],
       graphEvents: [],
@@ -131,7 +135,7 @@ describe('ReconcilerService.reconcileSpace', () => {
 
   it('raises recurrence_drift for matched events with different times', async () => {
     const { svc, insertedTypes } = buildSvc({
-      reservations: [
+      slots: [
         { id: 'r1', start_at: '2026-05-12T14:00:00Z', end_at: '2026-05-12T15:00:00Z', external_event_id: 'ext-1' },
       ],
       graphEvents: [makeGraphEvent('ext-1', '2026-05-12T15:00:00Z', '2026-05-12T16:00:00Z')],
@@ -148,7 +152,7 @@ describe('ReconcilerService.reconcileSpace', () => {
 
   it('reports orphan_external when Graph cannot be read', async () => {
     const { svc, insertedTypes } = buildSvc({
-      reservations: [],
+      slots: [],
       graphEvents: null,
     });
     await svc.reconcileSpace({
@@ -163,7 +167,7 @@ describe('ReconcilerService.reconcileSpace', () => {
 
   it('clean state inserts no conflicts', async () => {
     const { svc, insertedTypes } = buildSvc({
-      reservations: [
+      slots: [
         { id: 'r1', start_at: '2026-05-12T14:00:00Z', end_at: '2026-05-12T15:00:00Z', external_event_id: 'ext-1' },
       ],
       graphEvents: [makeGraphEvent('ext-1', '2026-05-12T14:00:00Z', '2026-05-12T15:00:00Z')],

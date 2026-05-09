@@ -271,8 +271,12 @@ apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:432:        // 
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:434:        // asset_reservations.update (286), approvals.select+update (584-596).
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:437:          table === 'asset_reservations' ||
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:52:  bundleLines?: Array<{ id: string; fulfillment_status: string | null; linked_asset_reservation_id: string | null; linked_ticket_id: string | null; order_id: string }>;
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:53:  bundleLines?: Array<{ id: string; fulfillment_status: string | null; linked_asset_reservation_id: string | null; linked_ticket_id: string | null; order_id: string }>;
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:599:          linked_asset_reservation_id: null,
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:641:          linked_asset_reservation_id: null,
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:655:          linked_asset_reservation_id: null,
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:700:          linked_asset_reservation_id: null,
+
 # === KEEP_HISTORICAL_COMMENT — rename rationale + column-rename docs ===
 apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:40:  // Post-canonicalisation (00278:109): orders.booking_bundle_id → booking_id.
 apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:47:  // primary_reservation_id was dropped — slots resolve via booking_slots.booking_id.
@@ -560,8 +564,13 @@ apps/api/src/modules/ticket/booking-origin-work-order.spec.ts:207:    // Canonic
 apps/api/src/modules/ticket/ticket.service.ts:1851:   * `booking_bundle_id` in 00278:87) and `linked_order_line_item_id`
 apps/api/src/modules/ticket/ticket.service.ts:1910:    // the CHECK from the legacy 'booking_bundle' label). The FK column is
 apps/api/src/modules/ticket/ticket.service.ts:1948:    // System event for audit + activity feed. The legacy `booking_bundle_id`
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:108:      // booking_bundle_id was renamed to booking_id; reservation_id was
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:129:  // Post-canonicalisation (00276-00281): `reservations` + `booking_bundles`
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:132:  // Post-canonicalisation (00276-00281): `reservations` + `booking_bundles`
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:133:  // r.booking_bundle_id = booking.id.
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:23:import { ReservationService } from '../reservations/reservation.service';
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:30:// reservations.id ≠ booking.id. Post-rewrite (00277:27) the booking IS
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:31:// reservations.id ≠ booking.id. Post-rewrite (00277:27) the booking IS
 apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:102:      // the canonicalization rename visitors.booking_bundle_id -> booking_id
 apps/api/src/modules/visitors/bundle-cascade.adapter.ts:313:    // Column rename: visitors.booking_bundle_id → visitors.booking_id (00278:41).
 apps/api/src/modules/visitors/dto/create-invitation.dto.ts:45:   * Visitors no longer carry a `reservation_id` (column dropped 00278:38).
@@ -767,7 +776,10 @@ apps/api/src/modules/ticket/ticket.service.ts:1965:      booking_id: args.bookin
 apps/api/src/modules/ticket/ticket.service.ts:257:    // both live in work_orders now, so the booking_bundle_id IS NULL guard is
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:109:      // booking_bundle_id was renamed to booking_id; reservation_id was
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:136:  // r.booking_bundle_id = booking.id.
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:616:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:649:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:674:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:680:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:710:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
 apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:743:          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
 apps/api/src/modules/visitors/bundle-cascade.adapter.spec.ts:105:      // the canonicalization rename visitors.booking_bundle_id -> booking_id
