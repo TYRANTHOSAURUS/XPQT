@@ -38,6 +38,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/portal-appearance"
   "apps/api/src/modules/outbox"
   "apps/api/src/modules/cost-centers"
+  "apps/api/src/modules/bundle-templates"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

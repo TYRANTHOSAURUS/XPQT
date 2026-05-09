@@ -1,10 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 export interface BundleTemplatePayload {
   /** Display name shown to admins. Distinct from BundleTemplateRow.name. */
@@ -86,10 +83,7 @@ export class BundleTemplatesService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'bundle_template_not_found',
-        message: `Bundle template ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('bundle_template_not_found', `Bundle template ${id} not found.`);
     }
     return data as BundleTemplateRow;
   }
@@ -118,10 +112,7 @@ export class BundleTemplatesService {
     dto: Partial<BundleTemplateUpsertDto>,
   ): Promise<BundleTemplateRow> {
     if (dto.name != null && !dto.name.trim()) {
-      throw new BadRequestException({
-        code: 'name_required',
-        message: 'name cannot be empty',
-      });
+      throw AppErrors.validationFailed('name_required', { detail: 'name cannot be empty' });
     }
     if (dto.payload != null) this.assertPayload(dto.payload);
     const tenant = TenantContext.current();
@@ -141,10 +132,7 @@ export class BundleTemplatesService {
       .single();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'bundle_template_not_found',
-        message: `Bundle template ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('bundle_template_not_found', `Bundle template ${id} not found.`);
     }
     return data as BundleTemplateRow;
   }
@@ -164,29 +152,22 @@ export class BundleTemplatesService {
 
   private assertValid(dto: BundleTemplateUpsertDto): void {
     if (!dto.name?.trim()) {
-      throw new BadRequestException({ code: 'name_required', message: 'name is required' });
+      throw AppErrors.validationFailed('name_required', { detail: 'name is required' });
     }
     this.assertPayload(dto.payload);
   }
 
   private assertPayload(payload: BundleTemplatePayload): void {
     if (!payload || typeof payload !== 'object') {
-      throw new BadRequestException({
-        code: 'invalid_payload',
-        message: 'payload must be an object',
-      });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'payload must be an object' });
     }
     if (payload.services != null && !Array.isArray(payload.services)) {
-      throw new BadRequestException({
-        code: 'invalid_services',
-        message: 'payload.services must be an array',
-      });
+      throw AppErrors.validationFailed('invalid_services', { detail: 'payload.services must be an array' });
     }
     for (const s of payload.services ?? []) {
       if (!s.catalog_item_id) {
-        throw new BadRequestException({
-          code: 'invalid_service_line',
-          message: 'each service line requires a catalog_item_id',
+        throw AppErrors.validationFailed('invalid_service_line', {
+          detail: 'each service line requires a catalog_item_id',
         });
       }
     }

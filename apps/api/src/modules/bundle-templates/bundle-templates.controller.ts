@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -16,6 +15,7 @@ import {
   BundleTemplatesService,
   type BundleTemplateUpsertDto,
 } from './bundle-templates.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Reads are open: the portal /portal/rooms BundleTemplatePicker (chip row)
@@ -45,7 +45,7 @@ export class BundleTemplatesController {
   async create(@Req() req: Request, @Body() dto: BundleTemplateUpsertDto) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.create(dto);
   }
@@ -58,7 +58,7 @@ export class BundleTemplatesController {
   ) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.update(id, dto);
   }

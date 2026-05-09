@@ -339,6 +339,11 @@ export type KnownErrorCode =
   | 'code_required'
   | 'code_too_long'
 
+  // ─── bundle-templates migration (Phase 7.B-1.bundle-templates) ───────────
+  | 'bundle_template_not_found'
+  | 'invalid_services'
+  | 'invalid_service_line'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -688,6 +693,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'cost_center_code_taken',
   'code_required',
   'code_too_long',
+  'bundle_template_not_found',
+  'invalid_services',
+  'invalid_service_line',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

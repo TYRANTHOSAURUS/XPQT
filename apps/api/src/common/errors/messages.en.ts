@@ -1087,6 +1087,19 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save",
     detail: 'Code must be 32 characters or fewer.',
   },
+
+  // ─── bundle-templates (Phase 7.B-1.bundle-templates) ─────────────────────
+  bundle_template_not_found: {
+    title: "Couldn't find that bundle template",
+  },
+  invalid_services: {
+    title: "Couldn't save that template",
+    detail: 'Services must be a list.',
+  },
+  invalid_service_line: {
+    title: "Couldn't save that template",
+    detail: 'Each service line needs a catalog item.',
+  },
 };
 
 /**
