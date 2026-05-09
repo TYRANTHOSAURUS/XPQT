@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { CalendarSyncService } from './calendar-sync.service';
 import { OutlookSyncAdapter } from './outlook-sync.adapter';
 
@@ -93,7 +94,7 @@ export class WebhookRenewalService {
         const tok = await msal.acquireTokenByClientCredential({
           scopes: ['https://graph.microsoft.com/.default'],
         });
-        if (!tok?.accessToken) throw new Error('app-only token acquisition returned empty');
+        if (!tok?.accessToken) throw AppErrors.server('calendar_sync.token_failed', { detail: 'app-only token acquisition returned empty' });
         const result = await this.outlook.renewWebhook(
           space.external_calendar_subscription_id as string,
           tok.accessToken,

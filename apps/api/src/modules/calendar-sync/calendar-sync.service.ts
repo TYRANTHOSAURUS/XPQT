@@ -1,12 +1,7 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { OutlookSyncAdapter } from './outlook-sync.adapter';
 import { TokenEncryptionService } from './token-encryption.service';
 import type {
@@ -76,9 +71,9 @@ export class CalendarSyncService {
 
   async finishConnect(authUid: string, code: string, state: string) {
     const stored = this.oauthStates.get(state);
-    if (!stored) throw new BadRequestException('Unknown or expired OAuth state');
+    if (!stored) throw AppErrors.validationFailed('calendar_sync.invalid_state', { detail: 'Unknown or expired OAuth state' });
     if (stored.authUid !== authUid) {
-      throw new ForbiddenException('OAuth state belongs to a different user');
+      throw AppErrors.forbidden('calendar_sync.state_user_mismatch', 'OAuth state belongs to a different user');
     }
     this.oauthStates.delete(state);
 
@@ -186,7 +181,7 @@ export class CalendarSyncService {
       .eq('provider', 'outlook')
       .maybeSingle();
     if (error) throw error;
-    if (!link) throw new NotFoundException('No outlook calendar linked');
+    if (!link) throw AppErrors.notFoundWithCode('calendar_sync.no_link', 'No outlook calendar linked');
 
     const accessToken = await this.refreshAccessToken(link.refresh_token_encrypted as string);
     const delta = await this.outlook.pullDelta(
@@ -346,9 +341,9 @@ export class CalendarSyncService {
       .eq('id', conflictId)
       .eq('tenant_id', tenant.id)
       .single();
-    if (cErr || !conflict) throw new NotFoundException('Conflict not found');
+    if (cErr || !conflict) throw AppErrors.notFoundWithCode('calendar_sync.conflict_not_found', 'Conflict not found');
     if (conflict.resolution_status !== 'open') {
-      throw new BadRequestException('Conflict is not open');
+      throw AppErrors.validationFailed('calendar_sync.conflict_not_open', { detail: 'Conflict is not open' });
     }
 
     // The actual ext-system mutation happens on a best-effort basis here;
@@ -452,7 +447,7 @@ export class CalendarSyncService {
       .select('id, tenant_id, refresh_token_encrypted')
       .eq('id', linkId)
       .single();
-    if (error || !row) throw new NotFoundException('Sync link not found');
+    if (error || !row) throw AppErrors.notFoundWithCode('calendar_sync.link_not_found', 'Sync link not found');
     const refresh = await this.tokens.decrypt(row.refresh_token_encrypted as string);
     const result = await this.outlook.refreshAccessToken(refresh);
     const newRefresh = await this.tokens.encrypt(result.refreshToken);
@@ -511,7 +506,7 @@ export class CalendarSyncService {
       .eq('auth_uid', authUid)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new ForbiddenException('No user in this tenant');
+    if (!data) throw AppErrors.forbidden('calendar_sync.no_user_in_tenant', 'No user in this tenant');
     return { userId: data.id as string };
   }
 

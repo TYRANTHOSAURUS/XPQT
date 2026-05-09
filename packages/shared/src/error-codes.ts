@@ -374,6 +374,19 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── calendar-sync migration (Phase 7.B-1.calendar-sync) ─────────────────
+  | 'calendar_sync.no_auth'
+  | 'calendar_sync.invalid_state'
+  | 'calendar_sync.state_user_mismatch'
+  | 'calendar_sync.no_link'
+  | 'calendar_sync.conflict_not_found'
+  | 'calendar_sync.conflict_not_open'
+  | 'calendar_sync.link_not_found'
+  | 'calendar_sync.no_user_in_tenant'
+  | 'calendar_sync.token_failed'
+  | 'calendar_sync.graph_failed'
+  | 'calendar_sync.config_missing'
+
   // ─── config-engine migration (Phase 7.B-1.config-engine) ─────────────────
   | 'config_engine.invalid_expression'
   | 'config_engine.criteria_set_not_found'
@@ -896,6 +909,17 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'config_engine.invalid_request_type',
   'config_engine.invalid_scope',
   'config_engine.invalid_handler',
+  'calendar_sync.no_auth',
+  'calendar_sync.invalid_state',
+  'calendar_sync.state_user_mismatch',
+  'calendar_sync.no_link',
+  'calendar_sync.conflict_not_found',
+  'calendar_sync.conflict_not_open',
+  'calendar_sync.link_not_found',
+  'calendar_sync.no_user_in_tenant',
+  'calendar_sync.token_failed',
+  'calendar_sync.graph_failed',
+  'calendar_sync.config_missing',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

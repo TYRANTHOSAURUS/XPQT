@@ -1316,6 +1316,19 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save",
     detail: 'Handler configuration is invalid.',
   },
+
+  // ─── calendar-sync (Phase 7.B-1.calendar-sync) ───────────────────────────
+  'calendar_sync.no_auth': { title: 'Sign in to continue' },
+  'calendar_sync.invalid_state': { title: "Couldn't complete sign-in", detail: 'OAuth state is unknown or expired.' },
+  'calendar_sync.state_user_mismatch': { title: "Couldn't complete sign-in", detail: 'OAuth state belongs to another user.' },
+  'calendar_sync.no_link': { title: 'No calendar linked' },
+  'calendar_sync.conflict_not_found': { title: "Couldn't find that conflict" },
+  'calendar_sync.conflict_not_open': { title: "Couldn't update that conflict", detail: 'Conflict is no longer open.' },
+  'calendar_sync.link_not_found': { title: "Couldn't find that calendar link" },
+  'calendar_sync.no_user_in_tenant': { title: 'No user in this tenant' },
+  'calendar_sync.token_failed': { title: "Couldn't process tokens" },
+  'calendar_sync.graph_failed': { title: "Couldn't reach calendar service" },
+  'calendar_sync.config_missing': { title: "Calendar sync isn't configured" },
 };
 
 /**

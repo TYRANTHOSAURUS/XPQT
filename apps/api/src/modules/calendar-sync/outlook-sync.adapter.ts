@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConfidentialClientApplication, type Configuration } from '@azure/msal-node';
+import { AppErrors } from '../../common/errors';
 import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
 import { randomBytes, createHash } from 'crypto';
 
@@ -211,13 +212,13 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     });
 
     if (!result || !result.accessToken) {
-      throw new Error('Microsoft Graph did not return an access token');
+      throw AppErrors.server('calendar_sync.graph_failed', { detail: 'Calendar service did not return an access token' });
     }
 
     // msal-node exposes the refresh token through the in-memory cache.
     const refreshToken = await this.extractRefreshToken();
     if (!refreshToken) {
-      throw new Error('Microsoft Graph did not issue a refresh token (offline_access scope missing?)');
+      throw AppErrors.server('calendar_sync.graph_failed', { detail: 'Calendar service did not issue a refresh token (offline_access scope missing?)' });
     }
 
     // Resolve the user's primary calendar id.
@@ -248,7 +249,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
       scopes: OutlookSyncAdapter.DELEGATED_SCOPES,
     });
     if (!result?.accessToken) {
-      throw new Error('Microsoft Graph refresh failed');
+      throw AppErrors.server('calendar_sync.graph_failed', { detail: 'Calendar service refresh failed' });
     }
     const newRefresh = (await this.extractRefreshToken()) ?? refreshToken;
     return {
@@ -399,7 +400,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
 
   async configureRoomMailbox(space: SpaceLite): Promise<{ subscriptionId: string; expiresAt: Date }> {
     if (!space.external_calendar_id) {
-      throw new Error(`Space ${space.id} has no external_calendar_id (room mailbox UPN)`);
+      throw AppErrors.validationFailed('calendar_sync.invalid_state', { detail: `Space ${space.id} has no external_calendar_id (room mailbox UPN)` });
     }
     const accessToken = await this.acquireAppToken();
 
@@ -439,7 +440,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     const accessToken = await this.acquireAppToken();
     const graph = this.graphFor(accessToken);
     if (!space.external_calendar_id) {
-      throw new Error(`Space ${space.id} has no external_calendar_id`);
+      throw AppErrors.validationFailed('calendar_sync.invalid_state', { detail: `Space ${space.id} has no external_calendar_id` });
     }
     // accept doesn't return the event body, but a follow-up GET gives the etag.
     await graph
@@ -460,7 +461,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     const accessToken = await this.acquireAppToken();
     const graph = this.graphFor(accessToken);
     if (!space.external_calendar_id) {
-      throw new Error(`Space ${space.id} has no external_calendar_id`);
+      throw AppErrors.validationFailed('calendar_sync.invalid_state', { detail: `Space ${space.id} has no external_calendar_id` });
     }
     await graph
       .api(`/users/${encodeURIComponent(space.external_calendar_id)}/events/${externalEventId}/decline`)
@@ -485,7 +486,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
       scopes: OutlookSyncAdapter.APPLICATION_SCOPES,
     });
     if (!result?.accessToken) {
-      throw new Error('Microsoft Graph app-only token acquisition failed');
+      throw AppErrors.server('calendar_sync.graph_failed', { detail: 'Calendar service app-only token acquisition failed' });
     }
     return result.accessToken;
   }
@@ -497,7 +498,7 @@ export class OutlookSyncAdapter implements OnModuleInit, CalendarSyncPort {
     accessToken: string;
   }): Promise<{ subscriptionId: string; expiresAt: Date }> {
     if (!this.webhookUrl) {
-      throw new Error('MICROSOFT_GRAPH_WEBHOOK_URL is not configured');
+      throw AppErrors.server('calendar_sync.config_missing', { detail: 'Calendar webhook URL is not configured' });
     }
     const graph = this.graphFor(opts.accessToken);
     const expiresAt = new Date(Date.now() + 3 * 24 * 3600 * 1000 - 60_000);

@@ -1,6 +1,7 @@
-import { Injectable, InternalServerErrorException, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Symmetric encryption for OAuth tokens stored in `calendar_sync_links`.
@@ -35,9 +36,9 @@ export class TokenEncryptionService implements OnModuleInit {
       this.config.get<string>('CALENDAR_TOKEN_ENCRYPTION_KEY') ||
       this.config.get<string>('SUPABASE_VAULT_KEY');
     if (!key) {
-      throw new InternalServerErrorException(
-        'CALENDAR_TOKEN_ENCRYPTION_KEY (or SUPABASE_VAULT_KEY) must be set — calendar-sync refuses to start without a token-encryption key.',
-      );
+      throw AppErrors.server('calendar_sync.config_missing', {
+        detail: 'CALENDAR_TOKEN_ENCRYPTION_KEY (or SUPABASE_VAULT_KEY) must be set — calendar-sync refuses to start without a token-encryption key.',
+      });
     }
     this.key = key;
   }
@@ -57,14 +58,15 @@ export class TokenEncryptionService implements OnModuleInit {
     if (error) {
       // Fallback: if the RPC isn't installed yet, do a raw SQL query through the
       // pg-meta-style endpoint. Keeping a single shape so callers don't branch.
-      throw new InternalServerErrorException(
-        `Token encryption failed: ${error.message}. ` +
+      throw AppErrors.server('calendar_sync.token_failed', {
+        detail: `Token encryption failed: ${error.message}. ` +
           `Make sure the calendar_sync_encrypt/decrypt SQL functions are installed (see calendar-sync-rpc.sql) ` +
           `or run them inline via the Supabase SQL editor.`,
-      );
+        cause: error,
+      });
     }
     if (typeof data !== 'string') {
-      throw new InternalServerErrorException('Token encryption returned non-string data');
+      throw AppErrors.server('calendar_sync.token_failed', { detail: 'Token encryption returned non-string data' });
     }
     return data;
   }
@@ -79,13 +81,14 @@ export class TokenEncryptionService implements OnModuleInit {
       p_key: this.key,
     });
     if (error) {
-      throw new InternalServerErrorException(
-        `Token decryption failed: ${error.message}. ` +
+      throw AppErrors.server('calendar_sync.token_failed', {
+        detail: `Token decryption failed: ${error.message}. ` +
           `Confirm the encryption key has not rotated unexpectedly.`,
-      );
+        cause: error,
+      });
     }
     if (typeof data !== 'string') {
-      throw new InternalServerErrorException('Token decryption returned non-string data');
+      throw AppErrors.server('calendar_sync.token_failed', { detail: 'Token decryption returned non-string data' });
     }
     return data;
   }

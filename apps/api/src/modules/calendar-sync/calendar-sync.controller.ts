@@ -7,10 +7,10 @@ import {
   Post,
   Query,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { CalendarSyncService } from './calendar-sync.service';
+import { AppErrors } from '../../common/errors';
 import type { OAuthCallbackBody, ResolveConflictBody } from './dto';
 
 @Controller('calendar-sync')
@@ -19,7 +19,7 @@ export class CalendarSyncController {
 
   private authUid(request: Request): string {
     const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     return authUid;
   }
 
@@ -55,7 +55,7 @@ export class AdminCalendarSyncController {
 
   private authUid(request: Request): string {
     const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     return authUid;
   }
 
