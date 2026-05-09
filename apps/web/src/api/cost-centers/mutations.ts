@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { costCenterKeys } from './keys';
 import type { CostCenter } from './types';
 
@@ -22,6 +23,7 @@ export function useCreateCostCenter() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: costCenterKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create cost center" }),
   });
 }
 
@@ -37,6 +39,7 @@ export function useUpdateCostCenter() {
       qc.invalidateQueries({ queryKey: costCenterKeys.detail(id) });
       qc.invalidateQueries({ queryKey: costCenterKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update cost center" }),
   });
 }
 
@@ -49,5 +52,6 @@ export function useDeleteCostCenter() {
       qc.invalidateQueries({ queryKey: costCenterKeys.detail(id) });
       qc.invalidateQueries({ queryKey: costCenterKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete cost center" }),
   });
 }
