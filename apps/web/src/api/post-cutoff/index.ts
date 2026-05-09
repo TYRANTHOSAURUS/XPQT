@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError } from '@/lib/errors';
 
 /**
  * Desk-side post-cutoff change workflow API client.
@@ -93,9 +94,15 @@ export function useConfirmPhoned() {
       }
       return { prev };
     },
-    onError: (_err, _args, ctx) => {
+    onError: (err, _args, ctx) => {
+      // Rollback optimistic state first — must happen before the toast,
+      // so a retry from the toast sees the restored row.
       const prev = (ctx as { prev?: PostCutoffGroup[] } | undefined)?.prev;
       if (prev) qc.setQueryData(postCutoffKeys.list(), prev);
+      // Phase 7.B-2 light migration — route the wire-shape error through
+      // the classifier + toast voice helper. Validation/auth/page-class
+      // surface routing is handled by the helper per spec §3.4 matrix.
+      handleMutationError(err, { actionTitle: "Couldn't confirm" });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: postCutoffKeys.list() });
