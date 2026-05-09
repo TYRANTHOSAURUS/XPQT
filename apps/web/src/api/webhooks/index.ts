@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface RequestTypeRuleCondition {
   path: string;
@@ -120,6 +121,7 @@ export function useCreateWebhook() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: webhookKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't create webhook" }),
   });
 }
 
@@ -132,6 +134,7 @@ export function useUpdateWebhook(id: string) {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: webhookKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't update webhook" }),
   });
 }
 
@@ -140,6 +143,7 @@ export function useDeleteWebhook() {
   return useMutation<{ ok: true }, Error, string>({
     mutationFn: (id) => apiFetch<{ ok: true }>(`/workflow-webhooks/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: webhookKeys.lists() }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete webhook" }),
   });
 }
 
@@ -147,9 +151,12 @@ export function useRotateWebhookApiKey() {
   return useMutation<{ api_key: string }, Error, string>({
     mutationFn: (id) =>
       apiFetch<{ api_key: string }>(`/workflow-webhooks/${id}/api-key/rotate`, { method: 'POST' }),
+    ...withErrorHandling({ actionTitle: "Couldn't rotate API key" }),
   });
 }
 
+// Test webhook — the result UI surfaces the test outcome inline. Errors
+// from the helper still toast for transport / permission / server classes.
 export function useTestWebhook() {
   return useMutation<WebhookTestResult, Error, { id: string; payload: Record<string, unknown> }>({
     mutationFn: ({ id, payload }) =>
@@ -157,6 +164,7 @@ export function useTestWebhook() {
         method: 'POST',
         body: JSON.stringify({ payload }),
       }),
+    ...withErrorHandling({ actionTitle: "Couldn't test webhook" }),
   });
 }
 
