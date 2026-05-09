@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { ReportingService } from './reporting.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -52,7 +52,14 @@ describe('ReportingService.getBookings* (canonical RPC pass-through)', () => {
         withTenant(() => svc.getBookingsOverview({
           from: '04/01/2026', to: '04/30/2026', buildingId: null, tz: 'UTC',
         })),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toMatchObject({
+        code: 'report.invalid_date',
+      });
+      await expect(
+        withTenant(() => svc.getBookingsOverview({
+          from: '04/01/2026', to: '04/30/2026', buildingId: null, tz: 'UTC',
+        })),
+      ).rejects.toBeInstanceOf(AppError);
       expect(rpc).not.toHaveBeenCalled();
     });
 

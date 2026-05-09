@@ -819,6 +819,23 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't place that space under that parent",
     detail: 'That space type isn\'t allowed under that parent.',
   },
+
+  // ─── reporting module migration (Phase 7.B-1.reporting) ──────────────────
+  'report.invalid_date_range': {
+    title: "Couldn't run that report",
+    detail: 'The "from" date must be on or before the "to" date.',
+  },
+  'report.window_too_large': {
+    title: "Couldn't run that report",
+    detail: 'Date range is too long. Try 365 days or fewer.',
+  },
+  'report.rpc_failed': {
+    title: "Couldn't run that report",
+  },
+  'report.invalid_date': {
+    title: "Couldn't run that report",
+    detail: 'Use a YYYY-MM-DD date.',
+  },
 };
 
 /**

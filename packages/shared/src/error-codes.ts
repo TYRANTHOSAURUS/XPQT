@@ -300,7 +300,13 @@ export type KnownErrorCode =
   | 'space.not_found'
   | 'space.parent_not_found'
   | 'space.invalid_root_type'
-  | 'space.invalid_parent_type';
+  | 'space.invalid_parent_type'
+
+  // ─── reporting module migration (Phase 7.B-1.reporting) ──────────────────
+  | 'report.invalid_date_range'
+  | 'report.window_too_large'
+  | 'report.rpc_failed'
+  | 'report.invalid_date';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -532,6 +538,10 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'space.parent_not_found',
   'space.invalid_root_type',
   'space.invalid_parent_type',
+  'report.invalid_date_range',
+  'report.window_too_large',
+  'report.rpc_failed',
+  'report.invalid_date',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

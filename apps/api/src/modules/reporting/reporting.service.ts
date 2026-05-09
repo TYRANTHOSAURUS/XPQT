@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 export interface BookingReportParams {
   from: string;
@@ -193,11 +194,15 @@ export class ReportingService {
     const fromDate = this.parseDate(params.from, 'from');
     const toDate = this.parseDate(params.to, 'to');
     if (fromDate > toDate) {
-      throw new BadRequestException('from must be on or before to');
+      throw AppErrors.validationFailed('report.invalid_date_range', {
+        detail: 'from must be on or before to',
+      });
     }
     const days = Math.round((toDate.getTime() - fromDate.getTime()) / 86_400_000);
     if (days > 365) {
-      throw new BadRequestException('window too large (max 365 days)');
+      throw AppErrors.validationFailed('report.window_too_large', {
+        detail: 'window too large (max 365 days)',
+      });
     }
     const tz = this.validateTimezone(params.tz);
 
@@ -210,21 +215,26 @@ export class ReportingService {
       p_tz: tz,
     });
     if (error) {
-      // Preserve the underlying message so frontend toasts surface a
-      // useful diagnostic (e.g. "from > to" raised by the RPC's own
-      // validation if the API layer somehow lets it through).
-      throw new BadRequestException(error.message);
+      // Underlying RPC error is logged via filter; user-visible copy comes
+      // from messages.en.ts (no SQL leak).
+      throw AppErrors.validationFailed('report.rpc_failed', {
+        detail: error.message,
+      });
     }
     return data;
   }
 
   private parseDate(value: string, label: string): Date {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      throw new BadRequestException(`${label} must be a YYYY-MM-DD date`);
+      throw AppErrors.validationFailed('report.invalid_date', {
+        detail: `${label} must be a YYYY-MM-DD date`,
+      });
     }
     const d = new Date(value + 'T00:00:00Z');
     if (Number.isNaN(d.getTime())) {
-      throw new BadRequestException(`${label} is not a valid date`);
+      throw AppErrors.validationFailed('report.invalid_date', {
+        detail: `${label} is not a valid date`,
+      });
     }
     return d;
   }
