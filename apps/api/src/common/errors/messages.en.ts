@@ -1173,6 +1173,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   'tenant.update_failed': { title: "Couldn't update tenant" },
   'tenant.upload_failed': { title: "Couldn't upload that image" },
+
+  // ─── workflow (Phase 7.B-1.workflow) ─────────────────────────────────────
+  'workflow.not_found': { title: "Couldn't find that workflow" },
+  'workflow.invalid': {
+    title: "Couldn't save that workflow",
+    detail: 'The workflow definition is invalid.',
+  },
+  'workflow_instance.not_found': { title: "Couldn't find that workflow run" },
 };
 
 /**

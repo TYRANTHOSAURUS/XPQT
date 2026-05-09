@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { WorkflowValidatorService } from './workflow-validator.service';
 
 interface Graph {
@@ -36,7 +37,7 @@ export class WorkflowService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error || !data) throw new NotFoundException('Workflow not found');
+    if (error || !data) throw AppErrors.notFoundWithCode('workflow.not_found', 'Workflow not found');
     return data;
   }
 
@@ -79,7 +80,7 @@ export class WorkflowService {
     const wf = await this.getById(id);
     const result = this.validator.validate((wf.graph_definition ?? { nodes: [], edges: [] }) as Graph);
     if (!result.ok) {
-      throw new BadRequestException({ message: 'Workflow is invalid', errors: result.errors });
+      throw AppErrors.validationFailed('workflow.invalid', { detail: 'Workflow is invalid' });
     }
     const { data, error } = await this.supabase.admin
       .from('workflow_definitions')
@@ -146,7 +147,7 @@ export class WorkflowService {
       .eq('id', instanceId)
       .eq('tenant_id', tenant.id)
       .single();
-    if (error || !data) throw new NotFoundException('Instance not found');
+    if (error || !data) throw AppErrors.notFoundWithCode('workflow_instance.not_found', 'Instance not found');
     return data;
   }
 

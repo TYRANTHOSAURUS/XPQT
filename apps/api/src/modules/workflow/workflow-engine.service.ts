@@ -1,4 +1,5 @@
-import { BadRequestException, Inject, Injectable, forwardRef } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, validateAssigneesInTenant } from '../../common/tenant-validation';
@@ -308,10 +309,8 @@ export class WorkflowEngineService {
           // sla_* computed columns, and the unknown 'foo' workflow-author
           // typo all land here.
           if (forbidden.length > 0) {
-            throw new BadRequestException({
-              code: 'workflow.update_ticket_field_not_allowed',
-              message: `workflow update_ticket node attempted to write disallowed field(s): ${forbidden.join(', ')}`,
-              forbidden_fields: forbidden,
+            throw AppErrors.validationFailed('workflow.update_ticket_field_not_allowed', {
+              detail: `workflow update_ticket node attempted to write disallowed field(s): ${forbidden.join(', ')}`,
             });
           }
 
@@ -336,10 +335,8 @@ export class WorkflowEngineService {
             }
             const fk = UPDATE_TICKET_FK_FIELDS[field];
             if (typeof value !== 'string') {
-              throw new BadRequestException({
-                code: 'reference.invalid_uuid',
-                message: `${fk.entityName} reference must be a string uuid`,
-                reference_table: fk.table,
+              throw AppErrors.validationFailed('reference.invalid_uuid', {
+                detail: `${fk.entityName} reference must be a string uuid`,
               });
             }
             await assertTenantOwned(

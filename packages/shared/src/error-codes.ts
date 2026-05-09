@@ -361,6 +361,11 @@ export type KnownErrorCode =
   | 'webhook.source_ip_unresolvable'
   | 'webhook.source_ip_not_permitted'
 
+  // ─── workflow migration (Phase 7.B-1.workflow) ───────────────────────────
+  | 'workflow.not_found'
+  | 'workflow.invalid'
+  | 'workflow_instance.not_found'
+
   // ─── tenant migration (Phase 7.B-1.tenant) ───────────────────────────────
   | 'tenant.not_found'
   | 'tenant.name_required'
@@ -748,6 +753,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'tenant.invalid_svg',
   'tenant.update_failed',
   'tenant.upload_failed',
+  'workflow.not_found',
+  'workflow.invalid',
+  'workflow_instance.not_found',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

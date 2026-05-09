@@ -544,10 +544,8 @@ describe('WorkflowEngineService.executeNode (update_ticket) — Plan A.4 / Commi
       caught = e;
     }
     expect(caught).toBeTruthy();
-    expect((caught as { response?: { code?: string; forbidden_fields?: string[] } }).response).toMatchObject({
-      code: 'workflow.update_ticket_field_not_allowed',
-      forbidden_fields: ['tenant_id'],
-    });
+    expect((caught as { code?: string }).code).toBe('workflow.update_ticket_field_not_allowed');
+    expect((caught as { detail?: string }).detail).toContain('tenant_id');
     // Critically: nothing should have hit tickets.update.
     expect(updateCalls).toEqual([]);
   });
@@ -572,9 +570,8 @@ describe('WorkflowEngineService.executeNode (update_ticket) — Plan A.4 / Commi
     } catch (e) {
       caught = e;
     }
-    expect((caught as { response?: { forbidden_fields?: string[] } }).response?.forbidden_fields).toEqual([
-      'priorty',
-    ]);
+    expect((caught as { code?: string }).code).toBe('workflow.update_ticket_field_not_allowed');
+    expect((caught as { detail?: string }).detail).toContain('priorty');
     expect(updateCalls).toEqual([]);
   });
 

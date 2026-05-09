@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { WorkflowEngineService, type EmittedEvent, type WorkflowRunContext } from './workflow-engine.service';
 
 interface GraphShape {
@@ -23,7 +24,7 @@ export class WorkflowSimulatorService {
       .eq('id', workflowId)
       .eq('tenant_id', tenant.id)
       .single();
-    if (!definition) throw new NotFoundException('Workflow not found');
+    if (!definition) throw AppErrors.notFoundWithCode('workflow.not_found', 'Workflow not found');
 
     const graph = (definition.graph_definition ?? { nodes: [], edges: [] }) as GraphShape;
     const trigger = graph.nodes.find((n) => n.type === 'trigger');
