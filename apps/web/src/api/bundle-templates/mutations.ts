@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { bundleTemplateKeys } from './keys';
 import type { BundleTemplate, BundleTemplatePayload } from './types';
 
@@ -22,6 +23,7 @@ export function useCreateBundleTemplate() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: bundleTemplateKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create bundle template" }),
   });
 }
 
@@ -37,6 +39,7 @@ export function useUpdateBundleTemplate() {
       qc.invalidateQueries({ queryKey: bundleTemplateKeys.detail(id) });
       qc.invalidateQueries({ queryKey: bundleTemplateKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update bundle template" }),
   });
 }
 
@@ -49,5 +52,6 @@ export function useDeleteBundleTemplate() {
       qc.invalidateQueries({ queryKey: bundleTemplateKeys.detail(id) });
       qc.invalidateQueries({ queryKey: bundleTemplateKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete bundle template" }),
   });
 }
