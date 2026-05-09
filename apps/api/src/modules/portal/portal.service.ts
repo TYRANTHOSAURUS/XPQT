@@ -1,6 +1,7 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { PortalAppearanceService } from '../portal-appearance/portal-appearance.service';
 import { PortalAnnouncementsService } from '../portal-announcements/portal-announcements.service';
 
@@ -146,14 +147,14 @@ export class PortalService {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string; person_id: string | null; email: string | null } | null;
-    if (!row) throw new UnauthorizedException('No user in this tenant');
+    if (!row) throw AppErrors.unauthorized('No user in this tenant');
     return { userId: row.id, personId: row.person_id, userEmail: row.email };
   }
 
   async getMe(authUid: string): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { userId, personId, userEmail } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const [personRes, userFull, authorizedLocationsRes, userRolesRes, tenantFlagsRes] = await Promise.all([
       this.supabase.admin
@@ -198,7 +199,7 @@ export class PortalService {
             | null;
         }
       | null;
-    if (!person) throw new NotFoundException('Person not found');
+    if (!person) throw AppErrors.notFoundWithCode('portal.person_not_found', 'Person not found');
 
     const primaryRow = (person.primary_membership ?? []).find((m) => m.is_primary) ?? null;
     const primaryOrgRaw = primaryRow?.org_node ?? null;
@@ -207,7 +208,7 @@ export class PortalService {
     // Tenant-fk guard: userFull came from .maybeSingle() with tenant_id
     // filter — a smuggled foreign userId returns null. Throw rather than
     // null-deref on portal_current_location_id below.
-    if (!userFull.data) throw new NotFoundException('User not found');
+    if (!userFull.data) throw AppErrors.notFoundWithCode('portal.user_not_found', 'User not found');
     const userRow = userFull.data as { id: string; email: string | null; portal_current_location_id: string | null };
 
     const authorized = authorizedLocationsRes;
@@ -344,14 +345,11 @@ export class PortalService {
     const tenant = TenantContext.current();
     const me = await this.getMe(authUid);
     if (!me.can_self_onboard) {
-      throw new ForbiddenException({
-        code: 'self_onboard_disabled',
-        message: 'Self-onboarding is not available for this account',
-      });
+      throw AppErrors.forbidden('portal.self_onboard_disabled', 'Self-onboarding is not available for this account');
     }
 
     const { personId: actorPersonId } = await this.resolveActor(authUid);
-    if (!actorPersonId) throw new UnauthorizedException('No linked person');
+    if (!actorPersonId) throw AppErrors.unauthorized('No linked person');
     const { data: rows, error } = await this.supabase.admin.rpc(
       'request_type_onboardable_space_ids',
       { p_tenant_id: tenant.id, p_actor_person_id: actorPersonId },
@@ -386,7 +384,7 @@ export class PortalService {
   async claimDefaultLocation(authUid: string, spaceId: string): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     // Gate 1 — tenant feature flag.
     const { data: tenantRow } = await this.supabase.admin
@@ -397,10 +395,7 @@ export class PortalService {
     const flags =
       ((tenantRow as { feature_flags?: Record<string, unknown> } | null)?.feature_flags ?? {}) as Record<string, unknown>;
     if (flags.portal_self_onboard !== true) {
-      throw new ForbiddenException({
-        code: 'self_onboard_disabled',
-        message: 'Portal self-onboarding is not enabled for this tenant',
-      });
+      throw AppErrors.forbidden('portal.self_onboard_disabled', 'Portal self-onboarding is not enabled for this tenant');
     }
 
     // Gates 2 + 3 — person state.
@@ -413,18 +408,12 @@ export class PortalService {
     const person = personRow as
       | { id: string; type: string; default_location_id: string | null }
       | null;
-    if (!person) throw new NotFoundException('Person not found');
+    if (!person) throw AppErrors.notFoundWithCode('portal.person_not_found', 'Person not found');
     if (person.type !== 'employee') {
-      throw new ForbiddenException({
-        code: 'self_onboard_forbidden_person_type',
-        message: `Only employees can self-assign a work location (your record type is '${person.type}')`,
-      });
+      throw AppErrors.forbidden('portal.self_onboard_forbidden_person_type', `Only employees can self-assign a work location (your record type is '${person.type}')`);
     }
     if (person.default_location_id) {
-      throw new ForbiddenException({
-        code: 'default_already_set',
-        message: 'Your work location is already set; contact an admin to change it',
-      });
+      throw AppErrors.forbidden('portal.default_already_set', 'Your work location is already set; contact an admin to change it');
     }
     const { count: grantCount } = await this.supabase.admin
       .from('person_location_grants')
@@ -432,10 +421,7 @@ export class PortalService {
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id);
     if ((grantCount ?? 0) > 0) {
-      throw new ForbiddenException({
-        code: 'grants_exist',
-        message: 'You already have location access; contact an admin for changes',
-      });
+      throw AppErrors.forbidden('portal.grants_exist', 'You already have location access; contact an admin for changes');
     }
 
     // Validated — write. Trigger 00047/00055 enforces site|building + active + tenant.
@@ -462,7 +448,7 @@ export class PortalService {
   ): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const update: Record<string, unknown> = {};
     if (body.phone !== undefined) {
@@ -473,10 +459,7 @@ export class PortalService {
       if (body.default_location_id) {
         const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
         if (!authorizedIds.includes(body.default_location_id)) {
-          throw new ForbiddenException({
-            code: 'location_not_authorized',
-            message: 'Selected location is not in your authorized scope',
-          });
+          throw AppErrors.forbidden('portal.location_not_authorized', 'Selected location is not in your authorized scope');
         }
       }
       update.default_location_id = body.default_location_id ?? null;
@@ -500,22 +483,16 @@ export class PortalService {
   ): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const ALLOWED = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const;
     const MAX_BYTES = 2 * 1024 * 1024;
     const ext = ALLOWED[file.mimetype as keyof typeof ALLOWED];
     if (!ext) {
-      throw new ForbiddenException({
-        code: 'unsupported_media_type',
-        message: 'Avatar must be JPG, PNG, or WebP',
-      });
+      throw AppErrors.forbidden('portal.unsupported_media_type', 'Avatar must be JPG, PNG, or WebP');
     }
     if (file.buffer.byteLength > MAX_BYTES) {
-      throw new ForbiddenException({
-        code: 'avatar_too_large',
-        message: 'Avatar image must be 2MB or smaller',
-      });
+      throw AppErrors.forbidden('portal.avatar_too_large', 'Avatar image must be 2MB or smaller');
     }
 
     // Remove any prior extensions so the bucket never accumulates stale variants.
@@ -546,7 +523,7 @@ export class PortalService {
   async removeAvatar(authUid: string): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const variants = (['jpg', 'png', 'webp'] as const).map(
       (e) => `${tenant.id}/avatar/${personId}.${e}`,
@@ -566,14 +543,11 @@ export class PortalService {
   async setCurrentLocation(authUid: string, locationId: string): Promise<PortalMeResponse> {
     const tenant = TenantContext.current();
     const { userId, personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
     if (!authorizedIds.includes(locationId)) {
-      throw new ForbiddenException({
-        code: 'location_not_authorized',
-        message: 'Selected location is not in your authorized scope',
-      });
+      throw AppErrors.forbidden('portal.location_not_authorized', 'Selected location is not in your authorized scope');
     }
 
     await this.supabase.admin
@@ -593,14 +567,11 @@ export class PortalService {
   async getCatalog(authUid: string, locationId: string): Promise<PortalCatalogResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
     if (!authorizedIds.includes(locationId)) {
-      throw new ForbiddenException({
-        code: 'location_not_authorized',
-        message: 'Selected location is not in your authorized scope',
-      });
+      throw AppErrors.forbidden('portal.location_not_authorized', 'Selected location is not in your authorized scope');
     }
 
     const { data: visibleRows, error: visibleErr } = await this.supabase.admin.rpc(
@@ -792,14 +763,11 @@ export class PortalService {
   async getSpaces(authUid: string, under: string): Promise<PortalSpacesResponse> {
     const tenant = TenantContext.current();
     const { personId } = await this.resolveActor(authUid);
-    if (!personId) throw new UnauthorizedException('No linked person');
+    if (!personId) throw AppErrors.unauthorized('No linked person');
 
     const authorizedIds = await this.loadAuthorizedSpaceIds(personId);
     if (!authorizedIds.includes(under)) {
-      throw new ForbiddenException({
-        code: 'location_not_authorized',
-        message: 'Parent location is not in your authorized scope',
-      });
+      throw AppErrors.forbidden('portal.location_not_authorized', 'Parent location is not in your authorized scope');
     }
 
     const [parentRes, childrenRes] = await Promise.all([
@@ -813,7 +781,7 @@ export class PortalService {
         .order('name'),
     ]);
 
-    if (!parentRes) throw new NotFoundException('Parent space not found');
+    if (!parentRes) throw AppErrors.notFoundWithCode('portal.parent_space_not_found', 'Parent space not found');
 
     const childRows = (childrenRes.data ?? []) as Array<{
       id: string;

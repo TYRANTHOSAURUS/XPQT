@@ -374,6 +374,25 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── portal migration (Phase 7.B-1.portal) ───────────────────────────────
+  | 'portal.no_linked_person'
+  | 'portal.no_user_in_tenant'
+  | 'portal.person_not_found'
+  | 'portal.user_not_found'
+  | 'portal.parent_space_not_found'
+  | 'portal.request_type_not_found'
+  | 'portal.field_required'
+  | 'portal.unsupported_media_type'
+  | 'portal.avatar_too_large'
+  | 'portal.location_not_authorized'
+  | 'portal.self_onboard_disabled'
+  | 'portal.self_onboard_forbidden_person_type'
+  | 'portal.default_already_set'
+  | 'portal.grants_exist'
+  | 'portal.requestable_failed'
+  | 'portal.request_type_required'
+  | 'portal.asset_not_found'
+
   // ─── tenant migration (Phase 7.B-1.tenant) ───────────────────────────────
   | 'tenant.not_found'
   | 'tenant.name_required'
@@ -770,6 +789,23 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'invalid_foreign_key',
   'invalid_service_category',
   'setup_routing_failed',
+  'portal.no_linked_person',
+  'portal.no_user_in_tenant',
+  'portal.person_not_found',
+  'portal.user_not_found',
+  'portal.parent_space_not_found',
+  'portal.request_type_not_found',
+  'portal.field_required',
+  'portal.unsupported_media_type',
+  'portal.avatar_too_large',
+  'portal.location_not_authorized',
+  'portal.self_onboard_disabled',
+  'portal.self_onboard_forbidden_person_type',
+  'portal.default_already_set',
+  'portal.grants_exist',
+  'portal.requestable_failed',
+  'portal.request_type_required',
+  'portal.asset_not_found',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -1201,6 +1201,42 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Invalid service category.',
   },
   setup_routing_failed: { title: "Couldn't resolve setup routing" },
+
+  // ─── portal (Phase 7.B-1.portal) ─────────────────────────────────────────
+  'portal.no_linked_person': {
+    title: 'No profile found',
+    detail: 'Your account isn\'t linked to a person record.',
+  },
+  'portal.no_user_in_tenant': {
+    title: 'No user in this tenant',
+  },
+  'portal.person_not_found': { title: "Couldn't find that person" },
+  'portal.user_not_found': { title: "Couldn't find that user" },
+  'portal.parent_space_not_found': { title: "Couldn't find that parent location" },
+  'portal.request_type_not_found': { title: "Couldn't find that request type" },
+  'portal.field_required': { title: "Couldn't process that request", detail: 'A required field is missing.' },
+  'portal.unsupported_media_type': { title: "Couldn't upload that image", detail: 'Unsupported file type.' },
+  'portal.avatar_too_large': { title: "Couldn't upload that image", detail: 'Avatar is too large.' },
+  'portal.location_not_authorized': { title: "You don't have access to this location" },
+  'portal.self_onboard_disabled': { title: 'Self-onboarding is disabled' },
+  'portal.self_onboard_forbidden_person_type': {
+    title: "Couldn't create that profile",
+    detail: 'That person type is not allowed for self-onboarding.',
+  },
+  'portal.default_already_set': {
+    title: "Couldn't change default",
+    detail: 'A default location is already set for this person.',
+  },
+  'portal.grants_exist': {
+    title: "Couldn't change defaults",
+    detail: 'Other location grants exist for this person.',
+  },
+  'portal.requestable_failed': { title: "Couldn't load request types" },
+  'portal.request_type_required': {
+    title: "Couldn't submit",
+    detail: 'A request type is required.',
+  },
+  'portal.asset_not_found': { title: "Couldn't find that asset" },
 };
 
 /**

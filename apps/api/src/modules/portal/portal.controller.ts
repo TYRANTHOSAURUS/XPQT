@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,7 +7,6 @@ import {
   Post,
   Query,
   Req,
-  UnauthorizedException,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -17,6 +15,7 @@ import type { Request } from 'express';
 import { PortalService } from './portal.service';
 import { PortalSubmitService } from './portal-submit.service';
 import { PortalSubmitDto } from './portal-submit.types';
+import { AppErrors } from '../../common/errors';
 
 @Controller('portal')
 export class PortalController {
@@ -27,7 +26,7 @@ export class PortalController {
 
   private authUid(request: Request): string {
     const authUid = (request as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.unauthorized('No auth user');
     return authUid;
   }
 
@@ -42,7 +41,7 @@ export class PortalController {
     @Body() body: { current_location_id: string },
   ) {
     if (!body?.current_location_id) {
-      throw new BadRequestException('current_location_id is required');
+      throw AppErrors.validationFailed('portal.field_required', { detail: 'current_location_id is required' });
     }
     return this.portal.setCurrentLocation(this.authUid(request), body.current_location_id);
   }
@@ -61,7 +60,7 @@ export class PortalController {
     @Req() request: Request,
     @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
-    if (!file) throw new BadRequestException('file is required');
+    if (!file) throw AppErrors.validationFailed('portal.field_required', { detail: 'file is required' });
     return this.portal.uploadAvatar(this.authUid(request), file);
   }
 
@@ -76,7 +75,7 @@ export class PortalController {
     @Query('location_id') locationId?: string,
   ) {
     if (!locationId) {
-      throw new BadRequestException('location_id is required');
+      throw AppErrors.validationFailed('portal.field_required', { detail: 'location_id is required' });
     }
     return this.portal.getCatalog(this.authUid(request), locationId);
   }
@@ -87,7 +86,7 @@ export class PortalController {
     @Query('under') under?: string,
   ) {
     if (!under) {
-      throw new BadRequestException('under (space_id) is required');
+      throw AppErrors.validationFailed('portal.field_required', { detail: 'under (space_id) is required' });
     }
     return this.portal.getSpaces(this.authUid(request), under);
   }
@@ -103,7 +102,7 @@ export class PortalController {
     @Body() body: { space_id: string },
   ) {
     if (!body?.space_id) {
-      throw new BadRequestException('space_id is required');
+      throw AppErrors.validationFailed('portal.field_required', { detail: 'space_id is required' });
     }
     return this.portal.claimDefaultLocation(this.authUid(request), body.space_id);
   }

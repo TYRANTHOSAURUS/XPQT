@@ -1,12 +1,8 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { IntakeContext } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { TicketService } from '../ticket/ticket.service';
 import {
   RequestTypeTrace,
@@ -61,10 +57,7 @@ export class PortalSubmitService {
     const tenant = TenantContext.current();
 
     if (!dto.request_type_id) {
-      throw new BadRequestException({
-        code: 'request_type_required',
-        message: 'request_type_id is required',
-      });
+      throw AppErrors.validationFailed('portal.request_type_required', { detail: 'request_type_id is required' });
     }
 
     // 1. Auth-bind requester.
@@ -76,7 +69,7 @@ export class PortalSubmitService {
       .maybeSingle();
     const userRow = userLookup.data as { id: string; person_id: string | null } | null;
     if (!userRow || !userRow.person_id) {
-      throw new UnauthorizedException('No linked person for authenticated user');
+      throw AppErrors.unauthorized('No linked person for authenticated user');
     }
     const requesterPersonId = userRow.person_id;
 
@@ -89,7 +82,7 @@ export class PortalSubmitService {
       .maybeSingle();
     const rt = rtRow as { id: string; active: boolean } | null;
     if (!rt || !rt.active) {
-      throw new NotFoundException('Request type not found or inactive');
+      throw AppErrors.notFoundWithCode('portal.request_type_not_found', 'Request type not found or inactive');
     }
 
     // 3. Early asset lookup (tenant-scoped) to derive the effective location
@@ -106,10 +99,7 @@ export class PortalSubmitService {
         | { id: string; asset_type_id: string | null; assigned_space_id: string | null }
         | null;
       if (!asset) {
-        throw new BadRequestException({
-          code: 'asset_not_found',
-          message: 'Asset does not exist or is not accessible',
-        });
+        throw AppErrors.validationFailed('portal.asset_not_found', { detail: 'Asset does not exist or is not accessible' });
       }
       assetAssignedSpaceId = asset.assigned_space_id;
     }
@@ -138,10 +128,8 @@ export class PortalSubmitService {
     const portal_trace = traceData as unknown as RequestTypeTrace;
 
     if (!portal_trace.overall_valid) {
-      throw new BadRequestException({
-        code: 'portal_requestable_failed',
-        message: portal_trace.failure_reason ?? 'Submission not allowed',
-        trace: portal_trace,
+      throw AppErrors.validationFailed('portal.requestable_failed', {
+        detail: portal_trace.failure_reason ?? 'Submission not allowed',
       });
     }
 
