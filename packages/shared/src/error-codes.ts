@@ -316,7 +316,16 @@ export type KnownErrorCode =
   | 'announcement.insert_no_row'
 
   // ─── person module migration (Phase 7.B-1.person) ────────────────────────
-  | 'person.org_change_in_progress';
+  | 'person.org_change_in_progress'
+
+  // ─── org-node module migration (Phase 7.B-1.org-node) ────────────────────
+  | 'org_node.not_found'
+  | 'org_node.name_required'
+  | 'org_node.create_failed'
+  | 'org_node.update_failed'
+  | 'org_node.delete_failed'
+  | 'org_node.add_member_failed'
+  | 'org_node.add_grant_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -558,6 +567,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'announcement.invalid_payload',
   'announcement.insert_no_row',
   'person.org_change_in_progress',
+  'org_node.not_found',
+  'org_node.name_required',
+  'org_node.create_failed',
+  'org_node.update_failed',
+  'org_node.delete_failed',
+  'org_node.add_member_failed',
+  'org_node.add_grant_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

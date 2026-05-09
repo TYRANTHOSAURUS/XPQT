@@ -860,6 +860,30 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't change that person's organisation",
     detail: 'Another organisation change for this person is in progress. Reload and try again.',
   },
+
+  // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
+  'org_node.not_found': {
+    title: "Couldn't find that organisation node",
+  },
+  'org_node.name_required': {
+    title: "Couldn't save that organisation node",
+    detail: 'Name is required.',
+  },
+  'org_node.create_failed': {
+    title: "Couldn't create that organisation node",
+  },
+  'org_node.update_failed': {
+    title: "Couldn't update that organisation node",
+  },
+  'org_node.delete_failed': {
+    title: "Couldn't delete that organisation node",
+  },
+  'org_node.add_member_failed': {
+    title: "Couldn't add that member",
+  },
+  'org_node.add_grant_failed': {
+    title: "Couldn't add that location grant",
+  },
 };
 
 /**

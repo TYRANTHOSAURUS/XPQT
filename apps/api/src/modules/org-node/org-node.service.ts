@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -104,12 +105,12 @@ export class OrgNodeService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`org_node ${id} not found`);
+    if (!data) throw AppErrors.notFound('org_node', id);
     return data as OrgNodeRow;
   }
 
   async create(dto: CreateOrgNodeDto): Promise<OrgNodeRow> {
-    if (!dto.name?.trim()) throw new BadRequestException('name is required');
+    if (!dto.name?.trim()) throw AppErrors.validationFailed('org_node.name_required', { detail: 'name is required' });
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('org_nodes')
@@ -122,7 +123,7 @@ export class OrgNodeService {
       })
       .select('*')
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.validationFailed('org_node.create_failed', { detail: error.message });
     return data as OrgNodeRow;
   }
 
@@ -144,7 +145,7 @@ export class OrgNodeService {
       .eq('tenant_id', tenant.id)
       .select('*')
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.validationFailed('org_node.update_failed', { detail: error.message });
     return data as OrgNodeRow;
   }
 
@@ -155,7 +156,7 @@ export class OrgNodeService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.validationFailed('org_node.delete_failed', { detail: error.message });
     return { ok: true };
   }
 
@@ -206,11 +207,11 @@ export class OrgNodeService {
       // Raced with another "set primary" call — the partial unique index on
       // is_primary per person is our safety net. Surface a readable 409.
       if (isUniqueViolation(error)) {
-        throw new ConflictException(
-          'Another organisation change for this person is in progress. Reload and try again.',
-        );
+        throw AppErrors.conflict('person.org_change_in_progress', {
+          detail: 'Another organisation change for this person is in progress. Reload and try again.',
+        });
       }
-      throw new BadRequestException(error.message);
+      throw AppErrors.validationFailed('org_node.add_member_failed', { detail: error.message });
     }
     return data;
   }
@@ -258,7 +259,7 @@ export class OrgNodeService {
       })
       .select('id, space_id, granted_by_user_id, granted_at, note')
       .single();
-    if (error) throw new BadRequestException(error.message);
+    if (error) throw AppErrors.validationFailed('org_node.add_grant_failed', { detail: error.message });
     return data;
   }
 
