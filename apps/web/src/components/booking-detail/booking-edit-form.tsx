@@ -14,8 +14,8 @@ import {
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { useEditBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toastError, toastUpdated } from '@/lib/toast';
-
+import { toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface Props {
   reservation: Reservation;
   onClose: () => void;
@@ -68,7 +68,7 @@ export function BookingEditForm({ reservation, onClose }: Props) {
       toastUpdated('Booking');
       onClose();
     } catch (e) {
-      toastError("Couldn't update booking", { error: e, retry: submit });
+      handleMutationError(e, { actionTitle: "Couldn't update booking", retry: submit });
     }
   };
 

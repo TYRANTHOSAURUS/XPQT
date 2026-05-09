@@ -20,8 +20,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
 import { useCancelBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toastError, toastRemoved } from '@/lib/toast';
-
+import { toastRemoved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 type Scope = 'this' | 'this_and_following' | 'series';
 
 interface Props {
@@ -81,7 +81,7 @@ export function CancelWithScopeDialog({
       onCancelled?.();
       onOpenChange(false);
     } catch (e) {
-      toastError("Couldn't cancel booking", { error: e, retry: submit });
+      handleMutationError(e, { actionTitle: "Couldn't cancel booking", retry: submit });
     }
   };
 

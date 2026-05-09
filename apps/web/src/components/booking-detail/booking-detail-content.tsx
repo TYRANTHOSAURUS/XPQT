@@ -27,8 +27,8 @@ import { BookingEditForm } from './booking-edit-form';
 import { BundleServicesSection } from './bundle-services-section';
 import { BundleWorkOrdersSection } from './bundle-work-orders-section';
 import { CancelWithScopeDialog } from './cancel-with-scope-dialog';
-import { toastError, toastSuccess, toastUpdated } from '@/lib/toast';
-
+import { toastSuccess, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 const TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
   minute: '2-digit',
@@ -173,7 +173,7 @@ export function BookingDetailContent({
       await checkIn.mutateAsync(reservation.id);
       toastSuccess('Checked in');
     } catch (e) {
-      toastError("Couldn't check in", { error: e, retry: onCheckIn });
+      handleMutationError(e, { actionTitle: "Couldn't check in", retry: onCheckIn });
     }
   };
 
@@ -182,7 +182,7 @@ export function BookingDetailContent({
       await restore.mutateAsync(reservation.id);
       toastSuccess('Booking restored');
     } catch (e) {
-      toastError("Couldn't restore booking", { error: e, retry: onRestore });
+      handleMutationError(e, { actionTitle: "Couldn't restore booking", retry: onRestore });
     }
   };
 
@@ -267,7 +267,7 @@ export function BookingDetailContent({
                     });
                     toastUpdated('Attendee count');
                   } catch (e) {
-                    toastError("Couldn't update attendees", { error: e });
+                    handleMutationError(e, { actionTitle: "Couldn't update attendees" });
                   }
                 }}
                 min={1}
@@ -480,7 +480,7 @@ export function BookingDetailContent({
             setChangingRoom(false);
             setNextSpaceId('');
           } catch (e) {
-            toastError("Couldn't change room", { error: e });
+            handleMutationError(e, { actionTitle: "Couldn't change room" });
           }
         }}
       />

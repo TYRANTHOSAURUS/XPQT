@@ -1,6 +1,6 @@
 import { Building2, MapPin, ChevronDown } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -83,7 +83,7 @@ export function PortalLocationSwitcher({
     try {
       await setCurrentLocation(spaceId);
     } catch (e) {
-      toastError("Couldn't switch location", { error: e, retry: () => handle(spaceId) });
+      handleMutationError(e, { actionTitle: "Couldn't switch location", retry: () => handle(spaceId) });
     } finally {
       setBusy(false);
     }

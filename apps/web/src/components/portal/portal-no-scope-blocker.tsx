@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 import { useQuery, queryOptions } from '@tanstack/react-query';
 import { AlertCircle, Building2, LogOut, Mail, MapPin } from 'lucide-react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -68,7 +69,7 @@ export function PortalNoScopeBlocker() {
       await claimDefaultLocation(spaceId);
       toastSuccess('Work location set');
     } catch (e) {
-      toastError("Couldn't set your work location", { error: e, retry: onClaim });
+      handleMutationError(e, { actionTitle: "Couldn't set your work location", retry: onClaim });
     } finally {
       setSubmitting(false);
     }

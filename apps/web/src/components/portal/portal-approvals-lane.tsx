@@ -17,7 +17,8 @@ import {
 import { useAuth } from '@/providers/auth-provider';
 import { Button } from '@/components/ui/button';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 
 type EntityKind = 'reservation' | 'booking_bundle' | 'ticket' | 'order' | 'other';
@@ -114,10 +115,7 @@ export function PortalApprovalsLane() {
           }
         },
         onError: (err) => {
-          toastError("Couldn't record your decision", {
-            error: err,
-            retry: () => handle(approval, status),
-          });
+          handleMutationError(err, { actionTitle: "Couldn't record your decision", retry: () => handle(approval, status) });
         },
         onSettled: () =>
           setResponding((prev) => ({ ...prev, [approval.id]: false })),

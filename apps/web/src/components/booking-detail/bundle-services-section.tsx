@@ -17,7 +17,8 @@ import {
   type PickerSelection,
 } from '@/components/booking-composer/service-picker-sheet';
 import { formatCurrency, formatTimeShort } from '@/lib/format';
-import { toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { handleMutationError, handleQueryError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 import { useRealtimeBundle } from './use-realtime-bundle';
 
@@ -94,7 +95,7 @@ export function BundleServicesSection({ reservation, canEdit, alwaysShow = false
       );
       setPickerOpen(false);
     } catch (e) {
-      toastError("Couldn't add services", { error: e, retry: () => handleAdd(selections) });
+      handleMutationError(e, { actionTitle: "Couldn't add services", retry: () => handleAdd(selections) });
     }
   };
 
@@ -169,7 +170,7 @@ function BundleServicesContent({
     // error-handling spec — never paint raw error.message into the UI).
     // The inline strip stays as a low-key fallback so the section doesn't
     // collapse silently on a non-page-class failure.
-    toastError("Couldn't load services", { error });
+    handleQueryError(error, { callSite: 'query', actionTitle: "Couldn't load services" });
     return (
       <div className="border-t px-5 py-3 text-xs text-muted-foreground">
         Services unavailable.
@@ -204,7 +205,7 @@ function BundleServicesContent({
       toastRemoved('Service line', { verb: 'cancelled' });
       onConfirmingLineChange(null);
     } catch (err) {
-      toastError("Couldn't cancel line", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't cancel line" });
     }
   };
 
@@ -270,7 +271,7 @@ function BundleServicesContent({
                     toastUpdated('Service line');
                     onEditingLineIdChange(null);
                   } catch (err) {
-                    toastError("Couldn't update line", { error: err });
+                    handleMutationError(err, { actionTitle: "Couldn't update line" });
                   }
                 }}
                 saving={editLine.isPending}
