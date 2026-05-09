@@ -374,6 +374,18 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── orders migration (Phase 7.B-1.orders) ───────────────────────────────
+  | 'no_lines'
+  | 'missing_location'
+  | 'missing_window'
+  | 'no_person'
+  | 'no_user'
+  | 'order_not_found'
+  | 'master_order_not_found'
+  | 'line_not_editable'
+  | 'orders.not_implemented'
+  | 'orders.approval_routing_failed'
+
   // ─── portal migration (Phase 7.B-1.portal) ───────────────────────────────
   | 'portal.no_linked_person'
   | 'portal.no_user_in_tenant'
@@ -806,6 +818,16 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'portal.requestable_failed',
   'portal.request_type_required',
   'portal.asset_not_found',
+  'no_lines',
+  'missing_location',
+  'missing_window',
+  'no_person',
+  'no_user',
+  'order_not_found',
+  'master_order_not_found',
+  'line_not_editable',
+  'orders.not_implemented',
+  'orders.approval_routing_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { assertTenantOwned } from '../../common/tenant-validation';
 import {
   loadPermissionMap,
@@ -138,10 +139,7 @@ export class OrderService {
       .maybeSingle();
     if (masterOrder.error) throw masterOrder.error;
     if (!masterOrder.data) {
-      throw new NotFoundException({
-        code: 'master_order_not_found',
-        message: `Master order ${args.masterOrderId} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('master_order_not_found', `Master order ${args.masterOrderId} not found.`);
     }
 
     // Plan A.2 / Commit 5 / gap map §orders.service.ts:164. The clone insert
@@ -751,12 +749,11 @@ export class OrderService {
    */
   async createStandalone(args: CreateStandaloneOrderArgs): Promise<CreateStandaloneOrderResult> {
     if (args.lines.length === 0) {
-      throw new BadRequestException({ code: 'no_lines', message: 'no order lines provided' });
+      throw AppErrors.validationFailed('no_lines', { detail: 'no order lines provided' });
     }
     if (Date.parse(args.requested_for_end_at) <= Date.parse(args.requested_for_start_at)) {
-      throw new BadRequestException({
-        code: 'invalid_window',
-        message: 'requested_for_end_at must be after requested_for_start_at',
+      throw AppErrors.validationFailed('booking.invalid_window', {
+        detail: 'requested_for_end_at must be after requested_for_start_at',
       });
     }
 
@@ -934,10 +931,8 @@ export class OrderService {
 
       if (perLineApproval.some((p) => p.outcome.effect === 'deny')) {
         const denials = perLineApproval.flatMap((p) => p.outcome.denial_messages);
-        throw new BadRequestException({
-          code: 'service_rule_deny',
-          message: denials[0] ?? 'A service rule denied this order.',
-          denial_messages: denials,
+        throw AppErrors.validationFailed('service_rule_deny', {
+          detail: denials[0] ?? 'A service rule denied this order.',
         });
       }
 
@@ -1217,7 +1212,7 @@ export class OrderService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (error) throw error;
-    if (!data) throw new NotFoundException({ code: 'catalog_item_not_found', message: `Catalog item ${id} not found.` });
+    if (!data) throw AppErrors.notFound('catalog_item', id);
     return data as typeof data & {
       id: string;
       category: string | null;
@@ -1264,10 +1259,7 @@ export class OrderService {
       .maybeSingle();
     if (assetCheck.error) throw assetCheck.error;
     if (!assetCheck.data) {
-      throw new NotFoundException({
-        code: 'asset_not_found',
-        message: `Asset ${args.asset_id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('asset.not_found', `Asset ${args.asset_id} not found.`);
     }
 
     // Column rename: asset_reservations.booking_bundle_id → booking_id

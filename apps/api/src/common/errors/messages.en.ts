@@ -1237,6 +1237,31 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'A request type is required.',
   },
   'portal.asset_not_found': { title: "Couldn't find that asset" },
+
+  // ─── orders (Phase 7.B-1.orders) ─────────────────────────────────────────
+  no_lines: { title: "Couldn't submit", detail: 'At least one order line is required.' },
+  missing_location: {
+    title: "Couldn't submit",
+    detail: 'Delivery location is required.',
+  },
+  missing_window: {
+    title: "Couldn't submit",
+    detail: 'Requested time window is required.',
+  },
+  no_person: { title: 'No profile found', detail: 'Your account isn\'t linked to a person.' },
+  no_user: { title: 'No user record found' },
+  order_not_found: { title: "Couldn't find that order" },
+  master_order_not_found: { title: "Couldn't find that master order" },
+  line_not_editable: {
+    title: "Couldn't update that order line",
+    detail: 'This line is no longer editable.',
+  },
+  'orders.not_implemented': {
+    title: "That feature isn't available yet",
+  },
+  'orders.approval_routing_failed': {
+    title: "Couldn't resolve approval routing",
+  },
 };
 
 /**

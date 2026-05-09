@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { AttachPlanApproval } from '../booking-bundles/attach-plan.types';
@@ -370,9 +371,9 @@ export class ApprovalRoutingService {
     attempt: number,
   ): Promise<AssembledApproval> {
     if (attempt > 2) {
-      throw new Error(
-        `approval-routing: dedup upsert retry exhausted for (target=${args.target_entity_id}, approver=${args.approver_person_id})`,
-      );
+      throw AppErrors.server('orders.approval_routing_failed', {
+        detail: `approval-routing: dedup upsert retry exhausted for (target=${args.target_entity_id}, approver=${args.approver_person_id})`,
+      });
     }
 
     const existing = await this.supabase.admin

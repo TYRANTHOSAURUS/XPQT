@@ -1,17 +1,15 @@
 import {
-  BadRequestException,
   Body,
   Controller,
-  NotImplementedException,
   Param,
   Patch,
   Post,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { OrderService, type CreateStandaloneOrderArgs } from './order.service';
 
 @Controller('orders')
@@ -25,9 +23,9 @@ export class OrdersController {
   create(@Body() _body: unknown) {
     // The composite path goes through POST /reservations with `services`.
     // A separate POST /orders (without reservation) is the standalone shape.
-    throw new NotImplementedException(
-      'orders.create is reserved for composite flow via POST /reservations',
-    );
+    throw AppErrors.validationFailed('orders.not_implemented', {
+      detail: 'orders.create is reserved for composite flow via POST /reservations',
+    });
   }
 
   /**
@@ -43,13 +41,13 @@ export class OrdersController {
     const requesterPersonId = await this.resolveRequesterPersonId(authUid, tenantId);
 
     if (!body || !Array.isArray(body.lines) || body.lines.length === 0) {
-      throw new BadRequestException({ code: 'no_lines', message: 'lines[] is required' });
+      throw AppErrors.validationFailed('no_lines', { detail: 'lines[] is required' });
     }
     if (!body.delivery_space_id) {
-      throw new BadRequestException({ code: 'missing_location', message: 'delivery_space_id is required' });
+      throw AppErrors.validationFailed('missing_location', { detail: 'delivery_space_id is required' });
     }
     if (!body.requested_for_start_at || !body.requested_for_end_at) {
-      throw new BadRequestException({ code: 'missing_window', message: 'requested_for_start_at and requested_for_end_at are required' });
+      throw AppErrors.validationFailed('missing_window', { detail: 'requested_for_start_at and requested_for_end_at are required' });
     }
 
     const args: CreateStandaloneOrderArgs = {
@@ -105,7 +103,7 @@ export class OrdersController {
 
   private getAuthUid(req: Request): string {
     const u = (req as unknown as { user?: { id?: string } }).user;
-    if (!u?.id) throw new UnauthorizedException('missing_user');
+    if (!u?.id) throw AppErrors.unauthorized('missing_user');
     return u.id;
   }
 
@@ -119,7 +117,7 @@ export class OrdersController {
     if (error) throw error;
     const personId = (data as { person_id: string | null } | null)?.person_id;
     if (!personId) {
-      throw new UnauthorizedException({ code: 'no_person', message: 'no person record linked to this user' });
+      throw AppErrors.unauthorized('no person record linked to this user');
     }
     return personId;
   }
@@ -154,10 +152,10 @@ export class OrdersController {
     const userRow = userRes.data as { id: string; person_id: string | null } | null;
     const lineRow = lineRes.data as { id: string; order_id: string } | null;
     if (!userRow) {
-      throw new UnauthorizedException({ code: 'no_user', message: 'no user record for this auth uid' });
+      throw AppErrors.unauthorized('no user record for this auth uid');
     }
     if (!lineRow) {
-      throw new BadRequestException({ code: 'line_not_found', message: 'order line not found' });
+      throw AppErrors.validationFailed('line_not_found', { detail: 'order line not found' });
     }
 
     const orderRes = await this.supabase.admin
@@ -169,7 +167,7 @@ export class OrdersController {
     if (orderRes.error) throw orderRes.error;
     const order = orderRes.data as { requester_person_id: string } | null;
     if (!order) {
-      throw new BadRequestException({ code: 'order_not_found', message: 'order not found' });
+      throw AppErrors.validationFailed('order_not_found', { detail: 'order not found' });
     }
 
     if (userRow.person_id && order.requester_person_id === userRow.person_id) return;
@@ -191,10 +189,7 @@ export class OrdersController {
     if (adminRes.error) throw adminRes.error;
     if (readAllRes.data || adminRes.data) return;
 
-    throw new UnauthorizedException({
-      code: 'line_not_editable',
-      message: 'You do not have access to this service line.',
-    });
+    throw AppErrors.forbidden('line_not_editable', 'You do not have access to this service line.');
   }
 }
 
