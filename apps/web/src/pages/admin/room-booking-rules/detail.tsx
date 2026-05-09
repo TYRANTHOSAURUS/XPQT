@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
+import { toastRemoved, toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Building2, Layers, Globe2, Tag, ChevronRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -138,7 +139,7 @@ function RuleDetailBody({ rule, onDeleted }: RuleDetailBodyProps) {
   ) => {
     update.mutate(patch as Record<string, unknown>, {
       onSuccess: () => toastSaved('Rule', { silent: opts.silent }),
-      onError: (err) => toastError("Couldn't save rule", { error: err, retry: () => save(patch, opts) }),
+      onError: (err) => handleMutationError(err, { actionTitle: "Couldn't save rule", retry: () => save(patch, opts) }),
     });
   };
 

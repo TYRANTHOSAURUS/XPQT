@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { History, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
@@ -136,7 +137,7 @@ function VersionRow({
             await restore.mutateAsync(version.version_number);
             toastSuccess(`Restored v${version.version_number}`);
           } catch (err) {
-            toastError("Couldn't restore version", { error: err });
+            handleMutationError(err, { actionTitle: "Couldn't restore version" });
             throw err;
           }
         }}

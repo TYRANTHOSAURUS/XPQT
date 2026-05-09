@@ -19,7 +19,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Trash2 } from 'lucide-react';
-import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
+import { toastRemoved, toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/confirm-dialog';
@@ -101,10 +102,7 @@ function DetailBody({ visitorType, onDeleted }: DetailBodyProps) {
     update.mutate(patch, {
       onSuccess: () => toastSaved('Visitor type', { silent: opts.silent }),
       onError: (err) =>
-        toastError("Couldn't save visitor type", {
-          error: err,
-          retry: () => save(patch, opts),
-        }),
+        handleMutationError(err, { actionTitle: "Couldn't save visitor type", retry: () => save(patch, opts) }),
     });
   };
 
@@ -396,7 +394,7 @@ function DangerGroup({
             toastRemoved('Visitor type', { verb: 'deleted' });
             onDeleted();
           } catch (err) {
-            toastError("Couldn't delete visitor type", { error: err });
+            handleMutationError(err, { actionTitle: "Couldn't delete visitor type" });
           }
         }}
       />

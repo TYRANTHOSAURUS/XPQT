@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from 'react';
 import { Play, Save } from 'lucide-react';
-import { toastError, toastSaved } from '@/lib/toast';
+import { toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -74,7 +75,7 @@ export function RuleTestScenarioPanel({ ruleId: _ruleId }: RuleTestScenarioPanel
     if (!selectedScenario) return;
     runSaved.mutate(selectedScenario.id, {
       onSuccess: (res) => setResult(res),
-      onError: (err) => toastError("Couldn't run scenario", { error: err, retry: handleRunSaved }),
+      onError: (err) => handleMutationError(err, { actionTitle: "Couldn't run scenario", retry: handleRunSaved }),
     });
   };
 
@@ -83,7 +84,7 @@ export function RuleTestScenarioPanel({ ruleId: _ruleId }: RuleTestScenarioPanel
       { scenario: adhoc },
       {
         onSuccess: (res) => setResult(res),
-        onError: (err) => toastError("Couldn't run scenario", { error: err, retry: handleRunAdhoc }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't run scenario", retry: handleRunAdhoc }),
       },
     );
   };
@@ -404,7 +405,7 @@ function SaveScenarioDialog({
           reset();
           onOpenChange(false);
         },
-        onError: (err) => toastError("Couldn't save scenario", { error: err, retry: handleSave }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't save scenario", retry: handleSave }),
       },
     );
   };

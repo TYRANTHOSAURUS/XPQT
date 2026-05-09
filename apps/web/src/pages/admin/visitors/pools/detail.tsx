@@ -30,7 +30,8 @@ import {
   X,
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { toastCreated, toastError, toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
+import { toastCreated, toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/confirm-dialog';
@@ -264,7 +265,7 @@ function PassRow({ spaceId, pass }: { spaceId: string; pass: ReceptionPass }) {
       {
         onSuccess: () => toastSaved('Pass', { silent: false }),
         onError: (err) =>
-          toastError("Couldn't save pass notes", { error: err }),
+          handleMutationError(err, { actionTitle: "Couldn't save pass notes" }),
       },
     );
   };
@@ -275,7 +276,7 @@ function PassRow({ spaceId, pass }: { spaceId: string; pass: ReceptionPass }) {
       {
         onSuccess: () =>
           toastRemoved('Pass', { verb: 'archived' }),
-        onError: (err) => toastError("Couldn't retire pass", { error: err }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't retire pass" }),
       },
     );
   };
@@ -283,7 +284,7 @@ function PassRow({ spaceId, pass }: { spaceId: string; pass: ReceptionPass }) {
   const recover = () => {
     recoverAdmin.mutate(pass.id, {
       onSuccess: () => toastSuccess('Pass marked recovered'),
-      onError: (err) => toastError("Couldn't recover pass", { error: err }),
+      onError: (err) => handleMutationError(err, { actionTitle: "Couldn't recover pass" }),
     });
   };
 
@@ -403,7 +404,7 @@ function AddPassDialog({
           toastCreated('Pass');
           onOpenChange(false);
         },
-        onError: (err) => toastError("Couldn't add pass", { error: err }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't add pass" }),
       },
     );
   };
@@ -554,7 +555,7 @@ function KioskProvisioningGroup({ spaceId }: { spaceId: string }) {
           setShowProvision(null);
         },
         onError: (err) =>
-          toastError("Couldn't provision kiosk", { error: err }),
+          handleMutationError(err, { actionTitle: "Couldn't provision kiosk" }),
       },
     );
   };
@@ -726,7 +727,7 @@ function KioskRow({
             });
             onRotated(res.token, res.expires_at);
           } catch (err) {
-            toastError("Couldn't rotate kiosk", { error: err });
+            handleMutationError(err, { actionTitle: "Couldn't rotate kiosk" });
           }
         }}
       />
@@ -743,7 +744,7 @@ function KioskRow({
             await revoke.mutateAsync({ kiosk_token_id: kioskToken.id });
             toastRemoved('Kiosk', { verb: 'revoked' });
           } catch (err) {
-            toastError("Couldn't revoke kiosk", { error: err });
+            handleMutationError(err, { actionTitle: "Couldn't revoke kiosk" });
           }
         }}
       />

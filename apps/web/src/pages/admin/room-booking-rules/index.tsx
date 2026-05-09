@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Sparkles } from 'lucide-react';
-import { toast, toastCreated, toastError } from '@/lib/toast';
+import { toast, toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -152,7 +153,7 @@ function RuleRow({ rule }: { rule: RoomBookingRule }) {
             update.mutate(
               { active: next },
               {
-                onError: (err) => toastError("Couldn't save rule", { error: err }),
+                onError: (err) => handleMutationError(err, { actionTitle: "Couldn't save rule" }),
               },
             )
           }
@@ -242,7 +243,7 @@ function CreateRuleDialog({ open, onOpenChange, seedTemplate }: CreateRuleDialog
           onOpenChange(false);
           navigate(`/admin/room-booking-rules/${rule.id}`);
         },
-        onError: (err) => toastError("Couldn't create rule", { error: err, retry: () => handleSave(result) }),
+        onError: (err) => handleMutationError(err, { actionTitle: "Couldn't create rule", retry: () => handleSave(result) }),
       },
     );
   };

@@ -14,7 +14,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, KeySquare } from 'lucide-react';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -189,7 +190,7 @@ function CreatePoolDialog({ open, onOpenChange }: CreateProps) {
           navigate(`/admin/visitors/pools/${target}`);
         },
         onError: (err) =>
-          toastError("Couldn't create pool", { error: err }),
+          handleMutationError(err, { actionTitle: "Couldn't create pool" }),
       },
     );
   };

@@ -34,8 +34,8 @@ import {
   ServiceRuleTemplateParamsForm,
   type TemplateParamValues,
 } from './service-rule-template-params-form';
-import { toastCreated, toastError } from '@/lib/toast';
-
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 const TARGET_KIND_OPTIONS: Array<{ value: ServiceRuleTargetKind; label: string; help: string }> = [
   { value: 'tenant',           label: 'Tenant-wide',  help: 'Applies to every order in this tenant.' },
   { value: 'menu',             label: 'Specific menu', help: 'Applies only when the order is from a particular menu.' },
@@ -132,7 +132,7 @@ export function ServiceRuleTemplateDialog({
       });
       onOpenChange(false);
     } catch (err) {
-      toastError("Couldn't create service rule", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't create service rule" });
     }
   };
 

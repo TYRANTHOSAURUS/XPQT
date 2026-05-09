@@ -13,7 +13,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, UserPlus } from 'lucide-react';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -198,7 +199,7 @@ function CreateVisitorTypeDialog({ open, onOpenChange }: CreateProps) {
           navigate(`/admin/visitors/types/${vt.id}`);
         },
         onError: (err) =>
-          toastError("Couldn't create visitor type", { error: err }),
+          handleMutationError(err, { actionTitle: "Couldn't create visitor type" }),
       },
     );
   };
