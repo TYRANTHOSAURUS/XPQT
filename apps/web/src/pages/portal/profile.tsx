@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   Building2,
   Camera,
@@ -153,7 +154,7 @@ function ProfileHero({
       await uploadAvatar(file);
       toastSuccess('Profile photo updated');
     } catch (e) {
-      toastError("Couldn't upload photo", { error: e });
+      handleMutationError(e, { actionTitle: "Couldn't upload photo" });
     } finally {
       setBusy(false);
     }
@@ -165,7 +166,7 @@ function ProfileHero({
       await removeAvatar();
       toastRemoved('Photo');
     } catch (e) {
-      toastError("Couldn't remove photo", { error: e });
+      handleMutationError(e, { actionTitle: "Couldn't remove photo" });
     } finally {
       setBusy(false);
     }
@@ -285,7 +286,7 @@ function PhoneRow({ phone }: { phone: string }) {
   useDebouncedSave(value, (next) => {
     if (next === phone) return;
     void updateProfile({ phone: next })
-      .catch((e) => toastError("Couldn't save phone", { error: e }));
+      .catch((e) => handleMutationError(e, { actionTitle: "Couldn't save phone" }));
   });
 
   return (
@@ -327,7 +328,7 @@ function DefaultLocationRow({
       await updateProfile({ default_location_id: spaceId });
       toastSuccess('Default location updated');
     } catch (e) {
-      toastError("Couldn't update location", { error: e });
+      handleMutationError(e, { actionTitle: "Couldn't update location" });
     } finally {
       setBusy(false);
     }

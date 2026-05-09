@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { toastError, toastUpdated } from '@/lib/toast';
+import { toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useAuth } from '@/providers/auth-provider';
 import { useEditBookingSlot, type Reservation, type RuleOutcome, type SchedulerRoom } from '@/api/room-booking';
 import { usePerson } from '@/api/persons';
@@ -307,10 +308,7 @@ export function DeskSchedulerPage() {
         });
         toastUpdated('Booking');
       } catch (e) {
-        toastError("Couldn't update booking", {
-          error: e,
-          retry: () => persistEdit(bookingId, slotId, newStartIso, newEndIso, newSpaceId),
-        });
+        handleMutationError(e, { actionTitle: "Couldn't update booking", retry: () => persistEdit(bookingId, slotId, newStartIso, newEndIso, newSpaceId) });
       }
     },
     [editBookingSlot],

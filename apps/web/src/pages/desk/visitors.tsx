@@ -86,7 +86,8 @@ import {
   type ReceptionTodayView,
   type ReceptionVisitorRow as RowT,
 } from '@/api/visitors/reception';
-import { toastCreated, toastError, toastSaved } from '@/lib/toast';
+import { toastCreated, toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useDeskLens } from '@/api/visitors/admin';
 import {
   useVisitorFilters,
@@ -720,10 +721,7 @@ function DeskVisitorsInner() {
             // expected → arrived is the visible feedback.
             onSuccess: () => toastSaved('visitor', { silent: true }),
             onError: (err) =>
-              toastError("Couldn't mark arrived", {
-                error: err,
-                retry: () => handlePrimaryAction(row),
-              }),
+              handleMutationError(err, { actionTitle: "Couldn't mark arrived", retry: () => handlePrimaryAction(row) }),
           },
         );
         return;
@@ -1233,10 +1231,7 @@ function LooseEndsPanel({
       {
         onSuccess: () => toastSaved('pass', { silent: true }),
         onError: (err) =>
-          toastError("Couldn’t mark returned", {
-            error: err,
-            retry: () => handleReturn(passId),
-          }),
+          handleMutationError(err, { actionTitle: "Couldn’t mark returned", retry: () => handleReturn(passId) }),
       },
     );
   };
@@ -1247,10 +1242,7 @@ function LooseEndsPanel({
       {
         onSuccess: () => toastSaved('pass', { silent: true }),
         onError: (err) =>
-          toastError("Couldn’t mark lost", {
-            error: err,
-            retry: () => handleMarkLost(passId),
-          }),
+          handleMutationError(err, { actionTitle: "Couldn’t mark lost", retry: () => handleMarkLost(passId) }),
       },
     );
   };

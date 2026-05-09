@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useCheckInBooking } from '@/api/room-booking';
 import type { Reservation } from '@/api/room-booking';
-import { toastError, toastSuccess } from '@/lib/toast';
-
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 interface Props {
   reservation: Reservation;
   spaceName?: string | null;
@@ -54,7 +54,7 @@ export function BookingNextUpCard({ reservation, spaceName, href }: Props) {
       await checkIn.mutateAsync(reservation.id);
       toastSuccess('Checked in');
     } catch (e) {
-      toastError("Couldn't check in", { error: e, retry: onCheckIn });
+      handleMutationError(e, { actionTitle: "Couldn't check in", retry: onCheckIn });
     }
   };
 

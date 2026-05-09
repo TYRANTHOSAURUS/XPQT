@@ -14,7 +14,8 @@ import {
 } from '@/components/portal/portal-request-thread';
 import { PortalRequestSidebar } from '@/components/portal/portal-request-sidebar';
 import { derivePortalStatus } from '@/lib/portal-status';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   activitiesToThreadEvents,
   deriveTicketSla,
@@ -49,10 +50,7 @@ export function RequestDetailPage() {
       toastSuccess('Reply sent');
     },
     onError: (e, body) => {
-      toastError("Couldn't send reply", {
-        error: e,
-        retry: () => void reply.mutate(body),
-      });
+      handleMutationError(e, { actionTitle: "Couldn't send reply", retry: () => void reply.mutate(body) });
     },
   });
 

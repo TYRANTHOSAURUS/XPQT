@@ -1,4 +1,5 @@
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Trash2 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -46,7 +47,7 @@ export function SchedulerEventPopover({
       toastRemoved('Booking', { verb: 'cancelled' });
       onOpenChange(false);
     } catch (e) {
-      toastError("Couldn't cancel booking", { error: e, retry: submitCancel });
+      handleMutationError(e, { actionTitle: "Couldn't cancel booking", retry: submitCancel });
     }
   };
 

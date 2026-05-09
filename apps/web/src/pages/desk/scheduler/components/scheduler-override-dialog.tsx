@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -86,7 +87,7 @@ export function SchedulerOverrideDialog({
       onCreated?.();
       onOpenChange(false);
     } catch (e) {
-      toastError(`Couldn't book override for ${room.name}`, { error: e, retry: submit });
+      handleMutationError(e, { actionTitle: `Couldn't book override for ${room.name}`, retry: submit });
     }
   };
 

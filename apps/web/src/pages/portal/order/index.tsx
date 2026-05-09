@@ -26,7 +26,8 @@ import { useCreateStandaloneOrder } from '@/api/orders';
 import { useCostCenters } from '@/api/cost-centers';
 import { ServiceSection, type ServiceSelection } from '@/pages/portal/book-room/components/service-section';
 import { formatCurrency } from '@/lib/format';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { usePortal } from '@/providers/portal-provider';
 
 /**
@@ -127,7 +128,7 @@ export function PortalOrderPage() {
       });
       navigate('/portal/requests');
     } catch (err) {
-      toastError("Couldn't place order", { error: err, retry: onSubmit });
+      handleMutationError(err, { actionTitle: "Couldn't place order", retry: onSubmit });
     }
   };
 

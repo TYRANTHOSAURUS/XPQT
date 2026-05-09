@@ -10,7 +10,8 @@ import {
 } from '@/api/room-booking';
 import type { MyReservationItem } from '@/api/room-booking';
 import { useSpaces } from '@/api/spaces';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
 import { BookingRow } from './booking-row';
 import { BookingDayGroup } from './booking-day-group';
@@ -76,7 +77,7 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
       await checkIn.mutateAsync(id);
       toastSuccess('Checked in');
     } catch (e) {
-      toastError("Couldn't check in", { error: e, retry: () => handleCheckIn(id) });
+      handleMutationError(e, { actionTitle: "Couldn't check in", retry: () => handleCheckIn(id) });
     }
   };
 
@@ -85,7 +86,7 @@ export function BookingsList({ buildHref, tab, onTabChange }: Props) {
       await restore.mutateAsync(id);
       toastSuccess('Booking restored');
     } catch (e) {
-      toastError("Couldn't restore booking", { error: e, retry: () => handleRestore(id) });
+      handleMutationError(e, { actionTitle: "Couldn't restore booking", retry: () => handleRestore(id) });
     }
   };
 

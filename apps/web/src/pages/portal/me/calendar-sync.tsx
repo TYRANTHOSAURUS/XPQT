@@ -1,6 +1,7 @@
 import { Calendar, CheckCircle2, AlertCircle, RefreshCw, Unplug } from 'lucide-react';
 import { InlineBanner } from '@/components/ui/inline-banner';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useState } from 'react';
 import {
   SettingsPageShell,
@@ -50,7 +51,7 @@ export function PortalCalendarSyncPage() {
       // /portal/calendar-sync/callback which finishes the exchange.
       window.location.href = authUrl;
     } catch (e) {
-      toastError("Couldn't start Outlook connection", { error: e, retry: onConnect });
+      handleMutationError(e, { actionTitle: "Couldn't start Outlook connection", retry: onConnect });
     }
   };
 
@@ -59,7 +60,7 @@ export function PortalCalendarSyncPage() {
       await disconnect.mutateAsync();
       toastRemoved('Outlook', { verb: 'detached' });
     } catch (e) {
-      toastError("Couldn't disconnect Outlook", { error: e, retry: onDisconnect });
+      handleMutationError(e, { actionTitle: "Couldn't disconnect Outlook", retry: onDisconnect });
     } finally {
       setConfirmDisconnect(false);
     }
@@ -70,7 +71,7 @@ export function PortalCalendarSyncPage() {
       const r = await resync.mutateAsync();
       toastSuccess('Resync triggered', { description: `${r.events_seen} event${r.events_seen === 1 ? '' : 's'} seen.` });
     } catch (e) {
-      toastError("Couldn't resync calendar", { error: e, retry: onResync });
+      handleMutationError(e, { actionTitle: "Couldn't resync calendar", retry: onResync });
     }
   };
 

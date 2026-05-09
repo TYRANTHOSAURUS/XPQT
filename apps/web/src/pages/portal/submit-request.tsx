@@ -22,7 +22,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle, MapPin } from 'lucide-react';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { apiFetch } from '@/lib/api';
 import { usePortal } from '@/providers/portal-provider';
 import { DynamicFormFields } from '@/components/form-renderer/dynamic-form-fields';
@@ -246,7 +247,7 @@ export function SubmitRequestPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit request';
       setSubmitError(msg);
-      toastError("Couldn't submit request", { error: err, retry: () => onSubmit(formValues) });
+      handleMutationError(err, { actionTitle: "Couldn't submit request", retry: () => onSubmit(formValues) });
     }
   };
 
