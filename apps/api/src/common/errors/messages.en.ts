@@ -1342,6 +1342,31 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'room_rule.invalid_scope': { title: "Couldn't save", detail: 'Scope is invalid.' },
   'room_rule.space_not_found': { title: "Couldn't find that space" },
   'room_rule.impact_failed': { title: "Couldn't preview impact" },
+
+  // ─── vendor-portal (Phase 7.B-1.vendor-portal) ───────────────────────────
+  'vendor_portal.order_not_found': { title: "Couldn't find that order" },
+  'vendor_portal.invalid_email': { title: "Couldn't save", detail: 'That email address looks invalid.' },
+  'vendor_portal.invalid_role': { title: "Couldn't save", detail: 'Role must be fulfiller or manager.' },
+  'vendor_portal.invite_failed': { title: "Couldn't send that invite" },
+  'vendor_portal.user_create_failed': { title: "Couldn't create that vendor user" },
+  'vendor_portal.user_not_found': { title: "Couldn't find that vendor user" },
+  'vendor_portal.user_deactivated': { title: 'Account deactivated' },
+  'vendor_portal.user_locked': { title: 'Account temporarily locked' },
+  'vendor_portal.magic_link_invalid': {
+    title: "Couldn't sign in",
+    detail: 'Magic link is invalid, expired, or already used.',
+  },
+  'vendor_portal.user_missing': { title: "Couldn't sign in" },
+  'vendor_portal.token_required': { title: "Couldn't process", detail: 'Token is required.' },
+  'vendor_portal.no_session': { title: 'Sign in to continue' },
+  'vendor_portal.session_invalid': { title: 'Sign in to continue', detail: 'Session is invalid or expired.' },
+  'vendor_portal.field_required': { title: "Couldn't process", detail: 'A required field is missing.' },
+  'vendor_portal.invalid_status': { title: "Couldn't update status" },
+  'vendor_portal.invalid_transition': { title: "Couldn't update status", detail: 'That status transition isn\'t allowed.' },
+  'vendor_portal.decline_reason_required': {
+    title: "Couldn't decline",
+    detail: 'A reason of at least 8 characters is required.',
+  },
 };
 
 /**

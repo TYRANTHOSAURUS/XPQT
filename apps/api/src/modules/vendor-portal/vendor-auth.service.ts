@@ -1,12 +1,7 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { VendorPortalEventType } from './event-types';
 import { VENDOR_MAILER, type VendorMailer } from './vendor-mailer.service';
@@ -52,10 +47,10 @@ export class VendorAuthService {
    */
   async invite(input: InviteInput): Promise<InviteResult> {
     if (!isPlausibleEmail(input.email)) {
-      throw new BadRequestException('email looks invalid');
+      throw AppErrors.validationFailed('vendor_portal.invalid_email', { detail: 'email looks invalid' });
     }
     if (input.role && !['fulfiller', 'manager'].includes(input.role)) {
-      throw new BadRequestException('role must be fulfiller or manager');
+      throw AppErrors.validationFailed('vendor_portal.invalid_role', { detail: 'role must be fulfiller or manager' });
     }
 
     // Defense in depth (the composite FK from migration 00171 also enforces this):
@@ -68,9 +63,9 @@ export class VendorAuthService {
       [input.tenantId, input.vendorId],
     );
     if (!tenantVendor) {
-      throw new BadRequestException(
-        `Vendor ${input.vendorId} does not belong to tenant ${input.tenantId}`,
-      );
+      throw AppErrors.validationFailed('reference.not_in_tenant', {
+        detail: `Vendor ${input.vendorId} does not belong to tenant ${input.tenantId}`,
+      });
     }
 
     const { vendorUser, magicLinkToken, magicLinkExpiresAt } = await this.db.tx(async (client) => {
@@ -99,7 +94,7 @@ export class VendorAuthService {
         ],
       );
       const vendorUser = upsert.rows[0];
-      if (!vendorUser) throw new BadRequestException('Failed to create vendor user');
+      if (!vendorUser) throw AppErrors.server('vendor_portal.user_create_failed', { detail: 'Failed to create vendor user' });
 
       const link = await this.issueLinkInner(client, vendorUser.id);
 
@@ -155,9 +150,9 @@ export class VendorAuthService {
         [input.tenantId, input.vendorUserId],
       );
       const vendorUser = vu.rows[0];
-      if (!vendorUser) throw new NotFoundException('Vendor user not found');
+      if (!vendorUser) throw AppErrors.notFoundWithCode('vendor_portal.user_not_found', 'Vendor user not found');
       if (!vendorUser.active) {
-        throw new BadRequestException('Vendor user is deactivated');
+        throw AppErrors.validationFailed('vendor_portal.user_deactivated', { detail: 'Vendor user is deactivated' });
       }
 
       const link = await this.issueLinkInner(client, vendorUser.id);
@@ -213,7 +208,7 @@ export class VendorAuthService {
         [tokenHash],
       );
       if (claim.rowCount === 0) {
-        throw new UnauthorizedException('Magic link invalid, expired, or already redeemed');
+        throw AppErrors.unauthorized('Magic link invalid, expired, or already redeemed');
       }
       const { vendor_user_id: vendorUserId } = claim.rows[0];
 
@@ -223,12 +218,12 @@ export class VendorAuthService {
         [vendorUserId],
       );
       const vendorUser = vu.rows[0];
-      if (!vendorUser) throw new UnauthorizedException('Vendor user missing');
+      if (!vendorUser) throw AppErrors.unauthorized('Vendor user missing');
       if (!vendorUser.active) {
-        throw new UnauthorizedException('Vendor user is deactivated');
+        throw AppErrors.unauthorized('Vendor user is deactivated');
       }
       if (vendorUser.locked_until && new Date(vendorUser.locked_until) > new Date()) {
-        throw new UnauthorizedException('Vendor user is temporarily locked');
+        throw AppErrors.unauthorized('Vendor user is temporarily locked');
       }
 
       // Invalidate any other unredeemed magic links for the same user — a

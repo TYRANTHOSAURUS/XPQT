@@ -3,10 +3,10 @@ import {
   ExecutionContext,
   Injectable,
   Logger,
-  UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { VendorAuthService, type ActiveSessionLookup } from './vendor-auth.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Authenticates vendor-portal requests via the HttpOnly session cookie set
@@ -32,12 +32,12 @@ export class VendorPortalGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<RequestWithVendorSession>();
     const token = readCookie(req, VendorPortalGuard.COOKIE_NAME);
     if (!token) {
-      throw new UnauthorizedException('Missing vendor session cookie');
+      throw AppErrors.unauthorized('Missing vendor session cookie');
     }
 
     const session = await this.auth.validate(token);
     if (!session) {
-      throw new UnauthorizedException('Vendor session invalid or expired');
+      throw AppErrors.unauthorized('Vendor session invalid or expired');
     }
 
     req.vendorSession = session;

@@ -1,4 +1,4 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { createHash } from 'node:crypto';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { VendorAuthService } from './vendor-auth.service';
@@ -168,7 +168,7 @@ describe('VendorAuthService.invite', () => {
     const { svc } = buildSvc();
     await expect(
       svc.invite({ tenantId: TENANT, vendorId: VENDOR, email: 'not-an-email', invitedByUserId: ADMIN }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects unknown role', async () => {
@@ -178,7 +178,7 @@ describe('VendorAuthService.invite', () => {
         tenantId: TENANT, vendorId: VENDOR, email: 'kitchen@acme.example',
         role: 'super_admin' as never, invitedByUserId: ADMIN,
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects when vendor does not belong to tenant', async () => {
@@ -225,7 +225,7 @@ describe('VendorAuthService.invite', () => {
 describe('VendorAuthService.redeem', () => {
   it('throws Unauthorized when token is invalid / expired / already redeemed', async () => {
     const { svc } = buildSvc({ magicLinkClaim: null });
-    await expect(svc.redeem({ token: 'not-real' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(svc.redeem({ token: 'not-real' })).rejects.toBeInstanceOf(AppError);
   });
 
   it('throws Unauthorized when the vendor_user is inactive', async () => {
@@ -233,7 +233,7 @@ describe('VendorAuthService.redeem', () => {
       magicLinkClaim: { id: 'ml-1', vendor_user_id: VENDOR_USER, expires_at: new Date().toISOString() },
       userActive: false,
     });
-    await expect(svc.redeem({ token: 'a-token' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(svc.redeem({ token: 'a-token' })).rejects.toBeInstanceOf(AppError);
   });
 
   it('mints a session, marks first_login on the first redeem, returns raw token only', async () => {

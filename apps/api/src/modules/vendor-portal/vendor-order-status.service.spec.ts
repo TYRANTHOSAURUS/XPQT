@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import {
   VendorOrderStatusService,
@@ -94,7 +94,7 @@ describe('VendorOrderStatusService.updateStatus', () => {
     await expect(svc.updateStatus({
       tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
       newStatus: 'delivered_xyz', vendorUserId: VENDOR_USER,
-    })).rejects.toBeInstanceOf(BadRequestException);
+    })).rejects.toBeInstanceOf(AppError);
   });
 
   it('throws 404 when no lines for this vendor on the order', async () => {
@@ -102,7 +102,7 @@ describe('VendorOrderStatusService.updateStatus', () => {
     await expect(svc.updateStatus({
       tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
       newStatus: 'preparing', vendorUserId: VENDOR_USER,
-    })).rejects.toBeInstanceOf(NotFoundException);
+    })).rejects.toBeInstanceOf(AppError);
   });
 
   it('happy path ordered → confirmed transitions every line + emits one audit event', async () => {
@@ -238,7 +238,7 @@ describe('VendorOrderStatusService.decline', () => {
     await expect(svc.decline({
       tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
       reason: 'short', vendorUserId: VENDOR_USER,
-    })).rejects.toBeInstanceOf(BadRequestException);
+    })).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects when ANY line is already terminal', async () => {
@@ -261,7 +261,7 @@ describe('VendorOrderStatusService.decline', () => {
       tenantId: TENANT, vendorId: VENDOR, orderId: ORDER_ID,
       reason: 'kitchen out of stock for the requested item',
       vendorUserId: VENDOR_USER,
-    })).rejects.toBeInstanceOf(NotFoundException);
+    })).rejects.toBeInstanceOf(AppError);
   });
 
   it('happy path cancels every non-terminal line + flags requires_phone_followup + emits audit', async () => {

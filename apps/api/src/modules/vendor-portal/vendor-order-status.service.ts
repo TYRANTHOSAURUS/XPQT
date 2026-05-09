@@ -1,9 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { VendorPortalEventType } from './event-types';
 
@@ -61,7 +58,7 @@ export class VendorOrderStatusService {
     const { tenantId, vendorId, orderId, newStatus, note, vendorUserId } = input;
 
     if (!isVendorTransitionStatus(newStatus)) {
-      throw new BadRequestException(`Invalid status: ${newStatus}`);
+      throw AppErrors.validationFailed('vendor_portal.invalid_status', { detail: `Invalid status: ${newStatus}` });
     }
 
     return this.db.tx(async (client) => {
@@ -79,7 +76,7 @@ export class VendorOrderStatusService {
       );
       const lines = linesResult.rows;
       if (lines.length === 0) {
-        throw new NotFoundException('Order not found');
+        throw AppErrors.notFoundWithCode('vendor_portal.order_not_found', 'Order not found');
       }
 
       // Validate the transition for every line. We allow heterogeneous
@@ -94,10 +91,10 @@ export class VendorOrderStatusService {
         }
       }
       if (invalid.length > 0) {
-        throw new BadRequestException(
-          `Cannot transition to ${newStatus}: ${invalid.length} line(s) in incompatible state ` +
-          `(${[...new Set(invalid.map((l) => l.from))].join(', ')})`,
-        );
+        throw AppErrors.validationFailed('vendor_portal.invalid_transition', {
+          detail: `Cannot transition to ${newStatus}: ${invalid.length} line(s) in incompatible state ` +
+            `(${[...new Set(invalid.map((l) => l.from))].join(', ')})`,
+        });
       }
 
       // Apply the transition. UPDATE returns the lines that actually changed
@@ -173,7 +170,7 @@ export class VendorOrderStatusService {
     const { tenantId, vendorId, orderId, reason, vendorUserId } = input;
 
     if (!reason || reason.trim().length < 8) {
-      throw new BadRequestException('Decline reason required (>=8 chars).');
+      throw AppErrors.validationFailed('vendor_portal.decline_reason_required', { detail: 'Decline reason required (>=8 chars).' });
     }
 
     return this.db.tx(async (client) => {
@@ -189,16 +186,16 @@ export class VendorOrderStatusService {
       );
       const lines = linesResult.rows;
       if (lines.length === 0) {
-        throw new NotFoundException('Order not found');
+        throw AppErrors.notFoundWithCode('vendor_portal.order_not_found', 'Order not found');
       }
 
       // Already-terminal lines (delivered / cancelled) can't be declined.
       const terminal = lines.filter((l) => l.fulfillment_status === 'delivered' || l.fulfillment_status === 'cancelled');
       if (terminal.length > 0) {
-        throw new BadRequestException(
-          `Cannot decline: ${terminal.length} line(s) already in terminal state ` +
-          `(${[...new Set(terminal.map((l) => l.fulfillment_status))].join(', ')})`,
-        );
+        throw AppErrors.validationFailed('vendor_portal.invalid_transition', {
+          detail: `Cannot decline: ${terminal.length} line(s) already in terminal state ` +
+            `(${[...new Set(terminal.map((l) => l.fulfillment_status))].join(', ')})`,
+        });
       }
 
       const trimmedReason = reason.trim();

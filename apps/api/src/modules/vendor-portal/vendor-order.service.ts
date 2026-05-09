@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Vendor-side order projections — strict PII minimization per spec §5.
@@ -208,7 +209,7 @@ export class VendorOrderService {
          )`,
       [tenantId, orderId, vendorId],
     );
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw AppErrors.notFoundWithCode('vendor_portal.order_not_found', 'Order not found');
 
     const lines = await this.db.queryMany<VendorOrderLine>(
       `select

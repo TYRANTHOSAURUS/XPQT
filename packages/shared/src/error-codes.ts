@@ -374,6 +374,25 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── vendor-portal migration (Phase 7.B-1.vendor-portal) ─────────────────
+  | 'vendor_portal.order_not_found'
+  | 'vendor_portal.invalid_email'
+  | 'vendor_portal.invalid_role'
+  | 'vendor_portal.invite_failed'
+  | 'vendor_portal.user_create_failed'
+  | 'vendor_portal.user_not_found'
+  | 'vendor_portal.user_deactivated'
+  | 'vendor_portal.user_locked'
+  | 'vendor_portal.magic_link_invalid'
+  | 'vendor_portal.user_missing'
+  | 'vendor_portal.token_required'
+  | 'vendor_portal.no_session'
+  | 'vendor_portal.session_invalid'
+  | 'vendor_portal.field_required'
+  | 'vendor_portal.invalid_status'
+  | 'vendor_portal.invalid_transition'
+  | 'vendor_portal.decline_reason_required'
+
   // ─── room-booking-rules migration (Phase 7.B-1.room-booking-rules) ───────
   | 'room_rule.template_param_required'
   | 'room_rule.template_invalid'
@@ -944,6 +963,23 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'room_rule.invalid_scope',
   'room_rule.space_not_found',
   'room_rule.impact_failed',
+  'vendor_portal.order_not_found',
+  'vendor_portal.invalid_email',
+  'vendor_portal.invalid_role',
+  'vendor_portal.invite_failed',
+  'vendor_portal.user_create_failed',
+  'vendor_portal.user_not_found',
+  'vendor_portal.user_deactivated',
+  'vendor_portal.user_locked',
+  'vendor_portal.magic_link_invalid',
+  'vendor_portal.user_missing',
+  'vendor_portal.token_required',
+  'vendor_portal.no_session',
+  'vendor_portal.session_invalid',
+  'vendor_portal.field_required',
+  'vendor_portal.invalid_status',
+  'vendor_portal.invalid_transition',
+  'vendor_portal.decline_reason_required',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

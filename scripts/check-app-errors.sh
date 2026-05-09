@@ -50,6 +50,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/config-engine"
   "apps/api/src/modules/calendar-sync"
   "apps/api/src/modules/room-booking-rules"
+  "apps/api/src/modules/vendor-portal"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

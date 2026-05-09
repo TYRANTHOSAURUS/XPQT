@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -8,6 +7,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { Public } from '../auth/public.decorator';
@@ -52,7 +52,7 @@ export class VendorAuthController {
     @Body() body: { token?: string },
   ) {
     if (!body?.token || typeof body.token !== 'string') {
-      throw new BadRequestException('token is required');
+      throw AppErrors.validationFailed('vendor_portal.token_required', { detail: 'token is required' });
     }
 
     const ipHash = hashOrNull(extractClientIp(req));

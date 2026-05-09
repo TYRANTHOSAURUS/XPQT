@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,6 +9,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { Public } from '../auth/public.decorator';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { PersonalDataAccessLogService } from '../privacy-compliance/personal-data-access-log.service';
@@ -134,12 +134,12 @@ export class VendorOrderController {
     @Body() body: { to_status?: string; note?: string },
   ) {
     if (!body?.to_status || typeof body.to_status !== 'string') {
-      throw new BadRequestException('to_status is required');
+      throw AppErrors.validationFailed('vendor_portal.field_required', { detail: 'to_status is required' });
     }
     if (!isVendorTransitionStatus(body.to_status)) {
-      throw new BadRequestException(
-        `to_status must be one of: confirmed, preparing, en_route, delivered`,
-      );
+      throw AppErrors.validationFailed('vendor_portal.invalid_status', {
+        detail: 'to_status must be one of: confirmed, preparing, en_route, delivered',
+      });
     }
     const session = req.vendorSession!;
     return this.status.updateStatus({
@@ -161,7 +161,7 @@ export class VendorOrderController {
     @Body() body: { reason?: string },
   ) {
     if (!body?.reason || typeof body.reason !== 'string') {
-      throw new BadRequestException('reason is required');
+      throw AppErrors.validationFailed('vendor_portal.field_required', { detail: 'reason is required' });
     }
     const session = req.vendorSession!;
     return this.status.decline({
