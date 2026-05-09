@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { apiFetch } from '@/lib/api';
+import { handleQueryError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 
 interface WorkflowSummary {
@@ -28,11 +29,18 @@ interface WorkflowDefinitionPickerProps {
 
 export function WorkflowDefinitionPicker({ value, onChange, placeholder = 'Inherit from request type' }: WorkflowDefinitionPickerProps) {
   const [open, setOpen] = useState(false);
-  const { data } = useQuery({
+  const { data, error } = useQuery({
     queryKey: ['workflows', 'definitions-list'],
     queryFn: ({ signal }) => apiFetch<WorkflowSummary[]>('/workflows', { signal }),
     staleTime: 60_000,
   });
+  // Phase 7.B-2 light migration — the picker is sidebar-class data; a
+  // failure here shouldn't replace the page (the form behind us is fine).
+  // handleQueryError swallows cancellations + auth and surfaces transport/
+  // server as a code-resolved toast in the canonical voice.
+  useEffect(() => {
+    if (error) handleQueryError(error, { callSite: 'query', actionTitle: "Couldn't load workflows" });
+  }, [error]);
   const selected = useMemo(() => (data ?? []).find((w) => w.id === value), [data, value]);
 
   return (
