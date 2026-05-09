@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface OrgNode {
   id: string;
@@ -44,6 +45,7 @@ export function useUpsertOrgNode() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: orgNodeKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save organization node" }),
   });
 }
 
@@ -52,5 +54,6 @@ export function useDeleteOrgNode() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/org-nodes/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: orgNodeKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete organization node" }),
   });
 }
