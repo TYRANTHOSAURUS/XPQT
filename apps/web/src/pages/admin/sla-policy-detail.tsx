@@ -19,10 +19,11 @@ import { SlaThresholdsDialog } from '@/components/admin/sla-thresholds-dialog';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import {
   useBusinessHoursCalendars,
-  useSlaPolicies,
+  slaPoliciesListOptions,
   useUpdateSlaPolicy,
   type SlaPolicy,
 } from '@/api/sla-policies';
+import { usePageQuery } from '@/lib/errors';
 
 const PAUSE_REASON_LABELS: Record<string, string> = {
   requester: 'Requester',
@@ -33,7 +34,9 @@ const PAUSE_REASON_LABELS: Record<string, string> = {
 export function SlaPolicyDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useSlaPolicies();
+  // Page-primary fetch — list endpoint backs the detail page (no by-id GET);
+  // page-class errors throw to RouteErrorBoundary.
+  const { data, isLoading } = usePageQuery(slaPoliciesListOptions());
   const policy = useMemo(() => (id ? data?.find((p) => p.id === id) : undefined), [data, id]);
 
   if (isLoading) {

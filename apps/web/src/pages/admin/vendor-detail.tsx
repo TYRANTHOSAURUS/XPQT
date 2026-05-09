@@ -26,17 +26,19 @@ import {
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { VendorFulfillmentSection } from '@/components/admin/vendor-fulfillment-section';
 import {
-  useVendor,
+  vendorDetailOptions,
   useUpsertVendor,
   useDeleteVendor,
 } from '@/api/vendors';
 import { useTeams } from '@/api/teams';
+import { usePageQuery } from '@/lib/errors';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 
 export function VendorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: vendor, isLoading } = useVendor(id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data: vendor, isLoading } = usePageQuery(vendorDetailOptions(id));
   const { data: teams } = useTeams();
   const upsert = useUpsertVendor();
   const del = useDeleteVendor();

@@ -19,7 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import {
-  useCriteriaSet,
+  criteriaSetOptions,
   useDeleteCriteriaSet,
   usePreviewCriteriaExpression,
   useUpdateCriteriaSet,
@@ -27,6 +27,7 @@ import {
   type CriteriaSet,
   type CriteriaSetUpsertBody,
 } from '@/api/criteria-sets';
+import { usePageQuery } from '@/lib/errors';
 import {
   countLeaves,
   describeExpression,
@@ -38,7 +39,8 @@ import { CriteriaSetExpressionDialog } from '@/components/admin/criteria-set-exp
 export function CriteriaSetDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useCriteriaSet(id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data, isLoading } = usePageQuery(criteriaSetOptions(id));
 
   if (isLoading) {
     return (

@@ -25,10 +25,11 @@ import {
 import { CatalogItemCombobox } from '@/components/catalog-item-combobox';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import {
-  useBundleTemplate,
+  bundleTemplateDetailOptions,
   useDeleteBundleTemplate,
   useUpdateBundleTemplate,
 } from '@/api/bundle-templates';
+import { usePageQuery } from '@/lib/errors';
 import type { BundleTemplatePayload } from '@/api/bundle-templates';
 import { useCostCenters } from '@/api/cost-centers';
 import { toastError, toastRemoved } from '@/lib/toast';
@@ -57,7 +58,8 @@ interface ServiceLineDraft {
 export function BundleTemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useBundleTemplate(id ?? '');
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data, isLoading } = usePageQuery(bundleTemplateDetailOptions(id ?? ''));
   const update = useUpdateBundleTemplate();
   const remove = useDeleteBundleTemplate();
   const { data: costCenters } = useCostCenters({ active: true });

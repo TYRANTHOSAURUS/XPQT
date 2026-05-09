@@ -28,7 +28,8 @@ import {
   SettingsSection,
   SettingsFooterActions,
 } from '@/components/ui/settings-page';
-import { configEntityKeys, useConfigEntity } from '@/api/config-entities';
+import { configEntityKeys, configEntityOptions } from '@/api/config-entities';
+import { usePageQuery } from '@/lib/errors';
 import { apiFetch } from '@/lib/api';
 import {
   PREMADE_FIELDS,
@@ -73,7 +74,8 @@ interface ConfigEntityDetail {
 export function FormSchemaDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useConfigEntity(id) as {
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data, isLoading } = usePageQuery(configEntityOptions(id)) as {
     data: ConfigEntityDetail | undefined;
     isLoading: boolean;
   };

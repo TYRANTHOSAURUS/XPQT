@@ -18,10 +18,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
-  useRequestType,
+  requestTypeDetailOptions,
   useUpsertRequestType,
   requestTypeKeys,
 } from '@/api/request-types';
+import { usePageQuery, withErrorHandling } from '@/lib/errors';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { apiFetch } from '@/lib/api';
 
@@ -29,12 +30,14 @@ export function RequestTypeDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data: requestType, isLoading } = useRequestType(id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data: requestType, isLoading } = usePageQuery(requestTypeDetailOptions(id));
   const upsert = useUpsertRequestType();
 
   const del = useMutation<unknown, Error, string>({
     mutationFn: (rtId) => apiFetch(`/request-types/${rtId}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: requestTypeKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete request type" }),
   });
 
   const [name, setName] = useState('');

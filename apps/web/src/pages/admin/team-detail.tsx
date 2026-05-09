@@ -17,17 +17,19 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import {
-  useTeam,
+  teamDetailOptions,
   useTeamMembers,
   useUpsertTeam,
   useDeleteTeam,
 } from '@/api/teams';
+import { usePageQuery } from '@/lib/errors';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 
 export function TeamDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: team, isLoading } = useTeam(id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data: team, isLoading } = usePageQuery(teamDetailOptions(id));
   const { data: members } = useTeamMembers(id);
   const upsert = useUpsertTeam();
   const del = useDeleteTeam();
