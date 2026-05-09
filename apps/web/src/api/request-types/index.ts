@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError, withErrorHandling } from '@/lib/errors';
 import { configEntityKeys } from '@/api/config-entities';
 
 export interface RequestTypeListItem {
@@ -134,6 +135,7 @@ export function useUpsertRequestType() {
       Promise.all([
         qc.invalidateQueries({ queryKey: requestTypeKeys.all }),
       ]),
+    ...withErrorHandling({ actionTitle: "Couldn't save request type" }),
   });
 }
 
@@ -160,6 +162,7 @@ export function useUpsertDefaultFormVariant(requestTypeId: string) {
         qc.invalidateQueries({ queryKey: requestTypeKeys.detail(requestTypeId) }),
         qc.invalidateQueries({ queryKey: configEntityKeys.all }),
       ]),
+    ...withErrorHandling({ actionTitle: "Couldn't save form variant" }),
   });
 }
 
@@ -183,9 +186,14 @@ export function useToggleRequestType() {
       }
       return { previous };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, vars, ctx) => {
       const prev = (ctx as { previous?: RequestTypeListItem[] } | undefined)?.previous;
       if (prev) qc.setQueryData(requestTypeKeys.list(), prev);
+      handleMutationError(err, {
+        actionTitle: vars.active
+          ? "Couldn't activate request type"
+          : "Couldn't deactivate request type",
+      });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: requestTypeKeys.all }),
   });
