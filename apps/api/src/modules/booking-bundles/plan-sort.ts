@@ -33,7 +33,9 @@
  * indexes, no `Array.prototype.indexOf` calls, no derived defaults.
  */
 
-const PLAN_SORT_CLIENT_LINE_ID_REQUIRED = 'plan_sort.client_line_id_required';
+import { AppErrors } from '../../common/errors';
+
+const PLAN_SORT_CLIENT_LINE_ID_REQUIRED = 'plan.client_line_id_required';
 
 /**
  * Slot sort: `(display_order, space_id, start_at)` ascending. `display_order`
@@ -78,7 +80,7 @@ export function comparePlanOrderLineItems(
   b: { client_line_id: string },
 ): number {
   if (!a.client_line_id || !b.client_line_id) {
-    throw new Error(PLAN_SORT_CLIENT_LINE_ID_REQUIRED);
+    throw AppErrors.server('plan.client_line_id_required', { detail: PLAN_SORT_CLIENT_LINE_ID_REQUIRED });
   }
   return a.client_line_id.localeCompare(b.client_line_id);
 }
@@ -94,7 +96,7 @@ export function comparePlanAssetReservations(
   b: { client_line_id: string },
 ): number {
   if (!a.client_line_id || !b.client_line_id) {
-    throw new Error(PLAN_SORT_CLIENT_LINE_ID_REQUIRED);
+    throw AppErrors.server('plan.client_line_id_required', { detail: PLAN_SORT_CLIENT_LINE_ID_REQUIRED });
   }
   return a.client_line_id.localeCompare(b.client_line_id);
 }

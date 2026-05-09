@@ -8,7 +8,7 @@
 // catch. The other tests cover the surrounding paths so a regression in any
 // of them surfaces here, not in production.
 
-import { ForbiddenException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { BundleVisibilityService, BundleVisibilityContext } from './bundle-visibility.service';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
@@ -110,7 +110,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx({ user_id: '', person_id: null })),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toBeInstanceOf(AppError);
 
     // No queries — must short-circuit before any I/O.
     expect(deps.supabase.admin.from).not.toHaveBeenCalled();
@@ -191,7 +191,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx()),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toBeInstanceOf(AppError);
 
     // The defensive filter MUST have been applied. If a future refactor drops
     // it, this assertion fails and the leak is caught at unit-test time.
@@ -224,7 +224,7 @@ describe('BundleVisibilityService.assertVisible', () => {
     });
   });
 
-  it('throws ForbiddenException with bundle_forbidden code when no path matches', async () => {
+  it('throws AppError with bundle.forbidden code when no path matches', async () => {
     const deps = makeDeps({ approvalRows: [], workOrderRows: [] });
     const svc = new BundleVisibilityService(deps.supabase as never);
 
@@ -235,9 +235,8 @@ describe('BundleVisibilityService.assertVisible', () => {
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(ForbiddenException);
-    const response = (caught as ForbiddenException).getResponse() as { code?: string };
-    expect(response.code).toBe('bundle_forbidden');
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({ code: 'bundle.forbidden', status: 403 });
   });
 
   it('does NOT grant via team membership (no team_members query is ever issued)', async () => {
@@ -251,7 +250,7 @@ describe('BundleVisibilityService.assertVisible', () => {
 
     await expect(
       svc.assertVisible(SAMPLE_BUNDLE, makeCtx()),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toBeInstanceOf(AppError);
 
     expect(deps.log.tablesAccessed).not.toContain('team_members');
   });

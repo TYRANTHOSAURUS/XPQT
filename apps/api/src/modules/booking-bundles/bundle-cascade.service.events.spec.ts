@@ -252,7 +252,7 @@ describe('BundleCascadeService — slice 4 event emission', () => {
       }
     });
 
-    it('does not emit when the line lookup fails (NotFoundException)', async () => {
+    it('does not emit when the line lookup fails (AppError line_not_found)', async () => {
       const { svc, captured, unsubscribe } = makeService({ line: null });
       try {
         await expect(
@@ -265,16 +265,14 @@ describe('BundleCascadeService — slice 4 event emission', () => {
                 has_override: false,
               } as never),
           ),
-        ).rejects.toMatchObject({
-          response: expect.objectContaining({ code: 'line_not_found' }),
-        });
+        ).rejects.toMatchObject({ code: 'line_not_found', status: 404 });
         expect(captured).toHaveLength(0);
       } finally {
         unsubscribe();
       }
     });
 
-    it('does not emit when the line is fulfilled (ForbiddenException)', async () => {
+    it('does not emit when the line is fulfilled (AppError line_already_fulfilled)', async () => {
       const { svc, captured, unsubscribe } = makeService({
         line: {
           id: LINE,
@@ -302,9 +300,7 @@ describe('BundleCascadeService — slice 4 event emission', () => {
                 has_override: false,
               } as never),
           ),
-        ).rejects.toMatchObject({
-          response: expect.objectContaining({ code: 'line_already_fulfilled' }),
-        });
+        ).rejects.toMatchObject({ code: 'line_already_fulfilled', status: 403 });
         expect(captured).toHaveLength(0);
       } finally {
         unsubscribe();

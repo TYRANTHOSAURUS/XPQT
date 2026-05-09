@@ -159,6 +159,35 @@ export type KnownErrorCode =
   | 'sla.policy_invalid'
   | 'sla.threshold_invalid'
   | 'sla.target_missing'
+
+  // ─── booking-bundles module migration (Phase 7.A.2.c.i) ──────────────────
+  | 'bundle.forbidden'
+  | 'bundle.not_found'
+  | 'bundle.no_services'
+  | 'bundle.line_not_in_bundle'
+  | 'bundle.invalid_quantity'
+  | 'bundle.invalid_service_window'
+  | 'bundle.invalid_requester_notes'
+  | 'bundle.invalid_expected_updated_at'
+  | 'bundle.lead_time_violation'
+  | 'bundle.context_lookup_failed'
+  | 'bundle.idempotency_key_required'
+  | 'bundle.tenant_id_required'
+  | 'booking.not_found'
+  | 'asset.not_found'
+  | 'catalog_item.not_found'
+  | 'plan.idempotency_key_required'
+  | 'plan.stable_index_required'
+  | 'plan.client_line_id_required'
+  // legacy snake_case codes — tests assert on these literal codes
+  | 'service_rule_deny'
+  | 'asset_conflict'
+  | 'line_not_found'
+  | 'line_state_changed'
+  | 'line_frozen'
+  | 'line_already_fulfilled'
+  | 'client_line_id_required'
+  | 'client_line_id_not_unique'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -280,6 +309,32 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'sla.policy_invalid',
   'sla.threshold_invalid',
   'sla.target_missing',
+  'bundle.forbidden',
+  'bundle.not_found',
+  'bundle.no_services',
+  'bundle.line_not_in_bundle',
+  'bundle.invalid_quantity',
+  'bundle.invalid_service_window',
+  'bundle.invalid_requester_notes',
+  'bundle.invalid_expected_updated_at',
+  'bundle.lead_time_violation',
+  'bundle.context_lookup_failed',
+  'bundle.idempotency_key_required',
+  'bundle.tenant_id_required',
+  'booking.not_found',
+  'asset.not_found',
+  'catalog_item.not_found',
+  'plan.idempotency_key_required',
+  'plan.stable_index_required',
+  'plan.client_line_id_required',
+  'service_rule_deny',
+  'asset_conflict',
+  'line_not_found',
+  'line_state_changed',
+  'line_frozen',
+  'line_already_fulfilled',
+  'client_line_id_required',
+  'client_line_id_not_unique',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',

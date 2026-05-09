@@ -1,5 +1,6 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Three-tier bundle visibility per spec §3.5.
@@ -97,7 +98,7 @@ export class BundleVisibilityService {
     // there's no person, no role, no permission to check; everything else
     // below would be wasted DB round-trips.
     if (!ctx.user_id) {
-      throw new ForbiddenException({ code: 'bundle_forbidden', message: 'You do not have access to this booking.' });
+      throw AppErrors.forbidden('bundle.forbidden', 'You do not have access to this booking.');
     }
 
     // Participant: requester / host
@@ -144,6 +145,6 @@ export class BundleVisibilityService {
       if ((data ?? []).length > 0) return;
     }
 
-    throw new ForbiddenException({ code: 'bundle_forbidden', message: 'You do not have access to this booking.' });
+    throw AppErrors.forbidden('bundle.forbidden', 'You do not have access to this booking.');
   }
 }

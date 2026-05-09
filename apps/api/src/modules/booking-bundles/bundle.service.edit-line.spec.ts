@@ -192,9 +192,7 @@ describe('BundleService.editLine', () => {
           expected_updated_at: TS_OLD,
         }),
       ),
-    ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'line_state_changed' }),
-    });
+    ).rejects.toMatchObject({ code: 'line_state_changed', status: 409 });
     // CAS guard fires before the UPDATE runs.
     expect(updates).toHaveLength(0);
   });
@@ -235,9 +233,7 @@ describe('BundleService.editLine', () => {
             patch: { requester_notes: 'too late' },
           }),
         ),
-      ).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'line_frozen' }),
-      });
+      ).rejects.toMatchObject({ code: 'line_frozen', status: 409 });
       expect(updates).toHaveLength(0);
     },
   );

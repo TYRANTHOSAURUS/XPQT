@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { BundleService } from './bundle.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { AttachPlan } from './attach-plan.types';
@@ -101,7 +101,7 @@ describe('BundleService.buildAttachPlan (B.0.C.4)', () => {
           ...baseBooking(),
           services: [{ catalog_item_id: 'c-1', quantity: 1 } /* no client_line_id */],
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
   });
 
@@ -117,9 +117,8 @@ describe('BundleService.buildAttachPlan (B.0.C.4)', () => {
         });
         fail('expected throw');
       } catch (err) {
-        const ex = err as BadRequestException;
-        expect(ex).toBeInstanceOf(BadRequestException);
-        expect((ex.getResponse() as { code: string }).code).toBe('client_line_id_required');
+        expect(err).toBeInstanceOf(AppError);
+        expect(err).toMatchObject({ code: 'client_line_id_required', status: 400 });
       }
     });
   });
@@ -137,9 +136,8 @@ describe('BundleService.buildAttachPlan (B.0.C.4)', () => {
         });
         fail('expected throw');
       } catch (err) {
-        const ex = err as BadRequestException;
-        expect(ex).toBeInstanceOf(BadRequestException);
-        expect((ex.getResponse() as { code: string }).code).toBe('client_line_id_not_unique');
+        expect(err).toBeInstanceOf(AppError);
+        expect(err).toMatchObject({ code: 'client_line_id_not_unique', status: 400 });
       }
     });
   });

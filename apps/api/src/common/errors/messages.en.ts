@@ -269,6 +269,98 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'sla.target_missing': {
     title: "Couldn't update SLA — target not found",
   },
+
+  // ─── booking-bundles module (Phase 7.A.2.c.i) ────────────────────────────
+  'bundle.forbidden': {
+    title: "You don't have access to this booking",
+  },
+  'bundle.not_found': {
+    title: "We can't find that booking",
+  },
+  'bundle.no_services': {
+    title: "Couldn't save — no service lines provided",
+  },
+  'bundle.line_not_in_bundle': {
+    title: "Couldn't cancel — line isn't part of a booking",
+  },
+  'bundle.invalid_quantity': {
+    title: "Couldn't save — quantity invalid",
+  },
+  'bundle.invalid_service_window': {
+    title: "Couldn't save — service window invalid",
+    detail: 'Provide valid start and end times.',
+  },
+  'bundle.invalid_requester_notes': {
+    title: "Couldn't save — notes invalid",
+    detail: 'Notes must be 2000 characters or fewer.',
+  },
+  'bundle.invalid_expected_updated_at': {
+    title: "Couldn't save — version token invalid",
+  },
+  'bundle.lead_time_violation': {
+    title: "Couldn't add — not enough lead time",
+    detail: 'Move the meeting later or remove this service.',
+  },
+  'bundle.context_lookup_failed': {
+    title: 'Something went wrong on our end',
+    detail: 'Try again. If it keeps happening, contact support with the trace ID.',
+  },
+  'bundle.idempotency_key_required': {
+    title: "Couldn't save — missing idempotency key",
+  },
+  'bundle.tenant_id_required': {
+    title: 'Something went wrong on our end',
+    detail: 'Missing workspace context. Try again.',
+  },
+  'booking.not_found': {
+    title: "We can't find that booking",
+  },
+  'asset.not_found': {
+    title: "We can't find that asset",
+  },
+  'catalog_item.not_found': {
+    title: "We can't find that catalog item",
+  },
+  'plan.idempotency_key_required': {
+    title: 'Something went wrong on our end',
+    detail: 'Missing idempotency key. Try again.',
+  },
+  'plan.stable_index_required': {
+    title: 'Something went wrong on our end',
+    detail: 'Missing stable index. Try again.',
+  },
+  'plan.client_line_id_required': {
+    title: 'Something went wrong on our end',
+    detail: 'Missing client line id. Try again.',
+  },
+  service_rule_deny: {
+    title: "Couldn't book — a rule blocked it",
+  },
+  asset_conflict: {
+    title: "Couldn't book — asset already reserved",
+    detail: 'A requested asset is already reserved for that window.',
+  },
+  line_not_found: {
+    title: "We can't find that line",
+  },
+  line_state_changed: {
+    title: 'This line was updated by someone else',
+    detail: 'Reload to see the latest state.',
+  },
+  line_frozen: {
+    title: "Couldn't edit — line already in fulfillment",
+    detail: 'Cancel and re-add instead.',
+  },
+  line_already_fulfilled: {
+    title: "Couldn't cancel — line has been fulfilled",
+    detail: 'Contact the fulfillment team if needed.',
+  },
+  client_line_id_required: {
+    title: "Couldn't save — missing client line id",
+  },
+  client_line_id_not_unique: {
+    title: "Couldn't save — duplicate client line id",
+  },
   'vendor.unavailable': {
     title: 'Vendor unavailable',
   },

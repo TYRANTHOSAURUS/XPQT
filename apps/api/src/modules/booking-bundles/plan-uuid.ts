@@ -1,4 +1,5 @@
 import { v5 as uuidv5 } from 'uuid';
+import { AppErrors } from '../../common/errors';
 
 /**
  * planUuid + planSort — deterministic UUID derivation for AttachPlan rows.
@@ -72,10 +73,10 @@ export function planUuid(
   stableIndex: string,
 ): string {
   if (!idempotencyKey || idempotencyKey.length === 0) {
-    throw new Error('planUuid: idempotencyKey required');
+    throw AppErrors.server('plan.idempotency_key_required', { detail: 'planUuid: idempotencyKey required' });
   }
   if (!stableIndex || stableIndex.length === 0) {
-    throw new Error('planUuid: stableIndex required (got empty string)');
+    throw AppErrors.server('plan.stable_index_required', { detail: 'planUuid: stableIndex required (got empty string)' });
   }
   return uuidv5(`${idempotencyKey}:${rowKind}:${stableIndex}`, NS_PLAN_BOOKING_WITH_ATTACH);
 }

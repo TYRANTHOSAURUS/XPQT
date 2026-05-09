@@ -1,11 +1,6 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import {
   loadPermissionMap,
@@ -238,7 +233,7 @@ export class BundleService {
    */
   async attachServicesToBooking(args: AttachServicesArgs): Promise<AttachServicesResult> {
     if (args.services.length === 0) {
-      throw new BadRequestException({ code: 'no_services', message: 'no service lines provided' });
+      throw AppErrors.validationFailed('bundle.no_services', { detail: 'no service lines provided' });
     }
     const tenantId = TenantContext.current().id;
 
@@ -350,7 +345,7 @@ export class BundleService {
         lines: perLineOutcomeInputs,
         contextFor: (lineKey) => {
           const line = lineByOli.get(lineKey);
-          if (!line) throw new Error(`context lookup failed for ${lineKey}`);
+          if (!line) throw AppErrors.server('bundle.context_lookup_failed', { detail: `context lookup failed for ${lineKey}` });
           return buildServiceEvaluationContext({
             requester: requesterCtx,
             bundle: {
@@ -428,10 +423,8 @@ export class BundleService {
         const denials = perLineApproval.flatMap((p) => p.outcome.denial_messages);
         // Throw before we mark orders 'submitted' — cleanup will undo the
         // asset reservations + line items + bundle.
-        throw new BadRequestException({
-          code: 'service_rule_deny',
-          message: denials[0] ?? 'A service rule denied this booking.',
-          denial_messages: denials,
+        throw AppErrors.validationFailed('service_rule_deny', {
+          detail: denials[0] ?? 'A service rule denied this booking.',
         });
       }
 
@@ -559,9 +552,8 @@ export class BundleService {
       // Asset GiST conflict path — surface a structured 409 with the
       // conflicting asset for the picker to suggest alternatives.
       if (isExclusionViolation(err)) {
-        throw new ConflictException({
-          code: 'asset_conflict',
-          message: 'A requested asset is already reserved for this window.',
+        throw AppErrors.conflict('asset_conflict', {
+          detail: 'A requested asset is already reserved for this window.',
         });
       }
       throw err;
@@ -601,15 +593,13 @@ export class BundleService {
    */
   async buildAttachPlan(args: BuildAttachPlanArgs): Promise<AttachPlan> {
     if (!args.idempotency_key || args.idempotency_key.length === 0) {
-      throw new BadRequestException({
-        code: 'idempotency_key_required',
-        message: 'buildAttachPlan: idempotency_key required.',
+      throw AppErrors.validationFailed('bundle.idempotency_key_required', {
+        detail: 'buildAttachPlan: idempotency_key required.',
       });
     }
     if (!args.tenant_id) {
-      throw new BadRequestException({
-        code: 'tenant_id_required',
-        message: 'buildAttachPlan: tenant_id required.',
+      throw AppErrors.validationFailed('bundle.tenant_id_required', {
+        detail: 'buildAttachPlan: tenant_id required.',
       });
     }
 
@@ -647,16 +637,13 @@ export class BundleService {
     for (const line of args.services) {
       const id = (line.client_line_id ?? '').trim();
       if (!id) {
-        throw new BadRequestException({
-          code: 'client_line_id_required',
-          message:
-            'buildAttachPlan: every service line must have a non-empty client_line_id.',
+        throw AppErrors.validationFailed('client_line_id_required', {
+          detail: 'buildAttachPlan: every service line must have a non-empty client_line_id.',
         });
       }
       if (seenLineIds.has(id)) {
-        throw new BadRequestException({
-          code: 'client_line_id_not_unique',
-          message: `buildAttachPlan: duplicate client_line_id "${id}" — each line must have a unique id.`,
+        throw AppErrors.validationFailed('client_line_id_not_unique', {
+          detail: `buildAttachPlan: duplicate client_line_id "${id}" — each line must have a unique id.`,
         });
       }
       seenLineIds.add(id);
@@ -686,9 +673,8 @@ export class BundleService {
       const serviceType = lines[i].service_type;
       const set = lineIdByServiceType.get(serviceType) ?? new Set<string>();
       if (set.has(cid)) {
-        throw new BadRequestException({
-          code: 'client_line_id_not_unique',
-          message: `buildAttachPlan: duplicate client_line_id "${cid}" within service_type "${serviceType}".`,
+        throw AppErrors.validationFailed('client_line_id_not_unique', {
+          detail: `buildAttachPlan: duplicate client_line_id "${cid}" within service_type "${serviceType}".`,
         });
       }
       set.add(cid);
@@ -831,7 +817,7 @@ export class BundleService {
       lines: perLineOutcomeInputs,
       contextFor: (lineKey) => {
         const line = lineByOliId.get(lineKey);
-        if (!line) throw new Error(`context lookup failed for ${lineKey}`);
+        if (!line) throw AppErrors.server('bundle.context_lookup_failed', { detail: `context lookup failed for ${lineKey}` });
         return buildServiceEvaluationContext({
           requester: requesterCtx,
           bundle: {
@@ -992,10 +978,7 @@ export class BundleService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'asset_not_found',
-        message: `Asset ${assetId} not found.`,
-      });
+      throw AppErrors.notFound('asset', assetId);
     }
   }
 
@@ -1015,7 +998,7 @@ export class BundleService {
     services: ServiceLineInput[];
   }): Promise<AttachServicesResult> {
     if (args.services.length === 0) {
-      throw new BadRequestException({ code: 'no_services', message: 'no service lines provided' });
+      throw AppErrors.validationFailed('bundle.no_services', { detail: 'no service lines provided' });
     }
     const tenantId = TenantContext.current().id;
 
@@ -1030,7 +1013,7 @@ export class BundleService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({ code: 'bundle_not_found', message: `Booking ${args.bundle_id} not found.` });
+      throw AppErrors.notFound('bundle', args.bundle_id);
     }
 
     return this.attachServicesToBooking({
@@ -1085,35 +1068,35 @@ export class BundleService {
     // 500 instead of a clean 400. Same risk for `requester_notes:
     // {evil:1}` reaching .trim() further down. Validate explicitly.
     if (args.patch.quantity !== undefined && (typeof args.patch.quantity !== 'number' || !Number.isFinite(args.patch.quantity))) {
-      throw new BadRequestException({ code: 'invalid_quantity', message: 'quantity must be a finite number.' });
+      throw AppErrors.validationFailed('bundle.invalid_quantity', { detail: 'quantity must be a finite number.' });
     }
     if (
       args.patch.service_window_start_at !== undefined &&
       args.patch.service_window_start_at !== null &&
       (typeof args.patch.service_window_start_at !== 'string' || Number.isNaN(Date.parse(args.patch.service_window_start_at)))
     ) {
-      throw new BadRequestException({ code: 'invalid_service_window_start_at', message: 'service_window_start_at must be an ISO string or null.' });
+      throw AppErrors.validationFailed('bundle.invalid_service_window', { detail: 'service_window_start_at must be an ISO string or null.' });
     }
     if (
       args.patch.service_window_end_at !== undefined &&
       args.patch.service_window_end_at !== null &&
       (typeof args.patch.service_window_end_at !== 'string' || Number.isNaN(Date.parse(args.patch.service_window_end_at)))
     ) {
-      throw new BadRequestException({ code: 'invalid_service_window_end_at', message: 'service_window_end_at must be an ISO string or null.' });
+      throw AppErrors.validationFailed('bundle.invalid_service_window', { detail: 'service_window_end_at must be an ISO string or null.' });
     }
     if (
       args.patch.requester_notes !== undefined &&
       args.patch.requester_notes !== null &&
       (typeof args.patch.requester_notes !== 'string' || args.patch.requester_notes.length > 2000)
     ) {
-      throw new BadRequestException({ code: 'invalid_requester_notes', message: 'requester_notes must be a string ≤ 2000 chars or null.' });
+      throw AppErrors.validationFailed('bundle.invalid_requester_notes', { detail: 'requester_notes must be a string ≤ 2000 chars or null.' });
     }
     if (
       args.expected_updated_at !== undefined &&
       args.expected_updated_at !== null &&
       (typeof args.expected_updated_at !== 'string' || Number.isNaN(Date.parse(args.expected_updated_at)))
     ) {
-      throw new BadRequestException({ code: 'invalid_expected_updated_at', message: 'expected_updated_at must be an ISO string or null.' });
+      throw AppErrors.validationFailed('bundle.invalid_expected_updated_at', { detail: 'expected_updated_at must be an ISO string or null.' });
     }
 
     const { data: existing, error: loadErr } = await this.supabase.admin
@@ -1124,7 +1107,7 @@ export class BundleService {
       .maybeSingle();
     if (loadErr) throw loadErr;
     if (!existing) {
-      throw new NotFoundException({ code: 'line_not_found', message: `Line ${args.line_id} not found.` });
+      throw AppErrors.notFoundWithCode('line_not_found', `Line ${args.line_id} not found.`);
     }
     const line = existing as {
       id: string;
@@ -1142,24 +1125,22 @@ export class BundleService {
     };
 
     if (args.expected_updated_at && args.expected_updated_at !== line.updated_at) {
-      throw new ConflictException({
-        code: 'line_state_changed',
-        message: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
+      throw AppErrors.conflict('line_state_changed', {
+        detail: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
       });
     }
 
     const FROZEN: Set<string> = new Set(['preparing', 'delivered', 'cancelled']);
     if (FROZEN.has(line.fulfillment_status)) {
-      throw new ConflictException({
-        code: 'line_frozen',
-        message: `Cannot edit a line in '${line.fulfillment_status}' state. Cancel and re-add instead.`,
+      throw AppErrors.conflict('line_frozen', {
+        detail: `Cannot edit a line in '${line.fulfillment_status}' state. Cancel and re-add instead.`,
       });
     }
 
     const update: Record<string, unknown> = {};
     if (typeof args.patch.quantity === 'number' && args.patch.quantity !== line.quantity) {
       if (args.patch.quantity < 1) {
-        throw new BadRequestException({ code: 'invalid_quantity', message: 'Quantity must be ≥ 1.' });
+        throw AppErrors.validationFailed('bundle.invalid_quantity', { detail: 'Quantity must be ≥ 1.' });
       }
       update.quantity = args.patch.quantity;
       if (line.unit_price != null) {
@@ -1215,9 +1196,8 @@ export class BundleService {
       .maybeSingle();
     if (updateErr) throw updateErr;
     if (!updated) {
-      throw new ConflictException({
-        code: 'line_state_changed',
-        message: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
+      throw AppErrors.conflict('line_state_changed', {
+        detail: 'This line was updated by someone else while you were editing. Reload to see the latest state.',
       });
     }
     const u = updated as { id: string; quantity: number; line_total: number | null; service_window_start_at: string | null; service_window_end_at: string | null; requester_notes: string | null; updated_at: string };
@@ -1350,10 +1330,7 @@ export class BundleService {
       .maybeSingle();
     if (bookingErr) throw bookingErr;
     if (!bookingRow) {
-      throw new NotFoundException({
-        code: 'booking_not_found',
-        message: `Booking ${bookingId} not found.`,
-      });
+      throw AppErrors.notFound('booking', bookingId);
     }
     const booking = bookingRow as unknown as {
       id: string;
@@ -1576,7 +1553,7 @@ export class BundleService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({ code: 'booking_not_found', message: `Booking ${id} not found.` });
+      throw AppErrors.notFound('booking', id);
     }
     const row = data as {
       id: string;
@@ -1630,7 +1607,7 @@ export class BundleService {
         .eq('tenant_id', tenantId)
         .maybeSingle();
       if (itemErr) throw itemErr;
-      if (!item) throw new NotFoundException({ code: 'catalog_item_not_found', message: `Catalog item ${input.catalog_item_id} not found.` });
+      if (!item) throw AppErrors.notFound('catalog_item', input.catalog_item_id);
 
       // Resolve menu offer to get vendor/team + price snapshot.
       let menuId = input.menu_id ?? null;
@@ -1685,9 +1662,8 @@ export class BundleService {
         offerRow?.lead_time_hours != null &&
         offerRow.lead_time_hours > leadRemaining
       ) {
-        throw new BadRequestException({
-          code: 'lead_time_violation',
-          message: `Service requires ${offerRow.lead_time_hours}h advance notice; only ${leadRemaining.toFixed(1)}h remain. Move the meeting later or remove this service.`,
+        throw AppErrors.validationFailed('bundle.lead_time_violation', {
+          detail: `Service requires ${offerRow.lead_time_hours}h advance notice; only ${leadRemaining.toFixed(1)}h remain. Move the meeting later or remove this service.`,
         });
       }
 
@@ -1813,10 +1789,7 @@ export class BundleService {
       .maybeSingle();
     if (assetCheck.error) throw assetCheck.error;
     if (!assetCheck.data) {
-      throw new NotFoundException({
-        code: 'asset_not_found',
-        message: `Asset ${args.asset_id} not found.`,
-      });
+      throw AppErrors.notFound('asset', args.asset_id);
     }
 
     const { data, error } = await this.supabase.admin

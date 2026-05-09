@@ -259,9 +259,7 @@ describe('BundleService.editLine — slice 4 event emission', () => {
               patch: { service_window_start_at: newStart },
             }),
         ),
-      ).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'line_state_changed' }),
-      });
+      ).rejects.toMatchObject({ code: 'line_state_changed', status: 409 });
       expect(captured).toHaveLength(0);
     } finally {
       unsubscribe();

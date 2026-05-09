@@ -1,5 +1,6 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import { BundleVisibilityService, type BundleVisibilityContext } from './bundle-visibility.service';
@@ -79,32 +80,23 @@ export class BundleCascadeService {
   }> {
     const tenantId = TenantContext.current().id;
     const line = await this.loadLine(args.line_id, tenantId);
-    if (!line) throw new NotFoundException({ code: 'line_not_found', message: `Line ${args.line_id} not found.` });
+    if (!line) throw AppErrors.notFoundWithCode('line_not_found', `Line ${args.line_id} not found.`);
     // Sub-project 2 only owns bundle-linked lines. A pre-bundle order line
     // (legacy /orders flow) routes through OrderService.cancel, not this
     // path — refuse so we don't silently let a tenant-mate cancel each
     // other's lines.
     if (!line.bundle_id) {
-      throw new NotFoundException({
-        code: 'line_not_in_bundle',
-        message: `Line ${args.line_id} is not part of a bundle.`,
-      });
+      throw AppErrors.notFoundWithCode('bundle.line_not_in_bundle', `Line ${args.line_id} is not part of a bundle.`);
     }
     const bundle = await this.loadBundle(line.bundle_id, tenantId);
     if (!bundle) {
-      throw new NotFoundException({
-        code: 'bundle_not_found',
-        message: `Bundle ${line.bundle_id} not found.`,
-      });
+      throw AppErrors.notFound('bundle', line.bundle_id);
     }
     await this.visibility.assertVisible(bundle, ctx);
 
     // Fulfilled-line protection.
     if (FULFILLED_STATUSES.has(line.fulfillment_status ?? '')) {
-      throw new ForbiddenException({
-        code: 'line_already_fulfilled',
-        message: 'This line has been fulfilled and cannot be cancelled. Contact the fulfillment team.',
-      });
+      throw AppErrors.forbidden('line_already_fulfilled', 'This line has been fulfilled and cannot be cancelled. Contact the fulfillment team.');
     }
 
     // Capture policy snapshot before mutating — needed for the bundle-event
@@ -239,7 +231,7 @@ export class BundleCascadeService {
   }> {
     const tenantId = TenantContext.current().id;
     const bundle = await this.loadBundle(args.bundle_id, tenantId);
-    if (!bundle) throw new NotFoundException({ code: 'bundle_not_found', message: `Bundle ${args.bundle_id} not found.` });
+    if (!bundle) throw AppErrors.notFound('bundle', args.bundle_id);
     if (!auth.skipVisibility && auth.ctx) {
       await this.visibility.assertVisible(bundle, auth.ctx);
     }
