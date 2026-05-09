@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface Delegation {
   id: string;
@@ -43,6 +44,7 @@ export function useUpsertDelegation() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save delegation" }),
   });
 }
 
@@ -51,5 +53,6 @@ export function useDeleteDelegation() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/delegations/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: delegationKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete delegation" }),
   });
 }
