@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import {
   MAIL_PROVIDER,
   type MailProvider,
@@ -93,9 +94,9 @@ export class ProviderDailyListMailer implements DailyListMailer {
        and silently downgrading to link-only would defeat the change. */
     const dl = await this.supabase.admin.storage.from(bucket).download(input.pdfStoragePath);
     if (dl.error || !dl.data) {
-      throw new Error(
-        `daily-list PDF download failed for path=${input.pdfStoragePath}: ${dl.error?.message ?? 'no data'}`,
-      );
+      throw AppErrors.server('daily_list.mailer_failed', {
+        detail: `daily-list PDF download failed for path=${input.pdfStoragePath}: ${dl.error?.message ?? 'no data'}`,
+      });
     }
     const buffer = Buffer.from(await dl.data.arrayBuffer());
 

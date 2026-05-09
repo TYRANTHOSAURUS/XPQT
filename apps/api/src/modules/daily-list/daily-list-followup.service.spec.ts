@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { DailyListFollowupService } from './daily-list-followup.service';
 
@@ -224,7 +224,7 @@ describe('DailyListFollowupService.confirmPhoned', () => {
     const { svc } = buildSvc({ preState: null });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('throws BadRequest when the line exists, has never been flagged, and is not currently flagged', async () => {
@@ -233,6 +233,6 @@ describe('DailyListFollowupService.confirmPhoned', () => {
     });
     await expect(
       svc.confirmPhoned({ tenantId: TENANT, lineId: LINE, userId: USER }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 });

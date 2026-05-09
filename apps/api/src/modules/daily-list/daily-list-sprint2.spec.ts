@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import {
   DailyListService,
@@ -233,7 +233,7 @@ describe('DailyListService.renderAndUpload', () => {
     const { svc } = buildSvc({ uploadError: 'bucket missing' });
     await expect(
       svc.renderAndUpload({ tenantId: TENANT, dailyListId: DAGLIJST }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 });
 

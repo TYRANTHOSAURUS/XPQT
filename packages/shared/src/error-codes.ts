@@ -374,6 +374,23 @@ export type KnownErrorCode =
   | 'invalid_service_category'
   | 'setup_routing_failed'
 
+  // ─── daily-list migration (Phase 7.B-1.daily-list) ───────────────────────
+  | 'daily_list.pdf_renderer_unavailable'
+  | 'daily_list.line_not_found'
+  | 'daily_list.invalid_payload'
+  | 'daily_list.invalid_date'
+  | 'daily_list.body_required'
+  | 'daily_list.field_required'
+  | 'daily_list.mailer_failed'
+  | 'daily_list.vendor_not_found'
+  | 'daily_list.invalid_vendor'
+  | 'daily_list.not_found'
+  | 'daily_list.upload_failed'
+  | 'daily_list.signed_url_failed'
+  | 'daily_list.no_email'
+  | 'daily_list.send_failed'
+  | 'daily_list.pdf_missing'
+
   // ─── orders migration (Phase 7.B-1.orders) ───────────────────────────────
   | 'no_lines'
   | 'missing_location'
@@ -828,6 +845,21 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'line_not_editable',
   'orders.not_implemented',
   'orders.approval_routing_failed',
+  'daily_list.pdf_renderer_unavailable',
+  'daily_list.line_not_found',
+  'daily_list.invalid_payload',
+  'daily_list.invalid_date',
+  'daily_list.body_required',
+  'daily_list.field_required',
+  'daily_list.mailer_failed',
+  'daily_list.vendor_not_found',
+  'daily_list.invalid_vendor',
+  'daily_list.not_found',
+  'daily_list.upload_failed',
+  'daily_list.signed_url_failed',
+  'daily_list.no_email',
+  'daily_list.send_failed',
+  'daily_list.pdf_missing',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -11,6 +10,7 @@ import {
 import type { Request } from 'express';
 import { PermissionGuard } from '../../common/permission-guard';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { DailyListService, type ServiceType } from './daily-list.service';
 
 /**
@@ -55,7 +55,7 @@ export class DailyListAdminController {
        it hits the SQL `$3::date` cast. */
     const sinceNorm = since && since.trim() !== '' ? since : undefined;
     if (sinceNorm !== undefined && !isValidIsoDate(sinceNorm)) {
-      throw new BadRequestException('since must be a valid YYYY-MM-DD date');
+      throw AppErrors.validationFailed('daily_list.invalid_date', { detail: 'since must be a valid YYYY-MM-DD date' });
     }
     const rows = await this.dailyList.getHistory({ tenantId, vendorId, since: sinceNorm });
     /* Strip payload from list response — admins only need it on the
@@ -131,9 +131,8 @@ export class DailyListAdminController {
     } catch (err) {
       const e = err as { name?: string; message?: string };
       if (e?.name === 'ListCancelledError') {
-        throw new BadRequestException({
-          code: 'list_cancelled',
-          message: 'No live lines for this bucket — nothing to regenerate.',
+        throw AppErrors.validationFailed('daily_list.invalid_payload', {
+          detail: 'No live lines for this bucket — nothing to regenerate.',
         });
       }
       throw err;
@@ -217,12 +216,12 @@ export function isValidIsoDate(s: string | undefined | null): boolean {
 
 function assertPreviewBody(body: PreviewBody): void {
   if (!body || typeof body !== 'object') {
-    throw new BadRequestException('Body required');
+    throw AppErrors.validationFailed('daily_list.body_required', { detail: 'Body required' });
   }
   if (!isValidIsoDate(body.listDate)) {
-    throw new BadRequestException('listDate must be a valid YYYY-MM-DD date');
+    throw AppErrors.validationFailed('daily_list.invalid_date', { detail: 'listDate must be a valid YYYY-MM-DD date' });
   }
   if (!body.serviceType) {
-    throw new BadRequestException('serviceType required');
+    throw AppErrors.validationFailed('daily_list.field_required', { detail: 'serviceType required' });
   }
 }

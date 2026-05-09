@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { DailyListService } from './daily-list.service';
 import { PdfRendererService } from './pdf-renderer.service';
@@ -165,7 +165,7 @@ describe('DailyListService.assemble', () => {
     const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects portal-only vendor', async () => {
@@ -173,7 +173,7 @@ describe('DailyListService.assemble', () => {
     const svc = buildSvc(db);
     await expect(
       svc.assemble({ tenantId: TENANT, vendorId: VENDOR, buildingId: BUILDING, serviceType: 'catering', listDate: LIST_DATE }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('produces a payload with first-name-only requester (privacy)', async () => {

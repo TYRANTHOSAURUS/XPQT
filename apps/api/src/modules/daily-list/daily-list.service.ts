@@ -1,10 +1,9 @@
 import {
-  BadRequestException,
   Inject,
   Injectable,
   Logger,
-  NotFoundException,
 } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
@@ -65,11 +64,11 @@ export class DailyListService {
         where tenant_id = $1 and id = $2`,
       [tenantId, vendorId],
     );
-    if (!vendor) throw new NotFoundException(`Vendor ${vendorId} not found`);
+    if (!vendor) throw AppErrors.notFoundWithCode('daily_list.vendor_not_found', `Vendor ${vendorId} not found`);
     if (vendor.fulfillment_mode === 'portal') {
-      throw new BadRequestException(
-        `Vendor ${vendor.name} is in portal-only mode  daily list not applicable.`,
-      );
+      throw AppErrors.validationFailed('daily_list.invalid_vendor', {
+        detail: `Vendor ${vendor.name} is in portal-only mode  daily list not applicable.`,
+      });
     }
 
     const building = buildingId
@@ -441,7 +440,7 @@ export class DailyListService {
     const { tenantId, dailyListId, force = false } = args;
 
     const dl = await this.getById(tenantId, dailyListId);
-    if (!dl) throw new NotFoundException('Daily-list not found');
+    if (!dl) throw AppErrors.notFoundWithCode('daily_list.not_found', 'Daily-list not found');
     if (dl.pdf_storage_path && !force) return dl;
 
     const rendered = await this.pdfRenderer.renderDaglijst({
@@ -462,7 +461,7 @@ export class DailyListService {
         upsert: true,                                    // re-render replaces in place
       });
     if (uploadErr) {
-      throw new BadRequestException(`PDF upload failed: ${uploadErr.message}`);
+      throw AppErrors.server('daily_list.upload_failed', { detail: `PDF upload failed: ${uploadErr.message}` });
     }
 
     const updated = await this.db.queryOne<VendorDailyListRow>(
@@ -487,7 +486,7 @@ export class DailyListService {
     const { tenantId, dailyListId, ttl = 'admin' } = args;
 
     let dl = await this.getById(tenantId, dailyListId);
-    if (!dl) throw new NotFoundException('Daily-list not found');
+    if (!dl) throw AppErrors.notFoundWithCode('daily_list.not_found', 'Daily-list not found');
     if (!dl.pdf_storage_path) {
       dl = await this.renderAndUpload({ tenantId, dailyListId });
     }
@@ -500,7 +499,7 @@ export class DailyListService {
       .from(DailyListService.PDF_BUCKET)
       .createSignedUrl(dl.pdf_storage_path!, ttlSec);
     if (error || !data) {
-      throw new BadRequestException(`Signed URL mint failed: ${error?.message ?? 'unknown'}`);
+      throw AppErrors.server('daily_list.signed_url_failed', { detail: `Signed URL mint failed: ${error?.message ?? 'unknown'}` });
     }
 
     const expiresAt = new Date(Date.now() + ttlSec * 1000).toISOString();
@@ -534,7 +533,7 @@ export class DailyListService {
       return { status: 'already_sent', row: dl };
     }
     if (!dl.recipient_email) {
-      throw new BadRequestException('Vendor has no daglijst_email configured; cannot send');
+      throw AppErrors.validationFailed('daily_list.no_email', { detail: 'Vendor has no daglijst_email configured; cannot send' });
     }
 
     // Codex Sprint 2 fix #1: CAS-acquire the row before calling the mailer.
@@ -634,7 +633,7 @@ export class DailyListService {
            attachment. pdf_storage_path is set by the renderAndUpload
            call earlier in send(). */
         if (!dl.pdf_storage_path) {
-          throw new Error('pdf_storage_path missing after renderAndUpload');
+          throw AppErrors.server('daily_list.pdf_missing', { detail: 'pdf_storage_path missing after renderAndUpload' });
         }
         const filename =
           `daily-list-${dl.payload.list_date}-${dl.service_type}-v${dl.version}.pdf`;
@@ -700,7 +699,7 @@ export class DailyListService {
           details: { error: errMsg.slice(0, 500), recipient: dl.recipient_email },
         });
       }
-      throw new BadRequestException(`Daily-list send failed: ${errMsg}`);
+      throw AppErrors.server('daily_list.send_failed', { detail: `Daily-list send failed: ${errMsg}` });
     }
 
     // Successful send — lock the lines + update the row + audit.

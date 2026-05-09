@@ -1,4 +1,5 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { DailyListPayload } from './daily-list.service';
 
 // TODO: PDF rendering temporarily disabled. The previous implementation used
@@ -19,9 +20,9 @@ export class PdfRendererService {
 
   async renderDaglijst(_input: RenderInput): Promise<RenderResult> {
     this.log.warn('renderDaglijst called while PDF renderer is disabled (see TODO in pdf-renderer.service.ts)');
-    throw new ServiceUnavailableException(
-      'PDF export temporarily disabled — see TODO in apps/api/src/modules/daily-list/pdf-renderer.service.ts',
-    );
+    throw AppErrors.server('daily_list.pdf_renderer_unavailable', {
+      detail: 'PDF export temporarily disabled — see TODO in apps/api/src/modules/daily-list/pdf-renderer.service.ts',
+    });
   }
 }
 

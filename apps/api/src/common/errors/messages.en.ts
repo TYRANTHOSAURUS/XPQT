@@ -1262,6 +1262,29 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'orders.approval_routing_failed': {
     title: "Couldn't resolve approval routing",
   },
+
+  // ─── daily-list (Phase 7.B-1.daily-list) ─────────────────────────────────
+  'daily_list.pdf_renderer_unavailable': {
+    title: "Couldn't generate PDF",
+    detail: 'PDF rendering is currently unavailable.',
+  },
+  'daily_list.line_not_found': { title: "Couldn't find that line" },
+  'daily_list.invalid_payload': { title: "Couldn't process that request" },
+  'daily_list.invalid_date': { title: "Couldn't process that request", detail: 'Invalid date format.' },
+  'daily_list.body_required': { title: "Couldn't process that request", detail: 'Request body is required.' },
+  'daily_list.field_required': { title: "Couldn't process that request", detail: 'A required field is missing.' },
+  'daily_list.mailer_failed': { title: "Couldn't send that email" },
+  'daily_list.vendor_not_found': { title: "Couldn't find that vendor" },
+  'daily_list.invalid_vendor': { title: "Couldn't process that request", detail: 'Vendor is not configured for daily lists.' },
+  'daily_list.not_found': { title: "Couldn't find that daily list" },
+  'daily_list.upload_failed': { title: "Couldn't upload PDF" },
+  'daily_list.signed_url_failed': { title: "Couldn't generate signed link" },
+  'daily_list.no_email': {
+    title: "Couldn't send daily list",
+    detail: 'Vendor has no email address configured.',
+  },
+  'daily_list.send_failed': { title: "Couldn't send daily list" },
+  'daily_list.pdf_missing': { title: "Couldn't render daily list", detail: 'PDF storage path is missing.' },
 };
 
 /**

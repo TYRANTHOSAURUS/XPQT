@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { AuditOutboxService } from '../privacy-compliance/audit-outbox.service';
 import { DailyListEventType } from './event-types';
 
@@ -152,7 +153,7 @@ export class DailyListFollowupService {
         [tenantId, lineId],
       );
       if (lookup.rowCount === 0) {
-        throw new NotFoundException(`Line ${lineId} not found`);
+        throw AppErrors.notFoundWithCode('daily_list.line_not_found', `Line ${lineId} not found`);
       }
       const before = lookup.rows[0];
 
@@ -166,9 +167,8 @@ export class DailyListFollowupService {
 
       /* Not flagged AND never confirmed → caller mistake; tell them. */
       if (!before.requires_phone_followup && !before.desk_confirmed_phoned_at) {
-        throw new BadRequestException({
-          code: 'not_flagged',
-          message: 'Line is not flagged for phone follow-up.',
+        throw AppErrors.validationFailed('daily_list.invalid_payload', {
+          detail: 'Line is not flagged for phone follow-up.',
         });
       }
 
