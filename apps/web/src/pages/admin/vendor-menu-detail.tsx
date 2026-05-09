@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/dialog';
 import { apiFetch } from '@/lib/api';
 import { useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { usePageQuery } from '@/lib/errors';
 import { useVendors } from '@/api/vendors';
 import { SpaceSelect } from '@/components/space-select';
 import { MenuItemsGrid, MenuItemRow } from '@/components/admin/menu-items-grid';
@@ -58,7 +59,8 @@ export function VendorMenuDetailPage() {
   const navigate = useNavigate();
 
   const qc = useQueryClient();
-  const { data: menu, isPending: menuLoading } = useQuery(queryOptions({
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data: menu, isPending: menuLoading } = usePageQuery(queryOptions({
     queryKey: ['catalog-menus', 'detail', id] as const,
     queryFn: ({ signal }) => apiFetch<Menu>(`/catalog-menus/${id}`, { signal }),
     enabled: Boolean(id),
