@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { createHash, randomBytes } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -75,7 +76,7 @@ export class InvitationService {
     if (actor.tenant_id !== tenant.id) {
       // Cross-tenant defence — actor cannot drive an invite in a tenant
       // other than the one their context resolved to.
-      throw new ForbiddenException('actor tenant mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'actor tenant mismatch' });
     }
 
     // 1. Cross-building scope check.
@@ -117,9 +118,7 @@ export class InvitationService {
     // 2. Visitor type lookup.
     const visitorType = await this.loadVisitorType(dto.visitor_type_id);
     if (!visitorType) {
-      throw new NotFoundException(
-        `visitor_type ${dto.visitor_type_id} not found or inactive`,
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
     }
 
     // 3. Persons row resolution (dedup or create).
@@ -174,8 +173,7 @@ export class InvitationService {
         meeting_room_id: dto.meeting_room_id ?? null,
         booking_id: bookingId,                      // 00278:41 (renamed from booking_bundle_id)
         notes_for_visitor: dto.notes_for_visitor ?? null,
-        notes_for_reception: dto.notes_for_reception ?? null,
-      })
+        notes_for_reception: dto.notes_for_reception ?? null })
       .select()
       .single();
     if (insertError || !visitorRow) {
@@ -209,15 +207,13 @@ export class InvitationService {
       {
         visitor_id: visitorId,
         person_id: actor.person_id,
-        tenant_id: tenant.id,
-      },
+        tenant_id: tenant.id },
       ...(dto.co_host_person_ids ?? [])
         .filter((id) => id !== actor.person_id)            // de-dupe primary
         .map((id) => ({
           visitor_id: visitorId,
           person_id: id,
-          tenant_id: tenant.id,
-        })),
+          tenant_id: tenant.id })),
     ];
     const { error: hostsError } = await this.supabase.admin
       .from('visitor_hosts')
@@ -237,8 +233,7 @@ export class InvitationService {
         visitor_id: visitorId,
         token_hash: tokenHash,
         purpose: 'cancel',
-        expires_at: tokenExpiresAt,
-      });
+        expires_at: tokenExpiresAt });
     if (tokenErr) throw tokenErr;
 
     // 8. Approval routing (only when type requires approval).
@@ -276,9 +271,7 @@ export class InvitationService {
           expected_at: dto.expected_at,
           status,
           has_approval: approvalId !== null,
-          co_host_count: (dto.co_host_person_ids ?? []).length,
-        },
-      });
+          co_host_count: (dto.co_host_person_ids ?? []).length } });
     } catch (err) {
       this.log.warn(`audit insert visitor.invited failed: ${(err as Error).message}`);
     }
@@ -311,9 +304,7 @@ export class InvitationService {
             visitor_id: visitorId,
             primary_host_person_id: actor.person_id,
             building_id: dto.building_id,
-            cancel_token: plaintext,
-          },
-        });
+            cancel_token: plaintext } });
       } catch (err) {
         this.log.warn(`domain_events emit failed: ${(err as Error).message}`);
       }
@@ -323,8 +314,7 @@ export class InvitationService {
       visitor_id: visitorId,
       status,
       approval_id: approvalId,
-      cancel_token: plaintext,
-    };
+      cancel_token: plaintext };
   }
 
   /**
@@ -337,8 +327,7 @@ export class InvitationService {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin.rpc('portal_authorized_space_ids', {
       p_person_id: personId,
-      p_tenant_id: tenant.id,
-    });
+      p_tenant_id: tenant.id });
     if (error) throw error;
 
     // The function returns either an array of uuids OR an array of {id} rows
@@ -348,7 +337,8 @@ export class InvitationService {
     );
 
     if (!ids.includes(buildingId)) {
-      throw new ForbiddenException(
+      throw AppErrors.forbidden(
+        'visitor.forbidden',
         "You don't have access to invite visitors at this building. Contact your admin.",
       );
     }

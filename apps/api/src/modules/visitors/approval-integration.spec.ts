@@ -32,6 +32,7 @@
  */
 
 import type { PoolClient } from 'pg';
+import { AppError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { ApprovalService } from '../approval/approval.service';
 import { HostNotificationService } from './host-notification.service';
@@ -105,8 +106,7 @@ function makeWorld(initialVisitorTenant = TENANT_ID): World {
       last_name: 'Visser',
       company: 'ABC Bank',
       building_id: 'building-1',
-      expected_at: '2026-05-01T09:00:00Z',
-    },
+      expected_at: '2026-05-01T09:00:00Z' },
     approval: {
       id: APPROVAL_ID,
       tenant_id: TENANT_ID,
@@ -119,8 +119,7 @@ function makeWorld(initialVisitorTenant = TENANT_ID): World {
       parallel_group: null,
       step_number: null,
       comments: null,
-      responded_at: null,
-    },
+      responded_at: null },
     hostsForVisitor: [
       {
         id: 'h1',
@@ -128,13 +127,11 @@ function makeWorld(initialVisitorTenant = TENANT_ID): World {
         person_id: HOST_PERSON_ID,
         tenant_id: TENANT_ID,
         notified_at: null,
-        acknowledged_at: null,
-      },
+        acknowledged_at: null },
     ],
     domainEvents: [],
     auditEvents: [],
-    notifications: [],
-  };
+    notifications: [] };
 }
 
 /**
@@ -162,11 +159,9 @@ function makeSupabase(world: World) {
               world.domainEvents.push({
                 event_type: row.event_type as string,
                 entity_id: row.entity_id as string,
-                payload: (row.payload as Record<string, unknown>) ?? {},
-              });
+                payload: (row.payload as Record<string, unknown>) ?? {} });
               return { data: row, error: null };
-            },
-          };
+            } };
         }
         if (table === 'audit_events') {
           return {
@@ -174,11 +169,9 @@ function makeSupabase(world: World) {
               world.auditEvents.push({
                 event_type: row.event_type as string,
                 entity_id: row.entity_id as string,
-                details: (row.details as Record<string, unknown>) ?? {},
-              });
+                details: (row.details as Record<string, unknown>) ?? {} });
               return { data: row, error: null };
-            },
-          };
+            } };
         }
         if (table === 'team_members' || table === 'delegations' || table === 'users') {
           // ApprovalService.callerCanRespond reads team_members + users +
@@ -191,14 +184,9 @@ function makeSupabase(world: World) {
               eq: () => ({
                 eq: () => ({
                   eq: () => ({
-                    maybeSingle: async () => ({ data: null, error: null }),
-                  }),
-                  maybeSingle: async () => ({ data: null, error: null }),
-                }),
-                maybeSingle: async () => ({ data: null, error: null }),
-              }),
-            }),
-          };
+                    maybeSingle: async () => ({ data: null, error: null }) }),
+                  maybeSingle: async () => ({ data: null, error: null }) }),
+                maybeSingle: async () => ({ data: null, error: null }) }) }) };
         }
         if (table === 'persons' || table === 'notifications' || table === 'notification_preferences') {
           // NotificationService.send reads/writes these. Stub so the call
@@ -208,25 +196,19 @@ function makeSupabase(world: World) {
               eq: () => ({
                 eq: () => ({
                   maybeSingle: async () => ({ data: null, error: null }),
-                  in: () => Promise.resolve({ data: [], error: null }),
-                }),
-                in: () => Promise.resolve({ data: [], error: null }),
-              }),
-              in: () => Promise.resolve({ data: [], error: null }),
-            }),
+                  in: () => Promise.resolve({ data: [], error: null }) }),
+                in: () => Promise.resolve({ data: [], error: null }) }),
+              in: () => Promise.resolve({ data: [], error: null }) }),
             insert: async (rows: unknown) => {
               const list = Array.isArray(rows) ? rows : [rows];
               for (const row of list) {
                 world.notifications.push(row as Record<string, unknown>);
               }
               return { data: rows, error: null, select: () => Promise.resolve({ data: rows, error: null }) };
-            },
-          };
+            } };
         }
         throw new Error(`unhandled table in approval-integration fake: ${table}`);
-      },
-    },
-  };
+      } } };
 }
 
 function makeApprovalsChain(world: World) {
@@ -279,8 +261,7 @@ function makeApprovalsChain(world: World) {
         return { data: world.approval, error: null };
       };
       return updateChain;
-    },
-  };
+    } };
 }
 
 function makeVisitorsChain(world: World) {
@@ -299,8 +280,7 @@ function makeVisitorsChain(world: World) {
         return { data: world.visitor, error: null };
       };
       return chain;
-    },
-  };
+    } };
 }
 
 function makeVisitorHostsChain(world: World) {
@@ -326,12 +306,9 @@ function makeVisitorHostsChain(world: World) {
       void patch;
       return {
         eq: () => ({
-          eq: async () => ({ data: null, error: null }),
-        }),
-      };
+          eq: async () => ({ data: null, error: null }) }) };
     },
-    insert: async () => ({ data: null, error: null }),
-  };
+    insert: async () => ({ data: null, error: null }) };
 }
 
 /**
@@ -372,8 +349,7 @@ function makeDb(world: World) {
         world.auditEvents.push({
           event_type: (params?.[1] as string) ?? '',
           entity_id: (params?.[3] as string) ?? '',
-          details: parsed,
-        });
+          details: parsed });
         return { rows: [], rowCount: 1 };
       }
       if (trimmed.startsWith('insert into public.domain_events')) {
@@ -384,19 +360,16 @@ function makeDb(world: World) {
         world.domainEvents.push({
           event_type: (params?.[1] as string) ?? '',
           entity_id: (params?.[3] as string) ?? '',
-          payload: parsed,
-        });
+          payload: parsed });
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
 
   return {
     tx: jest.fn(async <T,>(fn: (c: PoolClient) => Promise<T>): Promise<T> =>
       fn(client as unknown as PoolClient),
-    ),
-  };
+    ) };
 }
 
 function buildWiring(world: World) {
@@ -409,8 +382,7 @@ function buildWiring(world: World) {
     send: jest.fn(async (dto: Record<string, unknown>) => {
       world.notifications.push(dto);
       return [];
-    }),
-  };
+    }) };
 
   const eventBus = new VisitorEventBus();
 
@@ -450,8 +422,7 @@ describe('Approval ↔ Visitor cross-module integration (slice 3)', () => {
     jest.spyOn(TenantContext, 'current').mockReturnValue({
       id: TENANT_ID,
       slug: 'acme',
-      tier: 'standard',
-    });
+      tier: 'standard' });
   });
 
   afterEach(() => jest.restoreAllMocks());

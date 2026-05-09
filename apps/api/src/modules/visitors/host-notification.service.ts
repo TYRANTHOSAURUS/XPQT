@@ -1,10 +1,8 @@
 import {
-  BadRequestException,
   Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+  Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { NotificationService } from '../notification/notification.service';
 import { VisitorEventBus } from './visitor-event-bus';
@@ -85,7 +83,7 @@ export class HostNotificationService {
   async notifyArrival(visitorId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     const visitor = await this.loadVisitor(visitorId, tenantId);
@@ -108,8 +106,7 @@ export class HostNotificationService {
           related_entity_id: visitor.id,
           subject,
           body,
-          channels: ['email', 'in_app'],
-        });
+          channels: ['email', 'in_app'] });
 
         // SSE event — open portal tabs trigger Notification API.
         this.events.emit({
@@ -117,8 +114,7 @@ export class HostNotificationService {
           host_person_id: host.person_id,
           visitor_id: visitor.id,
           kind: 'visitor.arrived',
-          occurred_at: now,
-        });
+          occurred_at: now });
 
         // Record the per-host notified_at on the junction row.
         await this.supabase.admin
@@ -132,8 +128,7 @@ export class HostNotificationService {
         await this.emitAudit('visitor.host_notified', visitor.id, {
           visitor_id: visitor.id,
           host_person_id: host.person_id,
-          notified_at: now,
-        });
+          notified_at: now });
       } catch (err) {
         // Single host failure should not block the rest of the fan-out.
         // Reception can re-page individual hosts from the desk surface
@@ -162,7 +157,7 @@ export class HostNotificationService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     const visitor = await this.loadVisitor(visitorId, tenantId);
@@ -176,7 +171,7 @@ export class HostNotificationService {
       .maybeSingle();
     if (rowErr) throw rowErr;
     if (!row) {
-      throw new NotFoundException('host is not attached to this visitor');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'host is not attached to this visitor' });
     }
 
     const hostRow = row as HostRow;
@@ -204,15 +199,13 @@ export class HostNotificationService {
         host_person_id: peer.person_id,
         visitor_id: visitor.id,
         kind: 'visitor.acknowledged_by_other_host',
-        occurred_at: now,
-      });
+        occurred_at: now });
     }
 
     await this.emitAudit('visitor.host_acknowledged', visitor.id, {
       visitor_id: visitor.id,
       host_person_id: hostPersonId,
-      acknowledged_at: now,
-    });
+      acknowledged_at: now });
   }
 
   /**
@@ -235,7 +228,7 @@ export class HostNotificationService {
   async notifyInvitationDenied(visitorId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     const visitor = await this.loadVisitor(visitorId, tenantId);
@@ -253,13 +246,11 @@ export class HostNotificationService {
           related_entity_id: visitor.id,
           subject,
           body,
-          channels: ['email', 'in_app'],
-        });
+          channels: ['email', 'in_app'] });
 
         await this.emitAudit('visitor.invitation_denied_notified', visitor.id, {
           visitor_id: visitor.id,
-          host_person_id: host.person_id,
-        });
+          host_person_id: host.person_id });
       } catch (err) {
         // One host's notification failure shouldn't block the rest. The
         // approval state is already committed by the time we get here.
@@ -287,8 +278,7 @@ export class HostNotificationService {
           host_count: hosts.length,
           // The worker resolves the host email from the visitor's
           // primary_host_person_id — payload only carries identifiers.
-        },
-      });
+        } });
     } catch (err) {
       this.log.warn(
         `domain_events emit visitor.invitation_declined failed: ${(err as Error).message}`,
@@ -311,7 +301,7 @@ export class HostNotificationService {
   async notifyVisitorCancelled(visitorId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     const visitor = await this.loadVisitor(visitorId, tenantId);
@@ -329,13 +319,11 @@ export class HostNotificationService {
           related_entity_id: visitor.id,
           subject,
           body,
-          channels: ['in_app'],
-        });
+          channels: ['in_app'] });
 
         await this.emitAudit('visitor.cancelled_by_visitor_notified', visitor.id, {
           visitor_id: visitor.id,
-          host_person_id: host.person_id,
-        });
+          host_person_id: host.person_id });
       } catch (err) {
         this.log.warn(
           `cancel notify failed for visitor ${visitor.id} host ${host.person_id}: ${
@@ -356,7 +344,7 @@ export class HostNotificationService {
   ): Promise<PendingHost[]> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.loadVisitor(visitorId, tenantId);
@@ -386,8 +374,7 @@ export class HostNotificationService {
       return {
         host: personData ?? { id: row.person_id, first_name: null, last_name: null },
         notified_at: row.notified_at,
-        acknowledged_at: row.acknowledged_at,
-      };
+        acknowledged_at: row.acknowledged_at };
     });
   }
 
@@ -401,12 +388,12 @@ export class HostNotificationService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     const row = data as VisitorRow;
     if (row.tenant_id !== tenantId) {
       // Cross-tenant defence — present as not-found so we don't leak existence.
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     return row;
   }
@@ -467,8 +454,7 @@ export class HostNotificationService {
         event_type: eventType,
         entity_type: 'visitor',
         entity_id: entityId,
-        details,
-      });
+        details });
     } catch (err) {
       this.log.warn(
         `audit insert failed for ${eventType}: ${(err as Error).message}`,

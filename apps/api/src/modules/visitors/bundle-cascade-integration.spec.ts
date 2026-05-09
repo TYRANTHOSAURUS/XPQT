@@ -18,6 +18,7 @@
  */
 
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
+import { AppError } from '../../common/errors';
 import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
 import { ReservationService } from '../reservations/reservation.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -83,8 +84,7 @@ function buildHarness(opts: {
         return { rows: [], rowCount: 0 };
       }
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
   const db = {
     query: jest.fn(async (sql: string, params: unknown[] = []) => {
       const t = sql.trim().toLowerCase();
@@ -97,8 +97,7 @@ function buildHarness(opts: {
       if (t.startsWith('insert into public.domain_events')) {
         intentInserts.push({
           event_type: params[1] as string,
-          payload: JSON.parse(params[3] as string) as Record<string, unknown>,
-        });
+          payload: JSON.parse(params[3] as string) as Record<string, unknown> });
       }
       return { rows: [], rowCount: 0 };
     }),
@@ -113,8 +112,7 @@ function buildHarness(opts: {
       }
       return [];
     }),
-    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)),
-  };
+    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)) };
 
   // === VisitorService mock — only transitionStatus is consumed by adapter ===
   const visitors = {
@@ -124,8 +122,7 @@ function buildHarness(opts: {
       if (visitor_id === opts.visitor.id) {
         opts.visitor.status = to;
       }
-    }),
-  };
+    }) };
 
   // === SupabaseService mock for the cascade-cancel + reservation-edit paths ===
   //
@@ -138,8 +135,7 @@ function buildHarness(opts: {
     id: 'slot1111-1111-4111-8111-slotslotslot',
     space_id: SPACE_OLD,
     start_at: '2026-05-01T10:00:00.000Z',
-    end_at: '2026-05-01T11:00:00.000Z',
-  };
+    end_at: '2026-05-01T11:00:00.000Z' };
 
   // Mutable slot + booking rows so editOne's update → re-read flow returns
   // the patched values to the cascade emit step.
@@ -165,8 +161,7 @@ function buildHarness(opts: {
     cancellation_grace_until: null,
     display_order: 0,
     created_at: '2026-04-30T09:00:00.000Z',
-    updated_at: '2026-04-30T09:00:00.000Z',
-  };
+    updated_at: '2026-04-30T09:00:00.000Z' };
   let bookingRow: Record<string, unknown> = {
     id: BUNDLE,
     tenant_id: TENANT,
@@ -196,8 +191,7 @@ function buildHarness(opts: {
     recurrence_skipped: false,
     template_id: null,
     created_at: '2026-04-30T09:00:00.000Z',
-    updated_at: '2026-04-30T09:00:00.000Z',
-  };
+    updated_at: '2026-04-30T09:00:00.000Z' };
 
   // Build a slot+booking embed shape for SLOT_WITH_BOOKING_SELECT
   // (reservation-projection.ts:131-143). PostgREST returns the parent under
@@ -230,8 +224,7 @@ function buildHarness(opts: {
           }
           return Promise.resolve({
             data: { slot: slotRow, booking: bookingRow },
-            error: null,
-          });
+            error: null });
         }
         return Promise.resolve({ data: null, error: null });
       }),
@@ -251,13 +244,8 @@ function buildHarness(opts: {
                         id: BUNDLE,
                         requester_person_id: PERSON,
                         host_person_id: null,
-                        location_id: bookingRow.location_id,
-                      },
-                      error: null,
-                    }),
-                }),
-              }),
-            }),
+                        location_id: bookingRow.location_id },
+                      error: null }) }) }) }),
             update: (patch: Record<string, unknown>) => {
               bookingRow = { ...bookingRow, ...patch };
               const chain: Record<string, (...args: unknown[]) => unknown> = {};
@@ -267,8 +255,7 @@ function buildHarness(opts: {
               (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
                 resolve({ data: null, error: null });
               return chain;
-            },
-          };
+            } };
         }
         // ── spaces ───────────────────────────────────────────────────────
         // Plan A.2 / Commit 6: editOne does a TS-layer pre-flight on
@@ -290,12 +277,10 @@ function buildHarness(opts: {
               ) {
                 return Promise.resolve({
                   data: { id: filters.id as string },
-                  error: null,
-                });
+                  error: null });
               }
               return Promise.resolve({ data: null, error: null });
-            },
-          };
+            } };
           return { select: () => chain };
         }
         // ── booking_slots ────────────────────────────────────────────────
@@ -314,10 +299,7 @@ function buildHarness(opts: {
                   eq: () => ({
                     eq: () => ({
                       maybeSingle: () =>
-                        Promise.resolve({ data: { booking_id: slotRow.booking_id }, error: null }),
-                    }),
-                  }),
-                };
+                        Promise.resolve({ data: { booking_id: slotRow.booking_id }, error: null }) }) }) };
               }
               // Primary-slot id-only read. C2 added a second .order(created_at)
               // for tie-breaking — accept BOTH the legacy single-order and
@@ -332,13 +314,8 @@ function buildHarness(opts: {
                     eq: () => ({
                       order: () => ({
                         order: () => ({
-                          limit: () => ({ maybeSingle: slotIdResult }),
-                        }),
-                        limit: () => ({ maybeSingle: slotIdResult }),
-                      }),
-                    }),
-                  }),
-                };
+                          limit: () => ({ maybeSingle: slotIdResult }) }),
+                        limit: () => ({ maybeSingle: slotIdResult }) }) }) }) };
               }
               // Embed read for findByIdOrThrow / findByIdOrThrowAtSlot.
               return {
@@ -348,13 +325,7 @@ function buildHarness(opts: {
                       order: () => ({
                         limit: () => ({
                           maybeSingle: () =>
-                            Promise.resolve({ data: buildSlotEmbed(), error: null }),
-                        }),
-                      }),
-                    }),
-                  }),
-                }),
-              };
+                            Promise.resolve({ data: buildSlotEmbed(), error: null }) }) }) }) }) }) };
             },
             update: (patch: Record<string, unknown>) => {
               slotRow = { ...slotRow, ...patch };
@@ -365,8 +336,7 @@ function buildHarness(opts: {
               (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
                 resolve({ data: null, error: null });
               return chain;
-            },
-          };
+            } };
         }
         // ── orders ───────────────────────────────────────────────────────
         // orderIdsForBundle (cascade) selects id by booking_id (00278:109).
@@ -383,12 +353,8 @@ function buildHarness(opts: {
               return {
                 eq: () => ({
                   eq: () => ({
-                    maybeSingle: () => Promise.resolve({ data: { booking_id: BUNDLE }, error: null }),
-                  }),
-                }),
-              };
-            },
-          };
+                    maybeSingle: () => Promise.resolve({ data: { booking_id: BUNDLE }, error: null }) }) }) };
+            } };
         }
         // ── order_line_items ─────────────────────────────────────────────
         if (table === 'order_line_items') {
@@ -402,8 +368,7 @@ function buildHarness(opts: {
                   const thenable: Record<string, unknown> = {
                     eq: () => Promise.resolve({ data: opts.bundleLines ?? [], error: null }),
                     then: (resolve: (v: unknown) => void) =>
-                      resolve({ data: opts.bundleLines ?? [], error: null }),
-                  };
+                      resolve({ data: opts.bundleLines ?? [], error: null }) };
                   return thenable;
                 };
                 chain.eq = () => chain;
@@ -413,10 +378,7 @@ function buildHarness(opts: {
               return {
                 eq: () => ({
                   eq: () => ({
-                    maybeSingle: () => Promise.resolve({ data: null, error: null }),
-                  }),
-                }),
-              };
+                    maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }) };
             },
             update: () => {
               const chain: Record<string, (...args: unknown[]) => unknown> = {};
@@ -426,8 +388,7 @@ function buildHarness(opts: {
               (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
                 resolve({ data: null, error: null });
               return chain;
-            },
-          };
+            } };
         }
         // ── work_orders / asset_reservations / approvals ────────────────
         // Cascade-cancel writes: work_orders.update (cascade.service:302),
@@ -455,8 +416,7 @@ function buildHarness(opts: {
               (chain as Record<string, unknown>).then = (resolve: (v: unknown) => void) =>
                 resolve({ data: null, error: null });
               return chain;
-            },
-          };
+            } };
         }
         // ── visitors ─────────────────────────────────────────────────────
         // emitVisitorCascadeForBundle (reservation.service:732-736) reads
@@ -468,11 +428,7 @@ function buildHarness(opts: {
                 eq: () =>
                   Promise.resolve({
                     data: (opts.visitorIdsForBundle ?? [opts.visitor.id]).map((id) => ({ id })),
-                    error: null,
-                  }),
-              }),
-            }),
-          };
+                    error: null }) }) }) };
         }
         if (table === 'audit_events') {
           return { insert: () => Promise.resolve({ data: null, error: null }) };
@@ -482,15 +438,9 @@ function buildHarness(opts: {
           select: () => ({
             eq: () => ({
               eq: () => ({
-                maybeSingle: () => Promise.resolve({ data: null, error: null }),
-              }),
-            }),
-          }),
-          insert: () => Promise.resolve({ data: null, error: null }),
-        };
-      }),
-    },
-  };
+                maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }) }),
+          insert: () => Promise.resolve({ data: null, error: null }) };
+      }) } };
 
   const visibility = { assertVisible: jest.fn(async () => {}) };
   const bus = new BundleEventBus();
@@ -503,8 +453,7 @@ function buildHarness(opts: {
   const reservationVisibility = {
     loadContextByUserId: jest.fn(async () => ({})),
     assertVisible: () => {},
-    canEdit: () => true,
-  };
+    canEdit: () => true };
   const reservationService = new ReservationService(
     supabase as never,
     { isExclusionViolation: () => false } as never,
@@ -524,16 +473,14 @@ function buildHarness(opts: {
     transitionCalls,
     visitorUpdates,
     intentInserts,
-    teardown: () => adapter.unsubscribe(),
-  };
+    teardown: () => adapter.unsubscribe() };
 }
 
 const ACTOR = {
   user_id: USER,
   person_id: PERSON,
   is_service_desk: false,
-  has_override_rules: false,
-};
+  has_override_rules: false };
 
 // Allow the bus subscription's microtask + the adapter's async handler chain
 // to drain before assertions.
@@ -554,8 +501,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
   it('move bundle time → visitor.expected_at updated + visitor email intent (status=expected)', async () => {
     const newStart = '2026-05-01T14:00:00.000Z';
     const h = buildHarness({
-      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' },
-    });
+      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' } });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
@@ -584,8 +530,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
   it('move bundle time → host alert when visitor already arrived (no email to visitor)', async () => {
     const newStart = '2026-05-01T14:00:00.000Z';
     const h = buildHarness({
-      visitor: { id: VISITOR, tenant_id: TENANT, status: 'arrived' },
-    });
+      visitor: { id: VISITOR, tenant_id: TENANT, status: 'arrived' } });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
@@ -616,8 +561,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
 
   it('change room → visitor.meeting_room_id updated + visitor email intent (status=expected)', async () => {
     const h = buildHarness({
-      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' },
-    });
+      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' } });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
@@ -654,10 +598,8 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           fulfillment_status: 'ordered',
           linked_asset_reservation_id: null,
           linked_ticket_id: null,
-          order_id: ORDER,
-        },
-      ],
-    });
+          order_id: ORDER },
+      ] });
     // Visitor V_OTHER read uses the same loadVisitor row. To keep the harness
     // simple, mirror the status onto the queryOne lookup for V_OTHER too.
     (h as unknown as {
@@ -674,8 +616,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
             user_id: USER,
             person_id: PERSON,
-            has_override: false,
-          } as never),
+            has_override: false } as never),
       );
       await drainMicrotasks();
 
@@ -699,10 +640,8 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           fulfillment_status: 'ordered',
           linked_asset_reservation_id: null,
           linked_ticket_id: null,
-          order_id: ORDER,
-        },
-      ],
-    });
+          order_id: ORDER },
+      ] });
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
@@ -710,8 +649,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
             user_id: USER,
             person_id: PERSON,
-            has_override: false,
-          } as never),
+            has_override: false } as never),
       );
       await drainMicrotasks();
 
@@ -731,8 +669,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
   it('cross-tenant: events from tenant B do not affect tenant A visitor', async () => {
     const OTHER = '99999999-9999-4999-8999-999999999999';
     const h = buildHarness({
-      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' },
-    });
+      visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' } });
     try {
       // Run the cancelBundle in OTHER tenant context — the cascade emits an
       // event whose tenant_id=OTHER, and the adapter's loadVisitor query
@@ -743,8 +680,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
             user_id: USER,
             person_id: PERSON,
-            has_override: false,
-          } as never),
+            has_override: false } as never),
       );
       await drainMicrotasks();
 

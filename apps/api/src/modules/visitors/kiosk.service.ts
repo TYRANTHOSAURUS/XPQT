@@ -1,14 +1,10 @@
 import {
-  BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   Logger,
-  NotFoundException,
-  UnauthorizedException,
-  forwardRef,
-} from '@nestjs/common';
+  forwardRef } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -18,8 +14,7 @@ import type {
   KioskNameCheckinResult,
   KioskQrCheckinResult,
   KioskSearchResult,
-  KioskWalkupDto,
-} from './dto/kiosk.dto';
+  KioskWalkupDto } from './dto/kiosk.dto';
 import { HostNotificationService } from './host-notification.service';
 import { VisitorService } from './visitor.service';
 
@@ -116,8 +111,7 @@ export class KioskService {
         building_id: buildingId,
         token_hash: tokenHash,
         active: true,
-        expires_at: expiresAt,
-      })
+        expires_at: expiresAt })
       .select()
       .single();
     if (error || !data) {
@@ -130,8 +124,7 @@ export class KioskService {
       tenant_id: tenantId,
       building_id: buildingId,
       actor_user_id: actor.user_id,
-      expires_at: expiresAt,
-    });
+      expires_at: expiresAt });
 
     return { token: plaintext, kiosk_token_id: row.id, expires_at: expiresAt };
   }
@@ -145,7 +138,7 @@ export class KioskService {
     this.assertTenant(tenantId);
     const existing = await this.loadKioskToken(kioskTokenId, tenantId);
     if (!existing) {
-      throw new NotFoundException(`kiosk_token ${kioskTokenId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `kiosk_token ${kioskTokenId} not found` });
     }
 
     const plaintext = randomBytes(KIOSK_TOKEN_BYTES).toString('hex');
@@ -161,8 +154,7 @@ export class KioskService {
         token_hash: tokenHash,
         rotated_at: nowIso,
         expires_at: expiresAt,
-        active: true,
-      })
+        active: true })
       .eq('id', kioskTokenId)
       .eq('tenant_id', tenantId);
     if (error) throw error;
@@ -172,8 +164,7 @@ export class KioskService {
       tenant_id: tenantId,
       building_id: existing.building_id,
       actor_user_id: actor.user_id,
-      expires_at: expiresAt,
-    });
+      expires_at: expiresAt });
 
     return { token: plaintext, expires_at: expiresAt };
   }
@@ -186,7 +177,7 @@ export class KioskService {
     this.assertTenant(tenantId);
     const existing = await this.loadKioskToken(kioskTokenId, tenantId);
     if (!existing) {
-      throw new NotFoundException(`kiosk_token ${kioskTokenId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `kiosk_token ${kioskTokenId} not found` });
     }
     const { error } = await this.supabase.admin
       .from('kiosk_tokens')
@@ -199,8 +190,7 @@ export class KioskService {
       kiosk_token_id: kioskTokenId,
       tenant_id: tenantId,
       building_id: existing.building_id,
-      actor_user_id: actor.user_id,
-    });
+      actor_user_id: actor.user_id });
   }
 
   // ─── search (anonymous, kiosk-context only) ─────────────────────────────
@@ -286,8 +276,7 @@ export class KioskService {
       visitor_id: r.visitor_id,
       first_name: r.first_name ?? '',
       last_initial: r.last_name?.charAt(0).toUpperCase() ?? null,
-      company: r.company,
-    }));
+      company: r.company }));
   }
 
   // ─── check-in paths ─────────────────────────────────────────────────────
@@ -312,7 +301,7 @@ export class KioskService {
     this.assertTenant(kioskContext.tenantId);
 
     if (!plainToken || plainToken.trim().length === 0) {
-      throw new BadRequestException('Token is required');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Token is required' });
     }
 
     let visitorId: string;
@@ -328,7 +317,7 @@ export class KioskService {
       if (!result) {
         // SECURITY DEFINER function raises on miss — this branch is
         // defence in depth.
-        throw new UnauthorizedException('Token not recognised');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Token not recognised' });
       }
       visitorId = result.visitor_id;
       resolvedTenantId = result.tenant_id;
@@ -343,9 +332,8 @@ export class KioskService {
       // tenant-scoped, but never trust a single layer.)
       await this.audit('kiosk.checkin_failed', kioskContext.tenantId, null, {
         kiosk_token_id: kioskContext.kioskTokenId,
-        reason: 'cross_tenant_token',
-      });
-      throw new ForbiddenException('Token issued for a different tenant');
+        reason: 'cross_tenant_token' });
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Token issued for a different tenant' });
     }
 
     const visitor = await this.loadVisitorForCheckin(
@@ -358,11 +346,8 @@ export class KioskService {
         kiosk_token_id: kioskContext.kioskTokenId,
         reason: 'wrong_building',
         kiosk_building_id: kioskContext.buildingId,
-        visitor_building_id: visitor.building_id,
-      });
-      throw new BadRequestException(
-        'This visit is for a different building. Please see reception.',
-      );
+        visitor_building_id: visitor.building_id });
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'This visit is for a different building. Please see reception.' });
     }
 
     await this.transitionToArrived(visitor, kioskContext);
@@ -375,8 +360,7 @@ export class KioskService {
     return {
       visitor_id: visitor.id,
       host_first_name: visitor.primary_host_first_name,
-      has_reception_at_building: hasReception,
-    };
+      has_reception_at_building: hasReception };
   }
 
   /**
@@ -401,12 +385,10 @@ export class KioskService {
     );
 
     if (visitor.building_id !== kioskContext.buildingId) {
-      throw new BadRequestException('Visitor is for a different building');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Visitor is for a different building' });
     }
     if (visitor.status !== 'expected') {
-      throw new BadRequestException(
-        `Cannot check in — visitor status is ${visitor.status}`,
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `Cannot check in — visitor status is ${visitor.status}` });
     }
 
     const expectedHost = (visitor.primary_host_first_name ?? '').trim().toLowerCase();
@@ -414,11 +396,8 @@ export class KioskService {
     if (!expectedHost || expectedHost !== supplied) {
       await this.audit('kiosk.checkin_failed', kioskContext.tenantId, visitorId, {
         kiosk_token_id: kioskContext.kioskTokenId,
-        reason: 'host_name_mismatch',
-      });
-      throw new ForbiddenException(
-        'Host first name did not match — please see reception',
-      );
+        reason: 'host_name_mismatch' });
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Host first name did not match — please see reception' });
     }
 
     await this.transitionToArrived(visitor, kioskContext);
@@ -430,8 +409,7 @@ export class KioskService {
 
     return {
       host_first_name: visitor.primary_host_first_name,
-      has_reception_at_building: hasReception,
-    };
+      has_reception_at_building: hasReception };
   }
 
   /**
@@ -458,7 +436,7 @@ export class KioskService {
     this.assertTenant(kioskContext.tenantId);
 
     if (!dto.first_name?.trim()) {
-      throw new BadRequestException('first_name is required');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'first_name is required' });
     }
 
     // 1. Visitor type gate.
@@ -477,16 +455,14 @@ export class KioskService {
       [dto.visitor_type_id, kioskContext.tenantId],
     );
     if (!type) {
-      throw new NotFoundException(
-        `visitor_type ${dto.visitor_type_id} not found or inactive`,
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
     }
     if (!type.allow_walk_up) {
       // Distinct error string so the kiosk UI can route to "see reception".
-      throw new BadRequestException('walk_up_disabled');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'walk_up_disabled' });
     }
     if (type.requires_approval) {
-      throw new BadRequestException('approval_required');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'approval_required' });
     }
 
     // 2. Host person sanity. Visitors aren't valid hosts; vendors aren't
@@ -504,10 +480,10 @@ export class KioskService {
       [dto.primary_host_person_id, kioskContext.tenantId],
     );
     if (!host || !host.active) {
-      throw new NotFoundException('Host not found at this tenant');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Host not found at this tenant' });
     }
     if (host.type === 'visitor' || host.type === 'vendor_contact') {
-      throw new BadRequestException('Selected host cannot host visitors');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Selected host cannot host visitors' });
     }
 
     // 3. Create the visitor person row + visitors row + visitor_hosts row.
@@ -517,8 +493,7 @@ export class KioskService {
       last_name: dto.last_name ?? '',
       email: dto.email,
       phone: dto.phone,
-      type: 'visitor',
-    })) as { id: string };
+      type: 'visitor' })) as { id: string };
 
     const expectedAt = new Date().toISOString();
     const offsetMinutes = type.default_expected_until_offset_minutes ?? 240;
@@ -549,8 +524,7 @@ export class KioskService {
         expected_at: expectedAt,
         expected_until: expectedUntil,
         visit_date: visitDate,
-        building_id: kioskContext.buildingId,
-      })
+        building_id: kioskContext.buildingId })
       .select()
       .single();
     if (insertError || !visitorRow) {
@@ -563,16 +537,14 @@ export class KioskService {
       .insert({
         visitor_id: visitorId,
         person_id: dto.primary_host_person_id,
-        tenant_id: tenantId,
-      });
+        tenant_id: tenantId });
     if (hostsError) throw hostsError;
 
     await this.audit('kiosk.walkup_invited', kioskContext.tenantId, visitorId, {
       kiosk_token_id: kioskContext.kioskTokenId,
       visitor_id: visitorId,
       visitor_type_id: type.id,
-      primary_host_person_id: dto.primary_host_person_id,
-    });
+      primary_host_person_id: dto.primary_host_person_id });
 
     // 4. Transition to arrived + fire host notification + audit success.
     //    Routed through `runArrivalUnderTenantContext` so VisitorService.
@@ -602,7 +574,7 @@ export class KioskService {
       return;
     }
     if (ctx.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
   }
 
@@ -616,12 +588,10 @@ export class KioskService {
       [buildingId, tenantId],
     );
     if (!row) {
-      throw new NotFoundException(`building ${buildingId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `building ${buildingId} not found` });
     }
     if (row.type !== 'building' && row.type !== 'site') {
-      throw new BadRequestException(
-        'Kiosk can only be provisioned for a building or site',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Kiosk can only be provisioned for a building or site' });
     }
   }
 
@@ -670,7 +640,7 @@ export class KioskService {
       tenantId,
     ]);
     if (!row) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     return row;
   }
@@ -735,8 +705,7 @@ export class KioskService {
           {
             kiosk_token_id: kioskContext.kioskTokenId,
             visitor_id: visitorId,
-            mode,
-          },
+            mode },
         );
       },
     );
@@ -782,9 +751,7 @@ export class KioskService {
       // logs than to write an audit row with NULL tenant_id (constraint
       // violation, dropped silently inside try/catch) or, worse, a row
       // that fails RLS and leaks across tenants.
-      throw new Error(
-        `audit(${eventType}) called without a tenantId — every audit row MUST be tenant-scoped`,
-      );
+      throw AppErrors.server('visitor.config_missing', { detail: `audit(${eventType}) called without a tenantId — every audit row MUST be tenant-scoped` });
     }
     try {
       await this.supabase.admin.from('audit_events').insert({
@@ -792,8 +759,7 @@ export class KioskService {
         event_type: eventType,
         entity_type: 'visitor',
         entity_id: visitorId,
-        details,
-      });
+        details });
     } catch (err) {
       this.log.warn(`audit insert failed for ${eventType}: ${(err as Error).message}`);
     }
@@ -821,19 +787,18 @@ function hashToken(token: string): string {
 /**
  * Map SQLSTATEs from `validate_invitation_token` (00260) to API errors.
  *
- *   45001 invalid_token       → UnauthorizedException
- *   45002 token_already_used  → ForbiddenException ("already used" — explicit)
- *   45003 token_expired       → ForbiddenException ("expired" — explicit)
+ *   45001 invalid_token       → *   45002 token_already_used  → ("already used" — explicit)
+ *   45003 token_expired       → ("expired" — explicit)
  */
 function mapTokenError(err: unknown): Error {
   const e = err as { code?: string; message?: string };
   switch (e?.code) {
     case '45001':
-      return new UnauthorizedException('Invalid or unknown token');
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'Invalid or unknown token');
     case '45002':
-      return new ForbiddenException('Token has already been used');
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'Token has already been used');
     case '45003':
-      return new ForbiddenException('Token has expired');
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'Token has expired');
     default:
       return err instanceof Error ? err : new Error(String(err));
   }

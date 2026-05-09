@@ -14,8 +14,7 @@
 
 import {
   VisitorEmailWorker,
-  type DomainEventRow,
-} from './visitor-email.worker';
+  type DomainEventRow } from './visitor-email.worker';
 
 const TENANT_A = '11111111-1111-4111-8111-111111111111';
 const TENANT_B = '99999999-9999-4999-8999-999999999999';
@@ -108,24 +107,19 @@ function makeFakeSupabase(opts: FakeSupabaseOpts = {}) {
         }
         const result = {
           select: () => ({
-            single: async () => ({ data: { id: 'inserted' }, error: null }),
-          }),
+            single: async () => ({ data: { id: 'inserted' }, error: null }) }),
           // Promise-shape thenable for `await ...insert(row)` without .select():
           then(resolve: (v: { data: null; error: null }) => void) {
             resolve({ data: null, error: null });
-          },
-        };
+          } };
         return result as ReturnType<Q['insert']>;
-      },
-    };
+      } };
     return q;
   };
 
   const supabase = {
     admin: {
-      from: jest.fn((table: string) => builder(table)),
-    },
-  };
+      from: jest.fn((table: string) => builder(table)) } };
 
   return { supabase, auditInserts, tokenInserts };
 }
@@ -167,8 +161,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
         return opts.pendingEvents ?? [];
       }
       return [];
-    }),
-  };
+    }) };
 
   return { db, sqlCalls, adapterInserts };
 }
@@ -192,8 +185,7 @@ function makeFakeMail(opts: { fail?: boolean } = {}) {
       if (opts.fail) throw new Error('mail provider error');
       return { messageId: `pm-${calls.length}`, acceptedAt: new Date().toISOString() };
     }),
-    verifyWebhook: jest.fn(),
-  };
+    verifyWebhook: jest.fn() };
   return { mail, calls };
 }
 
@@ -206,14 +198,12 @@ function makeFakeAdapter() {
         visitor_id: vid,
         tenant_id: tid,
         provider_message_id: pmid,
-        recipient_email: opts?.recipient_email ?? null,
-      });
+        recipient_email: opts?.recipient_email ?? null });
     }),
     recordBounced: jest.fn(async (vid: string, tid: string) => {
       bouncedCalls.push({ visitor_id: vid, tenant_id: tid });
     }),
-    recordDelivered: jest.fn(async () => undefined),
-  };
+    recordDelivered: jest.fn(async () => undefined) };
   return { adapter, sentCalls, bouncedCalls };
 }
 
@@ -225,8 +215,7 @@ function buildEvent(eventType: string, payload: Record<string, unknown> = {}): D
     entity_type: 'visitor',
     entity_id: VISITOR,
     payload,
-    created_at: '2026-05-01T08:00:00Z',
-  };
+    created_at: '2026-05-01T08:00:00Z' };
 }
 
 function defaultVisitorRow() {
@@ -245,8 +234,7 @@ function defaultVisitorRow() {
     meeting_room_id: ROOM,
     primary_host_person_id: HOST_PERSON,
     visitor_type_id: VISITOR_TYPE,
-    notes_for_visitor: null,
-  };
+    notes_for_visitor: null };
 }
 
 function defaultSupabaseFixtures(): FakeSupabaseOpts {
@@ -261,9 +249,7 @@ function defaultSupabaseFixtures(): FakeSupabaseOpts {
       display_name: 'Guest',
       requires_id_scan: true,
       requires_nda: false,
-      requires_photo: false,
-    },
-  };
+      requires_photo: false } };
 }
 
 describe('VisitorEmailWorker.processOne', () => {
@@ -276,8 +262,7 @@ describe('VisitorEmailWorker.processOne', () => {
     const worker = new VisitorEmailWorker(db as never, supabase as never, mail as never, adapter as never);
 
     const result = await worker.processOne(buildEvent('visitor.invitation.expected', {
-      cancel_token: 'plaintext-abc',
-    }));
+      cancel_token: 'plaintext-abc' }));
 
     expect(result).toBe('sent');
     expect(calls).toHaveLength(1);
@@ -288,8 +273,7 @@ describe('VisitorEmailWorker.processOne', () => {
     expect(calls[0]!.tags).toMatchObject({
       entity_type: 'visitor_invite',
       visitor_id: VISITOR,
-      template_kind: 'visitor.invitation.expected',
-    });
+      template_kind: 'visitor.invitation.expected' });
     expect(sentCalls).toHaveLength(1);
     expect(sentCalls[0]!.recipient_email).toBe('marleen@example.com');
     expect(auditInserts).toHaveLength(1);
@@ -348,8 +332,7 @@ describe('VisitorEmailWorker.processOne', () => {
 
     await worker.processOne(buildEvent('visitor.cascade.moved', {
       old_expected_at: '2026-05-01T09:00:00Z',
-      new_expected_at: '2026-05-01T14:00:00Z',
-    }));
+      new_expected_at: '2026-05-01T14:00:00Z' }));
 
     expect(calls[0]!.subject).toContain('moved');
     expect(calls[0]!.textBody).toContain('Was:');
@@ -367,8 +350,7 @@ describe('VisitorEmailWorker.processOne', () => {
     // which doesn't have access to the original plaintext.
     await worker.processOne(buildEvent('visitor.cascade.moved', {
       old_expected_at: '2026-05-01T09:00:00Z',
-      new_expected_at: '2026-05-01T14:00:00Z',
-    }));
+      new_expected_at: '2026-05-01T14:00:00Z' }));
 
     // A fresh token row was inserted into visit_invitation_tokens.
     expect(tokenInserts).toHaveLength(1);
@@ -428,8 +410,7 @@ describe('VisitorEmailWorker.processOne', () => {
     await worker.processOne(buildEvent('visitor.cascade.moved', {
       old_expected_at: '2026-05-01T09:00:00Z',
       new_expected_at: '2026-05-01T14:00:00Z',
-      cancel_token: 'existing-plaintext-token',
-    }));
+      cancel_token: 'existing-plaintext-token' }));
 
     // Existing token reused — no fresh mint.
     expect(tokenInserts).toHaveLength(0);

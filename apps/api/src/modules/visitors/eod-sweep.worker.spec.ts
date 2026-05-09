@@ -14,6 +14,7 @@
  */
 
 import { TenantContext } from '../../common/tenant-context';
+import { AppError } from '../../common/errors';
 import { EodSweepWorker } from './eod-sweep.worker';
 import type { VisitorStatus } from './dto/transition-status.dto';
 
@@ -89,8 +90,7 @@ function makeHarness(opts: FakeOpts = {}) {
       }
       return [];
     }),
-    queryOne: jest.fn(async (_sql: string, _params?: unknown[]) => null),
-  };
+    queryOne: jest.fn(async (_sql: string, _params?: unknown[]) => null) };
 
   const visitors = {
     transitionStatus: jest.fn(
@@ -102,14 +102,12 @@ function makeHarness(opts: FakeOpts = {}) {
       ) => {
         transitionCalls.push({ visitor_id, to, txOpts });
       },
-    ),
-  };
+    ) };
 
   const passPool = {
     markPassMissing: jest.fn(async (pass_id: string, tenant_id: string, reason?: string) => {
       passCalls.push({ method: 'markPassMissing', pass_id, tenant_id, reason });
-    }),
-  };
+    }) };
 
   const worker = new EodSweepWorker(
     db as never,
@@ -126,8 +124,7 @@ function makeHarness(opts: FakeOpts = {}) {
     leaseAcquires,
     leaseReleases,
     transitionCalls,
-    passCalls,
-  };
+    passCalls };
 }
 
 describe('EodSweepWorker', () => {
@@ -153,11 +150,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.skipped).toBe(false);
       expect(result.no_show_count).toBe(1);
@@ -175,11 +169,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'arrived',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.auto_checked_out_count).toBe(1);
       const call = transitionCalls[0]!;
@@ -195,11 +186,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'in_meeting',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(transitionCalls[0]!.to).toBe('checked_out');
     });
@@ -212,11 +200,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'arrived',
               visitor_pass_id: PASS_ID,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.passes_flagged_count).toBe(1);
       expect(passCalls).toEqual([
@@ -224,8 +209,7 @@ describe('EodSweepWorker', () => {
           method: 'markPassMissing',
           pass_id: PASS_ID,
           tenant_id: TENANT_A,
-          reason: 'unreturned via eod sweep',
-        },
+          reason: 'unreturned via eod sweep' },
       ]);
     });
 
@@ -237,17 +221,13 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
+              expected_until: '2026-04-30T10:00:00Z' },
             {
               id: VISITOR_A2,
               status: 'arrived',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.no_show_count).toBe(1);
       expect(result.auto_checked_out_count).toBe(1);
@@ -271,11 +251,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.skipped).toBe(true);
       // Visitors are not transitioned when the lease is held.
@@ -308,8 +285,7 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
+              expected_until: '2026-04-30T10:00:00Z' },
           ],
           // tenant B has a candidate row in its own dataset; the call for
           // tenant A should NEVER touch it because the SELECT params are
@@ -319,11 +295,8 @@ describe('EodSweepWorker', () => {
               id: 'tenant-b-visitor',
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(transitionCalls).toHaveLength(1);
       expect(transitionCalls[0]!.visitor_id).toBe(VISITOR_A1);
@@ -347,8 +320,7 @@ describe('EodSweepWorker', () => {
 
     it('does not transition visitors when no candidates returned', async () => {
       const { worker, transitionCalls, leaseReleases } = makeHarness({
-        candidates: { [`${TENANT_A}|${BUILDING_A}`]: [] },
-      });
+        candidates: { [`${TENANT_A}|${BUILDING_A}`]: [] } });
       const result = await worker.runSweepForBuilding(BUILDING_A, TENANT_A);
       expect(result.skipped).toBe(false);
       expect(transitionCalls).toHaveLength(0);
@@ -398,9 +370,7 @@ describe('EodSweepWorker', () => {
               visitor_pass_id: null,
               expected_until: '2026-04-30T08:00:00Z', // earlier than Tokyo local 18:00 = 09:00 UTC
             },
-          ],
-        },
-      });
+          ] } });
       await (worker as unknown as { runForAllBuildingsInWindow: () => Promise<void> })
         .runForAllBuildingsInWindow();
       // Tokyo building was processed; visitor flipped to no_show.
@@ -422,19 +392,15 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T08:00:00Z',
-            },
+              expected_until: '2026-04-30T08:00:00Z' },
           ],
           [`${TENANT_A}|${AMS_BUILDING}`]: [
             {
               id: VISITOR_A2,
               status: 'arrived',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T15:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T15:00:00Z' },
+          ] } });
       await (worker as unknown as { runForAllBuildingsInWindow: () => Promise<void> })
         .runForAllBuildingsInWindow();
       expect(transitionCalls).toHaveLength(2);
@@ -465,11 +431,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const harness2 = makeHarness({
         leaseAcquired: { [leaseKey]: false },
         candidates: {
@@ -478,11 +441,8 @@ describe('EodSweepWorker', () => {
               id: VISITOR_A1,
               status: 'expected',
               visitor_pass_id: null,
-              expected_until: '2026-04-30T10:00:00Z',
-            },
-          ],
-        },
-      });
+              expected_until: '2026-04-30T10:00:00Z' },
+          ] } });
       const [r1, r2] = await Promise.all([
         harness1.worker.runSweepForBuilding(BUILDING_A, TENANT_A),
         harness2.worker.runSweepForBuilding(BUILDING_A, TENANT_A),

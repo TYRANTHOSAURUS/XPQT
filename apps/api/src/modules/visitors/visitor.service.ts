@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import type { PoolClient } from 'pg';
 import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -7,8 +8,7 @@ import type {
   CheckoutSource,
   TransitionStatusActor,
   TransitionStatusOpts,
-  VisitorStatus,
-} from './dto/transition-status.dto';
+  VisitorStatus } from './dto/transition-status.dto';
 import { HostNotificationService } from './host-notification.service';
 
 /**
@@ -80,7 +80,7 @@ export class VisitorService {
    *      defends against a stale/escalated context calling into another
    *      tenant's row.
    *   4. Validate transition against the §5 matrix (idempotent same-status
-   *      is a no-op; anything else throws BadRequestException).
+   *      is a no-op; anything else throws ).
    *   5. Apply audit field side-effects per target status.
    *   6. UPDATE the row with new status + side-effect columns.
    *   7. Insert audit_event with metadata.
@@ -102,9 +102,7 @@ export class VisitorService {
     // checkout_source whenever status='checked_out'. Catch missing input at
     // the app layer with a clear 400 rather than leaking the DB error.
     if (toStatus === 'checked_out' && !opts.checkout_source) {
-      throw new BadRequestException(
-        'checkout_source is required when transitioning to checked_out',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'checkout_source is required when transitioning to checked_out' });
     }
 
     return this.db.tx(async (client: PoolClient) => {
@@ -127,14 +125,14 @@ export class VisitorService {
       );
       const row = lockResult.rows[0];
       if (!row) {
-        throw new NotFoundException(`visitor ${visitorId} not found`);
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
       }
 
       if (row.tenant_id !== tenant.id) {
         // Cross-tenant defence — same shape as a missing row to the caller.
         // Logging is intentionally omitted so we don't leak the existence of
         // a visitor in another tenant.
-        throw new BadRequestException('visitor not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'visitor not in current tenant' });
       }
 
       // Idempotent same-status: no UPDATE, no audit, no downstream events.
@@ -144,9 +142,7 @@ export class VisitorService {
 
       const allowed = ALLOWED_TRANSITIONS.get(row.status);
       if (!allowed || !allowed.has(toStatus)) {
-        throw new BadRequestException(
-          `invalid_transition: ${row.status} -> ${toStatus}`,
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `invalid_transition: ${row.status} -> ${toStatus}` });
       }
 
       // Build the SET clause incrementally per target status. Order matters
@@ -193,7 +189,7 @@ export class VisitorService {
         // Should never happen — the FOR UPDATE lock means the row is still
         // there. If it does (e.g. row was deleted between lock and update by
         // a privileged direct-SQL caller), surface as BadRequest.
-        throw new BadRequestException('visitor disappeared during transition');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'visitor disappeared during transition' });
       }
 
       // Audit. Best-effort: an audit failure should NOT roll back the
@@ -218,10 +214,8 @@ export class VisitorService {
               ...(toStatus === 'checked_out'
                 ? {
                     checkout_source: opts.checkout_source,
-                    auto_checked_out: opts.checkout_source === 'eod_sweep',
-                  }
-                : {}),
-            }),
+                    auto_checked_out: opts.checkout_source === 'eod_sweep' }
+                : {}) }),
           ],
         );
       } catch (err) {
@@ -239,22 +233,19 @@ export class VisitorService {
       if (toStatus === 'arrived') {
         await this.emitDomainEvent(client, 'visitor.arrived', visitorId, {
           visitor_id: visitorId,
-          actor_user_id: actor.user_id,
-        });
+          actor_user_id: actor.user_id });
       }
       if (toStatus === 'checked_out' && row.visitor_pass_id) {
         await this.emitDomainEvent(client, 'visitor.pass_return_requested', visitorId, {
           visitor_id: visitorId,
           visitor_pass_id: row.visitor_pass_id,
-          checkout_source: opts.checkout_source,
-        });
+          checkout_source: opts.checkout_source });
       }
       if (toStatus === 'cancelled') {
         await this.emitDomainEvent(client, 'visitor.cancelled', visitorId, {
           visitor_id: visitorId,
           from_status: row.status,
-          actor_user_id: actor.user_id,
-        });
+          actor_user_id: actor.user_id });
       }
 
       return next;
@@ -280,7 +271,7 @@ export class VisitorService {
    * Idempotency: a second call with the same outcome on a visitor whose
    * status already matches the post-transition state is a no-op (returns
    * silently). A second call with the OPPOSITE outcome — e.g. attempting
-   * to deny an already-approved invite — throws BadRequestException so
+   * to deny an already-approved invite — throws so
    * the caller can detect a routing bug. Pure state-machine drift (e.g.
    * visitor was cancelled between approval grant and dispatcher firing)
    * also throws BadRequest.
@@ -307,11 +298,11 @@ export class VisitorService {
     const ctx = TenantContext.current();
     if (ctx.id !== tenantId) {
       // Cross-tenant defence — never let approver context drift.
-      throw new ForbiddenException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     if (!this.supabase) {
-      throw new Error('VisitorService.onApprovalDecided requires SupabaseService');
+      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorService.onApprovalDecided requires SupabaseService' });
     }
 
     // Read the visitor — we can't piggy-back on transitionStatus's
@@ -326,12 +317,12 @@ export class VisitorService {
       .maybeSingle();
     if (readErr) throw readErr;
     if (!visitorRow) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     const row = visitorRow as { id: string; tenant_id: string; status: VisitorStatus };
     if (row.tenant_id !== tenantId) {
       // Cross-tenant: surface as not-found so we don't leak existence.
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
 
     // SEAM: approval module uses 'rejected'; visitor module uses 'denied'.
@@ -350,15 +341,12 @@ export class VisitorService {
     // outcomes, or the visitor was cancelled between approval grant and
     // dispatcher firing. Surface clearly rather than silently no-op'ing.
     if (row.status !== 'pending_approval') {
-      throw new BadRequestException(
-        `visitor ${visitorId} is not pending approval (status=${row.status})`,
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} is not pending approval (status=${row.status})` });
     }
 
     const actor: TransitionStatusActor = {
       user_id: approverUserId,
-      person_id: null,
-    };
+      person_id: null };
 
     if (outcome === 'approved') {
       await this.transitionStatus(visitorId, 'expected', actor);
@@ -374,9 +362,7 @@ export class VisitorService {
           payload: {
             visitor_id: visitorId,
             triggered_by: 'approval_grant',
-            approver_user_id: approverUserId,
-          },
-        });
+            approver_user_id: approverUserId } });
       } catch (err) {
         // Best-effort. The visitor is already 'expected' — the worker
         // can reconcile from visitors.status if the event log is missing.
@@ -389,9 +375,7 @@ export class VisitorService {
 
       if (!this.hostNotifications) {
         // Same developer-error shape as the supabase guard above.
-        throw new Error(
-          'VisitorService.onApprovalDecided requires HostNotificationService for denial flow',
-        );
+        throw AppErrors.server('visitor.config_missing', { detail: 'VisitorService.onApprovalDecided requires HostNotificationService for denial flow' });
       }
       try {
         await this.hostNotifications.notifyInvitationDenied(visitorId, tenantId);

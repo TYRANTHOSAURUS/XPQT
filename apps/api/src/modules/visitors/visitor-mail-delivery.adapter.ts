@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -262,7 +263,7 @@ export class VisitorMailDeliveryAdapter {
   private assertTenant(tenantId: string): void {
     const ctx = TenantContext.current();
     if (ctx.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
   }
 }

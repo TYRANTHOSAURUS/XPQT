@@ -13,7 +13,7 @@
  * reads return not-found-shaped 404).
  */
 
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { HostNotificationService } from './host-notification.service';
 import { TenantContext } from '../../common/tenant-context';
 import { VisitorEventBus, type HostNotificationEvent } from './visitor-event-bus';
@@ -51,8 +51,7 @@ function makeHarness(opts: HarnessOpts = {}) {
         company: 'ABC Bank',
         building_id: 'building',
         expected_at: '2026-05-01T09:00:00Z',
-        ...opts.visitor,
-      };
+        ...opts.visitor };
   const hosts: VisitorHostsRow[] =
     opts.hosts ??
     [
@@ -71,10 +70,7 @@ function makeHarness(opts: HarnessOpts = {}) {
           return {
             select: () => ({
               eq: () => ({
-                maybeSingle: async () => ({ data: visitor, error: null }),
-              }),
-            }),
-          };
+                maybeSingle: async () => ({ data: visitor, error: null }) }) }) };
         }
         if (table === 'visitor_hosts') {
           return {
@@ -104,8 +100,7 @@ function makeHarness(opts: HarnessOpts = {}) {
                           (!tenantFilter || h.tenant_id === tenantFilter),
                       );
                       return { data: found ?? null, error: null };
-                    },
-                  }),
+                    } }),
                   // Two-arg .eq.eq → terminal as a list of rows.
                   then: (resolve: (r: { data: VisitorHostsRow[]; error: null }) => unknown) => {
                     const visitorFilter = col === 'visitor_id' ? val : col2 === 'visitor_id' ? val2 : null;
@@ -116,10 +111,7 @@ function makeHarness(opts: HarnessOpts = {}) {
                         (!tenantFilter || h.tenant_id === tenantFilter),
                     );
                     return resolve({ data: filtered, error: null });
-                  },
-                }),
-              }),
-            }),
+                  } }) }) }),
             update: (patch: Record<string, unknown>) => ({
               eq: (col1: string, val1: string) => ({
                 eq: async (col2: string, val2: string) => {
@@ -133,21 +125,16 @@ function makeHarness(opts: HarnessOpts = {}) {
                     }
                   }
                   return { data: null, error: null };
-                },
-              }),
-            }),
-          };
+                } }) }) };
         }
         if (table === 'audit_events') {
           return {
             insert: async (row: Record<string, unknown>) => {
               auditInserts.push({
                 event_type: row.event_type as string,
-                details: row.details as Record<string, unknown>,
-              });
+                details: row.details as Record<string, unknown> });
               return { data: row, error: null };
-            },
-          };
+            } };
         }
         // pendingHostsForVisitor uses a fkey-joined select; a separate fake.
         return {
@@ -155,22 +142,15 @@ function makeHarness(opts: HarnessOpts = {}) {
             eq: () => ({
               eq: () => ({
                 then: (resolve: (r: { data: unknown[]; error: null }) => unknown) =>
-                  resolve({ data: [], error: null }),
-              }),
-            }),
-          }),
-        };
-      }),
-    },
-  };
+                  resolve({ data: [], error: null }) }) }) }) };
+      }) } };
 
   const sentNotifications: Array<Record<string, unknown>> = [];
   const notifications = {
     send: jest.fn(async (dto: Record<string, unknown>) => {
       sentNotifications.push(dto);
       return [];
-    }),
-  };
+    }) };
 
   const eventBus = new VisitorEventBus();
   const captured: HostNotificationEvent[] = [];
@@ -193,8 +173,7 @@ function makeHarness(opts: HarnessOpts = {}) {
     auditInserts,
     visitorHostUpdates,
     hosts,
-    cleanup: () => sub.unsubscribe(),
-  };
+    cleanup: () => sub.unsubscribe() };
 }
 
 describe('HostNotificationService', () => {
@@ -273,20 +252,17 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyArrival(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(BadRequestException);
+        ).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }
     });
 
-    it('throws NotFoundException when visitor is in a different tenant', async () => {
+    it('throws when visitor is in a different tenant', async () => {
       const ctx = makeHarness({
-        visitor: { tenant_id: OTHER_TENANT_ID } as never,
-      });
+        visitor: { tenant_id: OTHER_TENANT_ID } as never });
       try {
-        await expect(ctx.svc.notifyArrival(VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-          NotFoundException,
-        );
+        await expect(ctx.svc.notifyArrival(VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }
@@ -351,12 +327,12 @@ describe('HostNotificationService', () => {
       }
     });
 
-    it('throws NotFoundException when host is not attached to the visitor', async () => {
+    it('throws when host is not attached to the visitor', async () => {
       const ctx = makeHarness();
       try {
         await expect(
           ctx.svc.acknowledge(VISITOR_ID, '00000000-0000-0000-0000-000000000000', TENANT_ID),
-        ).rejects.toBeInstanceOf(NotFoundException);
+        ).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }
@@ -364,12 +340,11 @@ describe('HostNotificationService', () => {
 
     it('cross-tenant: host in tenant A cannot acknowledge a visitor in tenant B', async () => {
       const ctx = makeHarness({
-        visitor: { tenant_id: OTHER_TENANT_ID } as never,
-      });
+        visitor: { tenant_id: OTHER_TENANT_ID } as never });
       try {
         await expect(
           ctx.svc.acknowledge(VISITOR_ID, COHOST_A, TENANT_ID),
-        ).rejects.toBeInstanceOf(NotFoundException);
+        ).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }
@@ -425,7 +400,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyInvitationDenied(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(BadRequestException);
+        ).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }
@@ -479,7 +454,7 @@ describe('HostNotificationService', () => {
       try {
         await expect(
           ctx.svc.notifyVisitorCancelled(VISITOR_ID, OTHER_TENANT_ID),
-        ).rejects.toBeInstanceOf(BadRequestException);
+        ).rejects.toBeInstanceOf(AppError);
       } finally {
         ctx.cleanup();
       }

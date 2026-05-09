@@ -17,7 +17,7 @@
  *   - HostNotificationService — fan-out fires inline on arrival.
  */
 
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { ReceptionService } from './reception.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { QuickAddWalkupDto } from './dto/reception.dto';
@@ -108,8 +108,7 @@ function makeHarness(opts: FakeOpts = {}) {
       return null;
     }),
     queryOneFromVisitors: jest.fn(),
-    tx: jest.fn(),
-  };
+    tx: jest.fn() };
 
   const transitionCalls: Array<{
     visitor_id: string;
@@ -128,16 +127,14 @@ function makeHarness(opts: FakeOpts = {}) {
         transitionCalls.push({ visitor_id, to, actor, opts: txOpts });
         return { id: visitor_id, status: to };
       },
-    ),
-  };
+    ) };
 
   const inviteCalls: Array<{ dto: Record<string, unknown>; actor: Record<string, unknown> }> = [];
   const invitations = {
     create: jest.fn(async (dto: Record<string, unknown>, actor: Record<string, unknown>) => {
       inviteCalls.push({ dto, actor });
       return { visitor_id: VISITOR_ID, status: 'expected', approval_id: null, cancel_token: 'tok' };
-    }),
-  };
+    }) };
 
   const passPoolCalls: Array<{ method: string; args: unknown[] }> = [];
   const passPool = {
@@ -147,23 +144,20 @@ function makeHarness(opts: FakeOpts = {}) {
     markPassMissing: jest.fn(async (...args: unknown[]) => {
       passPoolCalls.push({ method: 'markPassMissing', args });
     }),
-    unreturnedPassesForBuilding: jest.fn(async () => []),
-  };
+    unreturnedPassesForBuilding: jest.fn(async () => []) };
 
   const hostNotifyCalls: Array<{ visitor_id: string; tenant_id: string }> = [];
   const hostNotifications = {
     notifyArrival: jest.fn(async (visitor_id: string, tenant_id: string) => {
       hostNotifyCalls.push({ visitor_id, tenant_id });
-    }),
-  };
+    }) };
 
   const mailDeliveryCalls: Array<{ method: string; args: unknown[] }> = [];
   const mailDelivery = {
     bouncedInvitesForBuildingSince: jest.fn(async (...args: unknown[]) => {
       mailDeliveryCalls.push({ method: 'bouncedInvitesForBuildingSince', args });
       return opts.bouncedInvites ?? [];
-    }),
-  };
+    }) };
 
   jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
 
@@ -189,8 +183,7 @@ function makeHarness(opts: FakeOpts = {}) {
     invitations,
     passPool,
     hostNotifications,
-    mailDelivery,
-  };
+    mailDelivery };
 }
 
 const TYPE_GUEST_ROW = {
@@ -199,8 +192,7 @@ const TYPE_GUEST_ROW = {
   requires_approval: false,
   allow_walk_up: true,
   default_expected_until_offset_minutes: 240,
-  active: true,
-};
+  active: true };
 
 describe('ReceptionService', () => {
   afterEach(() => jest.restoreAllMocks());
@@ -222,8 +214,7 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            bucket: 'currently_arriving',
-          },
+            bucket: 'currently_arriving' },
           {
             visitor_id: 'v2',
             first_name: 'Bob',
@@ -237,8 +228,7 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            bucket: 'expected',
-          },
+            bucket: 'expected' },
           {
             visitor_id: 'v3',
             first_name: 'Carol',
@@ -252,8 +242,7 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            bucket: 'in_meeting',
-          },
+            bucket: 'in_meeting' },
           {
             visitor_id: 'v4',
             first_name: 'Dan',
@@ -267,10 +256,8 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            bucket: 'checked_out_today',
-          },
-        ],
-      });
+            bucket: 'checked_out_today' },
+        ] });
 
       const view = await ctx.svc.today(TENANT_ID, BUILDING_ID, USER_ID);
       expect(view.currently_arriving).toHaveLength(1);
@@ -303,10 +290,8 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            bucket: 'in_meeting',
-          },
-        ],
-      });
+            bucket: 'in_meeting' },
+        ] });
       const view = await ctx.svc.today(TENANT_ID, BUILDING_ID, USER_ID);
       expect(view.in_meeting).toHaveLength(1);
       expect(view.in_meeting[0].visitor_id).toBe('v_old_arrived');
@@ -343,9 +328,7 @@ describe('ReceptionService', () => {
 
     it('rejects when tenant context does not match', async () => {
       const ctx = makeHarness({});
-      await expect(ctx.svc.today(OTHER_TENANT_ID, BUILDING_ID, USER_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(ctx.svc.today(OTHER_TENANT_ID, BUILDING_ID, USER_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -366,10 +349,8 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            score: 0.9,
-          },
-        ],
-      });
+            score: 0.9 },
+        ] });
       const rows = await ctx.svc.search(TENANT_ID, BUILDING_ID, USER_ID, 'marl');
       expect(rows).toHaveLength(1);
       expect(rows[0].first_name).toBe('Marleen');
@@ -397,10 +378,8 @@ describe('ReceptionService', () => {
             visitor_pass_id: null,
             pass_number: null,
             visitor_type_id: TYPE_GUEST,
-            score: 0,
-          },
-        ],
-      });
+            score: 0 },
+        ] });
       const rows = await ctx.svc.search(TENANT_ID, BUILDING_ID, USER_ID, 'bo');
       expect(rows).toHaveLength(1);
       const ilike = ctx.sqlCalls.filter((c) => c.sql.toLowerCase().includes('ilike $4'));
@@ -418,7 +397,7 @@ describe('ReceptionService', () => {
       const ctx = makeHarness({});
       await expect(
         ctx.svc.search(OTHER_TENANT_ID, BUILDING_ID, USER_ID, 'x'),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -427,8 +406,7 @@ describe('ReceptionService', () => {
       first_name: 'Hans',
       company: 'Pieter Vendor',
       visitor_type_id: TYPE_GUEST,
-      primary_host_person_id: HOST_PERSON_ID,
-    };
+      primary_host_person_id: HOST_PERSON_ID };
 
     it('creates a visitor at status=expected then transitions to arrived', async () => {
       const ctx = makeHarness({ visitorType: TYPE_GUEST_ROW });
@@ -440,12 +418,10 @@ describe('ReceptionService', () => {
       expect(ctx.inviteCalls[0].actor).toMatchObject({
         user_id: USER_ID,
         person_id: HOST_PERSON_ID,  // host is the inviter
-        tenant_id: TENANT_ID,
-      });
+        tenant_id: TENANT_ID });
       expect(ctx.inviteCalls[0].dto).toMatchObject({
         first_name: 'Hans',
-        building_id: BUILDING_ID,
-      });
+        building_id: BUILDING_ID });
 
       // VisitorService.transitionStatus called with arrived
       expect(ctx.transitionCalls).toHaveLength(1);
@@ -462,12 +438,10 @@ describe('ReceptionService', () => {
         visitorType: {
           ...TYPE_GUEST_ROW,
           id: TYPE_DELIVERY_NO_WALKUP,
-          allow_walk_up: false,
-        },
-      });
+          allow_walk_up: false } });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, visitor_type_id: TYPE_DELIVERY_NO_WALKUP }, ACTOR),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(ctx.inviteCalls).toHaveLength(0);
     });
 
@@ -476,12 +450,10 @@ describe('ReceptionService', () => {
         visitorType: {
           ...TYPE_GUEST_ROW,
           id: TYPE_INTERVIEW,
-          requires_approval: true,
-        },
-      });
+          requires_approval: true } });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, visitor_type_id: TYPE_INTERVIEW }, ACTOR),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(ctx.inviteCalls).toHaveLength(0);
     });
 
@@ -489,7 +461,7 @@ describe('ReceptionService', () => {
       const ctx = makeHarness({ visitorType: TYPE_GUEST_ROW });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, dto, { ...ACTOR, tenant_id: OTHER_TENANT_ID }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('rejects future arrived_at', async () => {
@@ -497,22 +469,21 @@ describe('ReceptionService', () => {
       const future = new Date(Date.now() + 10 * 60_000).toISOString();
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, { ...dto, arrived_at: future }, ACTOR),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('returns NotFound when visitor type is missing', async () => {
       const ctx = makeHarness({ visitorType: null });
       await expect(
         ctx.svc.quickAddWalkup(TENANT_ID, BUILDING_ID, dto, ACTOR),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
   describe('markArrived()', () => {
     it('routes through VisitorService.transitionStatus with the arrived_at opt', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null, expected_at: '2026-05-01T09:00:00Z' },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null, expected_at: '2026-05-01T09:00:00Z' } });
       const arrived = '2026-05-01T08:55:00Z';
       await ctx.svc.markArrived(
         TENANT_ID,
@@ -524,16 +495,14 @@ describe('ReceptionService', () => {
       expect(ctx.transitionCalls[0]).toMatchObject({
         visitor_id: VISITOR_ID,
         to: 'arrived',
-        opts: { arrived_at: arrived },
-      });
+        opts: { arrived_at: arrived } });
       // Host notify fired inline
       expect(ctx.hostNotifyCalls).toHaveLength(1);
     });
 
     it('rejects future arrived_at', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null, expected_at: '2026-05-01T09:00:00Z' },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null, expected_at: '2026-05-01T09:00:00Z' } });
       const future = new Date(Date.now() + 10 * 60_000).toISOString();
       await expect(
         ctx.svc.markArrived(
@@ -542,7 +511,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { arrived_at: future },
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('rejects arrived_at more than 24h before expected_at', async () => {
@@ -551,9 +520,7 @@ describe('ReceptionService', () => {
           id: VISITOR_ID,
           tenant_id: TENANT_ID,
           visitor_pass_id: null,
-          expected_at: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
-        },
-      });
+          expected_at: new Date(Date.now() + 2 * 60 * 60_000).toISOString() } });
       // arrived 26h before expected
       const fakeArrived = new Date(
         new Date(ctx.visitors.transitionStatus as never).valueOf() // unused
@@ -569,7 +536,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { arrived_at: tooEarly },
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(fakeArrived).toBeTruthy(); // silence unused
     });
   });
@@ -577,8 +544,7 @@ describe('ReceptionService', () => {
   describe('markCheckedOut()', () => {
     it('returns the pass when pass_returned=true', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID } });
       await ctx.svc.markCheckedOut(
         TENANT_ID,
         VISITOR_ID,
@@ -587,8 +553,7 @@ describe('ReceptionService', () => {
       );
       expect(ctx.transitionCalls[0]).toMatchObject({
         to: 'checked_out',
-        opts: { checkout_source: 'reception', visitor_pass_id: PASS_ID },
-      });
+        opts: { checkout_source: 'reception', visitor_pass_id: PASS_ID } });
       const returned = ctx.passPoolCalls.find((c) => c.method === 'returnPass');
       expect(returned).toBeTruthy();
       expect(returned!.args[0]).toBe(PASS_ID);
@@ -596,8 +561,7 @@ describe('ReceptionService', () => {
 
     it('marks the pass missing when pass_returned=false', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID } });
       await ctx.svc.markCheckedOut(
         TENANT_ID,
         VISITOR_ID,
@@ -611,8 +575,7 @@ describe('ReceptionService', () => {
 
     it('skips pass actions when pass_returned is omitted (reconcile later)', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: PASS_ID } });
       await ctx.svc.markCheckedOut(
         TENANT_ID,
         VISITOR_ID,
@@ -624,8 +587,7 @@ describe('ReceptionService', () => {
 
     it('skips pass actions when visitor has no pass', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null } });
       await ctx.svc.markCheckedOut(
         TENANT_ID,
         VISITOR_ID,
@@ -637,8 +599,7 @@ describe('ReceptionService', () => {
 
     it('rejects unknown checkout sources from this surface', async () => {
       const ctx = makeHarness({
-        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: TENANT_ID, visitor_pass_id: null } });
       await expect(
         ctx.svc.markCheckedOut(
           TENANT_ID,
@@ -646,7 +607,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { checkout_source: 'eod_sweep' as never },
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('throws NotFound when visitor is missing', async () => {
@@ -658,7 +619,7 @@ describe('ReceptionService', () => {
           { user_id: USER_ID, person_id: PERSON_ID },
           { checkout_source: 'reception' },
         ),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -687,8 +648,7 @@ describe('ReceptionService', () => {
           last_assigned_at: '2026-04-30T16:00:00Z',
           notes: null,
           created_at: '2026-04-30T08:00:00Z',
-          updated_at: '2026-04-30T08:00:00Z',
-        },
+          updated_at: '2026-04-30T08:00:00Z' },
       ] as never);
 
       const result = await ctx.svc.yesterdayLooseEnds(TENANT_ID, BUILDING_ID, USER_ID);
@@ -716,8 +676,7 @@ describe('ReceptionService', () => {
           status: 'expected',
           visitor_pass_id: null,
           pass_number: null,
-          visitor_type_id: null,
-        },
+          visitor_type_id: null },
       ];
       const ctx = makeHarness({ autoCount: 0, bouncedInvites: bounced });
       const result = await ctx.svc.yesterdayLooseEnds(TENANT_ID, BUILDING_ID, USER_ID);
@@ -757,10 +716,8 @@ describe('ReceptionService', () => {
             status: 'expected',
             visitor_pass_id: null,
             pass_number: null,
-            visitor_type_id: TYPE_GUEST,
-          },
-        ],
-      });
+            visitor_type_id: TYPE_GUEST },
+        ] });
       const list = await ctx.svc.dailyListForBuilding(TENANT_ID, BUILDING_ID, USER_ID);
       expect(list).toHaveLength(1);
       expect(list[0].first_name).toBe('Alice');

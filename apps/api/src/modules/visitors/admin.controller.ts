@@ -1,19 +1,16 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
-  NotFoundException,
   Param,
   Patch,
   Post,
   Query,
   Req,
-  UnauthorizedException,
-  UseGuards,
-} from '@nestjs/common';
+  UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -26,8 +23,7 @@ import {
   PassPoolUpdateSchema,
   PassUpdateSchema,
   VisitorTypeCreateSchema,
-  VisitorTypeUpdateSchema,
-} from './dto/schemas';
+  VisitorTypeUpdateSchema } from './dto/schemas';
 import { KioskService } from './kiosk.service';
 import { VisitorPassPoolService } from './pass-pool.service';
 
@@ -77,7 +73,7 @@ export class VisitorsAdminController {
   @Post('types')
   async createType(@Body() body: unknown) {
     const parsed = VisitorTypeCreateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('visitor_types')
@@ -91,7 +87,7 @@ export class VisitorsAdminController {
   @Patch('types/:id')
   async updateType(@Param('id') id: string, @Body() body: unknown) {
     const parsed = VisitorTypeUpdateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
       .from('visitor_types')
@@ -101,7 +97,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`visitor_type ${id} not found`);
+    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${id} not found` });
     return data;
   }
 
@@ -119,7 +115,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`visitor_type ${id} not found`);
+    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${id} not found` });
     return { ok: true };
   }
 
@@ -191,9 +187,9 @@ export class VisitorsAdminController {
         where id = $1 and tenant_id = $2`,
       [spaceId, tenant.id],
     );
-    if (!anchor) throw new NotFoundException(`space ${spaceId} not found`);
+    if (!anchor) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${spaceId} not found` });
     if (anchor.type !== 'site' && anchor.type !== 'building') {
-      throw new BadRequestException('Pool anchor must be a site or building');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pool anchor must be a site or building' });
     }
     const passes = await this.db.queryMany(
       `select id, tenant_id, space_id, space_kind, pass_number, pass_type,
@@ -209,10 +205,8 @@ export class VisitorsAdminController {
         id: anchor.id,
         space_kind: anchor.type,
         name: anchor.name,
-        uses_visitor_passes: anchor.uses_visitor_passes ?? true,
-      },
-      passes,
-    };
+        uses_visitor_passes: anchor.uses_visitor_passes ?? true },
+      passes };
   }
 
   /**
@@ -234,7 +228,7 @@ export class VisitorsAdminController {
         where id = $1 and tenant_id = $2`,
       [spaceId, tenant.id],
     );
-    if (!anchor) throw new NotFoundException(`space ${spaceId} not found`);
+    if (!anchor) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${spaceId} not found` });
 
     // Descendants — buildings/sites under the anchor (or anchor itself).
     const descendants = await this.db.queryMany<{
@@ -280,8 +274,7 @@ export class VisitorsAdminController {
         name: d.name,
         type: d.type,
         covered,
-        opted_out: optedOut,
-      });
+        opted_out: optedOut });
     }
     return rows;
   }
@@ -295,7 +288,7 @@ export class VisitorsAdminController {
        and create a placeholder row at status='available' (with a
        generated pass_number if not supplied so the admin can rename it). */
     const parsed = PassPoolCreateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
 
     /* Validate the space is a building or site. Composite CHECK on the
@@ -305,12 +298,10 @@ export class VisitorsAdminController {
       [parsed.data.space_id, tenant.id],
     );
     if (!space) {
-      throw new NotFoundException(`space ${parsed.data.space_id} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `space ${parsed.data.space_id} not found` });
     }
     if (space.type !== 'site' && space.type !== 'building') {
-      throw new BadRequestException(
-        'Pass pool must be anchored to a site or building',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pass pool must be anchored to a site or building' });
     }
 
     return this.db.queryOne(
@@ -332,7 +323,7 @@ export class VisitorsAdminController {
   @Patch('pools/:id')
   async updatePool(@Param('id') id: string, @Body() body: unknown) {
     const parsed = PassPoolUpdateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
 
     /* `retired` is a CHECK-enum value, not a boolean. We translate the
@@ -357,7 +348,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`pass ${id} not found`);
+    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${id} not found` });
     return data;
   }
 
@@ -368,7 +359,7 @@ export class VisitorsAdminController {
        admin UI sends the space_id back as the pool key. We resolve to
        the space and create a new pass row. */
     const parsed = PassCreateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
 
     /* Try resolving poolId as a pass id first (so the admin can call
@@ -389,9 +380,9 @@ export class VisitorsAdminController {
         `select id, type from public.spaces where id = $1 and tenant_id = $2`,
         [poolId, tenant.id],
       );
-      if (!space) throw new NotFoundException(`pool/space ${poolId} not found`);
+      if (!space) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pool/space ${poolId} not found` });
       if (space.type !== 'site' && space.type !== 'building') {
-        throw new BadRequestException('Pass pool must be anchored to site or building');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Pass pool must be anchored to site or building' });
       }
       spaceId = space.id;
       spaceKind = space.type;
@@ -416,7 +407,7 @@ export class VisitorsAdminController {
   @Patch('pools/passes/:id')
   async updatePass(@Param('id') passId: string, @Body() body: unknown) {
     const parsed = PassUpdateSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(formatZodError(parsed.error));
+    if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     const tenant = TenantContext.current();
 
     const updates: Record<string, unknown> = {};
@@ -432,7 +423,7 @@ export class VisitorsAdminController {
       .select()
       .single();
     if (error) throw error;
-    if (!data) throw new NotFoundException(`pass ${passId} not found`);
+    if (!data) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${passId} not found` });
     return data;
   }
 
@@ -575,7 +566,7 @@ export class VisitorsAdminController {
    */
   private async resolveAdminUserId(req: Request): Promise<string> {
     const authUid = (req as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No auth user' });
     const tenant = TenantContext.current();
     const lookup = await this.supabase.admin
       .from('users')
@@ -584,7 +575,7 @@ export class VisitorsAdminController {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string } | null;
-    if (!row) throw new UnauthorizedException('No linked user in this tenant');
+    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No linked user in this tenant' });
     return row.id;
   }
 }

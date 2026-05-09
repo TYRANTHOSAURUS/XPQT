@@ -1,17 +1,12 @@
 import {
-  BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Get,
-  GoneException,
-  NotFoundException,
   Param,
   Post,
-  Req,
-  UnauthorizedException,
-} from '@nestjs/common';
+  Req } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -61,7 +56,7 @@ export class VisitorsController {
     await this.permissions.requirePermission(req, 'visitors.invite');
     const parsed = CreateInvitationSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
 
     const tenant = TenantContext.current();
@@ -70,8 +65,7 @@ export class VisitorsController {
     const result = await this.invitations.create(parsed.data, {
       user_id: actor.user_id,
       person_id: actor.person_id,
-      tenant_id: tenant.id,
-    });
+      tenant_id: tenant.id });
 
     /* The plaintext cancel_token is internal — slice 5's email worker
        will pick it up via a domain event. We do NOT return it in the
@@ -80,8 +74,7 @@ export class VisitorsController {
     return {
       visitor_id: result.visitor_id,
       status: result.status,
-      approval_id: result.approval_id,
-    };
+      approval_id: result.approval_id };
   }
 
   /**
@@ -183,7 +176,7 @@ export class VisitorsController {
   @Get('cancel/:token/preview')
   async previewCancel(@Param('token') token: string) {
     if (!token || token.trim().length === 0) {
-      throw new BadRequestException('Token is required');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Token is required' });
     }
 
     type PeekRow = {
@@ -211,7 +204,7 @@ export class VisitorsController {
       );
       if (!row) {
         // SECURITY DEFINER raises on miss; defence-in-depth.
-        throw new GoneException({ code: 'invalid_token' });
+        throw AppErrors.notFoundWithCode('visitor.invalid_token', 'invitation link is invalid or expired');
       }
     } catch (err) {
       throw mapTokenError(err);
@@ -221,10 +214,10 @@ export class VisitorsController {
        must match the token's tenant. Otherwise treat as not-found. */
     const ctxTenant = TenantContext.currentOrNull();
     if (!ctxTenant) {
-      throw new UnauthorizedException('No tenant context resolved');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No tenant context resolved' });
     }
     if (ctxTenant.id !== row.tenant_id) {
-      throw new GoneException({ code: 'invalid_token' });
+      throw AppErrors.notFoundWithCode('visitor.invalid_token', 'invitation link is invalid or expired');
     }
 
     /* Strip tenant_id from the response — the visitor doesn't need it
@@ -239,8 +232,7 @@ export class VisitorsController {
       expected_until: row.expected_until,
       building_id: row.building_id,
       building_name: row.building_name,
-      host_first_name: row.host_first_name,
-    };
+      host_first_name: row.host_first_name };
   }
 
   /**
@@ -267,7 +259,7 @@ export class VisitorsController {
   @Post('cancel/:token')
   async cancelByToken(@Param('token') token: string) {
     if (!token || token.trim().length === 0) {
-      throw new BadRequestException('Token is required');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Token is required' });
     }
 
     let visitorId: string;
@@ -279,7 +271,7 @@ export class VisitorsController {
       );
       if (!row) {
         // SECURITY DEFINER raises on miss; this branch is defense in depth.
-        throw new GoneException({ code: 'invalid_token' });
+        throw AppErrors.notFoundWithCode('visitor.invalid_token', 'invitation link is invalid or expired');
       }
       visitorId = row.visitor_id;
       resolvedTenantId = row.tenant_id;
@@ -293,10 +285,10 @@ export class VisitorsController {
        tenant-B token even if they somehow got the plaintext. */
     const ctxTenant = TenantContext.currentOrNull();
     if (!ctxTenant) {
-      throw new UnauthorizedException('No tenant context resolved');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No tenant context resolved' });
     }
     if (ctxTenant.id !== resolvedTenantId) {
-      throw new GoneException({ code: 'invalid_token' });
+      throw AppErrors.notFoundWithCode('visitor.invalid_token', 'invitation link is invalid or expired');
     }
 
     /* The token has already been single-use locked by
@@ -316,12 +308,12 @@ export class VisitorsController {
       // Idempotent same-status no-ops cleanly. Other transition errors
       // (e.g. visitor already arrived) surface as 400 — the cancel
       // link is too late to use.
-      if (err instanceof BadRequestException) {
+      if (
+        err instanceof Error &&
+        (err as { code?: string }).code === 'visitor.invalid_state'
+      ) {
         // Re-shape so the public landing page can show a clean message.
-        throw new GoneException({
-          code: 'transition_not_allowed',
-          message: 'This visit can no longer be cancelled.',
-        });
+        throw AppErrors.notFoundWithCode('visitor.invalid_token', 'This visit can no longer be cancelled.');
       }
       throw err;
     }
@@ -382,7 +374,7 @@ export class VisitorsController {
       [visitorId, actor.person_id, tenant.id],
     );
     if (!isHost?.exists) {
-      throw new ForbiddenException('You are not a host on this visit');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'You are not a host on this visit' });
     }
 
     await this.hostNotifications.acknowledge(visitorId, actor.person_id, tenant.id);
@@ -425,7 +417,7 @@ export class VisitorsController {
     `;
     const row = await this.db.queryOne(sql, [actor.user_id, tenant.id, visitorId]);
     if (!row) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     return row;
   }
@@ -441,7 +433,7 @@ export class VisitorsController {
     req: Request,
   ): Promise<{ user_id: string; person_id: string }> {
     const authUid = (req as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No auth user' });
     const tenant = TenantContext.current();
 
     const lookup = await this.supabase.admin
@@ -451,11 +443,9 @@ export class VisitorsController {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string; person_id: string | null } | null;
-    if (!row) throw new UnauthorizedException('No linked user in this tenant');
+    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No linked user in this tenant' });
     if (!row.person_id) {
-      throw new UnauthorizedException(
-        'Your user account is not linked to a person — contact your admin',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Your user account is not linked to a person — contact your admin' });
     }
     return { user_id: row.id, person_id: row.person_id };
   }
@@ -473,15 +463,19 @@ export class VisitorsController {
  * Anything else propagates unchanged.
  */
 export function mapTokenError(err: unknown): Error {
-  if (err instanceof GoneException) return err;
+  // Already an AppError with the right code? pass through.
+  if (
+    err instanceof Error &&
+    (err as { code?: string }).code === 'visitor.invalid_token'
+  ) return err;
   const e = err as { code?: string };
   switch (e?.code) {
     case '45001':
-      return new GoneException({ code: 'invalid_token' });
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'invalid_token');
     case '45002':
-      return new GoneException({ code: 'token_already_used' });
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'token_already_used');
     case '45003':
-      return new GoneException({ code: 'token_expired' });
+      return AppErrors.notFoundWithCode('visitor.invalid_token', 'token_expired');
     default:
       return err instanceof Error ? err : new Error(String(err));
   }

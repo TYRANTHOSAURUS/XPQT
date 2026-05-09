@@ -14,13 +14,8 @@
  * HostNotificationService. The same harness pattern as other slice 2 specs.
  */
 
-import {
-  BadRequestException,
-  ForbiddenException,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
 import { TenantContext } from '../../common/tenant-context';
+import { AppError } from '../../common/errors';
 import { KioskAuthGuard, hashToken } from './kiosk-auth.guard';
 import { KioskService } from './kiosk.service';
 import type { KioskContext, KioskWalkupDto } from './dto/kiosk.dto';
@@ -39,8 +34,7 @@ const TYPE_REQUIRES_APPROVAL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const KIOSK_CONTEXT: KioskContext = {
   tenantId: TENANT_ID,
   buildingId: BUILDING_ID,
-  kioskTokenId: KIOSK_TOKEN_ID,
-};
+  kioskTokenId: KIOSK_TOKEN_ID };
 
 const PLAIN_TOKEN = 'plain-test-token-abc';
 
@@ -165,8 +159,7 @@ function makeHarness(opts: FakeOpts = {}) {
     query: jest.fn(async (sql: string, params?: unknown[]) => {
       sqlCalls.push({ sql, params });
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
 
   const supabase = {
     admin: {
@@ -178,19 +171,14 @@ function makeHarness(opts: FakeOpts = {}) {
                 single: async () => {
                   kioskTokenInserts.push(row);
                   return { data: { id: KIOSK_TOKEN_ID }, error: null };
-                },
-              }),
-            }),
+                } }) }),
             update: (patch: Record<string, unknown>) => ({
               eq: (col1: string, val1: string) => ({
                 eq: async (col2: string, val2: string) => {
                   const id = col1 === 'id' ? val1 : col2 === 'id' ? val2 : '';
                   kioskTokenUpdates.push({ patch, id });
                   return { data: null, error: null };
-                },
-              }),
-            }),
-          };
+                } }) }) };
         }
         if (table === 'visitors') {
           return {
@@ -199,34 +187,26 @@ function makeHarness(opts: FakeOpts = {}) {
                 single: async () => {
                   visitorInserts.push(row);
                   return { data: { id: VISITOR_ID }, error: null };
-                },
-              }),
-            }),
-          };
+                } }) }) };
         }
         if (table === 'visitor_hosts') {
           return {
             insert: async (row: Record<string, unknown>) => {
               visitorHostInserts.push(row);
               return { data: row, error: null };
-            },
-          };
+            } };
         }
         if (table === 'audit_events') {
           return {
             insert: async (row: Record<string, unknown>) => {
               auditInserts.push({
                 event_type: row.event_type as string,
-                details: row.details as Record<string, unknown>,
-              });
+                details: row.details as Record<string, unknown> });
               return { data: row, error: null };
-            },
-          };
+            } };
         }
         return {};
-      }),
-    },
-  };
+      }) } };
 
   const visitors = {
     transitionStatus: jest.fn(
@@ -238,18 +218,15 @@ function makeHarness(opts: FakeOpts = {}) {
       ) => {
         transitionCalls.push({ visitor_id, to, actor, txOpts });
       },
-    ),
-  };
+    ) };
 
   const hostNotifications = {
     notifyArrival: jest.fn(async (visitor_id: string, tenant_id: string) => {
       notifyCalls.push({ visitor_id, tenant_id });
-    }),
-  };
+    }) };
 
   const persons = {
-    create: jest.fn(async () => ({ id: 'new-person-id' })),
-  };
+    create: jest.fn(async () => ({ id: 'new-person-id' })) };
 
   const svc = new KioskService(
     db as never,
@@ -271,8 +248,7 @@ function makeHarness(opts: FakeOpts = {}) {
     kioskTokenUpdates,
     visitors,
     hostNotifications,
-    persons,
-  };
+    persons };
 }
 
 describe('KioskService', () => {
@@ -303,8 +279,7 @@ describe('KioskService', () => {
       jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({ id: TENANT_ID } as never);
       jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
       const { svc, kioskTokenInserts, auditInserts } = makeHarness({
-        buildingRow: { id: BUILDING_ID, type: 'building' },
-      });
+        buildingRow: { id: BUILDING_ID, type: 'building' } });
       const { token, kiosk_token_id } = await svc.provisionKioskToken(
         TENANT_ID,
         BUILDING_ID,
@@ -324,11 +299,10 @@ describe('KioskService', () => {
       jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({ id: TENANT_ID } as never);
       jest.spyOn(TenantContext, 'current').mockReturnValue({ id: TENANT_ID } as never);
       const { svc } = makeHarness({
-        buildingRow: { id: BUILDING_ID, type: 'room' },
-      });
+        buildingRow: { id: BUILDING_ID, type: 'room' } });
       await expect(
         svc.provisionKioskToken(TENANT_ID, BUILDING_ID, { user_id: 'admin' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('refuses when building does not exist', async () => {
@@ -337,7 +311,7 @@ describe('KioskService', () => {
       const { svc } = makeHarness({ buildingRow: null });
       await expect(
         svc.provisionKioskToken(TENANT_ID, BUILDING_ID, { user_id: 'admin' }),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -350,12 +324,9 @@ describe('KioskService', () => {
           id: KIOSK_TOKEN_ID,
           tenant_id: TENANT_ID,
           building_id: BUILDING_ID,
-          active: true,
-        },
-      });
+          active: true } });
       const { token } = await svc.rotateKioskToken(KIOSK_TOKEN_ID, TENANT_ID, {
-        user_id: 'admin',
-      });
+        user_id: 'admin' });
       expect(token).toMatch(/^[a-f0-9]{64}$/);
       const update = kioskTokenUpdates[0]!;
       expect(update.id).toBe(KIOSK_TOKEN_ID);
@@ -374,9 +345,7 @@ describe('KioskService', () => {
           id: KIOSK_TOKEN_ID,
           tenant_id: TENANT_ID,
           building_id: BUILDING_ID,
-          active: true,
-        },
-      });
+          active: true } });
       await svc.revokeKioskToken(KIOSK_TOKEN_ID, TENANT_ID, { user_id: 'admin' });
       expect(kioskTokenUpdates[0]!.patch.active).toBe(false);
       expect(auditInserts.find((a) => a.event_type === 'kiosk.token_revoked')).toBeTruthy();
@@ -394,10 +363,8 @@ describe('KioskService', () => {
             first_name: 'Marleen',
             last_name: 'Visser',
             company: 'ABC',
-            score: 0.8,
-          },
-        ],
-      });
+            score: 0.8 },
+        ] });
       const results = await svc.searchExpectedAtKiosk(KIOSK_CONTEXT, 'mar');
       expect(results).toEqual([
         { visitor_id: VISITOR_ID, first_name: 'Marleen', last_initial: 'V', company: 'ABC' },
@@ -429,16 +396,13 @@ describe('KioskService', () => {
           status: 'expected',
           primary_host_person_id: HOST_PERSON_ID,
           primary_host_first_name: 'Anne',
-          primary_host_last_name: 'Hoek',
-        },
-        hasReception: true,
-      });
+          primary_host_last_name: 'Hoek' },
+        hasReception: true });
       const result = await svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN);
       expect(result).toEqual({
         visitor_id: VISITOR_ID,
         host_first_name: 'Anne',
-        has_reception_at_building: true,
-      });
+        has_reception_at_building: true });
       expect(transitionCalls).toEqual([
         expect.objectContaining({ visitor_id: VISITOR_ID, to: 'arrived' }),
       ]);
@@ -448,11 +412,10 @@ describe('KioskService', () => {
 
     it('rejects cross-tenant token (function returned different tenant)', async () => {
       const { svc, transitionCalls } = makeHarness({
-        tokenResult: { visitor_id: VISITOR_ID, tenant_id: OTHER_TENANT_ID },
-      });
+        tokenResult: { visitor_id: VISITOR_ID, tenant_id: OTHER_TENANT_ID } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(transitionCalls).toHaveLength(0);
     });
 
@@ -466,40 +429,35 @@ describe('KioskService', () => {
           status: 'expected',
           primary_host_person_id: HOST_PERSON_ID,
           primary_host_first_name: 'Anne',
-          primary_host_last_name: null,
-        },
-      });
+          primary_host_last_name: null } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(transitionCalls).toHaveLength(0);
     });
 
-    it('maps SQLSTATE 45003 (token_expired) to ForbiddenException', async () => {
+    it('maps SQLSTATE 45003 (token_expired) to ', async () => {
       const { svc } = makeHarness({
-        tokenError: { code: '45003', message: 'token_expired' },
-      });
+        tokenError: { code: '45003', message: 'token_expired' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
-    it('maps SQLSTATE 45002 (token_already_used) to ForbiddenException', async () => {
+    it('maps SQLSTATE 45002 (token_already_used) to ', async () => {
       const { svc } = makeHarness({
-        tokenError: { code: '45002', message: 'token_already_used' },
-      });
+        tokenError: { code: '45002', message: 'token_already_used' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
-    it('maps SQLSTATE 45001 (invalid_token) to UnauthorizedException', async () => {
+    it('maps SQLSTATE 45001 (invalid_token) to ', async () => {
       const { svc } = makeHarness({
-        tokenError: { code: '45001', message: 'invalid_token' },
-      });
+        tokenError: { code: '45001', message: 'invalid_token' } });
       await expect(
         svc.checkInWithQrToken(KIOSK_CONTEXT, PLAIN_TOKEN),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -515,15 +473,12 @@ describe('KioskService', () => {
           status: 'expected',
           primary_host_person_id: HOST_PERSON_ID,
           primary_host_first_name: 'Anne',
-          primary_host_last_name: 'Hoek',
-        },
-        hasReception: false,
-      });
+          primary_host_last_name: 'Hoek' },
+        hasReception: false });
       const result = await svc.checkInByName(KIOSK_CONTEXT, VISITOR_ID, 'anne');
       expect(result).toEqual({
         host_first_name: 'Anne',
-        has_reception_at_building: false,
-      });
+        has_reception_at_building: false });
       expect(transitionCalls).toHaveLength(1);
       expect(transitionCalls[0]!.to).toBe('arrived');
       expect(notifyCalls).toHaveLength(1);
@@ -538,12 +493,10 @@ describe('KioskService', () => {
           status: 'expected',
           primary_host_person_id: HOST_PERSON_ID,
           primary_host_first_name: 'Anne',
-          primary_host_last_name: null,
-        },
-      });
+          primary_host_last_name: null } });
       await expect(
         svc.checkInByName(KIOSK_CONTEXT, VISITOR_ID, 'wrongname'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
       expect(auditInserts.find((a) => a.event_type === 'kiosk.checkin_failed')).toBeTruthy();
     });
 
@@ -556,12 +509,10 @@ describe('KioskService', () => {
           status: 'arrived', // already arrived
           primary_host_person_id: HOST_PERSON_ID,
           primary_host_first_name: 'Anne',
-          primary_host_last_name: null,
-        },
-      });
+          primary_host_last_name: null } });
       await expect(
         svc.checkInByName(KIOSK_CONTEXT, VISITOR_ID, 'anne'),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -574,8 +525,7 @@ describe('KioskService', () => {
       visitor_type_id: TYPE_GUEST,
       primary_host_person_id: HOST_PERSON_ID,
       email: 'john@acme.com',
-      company: 'Acme',
-    };
+      company: 'Acme' };
 
     it('happy path for an allow_walk_up=true type', async () => {
       const { svc, visitorInserts, visitorHostInserts, transitionCalls, notifyCalls } = makeHarness({
@@ -585,16 +535,13 @@ describe('KioskService', () => {
           requires_approval: false,
           allow_walk_up: true,
           default_expected_until_offset_minutes: 240,
-          active: true,
-        },
+          active: true },
         hostPerson: {
           id: HOST_PERSON_ID,
           tenant_id: TENANT_ID,
           type: 'employee',
           first_name: 'Anne',
-          active: true,
-        },
-      });
+          active: true } });
 
       const result = await svc.walkupAtKiosk(KIOSK_CONTEXT, dto);
       expect(result).toEqual({ visitor_id: VISITOR_ID, status: 'arrived' });
@@ -618,12 +565,10 @@ describe('KioskService', () => {
           requires_approval: false,
           allow_walk_up: false,
           default_expected_until_offset_minutes: null,
-          active: true,
-        },
-      });
+          active: true } });
       await expect(
         svc.walkupAtKiosk(KIOSK_CONTEXT, { ...dto, visitor_type_id: TYPE_NO_WALKUP }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('rejects when requires_approval=true', async () => {
@@ -634,12 +579,10 @@ describe('KioskService', () => {
           requires_approval: true,
           allow_walk_up: true,
           default_expected_until_offset_minutes: null,
-          active: true,
-        },
-      });
+          active: true } });
       await expect(
         svc.walkupAtKiosk(KIOSK_CONTEXT, { ...dto, visitor_type_id: TYPE_REQUIRES_APPROVAL }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('rejects when host is a visitor-typed person', async () => {
@@ -650,19 +593,14 @@ describe('KioskService', () => {
           requires_approval: false,
           allow_walk_up: true,
           default_expected_until_offset_minutes: 120,
-          active: true,
-        },
+          active: true },
         hostPerson: {
           id: HOST_PERSON_ID,
           tenant_id: TENANT_ID,
           type: 'visitor', // visitor cannot host
           first_name: 'Bob',
-          active: true,
-        },
-      });
-      await expect(svc.walkupAtKiosk(KIOSK_CONTEXT, dto)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+          active: true } });
+      await expect(svc.walkupAtKiosk(KIOSK_CONTEXT, dto)).rejects.toBeInstanceOf(AppError);
     });
 
     // Regression for slice 2 review Fix #1 — walk-up arrived-transition
@@ -684,16 +622,13 @@ describe('KioskService', () => {
           requires_approval: false,
           allow_walk_up: true,
           default_expected_until_offset_minutes: 240,
-          active: true,
-        },
+          active: true },
         hostPerson: {
           id: HOST_PERSON_ID,
           tenant_id: TENANT_ID,
           type: 'employee',
           first_name: 'Anne',
-          active: true,
-        },
-      });
+          active: true } });
 
       // Patch the visitors mock to capture the TenantContext seen at the
       // moment transitionStatus runs. The previous bug-mode wouldn't even
@@ -742,16 +677,13 @@ describe('KioskService', () => {
           requires_approval: false,
           allow_walk_up: true,
           default_expected_until_offset_minutes: 240,
-          active: true,
-        },
+          active: true },
         hostPerson: {
           id: HOST_PERSON_ID,
           tenant_id: TENANT_ID,
           type: 'employee',
           first_name: 'Anne',
-          active: true,
-        },
-      });
+          active: true } });
 
       await svc.walkupAtKiosk(KIOSK_CONTEXT, dto);
       // The harness records `event_type` + `details` for each insert; we
@@ -840,19 +772,16 @@ describe('KioskAuthGuard', () => {
           throw e;
         }
         return behavior.row;
-      }),
-    };
+      }) };
     const guard = new KioskAuthGuard(db as never);
     return { guard, db };
   }
 
   function makeContext(authHeader: string | undefined) {
     const req: { headers: Record<string, string | undefined>; kioskContext?: unknown } = {
-      headers: { authorization: authHeader },
-    };
+      headers: { authorization: authHeader } };
     const ctx = {
-      switchToHttp: () => ({ getRequest: () => req }),
-    } as never;
+      switchToHttp: () => ({ getRequest: () => req }) } as never;
     return { ctx, req };
   }
 
@@ -862,17 +791,14 @@ describe('KioskAuthGuard', () => {
       row: {
         tenant_id: TENANT_ID,
         building_id: BUILDING_ID,
-        kiosk_token_id: KIOSK_TOKEN_ID,
-      },
-    });
+        kiosk_token_id: KIOSK_TOKEN_ID } });
     const { ctx, req } = makeContext('Bearer abc');
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     const reqWithCtx = req as { kioskContext?: KioskContext };
     expect(reqWithCtx.kioskContext).toEqual({
       tenantId: TENANT_ID,
       buildingId: BUILDING_ID,
-      kioskTokenId: KIOSK_TOKEN_ID,
-    });
+      kioskTokenId: KIOSK_TOKEN_ID });
     // The guard must hit the SECURITY DEFINER function, not the table.
     const sql = (db.queryOne as jest.Mock).mock.calls[0]![0] as string;
     expect(sql.toLowerCase()).toContain('public.validate_kiosk_token');
@@ -882,37 +808,37 @@ describe('KioskAuthGuard', () => {
   it('rejects missing Authorization header', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext(undefined);
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects malformed Authorization header', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext('Basic foo');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects on SQLSTATE 45011 (invalid_token)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45011' });
     const { ctx } = makeContext('Bearer wrong-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects on SQLSTATE 45012 (token_inactive / revoked)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45012' });
     const { ctx } = makeContext('Bearer revoked-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects on SQLSTATE 45013 (token_expired)', async () => {
     const { guard } = makeGuard({ kind: 'err', code: '45013' });
     const { ctx } = makeContext('Bearer expired-token');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('rejects on empty result (defensive)', async () => {
     const { guard } = makeGuard({ kind: 'ok', row: null });
     const { ctx } = makeContext('Bearer something');
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(AppError);
   });
 
   it('does not swallow non-token-error exceptions', async () => {

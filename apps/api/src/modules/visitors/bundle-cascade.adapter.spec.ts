@@ -11,13 +11,12 @@
  */
 
 import {
-  BundleCascadeAdapter,
-} from './bundle-cascade.adapter';
+  BundleCascadeAdapter } from './bundle-cascade.adapter';
 import {
   BundleEventBus,
-  type BundleEvent,
-} from '../booking-bundles/bundle-event-bus';
+  type BundleEvent } from '../booking-bundles/bundle-event-bus';
 import { TenantContext } from '../../common/tenant-context';
+import { AppError } from '../../common/errors';
 import type { VisitorStatus } from './dto/transition-status.dto';
 
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
@@ -63,8 +62,7 @@ function makeHarness(opts: FakeOpts = {}) {
       ) => {
         transitionCalls.push({ visitor_id, to, actor, txOpts });
       },
-    ),
-  };
+    ) };
 
   // Fake pg client used by `db.tx` for the FOR SHARE read inside the
   // adapter (full-review I6). Returns the visitor row scoped by tenant.
@@ -79,8 +77,7 @@ function makeHarness(opts: FakeOpts = {}) {
         return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
 
   const db = {
     query: jest.fn(async (sql: string, params?: unknown[]) => {
@@ -110,8 +107,7 @@ function makeHarness(opts: FakeOpts = {}) {
       }
       return [];
     }),
-    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)),
-  };
+    tx: jest.fn(async <T>(fn: (c: typeof fakeClient) => Promise<T>): Promise<T> => fn(fakeClient)) };
 
   const bus = new BundleEventBus();
   const adapter = new BundleCascadeAdapter(
@@ -128,8 +124,7 @@ function makeHarness(opts: FakeOpts = {}) {
     transitionCalls,
     updates,
     intentInserts,
-    sqlCalls,
-  };
+    sqlCalls };
 }
 
 describe('BundleCascadeAdapter', () => {
@@ -150,10 +145,7 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'expected',
-          },
-        },
-      });
+            status: 'expected' } } });
       const event: BundleEvent = {
         kind: 'bundle.line.moved',
         tenant_id: TENANT_ID,
@@ -162,8 +154,7 @@ describe('BundleCascadeAdapter', () => {
         line_kind: 'visitor',
         old_expected_at: '2026-05-01T09:00:00Z',
         new_expected_at: '2026-05-01T10:00:00Z',
-        occurred_at: '2026-04-30T18:00:00Z',
-      };
+        occurred_at: '2026-04-30T18:00:00Z' };
       await adapter.handle(event);
 
       expect(updates).toHaveLength(1);
@@ -181,10 +172,7 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'arrived',
-          },
-        },
-      });
+            status: 'arrived' } } });
       await adapter.handle({
         kind: 'bundle.line.moved',
         tenant_id: TENANT_ID,
@@ -193,8 +181,7 @@ describe('BundleCascadeAdapter', () => {
         line_kind: 'visitor',
         old_expected_at: null,
         new_expected_at: '2026-05-01T10:00:00Z',
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(updates).toHaveLength(0);
       expect(intentInserts).toHaveLength(1);
       expect(intentInserts[0]!.event_type).toBe('visitor.cascade.host_alert');
@@ -208,10 +195,7 @@ describe('BundleCascadeAdapter', () => {
             [`${VISITOR_ID}|${TENANT_ID}`]: {
               id: VISITOR_ID,
               tenant_id: TENANT_ID,
-              status,
-            },
-          },
-        });
+              status } } });
         await adapter.handle({
           kind: 'bundle.line.moved',
           tenant_id: TENANT_ID,
@@ -220,8 +204,7 @@ describe('BundleCascadeAdapter', () => {
           line_kind: 'visitor',
           old_expected_at: null,
           new_expected_at: '2026-05-01T10:00:00Z',
-          occurred_at: '2026-04-30T18:00:00Z',
-        });
+          occurred_at: '2026-04-30T18:00:00Z' });
         expect(updates).toHaveLength(0);
         expect(intentInserts).toHaveLength(0);
       }
@@ -237,8 +220,7 @@ describe('BundleCascadeAdapter', () => {
         line_kind: 'catering',
         old_expected_at: null,
         new_expected_at: '2026-05-01T10:00:00Z',
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       // No queryOne fired (we returned early for non-visitor kinds).
       expect(sqlCalls).toHaveLength(0);
     });
@@ -253,10 +235,7 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'expected',
-          },
-        },
-      });
+            status: 'expected' } } });
       await adapter.handle({
         kind: 'bundle.line.room_changed',
         tenant_id: TENANT_ID,
@@ -265,8 +244,7 @@ describe('BundleCascadeAdapter', () => {
         line_kind: 'visitor',
         old_room_id: ROOM_OLD,
         new_room_id: ROOM_NEW,
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(updates).toHaveLength(1);
       expect(updates[0]!.sql.toLowerCase()).toContain('set meeting_room_id = $1');
       expect((updates[0]!.params as unknown[])[0]).toBe(ROOM_NEW);
@@ -280,10 +258,7 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'in_meeting',
-          },
-        },
-      });
+            status: 'in_meeting' } } });
       await adapter.handle({
         kind: 'bundle.line.room_changed',
         tenant_id: TENANT_ID,
@@ -292,8 +267,7 @@ describe('BundleCascadeAdapter', () => {
         line_kind: 'visitor',
         old_room_id: ROOM_OLD,
         new_room_id: ROOM_NEW,
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(updates).toHaveLength(0);
       expect(intentInserts[0]!.event_type).toBe('visitor.cascade.host_alert');
     });
@@ -308,18 +282,14 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'expected',
-          },
-        },
-      });
+            status: 'expected' } } });
       await adapter.handle({
         kind: 'bundle.line.cancelled',
         tenant_id: TENANT_ID,
         bundle_id: BUNDLE_ID,
         line_id: VISITOR_ID,
         line_kind: 'visitor',
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(transitionCalls).toHaveLength(1);
       expect(transitionCalls[0]!.to).toBe('cancelled');
       expect(intentInserts[0]!.event_type).toBe('visitor.cascade.cancelled');
@@ -331,18 +301,14 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'arrived',
-          },
-        },
-      });
+            status: 'arrived' } } });
       await adapter.handle({
         kind: 'bundle.line.cancelled',
         tenant_id: TENANT_ID,
         bundle_id: BUNDLE_ID,
         line_id: VISITOR_ID,
         line_kind: 'visitor',
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(transitionCalls).toHaveLength(0);
       expect(intentInserts[0]!.event_type).toBe('visitor.cascade.host_alert');
     });
@@ -358,15 +324,12 @@ describe('BundleCascadeAdapter', () => {
         visitorsForBundle: { [BUNDLE_ID]: [V1, V2] },
         visitorByIdAndTenant: {
           [`${V1}|${TENANT_ID}`]: { id: V1, tenant_id: TENANT_ID, status: 'expected' },
-          [`${V2}|${TENANT_ID}`]: { id: V2, tenant_id: TENANT_ID, status: 'expected' },
-        },
-      });
+          [`${V2}|${TENANT_ID}`]: { id: V2, tenant_id: TENANT_ID, status: 'expected' } } });
       await adapter.handle({
         kind: 'bundle.cancelled',
         tenant_id: TENANT_ID,
         bundle_id: BUNDLE_ID,
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(transitionCalls).toHaveLength(2);
       expect(new Set(transitionCalls.map((c) => c.visitor_id))).toEqual(new Set([V1, V2]));
       for (const call of transitionCalls) {
@@ -385,18 +348,14 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'expected',
-          },
-        },
-      });
+            status: 'expected' } } });
       await adapter.handle({
         kind: 'bundle.line.cancelled',
         tenant_id: OTHER_TENANT_ID,
         bundle_id: BUNDLE_ID,
         line_id: VISITOR_ID,
         line_kind: 'visitor',
-        occurred_at: '2026-04-30T18:00:00Z',
-      });
+        occurred_at: '2026-04-30T18:00:00Z' });
       expect(transitionCalls).toHaveLength(0);
       expect(updates).toHaveLength(0);
     });
@@ -411,10 +370,7 @@ describe('BundleCascadeAdapter', () => {
           [`${VISITOR_ID}|${TENANT_ID}`]: {
             id: VISITOR_ID,
             tenant_id: TENANT_ID,
-            status: 'expected',
-          },
-        },
-      });
+            status: 'expected' } } });
       try {
         adapter.resubscribe();
         bus.emit({
@@ -423,8 +379,7 @@ describe('BundleCascadeAdapter', () => {
           bundle_id: BUNDLE_ID,
           line_id: VISITOR_ID,
           line_kind: 'visitor',
-          occurred_at: '2026-04-30T18:00:00Z',
-        });
+          occurred_at: '2026-04-30T18:00:00Z' });
         // Allow microtask queue to drain.
         await new Promise((r) => setImmediate(r));
         expect(transitionCalls).toHaveLength(1);

@@ -14,7 +14,7 @@
  * boundary — the same pattern used by approval.service.spec.ts.
  */
 
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { InvitationService } from './invitation.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -90,17 +90,14 @@ function makeService(opts: FakeOptions = {}) {
       requires_approval: false,
       allow_walk_up: true,
       default_expected_until_offset_minutes: 240,
-      active: true,
-    },
+      active: true },
     [TYPE_INTERVIEW]: {
       id: TYPE_INTERVIEW,
       tenant_id: TENANT_ID,
       requires_approval: true,
       allow_walk_up: false,
       default_expected_until_offset_minutes: 240,
-      active: true,
-    },
-  };
+      active: true } };
   const tenantSettings = opts.tenantSettings ?? { visitor_dedup_by_email: false };
 
   const insertedPersons: Array<Record<string, unknown>> = opts.insertedPersons ?? [];
@@ -138,20 +135,12 @@ function makeService(opts: FakeOptions = {}) {
                         // emit them by capturing recent .eq invocations.
                         // Simpler: parse via getMatchedType.
                         return { data: getMatchedType(), error: null };
-                      },
-                    }),
-                  }),
-                }),
-              }),
-            };
+                      } }) }) }) }) };
           case 'tenant_settings':
             return {
               select: () => ({
                 eq: () => ({
-                  maybeSingle: async () => ({ data: tenantSettings, error: null }),
-                }),
-              }),
-            };
+                  maybeSingle: async () => ({ data: tenantSettings, error: null }) }) }) };
           case 'persons':
             return {
               // Plan A.2 / Commit 5: invitation.create now calls
@@ -171,13 +160,10 @@ function makeService(opts: FakeOptions = {}) {
                         ? ids.filter((id) => allowed.includes(id)).map((id) => ({ id }))
                         : ids.map((id) => ({ id }));
                       return Promise.resolve({ data, error: null }).then(onFulfilled);
-                    },
-                  }),
+                    } }),
                   maybeSingle: async () => ({
                     data: opts.existingVisitorPersonByEmail ?? null,
-                    error: null,
-                  }),
-                };
+                    error: null }) };
                 return eqChain;
               },
               insert: (row: Record<string, unknown>) => ({
@@ -186,10 +172,7 @@ function makeService(opts: FakeOptions = {}) {
                     const inserted = { id: VISITOR_PERSON_ID, ...row };
                     insertedPersons.push(inserted);
                     return { data: inserted, error: null };
-                  },
-                }),
-              }),
-            };
+                  } }) }) };
           case 'visitors':
             return {
               insert: (row: Record<string, unknown>) => ({
@@ -198,25 +181,20 @@ function makeService(opts: FakeOptions = {}) {
                     const inserted = { id: VISITOR_ID, ...row };
                     opts.insertedVisitor = inserted;
                     return { data: inserted, error: null };
-                  },
-                }),
-              }),
-            };
+                  } }) }) };
           case 'visitor_hosts':
             return {
               insert: (rows: Record<string, unknown> | Array<Record<string, unknown>>) => {
                 const arr = Array.isArray(rows) ? rows : [rows];
                 insertedHostsRows.push(...arr);
                 return Promise.resolve({ data: arr, error: null });
-              },
-            };
+              } };
           case 'visit_invitation_tokens':
             return {
               insert: (row: Record<string, unknown>) => {
                 insertedTokens.push(row);
                 return Promise.resolve({ data: row, error: null });
-              },
-            };
+              } };
           case 'approvals':
             return {
               insert: (row: Record<string, unknown>) => ({
@@ -225,24 +203,19 @@ function makeService(opts: FakeOptions = {}) {
                     const inserted = { id: 'approval-id', ...row };
                     insertedApprovals.push(inserted);
                     return { data: inserted, error: null };
-                  },
-                }),
-              }),
-            };
+                  } }) }) };
           case 'audit_events':
             return {
               insert: (row: Record<string, unknown>) => {
                 insertedAudit.push(row);
                 return Promise.resolve({ data: row, error: null });
-              },
-            };
+              } };
           case 'domain_events':
             return {
               insert: (row: Record<string, unknown>) => {
                 insertedDomainEvents.push(row);
                 return Promise.resolve({ data: row, error: null });
-              },
-            };
+              } };
           case 'spaces':
             // Plan A.4 / Commit 9 (I5) — assertTenantOwned probe path.
             // .select('id').eq('id', X).eq('tenant_id', T).maybeSingle().
@@ -262,11 +235,9 @@ function makeService(opts: FakeOptions = {}) {
                       return { data: allowed.includes(id) ? { id } : null, error: null };
                     }
                     return { data: { id }, error: null };
-                  },
-                };
+                  } };
                 return chain;
-              },
-            };
+              } };
           case 'bookings':
             return {
               select: () => {
@@ -284,11 +255,9 @@ function makeService(opts: FakeOptions = {}) {
                       return { data: allowed.includes(id) ? { id } : null, error: null };
                     }
                     return { data: { id }, error: null };
-                  },
-                };
+                  } };
                 return chain;
-              },
-            };
+              } };
           default:
             return term({ data: null, error: null });
         }
@@ -297,13 +266,10 @@ function makeService(opts: FakeOptions = {}) {
         if (name === 'portal_authorized_space_ids') {
           return {
             data: (opts.authorizedSpaces ?? [BUILDING_ID]).map((id) => ({ id })),
-            error: null,
-          };
+            error: null };
         }
         return { data: null, error: null };
-      }),
-    },
-  };
+      }) } };
 
   // Capture which visitor_type_id is being queried so the visitor_types
   // .from('visitor_types') chain returns the right row. We hold a mutable
@@ -324,12 +290,7 @@ function makeService(opts: FakeOptions = {}) {
                 maybeSingle: async () => {
                   if (col === 'id') askedForTypeId = val;
                   return { data: getMatchedType(), error: null };
-                },
-              }),
-            }),
-          }),
-        }),
-      };
+                } }) }) }) }) };
     }
     return originalFrom(table);
   });
@@ -341,8 +302,7 @@ function makeService(opts: FakeOptions = {}) {
       const inserted = { id: VISITOR_PERSON_ID, ...dto };
       insertedPersons.push(inserted);
       return inserted;
-    }),
-  };
+    }) };
 
   const svc = new InvitationService(supabase as never, personService as never);
 
@@ -356,15 +316,13 @@ function makeService(opts: FakeOptions = {}) {
     insertedApprovals,
     insertedAudit,
     insertedDomainEvents,
-    getInsertedVisitor: () => opts.insertedVisitor,
-  };
+    getInsertedVisitor: () => opts.insertedVisitor };
 }
 
 const ACTOR = {
   user_id: ACTOR_USER_ID,
   person_id: ACTOR_PERSON_ID,
-  tenant_id: TENANT_ID,
-};
+  tenant_id: TENANT_ID };
 
 const baseDto = () => ({
   first_name: 'Marleen',
@@ -375,8 +333,7 @@ const baseDto = () => ({
   visitor_type_id: TYPE_GUEST,
   expected_at: '2026-05-02T09:00:00.000Z',
   building_id: BUILDING_ID,
-  co_host_person_ids: [] as string[],
-});
+  co_host_person_ids: [] as string[] });
 
 describe('InvitationService.create', () => {
   afterEach(() => jest.restoreAllMocks());
@@ -418,13 +375,12 @@ describe('InvitationService.create', () => {
     expect(ctx.insertedApprovals[0]).toMatchObject({
       target_entity_type: 'visitor_invite',
       target_entity_id: VISITOR_ID,
-      status: 'pending',
-    });
+      status: 'pending' });
   });
 
-  it('cross-building scope: actor without scope on building_id throws ForbiddenException', async () => {
+  it('cross-building scope: actor without scope on building_id throws ', async () => {
     const ctx = makeService({ authorizedSpaces: ['SOME-OTHER-BUILDING-ID'] });
-    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(AppError);
   });
 
   it('multi-host: creates one visitor_hosts row per co_host + one for primary', async () => {
@@ -446,8 +402,7 @@ describe('InvitationService.create', () => {
     const FOREIGN_PERSON = '00000000-0000-4000-8000-0000000fffff';
     const ctx = makeService({
       // Only the in-tenant co-host is registered as owned by this tenant.
-      tenantOwnedPersonIds: [CO_HOST_PERSON_ID],
-    });
+      tenantOwnedPersonIds: [CO_HOST_PERSON_ID] });
     let caught: unknown = null;
     try {
       await ctx.svc.create(
@@ -471,8 +426,7 @@ describe('InvitationService.create', () => {
     it('rejects when meeting_room_id is cross-tenant', async () => {
       const ctx = makeService({
         // No spaces in this tenant — the pre-flight rejects.
-        tenantOwnedSpaceIds: [],
-      });
+        tenantOwnedSpaceIds: [] });
       let caught: unknown = null;
       try {
         await ctx.svc.create(
@@ -490,8 +444,7 @@ describe('InvitationService.create', () => {
 
     it('rejects when booking_id is cross-tenant', async () => {
       const ctx = makeService({
-        tenantOwnedBookingIds: [],
-      });
+        tenantOwnedBookingIds: [] });
       let caught: unknown = null;
       try {
         await ctx.svc.create(
@@ -511,8 +464,7 @@ describe('InvitationService.create', () => {
       const VALID_BOOKING = '00000000-0000-4000-8000-00000000ddd1';
       const ctx = makeService({
         tenantOwnedSpaceIds: [VALID_SPACE],
-        tenantOwnedBookingIds: [VALID_BOOKING],
-      });
+        tenantOwnedBookingIds: [VALID_BOOKING] });
       const result = await ctx.svc.create(
         { ...baseDto(), meeting_room_id: VALID_SPACE, booking_id: VALID_BOOKING },
         ACTOR,
@@ -520,16 +472,14 @@ describe('InvitationService.create', () => {
       expect(result.visitor_id).toBe(VISITOR_ID);
       expect(ctx.getInsertedVisitor()).toMatchObject({
         meeting_room_id: VALID_SPACE,
-        booking_id: VALID_BOOKING,
-      });
+        booking_id: VALID_BOOKING });
     });
   });
 
   it('dedup ON: existing persons row reused (no new persons.create)', async () => {
     const ctx = makeService({
       tenantSettings: { visitor_dedup_by_email: true },
-      existingVisitorPersonByEmail: { id: 'EXISTING-PERSON-ID', email: 'marleen@example.com' },
-    });
+      existingVisitorPersonByEmail: { id: 'EXISTING-PERSON-ID', email: 'marleen@example.com' } });
     await ctx.svc.create(baseDto(), ACTOR);
 
     expect(ctx.personService.create).not.toHaveBeenCalled();
@@ -538,15 +488,14 @@ describe('InvitationService.create', () => {
   it('dedup OFF: new persons row even when an existing match exists', async () => {
     const ctx = makeService({
       tenantSettings: { visitor_dedup_by_email: false },
-      existingVisitorPersonByEmail: { id: 'EXISTING-PERSON-ID', email: 'marleen@example.com' },
-    });
+      existingVisitorPersonByEmail: { id: 'EXISTING-PERSON-ID', email: 'marleen@example.com' } });
     await ctx.svc.create(baseDto(), ACTOR);
     expect(ctx.personService.create).toHaveBeenCalledTimes(1);
   });
 
-  it('unknown visitor_type: throws NotFoundException', async () => {
+  it('unknown visitor_type: throws ', async () => {
     const ctx = makeService({ visitorTypes: {} });
-    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(ctx.svc.create(baseDto(), ACTOR)).rejects.toBeInstanceOf(AppError);
   });
 
   it('emits visitor.invitation.expected domain_event with plaintext cancel_token in payload', async () => {

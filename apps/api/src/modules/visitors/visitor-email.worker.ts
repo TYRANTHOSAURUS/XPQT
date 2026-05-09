@@ -6,6 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { AppErrors } from '../../common/errors';
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { DbService } from '../../common/db/db.service';
@@ -165,13 +166,13 @@ export class VisitorEmailWorker implements OnModuleInit {
    */
   async processOne(event: DomainEventRow): Promise<'sent' | 'skipped'> {
     if (!this.mail) {
-      throw new Error('VisitorEmailWorker requires MAIL_PROVIDER');
+      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires MAIL_PROVIDER' });
     }
     if (!this.mailDelivery) {
-      throw new Error('VisitorEmailWorker requires VisitorMailDeliveryAdapter');
+      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires VisitorMailDeliveryAdapter' });
     }
     if (!this.supabase) {
-      throw new Error('VisitorEmailWorker requires SupabaseService');
+      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorEmailWorker requires SupabaseService' });
     }
 
     const visitorId = event.entity_id;

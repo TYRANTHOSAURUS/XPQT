@@ -397,6 +397,26 @@ export type KnownErrorCode =
   | 'client_request_id.required'
   | 'client_request_id.invalid'
 
+  // ─── visitors migration (Phase 7.B-1.visitors) ───────────────────────────
+  | 'visitor.not_found'
+  | 'visitor.invalid_payload'
+  | 'visitor.invalid_state'
+  | 'visitor.forbidden'
+  | 'visitor.unauthorized'
+  | 'visitor.conflict'
+  | 'visitor.field_required'
+  | 'visitor.invalid_uuid'
+  | 'visitor.duplicate'
+  | 'visitor.host_not_found'
+  | 'visitor.kiosk_unauthorized'
+  | 'visitor.pass_not_found'
+  | 'visitor.pass_unavailable'
+  | 'visitor.invitation_not_found'
+  | 'visitor.reception_failed'
+  | 'visitor.notification_failed'
+  | 'visitor.invalid_token'
+  | 'visitor.config_missing'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1050,6 +1070,24 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'reference.invalid_array_size',
   'client_request_id.required',
   'client_request_id.invalid',
+  'visitor.not_found',
+  'visitor.invalid_payload',
+  'visitor.invalid_state',
+  'visitor.forbidden',
+  'visitor.unauthorized',
+  'visitor.conflict',
+  'visitor.field_required',
+  'visitor.invalid_uuid',
+  'visitor.duplicate',
+  'visitor.host_not_found',
+  'visitor.kiosk_unauthorized',
+  'visitor.pass_not_found',
+  'visitor.pass_unavailable',
+  'visitor.invitation_not_found',
+  'visitor.reception_failed',
+  'visitor.notification_failed',
+  'visitor.invalid_token',
+  'visitor.config_missing',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

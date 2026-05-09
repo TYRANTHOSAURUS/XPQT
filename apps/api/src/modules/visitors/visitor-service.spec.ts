@@ -10,7 +10,7 @@
  * blocks the same illegal pairs.
  */
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import type { PoolClient } from 'pg';
 import { VisitorService } from './visitor.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -47,8 +47,7 @@ function baseVisitor(overrides: Partial<FakeRow> = {}): FakeRow {
     checkout_source: null,
     auto_checked_out: false,
     visitor_pass_id: null,
-    ...overrides,
-  };
+    ...overrides };
 }
 
 /**
@@ -109,12 +108,10 @@ function makeFakeDb(initialRow: FakeRow) {
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
 
   const db = {
-    tx: jest.fn(async <T>(fn: (c: PoolClient) => Promise<T>): Promise<T> => fn(client as PoolClient)),
-  };
+    tx: jest.fn(async <T>(fn: (c: PoolClient) => Promise<T>): Promise<T> => fn(client as PoolClient)) };
 
   return {
     db,
@@ -122,8 +119,7 @@ function makeFakeDb(initialRow: FakeRow) {
     captured,
     auditInserts,
     domainEvents,
-    getRow: () => row,
-  };
+    getRow: () => row };
 }
 
 function tenantCtx() {
@@ -156,8 +152,7 @@ describe('VisitorService.transitionStatus', () => {
       const backdated = '2026-05-01T08:55:00.000Z';
 
       const result = await svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR, {
-        arrived_at: backdated,
-      });
+        arrived_at: backdated });
 
       expect(result.arrived_at).toBe(backdated);
       // logged_at is server-side (now), >= arrived_at — and not equal to
@@ -181,8 +176,7 @@ describe('VisitorService.transitionStatus', () => {
       const ctx = makeFakeDb(baseVisitor({ status: 'arrived', arrived_at: '2026-05-01T09:00:00Z' }));
       const svc = new VisitorService(ctx.db as never);
       const result = await svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, {
-        checkout_source: 'reception',
-      });
+        checkout_source: 'reception' });
       expect(result.status).toBe('checked_out');
       expect(result.checkout_source).toBe('reception');
       expect(result.auto_checked_out).toBe(false);
@@ -194,8 +188,7 @@ describe('VisitorService.transitionStatus', () => {
       const ctx = makeFakeDb(baseVisitor({ status: 'arrived', arrived_at: '2026-05-01T09:00:00Z' }));
       const svc = new VisitorService(ctx.db as never);
       const result = await svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, {
-        checkout_source: 'eod_sweep',
-      });
+        checkout_source: 'eod_sweep' });
       expect(result.auto_checked_out).toBe(true);
       expect(result.checkout_source).toBe('eod_sweep');
     });
@@ -205,8 +198,7 @@ describe('VisitorService.transitionStatus', () => {
       const ctx = makeFakeDb(baseVisitor({ status: 'in_meeting', arrived_at: '2026-05-01T09:00:00Z' }));
       const svc = new VisitorService(ctx.db as never);
       const result = await svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, {
-        checkout_source: 'host',
-      });
+        checkout_source: 'host' });
       expect(result.status).toBe('checked_out');
     });
 
@@ -260,53 +252,47 @@ describe('VisitorService.transitionStatus', () => {
   });
 
   describe('invalid transitions', () => {
-    it('expected → checked_out (skipping arrived) throws BadRequestException', async () => {
+    it('expected → checked_out (skipping arrived) throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'expected' }));
       const svc = new VisitorService(ctx.db as never);
       await expect(
         svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, { checkout_source: 'reception' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
-    it('checked_out → arrived (terminal state) throws BadRequestException', async () => {
+    it('checked_out → arrived (terminal state) throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb(
         baseVisitor({ status: 'checked_out', arrived_at: '2026-05-01T09:00:00Z', checkout_source: 'reception' }),
       );
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
     });
 
-    it('denied → expected throws BadRequestException', async () => {
+    it('denied → expected throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'denied' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'expected', ACTOR)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.transitionStatus(VISITOR_ID, 'expected', ACTOR)).rejects.toBeInstanceOf(AppError);
     });
 
-    it('pending_approval → arrived (must go through expected first) throws BadRequestException', async () => {
+    it('pending_approval → arrived (must go through expected first) throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'pending_approval' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
     });
   });
 
   describe('checkout invariants', () => {
-    it('arrived → checked_out without checkout_source throws BadRequestException', async () => {
+    it('arrived → checked_out without checkout_source throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'arrived', arrived_at: '2026-05-01T09:00:00Z' }));
       const svc = new VisitorService(ctx.db as never);
       await expect(
         svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
       // Defense-in-depth: the visitors_checkout_source_required CHECK
       // would also catch this in the DB. Both layers in agreement.
     });
@@ -317,9 +303,7 @@ describe('VisitorService.transitionStatus', () => {
       tenantCtx();
       const ctx = makeFakeDb(baseVisitor({ status: 'expected', tenant_id: '99999999-9999-4999-8999-999999999999' }));
       const svc = new VisitorService(ctx.db as never);
-      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.transitionStatus(VISITOR_ID, 'arrived', ACTOR)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -338,13 +322,11 @@ describe('VisitorService.transitionStatus', () => {
         baseVisitor({
           status: 'arrived',
           arrived_at: '2026-05-01T09:00:00Z',
-          visitor_pass_id: '33333333-3333-4333-8333-333333333333',
-        }),
+          visitor_pass_id: '33333333-3333-4333-8333-333333333333' }),
       );
       const svc = new VisitorService(ctx.db as never);
       await svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, {
-        checkout_source: 'reception',
-      });
+        checkout_source: 'reception' });
       expect(
         ctx.domainEvents.find((e) => e.event_type === 'visitor.pass_return_requested'),
       ).toBeTruthy();
@@ -357,8 +339,7 @@ describe('VisitorService.transitionStatus', () => {
       );
       const svc = new VisitorService(ctx.db as never);
       await svc.transitionStatus(VISITOR_ID, 'checked_out', ACTOR, {
-        checkout_source: 'reception',
-      });
+        checkout_source: 'reception' });
       expect(
         ctx.domainEvents.find((e) => e.event_type === 'visitor.pass_return_requested'),
       ).toBeUndefined();
@@ -400,8 +381,7 @@ describe('VisitorService.onApprovalDecided', () => {
     const visitorRow = {
       id: VISITOR_ID,
       tenant_id: opts.tenantOverride ?? TENANT_ID,
-      status: initialStatus,
-    };
+      status: initialStatus };
     const dbCtx = makeFakeDb(baseVisitor({ status: initialStatus }));
 
     const insertedDomainEvents: Array<Record<string, unknown>> = [];
@@ -412,28 +392,21 @@ describe('VisitorService.onApprovalDecided', () => {
             return {
               select: () => ({
                 eq: () => ({
-                  maybeSingle: async () => ({ data: visitorRow, error: null }),
-                }),
-              }),
-            };
+                  maybeSingle: async () => ({ data: visitorRow, error: null }) }) }) };
           }
           if (table === 'domain_events') {
             return {
               insert: async (row: Record<string, unknown>) => {
                 insertedDomainEvents.push(row);
                 return { data: row, error: null };
-              },
-            };
+              } };
           }
           throw new Error(`unexpected supabase table in onApprovalDecided test: ${table}`);
-        }),
-      },
-    };
+        }) } };
 
     const notifyDeniedSpy = jest.fn(async () => undefined);
     const hostNotifications = {
-      notifyInvitationDenied: notifyDeniedSpy,
-    };
+      notifyInvitationDenied: notifyDeniedSpy };
 
     tenantCtx();
     const svc = new VisitorService(
@@ -517,7 +490,7 @@ describe('VisitorService.onApprovalDecided', () => {
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'rejected', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
     expect(ctx.dbCtx.getRow().status).toBe('expected');
     expect(ctx.notifyDeniedSpy).not.toHaveBeenCalled();
   });
@@ -527,7 +500,7 @@ describe('VisitorService.onApprovalDecided', () => {
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('cross-tenant: tenantId param mismatching TenantContext is rejected', async () => {
@@ -540,7 +513,7 @@ describe('VisitorService.onApprovalDecided', () => {
         APPROVER_USER_ID,
         '99999999-9999-4999-8999-999999999999',
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(AppError);
     // No transition fired.
     expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
   });
@@ -550,12 +523,11 @@ describe('VisitorService.onApprovalDecided', () => {
     // belongs to a different tenant — composite-FK / explicit guard catches
     // this before any transition fires.
     const ctx = makeApprovalCtx('pending_approval', {
-      tenantOverride: '99999999-9999-4999-8999-999999999999',
-    });
+      tenantOverride: '99999999-9999-4999-8999-999999999999' });
 
     await expect(
       ctx.svc.onApprovalDecided(VISITOR_ID, 'approved', APPROVER_USER_ID, TENANT_ID),
-    ).rejects.toThrow();
+    ).rejects.toThrow(AppError);
     expect(ctx.dbCtx.getRow().status).toBe('pending_approval');
   });
 });

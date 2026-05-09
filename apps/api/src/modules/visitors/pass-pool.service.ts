@@ -1,11 +1,8 @@
 import {
-  BadRequestException,
-  ConflictException,
   Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+  Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -81,7 +78,7 @@ export class VisitorPassPoolService {
   ): Promise<VisitorPassPool | null> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     // The SQL function returns `setof public.visitor_pass_pool` and is
@@ -124,7 +121,7 @@ export class VisitorPassPoolService {
    *   - status='available'                                       → in_use
    *   - status='reserved' AND reserved_for_visitor_id=visitorId  → in_use
    *
-   * Rejects (ConflictException):
+   * Rejects ():
    *   - status='reserved' for a different visitor (slice 2d desk
    *     pre-assignment is the supported path; reception cannot steal
    *     someone else's pre-reservation).
@@ -145,7 +142,7 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.db.tx(async (client) => {
@@ -153,7 +150,7 @@ export class VisitorPassPoolService {
       if (pass.tenant_id !== tenantId) {
         // Cross-tenant defence — the composite FK would also block this on
         // the UPDATE, but we want a clean 400 before the DB raises.
-        throw new BadRequestException('pass not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
       }
 
       // Visitor must also be in this tenant. The composite FK
@@ -168,20 +165,14 @@ export class VisitorPassPoolService {
           break;
         case 'reserved':
           if (pass.reserved_for_visitor_id !== visitorId) {
-            throw new ConflictException(
-              `pass ${pass.pass_number} is reserved for another visitor`,
-            );
+            throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is reserved for another visitor` });
           }
           break;
         case 'in_use':
-          throw new ConflictException(
-            `pass ${pass.pass_number} is already in use`,
-          );
+          throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is already in use` });
         case 'lost':
         case 'retired':
-          throw new BadRequestException(
-            `pass ${pass.pass_number} is ${pass.status} and cannot be assigned`,
-          );
+          throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status} and cannot be assigned` });
       }
 
       const nowIso = new Date().toISOString();
@@ -208,8 +199,7 @@ export class VisitorPassPoolService {
         pass_id: passId,
         pass_number: pass.pass_number,
         visitor_id: visitorId,
-        from_status: pass.status,
-      });
+        from_status: pass.status });
     });
   }
 
@@ -226,21 +216,19 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw new BadRequestException('pass not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
       }
       const visitor = await this.lockVisitor(client, visitorId, tenantId);
       void visitor;
 
       if (pass.status !== 'available') {
-        throw new ConflictException(
-          `pass ${pass.pass_number} is ${pass.status}; only 'available' passes can be reserved`,
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'available' passes can be reserved` });
       }
 
       await client.query(
@@ -254,8 +242,7 @@ export class VisitorPassPoolService {
       await this.emitAudit(client, 'visitor.pass_reserved', visitorId, {
         pass_id: passId,
         pass_number: pass.pass_number,
-        visitor_id: visitorId,
-      });
+        visitor_id: visitorId });
     });
   }
 
@@ -270,18 +257,16 @@ export class VisitorPassPoolService {
   async returnPass(passId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw new BadRequestException('pass not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
       }
       if (pass.status !== 'in_use') {
-        throw new BadRequestException(
-          `pass ${pass.pass_number} is ${pass.status}; only 'in_use' passes can be returned`,
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'in_use' passes can be returned` });
       }
 
       const previousVisitorId = pass.current_visitor_id;
@@ -311,8 +296,7 @@ export class VisitorPassPoolService {
       await this.emitAudit(client, 'visitor.pass_returned', previousVisitorId, {
         pass_id: passId,
         pass_number: pass.pass_number,
-        visitor_id: previousVisitorId,
-      });
+        visitor_id: previousVisitorId });
     });
   }
 
@@ -333,18 +317,16 @@ export class VisitorPassPoolService {
   ): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw new BadRequestException('pass not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
       }
       if (pass.status === 'retired') {
-        throw new BadRequestException(
-          `pass ${pass.pass_number} is retired; cannot mark missing`,
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is retired; cannot mark missing` });
       }
 
       // Capture pre-update state for the audit payload before we mutate.
@@ -375,8 +357,7 @@ export class VisitorPassPoolService {
         pass_id: passId,
         pass_number: passNumber,
         from_status: previousStatus,
-        reason: reason ?? null,
-      });
+        reason: reason ?? null });
     });
   }
 
@@ -388,18 +369,16 @@ export class VisitorPassPoolService {
   async markPassRecovered(passId: string, tenantId: string): Promise<void> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     await this.db.tx(async (client) => {
       const pass = await this.lockPass(client, passId);
       if (pass.tenant_id !== tenantId) {
-        throw new BadRequestException('pass not in current tenant');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'pass not in current tenant' });
       }
       if (pass.status !== 'lost') {
-        throw new BadRequestException(
-          `pass ${pass.pass_number} is ${pass.status}; only 'lost' passes can be recovered`,
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `pass ${pass.pass_number} is ${pass.status}; only 'lost' passes can be recovered` });
       }
 
       await client.query(
@@ -411,8 +390,7 @@ export class VisitorPassPoolService {
 
       await this.emitAudit(client, 'visitor.pass_recovered', null, {
         pass_id: passId,
-        pass_number: pass.pass_number,
-      });
+        pass_number: pass.pass_number });
     });
   }
 
@@ -430,7 +408,7 @@ export class VisitorPassPoolService {
   ): Promise<VisitorPassPool[]> {
     const ctxTenant = TenantContext.current();
     if (ctxTenant.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
 
     const anchor = await this.passPoolForSpace(buildingId, tenantId);
@@ -465,7 +443,7 @@ export class VisitorPassPoolService {
     );
     const pass = result.rows[0];
     if (!pass) {
-      throw new NotFoundException(`visitor_pass_pool ${passId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_pass_pool ${passId} not found` });
     }
     return pass;
   }
@@ -481,10 +459,10 @@ export class VisitorPassPoolService {
     );
     const v = result.rows[0];
     if (!v) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     if (v.tenant_id !== tenantId) {
-      throw new BadRequestException('visitor not in current tenant');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'visitor not in current tenant' });
     }
     return v;
   }

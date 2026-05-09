@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,10 +6,9 @@ import {
   Post,
   Query,
   Req,
-  Sse,
-  UnauthorizedException,
-} from '@nestjs/common';
+  Sse } from '@nestjs/common';
 import type { Request } from 'express';
+import { AppErrors } from '../../common/errors';
 import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { DbService } from '../../common/db/db.service';
@@ -24,8 +22,7 @@ import {
   PassReserveSchema,
   ReceptionCheckInSchema,
   ReceptionCheckOutSchema,
-  ReceptionWalkupSchema,
-} from './dto/schemas';
+  ReceptionWalkupSchema } from './dto/schemas';
 import { VisitorPassPoolService } from './pass-pool.service';
 import { ReceptionService } from './reception.service';
 import { VisitorEventBus } from './visitor-event-bus';
@@ -59,7 +56,7 @@ export class ReceptionController {
     @Query('building_id') buildingId?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.today(tenant.id, buildingId, actor.user_id);
@@ -75,7 +72,7 @@ export class ReceptionController {
     @Query('building_id') buildingId?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.todayCount(tenant.id, buildingId, actor.user_id);
@@ -88,7 +85,7 @@ export class ReceptionController {
     @Query('q') q?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.search(tenant.id, buildingId, actor.user_id, q ?? '');
@@ -100,7 +97,7 @@ export class ReceptionController {
     @Query('building_id') buildingId?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.yesterdayLooseEnds(tenant.id, buildingId, actor.user_id);
@@ -112,7 +109,7 @@ export class ReceptionController {
     @Query('building_id') buildingId?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
     return this.reception.dailyListForBuilding(tenant.id, buildingId, actor.user_id);
@@ -136,7 +133,7 @@ export class ReceptionController {
     @Query('building_id') buildingId?: string,
   ) {
     await this.permissions.requirePermission(req, 'visitors.reception');
-    if (!buildingId) throw new BadRequestException('building_id is required');
+    if (!buildingId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'building_id is required' });
     const tenant = TenantContext.current();
     const anchor = await this.passPool.passPoolForSpace(buildingId, tenant.id);
     if (!anchor) return [];
@@ -279,9 +276,7 @@ export class ReceptionController {
       pending_approval: pending,
       escalations: {
         host_not_acknowledged: ackEscalations,
-        unreturned_passes: unreturnedPasses,
-      },
-    };
+        unreturned_passes: unreturnedPasses } };
   }
 
   // ─── walk-up / check-in / out (write) ──────────────────────────────────
@@ -291,7 +286,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = ReceptionWalkupSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
@@ -304,7 +299,7 @@ export class ReceptionController {
        we accept it via header + cross-check the actor has scope. */
     const buildingId = (req.headers['x-building-id'] as string | undefined) ?? null;
     if (!buildingId) {
-      throw new BadRequestException('X-Building-Id header is required for walk-up');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'X-Building-Id header is required for walk-up' });
     }
     return this.reception.quickAddWalkup(
       tenant.id,
@@ -323,7 +318,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = ReceptionCheckInSchema.safeParse(body ?? {});
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
@@ -345,7 +340,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = ReceptionCheckOutSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     const actor = await this.resolveActor(req);
@@ -355,8 +350,7 @@ export class ReceptionController {
       { user_id: actor.user_id, person_id: actor.person_id },
       {
         checkout_source: parsed.data.checkout_source,
-        pass_returned: parsed.data.pass_returned,
-      },
+        pass_returned: parsed.data.pass_returned },
     );
     return { ok: true };
   }
@@ -385,7 +379,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = PassAssignSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     await this.passPool.assignPass(passId, parsed.data.visitor_id, tenant.id);
@@ -401,7 +395,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = PassReserveSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     await this.passPool.reservePass(passId, parsed.data.visitor_id, tenant.id);
@@ -425,7 +419,7 @@ export class ReceptionController {
     await this.permissions.requirePermission(req, 'visitors.reception');
     const parsed = PassMissingSchema.safeParse(body ?? {});
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const tenant = TenantContext.current();
     await this.passPool.markPassMissing(passId, tenant.id, parsed.data.reason);
@@ -477,7 +471,7 @@ export class ReceptionController {
     req: Request,
   ): Promise<{ user_id: string; person_id: string }> {
     const authUid = (req as { user?: { id: string } }).user?.id;
-    if (!authUid) throw new UnauthorizedException('No auth user');
+    if (!authUid) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No auth user' });
     const tenant = TenantContext.current();
 
     const lookup = await this.supabase.admin
@@ -487,11 +481,9 @@ export class ReceptionController {
       .eq('auth_uid', authUid)
       .maybeSingle();
     const row = lookup.data as { id: string; person_id: string | null } | null;
-    if (!row) throw new UnauthorizedException('No linked user in this tenant');
+    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'No linked user in this tenant' });
     if (!row.person_id) {
-      throw new UnauthorizedException(
-        'Your user account is not linked to a person — contact your admin',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Your user account is not linked to a person — contact your admin' });
     }
     return { user_id: row.id, person_id: row.person_id };
   }

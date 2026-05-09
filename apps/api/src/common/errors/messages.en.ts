@@ -1411,6 +1411,26 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't process",
     detail: 'Client request id is invalid.',
   },
+
+  // ─── visitors (Phase 7.B-1.visitors) ─────────────────────────────────────
+  'visitor.not_found': { title: "Couldn't find that visitor" },
+  'visitor.invalid_payload': { title: "Couldn't process that request" },
+  'visitor.invalid_state': { title: "Couldn't update that visitor", detail: "That state transition isn't allowed." },
+  'visitor.forbidden': { title: "You don't have access to this" },
+  'visitor.unauthorized': { title: 'Sign in to continue' },
+  'visitor.conflict': { title: "Couldn't save", detail: 'Conflict with existing data.' },
+  'visitor.field_required': { title: "Couldn't process", detail: 'A required field is missing.' },
+  'visitor.invalid_uuid': { title: "Couldn't process", detail: 'Invalid UUID.' },
+  'visitor.duplicate': { title: "Couldn't save", detail: 'A duplicate already exists.' },
+  'visitor.host_not_found': { title: "Couldn't find that host" },
+  'visitor.kiosk_unauthorized': { title: 'Kiosk authentication failed' },
+  'visitor.pass_not_found': { title: "Couldn't find that pass" },
+  'visitor.pass_unavailable': { title: 'Pass unavailable' },
+  'visitor.invitation_not_found': { title: "Couldn't find that invitation" },
+  'visitor.reception_failed': { title: "Couldn't process at reception" },
+  'visitor.notification_failed': { title: "Couldn't send notification" },
+  'visitor.invalid_token': { title: 'Invitation link is invalid', detail: 'This link has expired or is no longer valid.' },
+  'visitor.config_missing': { title: "Couldn't process", detail: 'Visitor service is not configured.' },
 };
 
 /**

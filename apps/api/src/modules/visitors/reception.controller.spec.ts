@@ -8,12 +8,8 @@
  *   - SSE host-arrivals stream filters by tenant + person_id
  */
 
-import {
-  BadRequestException,
-  ForbiddenException,
-  UnauthorizedException,
-} from '@nestjs/common';
 import type { Request } from 'express';
+import { AppError, AppErrors } from '../../common/errors';
 import { Subject } from 'rxjs';
 import { TenantContext } from '../../common/tenant-context';
 import { ReceptionController } from './reception.controller';
@@ -39,14 +35,12 @@ function makeHarness(opts: HarnessOpts = {}) {
   jest.spyOn(TenantContext, 'current').mockReturnValue({
     id: TENANT_ID,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
 
   const subject = new Subject<HostNotificationEvent>();
   const events = {
     events$: subject.asObservable(),
-    emit: (e: HostNotificationEvent) => subject.next(e),
-  };
+    emit: (e: HostNotificationEvent) => subject.next(e) };
 
   const supabase = {
     admin: {
@@ -58,14 +52,7 @@ function makeHarness(opts: HarnessOpts = {}) {
                 data: opts.userRow === undefined
                   ? { id: USER_ID, person_id: PERSON_ID }
                   : opts.userRow,
-                error: null,
-              }),
-            }),
-          }),
-        }),
-      })),
-    },
-  };
+                error: null }) }) }) }) })) } };
 
   const reception = {
     today: jest.fn(async () => ({ generated_at: 'x' })),
@@ -75,23 +62,20 @@ function makeHarness(opts: HarnessOpts = {}) {
     markCheckedOut: jest.fn(async () => undefined),
     markNoShow: jest.fn(async () => undefined),
     yesterdayLooseEnds: jest.fn(async () => ({ auto_checked_out_count: 0, unreturned_passes: [], bounced_emails: [] })),
-    dailyListForBuilding: jest.fn(async () => []),
-  };
+    dailyListForBuilding: jest.fn(async () => []) };
 
   const passPool = {
     assignPass: jest.fn(async () => undefined),
     reservePass: jest.fn(async () => undefined),
     returnPass: jest.fn(async () => undefined),
     markPassMissing: jest.fn(async () => undefined),
-    markPassRecovered: jest.fn(async () => undefined),
-  };
+    markPassRecovered: jest.fn(async () => undefined) };
 
   const permissions = {
     requirePermission: jest.fn(async () => {
-      if (opts.permissionDenied) throw new ForbiddenException();
+      if (opts.permissionDenied) throw AppErrors.permissionDenied();
       return { userId: USER_ID };
-    }),
-  };
+    }) };
 
   const controller = new ReceptionController(
     reception as never,
@@ -109,8 +93,7 @@ const makeReq = (
 ): Request =>
   ({
     user: authUid ? { id: authUid } : undefined,
-    headers,
-  }) as unknown as Request;
+    headers }) as unknown as Request;
 
 describe('ReceptionController', () => {
   afterEach(() => jest.restoreAllMocks());
@@ -120,20 +103,20 @@ describe('ReceptionController', () => {
       const h = makeHarness({ permissionDenied: true });
       await expect(
         h.controller.today(makeReq(), BUILDING_ID),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
     });
     it('rejects walkup without visitors.reception', async () => {
       const h = makeHarness({ permissionDenied: true });
       await expect(
         h.controller.walkup(makeReq(AUTH_UID, { 'x-building-id': BUILDING_ID }), {}),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
   describe('today / search / daglijst (read)', () => {
     it('today requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.today(makeReq(), undefined)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.today(makeReq(), undefined)).rejects.toBeInstanceOf(AppError);
     });
 
     it('today delegates to ReceptionService.today with tenant + actor', async () => {
@@ -144,12 +127,12 @@ describe('ReceptionController', () => {
 
     it('search requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.search(makeReq(), undefined, 'q')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.search(makeReq(), undefined, 'q')).rejects.toBeInstanceOf(AppError);
     });
 
     it('daglijst requires building_id', async () => {
       const h = makeHarness();
-      await expect(h.controller.daglijst(makeReq(), undefined)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.daglijst(makeReq(), undefined)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -158,7 +141,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.walkup(makeReq(AUTH_UID, { 'x-building-id': BUILDING_ID }), { first_name: '' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('rejects missing X-Building-Id header', async () => {
@@ -167,9 +150,8 @@ describe('ReceptionController', () => {
         h.controller.walkup(makeReq(), {
           first_name: 'X',
           visitor_type_id: VISITOR_TYPE_ID,
-          primary_host_person_id: PERSON_ID,
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+          primary_host_person_id: PERSON_ID }),
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('happy path: delegates with X-Building-Id header', async () => {
@@ -177,8 +159,7 @@ describe('ReceptionController', () => {
       await h.controller.walkup(makeReq(AUTH_UID, { 'x-building-id': BUILDING_ID }), {
         first_name: 'Marleen',
         visitor_type_id: VISITOR_TYPE_ID,
-        primary_host_person_id: PERSON_ID,
-      });
+        primary_host_person_id: PERSON_ID });
       expect(h.reception.quickAddWalkup).toHaveBeenCalledWith(
         TENANT_ID,
         BUILDING_ID,
@@ -199,15 +180,14 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.checkOut(makeReq(), VISITOR_ID, { pass_returned: true }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('check-out happy path passes through pass_returned', async () => {
       const h = makeHarness();
       await h.controller.checkOut(makeReq(), VISITOR_ID, {
         checkout_source: 'reception',
-        pass_returned: true,
-      });
+        pass_returned: true });
       expect(h.reception.markCheckedOut).toHaveBeenCalledWith(
         TENANT_ID,
         VISITOR_ID,
@@ -228,7 +208,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.assignPass(makeReq(), PASS_ID, {}),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('assignPass delegates with tenant', async () => {
@@ -241,7 +221,7 @@ describe('ReceptionController', () => {
       const h = makeHarness();
       await expect(
         h.controller.reservePass(makeReq(), PASS_ID, {}),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('returnPass / markRecovered delegate', async () => {
@@ -264,7 +244,7 @@ describe('ReceptionController', () => {
   describe('SSE host-arrivals', () => {
     it('rejects when no auth user', async () => {
       const h = makeHarness();
-      await expect(h.controller.hostArrivals(makeReq(null))).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(h.controller.hostArrivals(makeReq(null))).rejects.toBeInstanceOf(AppError);
     });
 
     it('emits only this host\'s events for this tenant', async () => {
@@ -280,24 +260,21 @@ describe('ReceptionController', () => {
         host_person_id: PERSON_ID,
         visitor_id: VISITOR_ID,
         kind: 'visitor.arrived',
-        occurred_at: '2026-05-01T09:00:00Z',
-      });
+        occurred_at: '2026-05-01T09:00:00Z' });
       // Should NOT reach: different host.
       h.events.emit({
         tenant_id: TENANT_ID,
         host_person_id: OTHER_PERSON_ID,
         visitor_id: VISITOR_ID,
         kind: 'visitor.arrived',
-        occurred_at: '2026-05-01T09:01:00Z',
-      });
+        occurred_at: '2026-05-01T09:01:00Z' });
       // Should NOT reach: different tenant.
       h.events.emit({
         tenant_id: OTHER_TENANT_ID,
         host_person_id: PERSON_ID,
         visitor_id: VISITOR_ID,
         kind: 'visitor.arrived',
-        occurred_at: '2026-05-01T09:02:00Z',
-      });
+        occurred_at: '2026-05-01T09:02:00Z' });
 
       sub.unsubscribe();
       expect(seen).toHaveLength(1);

@@ -1,10 +1,9 @@
 import {
   CanActivate,
   ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+  Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { AppErrors } from '../../common/errors';
 import type { Request } from 'express';
 import { DbService } from '../../common/db/db.service';
 import type { KioskContext } from './dto/kiosk.dto';
@@ -48,7 +47,7 @@ export class KioskAuthGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<RequestWithKioskContext>();
     const token = readBearer(req);
     if (!token) {
-      throw new UnauthorizedException('Missing kiosk token');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Missing kiosk token' });
     }
 
     let row: {
@@ -66,7 +65,7 @@ export class KioskAuthGuard implements CanActivate {
       const code = (err as { code?: string }).code;
       // 45011 invalid / 45012 inactive / 45013 expired — all surface as 401.
       if (code === '45011' || code === '45012' || code === '45013') {
-        throw new UnauthorizedException('Kiosk token invalid or expired');
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Kiosk token invalid or expired' });
       }
       throw err;
     }
@@ -75,14 +74,13 @@ export class KioskAuthGuard implements CanActivate {
       // Belt-and-braces: the function raises rather than returning empty,
       // but if a future change makes it return-empty we still 401 instead
       // of crashing on undefined.
-      throw new UnauthorizedException('Kiosk token invalid or expired');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Kiosk token invalid or expired' });
     }
 
     req.kioskContext = {
       tenantId: row.tenant_id,
       buildingId: row.building_id,
-      kioskTokenId: row.kiosk_token_id,
-    };
+      kioskTokenId: row.kiosk_token_id };
     return true;
   }
 }

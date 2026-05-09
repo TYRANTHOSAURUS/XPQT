@@ -20,7 +20,7 @@
  * host-notification side effect.
  */
 
-import { GoneException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import type { Request } from 'express';
 import { TenantContext } from '../../common/tenant-context';
 import { VisitorsController } from './visitors.controller';
@@ -49,19 +49,16 @@ interface State {
 function build() {
   const state: State = {
     visitor: null,
-    tokens: new Map(),
-  };
+    tokens: new Map() };
 
   jest.spyOn(TenantContext, 'current').mockReturnValue({
     id: TENANT_A,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
   jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({
     id: TENANT_A,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
   // TenantContext.run is exercised by the controller's notify path.
   // Don't stub it; let the AsyncLocalStorage actually run the callback.
 
@@ -75,23 +72,13 @@ function build() {
                 eq: () => ({
                   maybeSingle: async () => ({
                     data: { id: HOST_USER_ID, person_id: HOST_PERSON_ID },
-                    error: null,
-                  }),
-                }),
-              }),
-            }),
-          };
+                    error: null }) }) }) }) };
         }
         return {
           select: () => ({
             eq: () => ({
-              maybeSingle: async () => ({ data: null, error: null }),
-            }),
-          }),
-        };
-      }),
-    },
-  };
+              maybeSingle: async () => ({ data: null, error: null }) }) }) };
+      }) } };
 
   const db = {
     queryOne: jest.fn(async (sql: string, params: unknown[]) => {
@@ -145,8 +132,7 @@ function build() {
             expected_until: null,
             building_id: null,
             building_name: null,
-            host_first_name: null,
-          };
+            host_first_name: null };
         }
         return {
           visitor_id: row.visitor_id,
@@ -157,13 +143,11 @@ function build() {
           expected_until: '2026-05-02T11:00:00.000Z',
           building_id: BUILDING_ID,
           building_name: 'HQ Amsterdam',
-          host_first_name: 'Sarah',
-        };
+          host_first_name: 'Sarah' };
       }
       return null;
     }),
-    queryMany: jest.fn(async () => []),
-  };
+    queryMany: jest.fn(async () => []) };
 
   const invitations = {
     create: jest.fn(async () => {
@@ -172,24 +156,20 @@ function build() {
         visitor_id: VISITOR_ID,
         tenant_id: TENANT_A,
         used: false,
-        expired: false,
-      });
+        expired: false });
       return {
         visitor_id: VISITOR_ID,
         status: 'expected' as const,
         approval_id: null,
-        cancel_token: TOKEN_OK,
-      };
-    }),
-  };
+        cancel_token: TOKEN_OK };
+    }) };
 
   const visitorService = {
     transitionStatus: jest.fn(async (id: string, to: VisitorStatus) => {
       if (!state.visitor || state.visitor.id !== id) throw new Error('not found');
       state.visitor.status = to;
       return state.visitor;
-    }),
-  };
+    }) };
 
   const notifyCalls: Array<{ visitor_id: string; tenant_id: string; ctxTenantId: string }> = [];
   const hostNotifications = {
@@ -201,15 +181,12 @@ function build() {
       notifyCalls.push({
         visitor_id,
         tenant_id,
-        ctxTenantId: ctx?.id ?? '',
-      });
+        ctxTenantId: ctx?.id ?? '' });
     }),
-    acknowledge: jest.fn(),
-  };
+    acknowledge: jest.fn() };
 
   const permissions = {
-    requirePermission: jest.fn(async () => ({ userId: HOST_USER_ID })),
-  };
+    requirePermission: jest.fn(async () => ({ userId: HOST_USER_ID })) };
 
   const controller = new VisitorsController(
     invitations as never,
@@ -238,8 +215,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       email: 'marleen@example.com',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
     expect(invite.visitor_id).toBe(VISITOR_ID);
     expect(invite.status).toBe('expected');
 
@@ -263,13 +239,10 @@ describe('Visitor cancel-link flow — slice 5', () => {
       first_name: 'Marleen',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
 
     await h.controller.cancelByToken(TOKEN_OK);
-    await expect(h.controller.cancelByToken(TOKEN_OK)).rejects.toBeInstanceOf(
-      GoneException,
-    );
+    await expect(h.controller.cancelByToken(TOKEN_OK)).rejects.toBeInstanceOf(AppError);
   });
 
   it('wrong tenant context (token issued for tenant B) returns 410', async () => {
@@ -278,12 +251,11 @@ describe('Visitor cancel-link flow — slice 5', () => {
       visitor_id: VISITOR_ID,
       tenant_id: TENANT_B, // mismatch
       used: false,
-      expired: false,
-    });
+      expired: false });
 
     await expect(
       h.controller.cancelByToken(TOKEN_CROSS_TENANT),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
     expect(h.hostNotifications.notifyVisitorCancelled).not.toHaveBeenCalled();
@@ -300,7 +272,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
 
     await expect(
       h.controller.cancelByToken(TOKEN_EXPIRED),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
     expect(h.hostNotifications.notifyVisitorCancelled).not.toHaveBeenCalled();
@@ -310,7 +282,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
     const h = build();
     await expect(
       h.controller.cancelByToken('garbage'),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
 
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();
   });
@@ -321,8 +293,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       first_name: 'Marleen',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
 
     const preview = await h.controller.previewCancel(TOKEN_OK);
     expect(preview).toMatchObject({
@@ -330,8 +301,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       visitor_status: 'expected',
       first_name: 'Marleen',
       building_name: 'HQ Amsterdam',
-      host_first_name: 'Sarah',
-    });
+      host_first_name: 'Sarah' });
     // Crucial: the cancel POST still works after the preview — the
     // token wasn't consumed by peek.
     const cancel = await h.controller.cancelByToken(TOKEN_OK);
@@ -340,9 +310,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
 
   it('preview returns 410 for invalid tokens', async () => {
     const h = build();
-    await expect(h.controller.previewCancel('garbage')).rejects.toBeInstanceOf(
-      GoneException,
-    );
+    await expect(h.controller.previewCancel('garbage')).rejects.toBeInstanceOf(AppError);
   });
 
   it('preview returns 410 for expired tokens', async () => {
@@ -351,11 +319,8 @@ describe('Visitor cancel-link flow — slice 5', () => {
       visitor_id: VISITOR_ID,
       tenant_id: TENANT_A,
       used: false,
-      expired: true,
-    });
-    await expect(h.controller.previewCancel(TOKEN_EXPIRED)).rejects.toBeInstanceOf(
-      GoneException,
-    );
+      expired: true });
+    await expect(h.controller.previewCancel(TOKEN_EXPIRED)).rejects.toBeInstanceOf(AppError);
   });
 
   it('preview returns 410 for cross-tenant tokens', async () => {
@@ -364,11 +329,10 @@ describe('Visitor cancel-link flow — slice 5', () => {
       visitor_id: VISITOR_ID,
       tenant_id: TENANT_B,
       used: false,
-      expired: false,
-    });
+      expired: false });
     await expect(
       h.controller.previewCancel(TOKEN_CROSS_TENANT),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it('preview after cancel returns visitor_status=cancelled with tombstoned PII (I12)', async () => {
@@ -377,8 +341,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       first_name: 'Marleen',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
 
     // Pre-cancel preview: full denormalized payload — first name + host
     // name + building name all present.
@@ -413,8 +376,7 @@ describe('Visitor cancel-link flow — slice 5', () => {
       first_name: 'Marleen',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
 
     // Cancel still succeeds even though the notify path threw.
     const cancel = await h.controller.cancelByToken(TOKEN_OK);

@@ -13,6 +13,7 @@
  */
 
 import { VisitorReminderWorker } from './visitor-reminder.worker';
+import { AppError } from '../../common/errors';
 
 const TENANT_A = '11111111-1111-4111-8111-111111111111';
 const TENANT_B = '99999999-9999-4999-8999-999999999999';
@@ -57,8 +58,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
         return opts.candidates ?? [];
       }
       return [];
-    }),
-  };
+    }) };
 
   return { db, sqlCalls };
 }
@@ -117,19 +117,15 @@ function makeFakeSupabase(fx: FakeSupabaseFixtures = {}) {
           for (const r of arr) auditInserts.push(r as Record<string, unknown>);
         }
         return {
-          select: () => ({ single: async () => ({ data: { id: 'inserted' }, error: null }) }),
-        };
-      },
-    };
+          select: () => ({ single: async () => ({ data: { id: 'inserted' }, error: null }) }) };
+      } };
     return q;
   };
 
   return {
     supabase: {
-      admin: { from: jest.fn((table: string) => builder(table)) },
-    },
-    auditInserts,
-  };
+      admin: { from: jest.fn((table: string) => builder(table)) } },
+    auditInserts };
 }
 
 interface SendCall {
@@ -150,8 +146,7 @@ function makeFakeMail(opts: { failOn?: Set<string> } = {}) {
       if (opts.failOn?.has(key)) throw new Error(`provider failed: ${key}`);
       return { messageId: `pm-${calls.length}`, acceptedAt: new Date().toISOString() };
     }),
-    verifyWebhook: jest.fn(),
-  };
+    verifyWebhook: jest.fn() };
   return { mail, calls };
 }
 
@@ -163,10 +158,8 @@ function makeFakeAdapter() {
         sentCalls.push({ visitor_id: vid, tenant_id: tid, provider_message_id: pmid });
       }),
       recordBounced: jest.fn(async () => undefined),
-      recordDelivered: jest.fn(async () => undefined),
-    },
-    sentCalls,
-  };
+      recordDelivered: jest.fn(async () => undefined) },
+    sentCalls };
 }
 
 function buildVisitor(id: string, tenantId: string, expectedAt: string) {
@@ -183,8 +176,7 @@ function buildVisitor(id: string, tenantId: string, expectedAt: string) {
     meeting_room_id: ROOM,
     primary_host_person_id: HOST,
     visitor_type_id: VISITOR_TYPE,
-    notes_for_visitor: null,
-  };
+    notes_for_visitor: null };
 }
 
 function buildFixtures(visitors: Array<{ id: string; tenant_id: string; expected_at: string }>) {
@@ -209,10 +201,8 @@ function buildFixtures(visitors: Array<{ id: string; tenant_id: string; expected
         display_name: 'Guest',
         requires_id_scan: false,
         requires_nda: false,
-        requires_photo: false,
-      }],
-    ]),
-  } satisfies FakeSupabaseFixtures;
+        requires_photo: false }],
+    ]) } satisfies FakeSupabaseFixtures;
 }
 
 describe('VisitorReminderWorker', () => {
@@ -243,8 +233,7 @@ describe('VisitorReminderWorker', () => {
     ];
     const { db } = makeFakeDb({
       candidates,
-      dedupHit: new Set([VISITOR_A1]),
-    });
+      dedupHit: new Set([VISITOR_A1]) });
     const { supabase } = makeFakeSupabase(buildFixtures(candidates));
     const { mail, calls } = makeFakeMail();
     const { adapter } = makeFakeAdapter();

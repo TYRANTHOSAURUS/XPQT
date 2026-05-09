@@ -1,12 +1,10 @@
 import {
-  BadRequestException,
   Inject,
   Injectable,
   Logger,
-  NotFoundException,
-  forwardRef,
-} from '@nestjs/common';
+  forwardRef } from '@nestjs/common';
 import { DbService } from '../../common/db/db.service';
+import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { HostNotificationService } from './host-notification.service';
 import { InvitationService } from './invitation.service';
@@ -19,8 +17,7 @@ import type {
   ReceptionActor,
   ReceptionVisitorRow,
   TodayView,
-  YesterdayLooseEnds,
-} from './dto/reception.dto';
+  YesterdayLooseEnds } from './dto/reception.dto';
 import type { VisitorStatus } from './dto/transition-status.dto';
 
 /**
@@ -172,8 +169,7 @@ export class ReceptionService {
       currently_arriving: [],
       expected: [],
       in_meeting: [],
-      checked_out_today: [],
-    };
+      checked_out_today: [] };
 
     for (const row of rows) {
       const mapped = mapRow(row);
@@ -244,8 +240,7 @@ export class ReceptionService {
     );
     return {
       count: row?.count ?? 0,
-      hasUrgency: row?.has_urgency ?? false,
-    };
+      hasUrgency: row?.has_urgency ?? false };
   }
 
   /**
@@ -408,7 +403,7 @@ export class ReceptionService {
   ): Promise<{ visitor_id: string }> {
     this.assertTenant(tenantId);
     if (actor.tenant_id !== tenantId) {
-      throw new BadRequestException('actor tenant mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'actor tenant mismatch' });
     }
     const arrivedAt = dto.arrived_at ?? new Date().toISOString();
     this.assertArrivedAtBound(arrivedAt);
@@ -429,15 +424,13 @@ export class ReceptionService {
       [dto.visitor_type_id, tenantId],
     );
     if (!type) {
-      throw new NotFoundException(`visitor_type ${dto.visitor_type_id} not found or inactive`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor_type ${dto.visitor_type_id} not found or inactive` });
     }
     if (!type.allow_walk_up) {
-      throw new BadRequestException('Walk-ups are disabled for this visitor type');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'Walk-ups are disabled for this visitor type' });
     }
     if (type.requires_approval) {
-      throw new BadRequestException(
-        'This visitor type requires approval — walk-ups disabled. Ask the host to pre-invite.',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'This visitor type requires approval — walk-ups disabled. Ask the host to pre-invite.' });
     }
 
     // 2. Create the invitation (visitor + visitor_hosts + cancel token).
@@ -456,8 +449,7 @@ export class ReceptionService {
         expected_at: arrivedAt,
         building_id: buildingId,
         co_host_person_ids: [dto.primary_host_person_id]
-          .filter((id) => id !== actor.person_id),
-      },
+          .filter((id) => id !== actor.person_id) },
       { user_id: actor.user_id, person_id: dto.primary_host_person_id, tenant_id: tenantId },
     );
 
@@ -507,9 +499,7 @@ export class ReceptionService {
       const arrivedMs = new Date(arrivedAt).getTime();
       // Sanity: arrived no more than 24h before expected.
       if (arrivedMs < expectedMs - 24 * 60 * 60 * 1000) {
-        throw new BadRequestException(
-          'arrived_at is more than 24h before expected_at — looks like a typo',
-        );
+        throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'arrived_at is more than 24h before expected_at — looks like a typo' });
       }
     }
 
@@ -541,22 +531,19 @@ export class ReceptionService {
   ): Promise<void> {
     this.assertTenant(tenantId);
     if (opts.checkout_source !== 'reception' && opts.checkout_source !== 'host') {
-      throw new BadRequestException(
-        'checkout_source must be "reception" or "host" for this surface',
-      );
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'checkout_source must be "reception" or "host" for this surface' });
     }
 
     const visitor = await this.db.queryOne<{ id: string; tenant_id: string; visitor_pass_id: string | null }>(
       `select id, tenant_id, visitor_pass_id from public.visitors where id = $1`,
       [visitorId],
     );
-    if (!visitor) throw new NotFoundException(`visitor ${visitorId} not found`);
-    if (visitor.tenant_id !== tenantId) throw new NotFoundException(`visitor ${visitorId} not found`);
+    if (!visitor) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
+    if (visitor.tenant_id !== tenantId) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
 
     await this.visitors.transitionStatus(visitorId, 'checked_out', actor, {
       checkout_source: opts.checkout_source,
-      visitor_pass_id: visitor.visitor_pass_id ?? undefined,
-    });
+      visitor_pass_id: visitor.visitor_pass_id ?? undefined });
 
     if (visitor.visitor_pass_id) {
       if (opts.pass_returned === true) {
@@ -651,8 +638,7 @@ export class ReceptionService {
     return {
       auto_checked_out_count: counts?.auto_checked_out_count ?? 0,
       unreturned_passes: unreturnedPasses,
-      bounced_emails: bouncedEmails,
-    };
+      bounced_emails: bouncedEmails };
   }
 
   /**
@@ -698,18 +684,18 @@ export class ReceptionService {
   private assertTenant(tenantId: string): void {
     const ctx = TenantContext.current();
     if (ctx.id !== tenantId) {
-      throw new BadRequestException('tenant context mismatch');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'tenant context mismatch' });
     }
   }
 
   private assertArrivedAtBound(arrivedAt: string): void {
     const ts = new Date(arrivedAt).getTime();
     if (Number.isNaN(ts)) {
-      throw new BadRequestException('arrived_at is not a valid timestamp');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'arrived_at is not a valid timestamp' });
     }
     if (ts > Date.now() + 60_000) {
       // Allow a 60s skew window for clients with slightly fast clocks.
-      throw new BadRequestException('arrived_at cannot be in the future');
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: 'arrived_at cannot be in the future' });
     }
   }
 
@@ -721,9 +707,9 @@ export class ReceptionService {
       `select expected_at, tenant_id from public.visitors where id = $1`,
       [visitorId],
     );
-    if (!row) throw new NotFoundException(`visitor ${visitorId} not found`);
+    if (!row) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     if (row.tenant_id !== tenantId) {
-      throw new NotFoundException(`visitor ${visitorId} not found`);
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: `visitor ${visitorId} not found` });
     }
     return row.expected_at;
   }
@@ -742,8 +728,7 @@ function mapRow(r: VisitorRowDb): ReceptionVisitorRow {
     status: r.status,
     visitor_pass_id: r.visitor_pass_id,
     pass_number: r.pass_number,
-    visitor_type_id: r.visitor_type_id,
-  };
+    visitor_type_id: r.visitor_type_id };
 }
 
 function startOfDay(d: Date): Date {

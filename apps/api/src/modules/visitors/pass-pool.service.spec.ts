@@ -18,7 +18,7 @@
  * rows, captures UPDATEs + audit_events for assertion.
  */
 
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import type { PoolClient } from 'pg';
 import { VisitorPassPoolService, type VisitorPassPool } from './pass-pool.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -51,8 +51,7 @@ function basePass(overrides: Partial<VisitorPassPool> = {}): VisitorPassPool {
     notes: null,
     created_at: '2026-04-30T08:00:00Z',
     updated_at: '2026-04-30T08:00:00Z',
-    ...overrides,
-  };
+    ...overrides };
 }
 
 interface FakeDbOpts {
@@ -168,8 +167,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
       }
 
       return { rows: [], rowCount: 0 };
-    }),
-  };
+    }) };
 
   const db = {
     tx: jest.fn(async <T>(fn: (c: PoolClient) => Promise<T>): Promise<T> => fn(client as PoolClient)),
@@ -185,8 +183,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
         return (opts.unreturnedRows ?? []) as unknown as T[];
       }
       return [] as T[];
-    }),
-  };
+    }) };
 
   return {
     db,
@@ -195,8 +192,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
     audit,
     visitorUpdates,
     passUpdates,
-    getPass: () => pass,
-  };
+    getPass: () => pass };
 }
 
 function tenantCtx() {
@@ -212,8 +208,7 @@ describe('VisitorPassPoolService', () => {
     it('returns the building pool when one is anchored at the building', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        poolForSpaceRows: [basePass({ space_id: BUILDING_ID, space_kind: 'building' })],
-      });
+        poolForSpaceRows: [basePass({ space_id: BUILDING_ID, space_kind: 'building' })] });
       const svc = new VisitorPassPoolService(ctx.db as never);
       const pool = await svc.passPoolForSpace(BUILDING_ID, TENANT_ID);
       expect(pool?.space_id).toBe(BUILDING_ID);
@@ -222,8 +217,7 @@ describe('VisitorPassPoolService', () => {
     it('returns the site-level pool when no building-level pool exists (inheritance)', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        poolForSpaceRows: [basePass({ space_id: SITE_ID, space_kind: 'site' })],
-      });
+        poolForSpaceRows: [basePass({ space_id: SITE_ID, space_kind: 'site' })] });
       const svc = new VisitorPassPoolService(ctx.db as never);
       const pool = await svc.passPoolForSpace(BUILDING_ID, TENANT_ID);
       expect(pool?.space_kind).toBe('site');
@@ -241,9 +235,7 @@ describe('VisitorPassPoolService', () => {
       tenantCtx();
       const ctx = makeFakeDb({});
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.passPoolForSpace(BUILDING_ID, OTHER_TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.passPoolForSpace(BUILDING_ID, OTHER_TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -272,9 +264,7 @@ describe('VisitorPassPoolService', () => {
       const ctx = makeFakeDb({
         initialPass: basePass({
           status: 'reserved',
-          reserved_for_visitor_id: VISITOR_ID,
-        }),
-      });
+          reserved_for_visitor_id: VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
       await svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID);
 
@@ -285,81 +275,61 @@ describe('VisitorPassPoolService', () => {
       expect(pass?.reserved_for_visitor_id).toBeNull();
     });
 
-    it('reserved-for-different-visitor throws ConflictException', async () => {
+    it('reserved-for-different-visitor throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({
           status: 'reserved',
-          reserved_for_visitor_id: OTHER_VISITOR_ID,
-        }),
-      });
+          reserved_for_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        ConflictException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
       // No mutation
       expect(ctx.passUpdates).toHaveLength(0);
     });
 
-    it('already in_use throws ConflictException', async () => {
+    it('already in_use throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({
           status: 'in_use',
-          current_visitor_id: OTHER_VISITOR_ID,
-        }),
-      });
+          current_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        ConflictException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
 
-    it('lost or retired passes throw BadRequestException', async () => {
+    it('lost or retired passes throw ', async () => {
       tenantCtx();
       const ctxLost = makeFakeDb({ initialPass: basePass({ status: 'lost' }) });
       const svc = new VisitorPassPoolService(ctxLost.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
 
       const ctxRetired = makeFakeDb({ initialPass: basePass({ status: 'retired' }) });
       const svcRetired = new VisitorPassPoolService(ctxRetired.db as never);
-      await expect(svcRetired.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svcRetired.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
 
     it('cross-tenant pass access blocked', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        initialPass: basePass({ tenant_id: OTHER_TENANT_ID, status: 'available' }),
-      });
+        initialPass: basePass({ tenant_id: OTHER_TENANT_ID, status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
 
     it('cross-tenant visitor blocked', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
         initialPass: basePass({ status: 'available' }),
-        visitorRow: { id: VISITOR_ID, tenant_id: OTHER_TENANT_ID },
-      });
+        visitorRow: { id: VISITOR_ID, tenant_id: OTHER_TENANT_ID } });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
 
-    it('missing pass throws NotFoundException', async () => {
+    it('missing pass throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: undefined });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(svc.assignPass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -376,15 +346,12 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_reserved')).toBeTruthy();
     });
 
-    it('non-available passes throw ConflictException', async () => {
+    it('non-available passes throw ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        initialPass: basePass({ status: 'in_use', current_visitor_id: OTHER_VISITOR_ID }),
-      });
+        initialPass: basePass({ status: 'in_use', current_visitor_id: OTHER_VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.reservePass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        ConflictException,
-      );
+      await expect(svc.reservePass(PASS_ID, VISITOR_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -395,9 +362,7 @@ describe('VisitorPassPoolService', () => {
         initialPass: basePass({
           status: 'in_use',
           current_visitor_id: VISITOR_ID,
-          last_assigned_at: '2026-04-30T09:00:00Z',
-        }),
-      });
+          last_assigned_at: '2026-04-30T09:00:00Z' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
       await svc.returnPass(PASS_ID, TENANT_ID);
 
@@ -413,11 +378,11 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_returned')).toBeTruthy();
     });
 
-    it('non-in_use throws BadRequestException', async () => {
+    it('non-in_use throws ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.returnPass(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(svc.returnPass(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -425,8 +390,7 @@ describe('VisitorPassPoolService', () => {
     it('audit emits with reason metadata', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        initialPass: basePass({ status: 'in_use', current_visitor_id: VISITOR_ID }),
-      });
+        initialPass: basePass({ status: 'in_use', current_visitor_id: VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
       await svc.markPassMissing(PASS_ID, TENANT_ID, 'visitor walked off');
 
@@ -435,15 +399,13 @@ describe('VisitorPassPoolService', () => {
       expect(evt!.details).toMatchObject({
         pass_number: '042',
         reason: 'visitor walked off',
-        from_status: 'in_use',
-      });
+        from_status: 'in_use' });
     });
 
     it('clears visitor.visitor_pass_id when previously held', async () => {
       tenantCtx();
       const ctx = makeFakeDb({
-        initialPass: basePass({ status: 'in_use', current_visitor_id: VISITOR_ID }),
-      });
+        initialPass: basePass({ status: 'in_use', current_visitor_id: VISITOR_ID }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
       await svc.markPassMissing(PASS_ID, TENANT_ID);
 
@@ -459,9 +421,7 @@ describe('VisitorPassPoolService', () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'retired' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.markPassMissing(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.markPassMissing(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -477,13 +437,11 @@ describe('VisitorPassPoolService', () => {
       expect(ctx.audit.find((a) => a.event_type === 'visitor.pass_recovered')).toBeTruthy();
     });
 
-    it('non-lost passes throw BadRequestException', async () => {
+    it('non-lost passes throw ', async () => {
       tenantCtx();
       const ctx = makeFakeDb({ initialPass: basePass({ status: 'available' }) });
       const svc = new VisitorPassPoolService(ctx.db as never);
-      await expect(svc.markPassRecovered(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(svc.markPassRecovered(PASS_ID, TENANT_ID)).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -493,8 +451,7 @@ describe('VisitorPassPoolService', () => {
       const lost = basePass({ status: 'lost', last_assigned_at: '2026-04-30T16:00:00Z' });
       const ctx = makeFakeDb({
         poolForSpaceRows: [basePass({ space_id: BUILDING_ID })],
-        unreturnedRows: [lost],
-      });
+        unreturnedRows: [lost] });
       const svc = new VisitorPassPoolService(ctx.db as never);
       const yesterday = new Date('2026-04-30T00:00:00Z');
       const rows = await svc.unreturnedPassesForBuilding(BUILDING_ID, TENANT_ID, yesterday);
@@ -519,8 +476,7 @@ describe('VisitorPassPoolService', () => {
         availableRows: [
           basePass({ id: 'a', pass_number: '001', status: 'available' }),
           basePass({ id: 'b', pass_number: '002', status: 'available' }),
-        ],
-      });
+        ] });
       const svc = new VisitorPassPoolService(ctx.db as never);
       const rows = await svc.availablePassesForSpace(BUILDING_ID, TENANT_ID);
       expect(rows).toHaveLength(2);

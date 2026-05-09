@@ -8,12 +8,8 @@
  *   - cross-tenant: every read filters on TenantContext
  */
 
-import {
-  BadRequestException,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
 import type { Request } from 'express';
+import { AppError, AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { VisitorsAdminController } from './admin.controller';
 
@@ -35,8 +31,7 @@ function makeHarness(opts: HarnessOpts = {}) {
   jest.spyOn(TenantContext, 'current').mockReturnValue({
     id: TENANT_ID,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
 
   const visitorTypeUpdated =
     opts.visitorTypeUpdated === undefined
@@ -50,45 +45,29 @@ function makeHarness(opts: HarnessOpts = {}) {
           return {
             select: () => ({
               eq: () => ({
-                eq: () => ({ maybeSingle: async () => ({ data: { id: USER_ID }, error: null }) }),
-              }),
-            }),
-          };
+                eq: () => ({ maybeSingle: async () => ({ data: { id: USER_ID }, error: null }) }) }) }) };
         }
         if (table === 'visitor_types') {
           return {
             select: () => ({
-              eq: () => ({ order: async () => ({ data: [{ id: 'type-1', display_name: 'Guest' }], error: null }) }),
-            }),
+              eq: () => ({ order: async () => ({ data: [{ id: 'type-1', display_name: 'Guest' }], error: null }) }) }),
             insert: (row: Record<string, unknown>) => ({
               select: () => ({
-                single: async () => ({ data: { id: 'new-type-id', ...row }, error: null }),
-              }),
-            }),
+                single: async () => ({ data: { id: 'new-type-id', ...row }, error: null }) }) }),
             update: () => ({
               eq: () => ({
                 eq: () => ({
-                  select: () => ({ single: async () => ({ data: visitorTypeUpdated, error: null }) }),
-                }),
-              }),
-            }),
-          };
+                  select: () => ({ single: async () => ({ data: visitorTypeUpdated, error: null }) }) }) }) }) };
         }
         if (table === 'visitor_pass_pool') {
           return {
             update: () => ({
               eq: () => ({
                 eq: () => ({
-                  select: () => ({ single: async () => ({ data: { id: PASS_ID }, error: null }) }),
-                }),
-              }),
-            }),
-          };
+                  select: () => ({ single: async () => ({ data: { id: PASS_ID }, error: null }) }) }) }) }) };
         }
         return {};
-      }),
-    },
-  };
+      }) } };
 
   const queryOne = jest.fn(async (sql: string, _params: unknown[]) => {
     if (sql.includes('from public.spaces') && sql.includes('select id, type')) {
@@ -107,25 +86,21 @@ function makeHarness(opts: HarnessOpts = {}) {
   const db = { queryOne, queryMany } as never;
 
   const passPool = {
-    markPassRecovered: jest.fn(async () => undefined),
-  };
+    markPassRecovered: jest.fn(async () => undefined) };
 
   const kiosk = {
     provisionKioskToken: jest.fn(async () => ({
       token: 'plaintext',
       kiosk_token_id: KIOSK_TOKEN_ID,
-      expires_at: '2027-01-01',
-    })),
+      expires_at: '2027-01-01' })),
     rotateKioskToken: jest.fn(async () => ({ token: 'rotated', expires_at: '2027-01-01' })),
-    revokeKioskToken: jest.fn(async () => undefined),
-  };
+    revokeKioskToken: jest.fn(async () => undefined) };
 
   const permissions = {
     requirePermission: jest.fn(async () => {
-      if (opts.permissionDenied) throw new ForbiddenException();
+      if (opts.permissionDenied) throw AppErrors.permissionDenied();
       return { userId: USER_ID };
-    }),
-  };
+    }) };
 
   const controller = new VisitorsAdminController(
     supabase as never,
@@ -154,14 +129,14 @@ describe('VisitorsAdminController', () => {
 
     it('createType rejects missing type_key', async () => {
       const h = makeHarness();
-      await expect(h.controller.createType({ display_name: 'X' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.createType({ display_name: 'X' })).rejects.toBeInstanceOf(AppError);
     });
 
     it('createType rejects type_key with capitals', async () => {
       const h = makeHarness();
       await expect(
         h.controller.createType({ type_key: 'BadKey', display_name: 'X' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('createType happy path', async () => {
@@ -170,8 +145,7 @@ describe('VisitorsAdminController', () => {
         type_key: 'guest_v2',
         display_name: 'Guest v2',
         requires_approval: false,
-        allow_walk_up: true,
-      })) as Record<string, unknown>;
+        allow_walk_up: true })) as Record<string, unknown>;
       expect(result.id).toBe('new-type-id');
       expect(result.tenant_id).toBe(TENANT_ID);
     });
@@ -180,17 +154,17 @@ describe('VisitorsAdminController', () => {
       const h = makeHarness();
       await expect(
         h.controller.updateType('type-1', { default_expected_until_offset_minutes: 9999 }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('updateType returns 404 when row missing', async () => {
       const h = makeHarness({ visitorTypeUpdated: null });
-      await expect(h.controller.updateType('missing', { display_name: 'X' })).rejects.toBeInstanceOf(NotFoundException);
+      await expect(h.controller.updateType('missing', { display_name: 'X' })).rejects.toBeInstanceOf(AppError);
     });
 
     it('deactivateType returns 404 when row missing', async () => {
       const h = makeHarness({ visitorTypeUpdated: null });
-      await expect(h.controller.deactivateType('missing')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(h.controller.deactivateType('missing')).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -199,26 +173,25 @@ describe('VisitorsAdminController', () => {
       const h = makeHarness({ spaceRow: { id: BUILDING_ID, type: 'floor' } });
       await expect(
         h.controller.createPool({ space_id: BUILDING_ID }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('createPool returns 404 when space missing', async () => {
       const h = makeHarness({ spaceRow: null });
       await expect(
         h.controller.createPool({ space_id: BUILDING_ID }),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      ).rejects.toBeInstanceOf(AppError);
     });
 
     it('addPass requires pass_number', async () => {
       const h = makeHarness();
-      await expect(h.controller.addPass(BUILDING_ID, {})).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.addPass(BUILDING_ID, {})).rejects.toBeInstanceOf(AppError);
     });
 
     it('addPass via space_id falls through to space lookup', async () => {
       const h = makeHarness({
         passRow: null,
-        spaceRow: { id: BUILDING_ID, type: 'building' },
-      });
+        spaceRow: { id: BUILDING_ID, type: 'building' } });
       await h.controller.addPass(BUILDING_ID, { pass_number: 'A1' });
       // Insert called via queryOne; we don't assert exact SQL — service-level guarantees.
       expect(h.queryOne).toHaveBeenCalled();
@@ -251,7 +224,7 @@ describe('VisitorsAdminController', () => {
   describe('listAll (visibility-bypass)', () => {
     it('rejects without visitors.read_all', async () => {
       const h = makeHarness({ permissionDenied: true });
-      await expect(h.controller.listAll(makeReq())).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(h.controller.listAll(makeReq())).rejects.toBeInstanceOf(AppError);
     });
 
     it('happy path: filters on tenant', async () => {

@@ -13,13 +13,12 @@
  * with canned rows.
  */
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import {
   VisitorMailDeliveryAdapter,
   type BouncedInviteRow,
-  type DeliveryEvent,
-} from './visitor-mail-delivery.adapter';
+  type DeliveryEvent } from './visitor-mail-delivery.adapter';
 
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_TENANT_ID = '99999999-9999-4999-8999-999999999999';
@@ -51,8 +50,7 @@ function makeFakeDb(opts: FakeDbOpts = {}) {
     queryMany: jest.fn(async (sql: string, params?: unknown[]) => {
       sqlCalls.push({ sql, params });
       return opts.bouncedRows ?? [];
-    }),
-  };
+    }) };
 
   return { db, sqlCalls, inserts };
 }
@@ -73,7 +71,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await expect(
         adapter.recordSent(VISITOR_ID, OTHER_TENANT_ID, 'msg-1'),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 
@@ -82,8 +80,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const { db, inserts } = makeFakeDb();
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await adapter.recordSent(VISITOR_ID, TENANT_ID, 'pm-123', {
-        recipient_email: 'visitor@acme.com',
-      });
+        recipient_email: 'visitor@acme.com' });
       expect(inserts).toHaveLength(1);
       const params = (inserts[0]!.params as unknown[]) ?? [];
       expect(params[0]).toBe(TENANT_ID);
@@ -101,8 +98,7 @@ describe('VisitorMailDeliveryAdapter', () => {
         provider_message_id: 'pm-321',
         reason: 'mailbox unknown',
         bounce_type: 'hard',
-        recipient_email: 'gone@acme.com',
-      });
+        recipient_email: 'gone@acme.com' });
       expect(inserts).toHaveLength(1);
       const params = (inserts[0]!.params as unknown[]) ?? [];
       expect(params[0]).toBe(TENANT_ID);
@@ -117,8 +113,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const { db, inserts } = makeFakeDb();
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await adapter.recordBounced(VISITOR_ID, TENANT_ID, {
-        reason: 'soft fail',
-      });
+        reason: 'soft fail' });
       const params = (inserts[0]!.params as unknown[]) ?? [];
       expect(typeof params[1]).toBe('string');
       expect((params[1] as string).startsWith('local-')).toBe(true);
@@ -144,8 +139,7 @@ describe('VisitorMailDeliveryAdapter', () => {
         bounce_type: 'hard',
         recipient_email: 'gone@acme.com',
         reason: 'mailbox unknown',
-        occurred_at: '2026-04-30T08:30:00Z',
-      };
+        occurred_at: '2026-04-30T08:30:00Z' };
       const { db, sqlCalls } = makeFakeDb({ lastEvent: last });
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       const result = await adapter.lastDeliveryStatusForVisitor(VISITOR_ID, TENANT_ID);
@@ -189,8 +183,7 @@ describe('VisitorMailDeliveryAdapter', () => {
         status: 'expected',
         visitor_pass_id: null,
         pass_number: null,
-        visitor_type_id: null,
-      };
+        visitor_type_id: null };
       const { db } = makeFakeDb({ bouncedRows: [row] });
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       const result = await adapter.bouncedInvitesForBuildingSince(
@@ -206,7 +199,7 @@ describe('VisitorMailDeliveryAdapter', () => {
       const adapter = new VisitorMailDeliveryAdapter(db as never);
       await expect(
         adapter.bouncedInvitesForBuildingSince(BUILDING_ID, OTHER_TENANT_ID, new Date()),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
   });
 });

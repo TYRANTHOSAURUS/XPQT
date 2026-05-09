@@ -11,7 +11,7 @@
  * validated the token.
  */
 
-import { BadRequestException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { KioskController } from './kiosk.controller';
 import type { RequestWithKioskContext } from './kiosk-auth.guard';
 
@@ -31,14 +31,11 @@ function makeHarness() {
     checkInWithQrToken: jest.fn(async () => ({
       visitor_id: VISITOR_ID,
       host_first_name: 'Jan',
-      has_reception_at_building: true,
-    })),
+      has_reception_at_building: true })),
     checkInByName: jest.fn(async () => ({
       host_first_name: 'Jan',
-      has_reception_at_building: false,
-    })),
-    walkupAtKiosk: jest.fn(async () => ({ visitor_id: VISITOR_ID, status: 'arrived' })),
-  };
+      has_reception_at_building: false })),
+    walkupAtKiosk: jest.fn(async () => ({ visitor_id: VISITOR_ID, status: 'arrived' })) };
 
   const db = { queryMany, queryOne } as never;
 
@@ -68,11 +65,11 @@ describe('KioskController', () => {
   describe('checkInQr', () => {
     it('rejects empty body', async () => {
       const h = makeHarness();
-      await expect(h.controller.checkInQr(makeReq(), {})).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.checkInQr(makeReq(), {})).rejects.toBeInstanceOf(AppError);
     });
     it('rejects too-short token', async () => {
       const h = makeHarness();
-      await expect(h.controller.checkInQr(makeReq(), { token: 'abc' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(h.controller.checkInQr(makeReq(), { token: 'abc' })).rejects.toBeInstanceOf(AppError);
     });
     it('happy path delegates with kioskContext + token', async () => {
       const h = makeHarness();
@@ -86,20 +83,19 @@ describe('KioskController', () => {
       const h = makeHarness();
       await expect(
         h.controller.checkInByName(makeReq(), { host_first_name_confirmation: 'Jan' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
     it('rejects missing host_first_name_confirmation', async () => {
       const h = makeHarness();
       await expect(
         h.controller.checkInByName(makeReq(), { visitor_id: VISITOR_ID }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(AppError);
     });
     it('happy path delegates', async () => {
       const h = makeHarness();
       await h.controller.checkInByName(makeReq(), {
         visitor_id: VISITOR_ID,
-        host_first_name_confirmation: 'Jan',
-      });
+        host_first_name_confirmation: 'Jan' });
       expect(h.kiosk.checkInByName).toHaveBeenCalledWith(ctx, VISITOR_ID, 'Jan');
     });
   });
@@ -110,17 +106,15 @@ describe('KioskController', () => {
       await expect(
         h.controller.walkup(makeReq(), {
           visitor_type_id: VISITOR_TYPE_ID,
-          primary_host_person_id: HOST_PERSON_ID,
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+          primary_host_person_id: HOST_PERSON_ID }),
+      ).rejects.toBeInstanceOf(AppError);
     });
     it('happy path delegates', async () => {
       const h = makeHarness();
       await h.controller.walkup(makeReq(), {
         first_name: 'Marleen',
         visitor_type_id: VISITOR_TYPE_ID,
-        primary_host_person_id: HOST_PERSON_ID,
-      });
+        primary_host_person_id: HOST_PERSON_ID });
       expect(h.kiosk.walkupAtKiosk).toHaveBeenCalledWith(
         ctx,
         expect.objectContaining({ first_name: 'Marleen', visitor_type_id: VISITOR_TYPE_ID }),

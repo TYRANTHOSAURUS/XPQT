@@ -17,6 +17,7 @@
  */
 
 import { Client } from 'pg';
+import { AppError } from '../../common/errors';
 
 const PG_URL = process.env.PG_TEST_URL ?? process.env.SUPABASE_DB_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
 
@@ -413,8 +414,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
       await expect(
         client.query(`update public.visitors set status='arrived' where id=$1`, [id]),
       ).rejects.toMatchObject({
-        message: expect.stringContaining('VisitorService.transitionStatus'),
-      });
+        message: expect.stringContaining('VisitorService.transitionStatus') });
     });
   });
 
@@ -466,8 +466,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
           [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
         ),
       ).rejects.toMatchObject({
-        message: expect.stringContaining('invalid initial visitor status on insert'),
-      });
+        message: expect.stringContaining('invalid initial visitor status on insert') });
     });
   });
 
@@ -483,8 +482,7 @@ describe('visitors v1 schema — status FSM trigger', () => {
           [TENANT_A, '99000000-0000-0000-0000-000000000a99'],
         ),
       ).rejects.toMatchObject({
-        message: expect.stringContaining('invalid initial visitor status on insert'),
-      });
+        message: expect.stringContaining('invalid initial visitor status on insert') });
     });
   });
 

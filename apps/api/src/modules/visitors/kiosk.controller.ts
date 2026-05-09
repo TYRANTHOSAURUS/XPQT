@@ -1,21 +1,19 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
   Post,
   Query,
   Req,
-  UseGuards,
-} from '@nestjs/common';
+  UseGuards } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
+import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import {
   formatZodError,
   KioskNameCheckinSchema,
   KioskQrCheckinSchema,
-  KioskWalkupSchema,
-} from './dto/schemas';
+  KioskWalkupSchema } from './dto/schemas';
 import { KioskAuthGuard, type RequestWithKioskContext } from './kiosk-auth.guard';
 import { KioskService } from './kiosk.service';
 
@@ -77,7 +75,7 @@ export class KioskController {
   ) {
     const parsed = KioskQrCheckinSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const ctx = req.kioskContext!;
     return this.kiosk.checkInWithQrToken(ctx, parsed.data.token);
@@ -96,7 +94,7 @@ export class KioskController {
   ) {
     const parsed = KioskNameCheckinSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const ctx = req.kioskContext!;
     return this.kiosk.checkInByName(
@@ -120,7 +118,7 @@ export class KioskController {
   ) {
     const parsed = KioskWalkupSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(formatZodError(parsed.error));
+      throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
     }
     const ctx = req.kioskContext!;
     return this.kiosk.walkupAtKiosk(ctx, parsed.data);
@@ -227,7 +225,6 @@ export class KioskController {
     return rows.map((r) => ({
       id: r.id,
       first_name: r.first_name ?? '',
-      last_initial: r.last_initial,
-    }));
+      last_initial: r.last_initial }));
   }
 }

@@ -23,7 +23,7 @@
  *   - #14 Multi-host: only the requesting host receives SSE events.
  */
 
-import { GoneException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import type { Request } from 'express';
 import { Subject } from 'rxjs';
 import { TenantContext } from '../../common/tenant-context';
@@ -56,19 +56,16 @@ interface IntegrationState {
 function buildIntegration() {
   const state: IntegrationState = {
     visitor: null,
-    cancelTokenStore: new Map(),
-  };
+    cancelTokenStore: new Map() };
 
   jest.spyOn(TenantContext, 'current').mockReturnValue({
     id: TENANT_ID,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
   jest.spyOn(TenantContext, 'currentOrNull').mockReturnValue({
     id: TENANT_ID,
     slug: 'acme',
-    tier: 'standard',
-  });
+    tier: 'standard' });
 
   /* Mock supabase: only `users` lookups for actor resolution. */
   const supabase = {
@@ -81,26 +78,16 @@ function buildIntegration() {
                 eq: () => ({
                   maybeSingle: async () => ({
                     data: { id: HOST_USER_ID, person_id: HOST_PERSON_ID },
-                    error: null,
-                  }),
-                }),
-              }),
-            }),
-          };
+                    error: null }) }) }) }) };
         }
         if (table === 'visitor_hosts') {
           return {
             select: () => ({
-              eq: () => ({ eq: () => ({ data: [], error: null }) }),
-            }),
-          };
+              eq: () => ({ eq: () => ({ data: [], error: null }) }) }) };
         }
         return {
-          select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
-        };
-      }),
-    },
-  };
+          select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) };
+      }) } };
 
   /* Mock db: handle the queries the controllers issue. */
   const db = {
@@ -137,8 +124,7 @@ function buildIntegration() {
       }
       return null;
     }),
-    queryMany: jest.fn(async () => []),
-  };
+    queryMany: jest.fn(async () => []) };
 
   /* Mock InvitationService: creates the visitor, mints a cancel token. */
   const invitations = {
@@ -148,16 +134,13 @@ function buildIntegration() {
         visitor_id: VISITOR_ID,
         tenant_id: TENANT_ID,
         used: false,
-        expired: false,
-      });
+        expired: false });
       return {
         visitor_id: VISITOR_ID,
         status: 'expected' as const,
         approval_id: null,
-        cancel_token: CANCEL_TOKEN,
-      };
-    }),
-  };
+        cancel_token: CANCEL_TOKEN };
+    }) };
 
   /* Mock VisitorService.transitionStatus: mutates state.visitor. */
   const visitorService = {
@@ -172,26 +155,23 @@ function buildIntegration() {
       ]);
       const okTargets = allowed.get(state.visitor.status) ?? [];
       if (!okTargets.includes(to) && state.visitor.status !== to) {
-        const { BadRequestException } = require('@nestjs/common'); // eslint-disable-line @typescript-eslint/no-var-requires
-        throw new BadRequestException(`invalid_transition: ${state.visitor.status} -> ${to}`);
+        const { } = require('@nestjs/common'); // eslint-disable-line @typescript-eslint/no-var-requires
+        throw new (`invalid_transition: ${state.visitor.status} -> ${to}`);
       }
       state.visitor.status = to as IntegrationState['visitor']['status'];
       return state.visitor;
-    }),
-  };
+    }) };
 
   /* Mock HostNotificationService.acknowledge: records ack. */
   const acknowledged: Array<{ visitor_id: string; person_id: string; tenant_id: string }> = [];
   const hostNotifications = {
     acknowledge: jest.fn(async (vid: string, pid: string, tid: string) => {
       acknowledged.push({ visitor_id: vid, person_id: pid, tenant_id: tid });
-    }),
-  };
+    }) };
 
   /* Mock PermissionGuard: always grants in this integration scope. */
   const permissions = {
-    requirePermission: jest.fn(async () => ({ userId: HOST_USER_ID })),
-  };
+    requirePermission: jest.fn(async () => ({ userId: HOST_USER_ID })) };
 
   /* Mock ReceptionService — only used so we can wire the controller and
      assert reception's today-view excludes cancelled visitors. */
@@ -204,16 +184,14 @@ function buildIntegration() {
         ? [{ visitor_id: state.visitor.id }]
         : [],
       in_meeting: [],
-      checked_out_today: [],
-    })),
+      checked_out_today: [] })),
     quickAddWalkup: jest.fn(),
     markArrived: jest.fn(),
     markCheckedOut: jest.fn(),
     markNoShow: jest.fn(),
     yesterdayLooseEnds: jest.fn(),
     dailyListForBuilding: jest.fn(),
-    search: jest.fn(),
-  };
+    search: jest.fn() };
 
   const passPool = {} as never;
 
@@ -222,8 +200,7 @@ function buildIntegration() {
   const subject = new Subject<HostNotificationEvent>();
   const events = {
     events$: subject.asObservable(),
-    emit: (e: HostNotificationEvent) => subject.next(e),
-  };
+    emit: (e: HostNotificationEvent) => subject.next(e) };
 
   const visitorsController = new VisitorsController(
     invitations as never,
@@ -252,8 +229,7 @@ function buildIntegration() {
     permissions,
     acknowledged,
     events,
-    db,
-  };
+    db };
 }
 
 const makeReq = (
@@ -275,13 +251,11 @@ describe('Visitor management — cross-controller integration', () => {
       email: 'marleen@example.com',
       visitor_type_id: VISITOR_TYPE_ID,
       expected_at: '2026-05-02T09:00:00.000Z',
-      building_id: BUILDING_ID,
-    });
+      building_id: BUILDING_ID });
     expect(inviteResult).toEqual({
       visitor_id: VISITOR_ID,
       status: 'expected',
-      approval_id: null,
-    });
+      approval_id: null });
     // cancel_token MUST NOT leak into the response.
     expect(inviteResult).not.toHaveProperty('cancel_token');
     expect(h.state.visitor?.status).toBe('expected');
@@ -294,7 +268,7 @@ describe('Visitor management — cross-controller integration', () => {
     // The token is single-use — re-using it returns 410.
     await expect(
       h.visitorsController.cancelByToken(CANCEL_TOKEN),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
 
     // ── 3. Reception today-view does NOT include the cancelled visit ──
     const today = await h.receptionController.today(makeReq(), BUILDING_ID);
@@ -316,15 +290,13 @@ describe('Visitor management — cross-controller integration', () => {
       host_person_id: HOST_PERSON_ID,
       visitor_id: VISITOR_ID,
       kind: 'visitor.arrived',
-      occurred_at: '2026-05-01T09:00:00Z',
-    });
+      occurred_at: '2026-05-01T09:00:00Z' });
     h.events.emit({
       tenant_id: TENANT_ID,
       host_person_id: OTHER_HOST_PERSON_ID,
       visitor_id: VISITOR_ID,
       kind: 'visitor.arrived',
-      occurred_at: '2026-05-01T09:01:00Z',
-    });
+      occurred_at: '2026-05-01T09:01:00Z' });
 
     sub.unsubscribe();
     expect(received).toHaveLength(1);
@@ -340,12 +312,11 @@ describe('Visitor management — cross-controller integration', () => {
       visitor_id: VISITOR_ID,
       tenant_id: OTHER_TENANT,
       used: false,
-      expired: false,
-    });
+      expired: false });
 
     await expect(
       h.visitorsController.cancelByToken('cross-tenant-token'),
-    ).rejects.toBeInstanceOf(GoneException);
+    ).rejects.toBeInstanceOf(AppError);
 
     // transitionStatus MUST NOT be called when cross-tenant defence trips.
     expect(h.visitorService.transitionStatus).not.toHaveBeenCalled();

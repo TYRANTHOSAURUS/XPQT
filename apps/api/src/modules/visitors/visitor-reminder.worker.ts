@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { AppErrors } from '../../common/errors';
 import { Cron } from '@nestjs/schedule';
 import { hostname } from 'node:os';
 import { DbService } from '../../common/db/db.service';
@@ -170,9 +171,7 @@ export class VisitorReminderWorker {
 
   private async processCandidate(c: ReminderCandidate): Promise<'sent' | 'skipped'> {
     if (!this.mail || !this.mailDelivery || !this.supabase) {
-      throw new Error(
-        'VisitorReminderWorker requires MAIL_PROVIDER, VisitorMailDeliveryAdapter, and SupabaseService',
-      );
+      throw AppErrors.server('visitor.config_missing', { detail: 'VisitorReminderWorker requires MAIL_PROVIDER, VisitorMailDeliveryAdapter, and SupabaseService' });
     }
 
     const idempotencyKey = `visitor-reminder:${c.id}:${normaliseExpectedAt(c.expected_at)}`;
