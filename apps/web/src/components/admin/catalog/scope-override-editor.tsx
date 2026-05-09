@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { toastError, toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { toastRemoved, toastSuccess, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import {
   Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
@@ -195,7 +196,7 @@ export function ScopeOverrideEditor({
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toastError("Couldn't save override", { error: err, retry: save });
+      handleMutationError(err, { actionTitle: "Couldn't save override", retry: save });
     } finally {
       setSaving(false);
     }
@@ -217,7 +218,7 @@ export function ScopeOverrideEditor({
       onOpenChange(false);
       onSaved();
     } catch (err) {
-      toastError("Couldn't remove override", { error: err, retry: remove });
+      handleMutationError(err, { actionTitle: "Couldn't remove override", retry: remove });
     } finally {
       setSaving(false);
     }

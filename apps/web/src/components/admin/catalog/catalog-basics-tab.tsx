@@ -13,7 +13,8 @@ import {
   FieldSet,
   FieldLegend,
 } from '@/components/ui/field';
-import { toastError, toastSaved } from '@/lib/toast';
+import { toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { apiFetch } from '@/lib/api';
 import { useCatalogCategories } from '@/api/catalog';
 import type { RequestTypeDetail } from './catalog-service-panel';
@@ -81,7 +82,7 @@ export function CatalogBasicsTab({
       toastSaved('Service basics');
       onSaved();
     } catch (e) {
-      toastError("Couldn't save service basics", { error: e, retry: save });
+      handleMutationError(e, { actionTitle: "Couldn't save service basics", retry: save });
     } finally {
       setSaving(false);
     }

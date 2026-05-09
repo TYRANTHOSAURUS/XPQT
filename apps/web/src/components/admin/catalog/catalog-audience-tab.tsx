@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toastError, toastSaved } from '@/lib/toast';
+import { toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -80,7 +81,7 @@ export function CatalogAudienceTab({ detail, onSaved }: {
       toastSaved('Audience rules');
       onSaved();
     } catch (err) {
-      toastError("Couldn't save audience rules", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't save audience rules" });
     } finally {
       setAudienceSaving(false);
     }
@@ -121,7 +122,7 @@ export function CatalogAudienceTab({ detail, onSaved }: {
       toastSaved('On-behalf rules');
       onSaved();
     } catch (err) {
-      toastError("Couldn't save on-behalf rules", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't save on-behalf rules" });
     } finally {
       setOnBehalfSaving(false);
     }

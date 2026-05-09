@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, MousePointerClick } from 'lucide-react';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { apiFetch } from '@/lib/api';
 import { CatalogBasicsTab } from './catalog-basics-tab';
 import { CatalogCoverageTab } from './catalog-coverage-tab';
@@ -178,7 +179,7 @@ export function CatalogServicePanel({ requestTypeId, onSaved, onClose }: Props) 
       onSaved();
       onClose();
     } catch (e) {
-      toastError("Couldn't deactivate service", { error: e });
+      handleMutationError(e, { actionTitle: "Couldn't deactivate service" });
     } finally {
       setDeleting(false);
     }

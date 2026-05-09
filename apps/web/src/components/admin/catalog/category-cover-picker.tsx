@@ -4,7 +4,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { apiFetch } from '@/lib/api';
 import { Plus } from 'lucide-react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 
 const PLATFORM_DEFAULTS: { token: string; className: string; label: string }[] = [
@@ -70,7 +71,7 @@ export function CategoryCoverPicker({
       onChange({ cover_source: 'image', cover_image_url: res.cover_image_url });
       toastSuccess('Cover uploaded');
     } catch (err) {
-      toastError("Couldn't upload cover", { error: err, retry: () => handleUpload(file) });
+      handleMutationError(err, { actionTitle: "Couldn't upload cover", retry: () => handleUpload(file) });
     } finally {
       setUploading(false);
     }

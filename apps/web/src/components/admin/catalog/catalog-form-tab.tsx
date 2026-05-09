@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toastError, toastSaved } from '@/lib/toast';
+import { toastSaved } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Plus, X, Info } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -167,7 +168,7 @@ export function CatalogFormTab({ detail, onSaved }: {
       toastSaved('Form variants');
       onSaved();
     } catch (err) {
-      toastError("Couldn't save form variants", { error: err, retry: () => void save() });
+      handleMutationError(err, { actionTitle: "Couldn't save form variants", retry: () => void save() });
     } finally {
       setSaving(false);
     }

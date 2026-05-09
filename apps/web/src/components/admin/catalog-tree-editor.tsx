@@ -33,6 +33,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
 import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 
 export interface CatalogRequestType {
   id: string;
@@ -375,6 +376,7 @@ export function CatalogTreeEditor({
 
     if (activeItem.kind === 'request_type') {
       if (newParentId === null) {
+        // Local validation guard (no API call yet); not an error from the helper layer's POV.
         toastError("Couldn't move request type", {
           description: 'Request types must live under a category.',
         });
@@ -391,7 +393,7 @@ export function CatalogTreeEditor({
       try {
         await onRequestTypeMove(updates);
       } catch (err) {
-        toastError("Couldn't move request type", { error: err });
+        handleMutationError(err, { actionTitle: "Couldn't move request type" });
       }
       return;
     }
@@ -408,6 +410,7 @@ export function CatalogTreeEditor({
     const newDepth = newParentDepth + 1;
 
     if (newDepth + subtreeDepth > MAX_CATEGORY_DEPTH) {
+      // Local validation guard (no API call yet); not an error from the helper layer's POV.
       toastError("Couldn't move category", {
         description: `The catalog hierarchy is capped at ${MAX_CATEGORY_DEPTH} levels.`,
       });
@@ -426,7 +429,7 @@ export function CatalogTreeEditor({
     try {
       await onCategoryMove(updates);
     } catch (err) {
-      toastError("Couldn't move category", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't move category" });
     }
   };
 
