@@ -25,10 +25,11 @@ import {
 } from '@/components/ui/settings-row';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import {
+  serviceRuleDetailOptions,
   useDeleteServiceRule,
-  useServiceRule,
   useUpdateServiceRule,
 } from '@/api/service-rules';
+import { usePageQuery } from '@/lib/errors';
 import type { ServiceRuleEffect, ServiceRuleTargetKind } from '@/api/service-rules';
 import { toastError, toastRemoved } from '@/lib/toast';
 
@@ -50,7 +51,8 @@ import { toastError, toastRemoved } from '@/lib/toast';
 export function ServiceRuleDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading } = useServiceRule(id ?? '');
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  const { data, isLoading } = usePageQuery(serviceRuleDetailOptions(id ?? ''));
   const update = useUpdateServiceRule();
   const remove = useDeleteServiceRule();
 

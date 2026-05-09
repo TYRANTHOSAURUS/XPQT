@@ -38,9 +38,10 @@ import {
   useDeleteWebhook,
   useRotateWebhookApiKey,
   useUpdateWebhook,
-  useWebhooks,
+  webhooksListOptions,
   type Webhook,
 } from '@/api/webhooks';
+import { usePageQuery } from '@/lib/errors';
 
 interface ValidationProblem {
   severity: 'error' | 'warning' | 'info';
@@ -51,7 +52,9 @@ interface ValidationProblem {
 export function WebhookDetailPage() {
   const { id: webhookId } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: webhooks, isLoading } = useWebhooks();
+  // Page-primary fetch — list endpoint backs the detail page (no by-id GET);
+  // page-class errors throw to RouteErrorBoundary.
+  const { data: webhooks, isLoading } = usePageQuery(webhooksListOptions());
   const webhook = useMemo(
     () => (webhookId ? webhooks?.find((w) => w.id === webhookId) : undefined),
     [webhooks, webhookId],
