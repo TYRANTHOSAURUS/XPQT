@@ -330,6 +330,17 @@ export type KnownErrorCode =
   // ─── user-management migration (Phase 7.B-1.user-management) ────────────
   | 'user_management.invalid_permission_key'
 
+  // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
+  | 'portal_appearance.location_required'
+  | 'portal_appearance.file_required'
+  | 'portal_appearance.unsupported_mime'
+  | 'portal_appearance.file_too_large'
+  | 'portal_appearance.list_failed'
+  | 'portal_appearance.upsert_failed'
+  | 'portal_appearance.upsert_no_row'
+  | 'portal_appearance.upload_failed'
+  | 'portal_appearance.delete_failed'
+
   // ─── service-catalog migration (Phase 7.B-1.service-catalog) ─────────────
   | 'service_rule_not_found'
   | 'name_required'
@@ -654,6 +665,15 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'invalid_payload',
   'missing_delivery_space',
   'missing_service_type',
+  'portal_appearance.location_required',
+  'portal_appearance.file_required',
+  'portal_appearance.unsupported_mime',
+  'portal_appearance.file_too_large',
+  'portal_appearance.list_failed',
+  'portal_appearance.upsert_failed',
+  'portal_appearance.upsert_no_row',
+  'portal_appearance.upload_failed',
+  'portal_appearance.delete_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

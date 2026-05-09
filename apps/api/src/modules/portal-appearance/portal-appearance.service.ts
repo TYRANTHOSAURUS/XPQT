@@ -1,12 +1,8 @@
 // apps/api/src/modules/portal-appearance/portal-appearance.service.ts
-import {
-  BadRequestException,
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { PortalAppearance, UpdatePortalAppearanceDto } from './dto';
 
 const BUCKET = 'portal-assets';
@@ -63,8 +59,8 @@ export class PortalAppearanceService {
           .select('id, parent_id')
           .eq('tenant_id', tenant.id),
       ]);
-    if (rowsErr) throw new InternalServerErrorException(rowsErr.message);
-    if (spacesErr) throw new InternalServerErrorException(spacesErr.message);
+    if (rowsErr) throw AppErrors.server('portal_appearance.list_failed', { detail: rowsErr.message, cause: rowsErr });
+    if (spacesErr) throw AppErrors.server('portal_appearance.list_failed', { detail: spacesErr.message, cause: spacesErr });
 
     const resolved = resolveAppearance(locationId, rows ?? [], spaces ?? []);
     return resolved;
@@ -76,12 +72,12 @@ export class PortalAppearanceService {
       .from('portal_appearance')
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .eq('tenant_id', tenant.id);
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('portal_appearance.list_failed', { detail: error.message, cause: error });
     return data ?? [];
   }
 
   async update(dto: UpdatePortalAppearanceDto): Promise<PortalAppearance> {
-    if (!dto.location_id) throw new BadRequestException('location_id is required');
+    if (!dto.location_id) throw AppErrors.validationFailed('portal_appearance.location_required', { detail: 'location_id is required' });
     const tenant = TenantContext.current();
 
     const payload: Record<string, unknown> = { tenant_id: tenant.id, location_id: dto.location_id };
@@ -94,8 +90,8 @@ export class PortalAppearanceService {
       .upsert(payload, { onConflict: 'tenant_id,location_id' })
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    if (!data) throw new NotFoundException('Upsert returned no row');
+    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.server('portal_appearance.upsert_no_row', { detail: 'Upsert returned no row' });
     return data as PortalAppearance;
   }
 
@@ -103,13 +99,15 @@ export class PortalAppearanceService {
     locationId: string,
     file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ): Promise<PortalAppearance> {
-    if (!locationId) throw new BadRequestException('location_id is required');
-    if (!file) throw new BadRequestException('Missing file');
+    if (!locationId) throw AppErrors.validationFailed('portal_appearance.location_required', { detail: 'location_id is required' });
+    if (!file) throw AppErrors.validationFailed('portal_appearance.file_required', { detail: 'Missing file' });
     if (!HERO_MIMES.has(file.mimetype)) {
-      throw new BadRequestException(`Unsupported mime: ${file.mimetype}`);
+      throw AppErrors.validationFailed('portal_appearance.unsupported_mime', { detail: `Unsupported mime: ${file.mimetype}` });
     }
     if (file.buffer.byteLength > HERO_MAX_BYTES) {
-      throw new BadRequestException(`File too large: ${file.buffer.byteLength} (max ${HERO_MAX_BYTES})`);
+      throw AppErrors.validationFailed('portal_appearance.file_too_large', {
+        detail: `File too large: ${file.buffer.byteLength} (max ${HERO_MAX_BYTES})`,
+      });
     }
 
     const tenant = TenantContext.current();
@@ -119,7 +117,7 @@ export class PortalAppearanceService {
     const { error: uploadErr } = await this.supabase.admin.storage
       .from(BUCKET)
       .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
-    if (uploadErr) throw new InternalServerErrorException(uploadErr.message);
+    if (uploadErr) throw AppErrors.server('portal_appearance.upload_failed', { detail: uploadErr.message, cause: uploadErr });
 
     const { data: pub } = this.supabase.admin.storage.from(BUCKET).getPublicUrl(path);
     const bustedUrl = `${pub.publicUrl}?v=${Date.now()}`;
@@ -132,8 +130,8 @@ export class PortalAppearanceService {
       )
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    if (!data) throw new NotFoundException('Upsert returned no row');
+    if (error) throw AppErrors.server('portal_appearance.upsert_failed', { detail: error.message, cause: error });
+    if (!data) throw AppErrors.server('portal_appearance.upsert_no_row', { detail: 'Upsert returned no row' });
     return data as PortalAppearance;
   }
 
@@ -149,7 +147,7 @@ export class PortalAppearanceService {
       .eq('location_id', locationId)
       .select('location_id, hero_image_url, welcome_headline, supporting_line, greeting_enabled')
       .maybeSingle();
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) throw AppErrors.server('portal_appearance.delete_failed', { detail: error.message, cause: error });
     return (data ?? null) as PortalAppearance | null;
   }
 }

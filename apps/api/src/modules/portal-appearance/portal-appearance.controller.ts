@@ -1,6 +1,5 @@
 // apps/api/src/modules/portal-appearance/portal-appearance.controller.ts
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -17,6 +16,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
 import { PortalAppearanceService } from './portal-appearance.service';
 import { UpdatePortalAppearanceDto } from './dto';
+import { AppErrors } from '../../common/errors';
 
 @Controller('admin/portal-appearance')
 @UseGuards(AuthGuard, AdminGuard)
@@ -30,7 +30,7 @@ export class PortalAppearanceController {
 
   @Get()
   async get(@Query('location_id') locationId: string) {
-    if (!locationId) throw new BadRequestException('location_id is required');
+    if (!locationId) throw AppErrors.validationFailed('portal_appearance.location_required', { detail: 'location_id is required' });
     return this.service.get(locationId);
   }
 
@@ -45,14 +45,14 @@ export class PortalAppearanceController {
     @Query('location_id') locationId: string,
     @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   ) {
-    if (!locationId) throw new BadRequestException('location_id is required');
-    if (!file) throw new BadRequestException('file is required');
+    if (!locationId) throw AppErrors.validationFailed('portal_appearance.location_required', { detail: 'location_id is required' });
+    if (!file) throw AppErrors.validationFailed('portal_appearance.file_required', { detail: 'file is required' });
     return this.service.uploadHero(locationId, file);
   }
 
   @Delete('hero')
   async removeHero(@Query('location_id') locationId: string) {
-    if (!locationId) throw new BadRequestException('location_id is required');
+    if (!locationId) throw AppErrors.validationFailed('portal_appearance.location_required', { detail: 'location_id is required' });
     return this.service.removeHero(locationId);
   }
 }

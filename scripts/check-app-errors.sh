@@ -35,6 +35,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/work-orders"
   "apps/api/src/modules/user-management"
   "apps/api/src/modules/service-catalog"
+  "apps/api/src/modules/portal-appearance"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

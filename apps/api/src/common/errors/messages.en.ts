@@ -1031,6 +1031,39 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't load services",
     detail: 'A service type is required.',
   },
+
+  // ─── portal-appearance (Phase 7.B-1.portal-appearance) ───────────────────
+  'portal_appearance.location_required': {
+    title: "Couldn't update appearance",
+    detail: 'Location is required.',
+  },
+  'portal_appearance.file_required': {
+    title: "Couldn't upload that image",
+    detail: 'A file is required.',
+  },
+  'portal_appearance.unsupported_mime': {
+    title: "Couldn't upload that image",
+    detail: 'That file type isn\'t supported.',
+  },
+  'portal_appearance.file_too_large': {
+    title: "Couldn't upload that image",
+    detail: 'That file is too large.',
+  },
+  'portal_appearance.list_failed': {
+    title: "Couldn't load portal appearance",
+  },
+  'portal_appearance.upsert_failed': {
+    title: "Couldn't save portal appearance",
+  },
+  'portal_appearance.upsert_no_row': {
+    title: "Couldn't save portal appearance",
+  },
+  'portal_appearance.upload_failed': {
+    title: "Couldn't upload that image",
+  },
+  'portal_appearance.delete_failed': {
+    title: "Couldn't delete portal appearance",
+  },
 };
 
 /**
