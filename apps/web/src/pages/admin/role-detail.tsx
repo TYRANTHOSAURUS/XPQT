@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toastCreated, toastError, toastSaved } from '@/lib/toast';
+import { usePageQuery } from '@/lib/errors';
 import { AlertTriangle, ChevronRight, Search, Shield, Users as UsersIcon, Info } from 'lucide-react';
 import { expandGranted, normalisePermission, type ModuleMeta } from '@prequest/shared';
 import {
@@ -33,6 +34,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { usePermissionCatalog } from '@/api/permissions';
 import {
+  roleOptions,
   useRole,
   useRoles,
   useCreateRole,
@@ -135,7 +137,10 @@ export function RoleDetailPage() {
   const cloneFromId = isNew ? searchParams.get('from') : null;
 
   const catalogQuery = usePermissionCatalog();
-  const roleQuery = useRole(isNew ? undefined : id);
+  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
+  // For the "new role" case the options helper is disabled so usePageQuery
+  // is a no-op (status='pending'); no boundary is reached.
+  const roleQuery = usePageQuery(roleOptions(isNew ? undefined : id));
   const cloneQuery = useRole(cloneFromId ?? undefined);
   const auditQuery = useRoleAudit(isNew ? undefined : id);
   const rolesListQuery = useRoles();
