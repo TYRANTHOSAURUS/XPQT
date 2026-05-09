@@ -24,6 +24,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError, withErrorHandling } from '@/lib/errors';
 import { visitorKeys, type VisitorStatus } from './keys';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -290,11 +291,12 @@ export function useMarkArrived(buildingId: string | null | undefined) {
       }
       return { previous };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       const snap = (ctx as { previous?: ReceptionTodayView } | undefined)?.previous;
       if (snap && buildingId) {
         qc.setQueryData(receptionKeys.today(buildingId), snap);
       }
+      handleMutationError(err, { actionTitle: "Couldn't check in visitor" });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: visitorKeys.all });
@@ -317,6 +319,7 @@ export function useMarkCheckedOut(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.passes(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't check out visitor" }),
   });
 }
 
@@ -342,11 +345,12 @@ export function useMarkNoShow(buildingId: string | null | undefined) {
       }
       return { previous };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       const snap = (ctx as { previous?: ReceptionTodayView } | undefined)?.previous;
       if (snap && buildingId) {
         qc.setQueryData(receptionKeys.today(buildingId), snap);
       }
+      handleMutationError(err, { actionTitle: "Couldn't mark visitor no-show" });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: visitorKeys.all });
@@ -370,6 +374,7 @@ export function useQuickAddWalkup(buildingId: string | null | undefined) {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: visitorKeys.all });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't add walk-up visitor" }),
   });
 }
 
@@ -389,6 +394,7 @@ export function useAssignPass(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.passes(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't assign pass" }),
   });
 }
 
@@ -405,6 +411,7 @@ export function useReservePass(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.passes(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't reserve pass" }),
   });
 }
 
@@ -420,6 +427,7 @@ export function useReturnPass(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.passes(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't return pass" }),
   });
 }
 
@@ -437,6 +445,7 @@ export function useMarkPassMissing(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.yesterday(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't mark pass missing" }),
   });
 }
 
@@ -453,6 +462,7 @@ export function useMarkPassRecovered(buildingId: string | null | undefined) {
         qc.invalidateQueries({ queryKey: receptionKeys.yesterday(buildingId) });
       }
     },
+    ...withErrorHandling({ actionTitle: "Couldn't mark pass recovered" }),
   });
 }
 
