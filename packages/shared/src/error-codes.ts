@@ -333,6 +333,12 @@ export type KnownErrorCode =
   // ─── outbox migration (Phase 7.B-1.outbox) ───────────────────────────────
   | 'outbox.duplicate_handler'
 
+  // ─── cost-centers migration (Phase 7.B-1.cost-centers) ───────────────────
+  | 'cost_center_not_found'
+  | 'cost_center_code_taken'
+  | 'code_required'
+  | 'code_too_long'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -678,6 +684,10 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'portal_appearance.upload_failed',
   'portal_appearance.delete_failed',
   'outbox.duplicate_handler',
+  'cost_center_not_found',
+  'cost_center_code_taken',
+  'code_required',
+  'code_too_long',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

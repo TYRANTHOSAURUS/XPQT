@@ -1070,6 +1070,23 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't start the worker",
     detail: 'A duplicate outbox handler was registered.',
   },
+
+  // ─── cost-centers (Phase 7.B-1.cost-centers) ─────────────────────────────
+  cost_center_not_found: {
+    title: "Couldn't find that cost center",
+  },
+  cost_center_code_taken: {
+    title: "Couldn't save that cost center",
+    detail: 'A cost center with that code already exists.',
+  },
+  code_required: {
+    title: "Couldn't save",
+    detail: 'Code is required.',
+  },
+  code_too_long: {
+    title: "Couldn't save",
+    detail: 'Code must be 32 characters or fewer.',
+  },
 };
 
 /**

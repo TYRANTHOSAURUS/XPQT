@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -13,6 +12,7 @@ import {
 import type { Request } from 'express';
 import { PermissionGuard } from '../../common/permission-guard';
 import { CostCentersService, type CostCenterUpsertDto } from './cost-centers.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Reads are intentionally NOT gated: the portal `/portal/order` flow
@@ -45,7 +45,7 @@ export class CostCentersController {
   async create(@Req() req: Request, @Body() dto: CostCenterUpsertDto) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.create(dto);
   }
@@ -54,7 +54,7 @@ export class CostCentersController {
   async update(@Req() req: Request, @Param('id') id: string, @Body() dto: Partial<CostCenterUpsertDto>) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.update(id, dto);
   }

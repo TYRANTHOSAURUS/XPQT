@@ -1,11 +1,7 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 export interface CostCenterUpsertDto {
   code: string;
@@ -66,10 +62,7 @@ export class CostCentersService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'cost_center_not_found',
-        message: `Cost center ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('cost_center_not_found', `Cost center ${id} not found.`);
     }
     return data as CostCenterRow;
   }
@@ -91,9 +84,8 @@ export class CostCentersService {
       .single();
     if (error) {
       if ((error as { code?: string }).code === '23505') {
-        throw new ConflictException({
-          code: 'cost_center_code_taken',
-          message: `Cost center with code "${dto.code}" already exists.`,
+        throw AppErrors.conflict('cost_center_code_taken', {
+          detail: `Cost center with code "${dto.code}" already exists.`,
         });
       }
       throw error;
@@ -104,7 +96,7 @@ export class CostCentersService {
   async update(id: string, dto: Partial<CostCenterUpsertDto>): Promise<CostCenterRow> {
     if (dto.code != null) this.assertValidCode(dto.code);
     if (dto.name != null && dto.name.trim().length === 0) {
-      throw new BadRequestException({ code: 'name_required', message: 'name cannot be empty' });
+      throw AppErrors.validationFailed('name_required', { detail: 'name cannot be empty' });
     }
     const tenant = TenantContext.current();
     const patch: Record<string, unknown> = {};
@@ -125,18 +117,14 @@ export class CostCentersService {
       .single();
     if (error) {
       if ((error as { code?: string }).code === '23505') {
-        throw new ConflictException({
-          code: 'cost_center_code_taken',
-          message: `Cost center with code "${dto.code}" already exists.`,
+        throw AppErrors.conflict('cost_center_code_taken', {
+          detail: `Cost center with code "${dto.code}" already exists.`,
         });
       }
       throw error;
     }
     if (!data) {
-      throw new NotFoundException({
-        code: 'cost_center_not_found',
-        message: `Cost center ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('cost_center_not_found', `Cost center ${id} not found.`);
     }
     return data as CostCenterRow;
   }
@@ -160,18 +148,17 @@ export class CostCentersService {
   private assertValid(dto: CostCenterUpsertDto): void {
     this.assertValidCode(dto.code);
     if (!dto.name?.trim()) {
-      throw new BadRequestException({ code: 'name_required', message: 'name is required' });
+      throw AppErrors.validationFailed('name_required', { detail: 'name is required' });
     }
   }
 
   private assertValidCode(code: string): void {
     if (!code?.trim()) {
-      throw new BadRequestException({ code: 'code_required', message: 'code is required' });
+      throw AppErrors.validationFailed('code_required', { detail: 'code is required' });
     }
     if (code.trim().length > 32) {
-      throw new BadRequestException({
-        code: 'code_too_long',
-        message: 'code must be 32 characters or fewer',
+      throw AppErrors.validationFailed('code_too_long', {
+        detail: 'code must be 32 characters or fewer',
       });
     }
   }
