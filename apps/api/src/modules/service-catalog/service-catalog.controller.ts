@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -15,6 +14,7 @@ import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ServiceRuleService, type ServiceRuleUpsertDto } from './service-rule.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Service catalog endpoints.
@@ -61,15 +61,13 @@ export class ServiceCatalogController {
     @Query('service_type') serviceType: string,
   ) {
     if (!deliverySpaceId) {
-      throw new BadRequestException({
-        code: 'missing_delivery_space',
-        message: 'delivery_space_id query parameter is required',
+      throw AppErrors.validationFailed('missing_delivery_space', {
+        detail: 'delivery_space_id query parameter is required',
       });
     }
     if (!serviceType) {
-      throw new BadRequestException({
-        code: 'missing_service_type',
-        message: 'service_type query parameter is required',
+      throw AppErrors.validationFailed('missing_service_type', {
+        detail: 'service_type query parameter is required',
       });
     }
     const tenant = TenantContext.current();
@@ -178,7 +176,7 @@ export class ServiceCatalogController {
   async create(@Req() req: Request, @Body() dto: ServiceRuleUpsertDto) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.rules.create(dto);
   }
@@ -204,7 +202,7 @@ export class ServiceCatalogController {
   ) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!body || typeof body !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.rules.createFromTemplate({
       templateKey: body.template_key,
@@ -222,7 +220,7 @@ export class ServiceCatalogController {
   async update(@Req() req: Request, @Param('id') id: string, @Body() dto: Partial<ServiceRuleUpsertDto>) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.rules.update(id, dto);
   }

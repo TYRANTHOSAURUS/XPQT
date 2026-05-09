@@ -1,10 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 import { PredicateEngineService } from '../room-booking-rules/predicate-engine.service';
 import type {
   ApprovalConfig,
@@ -265,10 +262,7 @@ export class ServiceRuleService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'service_rule_not_found',
-        message: `Service rule ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('service_rule_not_found', `Service rule ${id} not found.`);
     }
     return data as ServiceRuleRow;
   }
@@ -302,24 +296,20 @@ export class ServiceRuleService {
 
   async update(id: string, dto: Partial<ServiceRuleUpsertDto>): Promise<ServiceRuleRow> {
     if (dto.name != null && !dto.name.trim()) {
-      throw new BadRequestException({ code: 'name_required', message: 'name cannot be empty' });
+      throw AppErrors.validationFailed('name_required', { detail: 'name cannot be empty' });
     }
     if (dto.applies_when != null) {
       try {
         this.engine.validate(dto.applies_when);
       } catch (err) {
-        throw new BadRequestException({
-          code: 'invalid_predicate',
-          message: (err as Error).message,
-        });
+        throw AppErrors.validationFailed('invalid_predicate', { detail: (err as Error).message });
       }
     }
     if (dto.target_kind != null && dto.target_kind !== 'tenant' && dto.target_id == null) {
       const existing = await this.findOne(id);
       if (!existing.target_id) {
-        throw new BadRequestException({
-          code: 'target_id_required',
-          message: 'target_id is required when target_kind is not tenant',
+        throw AppErrors.validationFailed('target_id_required', {
+          detail: 'target_id is required when target_kind is not tenant',
         });
       }
     }
@@ -345,9 +335,8 @@ export class ServiceRuleService {
     if ('internal_setup_lead_time_minutes' in dto) {
       const v = dto.internal_setup_lead_time_minutes;
       if (v != null && (!Number.isInteger(v) || v < 0 || v > 1440)) {
-        throw new BadRequestException({
-          code: 'invalid_lead_time',
-          message: 'internal_setup_lead_time_minutes must be a non-negative integer up to 1440.',
+        throw AppErrors.validationFailed('invalid_lead_time', {
+          detail: 'internal_setup_lead_time_minutes must be a non-negative integer up to 1440.',
         });
       }
       patch.internal_setup_lead_time_minutes = v ?? null;
@@ -362,10 +351,7 @@ export class ServiceRuleService {
       .single();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'service_rule_not_found',
-        message: `Service rule ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('service_rule_not_found', `Service rule ${id} not found.`);
     }
     return data as ServiceRuleRow;
   }
@@ -412,29 +398,22 @@ export class ServiceRuleService {
   async createFromTemplate(args: CreateFromTemplateArgs): Promise<ServiceRuleRow> {
     const { templateKey, params, targetKind, targetId, name, description, priority, active } = args;
     if (!templateKey) {
-      throw new BadRequestException({ code: 'template_required', message: 'templateKey required' });
+      throw AppErrors.validationFailed('template_required', { detail: 'templateKey required' });
     }
 
     /* Codex Sprint 1B round-1 fix: enforce the same surface contract as
        create() so the /from-template endpoint can't bypass validation
        (empty name, missing target_id when not tenant, etc). */
     if (!targetKind) {
-      throw new BadRequestException({
-        code: 'target_kind_required',
-        message: 'target_kind is required',
-      });
+      throw AppErrors.validationFailed('target_kind_required', { detail: 'target_kind is required' });
     }
     if (targetKind !== 'tenant' && (!targetId || !targetId.trim())) {
-      throw new BadRequestException({
-        code: 'target_id_required',
-        message: 'target_id is required when target_kind is not tenant',
+      throw AppErrors.validationFailed('target_id_required', {
+        detail: 'target_id is required when target_kind is not tenant',
       });
     }
     if (name !== undefined && !name.trim()) {
-      throw new BadRequestException({
-        code: 'name_required',
-        message: 'name cannot be empty',
-      });
+      throw AppErrors.validationFailed('name_required', { detail: 'name cannot be empty' });
     }
 
     const tenant = TenantContext.current();
@@ -447,10 +426,7 @@ export class ServiceRuleService {
     if (tplLookup.error) throw tplLookup.error;
     const tpl = tplLookup.data as ServiceRuleTemplate | null;
     if (!tpl) {
-      throw new NotFoundException({
-        code: 'template_not_found',
-        message: `Template ${templateKey} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('template_not_found', `Template ${templateKey} not found.`);
     }
 
     /* Required-param check. The default fallback covers templates that
@@ -471,9 +447,8 @@ export class ServiceRuleService {
         if (spec.default !== undefined) {
           supplied[spec.key] = spec.default;
         } else {
-          throw new BadRequestException({
-            code: 'param_required',
-            message: `Template ${templateKey} requires param '${spec.key}' (${spec.label}).`,
+          throw AppErrors.validationFailed('param_required', {
+            detail: `Template ${templateKey} requires param '${spec.key}' (${spec.label}).`,
           });
         }
       }
@@ -489,9 +464,8 @@ export class ServiceRuleService {
     try {
       this.engine.validate(compiled);
     } catch (err) {
-      throw new BadRequestException({
-        code: 'invalid_compiled_predicate',
-        message: `Template compiled to an invalid predicate: ${(err as Error).message}`,
+      throw AppErrors.validationFailed('invalid_compiled_predicate', {
+        detail: `Template compiled to an invalid predicate: ${(err as Error).message}`,
       });
     }
 
@@ -525,31 +499,24 @@ export class ServiceRuleService {
 
   private assertValid(dto: ServiceRuleUpsertDto): void {
     if (!dto.name?.trim()) {
-      throw new BadRequestException({ code: 'name_required', message: 'name is required' });
+      throw AppErrors.validationFailed('name_required', { detail: 'name is required' });
     }
     if (!dto.target_kind) {
-      throw new BadRequestException({
-        code: 'target_kind_required',
-        message: 'target_kind is required',
-      });
+      throw AppErrors.validationFailed('target_kind_required', { detail: 'target_kind is required' });
     }
     if (!dto.effect) {
-      throw new BadRequestException({ code: 'effect_required', message: 'effect is required' });
+      throw AppErrors.validationFailed('effect_required', { detail: 'effect is required' });
     }
     if (dto.target_kind !== 'tenant' && !dto.target_id) {
-      throw new BadRequestException({
-        code: 'target_id_required',
-        message: 'target_id is required when target_kind is not tenant',
+      throw AppErrors.validationFailed('target_id_required', {
+        detail: 'target_id is required when target_kind is not tenant',
       });
     }
     if (dto.applies_when != null) {
       try {
         this.engine.validate(dto.applies_when);
       } catch (err) {
-        throw new BadRequestException({
-          code: 'invalid_predicate',
-          message: (err as Error).message,
-        });
+        throw AppErrors.validationFailed('invalid_predicate', { detail: (err as Error).message });
       }
     }
   }

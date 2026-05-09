@@ -975,6 +975,62 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save that role",
     detail: 'One of the permission keys is invalid.',
   },
+
+  // ─── service-catalog (Phase 7.B-1.service-catalog) ───────────────────────
+  service_rule_not_found: {
+    title: "Couldn't find that service rule",
+  },
+  name_required: {
+    title: "Couldn't save",
+    detail: 'Name is required.',
+  },
+  invalid_predicate: {
+    title: "Couldn't save that rule",
+    detail: 'The rule predicate is invalid.',
+  },
+  target_id_required: {
+    title: "Couldn't save that rule",
+    detail: 'Target id is required when target_kind is not tenant.',
+  },
+  target_kind_required: {
+    title: "Couldn't save that rule",
+    detail: 'Target kind is required.',
+  },
+  effect_required: {
+    title: "Couldn't save that rule",
+    detail: 'Effect is required.',
+  },
+  invalid_lead_time: {
+    title: "Couldn't save that rule",
+    detail: 'Lead time must be a non-negative integer up to 1440 minutes.',
+  },
+  template_required: {
+    title: "Couldn't create that rule",
+    detail: 'A template key is required.',
+  },
+  template_not_found: {
+    title: "Couldn't find that template",
+  },
+  invalid_compiled_predicate: {
+    title: "Couldn't create that rule",
+    detail: 'The template compiled to an invalid predicate.',
+  },
+  param_required: {
+    title: "Couldn't create that rule",
+    detail: 'A required template parameter is missing.',
+  },
+  invalid_payload: {
+    title: "Couldn't process that request",
+    detail: 'Request body is required.',
+  },
+  missing_delivery_space: {
+    title: "Couldn't load services",
+    detail: 'A delivery space is required.',
+  },
+  missing_service_type: {
+    title: "Couldn't load services",
+    detail: 'A service type is required.',
+  },
 };
 
 /**

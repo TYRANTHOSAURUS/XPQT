@@ -330,6 +330,22 @@ export type KnownErrorCode =
   // ─── user-management migration (Phase 7.B-1.user-management) ────────────
   | 'user_management.invalid_permission_key'
 
+  // ─── service-catalog migration (Phase 7.B-1.service-catalog) ─────────────
+  | 'service_rule_not_found'
+  | 'name_required'
+  | 'invalid_predicate'
+  | 'target_id_required'
+  | 'target_kind_required'
+  | 'effect_required'
+  | 'invalid_lead_time'
+  | 'template_required'
+  | 'template_not_found'
+  | 'invalid_compiled_predicate'
+  | 'param_required'
+  | 'invalid_payload'
+  | 'missing_delivery_space'
+  | 'missing_service_type'
+
   // ─── work-orders module migration (Phase 7.B-1.work-orders) ──────────────
   | 'work_order.not_found'
   | 'work_order.body_required'
@@ -624,6 +640,20 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'work_order.reassign_reason_required',
   'work_order.rerun_resolver_unsupported',
   'user_management.invalid_permission_key',
+  'service_rule_not_found',
+  'name_required',
+  'invalid_predicate',
+  'target_id_required',
+  'target_kind_required',
+  'effect_required',
+  'invalid_lead_time',
+  'template_required',
+  'template_not_found',
+  'invalid_compiled_predicate',
+  'param_required',
+  'invalid_payload',
+  'missing_delivery_space',
+  'missing_service_type',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
