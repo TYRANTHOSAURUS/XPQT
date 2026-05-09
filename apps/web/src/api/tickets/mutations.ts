@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { handleMutationError } from '@/lib/errors';
 import { ticketKeys } from './keys';
 import {
   ASSIGNMENT_FIELD,
@@ -75,8 +76,9 @@ export function useUpdateTicket(id: string) {
       return { previous };
     },
 
-    onError: (_err, _updates, ctx) => {
+    onError: (err, _updates, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+      handleMutationError(err, { actionTitle: "Couldn't update ticket" });
     },
 
     onSettled: (_data, _err, variables) => {
@@ -131,8 +133,9 @@ export function useReassignTicket(id: string) {
       return { previous };
     },
 
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+      handleMutationError(err, { actionTitle: "Couldn't reassign ticket" });
     },
 
     onSettled: () =>
@@ -189,6 +192,7 @@ export function useAddActivity(id: string) {
         }),
       });
     },
+    onError: (err) => handleMutationError(err, { actionTitle: "Couldn't post activity" }),
     onSettled: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
@@ -281,8 +285,9 @@ export function useUpdateWorkOrder(id: string) {
       return { previous };
     },
 
-    onError: (_err, _updates, ctx) => {
+    onError: (err, _updates, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+      handleMutationError(err, { actionTitle: "Couldn't update work order" });
     },
 
     onSettled: (_data, _err, variables) => {
@@ -343,8 +348,9 @@ export function useReassignWorkOrder(id: string) {
       return { previous };
     },
 
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
+      handleMutationError(err, { actionTitle: "Couldn't reassign work order" });
     },
 
     onSettled: () =>
