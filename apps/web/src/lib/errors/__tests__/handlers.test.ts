@@ -96,6 +96,39 @@ describe('handleMutationError — surface routing', () => {
     );
     expect(toastErrorMock).toHaveBeenCalledTimes(1);
   });
+
+  it('suppresses the toast on AbortError / request.cancelled', () => {
+    const e = new Error('aborted');
+    e.name = 'AbortError';
+    handleMutationError(e, { actionTitle: "Couldn't save" });
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the toast on status 499 (request.cancelled)', () => {
+    handleMutationError(
+      new ApiError({ status: 499, message: 'cancelled', body: {} }),
+      { actionTitle: "Couldn't save" },
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('appends the traceId to the description on server-class errors', () => {
+    handleMutationError(
+      new ApiError({ status: 500, message: 'x', body: {}, traceId: 'req_xyz_42' }),
+      { actionTitle: "Couldn't save webhook" },
+    );
+    const args = toastErrorMock.mock.calls[0];
+    expect(args[1]?.description).toContain('req_xyz_42');
+  });
+
+  it('does NOT append traceId on non-server classes (e.g. conflict)', () => {
+    handleMutationError(
+      new ApiError({ status: 409, message: 'x', body: {}, traceId: 'req_abc' }),
+      { actionTitle: "Couldn't save" },
+    );
+    const args = toastErrorMock.mock.calls[0];
+    expect(args[1]?.description ?? '').not.toContain('req_abc');
+  });
 });
 
 describe('handleQueryError', () => {

@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { classify, type ClassifiedError } from '@/lib/errors/classify';
 import { resolveMessage } from '@/lib/errors/messages.en';
+import { STASHED_CLASSIFIED } from '@/lib/errors/use-page-query';
 
 interface Props {
   children: ReactNode;
@@ -10,9 +11,40 @@ interface Props {
 interface State {
   error: Error | null;
   classified: ClassifiedError | null;
+  /**
+   * 'reload' = chunk failure that we auto-reloaded; render children while
+   * the reload happens. 'fail' = chunk failure on the second attempt; fall
+   * through to the generic error UI so the user isn't stranded on a blank.
+   */
+  chunkFallback: 'none' | 'reload' | 'fail';
 }
 
 const RELOAD_FLAG = 'route-error-boundary:reloaded';
+
+function safeReadFlag(): string | null {
+  try {
+    return sessionStorage.getItem(RELOAD_FLAG);
+  } catch {
+    // Safari private mode / embedded surfaces can throw on storage access.
+    return null;
+  }
+}
+
+function safeWriteFlag(): void {
+  try {
+    sessionStorage.setItem(RELOAD_FLAG, '1');
+  } catch {
+    /* noop — see safeReadFlag */
+  }
+}
+
+function safeClearFlag(): void {
+  try {
+    sessionStorage.removeItem(RELOAD_FLAG);
+  } catch {
+    /* noop — see safeReadFlag */
+  }
+}
 
 function isChunkLoadError(error: Error): boolean {
   if (error.name === 'ChunkLoadError') return true;
@@ -24,36 +56,62 @@ function isChunkLoadError(error: Error): boolean {
   );
 }
 
+function readStashedClassified(error: Error): ClassifiedError | undefined {
+  const e = error as Error & { [STASHED_CLASSIFIED]?: ClassifiedError };
+  return e[STASHED_CLASSIFIED];
+}
+
 /**
  * Top-level boundary used by every route via `<Route element={<RouteErrorBoundary>…`.
  *
  * Renders class-aware copy for the four classes that throw to a boundary
  * (`not_found`, `permission`, `server`, `unknown`) per spec §3.4. Chunk
- * loads still auto-reload once before falling through to the generic
- * "something went wrong" page.
+ * loads auto-reload once before falling through to the generic
+ * "something went wrong" page on the second failure.
  *
  * The traceId chip uses `data-chip` so triple-click selects it atomically
  * (CLAUDE.md design polish — copy chip rule).
+ *
+ * Implementation note: when `usePageQuery` threw the error, it stashed a
+ * classified value on the error object so we re-use it instead of re-running
+ * `classify()` on every render.
  */
 export class RouteErrorBoundary extends Component<Props, State> {
-  state: State = { error: null, classified: null };
+  state: State = { error: null, classified: null, chunkFallback: 'none' };
 
   static getDerivedStateFromError(error: Error): State {
-    return { error, classified: classify(error, { callSite: 'route_load' }) };
+    if (isChunkLoadError(error)) {
+      // Decision deferred to componentDidCatch — it owns the reload-attempt
+      // counter via sessionStorage.
+      return { error, classified: null, chunkFallback: 'reload' };
+    }
+    const classified = readStashedClassified(error) ?? classify(error, { callSite: 'route_load' });
+    return { error, classified, chunkFallback: 'none' };
   }
 
   componentDidCatch(error: Error) {
-    if (isChunkLoadError(error) && !sessionStorage.getItem(RELOAD_FLAG)) {
-      sessionStorage.setItem(RELOAD_FLAG, '1');
-      window.location.reload();
+    if (isChunkLoadError(error)) {
+      const alreadyReloaded = safeReadFlag() === '1';
+      if (!alreadyReloaded) {
+        safeWriteFlag();
+        // Render children while the reload happens (state.chunkFallback ===
+        // 'reload') — better than flashing a blank error frame.
+        window.location.reload();
+        return;
+      }
+      // Second chunk failure — clear the flag (so a future independent chunk
+      // failure can reload again) and fall through to the generic error UI.
+      safeClearFlag();
+      this.setState({ chunkFallback: 'fail' });
+      console.error('RouteErrorBoundary: chunk-load failed twice, falling back', error);
       return;
     }
-    sessionStorage.removeItem(RELOAD_FLAG);
+    safeClearFlag();
     console.error('RouteErrorBoundary caught:', error);
   }
 
   handleReload = () => {
-    sessionStorage.removeItem(RELOAD_FLAG);
+    safeClearFlag();
     window.location.reload();
   };
 
@@ -65,27 +123,56 @@ export class RouteErrorBoundary extends Component<Props, State> {
     }
   };
 
-  render() {
-    const { error, classified } = this.state;
-    if (!error || isChunkLoadError(error)) {
-      return this.props.children;
-    }
+  handleGoHome = () => {
+    window.location.href = '/';
+  };
 
-    const cls = classified?.class ?? 'unknown';
+  render() {
+    const { error, classified, chunkFallback } = this.state;
+    if (!error) return this.props.children;
+
+    // Chunk-load: render children during the auto-reload; only render the
+    // error UI when the reload itself failed.
+    if (chunkFallback === 'reload') return this.props.children;
+
+    const cls = classified?.class ?? (chunkFallback === 'fail' ? 'unknown' : 'unknown');
     const code = classified?.code ?? 'unknown.server_error';
     const traceId = classified?.traceId;
     const resolved = resolveMessage(code, 'dialog');
 
     if (cls === 'not_found') {
+      // Branch on body.reason per spec §3.3 / §4. 'hidden' must look identical
+      // to 'missing' — never reveal existence — so they share copy and
+      // recoveries.
+      const isRemoved = classified?.reason === 'removed';
+
+      // Prefer code-resolved title when the registry has one specific to the
+      // wire code (e.g. cost_center_not_found → "We can't find that cost
+      // center"). Fall back to a generic page-level title only when the code
+      // is the generic bucket. The `removed` reason wins over both.
+      const isGenericCode = code === 'generic.not_found';
+      const title = isRemoved
+        ? 'This was removed'
+        : !isGenericCode && resolved.title
+          ? resolved.title
+          : "We couldn't find that page";
+      const detail = isRemoved
+        ? 'It was deleted and is no longer available.'
+        : (resolved.detail ?? 'It may have been moved or removed.');
+
       return (
         <ErrorScaffold
-          title="We couldn't find that page"
-          detail={resolved.detail ?? 'It may have been moved or removed.'}
+          title={title}
+          detail={detail}
           actions={
-            <>
-              <Button onClick={this.handleGoBack} size="sm" variant="outline">Go back</Button>
-              <Button onClick={this.handleReload} size="sm">Reload</Button>
-            </>
+            isRemoved ? (
+              <Button onClick={this.handleGoHome} size="sm">Go to dashboard</Button>
+            ) : (
+              <>
+                <Button onClick={this.handleGoBack} size="sm" variant="outline">Go back</Button>
+                <Button onClick={this.handleReload} size="sm">Reload</Button>
+              </>
+            )
           }
         />
       );
@@ -121,7 +208,7 @@ export class RouteErrorBoundary extends Component<Props, State> {
       );
     }
 
-    // unknown / fallback
+    // unknown / fallback (incl. chunk-load second failure).
     return (
       <ErrorScaffold
         title="Something went wrong"

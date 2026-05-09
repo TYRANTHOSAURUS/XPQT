@@ -44,6 +44,15 @@ import { toastError } from '@/lib/toast';
 import { classify, type CallSite, type ClassifiedField, type ClassifiedError } from './classify';
 import { resolveMessage } from './messages.en';
 
+/**
+ * Loose-typed setter for compatibility with `react-hook-form`'s
+ * `UseFormSetError` (which is generic over the form values shape). We can't
+ * import the generic type without infecting every caller's form-values
+ * generic into this helper, so we keep the call signature shape-compatible
+ * (`(name, error) => void`) and let RHF's `setError` satisfy it
+ * structurally. If you're reading this and you have a concrete generic
+ * helper that doesn't make every caller pass `<TFieldValues>` — replace.
+ */
 type SetFormError = (field: string, error: FieldError) => void;
 
 // ─── Common surface decision ────────────────────────────────────────────────
@@ -80,8 +89,19 @@ function fireToast(
   // The actionTitle is the canonical toast title (voice rule); the
   // code-resolved detail is the description. Server's raw `detail` /
   // `error.message` is intentionally NOT surfaced.
+  //
+  // Server-class errors carry a traceId we surface in the description so
+  // users can paste it into a support thread. Sonner's `description`
+  // accepts string only today; the value is appended on a new line and the
+  // visual chip styling (data-chip / monospace) is a Phase 7.B follow-up
+  // when we lift `description` to ReactNode.
+  let description = resolved.detail;
+  if (classified.class === 'server' && classified.traceId) {
+    const ref = `Reference: ${classified.traceId}`;
+    description = description ? `${description}\n${ref}` : ref;
+  }
   toastError(actionTitle, {
-    description: resolved.detail,
+    description,
     retry,
   });
 }
@@ -116,6 +136,11 @@ export function handleMutationError(
 ): void {
   const callSite = opts.callSite ?? 'mutation';
   const classified = classify(error, { callSite, retry: opts.retry });
+
+  // Cancellation: user navigated away or React Query aborted the in-flight
+  // mutation. Toasting "Couldn't save" is a lie — the user's intent was to
+  // dismiss. Mirrors the suppression in handleQueryError.
+  if (classified.code === 'request.cancelled') return;
 
   // Validation: route fields[] to RHF. If we surfaced fields, suppress the
   // generic toast — the form is the surface. If no setFormError was given

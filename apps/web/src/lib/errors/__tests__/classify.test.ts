@@ -193,23 +193,37 @@ describe('classify — conflict (409)', () => {
 });
 
 describe('classify — rate_limit (429)', () => {
-  it('classifies 429 with retryAfter', () => {
+  it('classifies 429 with retryAfter and emits a wait recovery when retry is provided', () => {
+    const retry = vi.fn();
     const e = new ApiError({
       status: 429,
       message: 'x',
       body: { code: 'rate_limit.exceeded', retryAfter: 60 },
     });
-    const c = classify(e);
+    const before = Date.now();
+    const c = classify(e, { retry });
     expect(c.class).toBe('rate_limit');
     expect(c.retryAfter).toBe(60);
     const wait = c.recoveries.find((r) => r.kind === 'wait');
     expect(wait).toBeDefined();
     if (wait?.kind === 'wait') {
-      expect(wait.until).toBeGreaterThan(Date.now());
+      // 100ms tolerance for arithmetic: until ≈ Date.now() + retryAfter*1000.
+      const expected = before + 60 * 1000;
+      expect(Math.abs(wait.until - expected)).toBeLessThan(100);
+      // The wait recovery's `run` should be the real retry, not a no-op.
+      expect(wait.run).toBe(retry);
     }
   });
 
-  it('falls back to retryAfter=30 when missing', () => {
+  it('omits the wait recovery when ctx.retry is undefined (no-op would lie)', () => {
+    const e = new ApiError({ status: 429, message: 'x', body: { retryAfter: 10 } });
+    const c = classify(e);
+    expect(c.recoveries.find((r) => r.kind === 'wait')).toBeUndefined();
+    // Dismiss is always present.
+    expect(c.recoveries.find((r) => r.kind === 'dismiss')).toBeDefined();
+  });
+
+  it('falls back to retryAfter=30 (RATE_LIMIT_DEFAULT_RETRY_SECONDS) when missing', () => {
     const e = new ApiError({ status: 429, message: 'x', body: {} });
     expect(classify(e).retryAfter).toBe(30);
   });
@@ -272,6 +286,94 @@ describe('classify — other 4xx fallback', () => {
     const c = classify(e);
     expect(c.class).toBe('validation');
     expect(c.code).toBe('generic.bad_request');
+  });
+});
+
+describe('classify — 499 / request.cancelled', () => {
+  it('classifies status 499 as transport / request.cancelled', () => {
+    const e = new ApiError({ status: 499, message: 'cancelled', body: {} });
+    const c = classify(e);
+    expect(c.class).toBe('transport');
+    expect(c.code).toBe('request.cancelled');
+    expect(recoveryKinds(c.recoveries)).toEqual(['dismiss']);
+  });
+
+  it('classifies body.code=request.cancelled as transport (any status)', () => {
+    const e = new ApiError({ status: 400, message: 'cancelled', body: { code: 'request.cancelled' } });
+    const c = classify(e);
+    expect(c.class).toBe('transport');
+    expect(c.code).toBe('request.cancelled');
+  });
+
+  it('does NOT fall through to the generic 4xx validation branch', () => {
+    const e = new ApiError({ status: 499, message: 'cancelled', body: {} });
+    const c = classify(e);
+    expect(c.class).not.toBe('validation');
+  });
+});
+
+describe('classify — not_found body.reason discrimination', () => {
+  it('passes body.reason="removed" through to classified.reason', () => {
+    const e = new ApiError({
+      status: 404,
+      message: 'gone',
+      body: { code: 'ticket.not_found', reason: 'removed' },
+    });
+    const c = classify(e);
+    expect(c.class).toBe('not_found');
+    expect(c.reason).toBe('removed');
+  });
+
+  it('passes body.reason="missing" through', () => {
+    const e = new ApiError({ status: 404, message: 'x', body: { reason: 'missing' } });
+    expect(classify(e).reason).toBe('missing');
+  });
+
+  it('passes body.reason="hidden" through (renderer must hide it)', () => {
+    const e = new ApiError({ status: 404, message: 'x', body: { reason: 'hidden' } });
+    expect(classify(e).reason).toBe('hidden');
+  });
+
+  it('drops malformed reason values', () => {
+    const e = new ApiError({ status: 404, message: 'x', body: { reason: 'bogus' } });
+    expect(classify(e).reason).toBeUndefined();
+  });
+
+  it('omits reason on classes other than not_found', () => {
+    const e = new ApiError({ status: 500, message: 'x', body: { reason: 'removed' } });
+    expect(classify(e).reason).toBeUndefined();
+  });
+});
+
+describe('classify — defensive body shape (non-string code/traceId)', () => {
+  it('drops body.code when it is not a string', () => {
+    const e = new ApiError({
+      status: 500,
+      message: 'x',
+      // wire body lying about the code shape
+      body: { code: 42, detail: 'real' },
+    });
+    const c = classify(e);
+    // Falls back to default for the class, not the bogus number.
+    expect(c.code).toBe('unknown.server_error');
+    expect(c.detail).toBe('real');
+  });
+
+  it('drops body.detail / body.title when they are not strings', () => {
+    const e = new ApiError({
+      status: 500,
+      message: 'x',
+      body: { detail: { not: 'a string' }, title: 99 },
+    });
+    const c = classify(e);
+    expect(c.detail).toBeUndefined();
+    expect(c.title).toBeUndefined();
+  });
+
+  it('drops empty string body fields', () => {
+    const e = new ApiError({ status: 500, message: 'x', body: { code: '' } });
+    const c = classify(e);
+    expect(c.code).toBe('unknown.server_error');
   });
 });
 

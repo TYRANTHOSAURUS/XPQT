@@ -36,11 +36,17 @@ export interface ClassifyContext {
   callSite?: CallSite;
   /** Re-run the failing operation. Recoveries reference this; classifier never invokes it. */
   retry?: () => void;
-  /** Hard sign-out + sign-in. Auth-class recoveries use it. */
-  signOutAndIn?: () => void;
   /** Support email surfaced on `contactSupport` recoveries. */
   supportEmail?: string;
 }
+
+/**
+ * Default seconds to wait when the server emits 429 without `retryAfter`.
+ * 30s is the conservative midpoint between common server-emitted values
+ * (5–60s); long enough to avoid stampede, short enough that the user
+ * doesn't bail. Tune via the wire body's `retryAfter` when known.
+ */
+const RATE_LIMIT_DEFAULT_RETRY_SECONDS = 30;
 
 /** Discriminated union of recovery affordances per spec §3.3. */
 export type Recovery =
@@ -70,6 +76,18 @@ export interface ClassifiedError {
   title?: string;
   /** Server-supplied detail. Renderer uses as fallback only. */
   detail?: string;
+  /**
+   * Discriminator for not_found-class errors per spec §3.3 / §4. Drives
+   * subtly-different copy in the renderer:
+   *   - 'missing' — never existed (or unknown id format).
+   *   - 'removed' — existed, was deleted/archived.
+   *   - 'hidden'  — exists but caller can't see it. Security: the renderer
+   *                 must show identical copy to `missing` so existence
+   *                 isn't leaked; the discriminator lets ops/log paths
+   *                 still distinguish.
+   * Server emits via `body.reason`; absent on classes other than not_found.
+   */
+  reason?: 'missing' | 'removed' | 'hidden';
   /** RFC 9457-style structured field issues (validation only). */
   fields?: ClassifiedField[];
   /** Server-emitted X-Request-Id, surfaced on server-class toasts + support flow. */
@@ -93,6 +111,8 @@ interface WireBody {
   code?: string;
   title?: string;
   detail?: string;
+  /** not_found discriminator per spec §3.3 / §4. */
+  reason?: 'missing' | 'removed' | 'hidden';
   fields?: ClassifiedField[];
   docsUrl?: string;
   retryAfter?: number;
@@ -101,10 +121,49 @@ interface WireBody {
   message?: string;
 }
 
+/** Read a string field defensively. Empty / non-string → undefined. */
+function pickString(raw: Record<string, unknown>, key: string): string | undefined {
+  const v = raw[key];
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
 function readBody(error: ApiError): WireBody {
-  const b = error.body;
-  if (!b || typeof b !== 'object') return {};
-  return b as WireBody;
+  const raw = error.body;
+  if (!raw || typeof raw !== 'object') return {};
+  const obj = raw as Record<string, unknown>;
+  const out: WireBody = {};
+
+  // String fields — never trust the wire.
+  const code = pickString(obj, 'code');
+  if (code) out.code = code;
+  const title = pickString(obj, 'title');
+  if (title) out.title = title;
+  const detail = pickString(obj, 'detail');
+  if (detail) out.detail = detail;
+  const docsUrl = pickString(obj, 'docsUrl');
+  if (docsUrl) out.docsUrl = docsUrl;
+  const serverVersion = pickString(obj, 'serverVersion');
+  if (serverVersion) out.serverVersion = serverVersion;
+  const clientVersion = pickString(obj, 'clientVersion');
+  if (clientVersion) out.clientVersion = clientVersion;
+  const message = pickString(obj, 'message');
+  if (message) out.message = message;
+
+  // reason — only accept the three legal literals.
+  const rawReason = obj.reason;
+  if (rawReason === 'missing' || rawReason === 'removed' || rawReason === 'hidden') {
+    out.reason = rawReason;
+  }
+
+  // Numeric.
+  if (typeof obj.retryAfter === 'number' && Number.isFinite(obj.retryAfter)) {
+    out.retryAfter = obj.retryAfter;
+  }
+
+  // Array (filtered + validated by readFields).
+  if (Array.isArray(obj.fields)) out.fields = obj.fields as ClassifiedField[];
+
+  return out;
 }
 
 function readFields(body: WireBody): ClassifiedField[] | undefined {
@@ -172,6 +231,20 @@ export function classify(error: unknown, ctx: ClassifyContext = {}): ClassifiedE
       raw: error,
     };
 
+    // ── 499 / request.cancelled — checked FIRST so it doesn't fall into the
+    // generic 4xx branch. The server emits 499 + body.code='request.cancelled'
+    // when AbortController fires; React Query also raises this on navigation.
+    // Surface as transport (matches the AbortError branch above) so the
+    // matrix's transport rules apply and handlers suppress the toast.
+    if (status === 499 || body.code === 'request.cancelled') {
+      return {
+        ...baseProps,
+        class: 'transport',
+        code: 'request.cancelled',
+        recoveries: [{ kind: 'dismiss' }],
+      };
+    }
+
     // Network errors (apiFetch raised ApiError with status === 0).
     if (status === 0 || error.isNetworkError()) {
       const code = isOffline() ? 'network.offline' : body.code ?? 'network.timeout';
@@ -190,9 +263,9 @@ export function classify(error: unknown, ctx: ClassifyContext = {}): ClassifiedE
     if (status === 401) {
       const next =
         typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/';
-      // signOutAndIn (if provided) is the app's imperative redirect; we
-      // surface the signIn recovery descriptor either way so the UI layer
-      // decides how to render.
+      // The signIn recovery descriptor is what we hand the UI layer; the host
+      // app's auth provider decides how to render it (modal sign-in vs full
+      // redirect). Classifier never invokes anything imperative.
       recoveries.push({ kind: 'signIn', next });
       recoveries.push({ kind: 'dismiss' });
       return {
@@ -218,7 +291,10 @@ export function classify(error: unknown, ctx: ClassifyContext = {}): ClassifiedE
       };
     }
 
-    // 404 / 410 — not_found.
+    // 404 / 410 — not_found. Surface body.reason so the boundary can branch
+    // 'removed' to its own copy. 'hidden' must render identical copy to
+    // 'missing' (security: never reveal existence) — that's the renderer's
+    // job, not ours.
     if (status === 404 || status === 410) {
       recoveries.push({ kind: 'goBack' });
       recoveries.push({ kind: 'dismiss' });
@@ -226,6 +302,7 @@ export function classify(error: unknown, ctx: ClassifyContext = {}): ClassifiedE
         ...baseProps,
         class: 'not_found',
         code: body.code ?? 'generic.not_found',
+        reason: body.reason,
         recoveries,
       };
     }
@@ -256,12 +333,14 @@ export function classify(error: unknown, ctx: ClassifyContext = {}): ClassifiedE
       };
     }
 
-    // 429 — rate_limit.
+    // 429 — rate_limit. Only emit the wait recovery if there's a real `run`
+    // to invoke — a no-op recovery descriptor lies to the UI layer. The
+    // dismiss is always present.
     if (status === 429) {
-      const retryAfter = typeof body.retryAfter === 'number' ? body.retryAfter : 30;
+      const retryAfter =
+        typeof body.retryAfter === 'number' ? body.retryAfter : RATE_LIMIT_DEFAULT_RETRY_SECONDS;
       const until = Date.now() + retryAfter * 1000;
-      const run = ctx.retry ?? (() => {});
-      recoveries.push({ kind: 'wait', until, run });
+      if (ctx.retry) recoveries.push({ kind: 'wait', until, run: ctx.retry });
       recoveries.push({ kind: 'dismiss' });
       return {
         ...baseProps,

@@ -107,6 +107,48 @@ describe('usePageQuery', () => {
     expect(queryByTestId('boundary')).toBeNull();
   });
 
+  it('does NOT throw to boundary on 422 (validation)', async () => {
+    const queryFn = () =>
+      Promise.reject(new ApiError({ status: 422, message: 'invalid', body: {} }));
+    const { findByTestId, queryByTestId } = render(
+      <QueryClientProvider client={makeClient()}>
+        <TestBoundary>
+          <Probe queryFn={queryFn} testKey={`k-422-${probeCounter}`} />
+        </TestBoundary>
+      </QueryClientProvider>,
+    );
+    await findByTestId('rendered-error');
+    expect(queryByTestId('boundary')).toBeNull();
+  });
+
+  it('does NOT throw to boundary on 409 (conflict)', async () => {
+    const queryFn = () =>
+      Promise.reject(new ApiError({ status: 409, message: 'conflict', body: {} }));
+    const { findByTestId, queryByTestId } = render(
+      <QueryClientProvider client={makeClient()}>
+        <TestBoundary>
+          <Probe queryFn={queryFn} testKey={`k-409-${probeCounter}`} />
+        </TestBoundary>
+      </QueryClientProvider>,
+    );
+    await findByTestId('rendered-error');
+    expect(queryByTestId('boundary')).toBeNull();
+  });
+
+  it('does NOT throw to boundary on 429 (rate_limit)', async () => {
+    const queryFn = () =>
+      Promise.reject(new ApiError({ status: 429, message: 'rate', body: {} }));
+    const { findByTestId, queryByTestId } = render(
+      <QueryClientProvider client={makeClient()}>
+        <TestBoundary>
+          <Probe queryFn={queryFn} testKey={`k-429-${probeCounter}`} />
+        </TestBoundary>
+      </QueryClientProvider>,
+    );
+    await findByTestId('rendered-error');
+    expect(queryByTestId('boundary')).toBeNull();
+  });
+
   it('renders the data when the query resolves', async () => {
     const { findByTestId } = render(
       <QueryClientProvider client={makeClient()}>

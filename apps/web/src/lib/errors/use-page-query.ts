@@ -17,6 +17,11 @@
  *
  * Sidebar / autocomplete queries should keep using `useQuery` + a
  * `handleQueryError` call from a `useEffect`.
+ *
+ * Implementation note: we classify ONCE per error instance and stash the
+ * result on a non-enumerable property so React's class-component error
+ * boundary (which re-runs `getDerivedStateFromError`) can consume the same
+ * object instead of re-classifying on every render / retry / refocus.
  */
 
 import {
@@ -25,17 +30,40 @@ import {
   type UseQueryOptions,
   type UseQueryResult,
 } from '@tanstack/react-query';
-import { classify } from './classify';
+import { classify, type ClassifiedError } from './classify';
 import { throwToBoundary } from './throw-to-boundary';
 
 const PAGE_CLASSES = new Set(['not_found', 'permission', 'server', 'unknown']);
+
+/** Hidden symbol for the cached classification — not exported on purpose. */
+export const STASHED_CLASSIFIED = Symbol.for('prequest.classified');
 
 export function usePageQuery<TQueryFnData, TError = unknown, TData = TQueryFnData>(
   options: UseQueryOptions<TQueryFnData, TError, TData>,
 ): UseQueryResult<TData, TError> | DefinedUseQueryResult<TData, TError> {
   const result = useQuery(options);
   if (result.isError) {
-    const classified = classify(result.error, { callSite: 'route_load' });
+    const err = result.error as object & { [STASHED_CLASSIFIED]?: ClassifiedError };
+    let classified = err && typeof err === 'object' ? err[STASHED_CLASSIFIED] : undefined;
+    if (!classified) {
+      classified = classify(result.error, { callSite: 'route_load' });
+      // Stash on the error so the error boundary's getDerivedStateFromError
+      // re-uses the same classification rather than running classify() again
+      // on every render. Non-enumerable so it doesn't leak into JSON / logs.
+      if (err && typeof err === 'object') {
+        try {
+          Object.defineProperty(err, STASHED_CLASSIFIED, {
+            value: classified,
+            enumerable: false,
+            configurable: true,
+            writable: true,
+          });
+        } catch {
+          // Frozen errors (rare) — classification still works, we just pay
+          // the cost again on the boundary's first render.
+        }
+      }
+    }
     if (PAGE_CLASSES.has(classified.class)) {
       throwToBoundary(result.error);
     }
