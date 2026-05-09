@@ -23,7 +23,7 @@
  */
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { handleMutationError, withErrorHandling } from '@/lib/errors';
+import { handleMutationError } from '@/lib/errors';
 import { visitorKeys, type VisitorStatus, type VisitorType } from './keys';
 
 // Re-export the shared keys + types so existing `import { visitorKeys } from
@@ -304,6 +304,12 @@ export function useCancelPreview(token: string | null | undefined) {
  * without an explicit refetch from the caller. The detail key for the
  * new id is seeded with the response so a navigation to /portal/visitors/:id
  * doesn't re-fetch.
+ *
+ * Pattern E (skip migration): callers handle errors specifically —
+ * the booking-composer flush uses Promise.allSettled with an aggregate
+ * partial-success toast (booking-composer-modal.tsx:269), and the
+ * portal invite form has bespoke 403 copy (visitor-invite-form.tsx:393).
+ * Hook-level withErrorHandling would create duplicate toasts.
  */
 export function useCreateInvitation() {
   const qc = useQueryClient();
@@ -323,7 +329,6 @@ export function useCreateInvitation() {
       // /desk/visitors stale until the 15s poll catches up.
       qc.invalidateQueries({ queryKey: visitorKeys.all });
     },
-    ...withErrorHandling({ actionTitle: "Couldn't invite visitor" }),
   });
 }
 

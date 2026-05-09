@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -67,11 +67,7 @@ export function RequestTypeDetailPage() {
     });
   };
 
-  useEffect(() => {
-    if (upsert.error) {
-      toastError("Couldn't save request type", { error: upsert.error });
-    }
-  }, [upsert.error]);
+  // useUpsertRequestType carries withErrorHandling — toast fires from the hook.
 
   useDebouncedSave(name, (v) => {
     if (!requestType || v === requestType.name) return;

@@ -31,7 +31,7 @@ import {
 } from '@/api/service-rules';
 import { usePageQuery } from '@/lib/errors';
 import type { ServiceRuleEffect, ServiceRuleTargetKind } from '@/api/service-rules';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 
 /**
  * /admin/booking-services/rules/:id — auto-saving rule editor.
@@ -97,14 +97,8 @@ export function ServiceRuleDetailPage() {
     patch: Parameters<typeof update.mutateAsync>[0]['patch'],
   ) => {
     if (!id) return;
-    update.mutate(
-      { id, patch },
-      {
-        onError: (err: unknown) => {
-          toastError("Couldn't save rule", { error: err });
-        },
-      },
-    );
+    // useUpdateServiceRule carries withErrorHandling — toast fires from the hook.
+    update.mutate({ id, patch });
   };
 
   // Debounce text inputs.
@@ -415,12 +409,14 @@ export function ServiceRuleDetailPage() {
         destructive
         onConfirm={async () => {
           if (!id) return;
+          // useDeleteServiceRule carries withErrorHandling — toast fires
+          // from the hook on failure.
           try {
             await remove.mutateAsync(id);
             toastRemoved('Service rule');
             navigate('/admin/booking-services/rules');
-          } catch (err) {
-            toastError("Couldn't delete service rule", { error: err });
+          } catch {
+            // hook handled the toast
           }
         }}
       />

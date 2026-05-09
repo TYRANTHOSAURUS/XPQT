@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Filter as FilterIcon } from 'lucide-react';
-import { toastError } from '@/lib/toast';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -133,12 +132,13 @@ function CreateCriteriaSetDialog({ open, onOpenChange }: CreateProps) {
         active: true,
       },
       {
+        // useCreateCriteriaSet carries withErrorHandling — toast fires from
+        // the hook on failure.
         onSuccess: (cs) => {
           reset();
           onOpenChange(false);
           navigate(`/admin/criteria-sets/${cs.id}`);
         },
-        onError: (err) => toastError("Couldn't create criteria set", { error: err }),
       },
     );
   };

@@ -457,7 +457,7 @@ function UserInspectorContent({ userId }: { userId: string }) {
           </div>
         </div>
       )}
-      <UserDetailBody userId={userId} />
+      <UserDetailBody userId={userId} mode="inspector" />
     </div>
   );
 }

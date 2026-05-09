@@ -33,7 +33,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { useCostCenters, useCreateCostCenter, type CostCenter } from '@/api/cost-centers';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
 
 /**
  * /admin/cost-centers — index page.
@@ -157,6 +157,9 @@ function CreateDialog({
       setError('Code and name are required.');
       return;
     }
+    // useCreateCostCenter carries withErrorHandling — error toast fires
+    // from the hook. We still surface a per-field message inside the dialog
+    // via setError so the user sees the failure inline.
     try {
       const cc = await create.mutateAsync({
         code: code.trim(),
@@ -172,7 +175,6 @@ function CreateDialog({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Create failed';
       setError(message);
-      toastError("Couldn't create cost center", { error: err });
     }
   };
 

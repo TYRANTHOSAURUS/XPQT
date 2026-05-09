@@ -1,7 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { queryOptions } from '@tanstack/react-query';
-import { usePageQuery } from '@/lib/errors';
+import { queryOptions, useQuery } from '@tanstack/react-query';
+import { classify, handleQueryError, throwToBoundary, usePageQuery } from '@/lib/errors';
 import { Shield, AlertTriangle, Clock, MapPin, Building2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { formatFullTimestamp } from '@/lib/format';
@@ -70,13 +70,41 @@ export function userDisplayName(user: Pick<UserDetail, 'email' | 'person'>): str
     : user.email;
 }
 
+const PAGE_ERROR_CLASSES = new Set(['not_found', 'permission', 'server', 'unknown']);
+
 /**
  * Body sections for the user detail view. Used by both the dedicated route
  * (UserDetailPage) and the inspector panel on /admin/users.
+ *
+ * `mode='page'` (default): page-class errors throw to RouteErrorBoundary so
+ * the page replaces. `mode='inspector'`: errors flow to a toast via
+ * handleQueryError so the parent index page (/admin/users) keeps rendering
+ * — wiping the whole index because one inspector failed would be the wrong
+ * UX.
  */
-export function UserDetailBody({ userId }: { userId: string }) {
-  // Page-primary fetch — page-class errors throw to RouteErrorBoundary.
-  const userQuery = usePageQuery(userDetailOptions(userId));
+export function UserDetailBody({
+  userId,
+  mode = 'page',
+}: {
+  userId: string;
+  mode?: 'page' | 'inspector';
+}) {
+  const userQuery = useQuery(userDetailOptions(userId));
+  useEffect(() => {
+    if (mode !== 'inspector' || !userQuery.isError) return;
+    handleQueryError(userQuery.error, {
+      callSite: 'query',
+      actionTitle: "Couldn't load user",
+    });
+  }, [mode, userQuery.isError, userQuery.error]);
+  // Page mode mirrors usePageQuery: throw page-class errors to the route
+  // error boundary so the page replaces instead of toasting over stale chrome.
+  if (mode !== 'inspector' && userQuery.isError) {
+    const classified = classify(userQuery.error, { callSite: 'route_load' });
+    if (PAGE_ERROR_CLASSES.has(classified.class)) {
+      throwToBoundary(userQuery.error);
+    }
+  }
   const effectiveQuery = useEffectivePermissions(userId);
   const auditQuery = useUserAudit(userId);
 

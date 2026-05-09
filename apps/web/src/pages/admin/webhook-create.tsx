@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toastCreated, toastError, toastSuccess } from '@/lib/toast';
+import { toastCreated, toastSuccess } from '@/lib/toast';
 import { Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +25,7 @@ export function WebhookCreatePage() {
   const [createdId, setCreatedId] = useState<string | null>(null);
 
   const handleCreate = () => {
+    // useCreateWebhook carries withErrorHandling — toast fires from the hook.
     create.mutate(
       { name: name.trim() },
       {
@@ -35,7 +36,6 @@ export function WebhookCreatePage() {
             description: 'Copy the API key below — it only appears once.',
           });
         },
-        onError: (err) => toastError("Couldn't create webhook", { error: err, retry: handleCreate }),
       },
     );
   };

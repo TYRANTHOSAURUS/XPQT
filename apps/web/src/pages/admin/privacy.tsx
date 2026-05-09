@@ -47,7 +47,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
-import { toastUpdated, toastError, toastSaved } from '@/lib/toast';
+import { toastUpdated, toastSaved } from '@/lib/toast';
 import {
   describeCategory,
   describeLegalBasis,
@@ -336,6 +336,8 @@ function RetentionEditDialog({ row, onClose }: { row: RetentionSetting; onClose:
       setError('Reason is required (at least 8 characters).');
       return;
     }
+    // useUpdateRetention carries withErrorHandling — toast fires from the
+    // hook. We still surface a per-dialog inline message via setError.
     try {
       await update.mutateAsync({
         retention_days: days,
@@ -345,7 +347,6 @@ function RetentionEditDialog({ row, onClose }: { row: RetentionSetting; onClose:
       toastUpdated('Retention');
       onClose();
     } catch (err) {
-      toastError('Couldn\'t save retention', { error: err, retry: onSave });
       setError(err instanceof Error ? err.message : 'Save failed');
     }
   }
@@ -461,6 +462,7 @@ function PlaceHoldDialog({
       setError('Data category is required for a category hold.');
       return;
     }
+    // usePlaceLegalHold carries withErrorHandling — toast fires from the hook.
     try {
       await place.mutateAsync({
         hold_type: holdType,
@@ -472,7 +474,6 @@ function PlaceHoldDialog({
       toastSaved('Legal hold');
       onClose();
     } catch (err) {
-      toastError('Couldn\'t place hold', { error: err, retry: onPlace });
       setError(err instanceof Error ? err.message : 'Save failed');
     }
   }
@@ -587,12 +588,12 @@ function ReleaseHoldDialog({ hold, onClose }: { hold: LegalHold; onClose: () => 
       setError('Reason is required (at least 8 characters).');
       return;
     }
+    // useReleaseLegalHold carries withErrorHandling — toast fires from the hook.
     try {
       await release.mutateAsync({ id: hold.id, reason: reason.trim() });
       toastUpdated('Legal hold released');
       onClose();
     } catch (err) {
-      toastError('Couldn\'t release hold', { error: err, retry: onRelease });
       setError(err instanceof Error ? err.message : 'Save failed');
     }
   }

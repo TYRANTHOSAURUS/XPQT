@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastSaved } from '@/lib/toast';
+import { toastSaved } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -68,10 +68,10 @@ interface BodyProps {
 
 function SlaPolicyDetailBody({ policy }: BodyProps) {
   const update = useUpdateSlaPolicy(policy.id);
+  // useUpdateSlaPolicy carries withErrorHandling — toast fires from the hook.
   const save = (patch: Parameters<typeof update.mutate>[0], opts: { silent?: boolean } = {}) => {
     update.mutate(patch, {
       onSuccess: () => toastSaved('SLA policy', { silent: opts.silent }),
-      onError: (err) => toastError("Couldn't save SLA policy", { error: err, retry: () => save(patch, opts) }),
     });
   };
 

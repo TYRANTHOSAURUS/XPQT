@@ -54,7 +54,6 @@ import { useTeams } from '@/api/teams';
 import { useSlaPolicies } from '@/api/sla-policies';
 import {
   toastCreated,
-  toastError,
   toastRemoved,
   toastUpdated,
 } from '@/lib/toast';
@@ -360,11 +359,11 @@ function UpsertDialog({
       }
       handleOpen(false);
     } catch (err) {
+      // useCreateServiceRouting / useUpdateServiceRouting carry
+      // withErrorHandling — toast fires from the hook. We still surface
+      // the message inline in the dialog via setError.
       const message = err instanceof Error ? err.message : 'Save failed';
       setError(message);
-      toastError(isEdit ? "Couldn't update routing rule" : "Couldn't create routing rule", {
-        error: err,
-      });
     }
   };
 
@@ -551,12 +550,14 @@ function DeleteRowDialog({
       confirmLabel="Delete rule"
       destructive
       onConfirm={async () => {
+        // useDeleteServiceRouting carries withErrorHandling — toast fires
+        // from the hook on failure.
         try {
           await remove.mutateAsync(row.id);
           toastRemoved('Routing rule', { verb: 'deleted' });
           onClose();
-        } catch (err) {
-          toastError("Couldn't delete routing rule", { error: err });
+        } catch {
+          // hook handled the toast
         }
       }}
     />

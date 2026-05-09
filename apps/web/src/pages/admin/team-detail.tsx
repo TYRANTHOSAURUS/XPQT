@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -47,11 +47,7 @@ export function TeamDetailPage() {
     setActive(team.active ?? true);
   }, [teamId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (upsert.error) {
-      toastError("Couldn't save team", { error: upsert.error });
-    }
-  }, [upsert.error]);
+  // useUpsertTeam carries withErrorHandling — toast fires from the hook.
 
   useDebouncedSave(name, (v) => {
     if (!team || v === team.name) return;

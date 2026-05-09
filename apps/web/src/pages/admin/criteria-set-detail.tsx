@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved, toastSaved } from '@/lib/toast';
+import { toastRemoved, toastSaved } from '@/lib/toast';
 import { ArrowRight, RefreshCw } from 'lucide-react';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -73,10 +73,13 @@ interface BodyProps {
 function CriteriaSetDetailBody({ criteriaSet, onDeleted }: BodyProps) {
   const update = useUpdateCriteriaSet(criteriaSet.id);
 
+  // useUpdateCriteriaSet carries withErrorHandling — error toast fires from
+  // the hook. The retry control on the hook-level toast lacks a reference
+  // to this `patch`, but the retry on save errors is rarely useful for
+  // auto-save flows where the next keystroke retries anyway.
   const save = (patch: Partial<CriteriaSetUpsertBody>, opts: { silent?: boolean } = {}) => {
     update.mutate(patch, {
       onSuccess: () => toastSaved('Criteria set', { silent: opts.silent }),
-      onError: (err) => toastError("Couldn't save criteria set", { error: err, retry: () => save(patch, opts) }),
     });
   };
 
@@ -209,10 +212,11 @@ function PreviewGroup({ criteriaSet }: { criteriaSet: CriteriaSet }) {
   const preview = usePreviewCriteriaExpression(10);
   const [result, setResult] = useState<CriteriaPreviewResult | null>(null);
 
+  // usePreviewCriteriaExpression carries withErrorHandling — toast fires
+  // from the hook on failure.
   const run = () => {
     preview.mutate(criteriaSet.expression, {
       onSuccess: (res) => setResult(res),
-      onError: (err) => toastError("Couldn't preview criteria", { error: err, retry: run }),
     });
   };
 

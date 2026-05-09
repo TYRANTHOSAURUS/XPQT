@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toastCreated, toastError } from '@/lib/toast';
+import { toastCreated } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -31,12 +31,12 @@ export function SlaPolicyCreatePage() {
       pause_on_waiting_reasons: ['requester', 'vendor', 'scheduled_work'],
       escalation_thresholds: [],
     };
+    // useCreateSlaPolicy carries withErrorHandling — toast fires from the hook.
     create.mutate(body, {
       onSuccess: (policy) => {
         toastCreated('SLA policy', { onView: () => navigate(`/admin/sla-policies/${policy.id}`) });
         navigate(`/admin/sla-policies/${policy.id}`);
       },
-      onError: (err) => toastError("Couldn't create SLA policy", { error: err, retry: handleCreate }),
     });
   };
 

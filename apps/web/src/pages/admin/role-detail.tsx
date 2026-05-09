@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { toastCreated, toastError, toastSaved } from '@/lib/toast';
+import { toastCreated, toastSaved } from '@/lib/toast';
 import { usePageQuery } from '@/lib/errors';
 import { AlertTriangle, ChevronRight, Search, Shield, Users as UsersIcon, Info } from 'lucide-react';
 import { expandGranted, normalisePermission, type ModuleMeta } from '@prequest/shared';
@@ -360,6 +360,9 @@ export function RoleDetailPage() {
       // creates default to active=true server-side.
       ...(isNew ? {} : { active }),
     };
+    // useCreateRole / useUpdateRole both carry withErrorHandling — toast
+    // fires from the hook on failure. We swallow here so the success path
+    // can still navigate cleanly.
     try {
       if (isNew) {
         const created = await createMut.mutateAsync(body);
@@ -377,8 +380,8 @@ export function RoleDetailPage() {
         });
         toastSaved('Role');
       }
-    } catch (err) {
-      toastError(isNew ? "Couldn't create role" : "Couldn't save role", { error: err, retry: onSave });
+    } catch {
+      // hook handled the toast
     }
   };
 

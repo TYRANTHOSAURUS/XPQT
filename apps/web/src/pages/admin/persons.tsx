@@ -668,7 +668,7 @@ function PersonInspectorContent({
           </div>
         </div>
       )}
-      <PersonDetailBody personId={personId} onDeactivated={onDeactivated} />
+      <PersonDetailBody personId={personId} onDeactivated={onDeactivated} mode="inspector" />
     </div>
   );
 }

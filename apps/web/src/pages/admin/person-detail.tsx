@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -27,8 +27,9 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { PersonLocationGrantsPanel } from '@/components/admin/person-location-grants-panel';
 import { PersonAvatar } from '@/components/person-avatar';
 import { SaveIndicator } from '@/components/save-indicator';
+import { useQuery } from '@tanstack/react-query';
 import { personDetailOptions, useUpdatePerson, personFullName, type Person } from '@/api/persons';
-import { usePageQuery } from '@/lib/errors';
+import { classify, handleQueryError, throwToBoundary, usePageQuery } from '@/lib/errors';
 import { useCostCenters } from '@/api/cost-centers';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { userStatusDotClass } from '@/lib/status-tone';
@@ -46,21 +47,41 @@ export function personHeadline(person: Pick<Person, 'first_name' | 'last_name' |
   return personFullName(person) || person.email || 'Unnamed person';
 }
 
+const PERSON_PAGE_ERROR_CLASSES = new Set(['not_found', 'permission', 'server', 'unknown']);
+
 /**
  * Body sections for the person detail view. Shared by the dedicated route
  * (PersonDetailPage) and the inspector panel on /admin/persons. Renders
  * Identity rows + Location grants + Danger zone — no shell or header chrome.
+ *
+ * `mode='page'` (default): page-class errors throw to RouteErrorBoundary so
+ * the page replaces. `mode='inspector'`: errors flow to a toast via
+ * handleQueryError so the parent index page (/admin/persons) keeps rendering.
  */
 export function PersonDetailBody({
   personId,
   onDeactivated,
+  mode = 'page',
 }: {
   personId: string;
   onDeactivated?: () => void;
+  mode?: 'page' | 'inspector';
 }) {
-  // Page-primary fetch for the editor pane — page-class errors throw to
-  // RouteErrorBoundary so a missing/forbidden person replaces the page.
-  const { data: person, isLoading } = usePageQuery(personDetailOptions(personId));
+  const personQuery = useQuery(personDetailOptions(personId));
+  const { data: person, isLoading } = personQuery;
+  useEffect(() => {
+    if (mode !== 'inspector' || !personQuery.isError) return;
+    handleQueryError(personQuery.error, {
+      callSite: 'query',
+      actionTitle: "Couldn't load person",
+    });
+  }, [mode, personQuery.isError, personQuery.error]);
+  if (mode !== 'inspector' && personQuery.isError) {
+    const classified = classify(personQuery.error, { callSite: 'route_load' });
+    if (PERSON_PAGE_ERROR_CLASSES.has(classified.class)) {
+      throwToBoundary(personQuery.error);
+    }
+  }
   const { data: costCenters } = useCostCenters({ active: true });
   const update = useUpdatePerson(personId);
 
@@ -87,12 +108,8 @@ export function PersonDetailBody({
     setActive(person.active ?? true);
   }, [loadedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Surface PATCH failures as toasts so silent save errors stop being silent.
-  useEffect(() => {
-    if (update.error) {
-      toastError("Couldn't save changes", { error: update.error });
-    }
-  }, [update.error]);
+  // useUpdatePerson carries withErrorHandling — error toast fires from the
+  // hook layer; no page-level dedupe needed here.
 
   useDebouncedSave(firstName, (v) => {
     if (!person || v === person.first_name) return;

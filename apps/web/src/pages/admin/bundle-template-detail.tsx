@@ -32,7 +32,7 @@ import {
 import { usePageQuery } from '@/lib/errors';
 import type { BundleTemplatePayload } from '@/api/bundle-templates';
 import { useCostCenters } from '@/api/cost-centers';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 
 interface ServiceLineDraft {
   catalog_item_id: string;
@@ -101,14 +101,9 @@ export function BundleTemplateDetailPage() {
     },
   ) => {
     if (!id) return;
-    update.mutate(
-      { id, patch },
-      {
-        onError: (err: unknown) => {
-          toastError("Couldn't save template", { error: err });
-        },
-      },
-    );
+    // useUpdateBundleTemplate carries withErrorHandling — toast fires from
+    // the hook.
+    update.mutate({ id, patch });
   };
 
   const persistPayload = (next: Partial<BundleTemplatePayload>) => {
@@ -381,12 +376,14 @@ export function BundleTemplateDetailPage() {
         destructive
         onConfirm={async () => {
           if (!id) return;
+          // useDeleteBundleTemplate carries withErrorHandling — error toast
+          // fires from the hook. We only navigate on success.
           try {
             await remove.mutateAsync(id);
             toastRemoved('Bundle template');
             navigate('/admin/bundle-templates');
-          } catch (err) {
-            toastError("Couldn't delete bundle template", { error: err });
+          } catch {
+            // hook handled the toast
           }
         }}
       />

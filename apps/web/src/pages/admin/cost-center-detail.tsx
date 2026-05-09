@@ -23,7 +23,7 @@ import {
   useUpdateCostCenter,
 } from '@/api/cost-centers';
 import { usePageQuery } from '@/lib/errors';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 
 /**
  * /admin/cost-centers/:id — auto-saving detail page.
@@ -71,14 +71,8 @@ export function CostCenterDetailPage() {
     },
   ) => {
     if (!id) return;
-    update.mutate(
-      { id, patch },
-      {
-        onError: (err: unknown) => {
-          toastError("Couldn't save cost center", { error: err });
-        },
-      },
-    );
+    // useUpdateCostCenter carries withErrorHandling — toast fires from the hook.
+    update.mutate({ id, patch });
   };
 
   // Debounce text inputs. Switch + person-picker save synchronously.
@@ -216,12 +210,14 @@ export function CostCenterDetailPage() {
         destructive
         onConfirm={async () => {
           if (!id) return;
+          // useDeleteCostCenter carries withErrorHandling — toast fires from
+          // the hook on failure.
           try {
             await remove.mutateAsync(id);
             toastRemoved('Cost center');
             navigate('/admin/cost-centers');
-          } catch (err) {
-            toastError("Couldn't delete cost center", { error: err });
+          } catch {
+            // hook handled the toast
           }
         }}
       />

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -69,11 +69,7 @@ export function VendorDetailPage() {
     upsert.mutate({ id: vendor.id, payload: { name: vendor.name, ...payload } });
   };
 
-  useEffect(() => {
-    if (upsert.error) {
-      toastError("Couldn't save vendor", { error: upsert.error });
-    }
-  }, [upsert.error]);
+  // useUpsertVendor carries withErrorHandling — toast fires from the hook.
 
   useDebouncedSave(name, (v) => {
     if (!vendor || v === vendor.name) return;

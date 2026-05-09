@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
+import { toastRemoved, toastSaved, toastSuccess } from '@/lib/toast';
 import { AlertTriangle, Copy, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -92,6 +92,7 @@ function WebhookDetailBody({ webhook, onDeleted }: WebhookDetailBodyProps) {
   const update = useUpdateWebhook(webhook.id);
   const [problems, setProblems] = useState<ValidationProblem[]>([]);
 
+  // useUpdateWebhook carries withErrorHandling — toast fires from the hook.
   const save = (patch: Record<string, unknown>, opts: { silent?: boolean } = {}) => {
     update.mutate(patch, {
       onSuccess: (res) => {
@@ -99,7 +100,6 @@ function WebhookDetailBody({ webhook, onDeleted }: WebhookDetailBodyProps) {
         setProblems(next);
         toastSaved('Webhook', { silent: opts.silent });
       },
-      onError: (err) => toastError("Couldn't save webhook", { error: err, retry: () => save(patch, opts) }),
     });
   };
 

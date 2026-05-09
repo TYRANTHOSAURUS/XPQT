@@ -125,6 +125,12 @@ export interface RoutingDecision {
  * The `actionTitle` parameter lets each call site contribute its specific
  * voice ("Couldn't save routing rule", "Couldn't reorder rules") while the
  * underlying error classification + toast routing stays uniform.
+ *
+ * NOTE: `actionTitle` is currently optional with a generic fallback so the
+ * helper works without breaking existing callers. Callers SHOULD always
+ * pass an `actionTitle` written in the standard "Couldn't <verb> <thing>"
+ * voice (see docs/toast-conventions.md) — relying on the fallback drifts
+ * routing-page toasts away from the rest of the product.
  */
 export function useRoutingMutation<TVars = unknown, TData = unknown>(
   fn: (vars: TVars) => Promise<TData>,

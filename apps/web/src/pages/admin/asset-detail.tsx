@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { toastError, toastRemoved } from '@/lib/toast';
+import { toastRemoved } from '@/lib/toast';
 import { Trash2 } from 'lucide-react';
 import {
   SettingsPageHeader,
@@ -83,11 +83,7 @@ export function AssetDetailPage() {
     upsert.mutate({ id: asset.id, payload: { ...patch, name: asset.name } });
   };
 
-  useEffect(() => {
-    if (upsert.error) {
-      toastError("Couldn't save asset", { error: upsert.error });
-    }
-  }, [upsert.error]);
+  // useUpsertAsset carries withErrorHandling — toast fires from the hook.
 
   useDebouncedSave(name, (v) => {
     if (!asset || v === asset.name) return;
