@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Pencil, Trash2, X } from 'lucide-react';
-import { toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastRemoved, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -73,7 +74,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
       });
       return created.id;
     } catch (err) {
-      toastError("Couldn't save group", { error: err });
+      handleMutationError(err, { actionTitle: "Couldn't save group" });
       return null;
     }
   }
@@ -109,7 +110,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
       resetForm();
       refetch();
     } catch (err) {
-      toastError("Couldn't sync group members", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't sync group members", retry: handleSave });
     }
   }
 
@@ -120,7 +121,7 @@ export function SpaceGroupsEditor({ compact = false }: Props) {
       toastRemoved(group.name, { verb: 'deleted' });
       refetch();
     } catch (err) {
-      toastError("Couldn't delete group", { error: err, retry: () => handleDelete(group) });
+      handleMutationError(err, { actionTitle: "Couldn't delete group", retry: () => handleDelete(group) });
     }
   }
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -53,7 +54,7 @@ export function DomainFallbacksEditor({ compact = false }: Props) {
       reset();
       refetch();
     } catch (err) {
-      toastError("Couldn't add domain parent", { error: err, retry: handleCreate });
+      handleMutationError(err, { actionTitle: "Couldn't add domain parent", retry: handleCreate });
     }
   }
 
@@ -64,7 +65,7 @@ export function DomainFallbacksEditor({ compact = false }: Props) {
       toastRemoved('Relationship');
       refetch();
     } catch (err) {
-      toastError("Couldn't remove relationship", { error: err, retry: () => handleDelete(row) });
+      handleMutationError(err, { actionTitle: "Couldn't remove relationship", retry: () => handleDelete(row) });
     }
   }
 

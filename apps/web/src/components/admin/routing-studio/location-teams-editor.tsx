@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
-import { toastCreated, toastError, toastRemoved, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastRemoved, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -120,7 +121,7 @@ export function LocationTeamsEditor({ compact = false }: Props) {
       reset();
       refetch();
     } catch (err) {
-      toastError("Couldn't save routing entry", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save routing entry", retry: handleSave });
     }
   }
 
@@ -131,7 +132,7 @@ export function LocationTeamsEditor({ compact = false }: Props) {
       toastRemoved('Routing entry', { verb: 'deleted' });
       refetch();
     } catch (err) {
-      toastError("Couldn't delete routing entry", { error: err, retry: () => handleDelete(row) });
+      handleMutationError(err, { actionTitle: "Couldn't delete routing entry", retry: () => handleDelete(row) });
     }
   }
 

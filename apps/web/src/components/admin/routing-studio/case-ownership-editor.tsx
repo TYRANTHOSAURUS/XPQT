@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { CheckCircle2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -267,7 +268,7 @@ export function CaseOwnershipEditor({ initialRequestTypeId }: Props = {}) {
       // and the effect picks the new "attached" state up.
       await refetchRts();
     } catch (err) {
-      toastError("Couldn't save case-ownership policy", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save case-ownership policy", retry: handleSave });
     } finally {
       setSaving(false);
     }

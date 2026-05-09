@@ -13,7 +13,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Plus, Pencil } from 'lucide-react';
-import { toastCreated, toastError, toastUpdated } from '@/lib/toast';
+import { toastCreated, toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useTeams } from '@/api/teams';
@@ -73,7 +74,7 @@ export function RoutingRulesEditor({ compact = false }: Props) {
       setDialogOpen(false);
       refetch();
     } catch (err) {
-      toastError("Couldn't save routing rule", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save routing rule", retry: handleSave });
     }
   };
 

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -61,7 +62,7 @@ export function RoutingModeToggle() {
       });
       await qc.invalidateQueries({ queryKey: routingKeys.all });
     } catch (err) {
-      toastError("Couldn't change routing mode", { error: err, retry: () => handleChange(next) });
+      handleMutationError(err, { actionTitle: "Couldn't change routing mode", retry: () => handleChange(next) });
     } finally {
       setSaving(false);
     }

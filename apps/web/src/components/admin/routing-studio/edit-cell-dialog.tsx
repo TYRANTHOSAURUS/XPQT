@@ -7,7 +7,8 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { toastError, toastUpdated } from '@/lib/toast';
+import { toastUpdated } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { apiFetch } from '@/lib/api';
 import { useTeams } from '@/api/teams';
 import { useVendors } from '@/api/vendors';
@@ -82,7 +83,7 @@ export function EditCellDialog({ input, open, onOpenChange, onSaved }: Props) {
       onSaved();
       onOpenChange(false);
     } catch (e) {
-      toastError("Couldn't update coverage", { error: e, retry: handleSave });
+      handleMutationError(e, { actionTitle: "Couldn't update coverage", retry: handleSave });
     } finally {
       setSaving(false);
     }

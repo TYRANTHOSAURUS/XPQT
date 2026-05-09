@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, RotateCcw } from 'lucide-react';
-import { toastError, toastRemoved, toastSuccess } from '@/lib/toast';
+import { toastRemoved, toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -100,7 +101,7 @@ export function DomainsEditor() {
       reset();
       refetch();
     } catch (err) {
-      toastError("Couldn't save domain", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save domain", retry: handleSave });
     }
   }
 
@@ -112,7 +113,7 @@ export function DomainsEditor() {
       });
       refetch();
     } catch (err) {
-      toastError(`Couldn't reactivate ${row.key}`, { error: err, retry: () => reactivate(row) });
+      handleMutationError(err, { actionTitle: `Couldn't reactivate ${row.key}`, retry: () => reactivate(row) });
     }
   }
 
@@ -128,7 +129,7 @@ export function DomainsEditor() {
       }
       refetch();
     } catch (err) {
-      toastError("Couldn't update domain", { error: err, retry: () => handleToggleActive(row) });
+      handleMutationError(err, { actionTitle: "Couldn't update domain", retry: () => handleToggleActive(row) });
     }
   }
 

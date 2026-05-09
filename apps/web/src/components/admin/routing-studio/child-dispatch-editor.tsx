@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 import { CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -266,7 +267,7 @@ export function ChildDispatchEditor({ initialRequestTypeId }: Props = {}) {
       // Keep the RT + target selected for fast iterate-and-save.
       await refetchRts();
     } catch (err) {
-      toastError("Couldn't save dispatch policy", { error: err, retry: handleSave });
+      handleMutationError(err, { actionTitle: "Couldn't save dispatch policy", retry: handleSave });
     } finally {
       setSaving(false);
     }
