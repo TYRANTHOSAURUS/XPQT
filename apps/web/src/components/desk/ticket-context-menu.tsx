@@ -181,8 +181,9 @@ export function TicketContextMenu({
     const label = STATUS_OPTIONS.find((s) => s.value === status_category)?.label ?? status_category;
     const start = Date.now();
     setPendingStatus(status_category);
+    // B.2.A I1 — mutation-attempt-scoped request id (spec §3.9.1).
     update.mutate(
-      { status_category, status: status_category },
+      { payload: { status_category, status: status_category }, requestId: crypto.randomUUID() },
       {
         onSuccess: () => toastSuccess(`Status set to ${label}`),
         onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update status", retry: () => setStatus(status_category) }),
@@ -201,9 +202,12 @@ export function TicketContextMenu({
     setPendingStatus('waiting');
     setPendingWaitingReason(waiting_reason);
     update.mutate(
-      ticket.status_category === 'waiting'
-        ? { waiting_reason }
-        : { status_category: 'waiting', status: 'waiting', waiting_reason },
+      {
+        payload: ticket.status_category === 'waiting'
+          ? { waiting_reason }
+          : { status_category: 'waiting', status: 'waiting', waiting_reason },
+        requestId: crypto.randomUUID(),
+      },
       {
         onSuccess: () => toastSuccess(`Status set to Waiting · ${label}`),
         onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update status", retry: () => setWaitingReason(waiting_reason) }),
@@ -221,7 +225,7 @@ export function TicketContextMenu({
     const start = Date.now();
     setPendingPriority(priority);
     update.mutate(
-      { priority },
+      { payload: { priority }, requestId: crypto.randomUUID() },
       {
         onSuccess: () => toastSuccess(`Priority set to ${label}`),
         onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update priority", retry: () => setPriority(priority) }),
@@ -247,7 +251,7 @@ export function TicketContextMenu({
 
     if (previousLabel === null) {
       update.mutate(
-        { assigned_user_id: appUser.id },
+        { payload: { assigned_user_id: appUser.id }, requestId: crypto.randomUUID() },
         {
           onSuccess: () => toastSuccess('Assigned to you'),
           onError: (err) => handleMutationError(err, { actionTitle: "Couldn't assign to you", retry: assignToMe }),
@@ -264,6 +268,7 @@ export function TicketContextMenu({
         previousLabel,
         reason: `Self-assigned by ${meName} from tickets list`,
         actorPersonId: person?.id,
+        requestId: crypto.randomUUID(),
       },
       {
         onSuccess: () => toastSuccess('Assigned to you'),
@@ -288,6 +293,7 @@ export function TicketContextMenu({
         previousLabel: cachedDetail?.assigned_agent?.email ?? ticket.assigned_agent?.email ?? 'agent',
         reason,
         actorPersonId: person?.id,
+        requestId: crypto.randomUUID(),
       }));
     }
     if (ticket.assigned_team || cachedDetail?.assigned_team) {
@@ -298,6 +304,7 @@ export function TicketContextMenu({
         previousLabel: ticket.assigned_team?.name ?? cachedDetail?.assigned_team?.name ?? 'team',
         reason,
         actorPersonId: person?.id,
+        requestId: crypto.randomUUID(),
       }));
     }
     if (cachedDetail?.assigned_vendor) {
@@ -308,6 +315,7 @@ export function TicketContextMenu({
         previousLabel: cachedDetail.assigned_vendor.name,
         reason,
         actorPersonId: person?.id,
+        requestId: crypto.randomUUID(),
       }));
     }
 
@@ -333,7 +341,7 @@ export function TicketContextMenu({
       ? [...current, person.id]
       : current.filter((id) => id !== person.id);
     update.mutate(
-      { watchers: next },
+      { payload: { watchers: next }, requestId: crypto.randomUUID() },
       {
         onSuccess: () => toastSuccess(willWatch ? 'Now watching' : 'Stopped watching'),
         onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update watchers", retry: toggleWatch }),
@@ -347,7 +355,7 @@ export function TicketContextMenu({
     const start = Date.now();
     setPendingTags((prev) => new Set(prev).add(tag));
     update.mutate(
-      { tags: next },
+      { payload: { tags: next }, requestId: crypto.randomUUID() },
       {
         onSuccess: () => toastSuccess(has ? `Removed label "${tag}"` : `Added label "${tag}"`),
         onError: (err) => handleMutationError(err, { actionTitle: "Couldn't update labels", retry: () => toggleLabel(tag) }),

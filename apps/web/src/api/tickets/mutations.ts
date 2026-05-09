@@ -26,7 +26,38 @@ import {
  *
  * `useReassignWorkOrder` (POST endpoint) and `useCanPlanWorkOrder` (GET
  * endpoint) stay separate — they are not field-level mutations.
+ *
+ * Producer-route discipline (B.2.A I1, spec §3.9.1).
+ *
+ * `PATCH /tickets/:id`, `PATCH /work-orders/:id`,
+ * `POST /tickets/:id/reassign`, and `POST /work-orders/:id/reassign` are
+ * fronted by `RequireClientRequestIdGuard` which rejects requests
+ * without a client-supplied `X-Client-Request-Id`. Every mutation hook
+ * here accepts a `requestId: string` in its variables shape — callers
+ * MUST mint a fresh UUID with `crypto.randomUUID()` once per logical
+ * attempt (form submit, button click, retry hook) and thread it through
+ * `mutate(...)` so React Query retries of the same attempt reuse it.
+ * See Pattern A in B.0.E.3 (`useCreateBooking`, `useRespondApproval`)
+ * for the canonical shape.
  */
+
+/** Variables for `useUpdateTicket` — payload + producer-route requestId. */
+export interface UpdateTicketVariables {
+  payload: UpdateTicketPayload;
+  requestId: string;
+}
+
+/** Variables for `useUpdateWorkOrder` — payload + producer-route requestId. */
+export interface UpdateWorkOrderVariables {
+  payload: UpdateWorkOrderPayload;
+  requestId: string;
+}
+
+/** Variables for ticket/work-order reassignment — `ReassignVariables` plus
+ *  the producer-route requestId. */
+export interface ReassignTicketVariables extends ReassignVariables {
+  requestId: string;
+}
 
 interface UpdateMutationContext {
   previous: TicketDetail | undefined;
@@ -60,23 +91,24 @@ function touchesActivityFeed(updates: UpdateTicketPayload): boolean {
 export function useUpdateTicket(id: string) {
   const qc = useQueryClient();
 
-  return useMutation<TicketDetail, Error, UpdateTicketPayload, UpdateMutationContext>({
-    mutationFn: (updates) =>
+  return useMutation<TicketDetail, Error, UpdateTicketVariables, UpdateMutationContext>({
+    mutationFn: ({ payload, requestId }) =>
       apiFetch<TicketDetail>(`/tickets/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify(updates),
+        body: JSON.stringify(payload),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
 
-    onMutate: async (updates) => {
+    onMutate: async ({ payload }) => {
       await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
       const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
       if (previous) {
-        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), { ...previous, ...updates });
+        qc.setQueryData<TicketDetail>(ticketKeys.detail(id), { ...previous, ...payload });
       }
       return { previous };
     },
 
-    onError: (err, _updates, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
       handleMutationError(err, { actionTitle: "Couldn't update ticket" });
     },
@@ -86,7 +118,7 @@ export function useUpdateTicket(id: string) {
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
       ];
-      if (variables && touchesActivityFeed(variables)) {
+      if (variables && touchesActivityFeed(variables.payload)) {
         tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
       }
       return Promise.all(tasks);
@@ -106,7 +138,7 @@ interface ReassignMutationContext {
 export function useReassignTicket(id: string) {
   const qc = useQueryClient();
 
-  return useMutation<TicketDetail, Error, ReassignVariables, ReassignMutationContext>({
+  return useMutation<TicketDetail, Error, ReassignTicketVariables, ReassignMutationContext>({
     mutationFn: (vars) => {
       const field = ASSIGNMENT_FIELD[vars.kind];
       return apiFetch<TicketDetail>(`/tickets/${id}/reassign`, {
@@ -117,6 +149,7 @@ export function useReassignTicket(id: string) {
           actor_person_id: vars.actorPersonId,
           rerun_resolver: false,
         }),
+        headers: { 'X-Client-Request-Id': vars.requestId },
       });
     },
 
@@ -255,25 +288,26 @@ export function useUpdateWorkOrder(id: string) {
   return useMutation<
     WorkOrderUpdateResponse,
     Error,
-    UpdateWorkOrderPayload,
+    UpdateWorkOrderVariables,
     UpdateWorkOrderContext
   >({
-    mutationFn: (updates) =>
+    mutationFn: ({ payload, requestId }) =>
       apiFetch<WorkOrderUpdateResponse>(`/work-orders/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify(updates),
+        body: JSON.stringify(payload),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
 
-    onMutate: async (updates) => {
+    onMutate: async ({ payload }) => {
       await qc.cancelQueries({ queryKey: ticketKeys.detail(id) });
       const previous = qc.getQueryData<TicketDetail>(ticketKeys.detail(id));
       if (previous) {
         // Mirror server behavior: clearing planned_start_at clears
         // planned_duration_minutes too.
-        const optimistic: Partial<TicketDetail> = { ...updates } as Partial<TicketDetail>;
+        const optimistic: Partial<TicketDetail> = { ...payload } as Partial<TicketDetail>;
         if (
-          Object.prototype.hasOwnProperty.call(updates, 'planned_start_at') &&
-          updates.planned_start_at === null
+          Object.prototype.hasOwnProperty.call(payload, 'planned_start_at') &&
+          payload.planned_start_at === null
         ) {
           optimistic.planned_duration_minutes = null;
         }
@@ -285,7 +319,7 @@ export function useUpdateWorkOrder(id: string) {
       return { previous };
     },
 
-    onError: (err, _updates, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(ticketKeys.detail(id), ctx.previous);
       handleMutationError(err, { actionTitle: "Couldn't update work order" });
     },
@@ -295,7 +329,7 @@ export function useUpdateWorkOrder(id: string) {
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
       ];
-      if (variables && touchesWorkOrderActivityFeed(variables)) {
+      if (variables && touchesWorkOrderActivityFeed(variables.payload)) {
         tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
       }
       return Promise.all(tasks);
@@ -324,7 +358,7 @@ export function useReassignWorkOrder(id: string) {
   return useMutation<
     WorkOrderReassignResponse,
     Error,
-    ReassignVariables,
+    ReassignTicketVariables,
     ReassignWorkOrderContext
   >({
     mutationFn: (vars) => {
@@ -337,6 +371,7 @@ export function useReassignWorkOrder(id: string) {
           actor_person_id: vars.actorPersonId,
           rerun_resolver: false,
         }),
+        headers: { 'X-Client-Request-Id': vars.requestId },
       });
     },
 

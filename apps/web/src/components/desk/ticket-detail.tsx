@@ -327,10 +327,17 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
   const canPlan = !!canPlanResp?.canPlan;
 
   const handlePlanChange = (next: { startsAt: string | null; durationMinutes: number | null }) => {
+    // B.2.A I1 — mutation-attempt-scoped request id. RQ retries reuse it;
+    // the toast-retry callback re-enters handlePlanChange and gets a new id
+    // (new logical attempt). See spec §3.9.1.
+    const requestId = crypto.randomUUID();
     updateWorkOrder.mutate(
       {
-        planned_start_at: next.startsAt,
-        planned_duration_minutes: next.durationMinutes,
+        payload: {
+          planned_start_at: next.startsAt,
+          planned_duration_minutes: next.durationMinutes,
+        },
+        requestId,
       },
       {
         onError: (err) =>
@@ -352,7 +359,8 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
       patchWorkOrder(updates);
       return;
     }
-    updateTicket.mutate(updates as UpdateTicketPayload, {
+    const requestId = crypto.randomUUID();
+    updateTicket.mutate({ payload: updates as UpdateTicketPayload, requestId }, {
       onError: (err) => {
         const field = Object.keys(updates)[0] ?? 'field';
         handleMutationError(err, { actionTitle: `Couldn't update ${field}`, retry: () => patch(updates) });
@@ -387,10 +395,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
     if (Object.keys(woUpdates).length === 0) return;
 
-    updateWorkOrder.mutate(woUpdates, {
+    const requestId = crypto.randomUUID();
+    updateWorkOrder.mutate({ payload: woUpdates, requestId }, {
       onError: (err) => {
         const field = Object.keys(woUpdates)[0] ?? 'field';
-        handleMutationError(err, { actionTitle: `Couldn't update ${field}`, retry: () => updateWorkOrder.mutate(woUpdates) });
+        handleMutationError(err, { actionTitle: `Couldn't update ${field}`, retry: () => updateWorkOrder.mutate({ payload: woUpdates, requestId: crypto.randomUUID() }) });
       },
     });
   };
@@ -415,12 +424,13 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
 
     // First-time assignment — silent PATCH, no routing_decisions audit needed.
     if (target.previousLabel === null) {
+      const requestId = crypto.randomUUID();
       if (isWorkOrder) {
-        updateWorkOrder.mutate({ [field]: target.id } as UpdateWorkOrderPayload, {
+        updateWorkOrder.mutate({ payload: { [field]: target.id } as UpdateWorkOrderPayload, requestId }, {
           onError: (err) => handleMutationError(err, { actionTitle: `Couldn't assign ${target.kind}`, retry: () => updateAssignment(target) }),
         });
       } else {
-        updateTicket.mutate({ [field]: target.id } as UpdateTicketPayload, {
+        updateTicket.mutate({ payload: { [field]: target.id } as UpdateTicketPayload, requestId }, {
           onError: (err) => handleMutationError(err, { actionTitle: `Couldn't assign ${target.kind}`, retry: () => updateAssignment(target) }),
         });
       }
@@ -438,6 +448,7 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
       previousLabel: target.previousLabel,
       reason,
       actorPersonId: person?.id,
+      requestId: crypto.randomUUID(),
     };
     const reassignOpts = {
       onError: (err: Error) => handleMutationError(err, { actionTitle: `Couldn't reassign ${target.kind}`, retry: () => updateAssignment(target) }),
@@ -1140,11 +1151,11 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
                     // server orchestrator dispatches the SLA branch (which
                     // still enforces the sla.override danger gate inside
                     // updateSla).
-                    updateWorkOrder.mutate({ sla_id: next }, {
+                    updateWorkOrder.mutate({ payload: { sla_id: next }, requestId: crypto.randomUUID() }, {
                       onError: (err) =>
                         handleMutationError(err, {
                           actionTitle: "Couldn't update SLA",
-                          retry: () => updateWorkOrder.mutate({ sla_id: next }),
+                          retry: () => updateWorkOrder.mutate({ payload: { sla_id: next }, requestId: crypto.randomUUID() }),
                         }),
                     });
                   }}
