@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface PortalAppearance {
   location_id: string;
@@ -44,6 +45,7 @@ export function useUpdatePortalAppearance() {
         body: JSON.stringify(payload),
       }),
     onSettled: () => qc.invalidateQueries({ queryKey: portalAppearanceKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't update portal appearance" }),
   });
 }
 
@@ -59,6 +61,7 @@ export function useUploadPortalHero() {
       );
     },
     onSettled: () => qc.invalidateQueries({ queryKey: portalAppearanceKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't upload hero image" }),
   });
 }
 
@@ -71,5 +74,6 @@ export function useRemovePortalHero() {
         { method: 'DELETE' },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: portalAppearanceKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't remove hero image" }),
   });
 }

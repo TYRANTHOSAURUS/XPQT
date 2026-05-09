@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface Announcement {
   id: string;
@@ -44,6 +45,7 @@ export function usePublishAnnouncement() {
         body: JSON.stringify(payload),
       }),
     onSettled: () => qc.invalidateQueries({ queryKey: portalAnnouncementKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't publish announcement" }),
   });
 }
 
@@ -52,5 +54,6 @@ export function useUnpublishAnnouncement() {
   return useMutation<{ ok: boolean }, Error, string>({
     mutationFn: (id) => apiFetch(`/admin/portal-announcements/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: portalAnnouncementKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't unpublish announcement" }),
   });
 }
