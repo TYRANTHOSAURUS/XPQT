@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 import { serviceRuleKeys } from './keys';
 import type { ServiceRule, ServiceRuleEffect, ServiceRuleTargetKind } from './types';
 
@@ -30,6 +31,7 @@ export function useCreateServiceRule() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: serviceRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create rule" }),
   });
 }
 
@@ -45,6 +47,7 @@ export function useUpdateServiceRule() {
       qc.invalidateQueries({ queryKey: serviceRuleKeys.detail(id) });
       qc.invalidateQueries({ queryKey: serviceRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't update rule" }),
   });
 }
 
@@ -75,6 +78,7 @@ export function useCreateServiceRuleFromTemplate() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: serviceRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't create rule from template" }),
   });
 }
 
@@ -87,5 +91,6 @@ export function useDeleteServiceRule() {
       qc.invalidateQueries({ queryKey: serviceRuleKeys.detail(id) });
       qc.invalidateQueries({ queryKey: serviceRuleKeys.lists() });
     },
+    ...withErrorHandling({ actionTitle: "Couldn't delete rule" }),
   });
 }
