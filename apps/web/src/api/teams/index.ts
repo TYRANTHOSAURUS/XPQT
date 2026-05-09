@@ -1,5 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { withErrorHandling } from '@/lib/errors';
 
 export interface Team {
   id: string;
@@ -81,6 +82,7 @@ export function useUpsertTeam() {
         { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't save team" }),
   });
 }
 
@@ -89,5 +91,6 @@ export function useDeleteTeam() {
   return useMutation<unknown, Error, string>({
     mutationFn: (id) => apiFetch(`/teams/${id}`, { method: 'DELETE' }),
     onSettled: () => qc.invalidateQueries({ queryKey: teamKeys.all }),
+    ...withErrorHandling({ actionTitle: "Couldn't delete team" }),
   });
 }
