@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -15,6 +14,7 @@ import {
   ServiceRoutingService,
   type ServiceRoutingUpsertDto,
 } from './service-routing.service';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Admin endpoints for the service routing matrix. Backed by
@@ -49,10 +49,7 @@ export class ServiceRoutingController {
   async create(@Req() req: Request, @Body() dto: ServiceRoutingUpsertDto) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({
-        code: 'invalid_payload',
-        message: 'request body required',
-      });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.create(dto);
   }
@@ -65,10 +62,7 @@ export class ServiceRoutingController {
   ) {
     await this.permissions.requirePermission(req, 'rooms.admin');
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({
-        code: 'invalid_payload',
-        message: 'request body required',
-      });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     return this.service.update(id, dto);
   }

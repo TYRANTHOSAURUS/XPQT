@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { AppErrors } from '../../common/errors';
 import type { OutboxEvent } from '../outbox/outbox.types';
 
 /**
@@ -145,7 +146,7 @@ export class SetupWorkOrderRowBuilder {
       },
     );
     if (routingErr) {
-      throw new Error(`resolve_setup_routing: ${routingErr.message}`);
+      throw AppErrors.server('setup_routing_failed', { detail: `resolve_setup_routing: ${routingErr.message}`, cause: routingErr });
     }
     const row = (routing as Array<{
       internal_team_id: string | null;

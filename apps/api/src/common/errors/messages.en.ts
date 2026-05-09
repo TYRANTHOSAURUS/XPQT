@@ -1181,6 +1181,26 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'The workflow definition is invalid.',
   },
   'workflow_instance.not_found': { title: "Couldn't find that workflow run" },
+
+  // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
+  service_routing_not_found: { title: "Couldn't find that routing rule" },
+  service_routing_duplicate: {
+    title: "Couldn't save that routing rule",
+    detail: 'A routing rule for that service already exists.',
+  },
+  service_routing_immutable_key: {
+    title: "Couldn't update that routing rule",
+    detail: 'The service category cannot be changed after creation.',
+  },
+  invalid_foreign_key: {
+    title: "Couldn't save",
+    detail: 'A referenced item is not in this tenant.',
+  },
+  invalid_service_category: {
+    title: "Couldn't save that routing rule",
+    detail: 'Invalid service category.',
+  },
+  setup_routing_failed: { title: "Couldn't resolve setup routing" },
 };
 
 /**

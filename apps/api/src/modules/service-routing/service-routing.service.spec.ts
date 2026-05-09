@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { ServiceRoutingService } from './service-routing.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -117,7 +117,7 @@ describe('ServiceRoutingService', () => {
             internal_team_id: 't1',
           }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('rejects a negative lead time', async () => {
@@ -132,7 +132,7 @@ describe('ServiceRoutingService', () => {
             default_lead_time_minutes: -5,
           }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('rejects a lead time over 24h (1440 min)', async () => {
@@ -147,7 +147,7 @@ describe('ServiceRoutingService', () => {
             default_lead_time_minutes: 1500,
           }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('rejects a non-integer lead time', async () => {
@@ -162,7 +162,7 @@ describe('ServiceRoutingService', () => {
             default_lead_time_minutes: 30.5,
           }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('passes a valid payload through and inserts tenant_id from context', async () => {
@@ -221,7 +221,7 @@ describe('ServiceRoutingService', () => {
             internal_team_id: 'team-1',
           }),
         ),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(AppError);
     });
 
     it('rejects a foreign-tenant internal_team_id (tenant-isolation guard)', async () => {
@@ -236,7 +236,7 @@ describe('ServiceRoutingService', () => {
             internal_team_id: 'cross-tenant-team',
           }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('treats null location_id (tenant default) the same as a per-location row in payload shape', async () => {
@@ -267,7 +267,7 @@ describe('ServiceRoutingService', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           svc.update('some-id', { service_category: 'cleaning' as any }),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('refuses to update location_id (immutable routing key)', async () => {
@@ -277,7 +277,7 @@ describe('ServiceRoutingService', () => {
 
       await expect(
         withTenant(() => svc.update('some-id', { location_id: 'new-loc' })),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('rejects an invalid lead time on update', async () => {
@@ -287,7 +287,7 @@ describe('ServiceRoutingService', () => {
 
       await expect(
         withTenant(() => svc.update('some-id', { default_lead_time_minutes: -10 })),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(AppError);
     });
 
     it('passes a valid lead time + team change through', async () => {

@@ -43,6 +43,7 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/webhook"
   "apps/api/src/modules/tenant"
   "apps/api/src/modules/workflow"
+  "apps/api/src/modules/service-routing"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

@@ -366,6 +366,14 @@ export type KnownErrorCode =
   | 'workflow.invalid'
   | 'workflow_instance.not_found'
 
+  // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
+  | 'service_routing_not_found'
+  | 'service_routing_duplicate'
+  | 'service_routing_immutable_key'
+  | 'invalid_foreign_key'
+  | 'invalid_service_category'
+  | 'setup_routing_failed'
+
   // ─── tenant migration (Phase 7.B-1.tenant) ───────────────────────────────
   | 'tenant.not_found'
   | 'tenant.name_required'
@@ -756,6 +764,12 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'workflow.not_found',
   'workflow.invalid',
   'workflow_instance.not_found',
+  'service_routing_not_found',
+  'service_routing_duplicate',
+  'service_routing_immutable_key',
+  'invalid_foreign_key',
+  'invalid_service_category',
+  'setup_routing_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

@@ -1,11 +1,7 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 export const SERVICE_CATEGORIES = [
   'catering',
@@ -88,10 +84,7 @@ export class ServiceRoutingService {
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'service_routing_not_found',
-        message: `Service routing ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('service_routing_not_found', `Service routing ${id} not found.`);
     }
     return data as ServiceRoutingRow;
   }
@@ -119,9 +112,8 @@ export class ServiceRoutingService {
       .single();
     if (error) {
       if ((error as { code?: string }).code === '23505') {
-        throw new ConflictException({
-          code: 'service_routing_duplicate',
-          message: dto.location_id
+        throw AppErrors.conflict('service_routing_duplicate', {
+          detail: dto.location_id
             ? `A routing rule already exists for this location and "${dto.service_category}". Edit it instead.`
             : `A tenant-default rule already exists for "${dto.service_category}". Edit it instead.`,
         });
@@ -136,10 +128,8 @@ export class ServiceRoutingService {
       // service_category and location_id form the uniqueness key. Editing
       // them is conceptually "delete + create" — refuse here so admins
       // don't accidentally collide with another row.
-      throw new BadRequestException({
-        code: 'service_routing_immutable_key',
-        message:
-          'Service category and location are part of the routing key. To change them, delete this row and add a new one.',
+      throw AppErrors.validationFailed('service_routing_immutable_key', {
+        detail: 'Service category and location are part of the routing key. To change them, delete this row and add a new one.',
       });
     }
     this.assertValidPartial(dto);
@@ -169,10 +159,7 @@ export class ServiceRoutingService {
       .single();
     if (error) throw error;
     if (!data) {
-      throw new NotFoundException({
-        code: 'service_routing_not_found',
-        message: `Service routing ${id} not found.`,
-      });
+      throw AppErrors.notFoundWithCode('service_routing_not_found', `Service routing ${id} not found.`);
     }
     return data as ServiceRoutingRow;
   }
@@ -235,9 +222,8 @@ export class ServiceRoutingService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (!data) {
-      throw new BadRequestException({
-        code: 'invalid_foreign_key',
-        message: `${fieldName} ${id} does not exist in this tenant.`,
+      throw AppErrors.validationFailed('invalid_foreign_key', {
+        detail: `${fieldName} ${id} does not exist in this tenant.`,
       });
     }
   }
@@ -246,12 +232,11 @@ export class ServiceRoutingService {
 
   private assertValid(dto: ServiceRoutingUpsertDto): void {
     if (!dto || typeof dto !== 'object') {
-      throw new BadRequestException({ code: 'invalid_payload', message: 'request body required' });
+      throw AppErrors.validationFailed('invalid_payload', { detail: 'request body required' });
     }
     if (!SERVICE_CATEGORIES.includes(dto.service_category)) {
-      throw new BadRequestException({
-        code: 'invalid_service_category',
-        message: `service_category must be one of: ${SERVICE_CATEGORIES.join(', ')}`,
+      throw AppErrors.validationFailed('invalid_service_category', {
+        detail: `service_category must be one of: ${SERVICE_CATEGORIES.join(', ')}`,
       });
     }
     this.assertValidPartial(dto);
@@ -264,9 +249,8 @@ export class ServiceRoutingService {
         dto.default_lead_time_minutes < 0 ||
         dto.default_lead_time_minutes > 24 * 60)
     ) {
-      throw new BadRequestException({
-        code: 'invalid_lead_time',
-        message: 'default_lead_time_minutes must be a non-negative integer up to 1440 (24h).',
+      throw AppErrors.validationFailed('invalid_lead_time', {
+        detail: 'default_lead_time_minutes must be a non-negative integer up to 1440 (24h).',
       });
     }
   }
