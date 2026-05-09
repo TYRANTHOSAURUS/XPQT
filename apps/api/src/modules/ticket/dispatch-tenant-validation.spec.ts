@@ -169,7 +169,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     const svc = makeService(deps);
     const dto: DispatchDto = { title: 'do x', assigned_user_id: FOREIGN_UUID };
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
-      code: 'reference.field_invalid', status: 400 });
+      code: 'reference.not_in_tenant', status: 400 });
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_user_id') });
     expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
@@ -181,6 +181,8 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
     const svc = makeService(deps);
     const dto: DispatchDto = { title: 'do x', assigned_team_id: FOREIGN_UUID };
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
+      code: 'reference.not_in_tenant', status: 400 });
+    await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_team_id') });
     expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);
   });
@@ -190,6 +192,8 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       vendors: [{ id: FOREIGN_UUID, tenant_id: 'other-tenant' }] });
     const svc = makeService(deps);
     const dto: DispatchDto = { title: 'do x', assigned_vendor_id: FOREIGN_UUID };
+    await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
+      code: 'reference.not_in_tenant', status: 400 });
     await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).rejects.toMatchObject({
       message: expect.stringContaining('assigned_vendor_id') });
     expect(deps.insertCalls.filter((c) => c.table === 'work_orders')).toEqual([]);

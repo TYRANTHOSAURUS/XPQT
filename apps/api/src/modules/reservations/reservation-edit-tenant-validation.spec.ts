@@ -203,6 +203,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     }
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('reference.not_in_tenant');
+    expect((caught as AppError).status).toBe(400);
     // RPC must NOT have fired — pre-flight rejected first.
     expect(supabase.rpcCalls).toEqual([]);
   });
@@ -226,6 +227,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     }
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('reference.not_in_tenant');
+    expect((caught as AppError).status).toBe(400);
     expect(supabase.rpcCalls).toEqual([]);
   });
 
@@ -245,6 +247,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     }
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('reference.not_in_tenant');
+    expect((caught as AppError).status).toBe(400);
     // Defense-in-depth — pre-flight rejected BEFORE the atomic RPC.
     expect(supabase.rpcCalls).toEqual([]);
   });
@@ -317,6 +320,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
     }
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('reference.not_in_tenant');
+    expect((caught as AppError).status).toBe(400);
     // The whole point — pre-flight rejected BEFORE the atomic RPC.
     expect(supabase.rpcCalls).toEqual([]);
   });

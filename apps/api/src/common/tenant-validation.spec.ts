@@ -123,7 +123,7 @@ describe('assertTenantOwned', () => {
     await expect(
       assertTenantOwned(supabase as never, 'teams', 'not-a-uuid', 't1'),
     ).rejects.toMatchObject({
-      code: 'reference.invalid_uuid' });
+      code: 'reference.invalid_uuid', status: 400 });
   });
 
   it('honours activeOnly + reservableOnly options', async () => {

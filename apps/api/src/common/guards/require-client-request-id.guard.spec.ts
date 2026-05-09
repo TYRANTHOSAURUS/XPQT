@@ -41,8 +41,10 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
       const body = (err as AppError) as {
         code: string;
         message: string;
+        status: number;
       };
       expect(body.code).toBe('client_request_id.required');
+      expect(body.status).toBe(400);
     }
   });
 
@@ -55,8 +57,9 @@ describe('RequireClientRequestIdGuard (B.0.E.4)', () => {
       throw new Error('expected guard to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(AppError);
-      const body = (err as AppError) as { code: string };
+      const body = (err as AppError) as { code: string; status: number };
       expect(body.code).toBe('client_request_id.required');
+      expect(body.status).toBe(400);
     }
   });
 

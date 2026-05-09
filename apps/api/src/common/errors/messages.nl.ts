@@ -1171,7 +1171,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon die afbeelding niet uploaden',
     detail: 'Bestand lijkt geen SVG te zijn.',
   },
-  'tenant.update_failed': { title: 'Kon werkruimte niet bijwerken' },
+  'tenant.update_failed': {
+    title: 'Kon werkruimte niet bijwerken',
+    detail: 'Probeer opnieuw. Blijft het mislukken, neem contact op met support.',
+  },
   'tenant.upload_failed': { title: 'Kon die afbeelding niet uploaden' },
 
   // ─── workflow (Phase 7.B-1.workflow) ─────────────────────────────────────
@@ -1283,7 +1286,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon daglijst niet verzenden',
     detail: 'Leverancier heeft geen e-mailadres geconfigureerd.',
   },
-  'daily_list.send_failed': { title: 'Kon daglijst niet verzenden' },
+  'daily_list.send_failed': {
+    title: 'Kon daglijst niet verzenden',
+    detail: 'Probeer opnieuw vanuit de daglijstpagina of neem contact op met support.',
+  },
   'daily_list.pdf_missing': { title: 'Kon daglijst niet renderen', detail: 'PDF-opslagpad ontbreekt.' },
 
   // ─── config-engine (Phase 7.B-1.config-engine) ───────────────────────────
@@ -1379,8 +1385,14 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'privacy.dsr_not_found': { title: 'Kon die DSR niet vinden' },
   'privacy.dsr_invalid_state': { title: 'Kon die DSR niet bijwerken' },
   'privacy.dsr_create_failed': { title: 'Kon die DSR niet aanmaken' },
-  'privacy.bundle_upload_failed': { title: 'Kon bundel niet uploaden' },
-  'privacy.signed_url_failed': { title: 'Kon ondertekende link niet genereren' },
+  'privacy.bundle_upload_failed': {
+    title: 'Kon bundel niet uploaden',
+    detail: 'Probeer opnieuw. De export start opnieuw vanaf het begin.',
+  },
+  'privacy.signed_url_failed': {
+    title: 'Kon ondertekende link niet genereren',
+    detail: 'Probeer opnieuw. Blijft het mislukken, neem contact op met support.',
+  },
   'privacy.subject_not_found': { title: 'Kon die betrokkene niet vinden' },
   'privacy.unknown_data_category': { title: 'Kon niet verwerken', detail: 'Onbekende datacategorie.' },
 

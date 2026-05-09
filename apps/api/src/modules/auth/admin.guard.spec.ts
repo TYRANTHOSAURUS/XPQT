@@ -34,6 +34,7 @@ describe('AdminGuard', () => {
     const err = await withTenant(() => guard.canActivate(makeContext(undefined))).catch((e) => e);
     expect(err).toBeInstanceOf(AppError);
     expect((err as AppError).status).toBe(401);
+    expect((err as AppError).code).toBe('auth.unauthorized');
   });
 
   it('rejects users with no admin role', async () => {

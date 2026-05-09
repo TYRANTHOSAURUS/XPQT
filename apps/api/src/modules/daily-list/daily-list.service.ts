@@ -702,7 +702,12 @@ export class DailyListService {
       // Drop interpolation — errMsg comes from the mailer (Resend) and can
       // carry vendor names. messages.en.ts owns user-visible copy; the raw
       // error is preserved in audit_outbox + the rollback row's `email_error`.
-      throw AppErrors.server('daily_list.send_failed');
+      // Attach cause so the structured logger has the underlying mailer text
+      // (sendError is a string by the time we get here; wrap for the Error
+      // chain — formatCause handles plain Error / object alike).
+      throw AppErrors.server('daily_list.send_failed', {
+        cause: sendError ? new Error(sendError) : undefined,
+      });
     }
 
     // Successful send — lock the lines + update the row + audit.

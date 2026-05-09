@@ -1,5 +1,5 @@
 import type { SupabaseService } from './supabase/supabase.service';
-import { AppErrors } from './errors';
+import { AppError, AppErrors } from './errors';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -121,7 +121,9 @@ export async function assertTenantOwned(
   if (error) {
     // Drop interpolation — Supabase/Postgrest error.message can carry vendor
     // names + SQL fragments. messages.en.ts owns the user-visible detail.
-    throw AppErrors.validationFailed('reference.lookup_failed');
+    // Attach cause so the structured logger preserves the PostgrestError
+    // (filter's formatCause handles plain objects with code/message/hint).
+    throw new AppError('reference.lookup_failed', 400, { cause: error });
   }
   if (!data) {
     throw AppErrors.validationFailed('reference.not_in_tenant', {
@@ -205,7 +207,9 @@ export async function assertTenantOwnedAll(
   if (error) {
     // Drop interpolation — Supabase/Postgrest error.message can carry vendor
     // names + SQL fragments. messages.en.ts owns the user-visible detail.
-    throw AppErrors.validationFailed('reference.lookup_failed');
+    // Attach cause so the structured logger preserves the PostgrestError
+    // (filter's formatCause handles plain objects with code/message/hint).
+    throw new AppError('reference.lookup_failed', 400, { cause: error });
   }
 
   const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));
@@ -357,7 +361,11 @@ export async function validateAssigneesInTenant(
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      throw AppErrors.validationFailed('reference.field_invalid', { detail: `${c.field} ${c.id} does not reference a known ${c.singular} in this tenant` });
+      // Phase 7.B-1 polish: align cross-tenant misses to the canonical
+      // `reference.not_in_tenant` code (matches `assertTenantOwned`).
+      // Keep `reference.field_invalid` for malformed type/uuid cases above —
+      // those are genuinely "field invalid", not "not in tenant".
+      throw AppErrors.validationFailed('reference.not_in_tenant', { detail: `${c.field} ${c.id} does not reference a known ${c.singular} in this tenant` });
     }
   }
 }

@@ -1171,7 +1171,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't upload that image",
     detail: 'File doesn\'t appear to be an SVG.',
   },
-  'tenant.update_failed': { title: "Couldn't update tenant" },
+  'tenant.update_failed': {
+    title: "Couldn't update tenant",
+    detail: 'Try again. If it keeps happening, contact support.',
+  },
   'tenant.upload_failed': { title: "Couldn't upload that image" },
 
   // ─── workflow (Phase 7.B-1.workflow) ─────────────────────────────────────
@@ -1283,7 +1286,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't send daily list",
     detail: 'Vendor has no email address configured.',
   },
-  'daily_list.send_failed': { title: "Couldn't send daily list" },
+  'daily_list.send_failed': {
+    title: "Couldn't send daily list",
+    detail: 'Retry from the daily list page or contact support.',
+  },
   'daily_list.pdf_missing': { title: "Couldn't render daily list", detail: 'PDF storage path is missing.' },
 
   // ─── config-engine (Phase 7.B-1.config-engine) ───────────────────────────
@@ -1379,8 +1385,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'privacy.dsr_not_found': { title: "Couldn't find that DSR" },
   'privacy.dsr_invalid_state': { title: "Couldn't update that DSR" },
   'privacy.dsr_create_failed': { title: "Couldn't create that DSR" },
-  'privacy.bundle_upload_failed': { title: "Couldn't upload bundle" },
-  'privacy.signed_url_failed': { title: "Couldn't generate signed link" },
+  'privacy.bundle_upload_failed': {
+    title: "Couldn't upload bundle",
+    detail: 'Try again. The export will retry from the start.',
+  },
+  'privacy.signed_url_failed': {
+    title: "Couldn't generate signed link",
+    detail: 'Try again. If it keeps happening, contact support.',
+  },
   'privacy.subject_not_found': { title: "Couldn't find that subject" },
   'privacy.unknown_data_category': { title: "Couldn't process", detail: 'Unknown data category.' },
 

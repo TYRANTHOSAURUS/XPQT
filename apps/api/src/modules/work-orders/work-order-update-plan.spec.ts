@@ -241,6 +241,7 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
 
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('work_order.plan_invalid');
+    expect((caught as AppError).status).toBe(400);
     expect(setPlanSpy).not.toHaveBeenCalled();
   });
 
@@ -267,6 +268,7 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
 
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('work_order.plan_invalid');
+    expect((caught as AppError).status).toBe(400);
     expect(setPlanSpy).not.toHaveBeenCalled();
   });
 });
