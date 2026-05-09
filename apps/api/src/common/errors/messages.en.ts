@@ -1064,6 +1064,12 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'portal_appearance.delete_failed': {
     title: "Couldn't delete portal appearance",
   },
+
+  // ─── outbox (Phase 7.B-1.outbox) ─────────────────────────────────────────
+  'outbox.duplicate_handler': {
+    title: "Couldn't start the worker",
+    detail: 'A duplicate outbox handler was registered.',
+  },
 };
 
 /**

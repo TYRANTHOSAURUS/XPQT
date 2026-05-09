@@ -330,6 +330,9 @@ export type KnownErrorCode =
   // ─── user-management migration (Phase 7.B-1.user-management) ────────────
   | 'user_management.invalid_permission_key'
 
+  // ─── outbox migration (Phase 7.B-1.outbox) ───────────────────────────────
+  | 'outbox.duplicate_handler'
+
   // ─── portal-appearance migration (Phase 7.B-1.portal-appearance) ────────
   | 'portal_appearance.location_required'
   | 'portal_appearance.file_required'
@@ -674,6 +677,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'portal_appearance.upsert_no_row',
   'portal_appearance.upload_failed',
   'portal_appearance.delete_failed',
+  'outbox.duplicate_handler',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

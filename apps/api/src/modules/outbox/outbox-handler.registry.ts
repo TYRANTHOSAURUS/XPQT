@@ -6,6 +6,7 @@ import {
   type OutboxEventHandler,
   type OutboxHandlerMeta,
 } from './outbox-handler.decorator';
+import { AppErrors } from '../../common/errors';
 
 /**
  * Decorator-driven handler registry.
@@ -70,9 +71,9 @@ export class OutboxHandlerRegistry implements OnModuleInit {
         // is an authoring bug, not something the worker should paper over.
         const existingClass = (existing as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
         const newClass = (instance as { constructor?: { name?: string } }).constructor?.name ?? 'unknown';
-        throw new Error(
-          `Duplicate OutboxHandler registration: ${key}. Found: ${existingClass}, attempted: ${newClass}.`,
-        );
+        throw AppErrors.server('outbox.duplicate_handler', {
+          detail: `Duplicate OutboxHandler registration: ${key}. Found: ${existingClass}, attempted: ${newClass}.`,
+        });
       }
       this.handlers.set(key, instance);
       registered++;
