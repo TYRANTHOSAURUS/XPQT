@@ -324,6 +324,7 @@ export type KnownErrorCode =
   | 'org_node.create_failed'
   | 'org_node.update_failed'
   | 'org_node.delete_failed'
+  | 'org_node.has_children'
   | 'org_node.add_member_failed'
   | 'org_node.add_grant_failed'
 
@@ -861,6 +862,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'org_node.create_failed',
   'org_node.update_failed',
   'org_node.delete_failed',
+  'org_node.has_children',
   'org_node.add_member_failed',
   'org_node.add_grant_failed',
   'work_order.not_found',

@@ -102,19 +102,13 @@ export function OrganisationDetailPage() {
       toastRemoved('Organisation', { verb: 'deleted' });
       navigate('/admin/organisations');
     } catch (err: unknown) {
-      // The API emits a single `org_node.delete_failed` for every delete
-      // failure today (no FK-specific code), so the only honest narrowing
-      // is "did the server reject with this delete code?". When it does,
-      // the most common cause in practice is unmoved children — surface
-      // the hint inline. Anything else (network, 5xx, auth) routes
-      // through the standard mutation-error surface so the user gets a
-      // retry affordance instead of a misleading "move children first"
-      // toast.
-      // TODO(api): introduce a dedicated `org_node.has_children` code so
-      // we can branch precisely (today's hint is a heuristic).
+      // The API maps Postgres FK violation 23503 on delete to the
+      // dedicated `org_node.has_children` code. Frontend surfaces the
+      // children-first hint inline; everything else routes through the
+      // standard mutation-error surface (retry affordance, traceId, etc).
       const errAny = err as { body?: { code?: string }; status?: number };
-      if (errAny?.body?.code === 'org_node.delete_failed') {
-        toastError("Couldn't delete organisation", {
+      if (errAny?.body?.code === 'org_node.has_children') {
+        toastError("Couldn't delete — has children", {
           error: err,
           description: "Move or delete this organisation's children first.",
         });

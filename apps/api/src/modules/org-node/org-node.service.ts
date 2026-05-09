@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppError, AppErrors } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -156,7 +156,20 @@ export class OrgNodeService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw AppErrors.server('org_node.delete_failed', { cause: error });
+    if (error) {
+      // Postgres FK violation when descendants reference this node — surface
+      // a code the frontend can branch on to render the "delete children
+      // first" hint inline (see organisation-detail.tsx:105). The factory
+      // doesn't expose `cause` on conflict; construct AppError directly.
+      const pgCode = (error as { code?: string }).code;
+      if (pgCode === '23503') {
+        throw new AppError('org_node.has_children', 409, {
+          detail: "Move or delete the children of this organization before deleting it.",
+          cause: error,
+        });
+      }
+      throw AppErrors.server('org_node.delete_failed', { cause: error });
+    }
     return { ok: true };
   }
 

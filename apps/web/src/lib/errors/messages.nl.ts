@@ -930,6 +930,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'org_node.create_failed': { title: 'Kon dat organisatieknooppunt niet aanmaken' },
   'org_node.update_failed': { title: 'Kon dat organisatieknooppunt niet bijwerken' },
   'org_node.delete_failed': { title: 'Kon dat organisatieknooppunt niet verwijderen' },
+  'org_node.has_children': {
+    title: 'Kon niet verwijderen — heeft onderliggende knooppunten',
+    detail: 'Verplaats of verwijder de onderliggende knooppunten voordat je dit verwijdert.',
+  },
   'org_node.add_member_failed': { title: 'Kon dat lid niet toevoegen' },
   'org_node.add_grant_failed': { title: 'Kon die locatietoekenning niet toevoegen' },
 

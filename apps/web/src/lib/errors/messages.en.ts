@@ -951,6 +951,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'org_node.create_failed': { title: "Couldn't create that organisation node" },
   'org_node.update_failed': { title: "Couldn't update that organisation node" },
   'org_node.delete_failed': { title: "Couldn't delete that organisation node" },
+  'org_node.has_children': {
+    title: "Couldn't delete — has children",
+    detail: 'Move or delete the children of this organization before deleting it.',
+  },
   'org_node.add_member_failed': { title: "Couldn't add that member" },
   'org_node.add_grant_failed': { title: "Couldn't add that location grant" },
 
