@@ -17,7 +17,7 @@ import { useSpaceTree } from '@/api/spaces';
 import type { SpaceTreeNode } from '@/api/spaces/types';
 import { PortalHeroSlot } from './portal-hero-slot';
 import { AnnouncementDialog } from './announcement-dialog';
-import { toastError } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 
 function flattenSitesAndBuildings(nodes: SpaceTreeNode[]): SpaceTreeNode[] {
   const out: SpaceTreeNode[] = [];
@@ -56,7 +56,7 @@ export function PortalAppearanceSection() {
     try {
       await update.mutateAsync({ location_id: primary.id, [field]: value } as any);
     } catch (err) {
-      toastError("Couldn't save portal appearance", { error: err, retry: () => saveField(field, value) });
+      handleMutationError(err, { actionTitle: "Couldn't save portal appearance", retry: () => saveField(field, value) });
     }
   };
 

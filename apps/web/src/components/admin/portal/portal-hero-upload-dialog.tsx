@@ -9,7 +9,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useUploadPortalHero } from '@/api/portal-appearance';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 
 interface Props {
   open: boolean;
@@ -34,7 +35,7 @@ export function PortalHeroUploadDialog({ open, onOpenChange, locationId, locatio
       onOpenChange(false);
       setFile(null);
     } catch (err) {
-      toastError("Couldn't upload hero", { error: err, retry: handleSubmit });
+      handleMutationError(err, { actionTitle: "Couldn't upload hero", retry: handleSubmit });
     }
   };
 

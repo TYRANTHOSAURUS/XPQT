@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { usePublishAnnouncement, type Announcement } from '@/api/portal-announcements';
-import { toastError, toastSuccess } from '@/lib/toast';
+import { toastSuccess } from '@/lib/toast';
+import { handleMutationError } from '@/lib/errors';
 
 interface Props {
   open: boolean;
@@ -41,7 +42,7 @@ export function AnnouncementDialog({ open, onOpenChange, locationId, locationNam
       toastSuccess('Announcement published');
       onOpenChange(false);
     } catch (err) {
-      toastError("Couldn't publish announcement", { error: err, retry: submit });
+      handleMutationError(err, { actionTitle: "Couldn't publish announcement", retry: submit });
     }
   };
 
