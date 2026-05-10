@@ -2,10 +2,10 @@
  * B.2.A.7 concurrency probe — update_entity_sla.
  *
  * Spec ref: docs/follow-ups/b2-survey-and-design.md §3.3 (lines 2040-2160).
- * Migration: supabase/migrations/00328_update_entity_sla_rpc.sql.
+ * Migration: supabase/migrations/00330_update_entity_sla_v3.sql.
  * Harness pattern mirrors set_entity_assignment.spec.ts (00326 / 00327).
  *
- * Seven scenarios, all against the live local Supabase stack:
+ * Nine scenarios, all against the live local Supabase stack:
  *   1. Parallel idempotent — two clients fire same key + same payload in
  *      parallel. Advisory lock serialises (B blocks while A holds);
  *      after A commits, B returns the cached_result. Exactly one set of
@@ -26,6 +26,14 @@
  *      noop:true; no writes to sla_timers / ticket_activities /
  *      domain_events.
  *   7. work_order path — same as scenario 4 but on a work_orders row.
+ *   8. Two writers, different idempotency keys, same row (review I4) —
+ *      they do NOT serialize on the advisory lock (different keys =
+ *      different lock partitions). They DO serialize on SELECT FOR
+ *      UPDATE; second waits, then proceeds with its own update once
+ *      first commits. End state matches the second caller's payload.
+ *   9. Missing sla_id payload (review I4 + 00330 / I1 guard) — payload
+ *      `{}` raises 'update_entity_sla.sla_id_required'. Entity row
+ *      unchanged.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -802,6 +810,260 @@ describe('update_entity_sla — combined RPC', () => {
     );
     expect(evs.rowCount).toBe(1);
     expect(evs.rows[0].entity_type).toBe('ticket');
+  });
+
+  it('scenario 8: two writers, different idempotency keys, same row — serialize on SELECT FOR UPDATE not advisory lock', async () => {
+    const base = await seedBaseFixture(pool, `sla-rowlock-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const slaA = await seedSlaPolicy(pool, base.tenantId, { name: 'sla-A' });
+    const slaB = await seedSlaPolicy(pool, base.tenantId, { name: 'sla-B' });
+
+    const idemA = `sla-rowlock-${ticketId}-A`;
+    const idemB = `sla-rowlock-${ticketId}-B`;
+
+    // Different keys -> different advisory-lock partitions. Confirm by
+    // hashing both lock keys — they must differ. (If they collide on
+    // hashtextextended the test would degenerate to scenario 1.)
+    const lockA = await withClient(pool, (c) => lockKey(c, `${base.tenantId}:${idemA}`));
+    const lockB = await withClient(pool, (c) => lockKey(c, `${base.tenantId}:${idemB}`));
+    expect(lockA).not.toEqual(lockB);
+
+    const timersA = buildTimersPayload(slaA);
+    const timersB = buildTimersPayload(slaB);
+
+    const clientA = await pool.connect();
+    const clientB = await pool.connect();
+    try {
+      await clientA.query('begin');
+
+      // Client A: enter the RPC, take the row lock, hold the tx open.
+      const aResult = await callRpc<SlaResult>(
+        clientA,
+        'public.update_entity_sla',
+        [ticketId, 'case', base.tenantId, null, idemA, { sla_id: slaA.slaId, timers: timersA }],
+      );
+      expect(aResult.noop).toBe(false);
+      expect(aResult.new_sla_id).toBe(slaA.slaId);
+      expect(aResult.previous_sla_id).toBeNull();
+      expect(aResult.timers_inserted).toBe(2);
+
+      // pg_locks for advisory keys — A's lock is granted; B's lock isn't
+      // even attempted yet. Different lock partitions, no contention.
+      const lockSnapshotA = await pgLocksFor(pool, lockA);
+      expect(lockSnapshotA.filter((l) => l.granted).length).toBe(1);
+      const lockSnapshotB_before = await pgLocksFor(pool, lockB);
+      expect(lockSnapshotB_before.length).toBe(0);
+
+      // Client B: BEGIN + start RPC. Different idempotency_key, so its
+      // advisory lock acquires immediately. But it'll block on
+      // SELECT FOR UPDATE waiting for A's tx.
+      await clientB.query('begin');
+      const bPromise = callRpc<SlaResult>(
+        clientB,
+        'public.update_entity_sla',
+        [ticketId, 'case', base.tenantId, null, idemB, { sla_id: slaB.slaId, timers: timersB }],
+      );
+
+      // Wait for B to be blocked on the row lock. pg_locks for the
+      // tickets relation will show B's transaction as waiting on a
+      // tuple-level lock (locktype='tuple' or 'transactionid' depending
+      // on PG version). Poll for any non-granted lock held by B's
+      // backend on a tickets-related lock.
+      const blockedDeadline = Date.now() + 5_000;
+      let observedRowLockWait = false;
+      while (Date.now() < blockedDeadline) {
+        const r = await pool.query<{ granted: boolean; pid: number }>(
+          `select pg_locks.granted, pg_locks.pid
+             from pg_locks
+             join pg_stat_activity sa on sa.pid = pg_locks.pid
+            where sa.query like '%update_entity_sla%'
+              and pg_locks.granted = false
+              and pg_locks.locktype in ('transactionid','tuple')`,
+        );
+        if (r.rowCount && r.rowCount > 0) {
+          observedRowLockWait = true;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      expect(observedRowLockWait).toBe(true);
+
+      // B's advisory lock IS granted (it acquired its own partition).
+      const lockSnapshotB_during = await pgLocksFor(pool, lockB);
+      expect(lockSnapshotB_during.filter((l) => l.granted).length).toBe(1);
+
+      // Commit A — B unblocks, applies its UPDATE, commits.
+      await clientA.query('commit');
+
+      const bResult = await bPromise;
+      await clientB.query('commit');
+
+      // B saw the post-A state: previous_sla_id = slaA, new_sla_id = slaB.
+      expect(bResult.previous_sla_id).toBe(slaA.slaId);
+      expect(bResult.new_sla_id).toBe(slaB.slaId);
+      expect(bResult.noop).toBe(false);
+      expect(bResult.timers_inserted).toBe(2);
+    } finally {
+      try {
+        await clientA.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      try {
+        await clientB.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      clientA.release();
+      clientB.release();
+    }
+
+    // Final entity state: row reflects B's write (the second commit wins).
+    const t = await pool.query(
+      'select sla_id, sla_response_due_at, sla_resolution_due_at from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].sla_id).toBe(slaB.slaId);
+    const responseDueExpectedB = timersB.find((tt) => tt.timer_type === 'response')!.due_at;
+    const resolutionDueExpectedB = timersB.find((tt) => tt.timer_type === 'resolution')!.due_at;
+    expect(new Date(t.rows[0].sla_response_due_at).toISOString()).toBe(responseDueExpectedB);
+    expect(new Date(t.rows[0].sla_resolution_due_at).toISOString()).toBe(resolutionDueExpectedB);
+
+    // sla_timers state: A's timers stopped with reason='sla_changed';
+    // B's timers active. Total stopped = 2, active = 2.
+    const stopped = await pool.query(
+      `select sla_policy_id, stopped_reason from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2 and stopped_at is not null`,
+      [base.tenantId, ticketId],
+    );
+    expect(stopped.rowCount).toBe(2);
+    expect(stopped.rows.every((r) => r.sla_policy_id === slaA.slaId)).toBe(true);
+    expect(stopped.rows.every((r) => r.stopped_reason === 'sla_changed')).toBe(true);
+
+    const active = await pool.query(
+      `select sla_policy_id from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null`,
+      [base.tenantId, ticketId],
+    );
+    expect(active.rowCount).toBe(2);
+    expect(active.rows.every((r) => r.sla_policy_id === slaB.slaId)).toBe(true);
+
+    // Two command_operations rows — one per idempotency_key.
+    const co = await pool.query(
+      `select idempotency_key from public.command_operations
+        where tenant_id = $1 and idempotency_key like $2
+        order by idempotency_key`,
+      [base.tenantId, `sla-rowlock-${ticketId}-%`],
+    );
+    expect(co.rowCount).toBe(2);
+
+    // Two ticket_activities sla_changed rows — one per write.
+    const acts = await pool.query(
+      `select metadata->>'previous_sla_id' as prev,
+              metadata->>'new_sla_id' as next
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2
+          and metadata->>'event' = 'sla_changed'
+        order by created_at`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(2);
+    expect(acts.rows[0].prev).toBeNull();
+    expect(acts.rows[0].next).toBe(slaA.slaId);
+    expect(acts.rows[1].prev).toBe(slaA.slaId);
+    expect(acts.rows[1].next).toBe(slaB.slaId);
+  });
+
+  it('scenario 9: missing sla_id payload — `{}` raises update_entity_sla.sla_id_required, entity row unchanged', async () => {
+    const base = await seedBaseFixture(pool, `sla-missing-id-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const sla = await seedSlaPolicy(pool, base.tenantId);
+
+    // Step 1: install an SLA so we can prove a malformed `{}` payload
+    // does NOT silently clear it (that was the v3 / I1 fix).
+    const first = await runRpcCapture<SlaResult>(
+      pool,
+      'public.update_entity_sla',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `sla-missing-id-${ticketId}-1`,
+        { sla_id: sla.slaId, timers: buildTimersPayload(sla) },
+      ],
+    );
+    expect(first.kind).toBe('ok');
+    if (first.kind !== 'ok') return;
+    expect(first.value.new_sla_id).toBe(sla.slaId);
+
+    // Snapshot row state after step 1 — to confirm step 2 leaves it
+    // unchanged.
+    const snapshot = {
+      sla_id: (await pool.query(
+        'select sla_id from public.tickets where id = $1',
+        [ticketId],
+      )).rows[0].sla_id as string | null,
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2
+            and stopped_at is null and completed_at is null`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        'select count(*)::int as n from public.ticket_activities where tenant_id = $1 and ticket_id = $2',
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        'select count(*)::int as n from public.domain_events where tenant_id = $1 and entity_id = $2',
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+    };
+    expect(snapshot.sla_id).toBe(sla.slaId);
+    expect(snapshot.timers).toBe(2);
+
+    // Step 2: empty payload → must raise sla_id_required.
+    const second = await runRpcCapture<SlaResult>(
+      pool,
+      'public.update_entity_sla',
+      [ticketId, 'case', base.tenantId, null, `sla-missing-id-${ticketId}-2`, {}],
+    );
+    expect(second.kind).toBe('error');
+    if (second.kind !== 'error') return;
+    expect(second.error.message).toMatch(/update_entity_sla\.sla_id_required/);
+
+    // Entity row + timers + activities + events all unchanged from step 1.
+    const after = {
+      sla_id: (await pool.query(
+        'select sla_id from public.tickets where id = $1',
+        [ticketId],
+      )).rows[0].sla_id as string | null,
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2
+            and stopped_at is null and completed_at is null`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        'select count(*)::int as n from public.ticket_activities where tenant_id = $1 and ticket_id = $2',
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        'select count(*)::int as n from public.domain_events where tenant_id = $1 and entity_id = $2',
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+    };
+    expect(after).toEqual(snapshot);
+
+    // command_operations: the failed call's row was rolled back with the
+    // tx (the guard runs BEFORE the in_progress INSERT, so no row should
+    // exist for the second idempotency key).
+    const co = await pool.query(
+      'select outcome from public.command_operations where tenant_id = $1 and idempotency_key = $2',
+      [base.tenantId, `sla-missing-id-${ticketId}-2`],
+    );
+    expect(co.rowCount).toBe(0);
   });
 });
 
