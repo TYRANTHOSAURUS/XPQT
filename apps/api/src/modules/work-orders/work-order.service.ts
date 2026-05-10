@@ -156,6 +156,11 @@ export class WorkOrderService {
     workOrderId: string,
     dto: UpdateWorkOrderDto,
     actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `PATCH /work-orders/:id`. Plumbed only today;
+    // Step 3+ uses it as the idempotency-key seed for `set_entity_field`
+    // / `set_entity_assignment` RPCs (spec §3.0–3.2 + §3.9.1).
+    _clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     if (!dto || typeof dto !== 'object') {
       throw AppErrors.validationFailed('work_order.body_required', { detail: 'body required' });
@@ -1706,6 +1711,11 @@ export class WorkOrderService {
       rerun_resolver?: boolean;
     },
     actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /work-orders/:id/reassign`. Plumbed only today;
+    // Step 3+ uses it as the idempotency-key seed for the
+    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
+    _clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     const tenant = TenantContext.current();
 

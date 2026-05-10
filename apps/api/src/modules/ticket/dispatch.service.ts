@@ -56,7 +56,16 @@ export class DispatchService {
     private readonly scopeOverrides: ScopeOverrideResolverService,
   ) {}
 
-  async dispatch(parentId: string, dto: DispatchDto, actorAuthUid: string) {
+  async dispatch(
+    parentId: string,
+    dto: DispatchDto,
+    actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets/:id/dispatch`. Plumbed only today;
+    // Step 3+ uses it as the idempotency-key seed for the dispatch RPC
+    // (spec §3.4 + §3.9.1).
+    _clientRequestId?: string,
+  ) {
     const tenant = TenantContext.current();
 
     if (actorAuthUid !== SYSTEM_ACTOR) {

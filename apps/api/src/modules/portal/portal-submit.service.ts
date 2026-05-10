@@ -24,24 +24,38 @@ export class PortalSubmitService {
     private readonly ticketService: TicketService,
   ) {}
 
-  async submit(authUid: string, dto: PortalSubmitDto) {
+  async submit(
+    authUid: string,
+    dto: PortalSubmitDto,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /portal/tickets`. Plumbed only today; Step 3+
+    // forwards it through to `TicketService.create` so the underlying
+    // `create_ticket_with_automation` RPC has a stable idempotency key
+    // (spec §3.11 + §3.9.1).
+    clientRequestId?: string,
+  ) {
     const { intake, portal_trace, requested_for_person_id } =
       await this.resolvePortalSubmit(authUid, dto);
 
-    const ticket = await this.ticketService.create({
-      ticket_type_id: dto.request_type_id,
-      title: dto.title,
-      description: dto.description,
-      priority: intake.priority,
-      requester_person_id: intake.requester_person_id!,
-      requested_for_person_id,
-      location_id: portal_trace.effective_location_id ?? undefined,
-      asset_id: intake.asset_id ?? undefined,
-      impact: dto.impact,
-      urgency: dto.urgency,
-      source_channel: 'portal',
-      form_data: dto.form_data,
-    });
+    const ticket = await this.ticketService.create(
+      {
+        ticket_type_id: dto.request_type_id,
+        title: dto.title,
+        description: dto.description,
+        priority: intake.priority,
+        requester_person_id: intake.requester_person_id!,
+        requested_for_person_id,
+        location_id: portal_trace.effective_location_id ?? undefined,
+        asset_id: intake.asset_id ?? undefined,
+        impact: dto.impact,
+        urgency: dto.urgency,
+        source_channel: 'portal',
+        form_data: dto.form_data,
+      },
+      undefined,
+      undefined,
+      clientRequestId,
+    );
 
     return { ticket, portal_trace };
   }

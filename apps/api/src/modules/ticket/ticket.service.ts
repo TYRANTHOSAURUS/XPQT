@@ -584,6 +584,11 @@ export class TicketService {
     dto: CreateTicketDto,
     options: CreateTicketOptions = {},
     actorAuthUid: string = SYSTEM_ACTOR,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets`. Currently plumbed only; Step 3+ uses
+    // it as the idempotency-key seed for the `create_ticket_with_automation`
+    // RPC. See spec §3.9.1.
+    _clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -912,7 +917,16 @@ export class TicketService {
     return data;
   }
 
-  async update(id: string, dto: UpdateTicketDto, actorAuthUid: string) {
+  async update(
+    id: string,
+    dto: UpdateTicketDto,
+    actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `PATCH /tickets/:id`. Plumbed only today; Step 3+
+    // uses it as the idempotency-key seed for `set_entity_field` /
+    // `set_entity_assignment` RPCs (spec §3.0–3.2 + §3.9.1).
+    _clientRequestId?: string,
+  ) {
     const tenant = TenantContext.current();
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
@@ -1246,7 +1260,16 @@ export class TicketService {
    * so we can record a routing_decisions trace row and keep the reason visible
    * in the timeline.
    */
-  async reassign(id: string, dto: ReassignDto, actorAuthUid: string) {
+  async reassign(
+    id: string,
+    dto: ReassignDto,
+    actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets/:id/reassign`. Plumbed only today;
+    // Step 3+ uses it as the idempotency-key seed for the
+    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
+    _clientRequestId?: string,
+  ) {
     const tenant = TenantContext.current();
 
     if (actorAuthUid !== SYSTEM_ACTOR) {

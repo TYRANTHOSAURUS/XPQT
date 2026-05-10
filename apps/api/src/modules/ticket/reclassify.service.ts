@@ -210,6 +210,11 @@ export class ReclassifyService {
     ticketId: string,
     dto: ReclassifyExecuteDto,
     actorAuthUid: string,
+    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets/:id/reclassify`. Plumbed only today;
+    // Step 3+ uses it as the idempotency-key seed for the reclassify RPC
+    // (spec §3.10 + §3.9.1).
+    _clientRequestId?: string,
   ): Promise<unknown> {
     const tenant = TenantContext.current();
 
