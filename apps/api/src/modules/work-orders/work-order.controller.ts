@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
@@ -16,6 +17,7 @@ import {
   type UpdateWorkOrderDto,
 } from './work-order.service';
 import { AppErrors } from '../../common/errors';
+import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -52,7 +54,9 @@ const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_ven
 export class WorkOrderController {
   constructor(private readonly workOrderService: WorkOrderService) {}
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Patch(':id')
+  @UseGuards(RequireClientRequestIdGuard)
   async update(
     @Req() request: Request,
     @Param('id') id: string,
@@ -151,7 +155,8 @@ export class WorkOrderController {
       });
     }
 
-    return this.workOrderService.update(id, dto, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.workOrderService.update(id, dto, actorAuthUid, clientRequestId);
   }
 
   @Get(':id/can-plan')
@@ -161,7 +166,9 @@ export class WorkOrderController {
     return this.workOrderService.canPlan(id, actorAuthUid);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Post(':id/reassign')
+  @UseGuards(RequireClientRequestIdGuard)
   async reassign(
     @Req() request: Request,
     @Param('id') id: string,
@@ -181,6 +188,7 @@ export class WorkOrderController {
         throw AppErrors.validationFailed('work_order.field_invalid', { detail: `${k} must be a string or null` });
       }
     }
-    return this.workOrderService.reassign(id, dto, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.workOrderService.reassign(id, dto, actorAuthUid, clientRequestId);
   }
 }

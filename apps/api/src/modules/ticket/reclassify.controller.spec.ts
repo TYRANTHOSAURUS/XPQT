@@ -27,9 +27,13 @@ describe('ReclassifyController', () => {
 
   it('execute() extracts auth uid from request and delegates to execute', async () => {
     const { controller, service } = setup();
-    const req = { user: { id: 'auth-1' } } as never;
+    // B.2.A I1 — clientRequestId is read off req.clientRequestId
+    // (set by ClientRequestIdMiddleware) and forwarded to the service.
+    // The middleware doesn't run in this unit-level harness so the field
+    // is undefined; the call signature is positionally locked.
+    const req = { user: { id: 'auth-1' }, clientRequestId: 'cr-1' } as never;
     const result = await controller.execute(req, 'tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate' });
-    expect(service.execute).toHaveBeenCalledWith('tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate' }, 'auth-1');
+    expect(service.execute).toHaveBeenCalledWith('tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate' }, 'auth-1', 'cr-1');
     expect(result).toEqual({ id: 'tk1', ticket_type_id: 'rt-new' });
   });
 

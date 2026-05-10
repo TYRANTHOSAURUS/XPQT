@@ -8,11 +8,13 @@ import {
   Query,
   Req,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { AppErrors } from '../../common/errors';
+import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import {
   TicketService,
   CreateTicketDto,
@@ -108,14 +110,19 @@ export class TicketController {
     return this.ticketService.getById(id, actorAuthUid);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Post()
+  @UseGuards(RequireClientRequestIdGuard)
   async create(@Req() request: Request, @Body() dto: CreateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
-    return this.ticketService.create(dto, {}, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.ticketService.create(dto, {}, actorAuthUid, clientRequestId);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Patch(':id')
+  @UseGuards(RequireClientRequestIdGuard)
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: UpdateTicketDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
@@ -144,7 +151,8 @@ export class TicketController {
         detail: 'watchers must be an array of strings (person UUIDs) or null',
       });
     }
-    return this.ticketService.update(id, dto, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.ticketService.update(id, dto, actorAuthUid, clientRequestId);
   }
 
   @Patch('bulk/update')
@@ -157,18 +165,24 @@ export class TicketController {
     return this.ticketService.bulkUpdate(body.ids, body.updates, actorAuthUid);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Post(':id/reassign')
+  @UseGuards(RequireClientRequestIdGuard)
   async reassign(@Req() request: Request, @Param('id') id: string, @Body() dto: ReassignDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
-    return this.ticketService.reassign(id, dto, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.ticketService.reassign(id, dto, actorAuthUid, clientRequestId);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Post(':id/dispatch')
+  @UseGuards(RequireClientRequestIdGuard)
   async dispatch(@Req() request: Request, @Param('id') id: string, @Body() dto: DispatchDto) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
-    return this.dispatchService.dispatch(id, dto, actorAuthUid);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.dispatchService.dispatch(id, dto, actorAuthUid, clientRequestId);
   }
 
   @Get(':id/activities')
