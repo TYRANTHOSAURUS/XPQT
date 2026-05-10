@@ -8,6 +8,7 @@ import {
   Query,
   Req,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -16,6 +17,7 @@ import { PortalService } from './portal.service';
 import { PortalSubmitService } from './portal-submit.service';
 import { PortalSubmitDto } from './portal-submit.types';
 import { AppErrors } from '../../common/errors';
+import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 
 @Controller('portal')
 export class PortalController {
@@ -107,8 +109,11 @@ export class PortalController {
     return this.portal.claimDefaultLocation(this.authUid(request), body.space_id);
   }
 
+  /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Post('tickets')
+  @UseGuards(RequireClientRequestIdGuard)
   async submitTicket(@Req() request: Request, @Body() dto: PortalSubmitDto) {
-    return this.submit.submit(this.authUid(request), dto);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.submit.submit(this.authUid(request), dto, clientRequestId);
   }
 }
