@@ -228,6 +228,10 @@ export function SubmitRequestPage() {
     const { bound, form_data } = splitFormData(formFields, values);
 
     try {
+      // B.2.A I1 — mutation-attempt-scoped request id (spec §3.9.1).
+      // POST /portal/tickets is a producer route fronted by
+      // RequireClientRequestIdGuard.
+      const requestId = crypto.randomUUID();
       const created = await apiFetch<{ id: string }>('/portal/tickets', {
         method: 'POST',
         body: JSON.stringify({
@@ -241,6 +245,7 @@ export function SubmitRequestPage() {
           ...bound,
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
+        headers: { 'X-Client-Request-Id': requestId },
       });
       toastCreated('Request', { onView: () => navigate(`/portal/requests/${created.id}`) });
       navigate('/portal/requests');

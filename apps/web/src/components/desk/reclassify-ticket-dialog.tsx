@@ -62,10 +62,14 @@ export function ReclassifyTicketDialog({
   async function onConfirm() {
     if (!impact || !newTypeId) return;
     try {
+      // B.2.A I1 — mutation-attempt-scoped request id (spec §3.9.1).
       await mutation.execute({
-        newRequestTypeId: newTypeId,
-        reason: reasonTrimmed,
-        acknowledgedChildrenInProgress: ackInProgress,
+        payload: {
+          newRequestTypeId: newTypeId,
+          reason: reasonTrimmed,
+          acknowledgedChildrenInProgress: ackInProgress,
+        },
+        requestId: crypto.randomUUID(),
       });
       toastSuccess(`Reclassified to ${impact.ticket.new_request_type.name}`, {
         description: `${impact.children.length} work order${impact.children.length === 1 ? '' : 's'} closed.`,

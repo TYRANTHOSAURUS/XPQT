@@ -106,8 +106,20 @@ export interface ReclassifyExecutePayload {
   acknowledgedChildrenInProgress?: boolean;
 }
 
+/**
+ * Variables shape for the reclassify execute call. Carries the
+ * mutation-attempt-scoped `requestId` (B.2.A I1, spec §3.9.1) — caller
+ * mints once per attempt with `crypto.randomUUID()` so retries reuse it
+ * and the producer route's `RequireClientRequestIdGuard` can construct
+ * a stable idempotency key.
+ */
+export interface ReclassifyExecuteVariables {
+  payload: ReclassifyExecutePayload;
+  requestId: string;
+}
+
 export interface UseReclassifyTicketResult {
-  execute: (payload: ReclassifyExecutePayload) => Promise<unknown>;
+  execute: (vars: ReclassifyExecuteVariables) => Promise<unknown>;
   submitting: boolean;
   error: Error | null;
   reset: () => void;
@@ -117,18 +129,24 @@ export interface UseReclassifyTicketResult {
  * Executes a ticket reclassification. On success the caller should refetch the
  * ticket (and children / activity / SLA crossings) — this hook doesn't manage
  * those caches because the app doesn't use a global query cache.
+ *
+ * Producer-route discipline (B.2.A I1, spec §3.9.1) — the call sites mint a
+ * fresh request id per attempt and thread it through `execute({ payload,
+ * requestId })`. The header is what makes `command_operations.cached_result`
+ * idempotent across user double-clicks and React Query retries.
  */
 export function useReclassifyTicket(ticketId: string): UseReclassifyTicketResult {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const execute = useCallback(async (payload: ReclassifyExecutePayload) => {
+  const execute = useCallback(async ({ payload, requestId }: ReclassifyExecuteVariables) => {
     setSubmitting(true);
     setError(null);
     try {
       return await apiFetch(`/tickets/${ticketId}/reclassify`, {
         method: 'POST',
         body: JSON.stringify(payload),
+        headers: { 'X-Client-Request-Id': requestId },
       });
     } catch (e: unknown) {
       const err = e instanceof Error ? e : new Error('Reclassify failed');

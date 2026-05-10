@@ -107,6 +107,11 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
     const { bound, form_data } = splitFormData(formFields, formValues);
     setSubmitting(true);
     try {
+      // B.2.A I1 — mutation-attempt-scoped request id (spec §3.9.1).
+      // Producer route POST /tickets requires X-Client-Request-Id; the
+      // header is minted once per submit attempt so React Query / retry
+      // hooks reuse it.
+      const requestId = crypto.randomUUID();
       const created = await apiFetch<{ id: string }>('/tickets', {
         method: 'POST',
         body: JSON.stringify({
@@ -121,6 +126,7 @@ export function CreateTicketDialog({ onCreated }: { onCreated?: () => void }) {
           ...bound,
           form_data: Object.keys(form_data).length > 0 ? form_data : undefined,
         }),
+        headers: { 'X-Client-Request-Id': requestId },
       });
       setTitle(''); setDescription(''); setPriority('medium');
       setSelectedRT(null); setSelectedRequester(null); setRequesterId('');

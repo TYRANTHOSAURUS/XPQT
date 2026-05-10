@@ -124,14 +124,18 @@ export function AddSubIssueDialog({
     else if (slaSelection !== SLA_INHERIT) slaPayload = { sla_id: slaSelection };
 
     try {
+      // B.2.A I1 — mutation-attempt-scoped request id (spec §3.9.1).
       await dispatch({
-        title: trimmed,
-        description: description.trim() || undefined,
-        priority,
-        assigned_team_id: tab === 'team' ? selectedId : undefined,
-        assigned_user_id: tab === 'user' ? selectedId : undefined,
-        assigned_vendor_id: tab === 'vendor' ? selectedId : undefined,
-        ...slaPayload,
+        payload: {
+          title: trimmed,
+          description: description.trim() || undefined,
+          priority,
+          assigned_team_id: tab === 'team' ? selectedId : undefined,
+          assigned_user_id: tab === 'user' ? selectedId : undefined,
+          assigned_vendor_id: tab === 'vendor' ? selectedId : undefined,
+          ...slaPayload,
+        },
+        requestId: crypto.randomUUID(),
       });
       toastSuccess(`Sub-issue "${trimmed}" added`);
       onDispatched();

@@ -65,19 +65,30 @@ export function useWorkOrders(parentId: string | null) {
   };
 }
 
+/** Variables for `useDispatchWorkOrder` — the dispatch DTO + the
+ *  producer-route requestId that the dispatch endpoint's guard requires. */
+export interface DispatchWorkOrderVariables {
+  payload: DispatchDto;
+  requestId: string;
+}
+
 /**
  * Dispatch a new work order under a parent case. Settlement invalidates both
  * the children list and the parent's detail — parent `status_category` rolls
  * up when the first child arrives (new → assigned), so the sidebar updates
  * without the caller having to invalidate manually.
+ *
+ * Producer-route discipline (B.2.A I1, spec §3.9.1) — caller mints a fresh
+ * uuid per attempt and threads it through `dispatch({ payload, requestId })`.
  */
 export function useDispatchWorkOrder(parentId: string) {
   const qc = useQueryClient();
-  const mutation = useMutation<WorkOrderRow, Error, DispatchDto>({
-    mutationFn: (dto) =>
+  const mutation = useMutation<WorkOrderRow, Error, DispatchWorkOrderVariables>({
+    mutationFn: ({ payload, requestId }) =>
       apiFetch<WorkOrderRow>(`/tickets/${parentId}/dispatch`, {
         method: 'POST',
-        body: JSON.stringify(dto),
+        body: JSON.stringify(payload),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSettled: () =>
       Promise.all([
