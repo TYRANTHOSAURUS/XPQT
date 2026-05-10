@@ -48,6 +48,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,9 +123,18 @@ const results = { pass: 0, fail: 0, failed: [] };
 function makeProber(headers) {
   return async function probe(name, options) {
     const { method = 'PATCH', url, body, expect = 'success' } = options;
+    // B.2.A I1: every mutation surface (PATCH, POST) the smoke gate
+    // hits is now guarded by RequireClientRequestIdGuard. Mint a fresh
+    // UUID per probe — each probe is a logically distinct attempt;
+    // reusing one id across all of them would land in
+    // command_operations.cached_result and silently no-op on retries.
+    const isMutation = method === 'PATCH' || method === 'POST';
+    const probeHeaders = isMutation
+      ? { ...headers, 'X-Client-Request-Id': crypto.randomUUID() }
+      : headers;
     const r = await fetch(url, {
       method,
-      headers,
+      headers: probeHeaders,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const ok =
