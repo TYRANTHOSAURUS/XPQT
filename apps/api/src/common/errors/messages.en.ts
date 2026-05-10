@@ -1479,6 +1479,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update SLA",
     detail: 'Timers required.',
   },
+  'update_entity_sla.sla_id_required': {
+    title: "Couldn't update SLA",
+    detail: 'sla_id required.',
+  },
 };
 
 /**

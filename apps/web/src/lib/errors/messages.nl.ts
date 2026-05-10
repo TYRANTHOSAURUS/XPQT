@@ -1372,6 +1372,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon SLA niet bijwerken',
     detail: 'Timers verplicht.',
   },
+  'update_entity_sla.sla_id_required': {
+    title: 'Kon SLA niet bijwerken',
+    detail: 'sla_id is verplicht.',
+  },
 };
 
 /**

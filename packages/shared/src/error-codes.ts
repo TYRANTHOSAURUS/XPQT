@@ -445,6 +445,7 @@ export type KnownErrorCode =
   | 'update_entity_sla.unknown_kind'
   | 'update_entity_sla.not_found'
   | 'update_entity_sla.timers_required'
+  | 'update_entity_sla.sla_id_required'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -1141,6 +1142,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_sla.unknown_kind',
   'update_entity_sla.not_found',
   'update_entity_sla.timers_required',
+  'update_entity_sla.sla_id_required',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
