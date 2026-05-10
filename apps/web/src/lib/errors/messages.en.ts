@@ -1382,6 +1382,17 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update",
     detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
   },
+
+  // ─── B.2.A §3.3 update_entity_sla RPC (00328) ──────────────────────────
+  'update_entity_sla.unknown_kind': {
+    title: "Couldn't update SLA",
+    detail: 'Unknown entity kind.',
+  },
+  'update_entity_sla.not_found': { title: "Couldn't find that ticket" },
+  'update_entity_sla.timers_required': {
+    title: "Couldn't update SLA",
+    detail: 'Timers required.',
+  },
 };
 
 /**
