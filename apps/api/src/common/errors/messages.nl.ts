@@ -1456,6 +1456,15 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'kiosk_token.not_found': { title: 'Kon die kiosk niet vinden' },
   'pool_anchor.not_found': { title: 'Kon die ankerruimte niet vinden' },
   'pool_anchor.invalid': { title: 'Kon niet verwerken', detail: 'Pool-anker moet een site of gebouw zijn.' },
+  // B.2.A §3.1 transition_entity_status RPC
+  'transition_entity_status.unknown_kind': { title: 'Kon niet bijwerken', detail: 'Onbekend entiteitstype.' },
+  'transition_entity_status.not_found': { title: 'Ticket niet gevonden' },
+  'transition_entity_status.has_open_children': { title: 'Kon niet sluiten', detail: 'Deze case heeft openstaande werkbonnen.' },
+  'transition_entity_status.invalid_status': { title: 'Kon niet bijwerken', detail: 'Ongeldige status.' },
+  'transition_entity_status.invalid_status_category': { title: 'Kon niet bijwerken', detail: 'Ongeldige statuscategorie.' },
+  'command_operations.payload_mismatch': { title: 'Kon niet herhalen', detail: 'Een andere aanvraag hergebruikte deze idempotency-sleutel.' },
+  'command_operations.unexpected_state': { title: 'Kon niet herhalen', detail: 'Onverwachte status van de vorige poging.' },
+  'work_order.parent_terminal': { title: 'Kon niet toevoegen aan gesloten case' },
 };
 
 /**

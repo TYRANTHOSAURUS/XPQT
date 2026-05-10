@@ -426,6 +426,16 @@ export type KnownErrorCode =
   | 'pool_anchor.not_found'
   | 'pool_anchor.invalid'
 
+  // ─── B.2.A §3.1 transition_entity_status RPC (00323/00325) ───────────────
+  | 'transition_entity_status.unknown_kind'
+  | 'transition_entity_status.not_found'
+  | 'transition_entity_status.has_open_children'
+  | 'transition_entity_status.invalid_status'
+  | 'transition_entity_status.invalid_status_category'
+  | 'command_operations.payload_mismatch'
+  | 'command_operations.unexpected_state'
+  | 'work_order.parent_terminal'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1107,6 +1117,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'kiosk_token.not_found',
   'pool_anchor.not_found',
   'pool_anchor.invalid',
+  'transition_entity_status.unknown_kind',
+  'transition_entity_status.not_found',
+  'transition_entity_status.has_open_children',
+  'transition_entity_status.invalid_status',
+  'transition_entity_status.invalid_status_category',
+  'command_operations.payload_mismatch',
+  'command_operations.unexpected_state',
+  'work_order.parent_terminal',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

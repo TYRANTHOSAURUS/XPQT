@@ -1343,6 +1343,34 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   scheduler_window_failed: { title: "Couldn't load the scheduler window" },
   reservation_not_editable: { title: "You can't edit this booking" },
   missing_user: { title: 'Sign in to continue' },
+
+  // ─── B.2.A §3.1 transition_entity_status RPC ───────────────────────────
+  'transition_entity_status.unknown_kind': {
+    title: "Couldn't update",
+    detail: 'Unknown entity kind.',
+  },
+  'transition_entity_status.not_found': { title: "Couldn't find that ticket" },
+  'transition_entity_status.has_open_children': {
+    title: "Couldn't close",
+    detail: 'This case has open work orders.',
+  },
+  'transition_entity_status.invalid_status': {
+    title: "Couldn't update",
+    detail: 'Invalid status.',
+  },
+  'transition_entity_status.invalid_status_category': {
+    title: "Couldn't update",
+    detail: 'Invalid status category.',
+  },
+  'command_operations.payload_mismatch': {
+    title: "Couldn't replay",
+    detail: 'A different request reused this idempotency key.',
+  },
+  'command_operations.unexpected_state': {
+    title: "Couldn't replay",
+    detail: 'Unexpected state on the previous attempt.',
+  },
+  'work_order.parent_terminal': { title: "Couldn't add to a closed case" },
 };
 
 /**
