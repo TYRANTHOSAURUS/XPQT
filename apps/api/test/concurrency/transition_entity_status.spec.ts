@@ -6,12 +6,17 @@
  * Harness pattern mirrors create_booking_with_attach_plan.spec.ts.
  *
  * Five scenarios, all against the live local Supabase stack:
- *   1. Idempotent retry — same key + same payload → both calls return the
- *      same cached_result; only one ticket_activities row written.
+ *   1. Advisory-lock serialisation — two clients fire the RPC in parallel
+ *      with the same idempotency_key + same payload. Client B's pg_locks
+ *      row shows granted=false until A commits; B then returns the cached
+ *      result and exactly one ticket_activities row is written. Mirrors
+ *      `create_booking_with_attach_plan.spec.ts:55-163` so the harness
+ *      genuinely proves cross-connection serialisation, not in-process
+ *      sequencing.
  *   2. Payload mismatch — same key + different payload raises
  *      'command_operations.payload_mismatch'.
- *   3. Serial transitions — A → B → A produces 2 activity rows and the
- *      ticket settles back at A.
+ *   3. Serial transitions — three transitions write three activity rows
+ *      and the ticket settles back at the first state.
  *   4. has_open_children — case with an active work_order child cannot
  *      enter terminal; raises 'transition_entity_status.has_open_children'.
  *   5. No-op fast path — same status with no waiting_reason change returns
@@ -23,9 +28,12 @@ import { Pool } from 'pg';
 import {
   callRpc,
   flushAllFixtures,
+  lockKey,
+  pgLocksFor,
   registerCleanup,
   runRpcCapture,
   seedBaseFixture,
+  waitForBlocker,
   withClient,
 } from './helpers';
 import { endPool, getPool } from './pool';
@@ -128,38 +136,90 @@ describe('transition_entity_status — combined RPC', () => {
     await endPool();
   });
 
-  it('scenario 1: idempotent retry — same key + same payload returns cached_result, one activity row', async () => {
-    const base = await seedBaseFixture(pool, `transition-idem-${Date.now()}`);
+  it('scenario 1: advisory lock serializes parallel calls with same key — one activity row, B blocks until A commits', async () => {
+    const base = await seedBaseFixture(pool, `transition-parallel-${Date.now()}`);
     const { ticketId } = await seedCase(pool, base);
 
-    const idem = `transition-idem-${ticketId}`;
+    const idem = `transition-parallel-${ticketId}`;
     const payload = {
       status: 'in_progress',
       status_category: 'in_progress',
     };
 
-    const first = await runRpcCapture<TransitionResult>(
-      pool,
-      'public.transition_entity_status',
-      [ticketId, 'case', base.tenantId, null, idem, payload],
+    // Compute the lock key the RPC will derive at step 1 (00323:105 /
+    // 00325 — hashtextextended(tenant_id || ':' || idem, 0)).
+    const probeKey = await withClient(pool, (c) =>
+      lockKey(c, `${base.tenantId}:${idem}`),
     );
-    expect(first.kind).toBe('ok');
-    if (first.kind !== 'ok') return;
-    expect(first.value.noop).toBe(false);
-    expect(first.value.previous_status).toBe('new');
-    expect(first.value.new_status).toBe('in_progress');
 
-    // Same key, same payload — cached_result returned without re-writing.
-    const second = await runRpcCapture<TransitionResult>(
-      pool,
-      'public.transition_entity_status',
-      [ticketId, 'case', base.tenantId, null, idem, payload],
-    );
-    expect(second.kind).toBe('ok');
-    if (second.kind !== 'ok') return;
-    expect(second.value).toEqual(first.value);
+    const clientA = await pool.connect();
+    const clientB = await pool.connect();
+    let aResult: TransitionResult | undefined;
+    let bResult: TransitionResult | undefined;
+    try {
+      await clientA.query('begin');
 
-    // Exactly one status_changed activity row across both retries.
+      // Sanity: nobody is holding the lock yet.
+      const before = await pgLocksFor(pool, probeKey);
+      expect(before.filter((l) => l.granted).length).toBe(0);
+
+      // ── Client A: enter the RPC, acquire the lock, write the row,
+      //    return — but DON'T commit yet so B blocks.
+      aResult = await callRpc<TransitionResult>(
+        clientA,
+        'public.transition_entity_status',
+        [ticketId, 'case', base.tenantId, null, idem, payload],
+      );
+      expect(aResult.noop).toBe(false);
+      expect(aResult.previous_status).toBe('new');
+      expect(aResult.new_status).toBe('in_progress');
+
+      // A still owns the advisory lock (xact lock, released on COMMIT).
+      const duringA = await pgLocksFor(pool, probeKey);
+      expect(duringA.filter((l) => l.granted).length).toBe(1);
+
+      // ── Client B: BEGIN + start the RPC in the BACKGROUND. It must
+      //    block on the advisory lock until A commits.
+      await clientB.query('begin');
+      const bPromise = callRpc<TransitionResult>(
+        clientB,
+        'public.transition_entity_status',
+        [ticketId, 'case', base.tenantId, null, idem, payload],
+      );
+
+      // Confirm via pg_locks that B is now waiting (granted=false).
+      await waitForBlocker(pool, probeKey, { timeoutMs: 5_000 });
+      const duringContention = await pgLocksFor(pool, probeKey);
+      expect(duringContention.some((l) => !l.granted)).toBe(true);
+      expect(duringContention.filter((l) => l.granted).length).toBe(1);
+
+      // ── Commit A. B unblocks, re-reads command_operations (now
+      //    outcome='success' with cached_result), returns it.
+      await clientA.query('commit');
+
+      bResult = await bPromise;
+      await clientB.query('commit');
+
+      // Cached result equality: B got A's cached_result verbatim.
+      expect(bResult).toEqual(aResult);
+    } finally {
+      try {
+        await clientA.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      try {
+        await clientB.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      clientA.release();
+      clientB.release();
+    }
+
+    // Exactly ONE status_changed activity row across both parallel calls
+    // — B took the cached path (00323:120-122 / 00325 same path) and did
+    // not re-insert.
     const acts = await pool.query(
       `select id from public.ticket_activities
         where tenant_id = $1 and ticket_id = $2
@@ -168,7 +228,7 @@ describe('transition_entity_status — combined RPC', () => {
     );
     expect(acts.rowCount).toBe(1);
 
-    // command_operations row marked success.
+    // command_operations row marked success once with cached_result.
     const co = await pool.query(
       `select outcome, cached_result is not null as has_cached
          from public.command_operations
@@ -238,10 +298,10 @@ describe('transition_entity_status — combined RPC', () => {
     expect(t3.value.new_status_category).toBe('in_progress');
     expect(t3.value.new_waiting_reason).toBeNull();
 
-    // Brief expects "2 activity rows" — but the spec actually writes one
-    // per transition. With three writes (new->ip, ip->waiting, waiting->ip)
-    // the activity feed shows 3. Verify the actual count and that the
-    // final ticket state is correct.
+    // Contract: one activity row per non-noop transition (00323:360-381 /
+    // 00325 same path). Three transitions (new -> in_progress -> waiting
+    // -> in_progress) produce three activity rows; the ticket settles back
+    // at in_progress with waiting_reason cleared.
     const acts = await pool.query(
       `select metadata->'next'->>'status_category' as new_cat
          from public.ticket_activities

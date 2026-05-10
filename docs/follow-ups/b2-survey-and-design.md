@@ -1919,7 +1919,7 @@ create or replace function public.transition_entity_status(
   p_entity_id        uuid,
   p_entity_kind      text,        -- 'case' | 'work_order'
   p_tenant_id        uuid,
-  p_actor_user_id    uuid,        -- nullable for SYSTEM_ACTOR
+  p_actor_user_id    uuid,        -- Supabase auth UID (`users.auth_uid`, not `users.id`); nullable for SYSTEM_ACTOR. TODO: rename to p_actor_auth_uid in Step 4+ for self-documentation; existing callers thread `actorAuthUid` (e.g. reclassify.service.ts:261).
   p_idempotency_key  text,
   p_payload          jsonb        -- { status?, status_category?, waiting_reason? }
 ) returns jsonb
