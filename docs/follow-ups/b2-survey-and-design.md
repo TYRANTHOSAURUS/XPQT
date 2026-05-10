@@ -3121,6 +3121,21 @@ keep the v10 numbers for git-history continuity; readers must add
 iterations will rewrite this table to the final on-disk numbering
 once the §3.* slice closes.
 
+**v13 numbering note (2026-05-09).** During the B.2.A.6 §3.2 review
+slice one further migration landed:
+
+- `00327_set_entity_assignment_v2.sql` — C1+C2 (outbox.emit ->
+  domain_events INSERT per spec line 2024) + C3 (ticket_activities
+  metadata.previous/next shape aligned with the canonical TS emitters
+  at ticket.service.ts:1208-1216 + :1431-1443).
+
+After this slice the §3.* shift is +5 from the v10 column (was +4).
+Subsequent §3.* RPCs (§3.3 onwards) land at v10 + 5. Future
+iterations will rewrite this table to the final on-disk numbering
+once the §3.* slice closes. Future spec updates: bump the shift here
+and add a `v14 numbering note` once the next out-of-band migration
+ships.
+
 | # (v10) | # (actual) | File | Purpose |
 |---|---|---|---|
 | 00316 | 00316 | `command_operations_table.sql` | New idempotency table (§3.7). |
@@ -3130,24 +3145,27 @@ once the §3.* slice closes.
 | 00320 | 00320 | `tickets_routing_status_column.sql` | I2 fix — `routing_status text` (default `'idle'`, values `'idle'\|'pending'\|'failed'`) + `routing_failure_reason text` for async-routing surfaces. |
 | —     | 00321 | `validate_entity_in_tenant_v2.sql` | v11 — post-codex helper signature fix. |
 | —     | 00322 | `sla_timers_due_at_active_idx.sql` | v11 — partial breach-reader index. |
-| 00321 | 00323 | `transition_entity_status_rpc.sql` | §3.1. |
-| 00322 | 00324 | `set_entity_assignment_rpc.sql` | §3.2. |
-| 00323 | 00325 | `update_entity_sla_rpc.sql` | §3.3 (with recompute_pending semantics). |
-| 00324 | 00326 | `update_entity_combined_rpc.sql` | §3.0 — the controller-facing orchestrator (was §3.6 in v1, now generic). |
-| 00325 | 00327 | `dispatch_child_work_order_rpc.sql` | §3.4. |
-| 00326 | 00328 | `dispatch_child_work_orders_batch_rpc.sql` | §3.4 batch variant. |
-| 00327 | 00329 | `grant_ticket_approval_rpc.sql` | §3.5. |
-| 00328 | 00330 | `reclassify_ticket_rpc.sql` | §3.10 (C4). |
-| 00329 | 00331 | `update_entity_metadata_rpc.sql` | Plain audit-row write for plan / priority / metadata branches (called from §3.0 + standalone). |
-| 00330 | 00332 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
-| 00331 | 00333 | `outbox_events_b2_handlers.sql` | Outbox event types for routing rerun + sla timer recompute + workflow restart. |
-| 00332 | 00334 | `create_ticket_with_automation_rpc.sql` | §3.11 (v3 / C1) — atomic ticket create + automation outbox emit. |
-| 00333 | 00335 | `workflow_instances_active_unique_index.sql` | v4 / C2 — partial unique index on `workflow_instances (tenant_id, ticket_id)` WHERE `status IN ('active', 'waiting')`. **REQUIRES PREFLIGHT + CLEANUP RUNBOOK** (v5 / I1; v6 / I3 column correction). See "Migration 00333 runbook" below — the migration aborts if duplicates exist; operator runs the documented cleanup (keying on `started_at`, the actual column per `00009_workflows.sql:38` — NOT `created_at`), then re-runs. Required before §3.5 / §3.10 / §3.11 ship workflow-start outbox emits. |
-| 00334 | 00336 | `workflow_node_executions_table.sql` | v4 / C3 — durable per-node-fire record carrying the `execution_token`. UNIQUE on `(workflow_instance_id, node_id, attempt)`. v5 / I2 — table holds only the token (no `status` column; workflow engine uses Supabase HTTP, no shared tx for outcome tracking). Required before §1.21 cutover. |
-| 00335 | 00337 | `sla_timers_active_unique_index.sql` | v5 / C2 — partial unique index on `sla_timers (tenant_id, ticket_id, sla_policy_id, timer_type)` WHERE `stopped_at IS NULL AND completed_at IS NULL`. Enforces "one active timer per (ticket, policy, timer_type)" so handler `INSERT ... ON CONFLICT DO NOTHING` works. Existing schema columns (`stopped_at`, `completed_at` from migrations 00011/00044) are reused; no schema change to `sla_timers`. **REQUIRES PREFLIGHT + CLEANUP RUNBOOK** (v6 / I4). See "Migration 00335 runbook" below. Required before SlaTimerHandler ships in §3.5 / §3.11. |
-| 00336 | 00338 | `start_sla_timers_rpc.sql` | v6 / C2 — `start_sla_timers(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers jsonb)`: INSERT timer rows + UPDATE `tickets.sla_response_due_at` / `sla_resolution_due_at` in one tx. Used by `SlaTimerHandler` for the post-create + post-grant flows. **v9 / C-Nit — polymorphic `sla_timers` (00227):** the RPC writes `entity_kind='case', case_id=p_ticket_id, ticket_id=p_ticket_id` (legacy `ticket_id` column AND polymorphic `entity_kind` + `case_id` columns both filled during the bridge per `00227_step1c6_sla_timers_polymorphic.sql:18-21`). |
-| 00337 | 00339 | `repoint_sla_timer_rpc.sql` | v6 / C2 — `repoint_sla_timer(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers, p_reason text)`: STOP old active timers + INSERT new + UPDATE ticket due-dates atomically. Used by `SlaTimerRepointHandler` for the reclassify flow. |
-| 00338 | 00340 | `b2_schema_annotations.sql` | v9 / §0.4 + v10 / C1 — symmetric `COMMENT ON COLUMN` for config columns (`request_types.workflow_definition_id`, `sla_policy_id`; `request_type_scope_overrides.workflow_definition_id`, `case_sla_policy_id`, `executor_sla_policy_id`) AND runtime columns (`tickets.workflow_id`, `sla_id`; `work_orders.workflow_id`, `sla_id`). Schema-diff makes the source-of-truth contract visible to any DB tool. |
+| 00321 | 00323 | `transition_entity_status_rpc.sql` | §3.1 v1. |
+| —     | 00324 | `work_orders_parent_close_guard.sql` | v12 — race-safe BEFORE-UPDATE child guard (companion to §3.1). |
+| —     | 00325 | `transition_entity_status_v2.sql` | v12 — §3.1 v2: terminal-stamp preservation fix. |
+| 00322 | 00326 | `set_entity_assignment_rpc.sql` | §3.2 v1. |
+| —     | 00327 | `set_entity_assignment_v2.sql` | v13 — §3.2 v2: domain_events INSERT (was outbox.emit) + metadata.previous/next shape aligned with TS callers (ticket.service.ts:1208-1216 + :1431-1443). |
+| 00323 | 00328 | `update_entity_sla_rpc.sql` | §3.3 (with recompute_pending semantics). |
+| 00324 | 00329 | `update_entity_combined_rpc.sql` | §3.0 — the controller-facing orchestrator (was §3.6 in v1, now generic). |
+| 00325 | 00330 | `dispatch_child_work_order_rpc.sql` | §3.4. |
+| 00326 | 00331 | `dispatch_child_work_orders_batch_rpc.sql` | §3.4 batch variant. |
+| 00327 | 00332 | `grant_ticket_approval_rpc.sql` | §3.5. |
+| 00328 | 00333 | `reclassify_ticket_rpc.sql` | §3.10 (C4). |
+| 00329 | 00334 | `update_entity_metadata_rpc.sql` | Plain audit-row write for plan / priority / metadata branches (called from §3.0 + standalone). |
+| 00330 | 00335 | `command_operations_grants.sql` | service_role grants (mirror 00301/00314). |
+| 00331 | 00336 | `outbox_events_b2_handlers.sql` | Outbox event types for routing rerun + sla timer recompute + workflow restart. |
+| 00332 | 00337 | `create_ticket_with_automation_rpc.sql` | §3.11 (v3 / C1) — atomic ticket create + automation outbox emit. |
+| 00333 | 00338 | `workflow_instances_active_unique_index.sql` | v4 / C2 — partial unique index on `workflow_instances (tenant_id, ticket_id)` WHERE `status IN ('active', 'waiting')`. **REQUIRES PREFLIGHT + CLEANUP RUNBOOK** (v5 / I1; v6 / I3 column correction). See "Migration 00333 runbook" below — the migration aborts if duplicates exist; operator runs the documented cleanup (keying on `started_at`, the actual column per `00009_workflows.sql:38` — NOT `created_at`), then re-runs. Required before §3.5 / §3.10 / §3.11 ship workflow-start outbox emits. |
+| 00334 | 00339 | `workflow_node_executions_table.sql` | v4 / C3 — durable per-node-fire record carrying the `execution_token`. UNIQUE on `(workflow_instance_id, node_id, attempt)`. v5 / I2 — table holds only the token (no `status` column; workflow engine uses Supabase HTTP, no shared tx for outcome tracking). Required before §1.21 cutover. |
+| 00335 | 00340 | `sla_timers_active_unique_index.sql` | v5 / C2 — partial unique index on `sla_timers (tenant_id, ticket_id, sla_policy_id, timer_type)` WHERE `stopped_at IS NULL AND completed_at IS NULL`. Enforces "one active timer per (ticket, policy, timer_type)" so handler `INSERT ... ON CONFLICT DO NOTHING` works. Existing schema columns (`stopped_at`, `completed_at` from migrations 00011/00044) are reused; no schema change to `sla_timers`. **REQUIRES PREFLIGHT + CLEANUP RUNBOOK** (v6 / I4). See "Migration 00335 runbook" below. Required before SlaTimerHandler ships in §3.5 / §3.11. |
+| 00336 | 00341 | `start_sla_timers_rpc.sql` | v6 / C2 — `start_sla_timers(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers jsonb)`: INSERT timer rows + UPDATE `tickets.sla_response_due_at` / `sla_resolution_due_at` in one tx. Used by `SlaTimerHandler` for the post-create + post-grant flows. **v9 / C-Nit — polymorphic `sla_timers` (00227):** the RPC writes `entity_kind='case', case_id=p_ticket_id, ticket_id=p_ticket_id` (legacy `ticket_id` column AND polymorphic `entity_kind` + `case_id` columns both filled during the bridge per `00227_step1c6_sla_timers_polymorphic.sql:18-21`). |
+| 00337 | 00342 | `repoint_sla_timer_rpc.sql` | v6 / C2 — `repoint_sla_timer(p_tenant_id, p_ticket_id, p_sla_policy_id, p_timers, p_reason text)`: STOP old active timers + INSERT new + UPDATE ticket due-dates atomically. Used by `SlaTimerRepointHandler` for the reclassify flow. |
+| 00338 | 00343 | `b2_schema_annotations.sql` | v9 / §0.4 + v10 / C1 — symmetric `COMMENT ON COLUMN` for config columns (`request_types.workflow_definition_id`, `sla_policy_id`; `request_type_scope_overrides.workflow_definition_id`, `case_sla_policy_id`, `executor_sla_policy_id`) AND runtime columns (`tickets.workflow_id`, `sla_id`; `work_orders.workflow_id`, `sla_id`). Schema-diff makes the source-of-truth contract visible to any DB tool. |
 
 23 migrations from §3.0 onward (v10 count); the v11 fix-slice
 shipped 00321 + 00322 ahead of the §3.* RPCs (25 total). Up from
