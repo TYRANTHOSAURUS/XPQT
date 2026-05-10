@@ -2,10 +2,12 @@
  * B.2.A.6 concurrency probe — set_entity_assignment.
  *
  * Spec ref: docs/follow-ups/b2-survey-and-design.md §3.2 (lines 1986-2037).
- * Migration: supabase/migrations/00326_set_entity_assignment_rpc.sql.
+ * Migration: supabase/migrations/00326_set_entity_assignment_rpc.sql,
+ * superseded by 00327_set_entity_assignment_v2.sql (domain_events INSERT
+ * + metadata shape alignment).
  * Harness pattern mirrors transition_entity_status.spec.ts (00323 / 00325).
  *
- * Six scenarios, all against the live local Supabase stack:
+ * Ten scenarios, all against the live local Supabase stack:
  *   1. Advisory-lock serialisation — two clients fire the RPC in parallel
  *      with the same idempotency_key + same payload. Client B's pg_locks
  *      row shows granted=false until A commits; B then returns the cached
@@ -18,12 +20,30 @@
  *      No row UPDATE.
  *   4. Silent assignment (no reason) — assigned_user_id changes;
  *      ticket_activities row has metadata.event='assignment_changed';
- *      NO routing_decisions row written.
+ *      NO routing_decisions row written. metadata.previous + .next contain
+ *      ONLY the changed assigned_user_id field (00327 C3 alignment).
  *   5. Reassign with reason — payload includes `reason`;
  *      ticket_activities row has metadata.event='reassigned';
  *      routing_decisions row exists with chosen_by='manual_reassign'.
+ *      metadata.previous is short-key {team,user,vendor}; metadata.next is
+ *      {kind,id} for the single non-null target axis (00327 C3).
  *   6. rerun_resolver rejected — payload has `rerun_resolver=true`;
  *      raises 'set_entity_assignment.resolver_rerun_not_supported_at_rpc'.
+ *   7. work_order path (I5) — assign a user to a work_orders row; the
+ *      row UPDATE + activity write hit work_orders, not tickets. Sister
+ *      tickets row (if any) is untouched.
+ *   8. Clear all assignees (I5) — payload sets all three assigned_*_id to
+ *      null on a previously-assigned row. status_category does NOT demote
+ *      back to 'new' (only elevation new -> assigned is wired).
+ *   9. Reason present + assignment unchanged (I5) — payload carries
+ *      reason but the assignees match current. The no-op fast path does
+ *      NOT apply (reason itself is the audit signal); routing_decisions
+ *      row + ticket_activities row are STILL written.
+ *  10. Two writers, different idempotency keys, same row (I5) — they do
+ *      NOT serialize on the advisory lock (different keys = different
+ *      lock partitions). They DO serialize on SELECT FOR UPDATE; second
+ *      waits via pg_locks (relation lock, not advisory) until first
+ *      commits.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -43,6 +63,11 @@ import { endPool, getPool } from './pool';
 
 interface SeededTicket {
   ticketId: string;
+}
+
+interface SeededWorkOrder {
+  ticketId: string;     // parent ticket
+  workOrderId: string;
 }
 
 interface SeededUser {
@@ -151,6 +176,66 @@ async function seedUser(pool: Pool, tenantId: string): Promise<SeededUser> {
   });
 
   return { userId, authUid, personId };
+}
+
+/**
+ * Seed a parent ticket + a child work_orders row in `new` status. The
+ * §3.2 RPC supports both entity_kind='case' (tickets) and 'work_order'
+ * (work_orders); scenario 7 uses this to verify the work_order path
+ * lands UPDATEs on the right table. Cleanup mirrors seedCase + adds
+ * work_orders.
+ */
+async function seedWorkOrder(
+  pool: Pool,
+  base: { tenantId: string; personId: string },
+): Promise<SeededWorkOrder> {
+  const ticketId = randomUUID();
+  const workOrderId = randomUUID();
+
+  await withClient(pool, async (c) => {
+    await c.query('begin');
+    try {
+      await c.query(
+        `insert into public.tickets
+           (id, tenant_id, title, status, status_category,
+            requester_person_id, source_channel)
+         values ($1, $2, 'Concurrency probe parent case', 'new', 'new', $3, 'system')`,
+        [ticketId, base.tenantId, base.personId],
+      );
+      await c.query(
+        `insert into public.work_orders
+           (id, tenant_id, parent_kind, parent_ticket_id,
+            title, status, status_category, source_channel)
+         values ($1, $2, 'case', $3,
+                 'Concurrency probe child WO', 'new', 'new', 'system')`,
+        [workOrderId, base.tenantId, ticketId],
+      );
+      await c.query('commit');
+    } catch (e) {
+      await c.query('rollback');
+      throw e;
+    }
+  });
+
+  registerCleanup(async () => {
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query('delete from public.command_operations where tenant_id = $1', [base.tenantId]);
+        await c.query('delete from public.routing_decisions where tenant_id = $1', [base.tenantId]);
+        await c.query('delete from public.ticket_activities where tenant_id = $1', [base.tenantId]);
+        await c.query('delete from public.work_orders where tenant_id = $1', [base.tenantId]);
+        await c.query('delete from public.tickets where tenant_id = $1', [base.tenantId]);
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+  });
+
+  return { ticketId, workOrderId };
 }
 
 interface AssignmentResult {
@@ -347,7 +432,7 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(co.rowCount).toBe(0);
   });
 
-  it('scenario 4: silent assignment (no reason) — one assignment_changed activity, no routing_decisions row', async () => {
+  it('scenario 4: silent assignment (no reason) — one assignment_changed activity, no routing_decisions row, metadata shape narrow', async () => {
     const base = await seedBaseFixture(pool, `assign-silent-${Date.now()}`);
     const { ticketId } = await seedCase(pool, base);
     const { userId } = await seedUser(pool, base.tenantId);
@@ -364,9 +449,10 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(result.value.new_assigned_user_id).toBe(userId);
     expect(result.value.new_status_category).toBe('assigned');
 
-    // ticket_activities — exactly one assignment_changed row.
+    // ticket_activities — exactly one assignment_changed row, metadata
+    // shape narrow per 00327 C3 (only changed assigned_*_id keys).
     const acts = await pool.query(
-      `select metadata->>'event' as event, visibility, content
+      `select metadata->>'event' as event, visibility, content, metadata
          from public.ticket_activities
         where tenant_id = $1 and ticket_id = $2`,
       [base.tenantId, ticketId],
@@ -375,6 +461,9 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(acts.rows[0].event).toBe('assignment_changed');
     expect(acts.rows[0].visibility).toBe('system');
     expect(acts.rows[0].content).toBeNull();
+    // Only assigned_user_id changed; previous + next contain ONLY that key.
+    expect(acts.rows[0].metadata.previous).toEqual({ assigned_user_id: null });
+    expect(acts.rows[0].metadata.next).toEqual({ assigned_user_id: userId });
 
     // routing_decisions — none (silent path skips audit row).
     const rd = await pool.query(
@@ -383,10 +472,11 @@ describe('set_entity_assignment — combined RPC', () => {
     );
     expect(rd.rowCount).toBe(0);
 
-    // outbox.events — one ticket_assigned event emitted.
+    // domain_events — one ticket_assigned event emitted (00327 C1+C2:
+    // moved from outbox.events to public.domain_events per spec line 2024).
     const evs = await pool.query(
-      `select event_type from outbox.events
-        where tenant_id = $1 and aggregate_id = $2 and event_type = 'ticket_assigned'`,
+      `select event_type from public.domain_events
+        where tenant_id = $1 and entity_id = $2 and event_type = 'ticket_assigned'`,
       [base.tenantId, ticketId],
     );
     expect(evs.rowCount).toBe(1);
@@ -423,8 +513,10 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(result.value.reason).toBe('Workload rebalance');
 
     // ticket_activities — exactly one reassigned row, visibility=internal.
+    // metadata.previous is short-key shape; metadata.next is {kind,id} per
+    // 00327 C3 alignment with ticket.service.ts:1431-1443.
     const acts = await pool.query(
-      `select metadata->>'event' as event, visibility, content, author_person_id
+      `select metadata->>'event' as event, visibility, content, author_person_id, metadata
          from public.ticket_activities
         where tenant_id = $1 and ticket_id = $2`,
       [base.tenantId, ticketId],
@@ -434,6 +526,8 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(acts.rows[0].visibility).toBe('internal');
     expect(acts.rows[0].content).toBe('Workload rebalance');
     expect(acts.rows[0].author_person_id).toBe(actorPerson.personId);
+    expect(acts.rows[0].metadata.previous).toEqual({ team: null, user: null, vendor: null });
+    expect(acts.rows[0].metadata.next).toEqual({ kind: 'user', id: userId });
 
     // routing_decisions — exactly one row with chosen_by='manual_reassign',
     // strategy='manual', polymorphic columns set, chosen_user_id matches.
@@ -496,6 +590,335 @@ describe('set_entity_assignment — combined RPC', () => {
       [base.tenantId, idem],
     );
     expect(co.rowCount).toBe(0);
+  });
+
+  it('scenario 7: work_order path — UPDATE lands on work_orders, parent ticket untouched', async () => {
+    const base = await seedBaseFixture(pool, `assign-wo-${Date.now()}`);
+    const { ticketId, workOrderId } = await seedWorkOrder(pool, base);
+    const { userId } = await seedUser(pool, base.tenantId);
+
+    const result = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        workOrderId,
+        'work_order',
+        base.tenantId,
+        null,
+        `assign-wo-${workOrderId}`,
+        { assigned_user_id: userId },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.noop).toBe(false);
+    expect(result.value.entity_kind).toBe('work_order');
+    expect(result.value.new_assigned_user_id).toBe(userId);
+    expect(result.value.new_status_category).toBe('assigned');
+
+    // work_orders row UPDATEd.
+    const wo = await pool.query(
+      'select assigned_user_id, status_category from public.work_orders where id = $1',
+      [workOrderId],
+    );
+    expect(wo.rows[0].assigned_user_id).toBe(userId);
+    expect(wo.rows[0].status_category).toBe('assigned');
+
+    // Parent tickets row: assignment columns must NOT mirror — the RPC
+    // hit work_orders, not tickets. status_category may be lifted to
+    // 'assigned' by the rollup_parent_status_from_work_orders trigger
+    // (00220-era), which propagates child-WO status to parent. That is
+    // legitimate cross-row state; what the test verifies is that the
+    // assignment FK columns themselves did not move.
+    const t = await pool.query(
+      'select assigned_team_id, assigned_user_id, assigned_vendor_id from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].assigned_team_id).toBeNull();
+    expect(t.rows[0].assigned_user_id).toBeNull();
+    expect(t.rows[0].assigned_vendor_id).toBeNull();
+
+    // ticket_activities row written with ticket_id=workOrderId (the
+    // RPC writes ticket_activities.ticket_id = p_entity_id regardless
+    // of kind — same convention as work-order.service.ts:1424).
+    const acts = await pool.query(
+      `select metadata->>'event' as event, visibility
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, workOrderId],
+    );
+    expect(acts.rowCount).toBe(1);
+    expect(acts.rows[0].event).toBe('assignment_changed');
+
+    // domain_events row uses entity_type='ticket' uniformly (work-order
+    // service.ts:1923-1929 + spec line 2024) with entity_id=workOrderId.
+    const evs = await pool.query(
+      `select event_type, entity_type from public.domain_events
+        where tenant_id = $1 and entity_id = $2 and event_type = 'ticket_assigned'`,
+      [base.tenantId, workOrderId],
+    );
+    expect(evs.rowCount).toBe(1);
+    expect(evs.rows[0].entity_type).toBe('ticket');
+  });
+
+  it('scenario 8: clear all assignees — status_category does NOT demote back to new', async () => {
+    const base = await seedBaseFixture(pool, `assign-clear-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const { userId } = await seedUser(pool, base.tenantId);
+
+    // Step 1: assign — drives status_category 'new' -> 'assigned'.
+    const first = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [ticketId, 'case', base.tenantId, null, `assign-clear-${ticketId}-1`, { assigned_user_id: userId }],
+    );
+    expect(first.kind).toBe('ok');
+    if (first.kind !== 'ok') return;
+    expect(first.value.new_status_category).toBe('assigned');
+
+    // Step 2: clear all three keys explicitly. status_category must NOT
+    // demote (00326/00327 only elevates new -> assigned; clearing back
+    // to no-assignee is a valid intermediate state, not a status
+    // regression).
+    const second = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `assign-clear-${ticketId}-2`,
+        {
+          assigned_team_id: null,
+          assigned_user_id: null,
+          assigned_vendor_id: null,
+        },
+      ],
+    );
+    expect(second.kind).toBe('ok');
+    if (second.kind !== 'ok') return;
+    expect(second.value.noop).toBe(false);
+    expect(second.value.new_assigned_team_id).toBeNull();
+    expect(second.value.new_assigned_user_id).toBeNull();
+    expect(second.value.new_assigned_vendor_id).toBeNull();
+    // No demotion: previous_status_category was 'assigned' (post step 1),
+    // new_status_category stays 'assigned'.
+    expect(second.value.previous_status_category).toBe('assigned');
+    expect(second.value.new_status_category).toBe('assigned');
+
+    // Confirm row state on disk.
+    const t = await pool.query(
+      'select assigned_team_id, assigned_user_id, assigned_vendor_id, status_category from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].assigned_team_id).toBeNull();
+    expect(t.rows[0].assigned_user_id).toBeNull();
+    expect(t.rows[0].assigned_vendor_id).toBeNull();
+    expect(t.rows[0].status_category).toBe('assigned');
+
+    // Two activity rows total — one for the assign, one for the clear.
+    const acts = await pool.query(
+      `select metadata->>'event' as event
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2
+        order by created_at`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(2);
+    expect(acts.rows[0].event).toBe('assignment_changed');
+    expect(acts.rows[1].event).toBe('assignment_changed');
+  });
+
+  it('scenario 9: reason present + assignment unchanged — no-op fast path skipped, audit + activity STILL written', async () => {
+    const base = await seedBaseFixture(pool, `assign-reason-noop-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const { userId } = await seedUser(pool, base.tenantId);
+    const actor = await seedUser(pool, base.tenantId);
+
+    // Step 1: assign without reason — silent path.
+    const first = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [ticketId, 'case', base.tenantId, null, `assign-reason-noop-${ticketId}-1`, { assigned_user_id: userId }],
+    );
+    expect(first.kind).toBe('ok');
+
+    // Step 2: same assignee + reason. The RPC must NOT take the no-op
+    // path (00327 §9: noop fast path requires reason IS NULL). Behavior
+    // matches the manual-reassign UX where an admin records a reason
+    // for keeping the same assignee.
+    const second = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `assign-reason-noop-${ticketId}-2`,
+        {
+          assigned_user_id: userId,
+          reason: 'Confirming assignment after sync',
+          actor_person_id: actor.personId,
+        },
+      ],
+    );
+    expect(second.kind).toBe('ok');
+    if (second.kind !== 'ok') return;
+    expect(second.value.noop).toBe(false);
+    expect(second.value.reason).toBe('Confirming assignment after sync');
+
+    // routing_decisions — exactly one row (from step 2 only; step 1 was
+    // silent). Confirms reason-with-unchanged-assignment writes audit.
+    const rd = await pool.query(
+      `select chosen_by, context->>'reason' as reason
+         from public.routing_decisions
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(1);
+    expect(rd.rows[0].chosen_by).toBe('manual_reassign');
+    expect(rd.rows[0].reason).toBe('Confirming assignment after sync');
+
+    // ticket_activities — two rows: assignment_changed (step 1) +
+    // reassigned (step 2 even though assignee is unchanged).
+    const acts = await pool.query(
+      `select metadata->>'event' as event, content
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2
+        order by created_at`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(2);
+    expect(acts.rows[0].event).toBe('assignment_changed');
+    expect(acts.rows[1].event).toBe('reassigned');
+    expect(acts.rows[1].content).toBe('Confirming assignment after sync');
+  });
+
+  it('scenario 10: two writers, different idempotency keys, same row — serialize on SELECT FOR UPDATE not advisory lock', async () => {
+    const base = await seedBaseFixture(pool, `assign-rowlock-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const { userId: userA } = await seedUser(pool, base.tenantId);
+    const { userId: userB } = await seedUser(pool, base.tenantId);
+
+    const idemA = `assign-rowlock-${ticketId}-A`;
+    const idemB = `assign-rowlock-${ticketId}-B`;
+
+    // Different keys -> different advisory-lock partitions. Confirm by
+    // hashing both lock keys — they must differ. (If they collide on
+    // hashtextextended the test would degenerate to scenario 1.)
+    const lockA = await withClient(pool, (c) => lockKey(c, `${base.tenantId}:${idemA}`));
+    const lockB = await withClient(pool, (c) => lockKey(c, `${base.tenantId}:${idemB}`));
+    expect(lockA).not.toEqual(lockB);
+
+    const clientA = await pool.connect();
+    const clientB = await pool.connect();
+    try {
+      await clientA.query('begin');
+
+      // Client A: enter the RPC, take the row lock, hold the tx open.
+      const aResult = await callRpc<AssignmentResult>(
+        clientA,
+        'public.set_entity_assignment',
+        [ticketId, 'case', base.tenantId, null, idemA, { assigned_user_id: userA }],
+      );
+      expect(aResult.noop).toBe(false);
+      expect(aResult.new_assigned_user_id).toBe(userA);
+
+      // pg_locks for advisory keys — A's lock is granted; B's lock isn't
+      // even attempted yet. Different lock partitions, no contention.
+      const lockSnapshotA = await pgLocksFor(pool, lockA);
+      expect(lockSnapshotA.filter((l) => l.granted).length).toBe(1);
+      const lockSnapshotB_before = await pgLocksFor(pool, lockB);
+      expect(lockSnapshotB_before.length).toBe(0);
+
+      // Client B: BEGIN + start RPC. Different idempotency_key, so its
+      // advisory lock acquires immediately. But it'll block on
+      // SELECT FOR UPDATE waiting for A's tx.
+      await clientB.query('begin');
+      const bPromise = callRpc<AssignmentResult>(
+        clientB,
+        'public.set_entity_assignment',
+        [ticketId, 'case', base.tenantId, null, idemB, { assigned_user_id: userB }],
+      );
+
+      // Wait for B to be blocked on the row lock. pg_locks for the
+      // tickets relation will show B's transaction as waiting on a
+      // tuple-level lock (locktype='tuple' or 'transactionid' depending
+      // on PG version). We poll for any non-granted lock held by B's
+      // backend on a tickets-related lock.
+      const blockedDeadline = Date.now() + 5_000;
+      let observedRowLockWait = false;
+      while (Date.now() < blockedDeadline) {
+        const r = await pool.query<{ granted: boolean; pid: number }>(
+          `select pg_locks.granted, pg_locks.pid
+             from pg_locks
+             join pg_stat_activity sa on sa.pid = pg_locks.pid
+            where sa.query like '%set_entity_assignment%'
+              and pg_locks.granted = false
+              and pg_locks.locktype in ('transactionid','tuple')`,
+        );
+        if (r.rowCount && r.rowCount > 0) {
+          observedRowLockWait = true;
+          break;
+        }
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      expect(observedRowLockWait).toBe(true);
+
+      // B's advisory lock IS granted (it acquired its own partition).
+      const lockSnapshotB_during = await pgLocksFor(pool, lockB);
+      expect(lockSnapshotB_during.filter((l) => l.granted).length).toBe(1);
+
+      // Commit A — B unblocks, applies its UPDATE, commits.
+      await clientA.query('commit');
+
+      const bResult = await bPromise;
+      await clientB.query('commit');
+
+      // B saw the post-A state: previous_assigned_user_id = userA.
+      expect(bResult.previous_assigned_user_id).toBe(userA);
+      expect(bResult.new_assigned_user_id).toBe(userB);
+      expect(bResult.noop).toBe(false);
+    } finally {
+      try {
+        await clientA.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      try {
+        await clientB.query('rollback');
+      } catch {
+        /* tx already finished */
+      }
+      clientA.release();
+      clientB.release();
+    }
+
+    // Final state: row reflects B's write (the second commit wins).
+    const t = await pool.query(
+      'select assigned_user_id from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].assigned_user_id).toBe(userB);
+
+    // Two command_operations rows — one per idempotency_key.
+    const co = await pool.query(
+      `select idempotency_key from public.command_operations
+        where tenant_id = $1 and idempotency_key like $2
+        order by idempotency_key`,
+      [base.tenantId, `assign-rowlock-${ticketId}-%`],
+    );
+    expect(co.rowCount).toBe(2);
+
+    // Two activity rows — one per write.
+    const acts = await pool.query(
+      `select id from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(2);
   });
 });
 
