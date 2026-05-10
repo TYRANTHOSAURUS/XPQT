@@ -3103,17 +3103,23 @@ two extra migrations landed under the §3.* range:
 - `00322_sla_timers_due_at_active_idx.sql` — partial breach-reader
   index (C3 follow-up).
 
-The §3.* RPC files therefore shift +2 from the v10 table below.
-Actual on-disk filenames: 00323 (§3.1), 00324 (§3.2), 00325 (§3.3),
-00326 (§3.0), 00327 (§3.4), 00328 (§3.4 batch), 00329 (§3.5), 00330
-(§3.10), 00331 (§3.6 metadata), 00332 (grants), 00333 (B.2 outbox
-event types), 00334 (§3.11), 00335 (workflow_instances active
-unique), 00336 (workflow_node_executions), 00337 (sla_timers active
-unique), 00338 (start_sla_timers RPC), 00339 (repoint_sla_timer RPC),
-00340 (b2_schema_annotations). The narrative columns below keep the
-v10 numbers for git-history continuity; readers must add +2 to find
-the actual file. Future iterations will rewrite this table to the
-final on-disk numbering once the §3.* slice closes.
+**v12 numbering note (2026-05-09).** During the B.2.A.5 §3.1 fix
+slice two further migrations landed:
+
+- `00324_work_orders_parent_close_guard.sql` — race-safe BEFORE-
+  UPDATE child guard (companion to §3.1).
+- `00325_transition_entity_status_v2.sql` — terminal-stamp
+  preservation fix.
+
+The §3.2 RPC therefore lands on disk at **00326**, not 00324 as the
+v10 table projected. Actual on-disk filenames after this slice:
+00323 (§3.1 v1), 00324 (parent-close guard), 00325 (§3.1 v2),
+**00326 (§3.2 — set_entity_assignment)**. Subsequent §3.* RPCs
+will shift +4 from the v10 column. The narrative columns below
+keep the v10 numbers for git-history continuity; readers must add
++4 (post-§3.1) to find the actual file for §3.2 onwards. Future
+iterations will rewrite this table to the final on-disk numbering
+once the §3.* slice closes.
 
 | # (v10) | # (actual) | File | Purpose |
 |---|---|---|---|

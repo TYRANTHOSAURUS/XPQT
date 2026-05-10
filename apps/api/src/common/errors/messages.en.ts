@@ -1465,6 +1465,13 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'command_operations.payload_mismatch': { title: "Couldn't replay", detail: 'A different request reused this idempotency key.' },
   'command_operations.unexpected_state': { title: "Couldn't replay", detail: 'Unexpected state on the previous attempt.' },
   'work_order.parent_terminal': { title: "Couldn't add to a closed case" },
+  // B.2.A §3.2 set_entity_assignment RPC (00326)
+  'set_entity_assignment.unknown_kind': { title: "Couldn't update", detail: 'Unknown entity kind.' },
+  'set_entity_assignment.not_found': { title: "Couldn't find that ticket" },
+  'set_entity_assignment.resolver_rerun_not_supported_at_rpc': {
+    title: "Couldn't update",
+    detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
+  },
 };
 
 /**

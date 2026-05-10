@@ -436,6 +436,11 @@ export type KnownErrorCode =
   | 'command_operations.unexpected_state'
   | 'work_order.parent_terminal'
 
+  // ─── B.2.A §3.2 set_entity_assignment RPC (00326) ────────────────────────
+  | 'set_entity_assignment.unknown_kind'
+  | 'set_entity_assignment.not_found'
+  | 'set_entity_assignment.resolver_rerun_not_supported_at_rpc'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1125,6 +1130,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'command_operations.payload_mismatch',
   'command_operations.unexpected_state',
   'work_order.parent_terminal',
+  'set_entity_assignment.unknown_kind',
+  'set_entity_assignment.not_found',
+  'set_entity_assignment.resolver_rerun_not_supported_at_rpc',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

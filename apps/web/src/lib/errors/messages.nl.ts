@@ -1350,6 +1350,17 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Onverwachte status van de vorige poging.',
   },
   'work_order.parent_terminal': { title: 'Kon niet toevoegen aan gesloten case' },
+
+  // ─── B.2.A §3.2 set_entity_assignment RPC (00326) ──────────────────────
+  'set_entity_assignment.unknown_kind': {
+    title: 'Kon niet bijwerken',
+    detail: 'Onbekend entiteitstype.',
+  },
+  'set_entity_assignment.not_found': { title: 'Ticket niet gevonden' },
+  'set_entity_assignment.resolver_rerun_not_supported_at_rpc': {
+    title: 'Kon niet bijwerken',
+    detail: 'Server kan routing niet opnieuw draaien — interne fout: een orchestratiestap is overgeslagen.',
+  },
 };
 
 /**
