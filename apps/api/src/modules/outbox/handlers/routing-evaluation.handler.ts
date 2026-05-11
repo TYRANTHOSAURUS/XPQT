@@ -299,6 +299,14 @@ export class RoutingEvaluationHandler
    * + a routing_decisions audit row carrying the failure reason. Best-
    * effort: any insert error is logged but doesn't propagate (we don't
    * want a failure-recording-failure to retry the whole event).
+   *
+   * Step11 self-review F-CRIT-2: the routing_decisions audit row was
+   * documented in the doc comment above (lines 297-300) but never
+   * implemented — the pre-fix failure path only wrote tickets +
+   * ticket_activities, leaving the routing_decisions audit feed without
+   * a breadcrumb pointing back to the failed event. tenant_id is
+   * included to keep the cross-tenant defense intact (memory:
+   * feedback_tenant_id_ultimate_rule).
    */
   private async markRoutingFailure(
     tenantId: string,
@@ -336,6 +344,40 @@ export class RoutingEvaluationHandler
     if (actRes.error) {
       this.log.warn(
         `markRoutingFailure: ticket_activities insert failed event=${eventId}: ${actRes.error.message}`,
+      );
+    }
+
+    // routing_decisions audit row. Mirrors the success-path insert shape
+    // (entity_kind='case' derived by the 00230 polymorphic trigger from
+    // ticket_id; rule_id/null since no rule fired). chosen_by =
+    // 'auto_routing_failed' is the failure sentinel — ops can filter
+    // routing_decisions on this value to surface unresolved routing
+    // problems. trace carries the truncated reason for forensics.
+    const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
+      tenant_id: tenantId,
+      ticket_id: ticketId,
+      strategy: 'failed',
+      chosen_team_id: null,
+      chosen_user_id: null,
+      chosen_vendor_id: null,
+      chosen_by: 'auto_routing_failed',
+      rule_id: null,
+      trace: [
+        {
+          step: 'evaluation_failed',
+          matched: false,
+          reason: truncated,
+          target: null,
+        },
+      ],
+      context: {
+        outbox_event_id: eventId,
+        failure_reason: truncated,
+      },
+    });
+    if (decisionRes.error) {
+      this.log.warn(
+        `markRoutingFailure: routing_decisions insert failed event=${eventId}: ${decisionRes.error.message}`,
       );
     }
   }

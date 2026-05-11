@@ -337,7 +337,7 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
   });
 
   describe('failure paths (record failure, return normally)', () => {
-    it('resolver throws: marks routing_status=failed + writes activity breadcrumb, does NOT throw', async () => {
+    it('resolver throws: marks routing_status=failed + writes activity breadcrumb + writes routing_decisions audit row (Step11 F-CRIT-2), does NOT throw', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -360,9 +360,35 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       expect((activity!.row as { metadata: { event: string } }).metadata.event).toBe(
         'routing_evaluation_failed',
       );
+
+      // Step11 F-CRIT-2: routing_decisions audit row written on the
+      // failure path (mirroring the doc comment on markRoutingFailure).
+      const decisionInserts = supabase.captured.inserts.filter(
+        (i) => i.table === 'routing_decisions',
+      );
+      expect(decisionInserts).toHaveLength(1);
+      const decision = decisionInserts[0].row as {
+        tenant_id: string;
+        ticket_id: string;
+        chosen_by: string;
+        chosen_team_id: string | null;
+        chosen_user_id: string | null;
+        chosen_vendor_id: string | null;
+        strategy: string;
+        context: { outbox_event_id: string; failure_reason: string };
+      };
+      expect(decision.tenant_id).toBe(TENANT_ID);
+      expect(decision.ticket_id).toBe(TICKET_ID);
+      expect(decision.chosen_by).toBe('auto_routing_failed');
+      expect(decision.chosen_team_id).toBeNull();
+      expect(decision.chosen_user_id).toBeNull();
+      expect(decision.chosen_vendor_id).toBeNull();
+      expect(decision.strategy).toBe('failed');
+      expect(decision.context.outbox_event_id).toBe(EVENT_ID);
+      expect(decision.context.failure_reason).toMatch(/rule_evaluation_crashed/);
     });
 
-    it('set_entity_assignment RPC error: marks routing_status=failed + writes activity breadcrumb', async () => {
+    it('set_entity_assignment RPC error: marks routing_status=failed + writes activity breadcrumb + writes routing_decisions audit row (Step11 F-CRIT-2)', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -380,11 +406,26 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         (u) => u.table === 'tickets' && (u.patch as { routing_status: string }).routing_status === 'failed',
       );
       expect(failureUpdate).toBeDefined();
-      // routing_decisions NOT written when the assignment RPC fails — we
-      // never want the audit trail to claim a successful evaluation.
-      expect(
-        supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
-      ).toHaveLength(0);
+
+      // Step11 F-CRIT-2: routing_decisions ROW written by markRoutingFailure
+      // is the failure breadcrumb (chosen_by='auto_routing_failed'). This
+      // is distinct from the success-path insert (which never fires here
+      // because the assignment RPC failed before we reached the always-
+      // insert success block). One failure row, never the success row.
+      const decisionInserts = supabase.captured.inserts.filter(
+        (i) => i.table === 'routing_decisions',
+      );
+      expect(decisionInserts).toHaveLength(1);
+      const decision = decisionInserts[0].row as {
+        chosen_by: string;
+        strategy: string;
+        context: { outbox_event_id: string; failure_reason: string };
+      };
+      expect(decision.chosen_by).toBe('auto_routing_failed');
+      expect(decision.strategy).toBe('failed');
+      expect(decision.context.failure_reason).toMatch(
+        /validate_assignees_in_tenant\.assigned_team_id_not_in_tenant/,
+      );
     });
   });
 

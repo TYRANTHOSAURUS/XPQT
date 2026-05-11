@@ -360,6 +360,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet herclassificeren',
     detail: 'Een verplicht veld ontbreekt.',
   },
+  'reclassify_ticket.terminal_ticket': {
+    title: 'Kon niet herclassificeren',
+    detail: 'Dit ticket is gesloten of opgelost. Heropen het ticket eerst.',
+  },
 
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': { title: 'Kon niet uitsturen — titel verplicht' },

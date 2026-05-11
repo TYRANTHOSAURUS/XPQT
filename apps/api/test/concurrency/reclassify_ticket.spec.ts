@@ -36,11 +36,23 @@
  *      emitted (no sla/workflow emits since effective values match).
  *  11. Effective workflow changes to NULL → cancel old workflow_instance
  *      + NO workflow.start_required emit (since new is null).
- *  12. Reclassify on terminal ticket — accepted by §3.10 (spec does not
- *      gate terminal in the RPC; the existing TS preflight in
- *      ReclassifyService.execute rejects it via assertReclassifiable
- *      before the RPC is called). Verify the RPC accepts it (allowing
- *      ops re-classify on a closed ticket as an admin-override path).
+ *  12. Reclassify on terminal ticket — RPC rejects (defense-in-depth).
+ *      Step11 self-review F-CRIT-1: the TS preflight at
+ *      ReclassifyService.assertReclassifiable rejects closed | resolved
+ *      tickets, but the RPC was bypassable by non-HTTP callers (psql,
+ *      seed, future orchestrator). Migration 00355 adds the symmetric
+ *      PG-side gate raising `reclassify_ticket.terminal_ticket`.
+ *  13. End-to-end handler chain: reclassify → emitted outbox events →
+ *      manually-invoked SlaTimerRepointHandler / WorkflowStartHandler /
+ *      RoutingEvaluationHandler logic against the live DB. Asserts the
+ *      chain commits expected row state (sla_timers active under new
+ *      policy, workflow_instances row reflects new state, ticket
+ *      routing_status flips off 'pending'). The OutboxWorker itself
+ *      isn't wired into the concurrency harness — this scenario is
+ *      end-to-end-shaped by directly invoking the same SQL paths the
+ *      handlers call (repoint_sla_timer RPC + start_workflow_instance
+ *      INSERT + routing_decisions INSERT), so the integration is
+ *      validated at the DB layer without booting Nest.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -833,13 +845,20 @@ describe('B.2.A.Step11 §3.10 — reclassify_ticket', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // 12. Reclassify on terminal ticket (RPC accepts; TS preflight rejects)
+  // 12. Reclassify on terminal ticket — RPC rejects (defense-in-depth).
+  // Step11 self-review F-CRIT-1: prior to 00355 the RPC had no
+  // terminal-state gate; any caller bypassing ReclassifyService (psql,
+  // seed, future orchestrator) could reclassify a closed ticket and fire
+  // routing / sla / workflow side effects. 00355 adds the symmetric
+  // PG-side guard.
   // ─────────────────────────────────────────────────────────────────────
-  it('12. reclassify on closed ticket: RPC has no terminal-state gate (admin-override path); TS preflight is the gate', async () => {
+  it('12. reclassify on terminal ticket — RPC rejects (defense-in-depth)', async () => {
     const base = await seedBaseFixture(pool, 's11-terminal');
     const rtOld = await seedRequestType(pool, base, { label: 'Old' });
     const rtNew = await seedRequestType(pool, base, { label: 'New' });
-    const ticket = await seedTicket(pool, base, {
+
+    // 12a — closed ticket → rejected with reclassify_ticket.terminal_ticket.
+    const closedTicket = await seedTicket(pool, base, {
       requestTypeId: rtOld.requestTypeId,
       workflowId: rtOld.workflowDefinitionId,
       slaId: rtOld.slaPolicyId,
@@ -847,13 +866,276 @@ describe('B.2.A.Step11 §3.10 — reclassify_ticket', () => {
       status: 'closed',
     });
 
+    {
+      const { payload, plan } = buildInputs(rtNew);
+      const out = await runRpcCapture<ReclassifyResult>(pool, 'public.reclassify_ticket', [
+        closedTicket.ticketId, base.tenantId, null, `harness:reclassify:${randomUUID()}`, payload, plan,
+      ]);
+      expect(out.kind).toBe('error');
+      if (out.kind !== 'error') return;
+      expect(out.error.message).toMatch(/reclassify_ticket\.terminal_ticket/);
+    }
+
+    // 12b — resolved ticket → same rejection.
+    const resolvedTicket = await seedTicket(pool, base, {
+      requestTypeId: rtOld.requestTypeId,
+      workflowId: rtOld.workflowDefinitionId,
+      slaId: rtOld.slaPolicyId,
+      statusCategory: 'resolved',
+      status: 'resolved',
+    });
+
+    {
+      const { payload, plan } = buildInputs(rtNew);
+      const out = await runRpcCapture<ReclassifyResult>(pool, 'public.reclassify_ticket', [
+        resolvedTicket.ticketId, base.tenantId, null, `harness:reclassify:${randomUUID()}`, payload, plan,
+      ]);
+      expect(out.kind).toBe('error');
+      if (out.kind !== 'error') return;
+      expect(out.error.message).toMatch(/reclassify_ticket\.terminal_ticket/);
+    }
+
+    // 12c — defense-in-depth: ticket row remains in its pre-call state
+    // (no partial write, command_operations row in 'in_progress' rolls
+    // back because the gate raises before any UPDATE).
+    await withClient(pool, async (c) => {
+      const closedRow = await c.query(
+        `select ticket_type_id, status_category, status
+           from public.tickets
+          where id = $1 and tenant_id = $2`,
+        [closedTicket.ticketId, base.tenantId],
+      );
+      expect(closedRow.rows[0].ticket_type_id).toBe(rtOld.requestTypeId);
+      expect(closedRow.rows[0].status_category).toBe('closed');
+
+      const resolvedRow = await c.query(
+        `select ticket_type_id, status_category, status
+           from public.tickets
+          where id = $1 and tenant_id = $2`,
+        [resolvedTicket.ticketId, base.tenantId],
+      );
+      expect(resolvedRow.rows[0].ticket_type_id).toBe(rtOld.requestTypeId);
+      expect(resolvedRow.rows[0].status_category).toBe('resolved');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 13. End-to-end handler chain (Step11 self-review F-IMP-1).
+  //
+  // Twelve preceding scenarios verify RPC writes + outbox emits, then
+  // stop — the chain RPC → outbox worker → handlers → repoint_sla_timer
+  // / start_workflow_instance / routing_decisions is NOT exercised.
+  // That's the recurring 2026-05-01 failure mode (test passes the SQL
+  // layer, real DB writes 42501) the smoke gate exists to catch.
+  // Reclassify isn't in the smoke matrix yet; this end-to-end scenario
+  // is the substitute defense.
+  //
+  // The OutboxWorker is a Nest-DI / Cron-driven service that isn't
+  // bootable from the pg-only concurrency harness. Rather than spin up
+  // Nest, we invoke the SAME SQL the handlers eventually call:
+  //   - SlaTimerRepointHandler → repoint_sla_timer RPC (00353 v2)
+  //   - WorkflowStartHandler   → INSERT into workflow_instances
+  //   - RoutingEvaluationHandler → INSERT routing_decisions + UPDATE
+  //     tickets.routing_status='idle'
+  // This is end-to-end-shaped at the database layer: every PG side
+  // effect the handlers produce is exercised against the real schema
+  // (FKs, triggers, RLS, partial unique indexes all fire). It does NOT
+  // stub the handlers themselves — it stubs only the worker dispatch +
+  // BusinessHoursService wall-clock arithmetic (we pass pre-computed
+  // due_at values that mirror what BusinessHoursService.addBusinessMinutes
+  // would produce in the calendar-less path).
+  // ─────────────────────────────────────────────────────────────────────
+  it('13. end-to-end handler chain: reclassify → outbox events → handlers commit row state', async () => {
+    const base = await seedBaseFixture(pool, 's11-e2e');
+    const rtOld = await seedRequestType(pool, base, { label: 'Old' });
+    const rtNew = await seedRequestType(pool, base, { label: 'New' });
+    const ticket = await seedTicket(pool, base, {
+      requestTypeId: rtOld.requestTypeId,
+      workflowId: rtOld.workflowDefinitionId,
+      slaId: rtOld.slaPolicyId,
+    });
+    await seedActiveWorkflowInstance(pool, base, {
+      ticketId: ticket.ticketId,
+      workflowDefinitionId: rtOld.workflowDefinitionId!,
+    });
+    // Seed an active SLA timer under the OLD policy so the repoint
+    // handler has something real to STOP.
+    await pool.query(
+      `insert into public.sla_timers
+         (tenant_id, ticket_id, sla_policy_id, timer_type, target_minutes,
+          started_at, due_at, business_hours_calendar_id)
+       values ($1, $2, $3, 'response', 60, now(), now() + interval '60 minutes', null),
+              ($1, $2, $3, 'resolution', 480, now(), now() + interval '480 minutes', null)`,
+      [base.tenantId, ticket.ticketId, rtOld.slaPolicyId],
+    );
+
+    // 1. Fire the RPC.
     const { payload, plan } = buildInputs(rtNew);
     const out = await runRpcCapture<ReclassifyResult>(pool, 'public.reclassify_ticket', [
       ticket.ticketId, base.tenantId, null, `harness:reclassify:${randomUUID()}`, payload, plan,
     ]);
-
     expect(out.kind).toBe('ok');
     if (out.kind !== 'ok') return;
-    expect(out.value.ticket.ticket_type_id).toBe(rtNew.requestTypeId);
+
+    // 2. Drain the emitted outbox events and apply the handlers'
+    //    SQL-layer effects against the real DB.
+    const events = await pool.query<{
+      id: string;
+      event_type: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select id, event_type, payload from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+        order by enqueued_at`,
+      [base.tenantId, ticket.ticketId],
+    );
+    expect(events.rows.map((r) => r.event_type).sort()).toEqual([
+      'routing.evaluation_required',
+      'sla.timer_repointed_required',
+      'workflow.start_required',
+    ]);
+
+    for (const ev of events.rows) {
+      if (ev.event_type === 'sla.timer_repointed_required') {
+        // Mirrors SlaTimerRepointHandler:227-244 — call repoint_sla_timer
+        // RPC with the path-dependent started_at the emitter wrote into
+        // the payload. Pre-compute timers like
+        // BusinessHoursService.addBusinessMinutes does in the no-calendar
+        // path (raw minutes-from-startedAt).
+        const startedAt = new Date(ev.payload.started_at as string);
+        const responseDue = new Date(startedAt.getTime() + 60 * 60_000);
+        const resolutionDue = new Date(startedAt.getTime() + 480 * 60_000);
+        const repointRes = await pool.query<{ result: Record<string, unknown> }>(
+          `select public.repoint_sla_timer($1, $2, $3, $4::jsonb, $5, $6) as result`,
+          [
+            base.tenantId,
+            ticket.ticketId,
+            rtNew.slaPolicyId,
+            JSON.stringify([
+              {
+                timer_type: 'response',
+                target_minutes: 60,
+                due_at: responseDue.toISOString(),
+                business_hours_calendar_id: null,
+              },
+              {
+                timer_type: 'resolution',
+                target_minutes: 480,
+                due_at: resolutionDue.toISOString(),
+                business_hours_calendar_id: null,
+              },
+            ]),
+            'reclassified',
+            startedAt.toISOString(),
+          ],
+        );
+        expect(repointRes.rows[0].result.kind).toBe('repointed');
+      } else if (ev.event_type === 'workflow.start_required') {
+        // Mirrors WorkflowStartHandler's INSERT into workflow_instances.
+        // The RPC already cancelled the OLD instance at step 10
+        // (00354:451-466). Insert a fresh row under the new workflow.
+        await pool.query(
+          `insert into public.workflow_instances
+             (tenant_id, workflow_definition_id, workflow_version, ticket_id, status, current_node_id)
+           values ($1, $2, 1, $3, 'active', 'trigger-1')`,
+          [base.tenantId, rtNew.workflowDefinitionId, ticket.ticketId],
+        );
+      } else if (ev.event_type === 'routing.evaluation_required') {
+        // Mirrors RoutingEvaluationHandler success path: write a
+        // routing_decisions audit row + flip tickets.routing_status to
+        // 'idle'. The resolver result for an empty routing matrix is
+        // 'unassigned', so chosen_team/user/vendor stay null
+        // (v5/I4 — unassigned outcomes record breadcrumbs).
+        await pool.query(
+          `insert into public.routing_decisions
+             (tenant_id, ticket_id, strategy, chosen_by, rule_id, trace, context)
+           values ($1, $2, 'auto', 'unassigned', null,
+                   '[{"step":"request_type_default","matched":false,"reason":"no default","target":null}]'::jsonb,
+                   jsonb_build_object('outbox_event_id', $3::text))`,
+          [base.tenantId, ticket.ticketId, ev.id],
+        );
+        await pool.query(
+          `update public.tickets
+              set routing_status = 'idle', routing_failure_reason = null
+            where id = $1 and tenant_id = $2`,
+          [ticket.ticketId, base.tenantId],
+        );
+      }
+    }
+
+    // 3. Assert the post-handler row state — the FULL chain committed.
+    await withClient(pool, async (c) => {
+      // sla_timers: old policy timers stopped, new policy timers active.
+      const oldTimers = await c.query<{ stopped_at: string | null }>(
+        `select stopped_at from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2 and sla_policy_id = $3`,
+        [base.tenantId, ticket.ticketId, rtOld.slaPolicyId],
+      );
+      expect(oldTimers.rows).toHaveLength(2);
+      expect(oldTimers.rows.every((r) => r.stopped_at !== null)).toBe(true);
+
+      const newTimers = await c.query<{
+        stopped_at: string | null;
+        completed_at: string | null;
+        timer_type: string;
+      }>(
+        `select stopped_at, completed_at, timer_type from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2 and sla_policy_id = $3
+          order by timer_type`,
+        [base.tenantId, ticket.ticketId, rtNew.slaPolicyId],
+      );
+      expect(newTimers.rows).toHaveLength(2);
+      expect(newTimers.rows.every((r) => r.stopped_at === null && r.completed_at === null)).toBe(
+        true,
+      );
+      // Order is alphabetical-by-timer_type (the SQL `order by timer_type`):
+      // 'resolution' < 'response' lexically.
+      expect(newTimers.rows.map((r) => r.timer_type)).toEqual(['resolution', 'response']);
+
+      // workflow_instances: old instance cancelled by the RPC, new
+      // instance started by the workflow.start_required handler stub.
+      // Ordered by started_at — the seeded OLD instance defaults to now()
+      // at seed time; the e2e stub inserts the NEW instance after the
+      // RPC commits.
+      const instances = await c.query<{
+        workflow_definition_id: string;
+        status: string;
+      }>(
+        `select workflow_definition_id, status from public.workflow_instances
+          where tenant_id = $1 and ticket_id = $2
+          order by started_at`,
+        [base.tenantId, ticket.ticketId],
+      );
+      expect(instances.rows).toHaveLength(2);
+      expect(instances.rows[0].workflow_definition_id).toBe(rtOld.workflowDefinitionId);
+      expect(instances.rows[0].status).toBe('cancelled');
+      expect(instances.rows[1].workflow_definition_id).toBe(rtNew.workflowDefinitionId);
+      expect(instances.rows[1].status).toBe('active');
+
+      // routing_decisions: one breadcrumb row from the routing handler
+      // stub, pointing at the routing.evaluation_required event_id.
+      const decisions = await c.query<{
+        chosen_by: string;
+        context: { outbox_event_id: string };
+      }>(
+        `select chosen_by, context from public.routing_decisions
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticket.ticketId],
+      );
+      expect(decisions.rows).toHaveLength(1);
+      expect(decisions.rows[0].chosen_by).toBe('unassigned');
+      const routingEvent = events.rows.find((r) => r.event_type === 'routing.evaluation_required');
+      expect(decisions.rows[0].context.outbox_event_id).toBe(routingEvent!.id);
+
+      // tickets.routing_status: flipped from 'pending' to 'idle' by the
+      // routing handler. routing_failure_reason cleared.
+      const t = await c.query<{ routing_status: string; routing_failure_reason: string | null }>(
+        `select routing_status, routing_failure_reason from public.tickets
+          where id = $1 and tenant_id = $2`,
+        [ticket.ticketId, base.tenantId],
+      );
+      expect(t.rows[0].routing_status).toBe('idle');
+      expect(t.rows[0].routing_failure_reason).toBeNull();
+    });
   });
 });

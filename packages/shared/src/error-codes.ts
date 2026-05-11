@@ -156,6 +156,11 @@ export type KnownErrorCode =
   | 'reclassify_ticket.new_request_type_invalid'
   | 'reclassify_ticket.target_same'
   | 'reclassify_ticket.input_invalid'
+  // Step11 self-review F-CRIT-1: defense-in-depth terminal-state guard.
+  // TS layer rejects closed/resolved tickets via assertReclassifiable;
+  // the RPC was bypassable by non-HTTP callers (psql, seed, orchestrator).
+  // Migration 00355 adds the symmetric PG-side check.
+  | 'reclassify_ticket.terminal_ticket'
 
   // ─── dispatch codes ──────────────────────────────────────────────────────
   | 'dispatch.title_required'
@@ -807,6 +812,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'reclassify_ticket.new_request_type_invalid',
   'reclassify_ticket.target_same',
   'reclassify_ticket.input_invalid',
+  'reclassify_ticket.terminal_ticket',
   'dispatch.title_required',
   'dispatch.from_work_order',
   'dispatch.parent_pending_approval',

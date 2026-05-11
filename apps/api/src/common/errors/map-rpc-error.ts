@@ -125,6 +125,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // re-running reclassify. 422 unprocessable-entity is the right shape
   // (request payload is valid, but the ticket state blocks the action).
   'reclassify_ticket.reclassify_during_approval': 422,
+  // Step11 self-review F-CRIT-1 — terminal_ticket: the ticket is in
+  // resolved | closed state. The TS preflight already rejects this in
+  // ReclassifyService.assertReclassifiable; the RPC raise is the
+  // defense-in-depth path for non-HTTP callers (psql, seed, future
+  // orchestrator). 422 — payload is valid, ticket state blocks action.
+  'reclassify_ticket.terminal_ticket': 422,
 
   // B.2.A.Step9 — workflow `update_ticket` node config that references a
   // field outside the tightened allowlist throws this code (TS-side).

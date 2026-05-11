@@ -799,6 +799,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't reclassify",
     detail: 'The request payload is missing a required field.',
   },
+  'reclassify_ticket.terminal_ticket': {
+    title: "Couldn't reclassify",
+    detail: 'This ticket is closed or resolved. Reopen it first.',
+  },
 
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {

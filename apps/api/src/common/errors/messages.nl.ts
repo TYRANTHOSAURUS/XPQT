@@ -799,6 +799,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet herclassificeren',
     detail: 'Een verplicht veld ontbreekt in de aanvraag.',
   },
+  'reclassify_ticket.terminal_ticket': {
+    title: 'Kon niet herclassificeren',
+    detail: 'Dit ticket is gesloten of opgelost. Heropen het ticket eerst.',
+  },
 
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {

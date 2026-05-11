@@ -461,3 +461,35 @@ Risk: a frontend handler keyed off the legacy 400 status code (rather
 than the error `code` field) regresses. The error system is code-keyed
 end-to-end so risk is small, but worth a one-line cite when reviewing
 any frontend that consumes workflow-misconfiguration errors.
+
+## Step 10 (grant_ticket_approval) reland — NOT "mechanical"
+
+The original Step 10 commit (3834b702) was reverted at fde350df. With
+Step 12 + Step 11 shipped, the prerequisite infrastructure is in place
+(tickets.workflow_id / sla_id populated at create; SlaTimerHandler /
+WorkflowStartHandler / RoutingEvaluationHandler registered).
+
+But the reland is NOT a straight cherry-pick. Three contract drifts
+since the revert require fixes:
+
+1. **Approval enum gap (v10 / C2 from spec §3.10).** The reverted RPC
+   at line 226 filters `status <> 'pending'`. Spec lines 2612-2633
+   added `delegated` to the non-terminal set. Reland must extend the
+   CAS pre-check AND the chain/group resolution count to include
+   `delegated`.
+
+2. **F-CRIT-1 actor resolution (Step 12 pattern).** The reverted RPC
+   inserts p_actor_user_id into activities/domain_events directly,
+   triggering 23503 FK violations on the FK to users.id. Reland must
+   resolve auth_uid → users.id once and use that for the audit writes.
+
+3. **F-CRIT-2 / S12-I2 started_at semantics.** The reverted RPC emits
+   `started_at: now()` inline. Post-Step-12, the SlaTimerHandler
+   passes `event.payload.started_at` to `start_sla_timers` (00352 v2)
+   which persists that value. The reland's emit must carry an
+   appropriate `started_at` value (likely `now()` per spec line 2279,
+   since SLA clock starts at approval grant time, not earlier).
+
+A new migration slot must be used (00343 was dropped; next free is
+00356 if Step 11 remediation uses 00355). Reclassify the work as a
+fresh feature commit, not a revert-of-revert.
