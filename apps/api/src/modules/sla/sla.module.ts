@@ -10,6 +10,10 @@ import { TicketModule } from '../ticket/ticket.module';
   imports: [NotificationModule, forwardRef(() => TicketModule)],
   providers: [SlaService, BusinessHoursService],
   controllers: [SlaController, SlaPolicyController],
-  exports: [SlaService],
+  // BusinessHoursService is exported so the outbox SlaTimerHandler
+  // (apps/api/src/modules/outbox/handlers/sla-timer-recompute.handler.ts)
+  // can compute SLA timer due_at values without going through the full
+  // SlaService surface. B.2.A.Step12 commit 2.
+  exports: [SlaService, BusinessHoursService],
 })
 export class SlaModule {}
