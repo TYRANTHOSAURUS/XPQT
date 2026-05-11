@@ -45,6 +45,16 @@
  *      Mutations are left in a sensible state (priority restored, etc).
  *   4. **Human-readable output.** Each probe prints a single line; failures
  *      include the response body so the user can see what broke.
+ *   5. **B.2.A Step 7 — command_operations assertion.** After each
+ *      successful PATCH /work-orders/:id, query the command_operations
+ *      table for a row keyed on (tenant_id, `patch:work_order:<id>:<x-client-request-id>`)
+ *      AND `outcome='success'`. If the row is present, the controller
+ *      went through `update_entity_combined` (00335 v5). If absent, the
+ *      controller bypassed the orchestrator — fail loudly. Citations:
+ *      - 00316_command_operations_table.sql:31-42 (table schema).
+ *      - work-order.service.ts:503-508 (idempotency-key shape).
+ *      - 00335_update_entity_combined_v5.sql:203-205, 792-794
+ *        (RPC insert + final UPDATE to success).
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -115,6 +125,21 @@ async function mintAdminToken() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Supabase admin singleton — used for command_operations assertion +
+// cleanup of created entities. Lifted to module-level so probes can
+// query the table directly without re-creating a client per call.
+// ─────────────────────────────────────────────────────────────────────
+
+let SUPA = null;
+function supa() {
+  if (SUPA) return SUPA;
+  SUPA = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return SUPA;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Probe runner with consistent reporting
 // ─────────────────────────────────────────────────────────────────────
 
@@ -122,15 +147,24 @@ const results = { pass: 0, fail: 0, failed: [] };
 
 function makeProber(headers) {
   return async function probe(name, options) {
-    const { method = 'PATCH', url, body, expect = 'success' } = options;
+    const {
+      method = 'PATCH',
+      url,
+      body,
+      expect = 'success',
+      // Allow callers to pin the X-Client-Request-Id (used by
+      // idempotency-replay probes that send the same id twice).
+      clientRequestId,
+    } = options;
     // B.2.A I1: every mutation surface (PATCH, POST) the smoke gate
     // hits is now guarded by RequireClientRequestIdGuard. Mint a fresh
     // UUID per probe — each probe is a logically distinct attempt;
     // reusing one id across all of them would land in
     // command_operations.cached_result and silently no-op on retries.
     const isMutation = method === 'PATCH' || method === 'POST';
+    const xCid = isMutation ? clientRequestId || crypto.randomUUID() : null;
     const probeHeaders = isMutation
-      ? { ...headers, 'X-Client-Request-Id': crypto.randomUUID() }
+      ? { ...headers, 'X-Client-Request-Id': xCid }
       : headers;
     const r = await fetch(url, {
       method,
@@ -140,6 +174,7 @@ function makeProber(headers) {
     const ok =
       (expect === 'success' && r.status >= 200 && r.status < 300) ||
       (expect === 'badrequest' && r.status === 400) ||
+      (expect === 'conflict' && r.status === 409) ||
       (expect === 'forbidden' && r.status === 403);
     const txt = await r.text();
     if (ok) {
@@ -151,8 +186,82 @@ function makeProber(headers) {
       console.log(`  ✗ ${name} → HTTP ${r.status} (expected ${expect})`);
       console.log(`     ${txt.slice(0, 240)}`);
     }
-    return { status: r.status, body: txt, ok };
+    return { status: r.status, body: txt, ok, xClientRequestId: xCid };
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// B.2.A Step 7 — command_operations assertion helper.
+//
+// After every successful PATCH /work-orders/:id or /tickets/:id, verify
+// the orchestrator landed a `command_operations` row with
+//   (tenant_id, idempotency_key=`patch:<kind>:<id>:<x-cid>`)
+//   AND outcome='success'
+//   AND cached_result NOT NULL
+// per 00335_update_entity_combined_v5.sql:203-205 + :792-794.
+//
+// If the row is absent, the controller bypassed `update_entity_combined`
+// — fail loudly. This is the structural defense that catches an
+// accidental regression to the pre-cutover TS write path.
+// ─────────────────────────────────────────────────────────────────────
+
+async function assertCommandOpRow(name, tenantId, kind, entityId, xCid) {
+  if (!xCid) {
+    results.fail += 1;
+    results.failed.push(`${name} (command_op assert: no x-cid)`);
+    console.log(`  ✗ ${name} (command_op assert) — no X-Client-Request-Id captured`);
+    return false;
+  }
+  const idempotencyKey = `patch:${kind}:${entityId}:${xCid}`;
+  const { data, error } = await supa()
+    .from('command_operations')
+    .select('outcome, cached_result, completed_at')
+    .eq('tenant_id', tenantId)
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle();
+  if (error) {
+    results.fail += 1;
+    results.failed.push(`${name} (command_op assert: query error)`);
+    console.log(`  ✗ ${name} (command_op assert) — query error: ${error.message}`);
+    return false;
+  }
+  if (!data) {
+    results.fail += 1;
+    results.failed.push(`${name} (command_op assert: no row)`);
+    console.log(
+      `  ✗ ${name} (command_op assert) — no row for key=${idempotencyKey.slice(0, 60)}…`,
+    );
+    console.log(
+      `     update_entity_combined did NOT fire — controller bypassed §3.0 RPC.`,
+    );
+    return false;
+  }
+  if (data.outcome !== 'success') {
+    results.fail += 1;
+    results.failed.push(`${name} (command_op assert: outcome=${data.outcome})`);
+    console.log(`  ✗ ${name} (command_op assert) — outcome=${data.outcome}, want success`);
+    return false;
+  }
+  if (!data.cached_result) {
+    results.fail += 1;
+    results.failed.push(`${name} (command_op assert: empty cached_result)`);
+    console.log(`  ✗ ${name} (command_op assert) — cached_result is null`);
+    return false;
+  }
+  results.pass += 1;
+  console.log(`  ✓ ${name} (command_op outcome=success)`);
+  return true;
+}
+
+// Convenience: probe + assert in one call for the common PATCH-then-verify
+// flow. Skips the assertion when the probe expected a non-success outcome
+// or when the HTTP response was not in the 2xx range.
+async function probeAndAssertCommandOp(probe, name, options, tenantId, kind, entityId) {
+  const result = await probe(name, options);
+  if (result.ok && (options.expect ?? 'success') === 'success') {
+    await assertCommandOpRow(name, tenantId, kind, entityId, result.xClientRequestId);
+  }
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -172,23 +281,23 @@ async function runWorkOrderMutations(headers, probe) {
   // status: flip between 'new' (assigned) and 'in_progress'
   const nextStatus = cur.status === 'new' ? 'in_progress' : 'new';
   const nextStatusCat = cur.status === 'new' ? 'in_progress' : 'assigned';
-  await probe('WO: status flip', {
+  await probeAndAssertCommandOp(probe, 'WO: status flip', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { status: nextStatus, status_category: nextStatusCat },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // priority: flip between 'medium' and 'high'
   const nextPriority = cur.priority === 'high' ? 'medium' : 'high';
-  await probe('WO: priority flip', {
+  await probeAndAssertCommandOp(probe, 'WO: priority flip', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { priority: nextPriority },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // plan: set to +1 day from now (always different from current)
-  await probe('WO: planned_start_at +1d', {
+  await probeAndAssertCommandOp(probe, 'WO: planned_start_at +1d', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { planned_start_at: new Date(Date.now() + 86400000).toISOString() },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // ── Phase 1.1 plan-merge regression probes ───────────────────────────
   // Locks in: WorkOrderService.update merges plan-branch fields against the
@@ -198,10 +307,10 @@ async function runWorkOrderMutations(headers, probe) {
 
   // 1. Both fields together — fast-path baseline.
   const plan1Start = new Date(Date.now() + 2 * 86400000).toISOString();
-  const plan1Result = await probe('WO: plan set start+duration', {
+  const plan1Result = await probeAndAssertCommandOp(probe, 'WO: plan set start+duration', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { planned_start_at: plan1Start, planned_duration_minutes: 60 },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
   if (plan1Result.ok) {
     const after = await readWO(headers);
     if (
@@ -221,10 +330,10 @@ async function runWorkOrderMutations(headers, probe) {
   }
 
   // 2. Duration-only patch must preserve start. The bug fixed in Phase 1.1.
-  const plan2Result = await probe('WO: plan patch duration only preserves start', {
+  const plan2Result = await probeAndAssertCommandOp(probe, 'WO: plan patch duration only preserves start', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { planned_duration_minutes: 90 },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
   if (plan2Result.ok) {
     const after = await readWO(headers);
     if (
@@ -247,10 +356,10 @@ async function runWorkOrderMutations(headers, probe) {
 
   // 3. Start-only patch must preserve duration.
   const plan3Start = new Date(Date.now() + 3 * 86400000).toISOString();
-  const plan3Result = await probe('WO: plan patch start only preserves duration', {
+  const plan3Result = await probeAndAssertCommandOp(probe, 'WO: plan patch start only preserves duration', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { planned_start_at: plan3Start },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
   if (plan3Result.ok) {
     const after = await readWO(headers);
     if (
@@ -273,10 +382,10 @@ async function runWorkOrderMutations(headers, probe) {
 
   // 4. start=null clears both fields (existing setPlan invariant, exposed
   // through the orchestrator merge).
-  const plan4Result = await probe('WO: plan patch null start clears both', {
+  const plan4Result = await probeAndAssertCommandOp(probe, 'WO: plan patch null start clears both', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { planned_start_at: null },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
   if (plan4Result.ok) {
     const after = await readWO(headers);
     if (after.planned_start_at === null && after.planned_duration_minutes === null) {
@@ -320,69 +429,69 @@ async function runWorkOrderMutations(headers, probe) {
 
   // Restore a sensible plan so subsequent probes / manual inspection
   // aren't left with a cleared row.
-  await probe('WO: restore plan (cleanup)', {
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (cleanup)', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: {
       planned_start_at: new Date(Date.now() + 86400000).toISOString(),
       planned_duration_minutes: 60,
     },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // sla: clear (null is XOR-different from any current sla_id)
-  await probe('WO: sla_id = null', {
+  await probeAndAssertCommandOp(probe, 'WO: sla_id = null', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { sla_id: null },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // assignment: swap teams
   const nextTeam = cur.assigned_team_id === REAL_TEAM ? ALT_TEAM : REAL_TEAM;
-  await probe('WO: assignment swap', {
+  await probeAndAssertCommandOp(probe, 'WO: assignment swap', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { assigned_team_id: nextTeam },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // metadata: title with timestamp suffix (always XOR-different)
-  await probe('WO: title (Slice 3.1)', {
+  await probeAndAssertCommandOp(probe, 'WO: title (Slice 3.1)', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { title: `smoke-${Date.now()}` },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // metadata: tags
   const nextTags =
     JSON.stringify(cur.tags) === JSON.stringify(['smoke-a']) ? ['smoke-b'] : ['smoke-a'];
-  await probe('WO: tags (Slice 3.1)', {
+  await probeAndAssertCommandOp(probe, 'WO: tags (Slice 3.1)', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { tags: nextTags },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 
   // metadata: cost (fractional — float-normalization regression test)
   const nextCost = (cur.cost ?? 0) + 0.1 + 0.2; // intentionally drift-prone
-  await probe('WO: cost (fractional, normalization)', {
+  await probeAndAssertCommandOp(probe, 'WO: cost (fractional, normalization)', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
     body: { cost: nextCost },
-  });
+  }, TENANT_ID, 'work_order', WO_ID);
 }
 
 async function runCaseMutations(headers, probe) {
   console.log('\n=== Case mutations ===');
 
   // priority: flip
-  await probe('CASE: priority flip', {
+  await probeAndAssertCommandOp(probe, 'CASE: priority flip', {
     url: `${API_BASE}/api/tickets/${CASE_ID}`,
     body: { priority: 'high' },
-  });
+  }, TENANT_ID, 'case', CASE_ID);
 
   // assignment: swap teams (validation now enforced)
-  await probe('CASE: assignment to real team', {
+  await probeAndAssertCommandOp(probe, 'CASE: assignment to real team', {
     url: `${API_BASE}/api/tickets/${CASE_ID}`,
     body: { assigned_team_id: REAL_TEAM },
-  });
+  }, TENANT_ID, 'case', CASE_ID);
 
   // title
-  await probe('CASE: title', {
+  await probeAndAssertCommandOp(probe, 'CASE: title', {
     url: `${API_BASE}/api/tickets/${CASE_ID}`,
     body: { title: `smoke-case-${Date.now()}` },
-  });
+  }, TENANT_ID, 'case', CASE_ID);
 
   // cost (fractional — float-normalization regression test, case side).
   // Backports the WO-side fix per /full-review I3. Sends 0.1+0.2 which
@@ -391,10 +500,10 @@ async function runCaseMutations(headers, probe) {
   const r = await fetch(`${API_BASE}/api/tickets/${CASE_ID}`, { headers });
   const cur = await r.json();
   const nextCost = (cur.cost ?? 0) + 0.1 + 0.2;
-  await probe('CASE: cost (fractional, normalization)', {
+  await probeAndAssertCommandOp(probe, 'CASE: cost (fractional, normalization)', {
     url: `${API_BASE}/api/tickets/${CASE_ID}`,
     body: { cost: nextCost },
-  });
+  }, TENANT_ID, 'case', CASE_ID);
 }
 
 async function runValidationProbes(headers, probe) {
@@ -453,9 +562,11 @@ async function runValidationProbes(headers, probe) {
 async function runDispatchProbe(headers, probe) {
   console.log('\n=== Dispatch (creating a child WO) ===');
 
+  // B.2.A I1: POST /tickets/:id/dispatch is also guarded by
+  // RequireClientRequestIdGuard — mint a per-call uuid.
   const r = await fetch(`${API_BASE}/api/tickets/${CASE_ID}/dispatch`, {
     method: 'POST',
-    headers,
+    headers: { ...headers, 'X-Client-Request-Id': crypto.randomUUID() },
     body: JSON.stringify({
       title: `smoke-dispatch-${Date.now()}`,
       assigned_team_id: REAL_TEAM,
@@ -468,10 +579,7 @@ async function runDispatchProbe(headers, probe) {
     const created = await r.json();
     if (created?.id) {
       // Cleanup: delete the created WO via supabase admin (bypass RLS).
-      const supa = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
-        auth: { autoRefreshToken: false, persistSession: false },
-      });
-      const { error } = await supa.from('work_orders').delete().eq('id', created.id);
+      const { error } = await supa().from('work_orders').delete().eq('id', created.id);
       console.log(
         `  ✓ cleanup: deleted dispatched WO ${created.id.slice(0, 8)}…${error ? ` (warn: ${error.message})` : ''}`,
       );

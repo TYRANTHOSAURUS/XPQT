@@ -15,6 +15,7 @@
     "lint": "bash scripts/check-migration-prefixes.sh && pnpm -r run lint",
     "test": "pnpm -r run test",
     "smoke:work-orders": "pnpm --filter @prequest/api run smoke:work-orders",
+    "smoke:tickets": "pnpm --filter @prequest/api run smoke:tickets",
     "smoke:outbox": "pnpm --filter @prequest/api run smoke:outbox",
     "test:concurrency": "pnpm --filter @prequest/api run test:concurrency",
     "design:check": "bash scripts/check-design.sh",
