@@ -72,10 +72,6 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // entity kind.
   'validate_entity_in_tenant.unknown_kind': 400,
   'validate_entity_in_tenant.dispatch_missing': 400,
-  // Step 10 §3.5 — grant_ticket_approval payload / argument problems.
-  'grant_ticket_approval.invalid_target_entity_type': 400,
-  'grant_ticket_approval.tenant_mismatch': 400,
-  'grant_ticket_approval.invalid_response': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -84,9 +80,6 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'update_entity_combined.not_found': 404,
   'sla.policy_not_found': 404,
   'dispatch_child_work_order.parent_not_found': 404,
-  // Step 10 §3.5 — approval or its target ticket no longer exists.
-  'grant_ticket_approval.approval_not_found': 404,
-  'grant_ticket_approval.ticket_not_found': 404,
   // Codex-S8-I2 (F-IMP-2). Every per-kind miss from
   // validate_entity_in_tenant is a "the foreign-tenant ref doesn't exist
   // in this tenant" condition — 404 is the right shape, matching the
@@ -113,10 +106,6 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
   'dispatch_child_work_order.parent_not_dispatchable': 409,
-  // Step 10 §3.5 — CAS missed despite advisory lock (defensive; bug
-  // path, not a user race). Surface as 409 to match the existing
-  // approval.cas_lost convention.
-  'grant_ticket_approval.cas_lost': 409,
 
   // ── 422 unprocessable entity ─────────────────────────────────────
   // Tenant-FK validation helper (00317) raises 42501 on first

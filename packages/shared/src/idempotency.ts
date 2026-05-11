@@ -200,39 +200,3 @@ export function buildWorkflowUpdateTicketIdempotencyKey(
 ): string {
   return `${WORKFLOW_UPDATE_TICKET_IDEMPOTENCY_KEY_PREFIX}:${workflowInstanceId}:${nodeId}:${entityId}`;
 }
-
-/**
- * Prefix for the `grant_ticket_approval` RPC's outer idempotency key.
- * Namespaced separately from `patch` / `dispatch` / `workflow` so a
- * concurrent grant retry can never collide with a controller PATCH on
- * the same ticket or a workflow-engine call on the same entity.
- *
- * Citations:
- *   - 00343_grant_ticket_approval_rpc.sql (the RPC accepting any text key)
- *   - spec §3.5 (docs/follow-ups/b2-survey-and-design.md lines 2238-2326)
- *   - apps/api/src/modules/approval/approval.service.ts — the only caller
- */
-export const APPROVAL_GRANT_IDEMPOTENCY_KEY_PREFIX = 'approval:grant';
-
-/**
- * Build the outer idempotency key for `grant_ticket_approval`. Shape:
- *   `approval:grant:<approval_id>:<client_request_id>`
- *
- * **NO actor in the key.** F-CRIT-2 / plan-C1 (Step 6 lesson): tying the
- * key to actor identity creates a doubling hazard — same approval +
- * same clientRequestId + two different actors (e.g. a delegated approver
- * retried after a network blip) would yield two command_operations rows
- * and double-process the grant. The clientRequestId is the dedup
- * boundary; the actor is recorded on the audit row, not in the key.
- *
- * `clientRequestId` is required (controller's RequireClientRequestIdGuard
- * enforces this at the HTTP boundary). See B.2.A interim retro
- * F-CRIT-1 for the rationale on hard-failing rather than minting a
- * fallback uuid in the service.
- */
-export function buildApprovalGrantIdempotencyKey(
-  approvalId: string,
-  clientRequestId: string,
-): string {
-  return `${APPROVAL_GRANT_IDEMPOTENCY_KEY_PREFIX}:${approvalId}:${clientRequestId}`;
-}

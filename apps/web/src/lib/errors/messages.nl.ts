@@ -652,30 +652,6 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'approval.invalid_decision': {
     title: 'Kon niet goedkeuren — beslissing moet goedgekeurd of afgewezen zijn',
   },
-  'grant_ticket_approval.approval_not_found': {
-    title: 'Kon niet reageren op goedkeuring',
-    detail: 'We kunnen die goedkeuring niet meer vinden — mogelijk is hij verwijderd.',
-  },
-  'grant_ticket_approval.invalid_target_entity_type': {
-    title: 'Kon niet reageren op goedkeuring',
-    detail: 'Deze goedkeuring hoort bij een ander soort doel en gebruikt een ander pad.',
-  },
-  'grant_ticket_approval.tenant_mismatch': {
-    title: 'Kon niet reageren op goedkeuring',
-    detail: 'Die goedkeuring hoort niet bij deze werkruimte.',
-  },
-  'grant_ticket_approval.invalid_response': {
-    title: 'Kon niet reageren op goedkeuring',
-    detail: 'Beslissing moet goedgekeurd of afgewezen zijn.',
-  },
-  'grant_ticket_approval.ticket_not_found': {
-    title: 'Kon niet reageren op goedkeuring',
-    detail: 'De case waar deze goedkeuring bij hoort, bestaat niet meer.',
-  },
-  'grant_ticket_approval.cas_lost': {
-    title: 'Goedkeuringsstatus is gewijzigd tijdens de poging',
-    detail: 'Probeer het opnieuw.',
-  },
 
   // ─── vendor ──────────────────────────────────────────────────────────────
   'vendor.unavailable': { title: 'Leverancier niet beschikbaar' },
