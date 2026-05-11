@@ -270,6 +270,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'sla.target_missing': {
     title: "Couldn't update SLA — target not found",
   },
+  'sla.policy_not_found': {
+    title: "Couldn't update SLA",
+    detail: 'SLA policy not found in this tenant.',
+  },
 
   // ─── booking-bundles module (Phase 7.A.2.c.i) ────────────────────────────
   'bundle.forbidden': {
@@ -1462,8 +1466,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'transition_entity_status.has_open_children': { title: "Couldn't close", detail: 'This case has open work orders.' },
   'transition_entity_status.invalid_status': { title: "Couldn't update", detail: 'Invalid status.' },
   'transition_entity_status.invalid_status_category': { title: "Couldn't update", detail: 'Invalid status category.' },
-  'command_operations.payload_mismatch': { title: "Couldn't replay", detail: 'A different request reused this idempotency key.' },
+  'command_operations.payload_mismatch': { title: 'Duplicate request with different payload.', detail: 'Your client reused the same X-Client-Request-Id header for two different requests. Generate a fresh request id and retry.' },
   'command_operations.unexpected_state': { title: "Couldn't replay", detail: 'Unexpected state on the previous attempt.' },
+  'command_operations.client_request_id_required': { title: "Couldn't update", detail: 'This request is missing the X-Client-Request-Id header.' },
   'work_order.parent_terminal': { title: "Couldn't add to a closed case" },
   // B.2.A §3.2 set_entity_assignment RPC (00326)
   'set_entity_assignment.unknown_kind': { title: "Couldn't update", detail: 'Unknown entity kind.' },

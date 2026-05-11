@@ -1,6 +1,7 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
   assertTenantOwned,
@@ -1122,6 +1123,21 @@ export class TicketService {
     }
 
     if (Object.keys(patches).length > 0) {
+      // F-CRIT-1 (plan-review 2026-05-11): explicit defense-in-depth.
+      // The controller's RequireClientRequestIdGuard (I1) normally
+      // ensures clientRequestId is present at the HTTP boundary, but
+      // internal callers that bypass the controller (e.g. the future
+      // workflow-engine cutover in Step 9) would silently get a fresh
+      // randomUUID per call — a real idempotency footgun where "retry"
+      // mints a new key. Reject explicitly here so any non-HTTP caller
+      // surfaces the missing-id error instead of corrupting replay
+      // semantics.
+      if (!clientRequestId) {
+        throw AppErrors.badRequest(
+          'command_operations.client_request_id_required',
+          'PATCH /tickets/:id requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+        );
+      }
       const { error } = await this.supabase.admin.rpc('update_entity_combined', {
         p_entity_kind: 'case',
         p_entity_id: id,
@@ -1190,8 +1206,12 @@ export class TicketService {
     dto: UpdateTicketDto,
   ): Record<string, unknown> {
     const patches: Record<string, unknown> = {};
-    const has = (k: keyof UpdateTicketDto) =>
-      Object.prototype.hasOwnProperty.call(dto, k);
+    // F-IMP-2 (plan-review 2026-05-11): align with WO side — presence
+    // requires hasOwnProperty AND value !== undefined. Without the
+    // undefined guard a caller passing `{ title: undefined }` would
+    // populate metadata.title=undefined and trigger the metadata
+    // branch on a no-op.
+    const has = (k: keyof UpdateTicketDto) => hasOwnDefined(dto, k);
 
     // ── Status branch — top-level keys (00333:182, 277-303).
     if (has('status')) patches.status = dto.status;
@@ -1243,18 +1263,20 @@ export class TicketService {
    * Mint the outer idempotency key for `update_entity_combined` per spec
    * line 1892:
    *   `patch:<kind>:<id>:<client_request_id>`
-   * When `clientRequestId` is absent (legacy callers / SYSTEM_ACTOR
-   * paths that haven't been wired through the controller yet), fall
-   * back to a fresh randomUUID so every call earns its own idempotency
-   * row — better than colliding multiple distinct PATCHes under one key.
+   *
+   * F-CRIT-1 (plan-review 2026-05-11): the caller (update()) guards
+   * against a missing clientRequestId by throwing
+   * `command_operations.client_request_id_required` BEFORE this helper
+   * is reached. The legacy randomUUID() fallback has been removed —
+   * a fresh UUID per call was a real footgun (every retry mints a new
+   * key → idempotency is meaningless).
    */
   private combinedIdempotencyKey(
     kind: 'case' | 'work_order',
     entityId: string,
-    clientRequestId: string | undefined,
+    clientRequestId: string,
   ): string {
-    const seed = clientRequestId ?? randomUUID();
-    return `patch:${kind}:${entityId}:${seed}`;
+    return `patch:${kind}:${entityId}:${clientRequestId}`;
   }
 
   /**

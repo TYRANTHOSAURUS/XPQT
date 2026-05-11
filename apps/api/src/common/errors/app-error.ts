@@ -117,13 +117,13 @@ export const AppErrors = {
    */
   validationFailed: (
     code: KnownErrorCode,
-    opts?: { detail?: string; fields?: AppErrorField[] },
+    opts?: { detail?: string; fields?: AppErrorField[]; cause?: unknown },
   ): AppError => new AppError(code, 400, opts),
 
   /** 409 conflict — pass `serverVersion`/`clientVersion` for stale-write conflicts. */
   conflict: (
     code: KnownErrorCode,
-    opts?: { detail?: string; serverVersion?: string; clientVersion?: string },
+    opts?: { detail?: string; serverVersion?: string; clientVersion?: string; cause?: unknown },
   ): AppError => new AppError(code, 409, opts),
 
   /** 429 rate-limit — `retryAfter` is mandatory for the renderer's countdown UI. */
@@ -166,8 +166,11 @@ export const AppErrors = {
    * standard `<entity>.not_found` case. Use this when the not-found surface
    * has a more specific reason that the client renderer should disambiguate.
    */
-  notFoundWithCode: (code: KnownErrorCode, detail?: string): AppError =>
-    new AppError(code, 404, { detail }),
+  notFoundWithCode: (
+    code: KnownErrorCode,
+    detail?: string,
+    opts?: { cause?: unknown },
+  ): AppError => new AppError(code, 404, { detail, cause: opts?.cause }),
 } as const;
 
 /**

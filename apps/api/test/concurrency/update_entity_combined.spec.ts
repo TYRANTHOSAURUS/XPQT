@@ -55,23 +55,26 @@
  *      payload + outer key twice. Second call hits the outer cache;
  *      no additional rows in sla_timers / ticket_activities /
  *      domain_events / command_operations.
- *  14. Status + SLA combined-call ordering (v3 / codex F11). Send
- *      `kind='case'` with patches.status_category='waiting' +
- *      waiting_reason='vendor' + patches.sla = {sla_id, timers} +
- *      a pre-existing SLA + timers. Document the spec-ordered
- *      interaction:
+ *  14. Status + SLA combined-call ordering (v3 / codex F11; updated
+ *      for v4 post-sla hook). Send `kind='case'` with
+ *      patches.status_category='waiting' + waiting_reason='vendor' +
+ *      patches.sla = {sla_id, timers} + a pre-existing SLA + timers.
+ *      Document the spec-ordered interaction:
  *        a. Status branch fires first → sets recompute_pending=true on
  *           the existing active timers + emits
- *           outbox.events 'sla.timer_recompute_required' (00325:289-313).
+ *           outbox.events 'sla.timer_recompute_required'
+ *           action='pause' (00325:289-313).
  *        b. SLA branch fires second → stops the existing timers
  *           (stopped_reason='sla_changed') and inserts fresh timers
- *           with recompute_pending=false (00330).
- *      End state: two stopped timers + two active fresh timers; one
- *      wasted outbox 'sla.timer_recompute_required' (the worker
- *      queries `recompute_pending=true AND stopped_at IS NULL` and
- *      finds none, no-ops — see b2-followups.md C3). Both branches
- *      appear in branches_applied; both ticket_activities rows
- *      present (status_changed + sla_changed).
+ *           with recompute_pending=false (00330:273).
+ *        c. v4 post-sla hook fires → bumps recompute_pending=true on
+ *           the fresh timers + emits a second
+ *           'sla.timer_recompute_required' with
+ *           action='post_sla_install_in_waiting' (00334).
+ *      End state: two stopped timers (slaA) + two active fresh timers
+ *      (slaB) with recompute_pending=true; TWO outbox emits. Both
+ *      branches appear in branches_applied; both ticket_activities
+ *      rows present (status_changed + sla_changed).
  *  15. SLA branch nested idempotency / inner-cache reuse (v3 / codex
  *      F11). Run the orchestrator once with patches.sla. Then call
  *      update_entity_sla DIRECTLY with the SAME inner key
@@ -82,6 +85,20 @@
  *      reuse semantics + verifies the F1 sentinel prevents accidental
  *      collision (any sibling caller minting `__combined__:`-prefixed
  *      keys is by convention reserved to the orchestrator).
+ *
+ *  16. Status+SLA post-install recompute hook (v4 / plan-review C2).
+ *      Send `kind='case'` with patches.status_category='waiting' +
+ *      waiting_reason='vendor' + patches.sla = {sla_id, timers}.
+ *      Without the v4 hook, the fresh timers would have
+ *      recompute_pending=false (00330:273) — silently accumulating
+ *      SLA time during a paused-by-policy waiting state. With v4,
+ *      the orchestrator re-reads post-call status and bumps
+ *      recompute_pending=true on the fresh timers + emits one
+ *      additional outbox event with action='post_sla_install_in_waiting'.
+ *      Asserts: branches_applied = ['status','sla'], fresh active
+ *      timers under slaB with recompute_pending=true, outbox has
+ *      two 'sla.timer_recompute_required' rows
+ *      (actions = ['pause','post_sla_install_in_waiting']).
  *
  * Sentinel for inner idempotency keys (F1): `__combined__:`. Direct
  * callers of transition_entity_status / set_entity_assignment /
@@ -1303,7 +1320,7 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  it('scenario 14: status + sla combined call — branches commit in spec order; documents wasted outbox emit (C3)', async () => {
+  it('scenario 14: status + sla combined call — branches commit in spec order; v4 post-sla hook bumps recompute_pending on fresh timers', async () => {
     // codex F11 — exercises the spec-ordered status→sla interaction.
     //
     // End-state we assert:
@@ -1403,7 +1420,11 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
       expect(row.stopped_reason).toBe('sla_changed');
     }
 
-    // New timers (slaB) — two active rows, recompute_pending=false.
+    // New timers (slaB) — two active rows. v4 / plan-review C2:
+    // recompute_pending=true (was false under v3). Scenario 16
+    // exercises this path with explicit assertion + outbox shape;
+    // here we only assert the v4 contract so this scenario's mid-
+    // body checks stay accurate.
     const newTimers = await pool.query(
       `select timer_type, sla_policy_id, recompute_pending, paused
          from public.sla_timers
@@ -1414,7 +1435,7 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
     );
     expect(newTimers.rowCount).toBe(2);
     expect(newTimers.rows.every((r) => r.sla_policy_id === slaB.slaId)).toBe(true);
-    expect(newTimers.rows.every((r) => r.recompute_pending === false)).toBe(true);
+    expect(newTimers.rows.every((r) => r.recompute_pending === true)).toBe(true);
     expect(newTimers.rows.every((r) => r.paused === false)).toBe(true);
 
     // tickets row reflects slaB.
@@ -1446,15 +1467,20 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
     expect(eventCount.sla_changed).toBe(2);
     expect(eventCount.status_changed).toBe(1);
 
-    // Outbox: status branch emitted one 'sla.timer_recompute_required'
-    // during the combined call. Documents the wasted emit (C3).
+    // Outbox v4: TWO 'sla.timer_recompute_required' rows from this
+    // combined call. The status branch (00325:296-313) emits one
+    // (action='pause' since waiting_reason='vendor' is in slaA's
+    // default pause_on_waiting_reasons). The v4 post-sla hook emits
+    // one more (action='post_sla_install_in_waiting'). v3 only
+    // emitted the first; v4 fixes by ensuring fresh timers get
+    // re-evaluated under the new policy.
     const outboxAfter = (await pool.query(
       `select count(*)::int as n from outbox.events
         where tenant_id = $1 and aggregate_id = $2
           and event_type = 'sla.timer_recompute_required'`,
       [base.tenantId, ticketId],
     )).rows[0].n as number;
-    expect(outboxAfter).toBe(outboxBefore + 1);
+    expect(outboxAfter).toBe(outboxBefore + 2);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -1558,6 +1584,132 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
       )).rows[0].n as number,
     };
     expect(after).toEqual(snapshot);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 16: status+sla post-install recompute hook — v4 fix for plan-review C2', async () => {
+    // Plan-review C2 (00334 v4): when a PATCH carries BOTH a status
+    // transition to 'waiting' AND an `sla` branch (install or swap),
+    // v3 left the fresh timers with recompute_pending=false (00330:273)
+    // even though the entity is now in waiting state under a policy
+    // whose pause_on_waiting_reasons matches the waiting_reason.
+    //
+    // v4 fixes this by re-reading the post-call status AFTER both
+    // branches commit, and if status_category='waiting' bumps
+    // recompute_pending=true on the fresh active timers + emits one
+    // additional outbox 'sla.timer_recompute_required' event with
+    // action='post_sla_install_in_waiting'.
+    //
+    // End state we assert:
+    //   • Two ACTIVE timers under slaB (post-call), both with
+    //     recompute_pending=true (set by the v4 hook).
+    //   • Both 'status' and 'sla' in branches_applied.
+    //   • Pre-existing slaA timers stopped (sla_changed).
+    //   • TWO 'sla.timer_recompute_required' outbox rows from the
+    //     combined call: one from the status branch (00325:296-313,
+    //     action='pause' since waiting_reason='vendor' is in slaA's
+    //     default pause_on_waiting_reasons) and one from the v4 hook
+    //     (action='post_sla_install_in_waiting').
+    //
+    // sla_policies defaults pause_on_waiting_reasons to
+    // ARRAY['requester','vendor','scheduled_work'] (00008:11). The
+    // seedSlaPolicy helper doesn't override that, so both slaA and
+    // slaB inherit the default — 'vendor' is a pause reason for both.
+    const base = await seedBaseFixture(pool, `comb-status-sla-v4-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const slaA = await seedSlaPolicy(pool, base.tenantId, { name: 'slaA' });
+    const slaB = await seedSlaPolicy(pool, base.tenantId, { name: 'slaB' });
+
+    // Setup: install slaA with two timers via a separate (non-combined)
+    // SLA call so the combined call has pre-existing timers to act on.
+    const setupResult = await runRpcCapture<SlaInnerResult>(
+      pool,
+      'public.update_entity_sla',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-status-sla-v4-setup-${ticketId}`,
+        { sla_id: slaA.slaId, timers: buildTimersPayload(slaA) },
+      ],
+    );
+    expect(setupResult.kind).toBe('ok');
+
+    // Snapshot outbox count before the combined call.
+    const outboxBefore = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxBefore).toBe(0);
+
+    // Combined call: status (waiting/vendor) + sla swap (slaA → slaB).
+    const idem = `comb-status-sla-v4-${ticketId}`;
+    const timersBPayload = buildTimersPayload(slaB);
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        {
+          status_category: 'waiting',
+          waiting_reason: 'vendor',
+          sla: { sla_id: slaB.slaId, timers: timersBPayload },
+        },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.branches_applied.sort()).toEqual(['sla', 'status'].sort());
+    expect(result.value.any_changed).toBe(true);
+
+    // v4 assertion #1: the NEW active timers (slaB) have
+    // recompute_pending=true — the v4 hook bumped them post-sla.
+    const newTimers = await pool.query(
+      `select timer_type, sla_policy_id, recompute_pending, paused, stopped_at
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null
+        order by timer_type`,
+      [base.tenantId, ticketId],
+    );
+    expect(newTimers.rowCount).toBe(2);
+    expect(newTimers.rows.every((r) => r.sla_policy_id === slaB.slaId)).toBe(true);
+    // v4 fix: was `false` under 00333 v3 — should now be true.
+    expect(newTimers.rows.every((r) => r.recompute_pending === true)).toBe(true);
+    expect(newTimers.rows.every((r) => r.paused === false)).toBe(true);
+
+    // Tickets row reflects slaB + waiting state.
+    const t = await pool.query(
+      `select status_category, waiting_reason, sla_id
+         from public.tickets where id = $1`,
+      [ticketId],
+    );
+    expect(t.rows[0].status_category).toBe('waiting');
+    expect(t.rows[0].waiting_reason).toBe('vendor');
+    expect(t.rows[0].sla_id).toBe(slaB.slaId);
+
+    // v4 assertion #2: outbox has TWO new sla.timer_recompute_required
+    // events from this combined call: one from the status branch
+    // (action='pause') + one from the v4 post-sla hook
+    // (action='post_sla_install_in_waiting').
+    const outboxRows = await pool.query(
+      `select payload->>'action' as action
+         from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'
+        order by enqueued_at`,
+      [base.tenantId, ticketId],
+    );
+    expect(outboxRows.rowCount).toBe(2);
+    const actions = outboxRows.rows.map((r) => r.action).sort();
+    expect(actions).toEqual(['pause', 'post_sla_install_in_waiting'].sort());
   });
 });
 

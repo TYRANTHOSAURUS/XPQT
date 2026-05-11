@@ -53,13 +53,27 @@ interface PostgrestErrorLike {
  * 400 (validation/domain error). 404/409/500 must be explicit.
  */
 const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
+  // ── 400 bad_request ──────────────────────────────────────────────
+  // Defense-in-depth — controller's RequireClientRequestIdGuard normally
+  // returns 400 before we reach the service. This entry is for the TS-
+  // layer guard at TicketService.update + WorkOrderService.update which
+  // catches internal callers bypassing the controller.
+  'command_operations.client_request_id_required': 400,
+
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
   'set_entity_assignment.not_found': 404,
   'update_entity_sla.not_found': 404,
   'update_entity_combined.not_found': 404,
+  'sla.policy_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
+  // payload_mismatch: the client reused the same X-Client-Request-Id
+  // for two different payloads. From the server's perspective the
+  // resource is in a state that conflicts with the request — 409
+  // Conflict is the correct shape. (Plan-review F-IMP-5 originally
+  // proposed 500 but that implies a server bug; this is unambiguously
+  // a client mistake — the message copy makes that explicit.)
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
 
@@ -79,7 +93,10 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
  * 00333:250 etc.). Returns null when no recognisable token is present.
  */
 function extractCode(message: string): string | null {
-  const match = message.match(/^([a-z_][a-z0-9_]*\.[a-z0-9_]+)/i);
+  // No `/i` flag: registered codes are lowercase by convention (see
+  // KNOWN_ERROR_CODES). Dropping the flag tightens the match to the
+  // exact shape RPCs raise.
+  const match = message.match(/^([a-z_][a-z0-9_]*\.[a-z0-9_]+)/);
   return match?.[1] ?? null;
 }
 
@@ -105,8 +122,12 @@ export function mapRpcErrorToAppError(
   if (!candidate || !KNOWN_ERROR_CODES.has(candidate as KnownErrorCode)) {
     // Defence-in-depth: filter normalises unregistered codes to
     // `unknown.server_error`. Surface the raw RAISE message as `detail` so
-    // ops can triage from logs.
-    return AppErrors.server(fallback, { detail: message || undefined });
+    // ops can triage from logs. Cause carries the original PostgrestError
+    // so AppError's downstream logging captures it.
+    return AppErrors.server(fallback, {
+      detail: message || undefined,
+      cause: error,
+    });
   }
 
   const code = candidate as KnownErrorCode;
@@ -118,14 +139,14 @@ export function mapRpcErrorToAppError(
       // notFoundWithCode rather than notFound(entity, id) because the entity
       // alias on the wire is `<namespace>.<specifier>`, not the standard
       // `<entity>.not_found` shape.
-      return AppErrors.notFoundWithCode(code, detail);
+      return AppErrors.notFoundWithCode(code, detail, { cause: error });
     case 409:
-      return AppErrors.conflict(code, { detail });
+      return AppErrors.conflict(code, { detail, cause: error });
     case 500:
-      return AppErrors.server(code, { detail });
+      return AppErrors.server(code, { detail, cause: error });
     case 400:
     default:
-      return AppErrors.validationFailed(code, { detail });
+      return AppErrors.validationFailed(code, { detail, cause: error });
   }
 }
 

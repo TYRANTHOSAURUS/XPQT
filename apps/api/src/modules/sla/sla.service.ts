@@ -164,7 +164,20 @@ export class SlaService {
       .eq('id', slaPolicyId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (!policy) return [];
+    if (!policy) {
+      // F-IMP-4 (plan-review 2026-05-11): explicit 404 instead of
+      // returning []. Previously a missing policy returned an empty
+      // timers array and let the RPC raise
+      // `update_entity_sla.timers_required` — which maps to 500 (a
+      // programmer-error code: TS skipped its responsibility to
+      // compute timers when sla_id is non-null). The actual problem
+      // is "policy does not exist in tenant" → 404 is the right
+      // surface, with a registered code the renderer knows.
+      throw AppErrors.notFoundWithCode(
+        'sla.policy_not_found',
+        `SLA policy ${slaPolicyId} not found in tenant.`,
+      );
+    }
 
     const calendar = await this.loadCalendar(
       (policy.business_hours_calendar_id as string | null) ?? null,

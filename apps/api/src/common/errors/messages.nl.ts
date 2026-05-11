@@ -270,6 +270,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'sla.target_missing': {
     title: 'Kon SLA niet bijwerken — doel niet gevonden',
   },
+  'sla.policy_not_found': {
+    title: 'Kon SLA niet bijwerken',
+    detail: 'SLA-beleid niet gevonden in deze tenant.',
+  },
 
   // ─── booking-bundles module (Phase 7.A.2.c.i) ────────────────────────────
   'bundle.forbidden': {
@@ -1462,8 +1466,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'transition_entity_status.has_open_children': { title: 'Kon niet sluiten', detail: 'Deze case heeft openstaande werkbonnen.' },
   'transition_entity_status.invalid_status': { title: 'Kon niet bijwerken', detail: 'Ongeldige status.' },
   'transition_entity_status.invalid_status_category': { title: 'Kon niet bijwerken', detail: 'Ongeldige statuscategorie.' },
-  'command_operations.payload_mismatch': { title: 'Kon niet herhalen', detail: 'Een andere aanvraag hergebruikte deze idempotency-sleutel.' },
+  'command_operations.payload_mismatch': { title: 'Dubbel verzoek met andere payload.', detail: 'Je client gebruikte dezelfde X-Client-Request-Id header voor twee verschillende verzoeken. Genereer een nieuwe request-id en probeer opnieuw.' },
   'command_operations.unexpected_state': { title: 'Kon niet herhalen', detail: 'Onverwachte status van de vorige poging.' },
+  'command_operations.client_request_id_required': { title: 'Kon niet bijwerken', detail: 'Verzoek ontbreekt de X-Client-Request-Id header.' },
   'work_order.parent_terminal': { title: 'Kon niet toevoegen aan gesloten case' },
   // B.2.A §3.2 set_entity_assignment RPC (00326)
   'set_entity_assignment.unknown_kind': { title: 'Kon niet bijwerken', detail: 'Onbekend entiteitstype.' },

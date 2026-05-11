@@ -3,7 +3,6 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -13,6 +12,7 @@ import {
 import { SlaService } from '../sla/sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { hasOwnDefined } from '../../common/has-own-defined';
 
 export const SYSTEM_ACTOR = '__system__';
 
@@ -255,6 +255,13 @@ export class WorkOrderService {
     // ──────────────────────────────────────────────────────────────────
     const tenant = TenantContext.current();
 
+    // F-IMP-3 (plan-review 2026-05-11): build a normalized clone up-front
+    // so subsequent normalisation steps (plan-clear gesture + cost rounding)
+    // operate on `dtoNormalized` rather than mutating the caller's input
+    // dto. Previously the plan-clear branch mutated `dto.planned_duration_minutes
+    // = null` directly, which silently rewrote the caller's object.
+    const dtoNormalized: UpdateWorkOrderDto = { ...dto };
+
     if (hasPlan) {
       let currentStart: string | null = null;
       let currentDuration: number | null = null;
@@ -292,13 +299,14 @@ export class WorkOrderService {
         finalDuration = dto.planned_duration_minutes ?? null;
       } else if (present('planned_start_at') && finalStart === null) {
         finalDuration = null;
-        // Override dto to send an explicit null so the RPC's plan branch
-        // clears the column rather than preserving the old duration.
-        // The RPC's UPDATE uses `case when v_plan_has_duration_key then
-        // ... else planned_duration_minutes end` (00333:462); without
-        // marking the key present, an explicit start=null patch with no
-        // duration key would leave the prior duration on the row.
-        (dto as UpdateWorkOrderDto).planned_duration_minutes = null;
+        // F-IMP-3 fix: write the explicit-null clear onto the clone,
+        // not the caller's input. The RPC's UPDATE uses
+        // `case when v_plan_has_duration_key then ... else
+        // planned_duration_minutes end` (00333:462); without marking
+        // the key present on the patch we send, an explicit start=null
+        // patch with no duration key would leave the prior duration
+        // on the row.
+        dtoNormalized.planned_duration_minutes = null;
       } else {
         finalDuration = currentDuration;
       }
@@ -314,7 +322,6 @@ export class WorkOrderService {
     // rounds (00333:542) but normalising at the TS boundary stabilises
     // the orchestrator's payload_hash across replays. Mirrors the case-
     // side normalisation at ticket.service.ts:1082-1088.
-    const dtoNormalized: UpdateWorkOrderDto = { ...dto };
     if (
       Object.prototype.hasOwnProperty.call(dto, 'cost') &&
       typeof dto.cost === 'number' &&
@@ -348,6 +355,22 @@ export class WorkOrderService {
       { hasSla, hasPlan, hasStatus, hasPriority, hasAssignment, hasMetadata },
     );
 
+    // F-CRIT-1 (plan-review 2026-05-11): explicit defense-in-depth.
+    // The controller's RequireClientRequestIdGuard (I1) normally
+    // ensures clientRequestId is present at the HTTP boundary, but
+    // internal callers that bypass the controller (e.g. the future
+    // workflow-engine cutover in Step 9) would silently get a fresh
+    // randomUUID per call — a real idempotency footgun where "retry"
+    // mints a new key. Reject explicitly here so any non-HTTP caller
+    // surfaces the missing-id error instead of corrupting replay
+    // semantics.
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'PATCH /work-orders/:id requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+
     const { error: rpcErr } = await this.supabase.admin.rpc(
       'update_entity_combined',
       {
@@ -373,10 +396,13 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw AppErrors.forbidden(
-        'work_order.no_longer_accessible',
-        'Work order no longer accessible',
-      );
+      // F-IMP-1 (plan-review 2026-05-11): not `forbidden`. The RPC
+      // committed under service_role + tenant_id matches — a null
+      // refetch means the row was deleted concurrently or the
+      // PostgREST cache is stale. `notFound` is the correct shape.
+      // Previously this threw `forbidden('work_order.no_longer_accessible')`
+      // which misleadingly suggested a permission failure.
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     return refreshed as WorkOrderRow;
   }
@@ -406,9 +432,10 @@ export class WorkOrderService {
     },
   ): Promise<Record<string, unknown>> {
     const patches: Record<string, unknown> = {};
-    const has = (k: keyof UpdateWorkOrderDto) =>
-      Object.prototype.hasOwnProperty.call(dto, k) &&
-      (dto as Record<string, unknown>)[k] !== undefined;
+    // F-IMP-2 (plan-review 2026-05-11): canonical presence helper used
+    // by both case-side + WO-side payload builders so semantics agree
+    // by construction.
+    const has = (k: keyof UpdateWorkOrderDto) => hasOwnDefined(dto, k);
 
     // Status branch (00333:182, 277-303).
     if (flags.hasStatus) {
@@ -476,16 +503,20 @@ export class WorkOrderService {
 
   /**
    * Mint the outer idempotency key for `update_entity_combined` per spec
-   * line 1892. Falls back to a fresh randomUUID when clientRequestId is
-   * absent (SYSTEM_ACTOR / legacy callers); collision-free per call so
-   * the RPC's command_operations cache never serves a stale result.
+   * line 1892.
+   *
+   * F-CRIT-1 (plan-review 2026-05-11): the caller (update()) guards
+   * against a missing clientRequestId by throwing
+   * `command_operations.client_request_id_required` BEFORE this helper
+   * is reached. The legacy randomUUID() fallback has been removed — a
+   * fresh UUID per call was a real footgun (every retry mints a new
+   * key → idempotency is meaningless).
    */
   private combinedIdempotencyKey(
     workOrderId: string,
-    clientRequestId: string | undefined,
+    clientRequestId: string,
   ): string {
-    const seed = clientRequestId ?? randomUUID();
-    return `patch:work_order:${workOrderId}:${seed}`;
+    return `patch:work_order:${workOrderId}:${clientRequestId}`;
   }
 
   /**

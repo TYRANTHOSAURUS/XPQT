@@ -575,6 +575,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Controleer de drempelwaarden en probeer het opnieuw.',
   },
   'sla.target_missing': { title: 'Kon SLA niet bijwerken — doel niet gevonden' },
+  'sla.policy_not_found': {
+    title: 'Kon SLA niet bijwerken',
+    detail: 'SLA-beleid niet gevonden in deze tenant.',
+  },
   'order.line_invalid': { title: 'Kon niet toevoegen — ongeldige regel' },
 
   // ─── reference / fk ──────────────────────────────────────────────────────
@@ -1342,12 +1346,16 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Ongeldige statuscategorie.',
   },
   'command_operations.payload_mismatch': {
-    title: 'Kon niet herhalen',
-    detail: 'Een andere aanvraag hergebruikte deze idempotency-sleutel.',
+    title: 'Dubbel verzoek met andere payload.',
+    detail: 'Je client gebruikte dezelfde X-Client-Request-Id header voor twee verschillende verzoeken. Genereer een nieuwe request-id en probeer opnieuw.',
   },
   'command_operations.unexpected_state': {
     title: 'Kon niet herhalen',
     detail: 'Onverwachte status van de vorige poging.',
+  },
+  'command_operations.client_request_id_required': {
+    title: 'Kon niet bijwerken',
+    detail: 'Verzoek ontbreekt de X-Client-Request-Id header.',
   },
   'work_order.parent_terminal': { title: 'Kon niet toevoegen aan gesloten case' },
 

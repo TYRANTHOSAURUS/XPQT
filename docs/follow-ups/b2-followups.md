@@ -43,3 +43,45 @@ were intentionally not folded into v2 (00332) or v3 (00333):
   future v-N of a sibling RPC removes the key, the orchestrator
   silently treats it as noop. Low risk (sibling RPCs are battle-
   tested); add an assertion when next touching the file.
+
+## §3.0 update_entity_combined — Commit B (controller cutover) review-deferred items
+
+Items surfaced in the post-Commit-B self full-review (2026-05-11) that
+were intentionally not folded into the Commit-B remediation pass
+(00334 v4 + TS fixes):
+
+- **Workflow engine bypass (plan-review C3, 2026-05-11).** The
+  workflow engine's `assign` node at `workflow-engine.service.ts:273-278`
+  and `update_ticket` node at `:362-367` write to `tickets` via direct
+  `.from('tickets').update(...)` calls, bypassing §3.0 and the sub-RPCs.
+  Spec lines 1870-1873 explicitly say workflow-engine `assign` MUST go
+  through §3.2 `set_entity_assignment`. This is Step 9 in the B.2.A
+  roadmap. Cutover happens there; until then §3.0 is the ONLY HTTP
+  write path, not the only write path absolutely.
+
+- **Case-side satisfaction_rating + satisfaction_comment atomicity
+  gap (plan-review I4, 2026-05-11).** These fields are not in the
+  metadata branch of §3.0 RPC; case-side update() preserves the API
+  surface via a direct `.from('tickets').update({satisfaction_rating,
+  satisfaction_comment})` call AFTER the orchestrator commits. This
+  means satisfaction write can succeed while RPC fails (or vice
+  versa) — no audit row, no idempotency. Fix is to fold these into
+  the metadata branch of a future orchestrator version OR accept the
+  gap and document it on the satisfaction-survey workflow page. Not
+  P0 because satisfaction submissions are infrequent + non-critical
+  for SLA correctness.
+
+- **clientRequestId un-underscoring consistency (plan-review I1,
+  2026-05-11).** Commit B un-underscored 2 of 8 Step-2 params (the
+  PATCH paths). The other 6 (create / dispatch / reassign /
+  reclassify / portal-tickets / approvals) stay underscored awaiting
+  their respective §3.x cutovers. Mixed naming convention is
+  intentional; each future cutover un-underscores its own param.
+
+- **Refetch-after-RPC stale-read window (plan-review I2,
+  2026-05-11).** Both PATCH handlers do RPC then refetch via
+  separate .select('*'). Between RPC commit and refetch, another
+  writer can mutate the row. Mitigation path: have the orchestrator
+  return the full updated row in cached_result (currently it returns
+  only branch-specific subset). Defer to a 00335+ migration alongside
+  Step 7 (smoke probe extension).

@@ -596,6 +596,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     detail: 'Check the threshold values and try again.',
   },
   'sla.target_missing': { title: "Couldn't update SLA — target not found" },
+  'sla.policy_not_found': {
+    title: "Couldn't update SLA",
+    detail: 'SLA policy not found in this tenant.',
+  },
   'order.line_invalid': { title: "Couldn't add — invalid line" },
 
   // ─── reference / fk ──────────────────────────────────────────────────────
@@ -1363,12 +1367,16 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     detail: 'Invalid status category.',
   },
   'command_operations.payload_mismatch': {
-    title: "Couldn't replay",
-    detail: 'A different request reused this idempotency key.',
+    title: 'Duplicate request with different payload.',
+    detail: 'Your client reused the same X-Client-Request-Id header for two different requests. Generate a fresh request id and retry.',
   },
   'command_operations.unexpected_state': {
     title: "Couldn't replay",
     detail: 'Unexpected state on the previous attempt.',
+  },
+  'command_operations.client_request_id_required': {
+    title: "Couldn't update",
+    detail: 'This request is missing the X-Client-Request-Id header.',
   },
   'work_order.parent_terminal': { title: "Couldn't add to a closed case" },
 

@@ -434,6 +434,7 @@ export type KnownErrorCode =
   | 'transition_entity_status.invalid_status_category'
   | 'command_operations.payload_mismatch'
   | 'command_operations.unexpected_state'
+  | 'command_operations.client_request_id_required'
   | 'work_order.parent_terminal'
 
   // ─── B.2.A §3.2 set_entity_assignment RPC (00326) ────────────────────────
@@ -446,6 +447,7 @@ export type KnownErrorCode =
   | 'update_entity_sla.not_found'
   | 'update_entity_sla.timers_required'
   | 'update_entity_sla.sla_id_required'
+  | 'sla.policy_not_found'
 
   // ─── B.2.A §3.0 update_entity_combined RPC (00331) ───────────────────────
   | 'update_entity_combined.unknown_kind'
@@ -1146,6 +1148,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'transition_entity_status.invalid_status_category',
   'command_operations.payload_mismatch',
   'command_operations.unexpected_state',
+  'command_operations.client_request_id_required',
   'work_order.parent_terminal',
   'set_entity_assignment.unknown_kind',
   'set_entity_assignment.not_found',
@@ -1154,6 +1157,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_sla.not_found',
   'update_entity_sla.timers_required',
   'update_entity_sla.sla_id_required',
+  'sla.policy_not_found',
   'update_entity_combined.unknown_kind',
   'update_entity_combined.not_found',
   'update_entity_combined.invalid_patches',
