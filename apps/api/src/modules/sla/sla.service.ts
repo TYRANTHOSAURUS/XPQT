@@ -189,14 +189,28 @@ export class SlaService {
     // which maps to 500 (a programmer-error code). The real problem is
     // user/admin configuration — "this policy has no SLA targets" — and
     // surfaces best as a 400 with a registered code the renderer knows.
-    if (
-      (policy.response_time_minutes as number | null | undefined) == null &&
-      (policy.resolution_time_minutes as number | null | undefined) == null
-    ) {
-      throw AppErrors.badRequest(
-        'sla.policy_has_no_targets',
-        `SLA policy ${slaPolicyId} has no response_time_minutes or resolution_time_minutes configured. Set at least one before assigning it to an entity.`,
-      );
+    // codex final-pass (2026-05-11): treat 0 and non-positive as "no target"
+    // alongside null. The truthiness checks at the timer-emit sites below
+    // already skip 0, so admitting all-zero / all-null / mixed-zero-and-null
+    // policies past this guard produces an empty timers[] and falls through
+    // to the RPC's `update_entity_sla.timers_required` raise (500). Reject
+    // up front with the registered 400 code instead. Schema permits 0
+    // (00008_sla_policies.sql:8); sla-policy.controller.ts:80 accepts the
+    // DTO blindly — the validation responsibility lands here.
+    //
+    // No `detail` argument on the throw: detail-override leaks the policy
+    // UUID and DB column names past `normalize.ts:181` precedence and
+    // overrides the curated registry copy in messages.{en,nl}.ts. The
+    // registered code is the user-facing contract; the original policy id
+    // is captured via the call site's logging context, not the wire.
+    const responseValid =
+      typeof policy.response_time_minutes === 'number' &&
+      policy.response_time_minutes > 0;
+    const resolutionValid =
+      typeof policy.resolution_time_minutes === 'number' &&
+      policy.resolution_time_minutes > 0;
+    if (!responseValid && !resolutionValid) {
+      throw AppErrors.badRequest('sla.policy_has_no_targets');
     }
 
     const calendar = await this.loadCalendar(

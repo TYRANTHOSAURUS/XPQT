@@ -295,17 +295,17 @@ Resolution runs after routing fills in assignees, so routing-derived assignees p
 
 This is intentional and matches standard ITSM behavior: SLA is a promise to the requester (for cases) or to the service desk (for children), not to the specific assignee. Shuffling ownership does not reset the clock.
 
-### WorkOrderService surface — single PATCH endpoint
+### WorkOrderService surface — single PATCH endpoint backed by `update_entity_combined`
 
-Post-1c.10c, every mutating command on a work_order lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
+Post-B.2.A Step 6 (2026-05-11), every mutating command on a work_order lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
 
-Plan-reviewer P1 (post-Slice 2): the per-field PATCH endpoints (`/sla`, `/plan`, `/status`, `/priority`, `/assignment`) were collapsed into one `PATCH /work-orders/:id` accepting a union DTO. The orchestrator dispatches per-field gates server-side and delegates to the existing per-field service methods so side effects (timer pause/resume, activity emission, no-op fast-path, refetch) are reused unchanged.
+The `WorkOrderService.update()` (and `TicketService.update()`) orchestrator no longer dispatches to per-field service methods. It writes through a single PL/pgSQL RPC `update_entity_combined` (migration 00335 v5) that commits status, priority, assignment, SLA, plan, and metadata branches in **one transaction**. The pre-cutover per-field methods (`updateSla`, `setPlan`, `updateStatus`, `updatePriority`, `updateAssignment`, `updateMetadata`) and their spec files were deleted in commit `d23a9171` after grep confirmed zero production callers; `update()` is the sole multi-table-write entry point.
 
 | Endpoint | Service entry point | Notes |
 |---|---|---|
-| `PATCH /work-orders/:id` | `WorkOrderService.update(id, dto, actor)` | **Canonical command surface.** Union DTO; per-field gates dispatch internally. |
+| `PATCH /work-orders/:id` | `WorkOrderService.update(id, dto, actor, clientRequestId)` | **Canonical command surface.** Union DTO; preflight runs inline; one `update_entity_combined` RPC call commits every branch atomically. |
 | `GET /work-orders/:id/can-plan` | `WorkOrderService.canPlan(id, actor)` | Probe for the plandate gate. Used by the desk to disable affordances instead of waiting for a 403. |
-| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign(id, dto, actor)` | Audited reassignment with required `reason`. Distinct from PATCH because it writes a `routing_decisions` row. |
+| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign(id, dto, actor)` | Audited reassignment with required `reason`. **Still writes through a direct `.from('work_orders').update(...)` path** — not yet cut over to `update_entity_combined`. Slated for B.2.A Step 9. |
 
 `UpdateWorkOrderDto` accepts any subset of:
 
@@ -321,63 +321,77 @@ interface UpdateWorkOrderDto {
   assigned_team_id?: string | null;
   assigned_user_id?: string | null;
   assigned_vendor_id?: string | null;
+  title?: string;
+  description?: string | null;
+  cost?: number | null;
+  tags?: string[] | null;
+  watchers?: string[] | null;
 }
 ```
 
-Empty DTO rejects as `BadRequest`. Per-field gates dispatched inside the orchestrator:
+Empty DTO rejects as `BadRequest`. Preflight (`WorkOrderService.preflightValidateUpdate`) runs every check that could reject the write — visibility (`assertCanPlan`), per-action permissions (`sla.override` if `sla_id`; `tickets.change_priority` if `priority`; `tickets.assign` if assignment fields), tenant validation for assignees + watchers, SLA-policy reference existence (and the new positive-target guard at `sla.service.ts:192-208`), plan ISO/duration parse, priority enum, metadata shape — **before** the RPC fires. A multi-field PATCH with one bad field rejects atomically with no partial state.
 
-| Field group | Visibility gate | Permission gate (beyond visibility) | Service method delegated to |
+| Field group | Visibility gate | Permission gate (beyond visibility) | RPC patch shape |
 |---|---|---|---|
-| `sla_id` | `assertCanPlan` | `sla.override` OR `tickets.write_all` (danger:true) | `updateSla` |
-| `planned_start_at` / `planned_duration_minutes` | `assertCanPlan` | none | `setPlan` |
-| `status` / `status_category` / `waiting_reason` | `assertCanPlan` | none | `updateStatus` |
-| `priority` | `assertCanPlan` | `tickets.change_priority` OR `tickets.write_all` | `updatePriority` |
-| `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` | `updateAssignment` |
+| `sla_id` | `assertCanPlan` | `sla.override` OR `tickets.write_all` (danger:true) | `sla: { sla_id, timers? }` (TS computes `timers[]` via `SlaService.buildTimersForRpc`) |
+| `planned_start_at` / `planned_duration_minutes` | `assertCanPlan` | none | `plan: { ...keys present in DTO }` (WO-only branch) |
+| `status` / `status_category` / `waiting_reason` | `assertCanPlan` | none | top-level `status` / `status_category` / `waiting_reason` keys |
+| `priority` | `assertCanPlan` | `tickets.change_priority` OR `tickets.write_all` | top-level `priority` |
+| `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` | `assertCanPlan` | `tickets.assign` OR `tickets.write_all` | `assignment: { ...keys present in DTO }` |
+| `title` / `description` / `cost` / `tags` / `watchers` | `assertCanPlan` | none | `metadata: { ...keys present in DTO }` |
 
-Apply order is fixed: SLA → plan → status → priority → assignment. This matches the side-effect dependency order (status changes can pause/resume timers, which depend on the SLA policy being already set). Multiple fields in one call are applied **sequentially, not atomically** — a failure mid-sequence leaves earlier updates committed. Multi-field calls refetch once at the end so the response reflects every side effect.
+**Branch order inside the RPC** is fixed by spec §3.0: status → priority → assignment → sla → plan → metadata, each conditional on its key(s) being present. Status's SLA pause/resume interactions with a same-call sla branch are handled by 00334's post-SLA recompute hook (v4) gated by 00335's `timers_inserted > 0` guard (v5). Every mutation lands in one transaction or none — there's no partial-commit window.
 
-**Visibility gate ordering note.** `assertCanPlan` runs inside *each* per-field method and is therefore evaluated multiple times per multi-field call. This is intentional — it keeps the per-field methods callable directly from internal callers (cron, workflow engine, SYSTEM_ACTOR contexts) without duplicating the gate at the orchestrator. SLA's danger gate (`sla.override`), priority's `tickets.change_priority`, and assignment's `tickets.assign` only fire inside their respective branches.
+**`clientRequestId` is required** for every `update()` call. The controller's `RequireClientRequestIdGuard` (I1) enforces this at the HTTP boundary; the service layer's defense-in-depth check raises `command_operations.client_request_id_required` if internal callers (workflow engine, cron) bypass the controller. The orchestrator mints its outer idempotency key as `patch:<entity_kind>:<entity_id>:<client_request_id>` per spec line 1892, and derives nested keys for the sub-RPCs as `__combined__:<branch>:<kind>:<id>:<outer>` (the `__combined__:` sentinel is reserved — direct callers of the sub-RPCs must not use this prefix).
 
-**SYSTEM_ACTOR shortcut** bypasses every gate (per-field methods each handle this individually).
+**SYSTEM_ACTOR shortcut** still bypasses preflight visibility / permission gates for workflow / cron writes — the RPC's server-side validators enforce the same invariants regardless of actor.
 
-The per-field service methods (`updateSla`, `setPlan`, `updateStatus`, `updatePriority`, `updateAssignment`, `reassign`) remain callable directly. Internal callers (cron, workflow engine) can target a single command without going through the orchestrator. The dispatch contract is what's tested by `work-order-update.spec.ts`; per-field behavior is tested by the corresponding per-field specs (`work-order-sla-edit.spec.ts`, `work-order-set-plan.spec.ts`, etc.).
+> **Where future work-order commands go.** Add new fields to `UpdateWorkOrderDto` + extend the RPC's patch schema (and the orchestrator's branch handling) in a follow-up migration. **Do not add new PATCH endpoints to `WorkOrderController`.** The single-endpoint shape is the intentional end-state. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
 
-> **Where future work-order commands go.** Add new fields to `UpdateWorkOrderDto` + dispatch them to a new (or existing) per-field service method. **Do not add new PATCH endpoints to `WorkOrderController`.** The single-endpoint shape is the intentional end-state. Cost / tags / watchers / title / description on work_orders is the next slice — the path is to grow the union DTO, not the route table. The reverse rule also holds — case-only commands stay on TicketService, not WorkOrderService.
+### Branch specifics (now owned by the RPC)
 
-### Per-field method specifics
+Post-cutover, every branch's side-effects live inside `update_entity_combined` and its sub-RPCs (`transition_entity_status` 00325 / `set_entity_assignment` 00327 / `update_entity_sla` 00330). The notes below describe the observable contract; the canonical implementation is the SQL.
 
-`updateSla` specifics:
+**SLA branch:**
 
-- **Validation:** `slaId` must reference a real `sla_policies` row in the calling tenant (or be `null`).
-- **Side effects:** persists `sla_id` on `work_orders`, calls `SlaService.restartTimers(workOrderId, tenantId, slaId)` (stops old `sla_timers`, clears computed breach/due fields, starts fresh timers if non-null), writes a `sla_changed` system-event activity with `from_sla_id` / `to_sla_id`.
-- **No-op fast path:** if `slaId === current.sla_id`, returns the row without writing or restarting timers.
+- **Validation:** `sla_id` must reference a real `sla_policies` row in the calling tenant (or be `null`). The policy must have at least one positive `response_time_minutes` or `resolution_time_minutes` — `SlaService.buildTimersForRpc` rejects all-null / all-zero / mixed-null-and-zero policies with `sla.policy_has_no_targets` (400) before the RPC fires.
+- **Side effects:** persists `sla_id` on `work_orders`, stops old `sla_timers` (`stopped_at = now()`, `stopped_reason = 'sla_changed'`), inserts fresh rows with the TS-computed `due_at` values (`SlaService.buildTimersForRpc` uses `BusinessHoursService.addBusinessMinutes`), clears computed breach/due fields, writes a `sla_changed` system-event activity, emits a `ticket_sla_changed` domain event.
+- **No-op fast path:** same `sla_id` AND no `timers` payload → returns `noop: true, timers_inserted: 0` without writing.
 - **Visibility:** `assertCanPlan` — wider than `assertVisible('write')` because parent-case team owners must be able to act on child WOs (assignee, vendor, WO team, parent-case team, writable role operator, `tickets.write_all`).
 
-Shared invariants for all per-field methods:
+**Status branch** (`status` / `status_category` / `waiting_reason`):
 
-- **No-op fast path** — every command refetches and returns without writing if all provided fields equal the current values.
-- **Explicit `updated_at`** — the work_orders table has no auto-trigger for `updated_at` post-1c.10c (the bridge-era trigger was dropped in 00217 and never restored). Each UPDATE includes `updated_at = new Date().toISOString()`.
-- **Activity row swallow + log** — class-wide debt; the real fix is a transactional command pattern in `SlaService` + `addActivity`.
-- **Cross-tenant id validation** — `updateAssignment` and `reassign` validate that any non-null `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` belongs to the calling tenant. Defense against id smuggling — `assigned_vendor_id` has no FK and the team/user FKs don't enforce a tenant composite check.
+- Synthesizes `resolved_at = now()` when entering `status_category = 'resolved'` (only if currently null) and `closed_at = now()` when entering `'closed'`. Terminal re-entry preserves the original stamp (00325:185-210).
+- Has-open-children guard on case entries to terminal: refuses `resolved` / `closed` while any child work_order is non-terminal (raises `transition_entity_status.has_open_children`).
+- On `status_category` / `waiting_reason` transitions, sets `recompute_pending = true` on active `sla_timers` and emits `sla.timer_recompute_required` outbox event so the SLA worker recomputes business-hours `due_at`. If the same orchestrator call also carries an `sla` branch with fresh timers, the v4 post-SLA hook (00334) re-bumps `recompute_pending = true` on those fresh rows, gated by v5's `timers_inserted > 0` (00335) so the no-op fast path doesn't trigger a spurious emit.
+- Activity row: `system_event` with `metadata.event = 'status_changed'`. Domain event: emitted via outbox `ticket_status_changed` / `work_order_status_changed` (the case + WO branches differ here — case uses outbox, assignment uses `domain_events`; see 00325:349-369 vs 00327:387-410).
 
-`updateStatus` specifics:
+**Priority branch:**
 
-- DTO `{ status?, status_category?, waiting_reason? }`. Rejects an empty DTO (no fields to change) as `BadRequest`.
-- Synthesizes `resolved_at = now()` when entering `status_category = 'resolved'` (only if currently null) and `closed_at = now()` when entering `'closed'`.
-- On `status_category` / `waiting_reason` transitions, calls `SlaService.applyWaitingStateTransition` — the shared helper that the case-side `TicketService.update` also uses. It loads the SLA policy's `pause_on_waiting_reasons`, then calls `SlaService.pauseTimers` / `resumeTimers` only when the new waiting_reason actually triggers a transition into or out of the paused state.
-- Activity row: `system_event` with `metadata.event = 'status_changed'`, `previous`, `next`. Domain event: `ticket_status_changed` (same name as case-side; `entity_id` disambiguates).
+- Rejects values outside `low | medium | high | critical` at preflight; the RPC re-validates server-side as defense-in-depth.
+- **Does NOT trigger SLA recompute.** Priority change does not churn timers.
+- Activity row: `system_event` with `metadata.event = 'priority_changed'`. No domain event, no outbox emit.
 
-`updatePriority` specifics:
+**Assignment branch:**
 
-- Single-field: `{ priority }`. Rejects values outside `low | medium | high | critical`.
-- **Does NOT trigger SLA recompute.** Mirrors case-side behavior — priority change does not churn timers.
-- Activity row: `system_event` with `metadata.event = 'priority_changed'`, `previous`, `next`.
+- At least one of `assigned_team_id` / `assigned_user_id` / `assigned_vendor_id` must be in the DTO. `null` clears.
+- **Does NOT auto-promote `new → assigned` on first-time assignment** — the RPC's status-category inheritance is conservative.
+- Tenant validation of any non-null assignee runs in TS preflight (`validateAssigneesInTenant`) AND inside the RPC (`validate_assignees_in_tenant` helper 00317).
+- Activity row: `system_event` with `metadata.event = 'assignment_changed'`. Domain event: `ticket_assigned` via `domain_events.INSERT` (not outbox — 00327:387-410).
+- `set_entity_assignment` rejects `rerun_resolver: true` at the RPC layer — the TS-side reassign path handles resolver invocation explicitly.
 
-`updateAssignment` specifics:
+**Plan branch (WO-only):**
 
-- DTO `{ assigned_team_id?, assigned_user_id?, assigned_vendor_id? }`. At least one field required.
-- **Does NOT auto-promote `new → assigned` on first-time assignment.** Mirrors case-side. Use the resolver / dispatch paths when status implication is desired.
-- Activity row: `system_event` with `metadata.event = 'assignment_changed'`, per-field `previous` / `next`. Domain event: `ticket_assigned`.
+- Patches `planned_start_at` and/or `planned_duration_minutes`. Tickets have no plan columns; the orchestrator rejects `plan` for `entity_kind = 'case'` up front with `update_entity_combined.plan_not_supported_on_case`.
+- TS preflight enforces "duration requires start" (rejects a duration-only patch when current row also has no start). The RPC itself accepts partial-update semantics; the preflight closes the user-visible invariant.
+- Activity row: `system_event` with `metadata.event = 'plan_changed'`. No domain event.
+
+**Metadata branch** (`title` / `description` / `cost` / `tags` / `watchers`):
+
+- `cost` is rounded to 2 decimals in SQL (`round(x::numeric, 2)`) to match the NUMERIC(12,2) round-trip. Negative or non-finite values reject with `update_entity_combined.invalid_cost`.
+- `tags` and `watchers` accept `null` as explicit clear (matching the TS surface at `work-order.service.ts:1483-1487`). Array-of-strings shape validated.
+- Watcher tenant validation mirrors `tenant-validation.ts:271-302`: each uuid must be a `persons` row with `active = true AND anonymized_at IS NULL AND left_at IS NULL`. Duplicate uuids in the input are deduped server-side (order-preserving) before the tenant check + the row write.
+- One `metadata_changed` activity row per call carries `metadata.changes = { <field>: { previous, next }, ... }`. No domain event, no outbox emit.
 
 `reassign` specifics:
 
