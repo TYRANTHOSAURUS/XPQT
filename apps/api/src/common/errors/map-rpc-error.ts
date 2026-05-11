@@ -182,6 +182,18 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // because the request payload is valid but the booking state blocks the
   // action (same shape as reclassify_ticket.terminal_ticket).
   'booking.cancelled_cannot_edit': 422,
+  // B.2.A semantic re-derivation gates — RPCs raise these when the
+  // TS-side plan disagrees with the server's recomputation at write time
+  // (workflow/SLA/scope-override changed, effective location resolved
+  // differently, or the routing trace input drifted). Request payload is
+  // syntactically valid; server state blocks the operation — 422 is the
+  // right shape (same family as terminal_ticket / cancelled_cannot_edit).
+  // Without these entries the default 400 misclassifies a re-fetch-and-
+  // retry race as a payload-shape bug.
+  'automation_plan.semantic_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
+  'automation_plan.effective_location_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
+  'automation_plan.scope_override_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
+  'automation_plan.routing_input_mismatch': 422, // 00349/00350 create_ticket_with_automation
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always

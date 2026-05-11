@@ -340,8 +340,8 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
   },
   'automation_plan.stale_resolution': {
-    title: 'Kon de boeking niet opslaan — regels gewijzigd',
-    detail: 'De boekingsregels zijn gewijzigd terwijl je aan het bewerken was. Vernieuw en probeer opnieuw.',
+    title: 'Kon de reservering niet opslaan — regels gewijzigd',
+    detail: 'De reserveringsregels zijn gewijzigd terwijl je aan het bewerken was. Ververs en probeer opnieuw.',
   },
 
   // ─── reclassify_ticket (§3.10) ───────────────────────────────────────────
@@ -404,8 +404,8 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet wijzigen — reservering is al afgerond',
   },
   'booking.cancelled_cannot_edit': {
-    title: 'Kon niet wijzigen — boeking geannuleerd',
-    detail: 'Deze boeking is geannuleerd en kan niet meer worden bewerkt.',
+    title: 'Kon niet wijzigen — reservering geannuleerd',
+    detail: 'Deze reservering is geannuleerd en kan niet meer worden bewerkt.',
   },
   'booking.cancellation_grace_expired': {
     title: 'Kon niet annuleren — te laat om te annuleren',
