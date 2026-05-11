@@ -73,6 +73,19 @@ function makeSupabase(tables: Record<string, unknown[]>) {
       }),
       rpc: async (name: string, args: Record<string, unknown>) => {
         captured.rpcCalls.push({ name, args });
+        // Default RPC response shape — B.2.A.Step11 reclassify_ticket
+        // returns { ticket, follow_ups, concurrent_override_edit }. Tests
+        // that need a specific shape override on individual calls.
+        if (name === 'reclassify_ticket') {
+          return {
+            data: {
+              ticket: { id: 'tk1', ticket_type_id: 'rt-new' },
+              follow_ups: ['routing.evaluation_required'],
+              concurrent_override_edit: false,
+            },
+            error: null,
+          };
+        }
         return { data: null, error: null };
       },
     },
@@ -160,6 +173,11 @@ describe('ReclassifyService.computeImpact', () => {
     const visibility = { loadContext: jest.fn(async () => ({} as never)), assertVisible: jest.fn(async () => undefined) };
     const tickets = { getById: jest.fn(async () => ({ id: 'tk1', ticket_type_id: 'rt-new' })) };
 
+    const scopeOverrideResolver = {
+      deriveEffectiveLocation: jest.fn(async () => null),
+      resolveForLocation: jest.fn(async () => null),
+      resolve: jest.fn(async () => null),
+    };
     const service = new ReclassifyService(
       supabase as never,
       tickets as never,
@@ -167,9 +185,10 @@ describe('ReclassifyService.computeImpact', () => {
       sla as never,
       workflow as never,
       visibility as never,
+      scopeOverrideResolver as never,
     );
 
-    return { service, captured, routing, sla, workflow, tickets, visibility };
+    return { service, captured, routing, sla, workflow, tickets, visibility, scopeOverrideResolver };
   }
 
   it('returns an impact DTO for a typical reclassify', async () => {
@@ -266,7 +285,16 @@ describe('ReclassifyService.execute', () => {
     const sla = { startTimers: jest.fn(async () => undefined) };
     const workflow = { startForTicket: jest.fn(async () => undefined) };
     const visibility = { loadContext: jest.fn(async () => ({} as never)), assertVisible: jest.fn(async () => undefined) };
+    // Tickets.getById returns the enriched read shape post-RPC. Mock returns
+    // the reclassified ticket so the wrapper's spread carries follow_ups +
+    // concurrent_override_edit alongside the ticket payload.
     const tickets = { getById: jest.fn(async () => ({ id: 'tk1', ticket_type_id: 'rt-new' })) };
+
+    const scopeOverrideResolver = {
+      deriveEffectiveLocation: jest.fn(async () => null),
+      resolveForLocation: jest.fn(async () => null),
+      resolve: jest.fn(async () => null),
+    };
 
     const service = new ReclassifyService(
       supabase as never,
@@ -275,49 +303,99 @@ describe('ReclassifyService.execute', () => {
       sla as never,
       workflow as never,
       visibility as never,
+      scopeOverrideResolver as never,
     );
 
-    return { service, captured, routing, sla, workflow, visibility, tickets };
+    return { service, captured, routing, sla, workflow, visibility, tickets, scopeOverrideResolver };
   }
 
-  it('calls RPC, starts new timers + workflow, records routing, returns ticket', async () => {
-    const { service, captured, sla, workflow, routing, tickets } = harness();
+  it('calls reclassify_ticket RPC with payload + automation_plan + idempotency_key (auth_uid passed through)', async () => {
+    const { service, captured, tickets } = harness();
 
     const result = await service.execute(
       'tk1',
       { newRequestTypeId: 'rt-new', reason: 'actually plumbing' },
       'auth-1',
+      'crid-xyz', // B.2.A.Step11 client_request_id required
     );
 
     expect(captured.rpcCalls).toHaveLength(1);
+    const args = captured.rpcCalls[0].args as Record<string, unknown>;
     expect(captured.rpcCalls[0].name).toBe('reclassify_ticket');
-    expect(captured.rpcCalls[0].args.p_reason).toBe('actually plumbing');
-    expect(captured.rpcCalls[0].args.p_new_request_type_id).toBe('rt-new');
-    expect(captured.rpcCalls[0].args.p_actor_user_id).toBe('actor-user-id');
-    expect(captured.rpcCalls[0].args.p_new_assigned_team_id).toBe('team-new');
-    expect(sla.startTimers).toHaveBeenCalledWith('tk1', 'ten1', 'sp-new');
-    expect(workflow.startForTicket).toHaveBeenCalledWith('tk1', 'wd-new');
-    expect(routing.recordDecision).toHaveBeenCalled();
+    expect(args.p_ticket_id).toBe('tk1');
+    expect(args.p_tenant_id).toBe('ten1');
+    // Service passes auth_uid through — RPC resolves to users.id internally
+    // (F-CRIT-1 pattern from 00351).
+    expect(args.p_actor_user_id).toBe('auth-1');
+    expect(args.p_idempotency_key).toBe('reclassify:tk1:crid-xyz');
+    expect(args.p_payload).toEqual({
+      new_request_type_id: 'rt-new',
+      reason: 'actually plumbing',
+    });
+    const plan = args.p_automation_plan as Record<string, unknown>;
+    expect(plan).toEqual(
+      expect.objectContaining({
+        effective_location_id: null,
+        scope_override_id: null,
+        effective_workflow_definition_id: 'wd-new',
+        effective_sla_policy_id: 'sp-new',
+      }),
+    );
+    expect(plan._resolution_at).toEqual(expect.any(String));
+
     expect(tickets.getById).toHaveBeenCalledWith('tk1', expect.any(String));
-    expect(result).toEqual({ id: 'tk1', ticket_type_id: 'rt-new' });
+    // result spreads the enriched ticket + follow_ups + concurrent_override_edit.
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'tk1',
+        ticket_type_id: 'rt-new',
+        follow_ups: expect.any(Array),
+        concurrent_override_edit: expect.any(Boolean),
+      }),
+    );
+  });
+
+  it('does NOT call TS-side slaService.startTimers / workflowEngine.startForTicket / routingService.recordDecision (handlers own those)', async () => {
+    const { service, sla, workflow, routing } = harness();
+
+    await service.execute(
+      'tk1',
+      { newRequestTypeId: 'rt-new', reason: 'legit reason' },
+      'auth-1',
+      'crid-1',
+    );
+
+    // Post-Step 11: these execution paths live in the outbox handlers
+    // (SlaTimerRepointHandler / WorkflowStartHandler / RoutingEvaluationHandler).
+    // The service must NOT also fire them — would double-emit.
+    expect(sla.startTimers).not.toHaveBeenCalled();
+    expect(workflow.startForTicket).not.toHaveBeenCalled();
+    expect(routing.recordDecision).not.toHaveBeenCalled();
   });
 
   it('rejects when reason is too short', async () => {
     const { service } = harness();
-    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'x' }, 'auth-1'))
+    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'x' }, 'auth-1', 'crid-1'))
       .rejects.toThrow(/at least 3/i);
   });
 
   it('rejects when reason is too long', async () => {
     const { service } = harness();
-    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'x'.repeat(501) }, 'auth-1'))
+    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'x'.repeat(501) }, 'auth-1', 'crid-1'))
       .rejects.toThrow(/at most 500/i);
+  });
+
+  it('rejects when clientRequestId is missing (required by §3.0 / §3.10 RPC contract)', async () => {
+    const { service } = harness();
+    await expect(
+      service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate reason' }, 'auth-1'),
+    ).rejects.toThrow(/client_request_id/);
   });
 
   it('enforces visibility', async () => {
     const { service, visibility } = harness();
     (visibility.assertVisible as jest.Mock).mockRejectedValueOnce(new Error('denied'));
-    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate reason' }, 'auth-1'))
+    await expect(service.execute('tk1', { newRequestTypeId: 'rt-new', reason: 'legitimate reason' }, 'auth-1', 'crid-1'))
       .rejects.toThrow('denied');
   });
 });

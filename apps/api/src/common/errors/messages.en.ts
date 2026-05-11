@@ -779,6 +779,27 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'The routing context drifted while the form was open. Refresh and resubmit.',
   },
 
+  // ─── reclassify_ticket RPC (B.2.A.Step11 §3.10) ──────────────────────────
+  'reclassify_ticket.ticket_not_found': {
+    title: "Couldn't reclassify — ticket not found",
+  },
+  'reclassify_ticket.reclassify_during_approval': {
+    title: "Couldn't reclassify — approval pending",
+    detail: 'Resolve all pending or delegated approvals on this ticket before reclassifying.',
+  },
+  'reclassify_ticket.new_request_type_invalid': {
+    title: "Couldn't reclassify — request type unavailable",
+    detail: 'The new request type was not found or is inactive.',
+  },
+  'reclassify_ticket.target_same': {
+    title: "Couldn't reclassify — same request type",
+    detail: 'The new request type equals the current one.',
+  },
+  'reclassify_ticket.input_invalid': {
+    title: "Couldn't reclassify",
+    detail: 'The request payload is missing a required field.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {
     title: "Couldn't dispatch — title required",

@@ -3,10 +3,13 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
+import { buildReclassifyIdempotencyKey } from '@prequest/shared';
 import { AppErrors } from '../../common/errors';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { RoutingService } from '../routing/routing.service';
+import { ScopeOverrideResolverService } from '../routing/scope-override-resolver.service';
 import { SlaService } from '../sla/sla.service';
 import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
@@ -76,10 +79,19 @@ export class ReclassifyService {
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
     private readonly routingService: RoutingService,
-    private readonly slaService: SlaService,
-    private readonly workflowEngine: WorkflowEngineService,
+    // slaService / workflowEngine were the TS-side execution path
+    // pre-Step 11. Post-cutover their work moves into the outbox
+    // handlers (SlaTimerRepointHandler + WorkflowStartHandler). Kept
+    // in the constructor signature so DI stays stable + tests don't
+    // need rewrites; `void`-marked below so TS6138 stays quiet.
+    private readonly _slaService: SlaService,
+    private readonly _workflowEngine: WorkflowEngineService,
     private readonly visibility: TicketVisibilityService,
-  ) {}
+    private readonly scopeOverrideResolver: ScopeOverrideResolverService,
+  ) {
+    void this._slaService;
+    void this._workflowEngine;
+  }
 
   async computeImpact(
     ticketId: string,
@@ -210,11 +222,11 @@ export class ReclassifyService {
     ticketId: string,
     dto: ReclassifyExecuteDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets/:id/reclassify`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the reclassify RPC
+    // B.2.A.Step11 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets/:id/reclassify`. Used as the
+    // idempotency-key seed for the reclassify_ticket RPC
     // (spec §3.10 + §3.9.1).
-    _clientRequestId?: string,
+    clientRequestId?: string,
   ): Promise<unknown> {
     const tenant = TenantContext.current();
 
@@ -234,7 +246,20 @@ export class ReclassifyService {
       await this.visibility.assertVisible(ticketId, ctx, 'write');
     }
 
-    // computeImpact also performs preflight guards (not child, not closed, types differ, type active).
+    if (!clientRequestId) {
+      // Required by the §3.0/§3.10 RPC contract. RequireClientRequestIdGuard
+      // catches the HTTP path; this guard catches internal callers (workflow
+      // engine, future cron) that bypass the controller.
+      throw AppErrors.validationFailed('command_operations.client_request_id_required', {
+        detail: 'client_request_id required for reclassify_ticket',
+      });
+    }
+
+    // computeImpact also performs preflight guards (not child, not closed,
+    // types differ, type active). The acknowledgement gate for in-progress
+    // child WOs remains a TS preflight — the RPC itself doesn't reason
+    // about children (spec line 2636-2639: "WO-side reclassify is out of
+    // scope for §3.10").
     const impact = await this.computeImpact(ticketId, dto.newRequestTypeId, actorAuthUid);
 
     const hasInProgressChildren = impact.children.some((c) => c.is_in_progress);
@@ -254,169 +279,89 @@ export class ReclassifyService {
       );
     }
 
-    const routingContext = this.buildRoutingContext(ticket, newType);
-    const evaluation = await this.routingService.evaluate(routingContext);
-    const target = evaluation.target;
+    // ── TS plan-build: derive effective location + override + workflow + sla ──
+    //
+    // The TS-resolved values become the `p_automation_plan` payload the
+    // RPC asserts against (spec §3.10 step 5a). PG re-derives the same
+    // values from the canonical request_type + scope-override tables;
+    // a mismatch + no concurrent edit on the SPECIFIC override row →
+    // 'automation_plan.semantic_mismatch'. The narrowing follows the
+    // Step 12 codex-S12-I1 v3 pattern (00351).
+    const effectiveLocationId = await this.scopeOverrideResolver.deriveEffectiveLocation(
+      tenant.id,
+      { locationId: ticket.location_id, assetId: ticket.asset_id },
+    );
+    const effectiveOverride = await this.scopeOverrideResolver.resolveForLocation(
+      tenant.id,
+      newType.id,
+      effectiveLocationId,
+    );
 
-    let actorUserId: string | null = null;
-    let actorPersonId: string | null = null;
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      actorUserId = await this.resolveUserIdFromAuth(actorAuthUid, tenant.id);
-      if (!actorUserId) {
-        // Caller passed assertVisible via visibility.loadContext, so this should
-        // be unreachable. If it happens, fail loudly — unattributable audit
-        // events are worse than refusing the operation.
-        throw AppErrors.validationFailed('reclassify.actor_not_resolvable', {
-          detail: 'actor user not resolvable in tenant',
-        });
-      }
-      actorPersonId = await this.resolvePersonIdFromAuth(actorAuthUid, tenant.id);
-    }
+    const automationPlan = {
+      effective_location_id: effectiveLocationId,
+      scope_override_id: effectiveOverride?.id ?? null,
+      effective_workflow_definition_id:
+        effectiveOverride?.workflow_definition_id ?? newType.workflow_definition_id ?? null,
+      effective_sla_policy_id:
+        effectiveOverride?.case_sla_policy_id ?? newType.sla_policy_id ?? null,
+      _resolution_at: new Date().toISOString(),
+    };
 
-    const { error: rpcError } = await this.supabase.admin.rpc('reclassify_ticket', {
-      p_ticket_id: ticketId,
-      p_tenant_id: tenant.id,
-      p_new_request_type_id: dto.newRequestTypeId,
-      p_reason: dto.reason,
-      p_actor_user_id: actorUserId,
-      p_new_assigned_team_id: target?.kind === 'team' ? target.team_id : null,
-      p_new_assigned_user_id: target?.kind === 'user' ? target.user_id : null,
-      p_new_assigned_vendor_id: target?.kind === 'vendor' ? target.vendor_id : null,
-    });
+    const idempotencyKey = buildReclassifyIdempotencyKey(ticketId, clientRequestId);
+
+    // ── Call the RPC ────────────────────────────────────────────────────
+    //
+    // Actor passes through as the raw auth_uid; the RPC resolves it to
+    // users.id internally (F-CRIT-1 pattern from 00351).
+    const actorAuthUidForRpc =
+      actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid;
+
+    const { error: rpcError, data: rpcData } = await this.supabase.admin.rpc(
+      'reclassify_ticket',
+      {
+        p_ticket_id: ticketId,
+        p_tenant_id: tenant.id,
+        p_actor_user_id: actorAuthUidForRpc,
+        p_idempotency_key: idempotencyKey,
+        p_payload: {
+          new_request_type_id: dto.newRequestTypeId,
+          reason: dto.reason,
+        },
+        p_automation_plan: automationPlan,
+      },
+    );
 
     if (rpcError) {
-      if (rpcError.code === '55P03') {
-        throw AppErrors.conflict('reclassify.in_progress_collision', {
-          detail: 'another reclassify is in progress for this ticket',
-        });
-      }
-      if (rpcError.code === 'P0002' || rpcError.message?.includes('ticket_not_found')) {
-        throw AppErrors.notFound('ticket', ticketId);
-      }
-      if (rpcError.code === '22023' || rpcError.message?.includes('same_request_type')) {
-        throw AppErrors.validationFailed('reclassify.target_same', {
-          detail: 'new request type is the same as current',
-        });
-      }
-      throw rpcError;
+      // The RPC's command_operations gate handles same-key-same-payload
+      // (cached_result) and same-key-different-payload (payload_mismatch).
+      // Other recognised codes route through mapRpcErrorToAppError.
+      throw mapRpcErrorToAppError(rpcError);
     }
 
-    // Activity feed entry — shown in the ticket's Activity tab as a system row.
-    // We pass author_person_id explicitly (resolved before the RPC, while the
-    // actor still had write access) and SYSTEM_ACTOR for actorAuthUid so
-    // addActivity doesn't re-assertVisible — the actor may have been routed
-    // off the ticket by reclassify, which would cause a false 403 here.
-    try {
-      await this.tickets.addActivity(ticketId, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        author_person_id: actorPersonId ?? undefined,
-        metadata: {
-          event: `Reclassified from "${impact.ticket.current_request_type.name}" to "${impact.ticket.new_request_type.name}"`,
-          event_type: 'request_type_changed',
-          from_request_type: impact.ticket.current_request_type,
-          to_request_type: impact.ticket.new_request_type,
-          reason: dto.reason,
-          closed_child_count: impact.children.length,
-          cancelled_workflow: impact.workflow.will_be_cancelled,
-        },
-      });
-    } catch (err) {
-      console.error('[reclassify] addActivity failed', err);
-    }
-
-    // Post-RPC best-effort side effects. The RPC has already committed; any
-    // failure here is recoverable (cron will eventually heal timers, admin can
-    // start a workflow manually). We still collect warnings so the caller can
-    // surface them in the UI and the tenant can log a follow-up.
-    const warnings: Array<{ stage: string; message: string }> = [];
-
-    if (newType.sla_policy_id) {
-      // Update sla_id FIRST so the pointer is correct even if startTimers
-      // crashes partway through (partial timer rows are the cron's problem,
-      // a stale sla_id pointer would mislead every downstream reader).
-      try {
-        await this.supabase.admin
-          .from('tickets')
-          .update({ sla_id: newType.sla_policy_id })
-          .eq('id', ticketId)
-          .eq('tenant_id', tenant.id);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        console.error('[reclassify] update sla_id failed', err);
-        warnings.push({ stage: 'update_sla_id', message });
-      }
-      try {
-        await this.slaService.startTimers(ticketId, tenant.id, newType.sla_policy_id);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        console.error('[reclassify] startTimers failed', err);
-        warnings.push({ stage: 'start_sla_timers', message });
-      }
-    } else {
-      // No new SLA policy — clear ticket-level SLA computed fields so the UI
-      // doesn't show stale due-at values from the old policy's timers.
-      try {
-        await this.supabase.admin
-          .from('tickets')
-          .update({
-            sla_id: null,
-            sla_response_due_at: null,
-            sla_resolution_due_at: null,
-            sla_response_breached_at: null,
-            sla_resolution_breached_at: null,
-            sla_at_risk: false,
-          })
-          .eq('id', ticketId)
-          .eq('tenant_id', tenant.id);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        console.error('[reclassify] clear sla fields failed', err);
-        warnings.push({ stage: 'clear_sla_fields', message });
-      }
-    }
-
-    if (newType.workflow_definition_id) {
-      try {
-        await this.workflowEngine.startForTicket(ticketId, newType.workflow_definition_id);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        console.error('[reclassify] startForTicket failed', err);
-        warnings.push({ stage: 'start_workflow', message });
-      }
-    }
-
-    try {
-      await this.routingService.recordDecision(ticketId, routingContext, evaluation);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'unknown error';
-      console.error('[reclassify] recordDecision failed', err);
-      warnings.push({ stage: 'record_routing_decision', message });
-    }
-
-    // If any post-RPC stage failed, emit a domain event so the audit trail
-    // shows the partial completion. The primary ticket_type_changed event
-    // already committed inside the RPC, so this is the appropriate place
-    // to record recovery-needed state.
-    if (warnings.length > 0) {
-      try {
-        await this.supabase.admin.from('domain_events').insert({
-          tenant_id: tenant.id,
-          event_type: 'reclassify_post_rpc_warning',
-          entity_type: 'ticket',
-          entity_id: ticketId,
-          payload: { warnings },
-          actor_user_id: actorUserId,
-        });
-      } catch (err) {
-        console.error('[reclassify] failed to record post-rpc warning event', err);
-      }
-    }
-
+    // RPC returned { ticket, follow_ups, concurrent_override_edit }. The
+    // ticket row in the response is the raw `public.tickets` shape; the
+    // controller / UI wants the enriched read shape, so re-load via
+    // TicketService.getById (visibility-aware, joins everything).
     const ticketResponse = await this.tickets.getById(ticketId, SYSTEM_ACTOR);
-    return warnings.length > 0
-      ? { ...(ticketResponse as Record<string, unknown>), post_rpc_warnings: warnings }
-      : ticketResponse;
+    const rpcResult = rpcData as
+      | { follow_ups?: string[]; concurrent_override_edit?: boolean }
+      | null;
+    if (
+      rpcResult &&
+      typeof rpcResult === 'object' &&
+      typeof ticketResponse === 'object' &&
+      ticketResponse !== null
+    ) {
+      // Surface the breadcrumb flag + follow-up event types so callers
+      // can show "configuration changed mid-form" UX or display which
+      // outbox events fired.
+      return {
+        ...(ticketResponse as Record<string, unknown>),
+        follow_ups: rpcResult.follow_ups ?? [],
+        concurrent_override_edit: rpcResult.concurrent_override_edit ?? false,
+      };
+    }
+    return ticketResponse;
   }
 
   // ─────── Guards ───────
@@ -553,26 +498,6 @@ export class ReclassifyService {
     const out: Record<string, string> = {};
     for (const r of rows) out[r.id] = r[displayCol] ?? '(unnamed)';
     return out;
-  }
-
-  private async resolveUserIdFromAuth(authUid: string, tenantId: string): Promise<string | null> {
-    const { data } = await this.supabase.admin
-      .from('users')
-      .select('id')
-      .eq('auth_uid', authUid)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    return (data?.id as string | undefined) ?? null;
-  }
-
-  private async resolvePersonIdFromAuth(authUid: string, tenantId: string): Promise<string | null> {
-    const { data } = await this.supabase.admin
-      .from('users')
-      .select('person_id')
-      .eq('auth_uid', authUid)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    return (data?.person_id as string | undefined) ?? null;
   }
 
   // ─────── Builders ───────

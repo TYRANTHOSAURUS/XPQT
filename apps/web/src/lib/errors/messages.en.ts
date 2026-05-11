@@ -361,6 +361,27 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     detail: 'Refresh and try again — the page is showing stale data.',
   },
 
+  // ─── reclassify_ticket (§3.10) ───────────────────────────────────────────
+  'reclassify_ticket.ticket_not_found': {
+    title: "Couldn't reclassify — ticket not found",
+  },
+  'reclassify_ticket.reclassify_during_approval': {
+    title: "Couldn't reclassify — approval pending",
+    detail: 'Resolve all pending or delegated approvals on this ticket before reclassifying.',
+  },
+  'reclassify_ticket.new_request_type_invalid': {
+    title: "Couldn't reclassify — request type unavailable",
+    detail: 'The new request type was not found or is inactive.',
+  },
+  'reclassify_ticket.target_same': {
+    title: "Couldn't reclassify — same request type",
+    detail: 'The new request type equals the current one.',
+  },
+  'reclassify_ticket.input_invalid': {
+    title: "Couldn't reclassify",
+    detail: 'A required field is missing.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': { title: "Couldn't dispatch — title required" },
   'dispatch.from_work_order': {

@@ -97,6 +97,8 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'validate_entity_in_tenant.routing_rule_not_in_tenant': 404,
   // B.2.A.Step12 §3.11 — create RPC's request-type-not-found path.
   'create_ticket_with_automation.request_type_not_found': 404,
+  // B.2.A.Step11 §3.10 — reclassify_ticket RPC.
+  'reclassify_ticket.ticket_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -118,6 +120,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'validate_assignees_in_tenant.assigned_team_id_not_in_tenant': 422,
   'validate_assignees_in_tenant.assigned_user_id_not_in_tenant': 422,
   'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant': 422,
+  // B.2.A.Step11 §3.10 — reclassify_during_approval: the ticket has
+  // non-terminal approvals; the operator must resolve them before
+  // re-running reclassify. 422 unprocessable-entity is the right shape
+  // (request payload is valid, but the ticket state blocks the action).
+  'reclassify_ticket.reclassify_during_approval': 422,
+
   // B.2.A.Step9 — workflow `update_ticket` node config that references a
   // field outside the tightened allowlist throws this code (TS-side).
   // The raise is unprocessable-entity rather than 400 validation:

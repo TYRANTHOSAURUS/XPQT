@@ -253,3 +253,32 @@ export const CREATE_TICKET_ID_NAMESPACE = '4f6e1c92-8a3b-4d2e-9f5c-1a8b7c6d5e3f'
 export function buildCreateTicketId(idempotencyKey: string): string {
   return uuidv5(idempotencyKey, CREATE_TICKET_ID_NAMESPACE);
 }
+
+/**
+ * Prefix for the `reclassify_ticket` outer idempotency key. B.2.A.Step11
+ * §3.10 — the RPC's `command_operations` gate is keyed on
+ * (tenant_id, idempotency_key); a retry of the SAME ticket reclassify
+ * (same ticket + same clientRequestId) collapses to the cached result.
+ *
+ * Citations:
+ *   - 00354_reclassify_ticket_rpc.sql (B.2.A.Step11)
+ *   - spec §3.10 (docs/follow-ups/b2-survey-and-design.md lines 2579-2790)
+ *   - apps/api/src/modules/ticket/reclassify.service.ts (ReclassifyService.execute)
+ */
+export const RECLASSIFY_IDEMPOTENCY_KEY_PREFIX = 'reclassify';
+
+/**
+ * Build the outer idempotency key for `reclassify_ticket`. Shape:
+ *   `reclassify:<ticket_id>:<clientRequestId>`
+ *
+ * Same ticket + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call. No actor in the key — actor-in-key
+ * created a double-dispatch hazard in F-CRIT-2 / plan-C1 (dispatch
+ * RPC); the same reasoning applies here.
+ */
+export function buildReclassifyIdempotencyKey(
+  ticketId: string,
+  clientRequestId: string,
+): string {
+  return `${RECLASSIFY_IDEMPOTENCY_KEY_PREFIX}:${ticketId}:${clientRequestId}`;
+}

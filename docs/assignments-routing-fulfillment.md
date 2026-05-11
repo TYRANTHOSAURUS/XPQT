@@ -750,26 +750,44 @@ API: `GET /tickets/:id/children` returns the same shape including `ticket_kind` 
 
 An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/reclassify` (with a required preview at `/reclassify/preview`). This is a distinct operation from `PATCH /tickets/:id` — `ticket_type_id` is deliberately NOT in `UpdateTicketDto` because the change cascades through all four axes of the routing model.
 
-**What happens when a reclassify executes** (all steps in a single transactional RPC, `reclassify_ticket`):
+**B.2.A.Step11 cutover (2026-05-11):** the `reclassify_ticket` RPC was rebuilt to mirror `create_ticket_with_automation` (§3.10 of the B.2 spec). Signature is now `(p_ticket_id, p_tenant_id, p_actor_user_id, p_idempotency_key, p_payload, p_automation_plan)`. The payload carries `new_request_type_id` + `reason` + optional `new_location_id`; the automation plan is TS-resolved effective config (`effective_location_id`, `scope_override_id`, `effective_workflow_definition_id`, `effective_sla_policy_id`, `_resolution_at`). PG re-derives the same values via `request_type_effective_scope_override` (00096) and asserts equality — mismatch + no concurrent edit on the SPECIFIC override row → `automation_plan.semantic_mismatch` (codex-S12-I1 v3 narrowing, mirroring 00351).
 
-1. **Routing** — `RoutingService.evaluate()` runs against the new request type's context. The new team / user / vendor replace the current assignment.
-2. **Ownership** — previous user-assignee (if any) is promoted to the ticket's `watchers` array so they retain visibility. Vendors and teams are not added as watchers (not supported by the watcher model). If new routing keeps the same assignee, no watcher is added.
-3. **Execution** — every non-terminal child work order is closed (`status_category='closed'`, `close_reason="Parent ticket reclassified: <reason>"`, `closed_by`, `closed_at`). The existing workflow instance is cancelled (`workflow_instances.status='cancelled'` + `cancelled_reason`). Active SLA timers are stopped (`stopped_at`, `stopped_reason`).
-4. **Visibility** — see §2b in `docs/visibility.md`: promotion-to-watcher is a new path for entering the Participants tier.
+**What happens when reclassify executes** (atomic PG transaction inside `reclassify_ticket`):
 
-**Post-RPC, best-effort side effects** (outside the atomic block so transient failures don't roll back a successful reclassify):
-- `SlaService.startTimers` on the new policy.
-- `WorkflowEngineService.startForTicket` on the new definition (which may itself spawn new child WOs via `create_child_tasks`).
-- `RoutingService.recordDecision` appending a new `routing_decisions` row for traceability.
+1. Advisory lock + `command_operations` idempotency gate keyed on `(tenant_id, p_idempotency_key)`. Replay with the same key + same payload returns the cached result; same key + different payload raises `command_operations.payload_mismatch`.
+2. `SELECT FOR UPDATE` on the ticket — captures old effective workflow_id + sla_id + location_id.
+3. **Reject if non-terminal approvals exist** (status `pending` or `delegated`) — `reclassify_ticket.reclassify_during_approval`. Closes the "approver authorized plan A, last grant landed on plan B" hazard.
+4. Validate `new_request_type_id` is tenant-owned + active (via `validate_entity_in_tenant`).
+5. Compute new effective config in PG; reject on semantic mismatch unless the SPECIFIC override row PG derived from was edited post-`_resolution_at` (concurrent-edit narrowing).
+6. `UPDATE tickets` — `ticket_type_id`, `reclassified_from_id`, `location_id`, `workflow_id`, `sla_id`, `reclassified_reason`, `reclassified_at`, `reclassified_by`, `routing_status='pending'`.
+7. `INSERT ticket_activities` (`reclassified` event) + optional breadcrumb if concurrent override edit was detected.
+8. `INSERT domain_events` (`ticket_reclassified`).
+9. If effective workflow changes → cancel active `workflow_instances` rows (mirror of 00046:65-77). The partial unique index 00345 no longer matches the cancelled rows, so the `workflow.start_required` handler can INSERT cleanly.
+10. **Emit outbox events atomically:**
+    - `sla.timer_repointed_required` if `ticket.sla_id` changes AND the new sla is non-null. (If the new sla is null, the RPC inline-stops the old policy's active timers + clears `tickets.sla_*_due_at`.)
+    - `workflow.start_required` if `ticket.workflow_id` changes AND the new workflow is non-null.
+    - `routing.evaluation_required` ALWAYS — even when the new type resolves to the same target, the resolver re-runs to record the breadcrumb.
 
-**Rejected paths:** reclassifying a child work order (reclassify the parent instead), reclassifying a closed/resolved ticket, reclassifying to the same type, reclassifying to an inactive type, concurrent reclassifies on the same ticket (advisory lock → 409).
+**Outbox handlers (Step 11 commit 1):**
+- `SlaTimerRepointHandler` — drains `sla.timer_repointed_required`. Reads `tickets.sla_id` at fire time as source of truth (v8 / C3); computes `due_at` via `BusinessHoursService` from the path-dependent `started_at` in the payload (reclassify-time, not ticket.created_at); calls `repoint_sla_timer` RPC (00353 v2). Idempotent short-circuit on `(tenant, ticket, new_policy)` via the RPC's `already_repointed` outcome.
+- `WorkflowStartHandler` — already shipped in Step 12; same handler the create / grant paths use.
+- `RoutingEvaluationHandler` — drains `routing.evaluation_required`. Calls `RoutingService.evaluate`; if the target differs from current → calls `set_entity_assignment` RPC (00327 v2) with `idempotency_key=routing-evaluation:<event_id>`. Always inserts a `routing_decisions` audit row (including `unassigned` outcomes per v5 / I4). Sets `tickets.routing_status='idle'` on success, `'failed'` only on resolver throws or RPC errors (writes a `routing_evaluation_failed` activity breadcrumb).
 
-**Audit:** one `ticket_type_changed` domain event on the parent, one `workflow_cancelled` event if applicable, one `ticket_closed` event per closed child with `closed_by_reclassify: true` flagged in the payload.
+**Rejected paths:** reclassifying a child work order (TS preflight in `ReclassifyService.assertReclassifiable` — RPC doesn't gate this), reclassifying a closed/resolved ticket (TS preflight only — RPC accepts terminal tickets as an admin-override path; see harness scenario 12), reclassifying to the same type (RPC raises `reclassify_ticket.target_same`), reclassifying to an inactive type (RPC raises `reclassify_ticket.new_request_type_invalid`), `reclassify_during_approval` (RPC raises — see step 3 above).
+
+**Idempotency:** the outer key is `reclassify:<ticket_id>:<clientRequestId>` (helper `buildReclassifyIdempotencyKey` in `@prequest/shared`). The controller's `RequireClientRequestIdGuard` enforces presence at the HTTP boundary; the service-layer hard-fail enforces it for internal callers.
+
+**Audit:** one `ticket_reclassified` domain event on the parent. Old-style `ticket_type_changed` / `workflow_cancelled` / `ticket_closed` events from pre-Step 11 are no longer emitted (children aren't closed; the workflow cancel is inline + traceable via `workflow_instances.cancelled_*`). The breakdown of effective config is in the activity row's metadata (`previous_workflow_definition_id`, `new_workflow_definition_id`, `previous_sla_policy_id`, `new_sla_policy_id`, `previous_location_id`, `new_location_id`).
 
 **Relevant files:**
-- `apps/api/src/modules/ticket/reclassify.service.ts` — orchestrator (`computeImpact` + `execute`)
-- `apps/api/src/modules/ticket/reclassify.controller.ts` — `/preview` and execute endpoints
-- `supabase/migrations/00044_reclassify_support.sql` — columns + `reclassify_ticket` RPC
+- `apps/api/src/modules/ticket/reclassify.service.ts` — orchestrator (`computeImpact` + cutover'd `execute`)
+- `apps/api/src/modules/ticket/reclassify.controller.ts` — `/preview` + execute endpoints (`RequireClientRequestIdGuard`)
+- `apps/api/src/modules/outbox/handlers/sla-timer-repoint.handler.ts` — new outbox handler
+- `apps/api/src/modules/outbox/handlers/routing-evaluation.handler.ts` — new outbox handler
+- `supabase/migrations/00353_repoint_sla_timer_v2.sql` — accepts `p_started_at` (codex-S12-I2 mirror)
+- `supabase/migrations/00354_reclassify_ticket_rpc.sql` — new RPC body
+- `packages/shared/src/idempotency.ts` — `buildReclassifyIdempotencyKey`
+- `apps/api/test/concurrency/reclassify_ticket.spec.ts` — 12 concurrency scenarios
 
 ---
 

@@ -779,6 +779,27 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'De routing-context is veranderd terwijl het formulier open was. Vernieuw en dien opnieuw in.',
   },
 
+  // ─── reclassify_ticket RPC (B.2.A.Step11 §3.10) ──────────────────────────
+  'reclassify_ticket.ticket_not_found': {
+    title: 'Kon niet herclassificeren — ticket niet gevonden',
+  },
+  'reclassify_ticket.reclassify_during_approval': {
+    title: 'Kon niet herclassificeren — goedkeuring loopt',
+    detail: 'Sluit eerst alle openstaande of gedelegeerde goedkeuringen op dit ticket af.',
+  },
+  'reclassify_ticket.new_request_type_invalid': {
+    title: 'Kon niet herclassificeren — type niet beschikbaar',
+    detail: 'Het nieuwe aanvraagtype is niet gevonden of niet actief.',
+  },
+  'reclassify_ticket.target_same': {
+    title: 'Kon niet herclassificeren — hetzelfde type',
+    detail: 'Het nieuwe aanvraagtype is hetzelfde als het huidige.',
+  },
+  'reclassify_ticket.input_invalid': {
+    title: 'Kon niet herclassificeren',
+    detail: 'Een verplicht veld ontbreekt in de aanvraag.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {
     title: 'Kon niet uitsturen — titel verplicht',

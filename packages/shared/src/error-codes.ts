@@ -150,6 +150,13 @@ export type KnownErrorCode =
   | 'automation_plan.scope_override_mismatch'
   | 'automation_plan.routing_input_mismatch'
 
+  // ─── reclassify_ticket RPC codes (B.2.A.Step11 §3.10) ────────────────────
+  | 'reclassify_ticket.ticket_not_found'
+  | 'reclassify_ticket.reclassify_during_approval'
+  | 'reclassify_ticket.new_request_type_invalid'
+  | 'reclassify_ticket.target_same'
+  | 'reclassify_ticket.input_invalid'
+
   // ─── dispatch codes ──────────────────────────────────────────────────────
   | 'dispatch.title_required'
   | 'dispatch.from_work_order'
@@ -795,6 +802,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'automation_plan.semantic_mismatch',
   'automation_plan.scope_override_mismatch',
   'automation_plan.routing_input_mismatch',
+  'reclassify_ticket.ticket_not_found',
+  'reclassify_ticket.reclassify_during_approval',
+  'reclassify_ticket.new_request_type_invalid',
+  'reclassify_ticket.target_same',
+  'reclassify_ticket.input_invalid',
   'dispatch.title_required',
   'dispatch.from_work_order',
   'dispatch.parent_pending_approval',
