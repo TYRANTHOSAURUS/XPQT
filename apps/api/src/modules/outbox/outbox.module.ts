@@ -1,10 +1,13 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
+import { RoutingModule } from '../routing/routing.module';
 import { ServiceRoutingModule } from '../service-routing/service-routing.module';
 import { SlaModule } from '../sla/sla.module';
 import { WorkflowModule } from '../workflow/workflow.module';
+import { RoutingEvaluationHandler } from './handlers/routing-evaluation.handler';
 import { SetupWorkOrderHandler } from './handlers/setup-work-order.handler';
 import { SlaTimerHandler } from './handlers/sla-timer-recompute.handler';
+import { SlaTimerRepointHandler } from './handlers/sla-timer-repoint.handler';
 import { WorkflowStartHandler } from './handlers/workflow-start.handler';
 import { OutboxHandlerRegistry } from './outbox-handler.registry';
 import { OutboxService } from './outbox.service';
@@ -35,6 +38,17 @@ import { OutboxWorker } from './outbox.worker';
  *     `tickets.workflow_id` at fire time as source of truth per v8 / C3.
  *     Idempotent via migration 00345's partial unique index +
  *     handler-side 23505 catch. B.2.A.Step12 commit 2.
+ *   - SlaTimerRepointHandler — drains `sla.timer_repointed_required`
+ *     events via `repoint_sla_timer` RPC (00353 v2). STOPs old-policy
+ *     active timers + INSERTs fresh timers under the new policy in one
+ *     PG tx. Idempotent short-circuit on (tenant, ticket, new_policy)
+ *     (00353 step 4). B.2.A.Step11 commit 1.
+ *   - RoutingEvaluationHandler — drains `routing.evaluation_required`
+ *     events. Calls `RoutingService.evaluate`, then `set_entity_assignment`
+ *     RPC if the resolver picks a different target. Always inserts a
+ *     `routing_decisions` audit row (including `unassigned` outcomes).
+ *     Sets `tickets.routing_status='idle'` on success or `'failed'` on
+ *     resolver / RPC errors. B.2.A.Step11 commit 1.
  *
  * Schema/RLS dependencies (DbModule + SupabaseModule are @Global, so no
  * explicit imports needed):
@@ -42,20 +56,24 @@ import { OutboxWorker } from './outbox.worker';
  *     are created in supabase/migrations/00299_outbox_foundation.sql.
  *   - public.start_sla_timers RPC + sla_timers_active_unique_idx are
  *     created in 00347 + 00346 respectively.
+ *   - public.repoint_sla_timer RPC is created in 00348 / v2 in 00353.
+ *   - public.set_entity_assignment RPC is created in 00326 / v2 in 00327.
  *   - public.workflow_instances_active_unique_idx is created in 00345.
  *   - DiscoveryModule is imported here so OutboxHandlerRegistry can walk all
  *     DI providers at OnModuleInit (spec §9, N1 fold) and self-discover
  *     handlers without a central registration map.
  *   - ServiceRoutingModule provides SetupWorkOrderRowBuilder.
  *   - SlaModule (forwardRef to break circular with TicketModule chain)
- *     provides BusinessHoursService for SlaTimerHandler's due_at math.
+ *     provides BusinessHoursService for both SLA timer handlers.
  *   - WorkflowModule (forwardRef) provides WorkflowEngineService for
  *     WorkflowStartHandler's start path.
+ *   - RoutingModule provides RoutingService for the RoutingEvaluationHandler.
  */
 @Module({
   imports: [
     DiscoveryModule,
     ServiceRoutingModule,
+    RoutingModule,
     forwardRef(() => SlaModule),
     forwardRef(() => WorkflowModule),
   ],
@@ -65,7 +83,9 @@ import { OutboxWorker } from './outbox.worker';
     OutboxWorker,
     SetupWorkOrderHandler,
     SlaTimerHandler,
+    SlaTimerRepointHandler,
     WorkflowStartHandler,
+    RoutingEvaluationHandler,
   ],
   exports: [OutboxService, OutboxHandlerRegistry],
 })
