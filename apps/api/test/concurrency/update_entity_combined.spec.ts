@@ -42,6 +42,46 @@
  *  11. Invalid plan input — bad timestamp (F3). Send
  *      kind='work_order' with plan = {planned_start_at: 'not-a-date'}
  *      raises 'update_entity_combined.invalid_plan'. No partial writes.
+ *  12. SLA branch happy path (v3 / codex F11). Send `kind='case'` with
+ *      patches.sla = {sla_id: <tenant>, timers: [response, resolution]}.
+ *      Assert tickets.sla_id is set, branches_applied contains 'sla',
+ *      result.sla.noop=false, two active sla_timers with
+ *      recompute_pending=false, one ticket_activities `sla_changed`,
+ *      one domain_events `ticket_sla_changed`, no outbox row (SLA RPC
+ *      does NOT emit outbox; 00330:1-393 has only domain_events +
+ *      activities). Two command_operations rows (outer + sla inner
+ *      with sentinel prefix).
+ *  13. SLA branch idempotent replay (v3 / codex F11). Send the same
+ *      payload + outer key twice. Second call hits the outer cache;
+ *      no additional rows in sla_timers / ticket_activities /
+ *      domain_events / command_operations.
+ *  14. Status + SLA combined-call ordering (v3 / codex F11). Send
+ *      `kind='case'` with patches.status_category='waiting' +
+ *      waiting_reason='vendor' + patches.sla = {sla_id, timers} +
+ *      a pre-existing SLA + timers. Document the spec-ordered
+ *      interaction:
+ *        a. Status branch fires first → sets recompute_pending=true on
+ *           the existing active timers + emits
+ *           outbox.events 'sla.timer_recompute_required' (00325:289-313).
+ *        b. SLA branch fires second → stops the existing timers
+ *           (stopped_reason='sla_changed') and inserts fresh timers
+ *           with recompute_pending=false (00330).
+ *      End state: two stopped timers + two active fresh timers; one
+ *      wasted outbox 'sla.timer_recompute_required' (the worker
+ *      queries `recompute_pending=true AND stopped_at IS NULL` and
+ *      finds none, no-ops — see b2-followups.md C3). Both branches
+ *      appear in branches_applied; both ticket_activities rows
+ *      present (status_changed + sla_changed).
+ *  15. SLA branch nested idempotency / inner-cache reuse (v3 / codex
+ *      F11). Run the orchestrator once with patches.sla. Then call
+ *      update_entity_sla DIRECTLY with the SAME inner key
+ *      (`__combined__:sla:<kind>:<id>:<outer>`) and the SAME payload.
+ *      The direct call must hit the inner command_operations cache
+ *      and return without rewriting (no new sla_timers /
+ *      ticket_activities / domain_events). Documents the inner-cache
+ *      reuse semantics + verifies the F1 sentinel prevents accidental
+ *      collision (any sibling caller minting `__combined__:`-prefixed
+ *      keys is by convention reserved to the orchestrator).
  *
  * Sentinel for inner idempotency keys (F1): `__combined__:`. Direct
  * callers of transition_entity_status / set_entity_assignment /
@@ -72,6 +112,21 @@ interface SeededUser {
   userId: string;
   authUid: string;
   personId: string;
+}
+
+interface SeededSla {
+  slaId: string;
+  responseMinutes: number;
+  resolutionMinutes: number;
+}
+
+interface SlaInnerResult {
+  entity_id: string;
+  entity_kind: string;
+  previous_sla_id: string | null;
+  new_sla_id: string | null;
+  timers_inserted: number;
+  noop: boolean;
 }
 
 interface CombinedResult {
@@ -288,6 +343,53 @@ async function seedUser(pool: Pool, tenantId: string): Promise<SeededUser> {
   });
 
   return { userId, authUid, personId };
+}
+
+/**
+ * Insert a minimal sla_policies row for the tenant. Cleanup is handled
+ * by seedCase / seedWorkOrder which both delete sla_policies for the
+ * tenant on teardown. Mirrors update_entity_sla.spec.ts:187-201.
+ */
+async function seedSlaPolicy(
+  pool: Pool,
+  tenantId: string,
+  opts: { responseMinutes?: number; resolutionMinutes?: number; name?: string } = {},
+): Promise<SeededSla> {
+  const slaId = randomUUID();
+  const responseMinutes = opts.responseMinutes ?? 60;
+  const resolutionMinutes = opts.resolutionMinutes ?? 240;
+  await pool.query(
+    `insert into public.sla_policies
+       (id, tenant_id, name, response_time_minutes, resolution_time_minutes, active)
+     values ($1, $2, $3, $4, $5, true)`,
+    [slaId, tenantId, opts.name ?? 'Concurrency combined SLA', responseMinutes, resolutionMinutes],
+  );
+  return { slaId, responseMinutes, resolutionMinutes };
+}
+
+/**
+ * Build the {timers:[…]} array the SLA branch expects (mirrors
+ * update_entity_sla.spec.ts:211-229 — the RPC does NOT do business-hours
+ * math; due_at is TS-computed wall-clock now()+minutes).
+ */
+function buildTimersPayload(sla: SeededSla, base: { startAt?: Date } = {}) {
+  const now = base.startAt ?? new Date();
+  const responseDue = new Date(now.getTime() + sla.responseMinutes * 60_000);
+  const resolutionDue = new Date(now.getTime() + sla.resolutionMinutes * 60_000);
+  return [
+    {
+      timer_type: 'response',
+      target_minutes: sla.responseMinutes,
+      due_at: responseDue.toISOString(),
+      business_hours_calendar_id: null,
+    },
+    {
+      timer_type: 'resolution',
+      target_minutes: sla.resolutionMinutes,
+      due_at: resolutionDue.toISOString(),
+      business_hours_calendar_id: null,
+    },
+  ];
 }
 
 describe('update_entity_combined — §3.0 orchestrator RPC', () => {
@@ -1010,6 +1112,452 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
       [base.tenantId, idem],
     );
     expect(co.rows[0].n).toBe(0);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 12: sla branch happy path — sla_id set, two timers inserted, one activity + one domain event, no outbox', async () => {
+    // codex F11 — exercise the SLA sub-RPC through the orchestrator end-
+    // to-end. v2's harness covered every other branch but skipped sla.
+    const base = await seedBaseFixture(pool, `comb-sla-happy-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const sla = await seedSlaPolicy(pool, base.tenantId);
+
+    const idem = `comb-sla-happy-${ticketId}`;
+    const timersPayload = buildTimersPayload(sla);
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        { sla: { sla_id: sla.slaId, timers: timersPayload } },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.branches_applied).toEqual(['sla']);
+    expect(result.value.any_changed).toBe(true);
+    expect(result.value.noop).toBe(false);
+
+    // SLA sub-RPC result shape per 00330:372-379 — no `changed`, only
+    // `noop`, `previous_sla_id`, `new_sla_id`, `timers_inserted`.
+    const slaSub = result.value.sla as unknown as SlaInnerResult | null;
+    expect(slaSub).not.toBeNull();
+    expect(slaSub!.noop).toBe(false);
+    expect(slaSub!.previous_sla_id).toBeNull();
+    expect(slaSub!.new_sla_id).toBe(sla.slaId);
+    expect(slaSub!.timers_inserted).toBe(2);
+
+    // tickets row reflects the SLA write.
+    const responseDueExpected = timersPayload.find((t) => t.timer_type === 'response')!.due_at;
+    const resolutionDueExpected = timersPayload.find((t) => t.timer_type === 'resolution')!.due_at;
+    const t = await pool.query(
+      `select sla_id, sla_response_due_at, sla_resolution_due_at
+         from public.tickets where id = $1`,
+      [ticketId],
+    );
+    expect(t.rows[0].sla_id).toBe(sla.slaId);
+    expect(new Date(t.rows[0].sla_response_due_at).toISOString()).toBe(responseDueExpected);
+    expect(new Date(t.rows[0].sla_resolution_due_at).toISOString()).toBe(resolutionDueExpected);
+
+    // Two active sla_timers, both with recompute_pending=false.
+    const timers = await pool.query(
+      `select timer_type, recompute_pending, paused, stopped_at
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null
+        order by timer_type`,
+      [base.tenantId, ticketId],
+    );
+    expect(timers.rowCount).toBe(2);
+    expect(timers.rows.map((r) => r.timer_type)).toEqual(['resolution', 'response']);
+    for (const r of timers.rows) {
+      expect(r.recompute_pending).toBe(false);
+      expect(r.paused).toBe(false);
+    }
+
+    // Exactly one ticket_activities sla_changed row.
+    const acts = await pool.query(
+      `select metadata->>'event' as event
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(1);
+    expect(acts.rows[0].event).toBe('sla_changed');
+
+    // Exactly one domain_events row.
+    const evs = await pool.query(
+      `select event_type from public.domain_events
+        where tenant_id = $1 and entity_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(evs.rowCount).toBe(1);
+    expect(evs.rows[0].event_type).toBe('ticket_sla_changed');
+
+    // SLA RPC (00330:1-393) does NOT emit outbox events — only
+    // domain_events + ticket_activities. Verify zero outbox rows.
+    const outbox = await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(outbox.rows[0].n).toBe(0);
+
+    // command_operations: outer + sla inner (sentinel prefix per F1).
+    const co = await pool.query(
+      `select idempotency_key from public.command_operations
+        where tenant_id = $1
+        order by idempotency_key`,
+      [base.tenantId],
+    );
+    expect(co.rowCount).toBe(2);
+    const keys = co.rows.map((r) => r.idempotency_key);
+    expect(keys).toContain(idem);
+    expect(keys).toContain(`__combined__:sla:case:${ticketId}:${idem}`);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 13: sla branch idempotent replay — outer cache hit short-circuits; no extra rows', async () => {
+    // codex F11 — verify the outer cache path takes precedence when only
+    // the sla branch is in patches. Same shape as scenario 2 (priority
+    // replay) but exercises the sla sub-RPC's idempotency contract too.
+    const base = await seedBaseFixture(pool, `comb-sla-replay-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const sla = await seedSlaPolicy(pool, base.tenantId);
+
+    const idem = `comb-sla-replay-${ticketId}`;
+    const patches = { sla: { sla_id: sla.slaId, timers: buildTimersPayload(sla) } };
+
+    const first = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      ['case', ticketId, base.tenantId, null, idem, patches],
+    );
+    expect(first.kind).toBe('ok');
+    if (first.kind !== 'ok') return;
+    expect((first.value.sla as unknown as SlaInnerResult).noop).toBe(false);
+
+    const snapshot = {
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        `select count(*)::int as n from public.ticket_activities
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        `select count(*)::int as n from public.domain_events
+          where tenant_id = $1 and entity_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      co: (await pool.query(
+        `select count(*)::int as n from public.command_operations where tenant_id = $1`,
+        [base.tenantId],
+      )).rows[0].n as number,
+    };
+    expect(snapshot.timers).toBe(2);
+    expect(snapshot.acts).toBe(1);
+    expect(snapshot.evs).toBe(1);
+    // outer + sla inner.
+    expect(snapshot.co).toBe(2);
+
+    // Replay — same outer key + same payload.
+    const second = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      ['case', ticketId, base.tenantId, null, idem, patches],
+    );
+    expect(second.kind).toBe('ok');
+    if (second.kind !== 'ok') return;
+    expect(second.value).toEqual(first.value);
+
+    const after = {
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        `select count(*)::int as n from public.ticket_activities
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        `select count(*)::int as n from public.domain_events
+          where tenant_id = $1 and entity_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      co: (await pool.query(
+        `select count(*)::int as n from public.command_operations where tenant_id = $1`,
+        [base.tenantId],
+      )).rows[0].n as number,
+    };
+    expect(after).toEqual(snapshot);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 14: status + sla combined call — branches commit in spec order; documents wasted outbox emit (C3)', async () => {
+    // codex F11 — exercises the spec-ordered status→sla interaction.
+    //
+    // End-state we assert:
+    //   • Initial SLA + two active timers (from setup call #1).
+    //   • Setup call's outbox row count snapshotted.
+    //   • Combined call: status branch sets recompute_pending=true on
+    //     active timers AND emits outbox 'sla.timer_recompute_required'
+    //     (00325:289-313). SLA branch then stops those timers
+    //     (stopped_reason='sla_changed') and inserts fresh ones with
+    //     recompute_pending=false.
+    //   • After the combined call: 2 stopped timers (slaA) + 2 active
+    //     timers (slaB), one extra outbox 'sla.timer_recompute_required'
+    //     row (the "wasted" emit per b2-followups.md C3).
+    //   • branches_applied contains both 'status' and 'sla'.
+    //   • Two ticket_activities rows in this single combined call:
+    //     status_changed + sla_changed (in addition to the setup call's
+    //     sla_changed).
+    const base = await seedBaseFixture(pool, `comb-status-sla-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const slaA = await seedSlaPolicy(pool, base.tenantId, { name: 'slaA' });
+    const slaB = await seedSlaPolicy(pool, base.tenantId, { name: 'slaB' });
+
+    // Setup: install slaA with two timers via a separate (non-combined)
+    // SLA call so the combined call has pre-existing timers to act on.
+    const setupResult = await runRpcCapture<SlaInnerResult>(
+      pool,
+      'public.update_entity_sla',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-status-sla-setup-${ticketId}`,
+        { sla_id: slaA.slaId, timers: buildTimersPayload(slaA) },
+      ],
+    );
+    expect(setupResult.kind).toBe('ok');
+
+    // Snapshot outbox count before the combined call.
+    const outboxBefore = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxBefore).toBe(0);
+
+    // Snapshot the active timer ids — they should be stopped after the
+    // combined call's sla branch fires.
+    const oldTimers = await pool.query(
+      `select id from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null`,
+      [base.tenantId, ticketId],
+    );
+    expect(oldTimers.rowCount).toBe(2);
+
+    // Combined call: status (waiting/vendor) + sla swap (slaA → slaB).
+    const idem = `comb-status-sla-${ticketId}`;
+    const timersBPayload = buildTimersPayload(slaB);
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        {
+          status_category: 'waiting',
+          waiting_reason: 'vendor',
+          sla: { sla_id: slaB.slaId, timers: timersBPayload },
+        },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.branches_applied.sort()).toEqual(['sla', 'status'].sort());
+    expect(result.value.any_changed).toBe(true);
+
+    // Old timers (slaA) all stopped with reason='sla_changed'. The
+    // recompute_pending flag set by the status branch was on these rows;
+    // because the sla branch's UPDATE comes second and includes
+    // stopped_at=now()+stopped_reason='sla_changed', the worker will
+    // skip them (worker filter: stopped_at IS NULL). The "wasted" emit
+    // remains in outbox; that's the documented C3 cosmetic interaction.
+    const stoppedOld = await pool.query(
+      `select stopped_at, stopped_reason, recompute_pending
+         from public.sla_timers
+        where id = any($1::uuid[])`,
+      [oldTimers.rows.map((r) => r.id)],
+    );
+    expect(stoppedOld.rowCount).toBe(2);
+    for (const row of stoppedOld.rows) {
+      expect(row.stopped_at).not.toBeNull();
+      expect(row.stopped_reason).toBe('sla_changed');
+    }
+
+    // New timers (slaB) — two active rows, recompute_pending=false.
+    const newTimers = await pool.query(
+      `select timer_type, sla_policy_id, recompute_pending, paused
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null
+        order by timer_type`,
+      [base.tenantId, ticketId],
+    );
+    expect(newTimers.rowCount).toBe(2);
+    expect(newTimers.rows.every((r) => r.sla_policy_id === slaB.slaId)).toBe(true);
+    expect(newTimers.rows.every((r) => r.recompute_pending === false)).toBe(true);
+    expect(newTimers.rows.every((r) => r.paused === false)).toBe(true);
+
+    // tickets row reflects slaB.
+    const t = await pool.query(
+      `select status_category, waiting_reason, sla_id
+         from public.tickets where id = $1`,
+      [ticketId],
+    );
+    expect(t.rows[0].status_category).toBe('waiting');
+    expect(t.rows[0].waiting_reason).toBe('vendor');
+    expect(t.rows[0].sla_id).toBe(slaB.slaId);
+
+    // Both activities present (in addition to setup's sla_changed).
+    // Setup row uses a separate ticket_id timing window — count by event.
+    const acts = await pool.query(
+      `select metadata->>'event' as event
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2
+        order by created_at`,
+      [base.tenantId, ticketId],
+    );
+    // Three total: setup sla_changed, combined-call status_changed,
+    // combined-call sla_changed.
+    expect(acts.rowCount).toBe(3);
+    const eventCount = acts.rows.reduce<Record<string, number>>((acc, r) => {
+      acc[r.event] = (acc[r.event] ?? 0) + 1;
+      return acc;
+    }, {});
+    expect(eventCount.sla_changed).toBe(2);
+    expect(eventCount.status_changed).toBe(1);
+
+    // Outbox: status branch emitted one 'sla.timer_recompute_required'
+    // during the combined call. Documents the wasted emit (C3).
+    const outboxAfter = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxAfter).toBe(outboxBefore + 1);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 15: sla branch nested idempotency — direct call with the inner sentinel key reuses the cache', async () => {
+    // codex F11 — verify the inner command_operations row caches the
+    // sub-RPC's result and that a direct caller using the orchestrator-
+    // derived sentinel-prefixed key gets the cached result back without
+    // re-writing rows. Documents the F1 contract: the sentinel
+    // `__combined__:` is reserved-by-convention; direct callers minting
+    // the same key intentionally collide with (= reuse) the cached
+    // inner result.
+    const base = await seedBaseFixture(pool, `comb-sla-nested-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const sla = await seedSlaPolicy(pool, base.tenantId);
+
+    const outerIdem = `comb-sla-nested-${ticketId}`;
+    const innerKey = `__combined__:sla:case:${ticketId}:${outerIdem}`;
+    const slaPayload = { sla_id: sla.slaId, timers: buildTimersPayload(sla) };
+
+    // Step 1: combined call seeds the inner cache via the orchestrator.
+    const first = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      ['case', ticketId, base.tenantId, null, outerIdem, { sla: slaPayload }],
+    );
+    expect(first.kind).toBe('ok');
+    if (first.kind !== 'ok') return;
+    expect((first.value.sla as unknown as SlaInnerResult).noop).toBe(false);
+
+    // Confirm the inner row exists with cached_result populated.
+    const innerBefore = await pool.query(
+      `select outcome, cached_result is not null as has_cached
+         from public.command_operations
+        where tenant_id = $1 and idempotency_key = $2`,
+      [base.tenantId, innerKey],
+    );
+    expect(innerBefore.rowCount).toBe(1);
+    expect(innerBefore.rows[0].outcome).toBe('success');
+    expect(innerBefore.rows[0].has_cached).toBe(true);
+
+    const snapshot = {
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        `select count(*)::int as n from public.ticket_activities
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        `select count(*)::int as n from public.domain_events
+          where tenant_id = $1 and entity_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      co: (await pool.query(
+        `select count(*)::int as n from public.command_operations where tenant_id = $1`,
+        [base.tenantId],
+      )).rows[0].n as number,
+    };
+    expect(snapshot.timers).toBe(2);
+    expect(snapshot.acts).toBe(1);
+    expect(snapshot.evs).toBe(1);
+    expect(snapshot.co).toBe(2); // outer + sla inner
+
+    // Step 2: direct call to update_entity_sla using the inner key +
+    // same payload. Must hit the inner cache and return without any
+    // additional writes.
+    const direct = await runRpcCapture<SlaInnerResult>(
+      pool,
+      'public.update_entity_sla',
+      [ticketId, 'case', base.tenantId, null, innerKey, slaPayload],
+    );
+    expect(direct.kind).toBe('ok');
+    if (direct.kind !== 'ok') return;
+    // Returned cached_result matches what the orchestrator surfaced
+    // back as result.sla.
+    expect(direct.value).toEqual(first.value.sla);
+
+    // No new rows.
+    const after = {
+      timers: (await pool.query(
+        `select count(*)::int as n from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      acts: (await pool.query(
+        `select count(*)::int as n from public.ticket_activities
+          where tenant_id = $1 and ticket_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      evs: (await pool.query(
+        `select count(*)::int as n from public.domain_events
+          where tenant_id = $1 and entity_id = $2`,
+        [base.tenantId, ticketId],
+      )).rows[0].n as number,
+      co: (await pool.query(
+        `select count(*)::int as n from public.command_operations where tenant_id = $1`,
+        [base.tenantId],
+      )).rows[0].n as number,
+    };
+    expect(after).toEqual(snapshot);
   });
 });
 

@@ -7,19 +7,12 @@ documented so future readers don't re-discover them as bugs.
 ## §3.0 update_entity_combined — review-deferred items
 
 Items surfaced in the post-Commit-A self full-review (2026-05-11) that
-were intentionally not folded into v2 (00332):
+were intentionally not folded into v2 (00332) or v3 (00333):
 
-- **Branch ordering: status→sla wasted outbox emit.** If a single
-  call patches both `waiting_reason` and `sla_id`, the status branch
-  sets `recompute_pending=true` on the existing timers, then the sla
-  branch stops those timers (`stopped_at=now()`) and inserts fresh
-  ones with `recompute_pending=false`. End state is correct (fresh
-  timers under the new SLA); the only impact is one wasted
-  `sla.timer_recompute_required` outbox emit per (status+sla)
-  combined call. The worker queries `recompute_pending=true AND
-  stopped_at IS NULL` and finds none, no-ops. Cosmetic; revisit if
-  the worker's cost-per-event grows. Spec line 1816-1837 explicitly
-  orders status first.
+- **Watcher validation parity with TS reached at 00333** — RPC now
+  matches `tenant-validation.ts:271-302` contract (active + anonymized_at
+  IS NULL + left_at IS NULL + 200 unique-uuid size cap). Closed by
+  codex F9.
 
 - **Sub-RPC error code leakage to API surface.** Spec §3.0 line
   1867-1873 documents that §3.1-3.3 stay as public RPCs called
