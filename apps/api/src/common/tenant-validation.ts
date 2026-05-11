@@ -247,9 +247,9 @@ const MAX_WATCHER_IDS_PER_QUERY = 200;
  * subscriber semantics, not a validation problem.
  *
  * Free function (vs. service-method) so both `TicketService.update` and
- * `WorkOrderService.updateMetadata` import the same canonical impl. Keeping
- * it stateless means neither service needs to depend on the other and there
- * is no Nest cyclic-dep issue.
+ * `WorkOrderService.update` (and its `preflightValidateUpdate`) import the
+ * same canonical impl. Keeping it stateless means neither service needs
+ * to depend on the other and there is no Nest cyclic-dep issue.
  */
 export async function validateWatcherIdsInTenant(
   supabase: SupabaseService,

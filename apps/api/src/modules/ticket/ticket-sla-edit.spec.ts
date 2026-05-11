@@ -105,7 +105,11 @@ describe('TicketService.update — sla_id', () => {
     expect(deps.slaService.restartTimers).not.toHaveBeenCalled();
   });
 
-  // Step 1c.10c: ticket.service.update is case-only post-cutover. SLA edits
-  // on work_orders moved to WorkOrderService.updateSla — see
-  // `apps/api/src/modules/work-orders/work-order-sla-edit.spec.ts`.
+  // Step 1c.10c: ticket.service.update is case-only post-cutover. SLA
+  // edits on work_orders flow through `WorkOrderService.update` (the
+  // §3.0 orchestrator) — see `work-order-update.spec.ts` (TS call shape)
+  // + `apps/api/test/concurrency/update_entity_combined.spec.ts`
+  // (integration). The legacy per-field `WorkOrderService.updateSla` and
+  // its `work-order-sla-edit.spec.ts` were deleted in B.2.A §3.0
+  // Commit C remediation (2026-05-11).
 });

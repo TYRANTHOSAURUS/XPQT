@@ -288,6 +288,15 @@ describe('TicketService — per-action permission gates', () => {
       .mockReturnValue({ id: TENANT, subdomain: TENANT });
   });
 
+  // C-remediation alignment (2026-05-11, F-IMP-B): match the pattern used
+  // by every other migrated spec in this commit (work-order-update.spec
+  // :231-233, ticket-close-guard.spec:137, ticket-watcher-validation
+  // .spec:214). Without `restoreAllMocks`, `jest.spyOn(TenantContext)`
+  // from beforeEach leaks across tests in the same worker.
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   describe('update', () => {
     it('throws Forbidden when caller lacks tickets.change_priority and write_all', async () => {
       const deps = makeDeps(baseRow(), {
@@ -580,11 +589,18 @@ describe('TicketService — per-action permission gates', () => {
       );
 
       expect(deps.permissionChecks).toHaveLength(0);
-      // Reassign still goes through `.from('tickets').update` (it isn't
-      // part of the §3.0 orchestrator cutover scope — yet). What we
-      // assert is the absence of the permission RPC, plus that the
-      // mutation ran (visibility-loadContext was called → flow proceeded).
-      expect(deps.visibility.loadContext).toHaveBeenCalled();
+      // C-remediation strengthening (2026-05-11, F-IMP-A): the prior
+      // assertion (`visibility.loadContext was called`) was a weak proxy
+      // for "the mutation ran". `loadContext` fires during the gate even
+      // when the subsequent write is short-circuited, so it cannot
+      // distinguish "permission cleared, write happened" from "permission
+      // cleared, write threw". Reassign writes via `.from('tickets')
+      // .update(...)` (ticket.service.ts:1431) — its mock at the top of
+      // this file applies the patch onto `row`, so the row state IS the
+      // write proof.
+      expect(deps.row().assigned_team_id).toBe(
+        '33333333-3333-3333-3333-333333333333',
+      );
     });
 
     it('SYSTEM_ACTOR bypasses the gate', async () => {
@@ -627,7 +643,14 @@ describe('TicketService — per-action permission gates', () => {
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      expect(deps.visibility.loadContext).toHaveBeenCalled();
+      // C-remediation strengthening (2026-05-11, F-IMP-A): assert that
+      // the write actually landed, not just that the gate was traversed
+      // (`loadContext` alone proves nothing about the write outcome).
+      // See the sibling `skips the permission RPC` test for the same
+      // pattern.
+      expect(deps.row().assigned_team_id).toBe(
+        '33333333-3333-3333-3333-333333333333',
+      );
     });
   });
 });

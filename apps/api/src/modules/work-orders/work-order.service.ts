@@ -17,10 +17,10 @@ import { hasOwnDefined } from '../../common/has-own-defined';
 export const SYSTEM_ACTOR = '__system__';
 
 /**
- * Row shape returned by command methods (`updateSla`, `setPlan`, …). The
- * work_orders table mirrors most of `tickets` (Step 1c.1/1c.10c) but
- * post-cutover it is its own base table — callers should not assume the
- * field set is identical to `TicketDetail`.
+ * Row shape returned by the public command surface (`update`, `reassign`,
+ * `canPlan`). The work_orders table mirrors most of `tickets`
+ * (Step 1c.1/1c.10c) but post-cutover it is its own base table — callers
+ * should not assume the field set is identical to `TicketDetail`.
  */
 export type WorkOrderRow = Record<string, unknown> & {
   id: string;
@@ -32,13 +32,13 @@ export type WorkOrderRow = Record<string, unknown> & {
 
 /**
  * Union DTO accepted by the orchestrator `WorkOrderService.update`. Every
- * field is optional; the orchestrator dispatches per-field-group to the
- * existing per-field service methods (`updateSla` / `setPlan` / `updateStatus`
- * / `updatePriority` / `updateAssignment`). At least one field must be
- * present — an empty DTO is rejected as `BadRequest`.
+ * field is optional; the orchestrator builds a `p_patches` payload (one
+ * branch per field group: sla / plan / status / priority / assignment /
+ * metadata) and submits a single `update_entity_combined` RPC. At least
+ * one field must be present — an empty DTO is rejected as `BadRequest`.
  *
  * See `docs/assignments-routing-fulfillment.md` §7 for the per-field gates
- * that fire inside the orchestrator.
+ * that fire inside the orchestrator preflight (`preflightValidateUpdate`).
  */
 export interface UpdateWorkOrderDto {
   sla_id?: string | null;
@@ -67,11 +67,14 @@ const STATUS_FIELDS = ['status', 'status_category', 'waiting_reason'] as const;
 const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_vendor_id'] as const;
 const METADATA_FIELDS = ['title', 'description', 'cost', 'tags', 'watchers'] as const;
 
-// Module-level shared constants — used by both per-field methods and the
-// orchestrator's preflight. Single source of truth so a future tweak to
-// any bound or enum doesn't drift between the two validation surfaces.
-// Full-review on commit 4b2f6e0 caught a divergent duration cap (preflight
-// 30d vs setPlan 1y) — the same shape of bug; this is the structural fix.
+// Module-level shared constants — used by the orchestrator's preflight
+// (and historically by the legacy per-field methods deleted in
+// C-remediation, where divergence between the two surfaces caused real
+// bugs). Single source of truth so a future tweak to any bound or enum
+// can't drift between validation sites. Full-review on commit 4b2f6e0
+// originally caught a divergent duration cap (preflight 30d vs the
+// since-removed `setPlan` 1y); the constant stays here as the structural
+// fix.
 export const MAX_DURATION_MINUTES = 60 * 24 * 365; // 1 year
 export const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
 export type Priority = (typeof VALID_PRIORITIES)[number];
@@ -98,9 +101,23 @@ export const ERR_PERM_ASSIGN =
  *
  * Step 1c.10c made `TicketService.update` case-only. Any command that
  * mutates a work_order row (sla_id, plan, status, priority, assignment,
- * watchers, etc.) belongs here, NOT on TicketService. Today this service
- * exposes the SLA + plandate commands; status/priority/assignment/watchers
- * accumulate here as they get rewired off the case-only TicketService.
+ * watchers, etc.) belongs here, NOT on TicketService.
+ *
+ * Post-B.2.A §3.0 (Commit C, 2026-05-11): the canonical mutation surface
+ * is `update()` — a single orchestrator that builds a `p_patches` payload
+ * and commits every branch atomically via the `update_entity_combined`
+ * RPC (00335 v5). The legacy per-field service methods
+ * (`updateSla` / `setPlan` / `updateStatus` / `updatePriority` /
+ * `updateAssignment` / `updateMetadata`) were deleted in C-remediation:
+ * they had zero production callers post-cutover and conflicted with the
+ * CLAUDE.md rule that multi-table writes go through PL/pgSQL RPCs, not
+ * TS pipelines. Future single-field convenience entrypoints are welcome
+ * but MUST funnel through `update()` so they inherit the orchestrator's
+ * atomicity / audit / idempotency guarantees.
+ *
+ * `reassign()` stays as its own write path (routing_decisions audit
+ * insert + manual-mode assignment) until Step 9 (workflow-engine
+ * cutover) folds it into `set_entity_assignment` (§3.2).
  *
  * See `docs/assignments-routing-fulfillment.md` §6/§7 for the case-vs-WO
  * model and SLA editability rules.
@@ -118,40 +135,40 @@ export class WorkOrderService {
    * Single-endpoint command surface for `PATCH /work-orders/:id`.
    *
    * Plan-reviewer P1 (post-1c.10c): per-field PATCH endpoints (`/sla`,
-   * `/plan`, `/status`, `/priority`, `/assignment`) accreted as Slice 2 grew
-   * — each new field adds another route, hook, gate. The right shape is one
-   * endpoint that accepts a union DTO and dispatches per-field-group
-   * server-side. This method is that orchestrator.
+   * `/plan`, `/status`, `/priority`, `/assignment`) accreted as Slice 2
+   * grew — each new field adds another route, hook, gate. The right shape
+   * is one endpoint that accepts a union DTO and a single RPC that
+   * commits every branch atomically. This method is that orchestrator.
    *
    * Behavior:
-   * - Accepts any subset of `UpdateWorkOrderDto`. At least one field must be
-   *   present — empty DTO rejects as `BadRequest`.
-   * - Dispatches to the existing per-field service methods (`updateSla`,
-   *   `setPlan`, `updateStatus`, `updatePriority`, `updateAssignment`) so
-   *   side effects (timer pause/resume, activity emission, no-op fast-path,
-   *   refetch) are reused unchanged. The per-field methods remain callable
-   *   directly from internal callers (cron, workflow engine, SYSTEM_ACTOR).
-   * - Each per-field method enforces its own gate (visibility floor +
-   *   permission ceiling). Calling `update()` with multiple field-groups
-   *   evaluates each gate independently — there is no "common floor" that
-   *   short-circuits subsequent checks. SLA's danger gate (`sla.override`)
-   *   only fires inside the SLA branch; priority's `tickets.change_priority`
-   *   only fires inside the priority branch; etc.
-   * - Order of application is fixed: SLA → plan → status → priority →
-   *   assignment. This matches the side-effect dependency order
-   *   (status changes can pause/resume timers, which depend on the SLA
-   *   policy being already set). Multiple fields in one call are applied
-   *   sequentially, NOT atomically — a failure mid-sequence leaves earlier
-   *   updates committed. This matches the per-field endpoint behavior the
-   *   FE was already coded against; a transactional wrapper is class-wide
-   *   debt tracked alongside the activity-row swallow pattern.
-   * - Returns the final row state after all dispatched updates apply.
-   *   Single-field calls return the per-field method's row directly; multi-
-   *   field calls refetch once at the end so the response reflects every
-   *   side effect (e.g. resolved_at synthesized by status, sla_id-derived
-   *   columns from SLA edits).
-   * - SYSTEM_ACTOR bypasses every gate (the per-field methods already do
-   *   this individually).
+   * - Accepts any subset of `UpdateWorkOrderDto`. At least one field must
+   *   be present — empty DTO rejects as `BadRequest`.
+   * - Runs `preflightValidateUpdate` to gate visibility, per-field
+   *   permission RPCs (`sla.override`, `tickets.change_priority`,
+   *   `tickets.assign`), tenant validation for assignees + watchers,
+   *   SLA-policy existence, and stateless format / enum / range checks.
+   *   If preflight throws, NO write happens (validation-atomic).
+   * - Builds the `p_patches` payload (sla / plan / status / priority /
+   *   assignment / metadata branches as needed) via
+   *   `buildPatchesPayloadForWorkOrder`. SLA branch includes
+   *   TS-computed timer due_at values from `SlaService.buildTimersForRpc`
+   *   (the RPC requires pre-computed timers — 00330:202-205).
+   * - Commits via a single `update_entity_combined` RPC call (00335 v5).
+   *   The RPC writes every branch in one transaction, emits all activity
+   *   rows + domain events, and is idempotent via the
+   *   `patch:work_order:<id>:<clientRequestId>` outer key (spec 1892).
+   * - Refetches the row after the RPC returns so the response reflects
+   *   every RPC-side side effect (resolved_at / closed_at synthesised
+   *   by status branch, sla_response_due_at / sla_resolution_due_at
+   *   from sla branch).
+   * - SYSTEM_ACTOR collapses `p_actor_user_id` to null (00325:89-94) and
+   *   skips visibility + per-field permission checks in preflight. The
+   *   stateless tier-1 checks (format / enum / range / shape) still
+   *   apply — workflow + cron writes shouldn't be able to land malformed
+   *   data either.
+   * - `clientRequestId` is required (F-CRIT-1) — internal callers that
+   *   bypass the controller's `RequireClientRequestIdGuard` would
+   *   otherwise mint a fresh randomUUID per call and lose idempotency.
    */
   async update(
     workOrderId: string,
@@ -331,15 +348,21 @@ export class WorkOrderService {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // B.2.A Commit B (§3.0 controller cutover) — replace the per-field
-    // dispatch chain (updateSla → setPlan → updateStatus → updatePriority
-    // → updateAssignment → updateMetadata) with one `update_entity_combined`
-    // RPC call. The RPC commits every branch in one transaction, emits
-    // the same activity rows + domain events the per-field methods
-    // emitted, and removes the validation-atomic-only / activity-row-
-    // swallow caveats called out above. The per-field service methods
-    // remain on the class for internal callers (cron, workflow engine,
-    // SYSTEM_ACTOR paths); they are not called from the PATCH path.
+    // B.2.A Commit B (§3.0 controller cutover) — the per-field dispatch
+    // chain (updateSla → setPlan → updateStatus → updatePriority →
+    // updateAssignment → updateMetadata) was replaced by one
+    // `update_entity_combined` RPC call. The RPC commits every branch in
+    // one transaction, emits the same activity rows + domain events the
+    // legacy per-field methods emitted, and removes the
+    // validation-atomic-only / activity-row-swallow caveats called out
+    // above.
+    //
+    // Commit C remediation (2026-05-11): the legacy per-field service
+    // methods had zero production callers post-cutover and were deleted.
+    // Internal callers (cron, workflow engine, SYSTEM_ACTOR paths) must
+    // come through `update()` so they inherit the orchestrator's atomic
+    // commit + audit + idempotency guarantees. The workflow-engine
+    // cutover happens in B.2.A Step 9 (§3.2 `set_entity_assignment`).
     //
     // SLA branch needs TS-computed timers (the RPC raises
     // update_entity_sla.timers_required if sla_id is non-null and
@@ -656,12 +679,14 @@ export class WorkOrderService {
     }
 
     // SLA policy existence in tenant (full-review #3 critical fix).
-    // Pre-fix this lived in tier-2 and was skipped for SYSTEM_ACTOR;
-    // `updateSla` validates the same thing for SYSTEM_ACTOR (line 587+),
-    // so SYSTEM_ACTOR multi-field PATCH with bad sla_id + good other
-    // fields would commit the others and then reject — partial commit
-    // reintroduced. Hoisted into tier-1 because it's an auth-free DB
-    // lookup keyed by a deterministic id.
+    // Pre-fix this lived in tier-2 and was skipped for SYSTEM_ACTOR.
+    // Pre-cutover the legacy per-field `updateSla` validated this for
+    // SYSTEM_ACTOR too, so a SYSTEM_ACTOR multi-field PATCH with a bad
+    // sla_id + good other fields could commit the others and then reject
+    // — partial commit. Even though the combined RPC is now atomic and
+    // would NOT partial-commit, we keep the tier-1 check so the failure
+    // surfaces as a registered `work_order.sla_unknown` (400) instead of
+    // the RPC's programmer-error code `update_entity_sla.invalid_sla_id`.
     if (
       flags.hasSla &&
       dto.sla_id !== null &&
@@ -740,357 +765,10 @@ export class WorkOrderService {
     }
 
     // SLA policy existence — moved to tier 1 (auth-free; needs to fire
-    // for SYSTEM_ACTOR too because per-field updateSla validates it
-    // there).
-  }
-
-  /**
-   * Reassign the executor SLA on a work_order. Mirrors the pre-1c.10c
-   * `TicketService.update({ sla_id })` behavior for child tickets.
-   *
-   * - Visibility gate is `assertCanPlan` (parent-case team owners can act on
-   *   child WOs — wider than `assertVisible('write')` which doesn't model
-   *   that path). See `ticket-visibility.service.ts:184`.
-   * - No-op (no DB write, no timer churn) when the new value equals the
-   *   current value — avoids stomping on stable timers.
-   * - Validates `slaId` references a real `sla_policies` row in the tenant
-   *   before persisting; null clears the SLA.
-   * - Calls `SlaService.restartTimers` so existing timers stop and fresh
-   *   ones start from the new policy.
-   * - Records a `sla_changed` system-event activity (mirrors the activity
-   *   that `TicketService.update` previously emitted on this path).
-   */
-  async updateSla(
-    workOrderId: string,
-    slaId: string | null,
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    // Two-axis gate: visibility floor + danger-permission check.
-    //
-    // Visibility (assertCanPlan): the user must be able to see the WO at all
-    // (assignee / assigned vendor / WO team / parent case team / scoped role
-    // / tickets.write_all). Without this, the permission check could leak WO
-    // ids from other locations/domains.
-    //
-    // Permission (sla.override OR tickets.write_all): SLA reassignment is
-    // explicitly marked danger:true in the permission catalog
-    // (packages/shared/src/permissions.ts:296). It is desk/admin-owned —
-    // assignees and vendors can SEE the WO and its SLA but should NOT change
-    // it. Codex round 1 flagged that gating on assertCanPlan alone over-grants.
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertCanPlan(workOrderId, ctx);
-
-      if (!ctx.has_write_all) {
-        const { data: hasOverride, error: permErr } = await this.supabase.admin.rpc(
-          'user_has_permission',
-          {
-            p_user_id: ctx.user_id,
-            p_tenant_id: tenant.id,
-            p_permission: 'sla.override',
-          },
-        );
-        if (permErr) throw permErr;
-        if (!hasOverride) {
-          throw AppErrors.forbidden('work_order.permission_sla_override', ERR_PERM_SLA_OVERRIDE);
-        }
-      }
-    }
-
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, sla_id')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as { id: string; tenant_id: string; sla_id: string | null };
-    const previousSlaId = currentRow.sla_id;
-
-    // No-op fast-path: the FE will sometimes send the same value (e.g. when
-    // the user re-selects the current option). Don't churn timers.
-    if (previousSlaId === slaId) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    // Validate the target policy belongs to this tenant before mutating.
-    // Avoids an FK violation surfacing as a 500; also blocks cross-tenant id
-    // smuggling. `null` is a deliberate "No SLA" choice — skip validation.
-    if (slaId !== null) {
-      const { data: policy, error: policyErr } = await this.supabase.admin
-        .from('sla_policies')
-        .select('id')
-        .eq('id', slaId)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle();
-      if (policyErr) throw policyErr;
-      if (!policy) {
-        throw AppErrors.validationFailed('work_order.sla_unknown', {
-          detail: `sla_id ${slaId} does not reference a known SLA policy in this tenant`,
-        });
-      }
-    }
-
-    // Bump updated_at explicitly. The work_orders table has no auto-trigger
-    // for updated_at on UPDATE (the bridge-era trigger was dropped in
-    // 00217_step1c3_post_review_fixes.sql:235 and never restored as a native
-    // post-cutover trigger). Codex round 1 caught this — without the
-    // explicit timestamp, downstream consumers (FE refetch, audit feeds,
-    // Realtime) miss the change.
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update({ sla_id: slaId, updated_at: new Date().toISOString() })
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    // Restart timers. SlaService.restartTimers handles null (clear-only)
-    // internally and routes the row update via updateTicketOrWorkOrder.
-    //
-    // KNOWN DEBT (codex round 1): swallowing this error leaves sla_id and
-    // active timers inconsistent. Fixing that properly requires a
-    // transaction or outbox pattern in SlaService — not B1.5 scope.
-    // TicketService.update has the same swallow pattern today
-    // (ticket.service.ts:842). Lock-step replacement is a separate task;
-    // until then, a cron tick + manual recovery can reconcile.
-    try {
-      await this.slaService.restartTimers(workOrderId, tenant.id, slaId);
-    } catch (err) {
-      console.error('[sla] restart on work_order sla_id change failed', err);
-    }
-
-    // Activity row. Mirrors the `sla_changed` event TicketService.update
-    // previously wrote for child tickets. ticket_activities accepts
-    // work_order ids post-1c.10c (FK to tickets dropped in 00235); the
-    // activities sidecar mirrors via shadow trigger with entity_kind
-    // auto-derived to 'work_order'.
-    //
-    // KNOWN DEBT (codex round 1): same audit-trail concern as the timer
-    // swallow above. Documented for the class-wide cleanup.
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: {
-            event: 'sla_changed',
-            from_sla_id: previousSlaId,
-            to_sla_id: slaId,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] sla_changed activity failed', err);
-    }
-
-    // Refetch AFTER restartTimers so the returned row reflects any
-    // SLA-derived columns the timer restart writes (due_at, breached_at,
-    // sla_at_risk, etc.). Without this the FE caches a stale snapshot.
-    // Codex round 1 finding #3.
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
-  }
-
-  /**
-   * Set the assignee-declared plan (planned_start_at + planned_duration_minutes)
-   * on a work_order. Mirrors the pre-1c.10c `TicketService.setPlan` behavior;
-   * the legacy method still exists at `ticket.service.ts:1082` but writes to
-   * the wrong table post-cutover (case-only `tickets`) — that file is owned
-   * by the plandate workstream and stays as the dead-but-isolated code their
-   * cleanup will remove. The Plan SidebarGroup in the desk UI is gated to
-   * `ticket_kind === 'work_order'`, so all live plan writes route here.
-   *
-   * Inherits the same Step 1c.10c codex round 1 pattern that `updateSla` uses:
-   *  - Visibility-only gate (no `danger:true` permission gate). Plandate is
-   *    the assignee's call by design — `assertCanPlan` already excludes
-   *    requesters/watchers and read-only cross-domain roles. Codex round 1's
-   *    finding #1 about over-grant only applied to SLA reassignment.
-   *  - No-op fast-path when both fields equal current — no churn, no activity.
-   *  - Explicit `updated_at` bump (work_orders has no auto-trigger post-1c.10c).
-   *  - Refetch AFTER the activity write so the returned row reflects any
-   *    activity-side mutations downstream consumers care about.
-   */
-  async setPlan(
-    workOrderId: string,
-    plannedStartAt: string | null,
-    plannedDurationMinutes: number | null,
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    // Visibility gate. Plan changes are explicitly allowed for the WO
-    // assignee, the assigned vendor, and team members of the WO/parent case
-    // team — `assertCanPlan` encodes that. No additional permission check
-    // (per codex round 1: SLA's danger gate doesn't apply to plan).
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertCanPlan(workOrderId, ctx);
-    }
-
-    // Validate inputs early. Same rules as the legacy TicketService.setPlan
-    // (ticket.service.ts:1106-1116) so behavior is identical for callers.
-    if (plannedStartAt !== null) {
-      const ts = Date.parse(plannedStartAt);
-      if (Number.isNaN(ts)) {
-        throw AppErrors.validationFailed('work_order.planned_start_invalid', {
-          detail: 'planned_start_at must be a valid ISO 8601 timestamp',
-        });
-      }
-    }
-    // Upper bound: 1 year of minutes (module-level MAX_DURATION_MINUTES;
-    // shared with preflight). `Number.isInteger` returns true for some
-    // integral floats above 2^31 (e.g. 1e15), which would pass our
-    // validation and 500 on the int4 column overflow. Codex round 1 catch.
-    if (
-      plannedDurationMinutes !== null &&
-      (!Number.isInteger(plannedDurationMinutes) ||
-        plannedDurationMinutes <= 0 ||
-        plannedDurationMinutes > MAX_DURATION_MINUTES)
-    ) {
-      throw AppErrors.validationFailed('work_order.duration_invalid', { detail: ERR_DURATION_INVALID() });
-    }
-    // Duration without a start makes no sense — clear them together.
-    // Mirror of the legacy method's behavior; the FE relies on this.
-    const finalDuration = plannedStartAt === null ? null : plannedDurationMinutes;
-
-    // Load current row + tenant scope. maybeSingle so an unknown id raises
-    // 404 cleanly rather than throwing the supabase no-rows error.
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, planned_start_at, planned_duration_minutes')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      planned_start_at: string | null;
-      planned_duration_minutes: number | null;
-    };
-
-    const previous = {
-      planned_start_at: currentRow.planned_start_at,
-      planned_duration_minutes: currentRow.planned_duration_minutes,
-    };
-    const nextValues = {
-      planned_start_at: plannedStartAt,
-      planned_duration_minutes: finalDuration,
-    };
-
-    // No-op fast-path. The FE re-emits identical values for some flows
-    // (e.g. opening + closing the picker without changing it). Skip the
-    // write + activity row + cache invalidations.
-    //
-    // Codex round 2 catch: timestamps from Postgres come back in a
-    // different STRING form than what the caller sent (e.g. caller sends
-    // `2026-05-04T13:00:00.000Z`, DB returns `2026-05-04T13:00:00+00:00`)
-    // — same instant, different string. A naive `===` would treat these
-    // as different and trigger an unnecessary write + spurious activity
-    // row. Normalize both sides via Date.parse before comparing.
-    const sameStart =
-      previous.planned_start_at === nextValues.planned_start_at ||
-      (previous.planned_start_at !== null &&
-        nextValues.planned_start_at !== null &&
-        Date.parse(previous.planned_start_at) === Date.parse(nextValues.planned_start_at));
-    if (
-      sameStart &&
-      previous.planned_duration_minutes === nextValues.planned_duration_minutes
-    ) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    // Explicit updated_at — work_orders has no auto-trigger for it
-    // post-1c.10c (the bridge-era trigger was dropped in 00217 and never
-    // restored). Codex round 1 finding for updateSla applies here too.
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update({
-        planned_start_at: nextValues.planned_start_at,
-        planned_duration_minutes: nextValues.planned_duration_minutes,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    // Activity row. Same `plan_changed` event shape the legacy
-    // TicketService.setPlan emitted (ticket.service.ts:1143-1156) so the
-    // activity feed renderer keeps working unchanged.
-    //
-    // KNOWN DEBT (carried over from updateSla): swallowing the error leaves
-    // the row updated but the audit trail missing. Class-wide cleanup is
-    // tracked in the Step 1c.10c handoff.
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: {
-            event: 'plan_changed',
-            previous,
-            next: nextValues,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] plan_changed activity failed', err);
-    }
-
-    // Refetch AFTER the activity write so the returned row is the
-    // post-mutation snapshot. Codex round 1 finding #3.
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
+    // for SYSTEM_ACTOR too because the orchestrator must reject an
+    // unknown sla_id before submitting the combined RPC, where the
+    // failure would surface as a programmer-error code from the inner
+    // SQL function instead of a registered validation code).
   }
 
   /**
@@ -1124,674 +802,13 @@ export class WorkOrderService {
   }
 
   /**
-   * Update status / status_category / waiting_reason on a work_order. Mirrors
-   * the case-side `TicketService.update` status path (ticket.service.ts:880-952)
-   * but writes to work_orders directly.
-   *
-   * Visibility gate: `assertCanPlan` (the same operator floor used by
-   * `setPlan` / `updateAssignment` / `updatePriority`). No per-transition
-   * close/reopen permission gate — case side doesn't have one and divergence
-   * here would be a footgun for the desk UI which calls both paths
-   * symmetrically.
-   *
-   * Side effects:
-   *  - When status_category enters 'resolved', synthesize `resolved_at = now()`.
-   *  - When status_category enters 'closed', synthesize `closed_at = now()`.
-   *  - On waiting-state transitions, call
-   *    `slaService.applyWaitingStateTransition` (the shared helper that the
-   *    case-side `TicketService.update` also uses) to pause/resume SLA timers
-   *    when the policy's `pause_on_waiting_reasons` matches the new
-   *    waiting_reason. No double-fire risk via workflow listeners (verified
-   *    against case-side code path).
-   *  - Activity row: `system_event` with `metadata.event = 'status_changed'`,
-   *    previous/next snapshots of the changed fields.
-   *  - Domain event: `ticket_status_changed` (same name as case-side; the
-   *    entity_id disambiguates).
-   */
-  async updateStatus(
-    workOrderId: string,
-    dto: { status?: string; status_category?: string; waiting_reason?: string | null },
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertCanPlan(workOrderId, ctx);
-    }
-
-    // Validate the DTO has at least one field to change. An empty PATCH
-    // is a malformed request, not a no-op — surface it as 400 so the FE
-    // sees the bug immediately rather than silently no-oping.
-    const provided: Array<'status' | 'status_category' | 'waiting_reason'> = [];
-    if (dto.status !== undefined) provided.push('status');
-    if (dto.status_category !== undefined) provided.push('status_category');
-    if (dto.waiting_reason !== undefined) provided.push('waiting_reason');
-    if (provided.length === 0) {
-      throw AppErrors.validationFailed('work_order.empty_status_update', {
-        detail: 'updateStatus requires at least one of: status, status_category, waiting_reason',
-      });
-    }
-
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, sla_id, status, status_category, waiting_reason, resolved_at, closed_at')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      sla_id: string | null;
-      status: string;
-      status_category: string;
-      waiting_reason: string | null;
-      resolved_at: string | null;
-      closed_at: string | null;
-    };
-
-    // Compute diff. No-op fast-path: every provided field already matches
-    // the current value — refetch + return without writing.
-    const diff: Record<string, unknown> = {};
-    const previous: Record<string, unknown> = {};
-    const next: Record<string, unknown> = {};
-    for (const field of provided) {
-      const cur = currentRow[field];
-      const incoming = dto[field] as string | null | undefined;
-      if (cur !== incoming) {
-        diff[field] = incoming;
-        previous[field] = cur;
-        next[field] = incoming;
-      }
-    }
-
-    if (Object.keys(diff).length === 0) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    // Synthesize terminal-state timestamps. Mirror of the case-side
-    // ticket.service.ts:880-885 behavior. Set only if the column is
-    // currently null — re-resolving an already-resolved row should not
-    // overwrite the historical timestamp.
-    if (diff.status_category === 'resolved' && !currentRow.resolved_at) {
-      diff.resolved_at = new Date().toISOString();
-    }
-    if (diff.status_category === 'closed' && !currentRow.closed_at) {
-      diff.closed_at = new Date().toISOString();
-    }
-
-    // Explicit updated_at — work_orders has no auto-trigger for it
-    // post-1c.10c (codex round 1 finding from Session 9).
-    diff.updated_at = new Date().toISOString();
-
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update(diff)
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    // SLA pause/resume on waiting-state transitions. Only fires when the
-    // status_category or waiting_reason actually changed (covered by the
-    // diff check above). Delegates to SlaService.applyWaitingStateTransition,
-    // the same helper TicketService.update calls on the case side — single
-    // source of truth, no divergence risk if a future transition rule lands.
-    if (diff.status_category !== undefined || diff.waiting_reason !== undefined) {
-      try {
-        const beforeRow = {
-          status_category: currentRow.status_category,
-          waiting_reason: currentRow.waiting_reason,
-          sla_id: currentRow.sla_id,
-        };
-        const afterRow = {
-          status_category: (diff.status_category as string | undefined) ?? currentRow.status_category,
-          waiting_reason:
-            diff.waiting_reason !== undefined
-              ? (diff.waiting_reason as string | null)
-              : currentRow.waiting_reason,
-          sla_id: currentRow.sla_id,
-        };
-        await this.slaService.applyWaitingStateTransition(workOrderId, tenant.id, beforeRow, afterRow);
-      } catch (err) {
-        // KNOWN DEBT (Session 9 codex): swallowing leaves status updated but
-        // SLA timer state stale. Class-wide cleanup tracked in the handoff.
-        console.error('[work-order] sla pause/resume failed', err);
-      }
-    }
-
-    // Activity row. Same `status_changed` event shape as the case side
-    // (ticket.service.ts:925-932) so the activity feed renderer keeps
-    // working uniformly across cases and work_orders.
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: {
-            event: 'status_changed',
-            previous,
-            next,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] status_changed activity failed', err);
-    }
-
-    // Domain event. Same `ticket_status_changed` name as case side; the
-    // entity_id field disambiguates which kind of entity it refers to.
-    try {
-      await this.logDomainEvent(workOrderId, tenant.id, 'ticket_status_changed', {
-        previous,
-        next,
-      });
-    } catch (err) {
-      console.error('[work-order] status_changed domain event failed', err);
-    }
-
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
-  }
-
-  /**
-   * Update priority on a work_order. Two-axis gate:
-   *  - Visibility: `assertCanPlan` (operator floor).
-   *  - Permission: `tickets.change_priority` OR `tickets.write_all`.
-   *
-   * Note: priority change does NOT trigger SLA recompute on the case side
-   * (ticket.service.ts:867-952 only fires SLA on status / sla_id transitions).
-   * Mirror that here — no SLA churn on priority change.
-   */
-  async updatePriority(
-    workOrderId: string,
-    priority: 'low' | 'medium' | 'high' | 'critical',
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    if (!VALID_PRIORITIES.includes(priority)) {
-      throw AppErrors.validationFailed('work_order.priority_invalid', { detail: ERR_PRIORITY_INVALID });
-    }
-
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertCanPlan(workOrderId, ctx);
-
-      // Per the permission catalog, tickets.change_priority is NOT a
-      // danger:true gate (only tickets.write_all is). Plain permission
-      // check: change_priority OR write_all.
-      if (!ctx.has_write_all) {
-        const { data: hasChange, error: permErr } = await this.supabase.admin.rpc(
-          'user_has_permission',
-          {
-            p_user_id: ctx.user_id,
-            p_tenant_id: tenant.id,
-            p_permission: 'tickets.change_priority',
-          },
-        );
-        if (permErr) throw permErr;
-        if (!hasChange) {
-          throw AppErrors.forbidden('work_order.permission_priority_change', ERR_PERM_PRIORITY_CHANGE);
-        }
-      }
-    }
-
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, priority')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      priority: string;
-    };
-
-    if (currentRow.priority === priority) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update({ priority, updated_at: new Date().toISOString() })
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: {
-            event: 'priority_changed',
-            previous: currentRow.priority,
-            next: priority,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] priority_changed activity failed', err);
-    }
-
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
-  }
-
-  /**
-   * Update assignment on a work_order — silent PATCH path (no reason audit).
-   * Mirrors the case-side update path (ticket.service.ts:934-948) but writes
-   * to work_orders.
-   *
-   * Two-axis gate:
-   *  - Visibility: `assertCanPlan` (operator floor).
-   *  - Permission: `tickets.assign` OR `tickets.write_all`.
-   *
-   * Does NOT auto-promote `new → assigned` on first assignment via PATCH —
-   * the case side doesn't, and quietly flipping status here would be
-   * surprising. Use the resolver / dispatch paths when status implication
-   * is desired.
-   */
-  async updateAssignment(
-    workOrderId: string,
-    dto: {
-      assigned_team_id?: string | null;
-      assigned_user_id?: string | null;
-      assigned_vendor_id?: string | null;
-    },
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
-
-    const provided: Array<'assigned_team_id' | 'assigned_user_id' | 'assigned_vendor_id'> = [];
-    if (dto.assigned_team_id !== undefined) provided.push('assigned_team_id');
-    if (dto.assigned_user_id !== undefined) provided.push('assigned_user_id');
-    if (dto.assigned_vendor_id !== undefined) provided.push('assigned_vendor_id');
-    if (provided.length === 0) {
-      throw AppErrors.validationFailed('work_order.empty_assignment_update', {
-        detail: 'updateAssignment requires at least one of: assigned_team_id, assigned_user_id, assigned_vendor_id',
-      });
-    }
-
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, assigned_team_id, assigned_user_id, assigned_vendor_id')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      assigned_team_id: string | null;
-      assigned_user_id: string | null;
-      assigned_vendor_id: string | null;
-    };
-
-    const diff: Record<string, unknown> = {};
-    const previous: Record<string, string | null> = {};
-    const next: Record<string, string | null> = {};
-    for (const field of provided) {
-      const cur = currentRow[field];
-      const incoming = dto[field] as string | null;
-      if (cur !== incoming) {
-        diff[field] = incoming;
-        previous[field] = cur;
-        next[field] = incoming;
-      }
-    }
-
-    if (Object.keys(diff).length === 0) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    // Validate any non-null new assignee belongs to this tenant. Cross-tenant
-    // id smuggling defense — without this, a malicious caller could attach a
-    // foreign team / user / vendor id and the FK / RLS layers would NOT catch
-    // it (assigned_vendor_id has no FK; teams + users have FKs but no tenant
-    // composite check).
-    await validateAssigneesInTenant(this.supabase, diff, tenant.id, {
-      skipForSystemActor: actorAuthUid === SYSTEM_ACTOR,
-    });
-
-    diff.updated_at = new Date().toISOString();
-
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update(diff)
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: {
-            event: 'assignment_changed',
-            previous,
-            next,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] assignment_changed activity failed', err);
-    }
-
-    try {
-      await this.logDomainEvent(workOrderId, tenant.id, 'ticket_assigned', {
-        previous,
-        next,
-      });
-    } catch (err) {
-      console.error('[work-order] ticket_assigned domain event failed', err);
-    }
-
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
-  }
-
-  /**
-   * Update metadata fields on a work_order — `title`, `description`,
-   * `cost`, `tags`, `watchers`. Slice 3.1 of the WO command surface.
-   *
-   * Mirrors the case-side TicketService.update behaviour for these fields:
-   *  - Visibility: `assertCanPlan` (operator floor; no danger-permission).
-   *  - Validation: type-narrowed by the controller; this method enforces
-   *    the no-empty-DTO and no-op fast-path semantics consistent with
-   *    sibling methods.
-   *  - Side effects: bulk `.update()` of whichever fields differ, plus an
-   *    explicit `updated_at`. No timer churn, no status promotion, no
-   *    activity emission.
-   *
-   * The case side does not emit per-field activity rows for these fields
-   * (verified at ticket.service.ts:990+ — only status/assignment/sla
-   * write activities). To keep parity, neither does this method. If/when
-   * the audit trail is improved, both sides should grow the rows in the
-   * same slice.
-   */
-  async updateMetadata(
-    workOrderId: string,
-    dto: {
-      title?: string;
-      description?: string | null;
-      cost?: number | null;
-      tags?: string[] | null;
-      watchers?: string[] | null;
-    },
-    actorAuthUid: string,
-  ): Promise<WorkOrderRow> {
-    const tenant = TenantContext.current();
-
-    // Validation lives at the service layer too — the controller catches
-    // the same conditions, but internal callers (workflow engine, cron,
-    // SYSTEM_ACTOR paths) bypass the controller. Service layer is the
-    // trust boundary.
-    if (Object.keys(dto).length === 0) {
-      throw AppErrors.validationFailed('work_order.empty_metadata_update', {
-        detail: 'updateMetadata requires at least one of: title, description, cost, tags, watchers',
-      });
-    }
-    if (dto.title !== undefined && dto.title.trim() === '') {
-      throw AppErrors.validationFailed('work_order.title_empty', { detail: ERR_TITLE_EMPTY });
-    }
-    if (
-      dto.cost !== undefined &&
-      dto.cost !== null &&
-      !Number.isFinite(dto.cost)
-    ) {
-      throw AppErrors.validationFailed('work_order.cost_invalid', { detail: ERR_COST_NOT_FINITE });
-    }
-    if (dto.tags !== undefined && dto.tags !== null) {
-      if (!Array.isArray(dto.tags) || !dto.tags.every((t) => typeof t === 'string')) {
-        throw AppErrors.validationFailed('work_order.tags_invalid', { detail: ERR_TAGS_INVALID });
-      }
-    }
-    if (dto.watchers !== undefined && dto.watchers !== null) {
-      if (
-        !Array.isArray(dto.watchers) ||
-        !dto.watchers.every((w) => typeof w === 'string')
-      ) {
-        throw AppErrors.validationFailed('work_order.watchers_invalid', { detail: ERR_WATCHERS_SHAPE_INVALID });
-      }
-    }
-
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertCanPlan(workOrderId, ctx);
-    }
-
-    // Tenant-validate watcher uuids before the write. Closes the GHOST-uuid
-    // vector — does NOT close the within-tenant unauthorized-share vector
-    // (which is a product decision about subscriber semantics, not a
-    // validation problem). Helper handles the SYSTEM_ACTOR bypass internally
-    // to keep the gate convention consistent with the visibility checks
-    // above.
-    await validateWatcherIdsInTenant(
-      this.supabase,
-      Object.prototype.hasOwnProperty.call(dto, 'watchers') ? dto.watchers : undefined,
-      tenant.id,
-      { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
-    );
-
-    const { data: current, error: loadErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('id, tenant_id, title, description, cost, tags, watchers')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (loadErr) throw loadErr;
-    if (!current) {
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      title: string | null;
-      description: string | null;
-      cost: number | null;
-      tags: string[] | null;
-      watchers: string[] | null;
-    };
-
-    // Cost is `numeric(12,2)` in Postgres — exact 2-dp decimal. JS sends
-    // IEEE-754 floats, so a UI-derived 0.1+0.2=0.30000000000000004 PATCH
-    // would round to 0.30 on write but compare against 0.3 on the next
-    // refetch — the no-op fast-path below would never fire and every
-    // PATCH with a fractional cost would re-write the row. Round to 2 dp
-    // up front so the diff and the persisted value agree.
-    const costNormalized =
-      dto.cost === null || dto.cost === undefined
-        ? dto.cost
-        : Math.round(dto.cost * 100) / 100;
-
-    // Build the diff: only fields whose new value differs from current.
-    // Array equality uses JSON.stringify — these arrays are always small
-    // (tags ≤ ~20, watchers ≤ ~20) and typed as string[], so JSON
-    // comparison is correct and cheap. If tags ever becomes object[], swap
-    // for a structural deep-equal helper.
-    const diff: Record<string, unknown> = {};
-    if (dto.title !== undefined && dto.title !== currentRow.title) {
-      diff.title = dto.title;
-    }
-    if (
-      Object.prototype.hasOwnProperty.call(dto, 'description') &&
-      (dto.description ?? null) !== currentRow.description
-    ) {
-      diff.description = dto.description ?? null;
-    }
-    if (
-      Object.prototype.hasOwnProperty.call(dto, 'cost') &&
-      (costNormalized ?? null) !== currentRow.cost
-    ) {
-      diff.cost = costNormalized ?? null;
-    }
-    if (Object.prototype.hasOwnProperty.call(dto, 'tags')) {
-      const next = dto.tags ?? null;
-      const prev = currentRow.tags ?? null;
-      if (JSON.stringify(next) !== JSON.stringify(prev)) {
-        diff.tags = next;
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(dto, 'watchers')) {
-      const next = dto.watchers ?? null;
-      const prev = currentRow.watchers ?? null;
-      if (JSON.stringify(next) !== JSON.stringify(prev)) {
-        diff.watchers = next;
-      }
-    }
-
-    // No-op fast path: every supplied field already equals the current value.
-    // Return the full row without writing — matches updateStatus / updatePriority
-    // / updateAssignment behaviour and avoids spurious updated_at bumps that
-    // would invalidate downstream caches and Realtime subscribers.
-    if (Object.keys(diff).length === 0) {
-      const { data: full, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .single();
-      if (refetchErr) throw refetchErr;
-      return full as WorkOrderRow;
-    }
-
-    diff.updated_at = new Date().toISOString();
-
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update(diff)
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    // Audit row — `metadata_changed` event with per-field diff. One row
-    // per call (not per field) so the audit feed stays scannable when
-    // multiple fields change in a bulk PATCH. Wrapped in try/catch so
-    // an activity write failure doesn't roll back the user-visible
-    // change. Mirrors `assignment_changed` / `priority_changed` shape
-    // from sibling methods.
-    try {
-      const authorPersonId = await this.resolveAuthorPersonId(actorAuthUid, tenant.id);
-      const changes: Record<string, { previous: unknown; next: unknown }> = {};
-      if ('title' in diff) changes.title = { previous: currentRow.title, next: diff.title };
-      if ('description' in diff) changes.description = { previous: currentRow.description, next: diff.description };
-      if ('cost' in diff) changes.cost = { previous: currentRow.cost, next: diff.cost };
-      if ('tags' in diff) changes.tags = { previous: currentRow.tags, next: diff.tags };
-      if ('watchers' in diff) changes.watchers = { previous: currentRow.watchers, next: diff.watchers };
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'system',
-          metadata: { event: 'metadata_changed', changes },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] metadata_changed activity failed', err);
-    }
-
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
-    }
-    return refreshed as WorkOrderRow;
-  }
-
-  /**
-   * Reassign a work_order with a reason. Distinct from `updateAssignment` —
-   * this writes a `routing_decisions` row tagged `chosen_by: 'manual_reassign'`
-   * and a corresponding internal-visibility activity row carrying the human
+   * Reassign a work_order with a reason. Distinct from the `update()`
+   * orchestrator's `assignment` branch — `reassign` writes a
+   * `routing_decisions` row tagged `chosen_by: 'manual_reassign'` and a
+   * corresponding internal-visibility activity row carrying the human
    * reason in `content`. Mirrors ticket.service.ts:959-1074.
    *
-   * Two-axis gate (same as updateAssignment):
+   * Two-axis gate (same as the orchestrator's assignment branch):
    *  - Visibility: `assertCanPlan` (operator floor).
    *  - Permission: `tickets.assign` OR `tickets.write_all`.
    *
@@ -1990,10 +1007,15 @@ export class WorkOrderService {
   }
 
   /**
-   * Shared two-axis gate for assignment + reassign — visibility floor
-   * (`assertCanPlan`) plus the `tickets.assign` OR `tickets.write_all`
-   * permission check. Per the catalog, `tickets.assign` is NOT a danger:true
-   * gate, so this is a plain permission check (no danger ceremony).
+   * Two-axis gate for `reassign()` — visibility floor (`assertCanPlan`)
+   * plus the `tickets.assign` OR `tickets.write_all` permission check.
+   * Per the catalog, `tickets.assign` is NOT a danger:true gate, so this
+   * is a plain permission check (no danger ceremony).
+   *
+   * `update()`'s assignment branch goes through `preflightValidateUpdate`,
+   * which runs the same checks inline; this helper exists for `reassign`'s
+   * separate write path (routing_decisions audit) which stays outside the
+   * orchestrator until Step 9 (workflow-engine cutover, §3.2).
    */
   private async assertAssignPermission(
     actorAuthUid: string,
@@ -2018,26 +1040,6 @@ export class WorkOrderService {
     if (!hasAssign) {
       throw AppErrors.forbidden('work_order.permission_assign', ERR_PERM_ASSIGN);
     }
-  }
-
-  /**
-   * Domain event emitter. Mirrors `TicketService.logDomainEvent` (private
-   * there). Local copy so this service doesn't depend on TicketService for
-   * what is effectively a one-line insert.
-   */
-  private async logDomainEvent(
-    entityId: string,
-    tenantId: string,
-    eventType: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    await this.supabase.admin.from('domain_events').insert({
-      tenant_id: tenantId,
-      event_type: eventType,
-      entity_type: 'ticket', // case-side uses 'ticket' uniformly; entity_id disambiguates
-      entity_id: entityId,
-      payload,
-    });
   }
 
   /**

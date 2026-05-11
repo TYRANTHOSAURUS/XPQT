@@ -180,10 +180,28 @@ function makeSvc(opts?: {
     startTimers: jest.fn(),
     applyWaitingStateTransition: jest.fn(),
     buildTimersForRpc: jest.fn().mockResolvedValue([
-      // §3.3 expects pre-computed timer payloads when sla_id is set.
-      // Shape mirrors 00330:279-284 — { kind, deadline_at }.
-      { kind: 'response', deadline_at: '2026-06-01T10:00:00.000Z' },
-      { kind: 'resolution', deadline_at: '2026-06-01T18:00:00.000Z' },
+      // Mirrors the real return shape of `SlaService.buildTimersForRpc`
+      // (apps/api/src/modules/sla/sla.service.ts:150-160) which is built
+      // to match the RPC's jsonb_to_recordset schema at
+      // supabase/migrations/00330_update_entity_sla_v3.sql:279-284:
+      //   (timer_type text, target_minutes int, due_at timestamptz,
+      //    business_hours_calendar_id uuid).
+      // C-remediation fix (2026-05-11): the previous mock used
+      // `{ kind, deadline_at }` which passed tautologically — the orchestrator
+      // forwarded whatever objects came out of the mock as-is, so the test
+      // never asserted shape parity with the real RPC contract.
+      {
+        timer_type: 'response',
+        target_minutes: 60,
+        due_at: '2026-06-01T10:00:00.000Z',
+        business_hours_calendar_id: null,
+      },
+      {
+        timer_type: 'resolution',
+        target_minutes: 240,
+        due_at: '2026-06-01T18:00:00.000Z',
+        business_hours_calendar_id: null,
+      },
     ]),
   };
   const visibility = {
@@ -249,11 +267,20 @@ describe('WorkOrderService.update — §3.0 orchestrator call shape', () => {
       p_patches: {
         sla: {
           sla_id: 'sla-x',
+          // Shape mirrors the RPC's jsonb_to_recordset schema
+          // (00330:279-284) — see makeSvc()'s buildTimersForRpc mock.
           timers: [
-            { kind: 'response', deadline_at: '2026-06-01T10:00:00.000Z' },
             {
-              kind: 'resolution',
-              deadline_at: '2026-06-01T18:00:00.000Z',
+              timer_type: 'response',
+              target_minutes: 60,
+              due_at: '2026-06-01T10:00:00.000Z',
+              business_hours_calendar_id: null,
+            },
+            {
+              timer_type: 'resolution',
+              target_minutes: 240,
+              due_at: '2026-06-01T18:00:00.000Z',
+              business_hours_calendar_id: null,
             },
           ],
         },

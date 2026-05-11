@@ -136,7 +136,7 @@ export class DispatchService {
       );
     }
     // Assignees: assigned_team_id / assigned_user_id / assigned_vendor_id.
-    // Mirror of TicketService.update + WorkOrderService.updateMetadata.
+    // Mirror of TicketService.update + WorkOrderService.update preflight.
     await validateAssigneesInTenant(
       this.supabase,
       {

@@ -372,8 +372,13 @@ export class SlaService {
    * waiting_reason — a policy with an empty pause_on_waiting_reasons list
    * never triggers pause.
    *
-   * Both TicketService.update (cases) and WorkOrderService.updateStatus
-   * (work_orders) call this. Cross-table polymorphism is handled by
+   * Pre-§3.0 both TicketService.update (cases) and
+   * WorkOrderService.updateStatus (work_orders) called this directly.
+   * Post-§3.0 cutover, the equivalent pause/resume logic lives inside
+   * `update_entity_combined` (00335 v5) so the status branch fires the
+   * timer churn inside the same transaction. This helper stays for
+   * future internal callers (workflow engine, cron) until they go
+   * through `update()` too. Cross-table polymorphism is handled by
    * pauseTimers/resumeTimers via updateTicketOrWorkOrder.
    */
   async applyWaitingStateTransition(

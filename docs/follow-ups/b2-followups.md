@@ -130,3 +130,65 @@ following the post-Commit-B codex review (2026-05-11):
   registry copy. The original PostgrestError stays attached as `cause`
   for server-side logging. Only the fallback / unknown-code path keeps
   `detail: message`. Reference: `apps/api/src/common/errors/map-rpc-error.ts`.
+
+## §3.0 closeout — what's actually shipped (Commit C remediation, 2026-05-11)
+
+The §3.0 update_entity_combined work landed across three commits
+(A: orchestrator RPC, B: controller cutover, C: remediation). What
+the cutover means in practice:
+
+**Controllers cut over.** `PATCH /tickets/:id` and `PATCH /work-orders/:id`
+write exclusively through the `update_entity_combined` RPC (v5 / 00335).
+The orchestrator preflight (visibility + per-field permission +
+tenant validation + sla policy existence + format/enum/range) runs in
+TS; the actual writes — every branch in one transaction — happen
+inside the RPC. The legacy per-field TS dispatch chain is gone.
+
+**Engines NOT cut over.** The workflow engine continues to write to
+`tickets` directly at:
+- `apps/api/src/modules/workflow/workflow-engine.service.ts:273-278`
+  (`assign` node)
+- `apps/api/src/modules/workflow/workflow-engine.service.ts:355-365`
+  (`update_ticket` node)
+
+These bypass the orchestrator, the sub-RPCs, audit emission, and the
+`command_operations` idempotency table. Spec lines 1870-1873 explicitly
+say the workflow engine's `assign` node must go through §3.2
+`set_entity_assignment`. The cutover happens in B.2.A Step 9
+(§1.21 workflow-engine cutover). Until then: **§3.0 is the only HTTP
+write path, not the only write path absolutely.**
+
+`WorkOrderService.reassign` and `TicketService.reassign` also remain
+outside §3.0 — both write via `.from('<table>').update(...)` plus a
+`routing_decisions` audit insert. Step 9 (workflow-engine cutover)
+also folds reassign into `set_entity_assignment` (§3.2). Until then
+reassign is a known second write path.
+
+**Dead code removed (Commit C remediation, 2026-05-11).** The
+per-field `WorkOrderService` methods (`updateSla` / `setPlan` /
+`updateStatus` / `updatePriority` / `updateAssignment` /
+`updateMetadata`) plus the private `logDomainEvent` helper they
+relied on were deleted in `work-order.service.ts`. Six dedicated
+spec files (`work-order-{sla-edit,set-plan,update-status,
+update-priority,update-assignment,update-metadata}.spec.ts`) were
+deleted alongside. Plan + code reviewers flagged the prior subagent's
+rationale ("they validate preflight") as false — preflight runs in
+`update()` directly, not via the per-field methods.
+
+Future multi-table writes on work_orders MUST go through `update()`
+→ `update_entity_combined`. The class-level docstring in
+`work-order.service.ts` enforces this contract in prose; the absence
+of the methods enforces it structurally. The CLAUDE.md project rule
+is explicit: multi-step writes are PL/pgSQL RPCs, not TS pipelines.
+
+**Test-shape correction (Commit C remediation, 2026-05-11).** The
+`buildTimersForRpc` mock in `work-order-update.spec.ts:182-187`
+previously returned `{kind, deadline_at}` with a comment claiming
+parity with 00330:279-284. The actual `jsonb_to_recordset` schema
+is `(timer_type text, target_minutes int, due_at timestamptz,
+business_hours_calendar_id uuid)`. The test passed tautologically —
+the orchestrator forwards whatever the mock returns into the RPC's
+`p_patches.sla.timers` array; the spec only re-asserted what the
+mock produced. Code reviewer flagged. Fixed to mirror the real shape
+so a future drift between `SlaService.buildTimersForRpc` and the
+RPC's recordset schema would surface as a failing unit test.
