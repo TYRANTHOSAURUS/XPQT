@@ -190,10 +190,10 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // right shape (same family as terminal_ticket / cancelled_cannot_edit).
   // Without these entries the default 400 misclassifies a re-fetch-and-
   // retry race as a payload-shape bug.
-  'automation_plan.semantic_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
-  'automation_plan.effective_location_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
-  'automation_plan.scope_override_mismatch': 422, // 00349/00350 create_ticket_with_automation; 00354 reclassify_ticket
-  'automation_plan.routing_input_mismatch': 422, // 00349/00350 create_ticket_with_automation
+  'automation_plan.semantic_mismatch': 422, // raised by create_ticket_with_automation (00349 → 00350 → 00351) + reclassify_ticket (00354 → 00355)
+  'automation_plan.effective_location_mismatch': 422, // raised by create_ticket_with_automation (00349 → 00350 → 00351) + reclassify_ticket (00354 → 00355)
+  'automation_plan.scope_override_mismatch': 422, // raised by create_ticket_with_automation (00349 → 00350 → 00351) + reclassify_ticket (00354 → 00355)
+  'automation_plan.routing_input_mismatch': 422, // raised by create_ticket_with_automation (00349 → 00350 → 00351) only — reclassify_ticket does not re-validate routing trace input
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always
