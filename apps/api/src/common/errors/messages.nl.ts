@@ -1483,6 +1483,30 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon SLA niet bijwerken',
     detail: 'sla_id is verplicht.',
   },
+  // B.2.A §3.0 update_entity_combined RPC (00331)
+  'update_entity_combined.unknown_kind': { title: 'Kon niet bijwerken', detail: 'Onbekend entiteitstype.' },
+  'update_entity_combined.not_found': { title: 'Ticket niet gevonden' },
+  'update_entity_combined.invalid_patches': { title: 'Kon niet bijwerken', detail: 'De patch-payload moet een JSON-object zijn.' },
+  'update_entity_combined.plan_not_supported_on_case': {
+    title: 'Kon niet bijwerken',
+    detail: 'Plandata kun je alleen op werkbonnen instellen.',
+  },
+  'update_entity_combined.invalid_priority': {
+    title: 'Kon niet bijwerken',
+    detail: 'Prioriteit moet low, medium, high of critical zijn.',
+  },
+  'update_entity_combined.invalid_metadata': {
+    title: 'Kon niet bijwerken',
+    detail: 'Titel mag niet leeg zijn.',
+  },
+  'update_entity_combined.invalid_cost': {
+    title: 'Kon niet bijwerken',
+    detail: 'Kosten moeten een niet-negatief getal zijn.',
+  },
+  'update_entity_combined.invalid_watcher': {
+    title: 'Kon niet bijwerken',
+    detail: 'Een of meer volgers horen niet bij deze tenant.',
+  },
 };
 
 /**

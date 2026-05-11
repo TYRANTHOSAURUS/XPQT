@@ -1397,6 +1397,37 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update SLA",
     detail: 'sla_id required.',
   },
+
+  // ─── B.2.A §3.0 update_entity_combined RPC (00331) ─────────────────────
+  'update_entity_combined.unknown_kind': {
+    title: "Couldn't update",
+    detail: 'Unknown entity kind.',
+  },
+  'update_entity_combined.not_found': { title: "Couldn't find that ticket" },
+  'update_entity_combined.invalid_patches': {
+    title: "Couldn't update",
+    detail: 'The patch payload must be a JSON object.',
+  },
+  'update_entity_combined.plan_not_supported_on_case': {
+    title: "Couldn't update",
+    detail: 'Plan dates can only be set on work orders.',
+  },
+  'update_entity_combined.invalid_priority': {
+    title: "Couldn't update",
+    detail: 'Priority must be one of low, medium, high, critical.',
+  },
+  'update_entity_combined.invalid_metadata': {
+    title: "Couldn't update",
+    detail: 'Title cannot be empty.',
+  },
+  'update_entity_combined.invalid_cost': {
+    title: "Couldn't update",
+    detail: 'Cost must be a non-negative number.',
+  },
+  'update_entity_combined.invalid_watcher': {
+    title: "Couldn't update",
+    detail: 'One or more watchers are not part of this tenant.',
+  },
 };
 
 /**

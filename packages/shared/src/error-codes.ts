@@ -447,6 +447,16 @@ export type KnownErrorCode =
   | 'update_entity_sla.timers_required'
   | 'update_entity_sla.sla_id_required'
 
+  // ─── B.2.A §3.0 update_entity_combined RPC (00331) ───────────────────────
+  | 'update_entity_combined.unknown_kind'
+  | 'update_entity_combined.not_found'
+  | 'update_entity_combined.invalid_patches'
+  | 'update_entity_combined.plan_not_supported_on_case'
+  | 'update_entity_combined.invalid_priority'
+  | 'update_entity_combined.invalid_metadata'
+  | 'update_entity_combined.invalid_cost'
+  | 'update_entity_combined.invalid_watcher'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1143,6 +1153,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_sla.not_found',
   'update_entity_sla.timers_required',
   'update_entity_sla.sla_id_required',
+  'update_entity_combined.unknown_kind',
+  'update_entity_combined.not_found',
+  'update_entity_combined.invalid_patches',
+  'update_entity_combined.plan_not_supported_on_case',
+  'update_entity_combined.invalid_priority',
+  'update_entity_combined.invalid_metadata',
+  'update_entity_combined.invalid_cost',
+  'update_entity_combined.invalid_watcher',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
