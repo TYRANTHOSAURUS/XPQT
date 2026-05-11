@@ -1,16 +1,32 @@
-// Tests for WorkOrderService.update — the orchestrator that backs the
-// single `PATCH /work-orders/:id` endpoint (plan-reviewer P1). The
-// orchestrator's job is to dispatch a union DTO to the existing per-field
-// service methods (`updateSla`, `setPlan`, `updateStatus`, `updatePriority`,
-// `updateAssignment`) so each field's gate, no-op fast-path, and side
-// effects are reused unchanged. The per-field methods themselves are
-// covered by their own specs (`work-order-sla-edit.spec.ts`,
-// `work-order-set-plan.spec.ts`, etc.).
+// Tests for WorkOrderService.update — the single-endpoint command surface
+// behind `PATCH /work-orders/:id`.
 //
-// Strategy: spy on the per-field methods directly and assert which one(s)
-// got called for each DTO shape. We don't reach into Supabase here — the
-// per-field specs already prove the underlying behavior. This spec is the
-// dispatch contract.
+// Post-§3.0 cutover (Commit B): the per-field dispatcher chain
+// (`updateSla → setPlan → updateStatus → updatePriority → updateAssignment
+//  → updateMetadata`) was replaced by ONE `update_entity_combined` RPC
+// call (00333) that commits every branch in one transaction. The per-field
+// service methods remain on the class as legacy entry points exercised by
+// their own spec files (`work-order-{sla-edit,set-plan,update-status,
+// update-priority,update-assignment,update-metadata}.spec.ts`) — they are
+// no longer reached by the `update()` orchestrator.
+//
+// What this spec asserts post-cutover:
+//   1. `update()` calls `supabase.admin.rpc('update_entity_combined', …)`
+//      exactly once for every non-empty DTO, with the patches payload
+//      grouped per §3.0 (status, priority, assignment, plan, sla, metadata).
+//   2. The outer idempotency key matches `patch:work_order:<id>:<cri>`
+//      (spec line 1892).
+//   3. `p_actor_user_id` is null for SYSTEM_ACTOR (00325:89-94) and the raw
+//      auth uid otherwise.
+//   4. The orchestrator refetches once after the RPC returns.
+//   5. The preflight (`preflightValidateUpdate`) rejects malformed payloads
+//      BEFORE the RPC is called — no partial state.
+//   6. `clientRequestId` is required when the dto carries any writable
+//      branch (defense-in-depth — F-CRIT-1 / 2026-05-11).
+//   7. Integration-level behaviour (sub-RPC dispatch, sla_timers, activity
+//      rows, domain events, cached_result on idempotent replay) is covered
+//      by `apps/api/test/concurrency/update_entity_combined.spec.ts` —
+//      this spec is the unit-level call-shape proof.
 
 import { AppError } from '../../common/errors';
 import {
@@ -20,6 +36,7 @@ import {
 } from './work-order.service';
 
 const TENANT = 't1';
+const CRI = 'cri-test-1';
 
 function makeRow(overrides: Partial<WorkOrderRow> = {}): WorkOrderRow {
   return {
@@ -38,36 +55,123 @@ function makeRow(overrides: Partial<WorkOrderRow> = {}): WorkOrderRow {
   } as WorkOrderRow;
 }
 
-interface RefetchCall {
+interface FromCall {
   table: string;
-  id: string;
-  tenant: string;
+  args?: unknown[];
+}
+interface RpcCall {
+  fn: string;
+  args: Record<string, unknown>;
 }
 
-function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
-  const refetchCalls: RefetchCall[] = [];
+function makeSvc(opts?: {
+  refetchedRow?: WorkOrderRow;
+  hasPermission?: boolean;
+  has_write_all?: boolean;
+  slaPolicyExists?: boolean;
+  personsInTenant?: string[];
+  rpcImpl?: (
+    fn: string,
+    args: Record<string, unknown>,
+  ) => Promise<{ data: unknown; error: unknown }>;
+}) {
+  const refetchedRow = opts?.refetchedRow ?? makeRow();
+  const slaPolicyExists = opts?.slaPolicyExists ?? true;
+  const personsInTenant = new Set(opts?.personsInTenant ?? []);
+
+  const fromCalls: FromCall[] = [];
+  const rpcCalls: RpcCall[] = [];
 
   const supabase = {
     admin: {
-      from: jest.fn((table: string) => ({
-        select: () => ({
-          eq: (_c1: string, v1: string) => ({
-            eq: (_c2: string, v2: string) => ({
-              maybeSingle: async () => {
-                refetchCalls.push({ table, id: v1, tenant: v2 });
-                return { data: { ...refetchedRow }, error: null };
-              },
+      from: jest.fn((table: string) => {
+        fromCalls.push({ table });
+        if (table === 'work_orders') {
+          // Both the plan-branch "current row" probe and the post-RPC
+          // refetch land here. .maybeSingle() returns the refetched row.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: { ...refetchedRow },
+                    error: null,
+                  }),
+                }),
+              }),
             }),
-          }),
-        }),
-      })),
-      rpc: jest.fn(),
+          } as unknown;
+        }
+        if (table === 'sla_policies') {
+          // preflightValidateUpdate tier-1 sla_policies probe.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: slaPolicyExists ? { id: 'sla-x' } : null,
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          } as unknown;
+        }
+        if (table === 'teams' || table === 'users' || table === 'vendors') {
+          // validateAssigneesInTenant probe — return found-shape so it
+          // clears unless tests opt-out via a different mock.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: { id: 'mocked' },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          } as unknown;
+        }
+        if (table === 'persons') {
+          // Watcher tenant validation — resilient chain.
+          const chain: Record<string, unknown> = {};
+          chain.select = () => chain;
+          chain.eq = () => chain;
+          chain.is = () => chain;
+          chain.in = (_col: string, ids: string[]) => ({
+            then: (
+              resolve: (v: {
+                data: Array<{ id: string }>;
+                error: null;
+              }) => unknown,
+              reject: (e: unknown) => unknown,
+            ) =>
+              Promise.resolve({
+                data: ids
+                  .filter((id) => personsInTenant.has(id))
+                  .map((id) => ({ id })),
+                error: null,
+              }).then(resolve, reject),
+          });
+          return chain as unknown;
+        }
+        return {} as unknown;
+      }),
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (opts?.rpcImpl) return opts.rpcImpl(fn, args);
+        if (fn === 'user_has_permission') {
+          return { data: !!opts?.hasPermission, error: null };
+        }
+        if (fn === 'update_entity_combined') {
+          return { data: null, error: null };
+        }
+        throw new Error(`unexpected rpc in mock: ${fn}`);
+      }),
     },
   };
 
-  // SlaService + visibility are unused here because we spy on the per-field
-  // methods (which is where they get touched). Stub them to throw if anyone
-  // bypasses the spy.
   const slaService = {
     restartTimers: jest.fn(),
     pauseTimers: jest.fn(),
@@ -75,12 +179,23 @@ function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
     completeTimers: jest.fn(),
     startTimers: jest.fn(),
     applyWaitingStateTransition: jest.fn(),
+    buildTimersForRpc: jest.fn().mockResolvedValue([
+      // §3.3 expects pre-computed timer payloads when sla_id is set.
+      // Shape mirrors 00330:279-284 — { kind, deadline_at }.
+      { kind: 'response', deadline_at: '2026-06-01T10:00:00.000Z' },
+      { kind: 'resolution', deadline_at: '2026-06-01T18:00:00.000Z' },
+    ]),
   };
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({
-      user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
-      team_ids: [], role_assignments: [], vendor_id: null,
-      has_read_all: false, has_write_all: true,
+      user_id: 'u1',
+      person_id: 'p1',
+      tenant_id: TENANT,
+      team_ids: [],
+      role_assignments: [],
+      vendor_id: null,
+      has_read_all: false,
+      has_write_all: opts?.has_write_all ?? true,
     }),
     assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
@@ -91,128 +206,173 @@ function makeSvc(refetchedRow: WorkOrderRow = makeRow()) {
     visibility as never,
   );
 
-  // Spy on every per-field method. The orchestrator delegates to these;
-  // the spy lets us assert which one was called with what args.
-  const spies = {
-    updateSla: jest.spyOn(svc, 'updateSla').mockResolvedValue(makeRow({ sla_id: 'sla-x' })),
-    setPlan: jest.spyOn(svc, 'setPlan').mockResolvedValue(makeRow({ planned_start_at: '2026-05-04T13:00:00.000Z' })),
-    updateStatus: jest.spyOn(svc, 'updateStatus').mockResolvedValue(makeRow({ status: 'in_progress', status_category: 'in_progress' })),
-    updatePriority: jest.spyOn(svc, 'updatePriority').mockResolvedValue(makeRow({ priority: 'high' })),
-    updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow({ assigned_user_id: '99999999-9999-9999-9999-999999999999' })),
-    updateMetadata: jest.spyOn(svc, 'updateMetadata').mockResolvedValue(makeRow({ title: 'updated' })),
-  };
-
-  return { svc, spies, supabase, refetchCalls };
+  return { svc, supabase, slaService, visibility, fromCalls, rpcCalls };
 }
 
-describe('WorkOrderService.update (orchestrator)', () => {
+/** Convenience: pluck `update_entity_combined` calls only. */
+function combinedCalls(
+  rpcCalls: RpcCall[],
+): Array<Record<string, unknown>> {
+  return rpcCalls
+    .filter((c) => c.fn === 'update_entity_combined')
+    .map((c) => c.args);
+}
+
+describe('WorkOrderService.update — §3.0 orchestrator call shape', () => {
   beforeEach(() => {
-    jest.spyOn(
-      require('../../common/tenant-context').TenantContext,
-      'current',
-    ).mockReturnValue({ id: TENANT, slug: TENANT });
+    jest
+      .spyOn(
+        require('../../common/tenant-context').TenantContext,
+        'current',
+      )
+      .mockReturnValue({ id: TENANT, slug: TENANT });
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
   });
 
-  it('dispatches sla_id-only call to updateSla and nothing else', async () => {
-    const { svc, spies } = makeSvc();
-    const row = await svc.update('wo1', { sla_id: 'sla-x' }, SYSTEM_ACTOR);
+  // ── DTO branch detection ────────────────────────────────────────────
 
-    expect(spies.updateSla).toHaveBeenCalledTimes(1);
-    expect(spies.updateSla).toHaveBeenCalledWith('wo1', 'sla-x', SYSTEM_ACTOR);
-    expect(spies.setPlan).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
-    expect(row.sla_id).toBe('sla-x');
+  it('sla_id-only DTO emits a single RPC with patches.sla = { sla_id, timers }', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await svc.update('wo1', { sla_id: 'sla-x' }, SYSTEM_ACTOR, CRI);
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]).toMatchObject({
+      p_entity_kind: 'work_order',
+      p_entity_id: 'wo1',
+      p_tenant_id: TENANT,
+      p_actor_user_id: null,
+      p_idempotency_key: `patch:work_order:wo1:${CRI}`,
+      p_patches: {
+        sla: {
+          sla_id: 'sla-x',
+          timers: [
+            { kind: 'response', deadline_at: '2026-06-01T10:00:00.000Z' },
+            {
+              kind: 'resolution',
+              deadline_at: '2026-06-01T18:00:00.000Z',
+            },
+          ],
+        },
+      },
+    });
   });
 
-  it('dispatches plan-only call to setPlan with both fields', async () => {
-    const { svc, spies } = makeSvc();
+  it('sla_id=null DTO emits a clear-only sla branch (no timers)', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await svc.update('wo1', { sla_id: null }, SYSTEM_ACTOR, CRI);
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    const patches = combined[0].p_patches as { sla?: Record<string, unknown> };
+    expect(patches.sla).toEqual({ sla_id: null });
+  });
+
+  it('plan DTO with both fields emits patches.plan grouped', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      refetchedRow: makeRow({
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      }),
+    });
     await svc.update(
       'wo1',
-      { planned_start_at: '2026-05-04T13:00:00.000Z', planned_duration_minutes: 60 },
+      {
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.setPlan).toHaveBeenCalledTimes(1);
-    expect(spies.setPlan).toHaveBeenCalledWith(
-      'wo1',
-      '2026-05-04T13:00:00.000Z',
-      60,
-      SYSTEM_ACTOR,
-    );
-    expect(spies.updateSla).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      plan: {
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      },
+    });
   });
 
-  it('dispatches status-only call to updateStatus with the provided status fields', async () => {
-    const { svc, spies } = makeSvc();
+  it('status DTO emits patches.{status,status_category} at top level', async () => {
+    const { svc, rpcCalls } = makeSvc();
     await svc.update(
       'wo1',
       { status_category: 'in_progress', status: 'in_progress' },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
-    expect(spies.updateStatus).toHaveBeenCalledWith(
-      'wo1',
-      { status: 'in_progress', status_category: 'in_progress' },
-      SYSTEM_ACTOR,
-    );
-    expect(spies.updatePriority).not.toHaveBeenCalled();
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      status: 'in_progress',
+      status_category: 'in_progress',
+    });
   });
 
-  it('dispatches priority-only call to updatePriority', async () => {
-    const { svc, spies } = makeSvc();
-    await svc.update('wo1', { priority: 'high' }, SYSTEM_ACTOR);
+  it('priority DTO emits patches.priority at top level', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await svc.update('wo1', { priority: 'high' }, SYSTEM_ACTOR, CRI);
 
-    expect(spies.updatePriority).toHaveBeenCalledTimes(1);
-    expect(spies.updatePriority).toHaveBeenCalledWith('wo1', 'high', SYSTEM_ACTOR);
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({ priority: 'high' });
   });
 
-  it('dispatches assignment-only call to updateAssignment with only the supplied keys', async () => {
-    const { svc, spies } = makeSvc();
-    await svc.update('wo1', { assigned_user_id: '99999999-9999-9999-9999-999999999999' }, SYSTEM_ACTOR);
-
-    expect(spies.updateAssignment).toHaveBeenCalledTimes(1);
-    expect(spies.updateAssignment).toHaveBeenCalledWith(
+  it('assignment DTO emits patches.assignment grouped with only the supplied keys', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await svc.update(
       'wo1',
       { assigned_user_id: '99999999-9999-9999-9999-999999999999' },
       SYSTEM_ACTOR,
+      CRI,
     );
-    expect(spies.updatePriority).not.toHaveBeenCalled();
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      assignment: {
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
+      },
+    });
   });
 
-  it('dispatches assignment with explicit nulls (clearing) preserved as null, not stripped', async () => {
-    const { svc, spies } = makeSvc();
+  it('assignment with explicit null preserves null on the wire (clear gesture)', async () => {
+    const { svc, rpcCalls } = makeSvc();
     await svc.update(
       'wo1',
-      { assigned_team_id: null, assigned_user_id: '99999999-9999-9999-9999-999999999999' },
+      {
+        assigned_team_id: null,
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
+      },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateAssignment).toHaveBeenCalledWith(
-      'wo1',
-      { assigned_team_id: null, assigned_user_id: '99999999-9999-9999-9999-999999999999' },
-      SYSTEM_ACTOR,
-    );
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      assignment: {
+        assigned_team_id: null,
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
+      },
+    });
   });
 
-  it('dispatches multi-field call (status + priority + assignment) to all three methods, in order', async () => {
-    const { svc, spies, refetchCalls } = makeSvc(
-      makeRow({
+  it('multi-field DTO (status + priority + assignment) emits ONE RPC with every branch', async () => {
+    const { svc, rpcCalls, fromCalls } = makeSvc({
+      refetchedRow: makeRow({
         status: 'in_progress',
         status_category: 'in_progress',
         priority: 'high',
         assigned_user_id: '99999999-9999-9999-9999-999999999999',
       }),
-    );
+    });
     const row = await svc.update(
       'wo1',
       {
@@ -222,48 +382,49 @@ describe('WorkOrderService.update (orchestrator)', () => {
         assigned_user_id: '99999999-9999-9999-9999-999999999999',
       },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
-    expect(spies.updatePriority).toHaveBeenCalledTimes(1);
-    expect(spies.updateAssignment).toHaveBeenCalledTimes(1);
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      status: 'in_progress',
+      status_category: 'in_progress',
+      priority: 'high',
+      assignment: {
+        assigned_user_id: '99999999-9999-9999-9999-999999999999',
+      },
+    });
 
-    // Order: SLA → plan → status → priority → assignment.
-    const order = [
-      spies.updateSla.mock.invocationCallOrder[0],
-      spies.setPlan.mock.invocationCallOrder[0],
-      spies.updateStatus.mock.invocationCallOrder[0],
-      spies.updatePriority.mock.invocationCallOrder[0],
-      spies.updateAssignment.mock.invocationCallOrder[0],
-    ].filter((n) => typeof n === 'number');
-    const sorted = [...order].sort((a, b) => a - b);
-    expect(order).toEqual(sorted);
-
-    // Multi-field calls refetch once at the end so the response reflects
-    // every side effect.
-    expect(refetchCalls).toHaveLength(1);
-    expect(refetchCalls[0]).toEqual({ table: 'work_orders', id: 'wo1', tenant: TENANT });
+    // Refetch landed on `work_orders` exactly once (post-RPC).
+    const woRefetches = fromCalls.filter((c) => c.table === 'work_orders');
+    expect(woRefetches.length).toBeGreaterThanOrEqual(1);
     expect(row.status_category).toBe('in_progress');
     expect(row.priority).toBe('high');
-    expect(row.assigned_user_id).toBe('99999999-9999-9999-9999-999999999999');
+    expect(row.assigned_user_id).toBe(
+      '99999999-9999-9999-9999-999999999999',
+    );
   });
 
-  it('rejects an empty DTO', async () => {
-    const { svc, spies } = makeSvc();
-    await expect(svc.update('wo1', {}, SYSTEM_ACTOR)).rejects.toThrow(AppError);
-    expect(spies.updateSla).not.toHaveBeenCalled();
-    expect(spies.setPlan).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
-    expect(spies.updateMetadata).not.toHaveBeenCalled();
+  it('rejects an empty DTO with work_order.empty_update', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await expect(svc.update('wo1', {}, SYSTEM_ACTOR, CRI)).rejects.toThrow(
+      AppError,
+    );
+    await expect(svc.update('wo1', {}, SYSTEM_ACTOR, CRI)).rejects.toMatchObject(
+      {
+        code: 'work_order.empty_update',
+      },
+    );
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('dispatches metadata-only call to updateMetadata with all 5 metadata fields', async () => {
-    // Slice 3.1: title / description / cost / tags / watchers go to a single
-    // updateMetadata branch. Verifies dispatcher detection + correct DTO
-    // narrowing. The non-metadata branches must NOT fire.
-    const { svc, spies } = makeSvc();
+  it('metadata-only DTO emits patches.metadata grouped with all 5 fields', async () => {
+    // title / description / cost / tags / watchers all go into the
+    // metadata branch (00333:187, 505-732).
+    const { svc, rpcCalls } = makeSvc({
+      personsInTenant: ['p1'],
+    });
     await svc.update(
       'wo1',
       {
@@ -274,34 +435,28 @@ describe('WorkOrderService.update (orchestrator)', () => {
         watchers: ['p1'],
       },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
-    expect(spies.updateMetadata).toHaveBeenCalledWith(
-      'wo1',
-      {
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      metadata: {
         title: 'new title',
         description: 'new desc',
         cost: 250,
         tags: ['a', 'b'],
         watchers: ['p1'],
       },
-      SYSTEM_ACTOR,
-    );
-    expect(spies.updateSla).not.toHaveBeenCalled();
-    expect(spies.setPlan).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
+    });
   });
 
-  it('does NOT dispatch metadata branch for explicit-undefined keys', async () => {
-    // Full-review #2: `{ status: 'new', title: undefined }` previously
-    // tripped hasOwnProperty('title') = true → hasMetadata = true →
-    // updateMetadata fired with empty inner DTO, doing an extra DB
-    // round-trip + visibility load for nothing. The detector now uses
-    // the `present()` helper which guards against explicit undefined.
-    const { svc, spies } = makeSvc();
+  it('does NOT emit metadata branch when keys are explicit-undefined', async () => {
+    // hasOwnDefined (apps/api/src/common/has-own-defined.ts) drops
+    // explicit-undefined keys. Without the guard, `{ status: 'x',
+    // title: undefined }` would emit metadata with an empty inner DTO
+    // → unnecessary write + spurious activity row.
+    const { svc, rpcCalls } = makeSvc();
     await svc.update(
       'wo1',
       {
@@ -314,113 +469,125 @@ describe('WorkOrderService.update (orchestrator)', () => {
         watchers: undefined,
       },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
-    expect(spies.updateMetadata).not.toHaveBeenCalled();
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    const patches = combined[0].p_patches as Record<string, unknown>;
+    expect(patches).toMatchObject({
+      status: 'in_progress',
+      status_category: 'in_progress',
+    });
+    expect(patches.metadata).toBeUndefined();
   });
 
-  it('still dispatches metadata branch when only SOME keys are explicit-undefined', async () => {
-    // `{ title: 'real', cost: undefined }` should fire the metadata
-    // branch with `{ title: 'real' }` only — NOT with `{ title: 'real',
-    // cost: null }` (which would clear the cost the caller did not
-    // intend to touch).
-    const { svc, spies } = makeSvc();
+  it('still emits metadata branch when only SOME keys are explicit-undefined', async () => {
+    // `{ title: 'real', cost: undefined }` → metadata = { title: 'real' }
+    // only. Cost is NOT cleared (undefined ≠ null on the wire).
+    const { svc, rpcCalls } = makeSvc();
     await svc.update(
       'wo1',
       { title: 'real', cost: undefined },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
-    expect(spies.updateMetadata).toHaveBeenCalledWith(
-      'wo1',
-      { title: 'real' },
-      SYSTEM_ACTOR,
-    );
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      metadata: { title: 'real' },
+    });
+    expect(
+      (combined[0].p_patches as { metadata: Record<string, unknown> }).metadata
+        .cost,
+    ).toBeUndefined();
   });
 
-  it('dispatches a metadata + status mix (multi-field)', async () => {
-    // Status before metadata in the dispatch order so status side effects
-    // (resolved_at synthesis, timer pause/resume) settle before the
-    // metadata bulk write.
-    const { svc, spies } = makeSvc();
+  it('mixed metadata + status DTO emits ONE RPC with both branches', async () => {
+    const { svc, rpcCalls } = makeSvc();
     await svc.update(
       'wo1',
-      { status: 'in_progress', status_category: 'in_progress', title: 'updated' },
+      {
+        status: 'in_progress',
+        status_category: 'in_progress',
+        title: 'updated',
+      },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(spies.updateStatus).toHaveBeenCalledTimes(1);
-    expect(spies.updateMetadata).toHaveBeenCalledTimes(1);
-    // Order assertion: status fires before metadata.
-    const statusOrder = spies.updateStatus.mock.invocationCallOrder[0];
-    const metadataOrder = spies.updateMetadata.mock.invocationCallOrder[0];
-    expect(statusOrder).toBeLessThan(metadataOrder);
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      status: 'in_progress',
+      status_category: 'in_progress',
+      metadata: { title: 'updated' },
+    });
   });
 
-  it('rejects a null DTO', async () => {
-    const { svc } = makeSvc();
+  it('rejects a null DTO with work_order.body_required', async () => {
+    const { svc, rpcCalls } = makeSvc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(svc.update('wo1', null as any, SYSTEM_ACTOR)).rejects.toThrow(
+    await expect(svc.update('wo1', null as any, SYSTEM_ACTOR, CRI)).rejects.toThrow(
       AppError,
     );
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('SYSTEM_ACTOR forwards as-is to per-field methods (which bypass gates internally)', async () => {
-    const { svc, spies } = makeSvc();
-    await svc.update('wo1', { sla_id: 'sla-x', priority: 'high' }, SYSTEM_ACTOR);
+  // ── actor handling ──────────────────────────────────────────────────
 
-    expect(spies.updateSla).toHaveBeenCalledWith('wo1', 'sla-x', SYSTEM_ACTOR);
-    expect(spies.updatePriority).toHaveBeenCalledWith('wo1', 'high', SYSTEM_ACTOR);
+  it('SYSTEM_ACTOR collapses p_actor_user_id to null (00325:89-94)', async () => {
+    const { svc, rpcCalls } = makeSvc();
+    await svc.update('wo1', { sla_id: 'sla-x' }, SYSTEM_ACTOR, CRI);
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_actor_user_id).toBeNull();
   });
 
-  it('forwards a real auth uid to per-field methods so their gates fire', async () => {
-    const { svc, spies } = makeSvc();
-    await svc.update('wo1', { sla_id: 'sla-x' }, 'auth-uid-real');
-
-    expect(spies.updateSla).toHaveBeenCalledWith('wo1', 'sla-x', 'auth-uid-real');
+  it('non-system actor passes the raw auth uid as p_actor_user_id', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      hasPermission: true,
+      has_write_all: false,
+    });
+    await svc.update('wo1', { sla_id: 'sla-x' }, 'auth-uid-real', CRI);
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_actor_user_id).toBe('auth-uid-real');
   });
 
-  it('propagates a Forbidden from the SLA branch and never invokes downstream branches', async () => {
-    const { svc, spies } = makeSvc();
-    spies.updateSla.mockReset().mockRejectedValue(
-      new (require('@nestjs/common').ForbiddenException)(
-        "missing 'sla.override' permission",
-      ),
-    );
+  // ── error propagation from RPC ─────────────────────────────────────
 
+  it('propagates AppError from a mapped RPC error (sla.override denied)', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      hasPermission: false,
+      has_write_all: false,
+    });
+
+    // Permission preflight fails on sla.override before the orchestrator
+    // RPC fires. Asserts the 403 propagates and NO update_entity_combined
+    // was issued.
     await expect(
-      svc.update('wo1', { sla_id: 'sla-x', priority: 'high' }, 'auth-uid-no-sla'),
+      svc.update('wo1', { sla_id: 'sla-x' }, 'auth-uid-no-sla', CRI),
     ).rejects.toThrow(/sla\.override/);
-
-    // Priority dispatch was downstream of SLA in the apply order — must not
-    // have fired after the SLA gate failed.
-    expect(spies.updatePriority).not.toHaveBeenCalled();
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('propagates a Forbidden from the priority branch (tickets.change_priority denied)', async () => {
-    const { svc, spies } = makeSvc();
-    spies.updatePriority.mockReset().mockRejectedValue(
-      new (require('@nestjs/common').ForbiddenException)(
-        "missing 'tickets.change_priority' permission",
-      ),
-    );
-
+  it('propagates AppError from a mapped RPC error (tickets.change_priority denied)', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      hasPermission: false,
+      has_write_all: false,
+    });
     await expect(
-      svc.update('wo1', { priority: 'high' }, 'auth-uid-no-priority'),
+      svc.update('wo1', { priority: 'high' }, 'auth-uid-no-priority', CRI),
     ).rejects.toThrow(/tickets\.change_priority/);
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
   // ── partial-commit prevention via preflight ────────────────────────
 
-  it('preflight rejects ENTIRE multi-field update when one field fails validation — no per-field method runs', async () => {
-    // The scenario this slice exists to prevent: a multi-field PATCH
-    // with priority + assignment + an invalid title would have
-    // committed priority + assignment then 400'd on the title. With
-    // preflight, the empty title rejects upfront and NO per-field
-    // method runs.
-    const { svc, spies } = makeSvc();
+  it('preflight rejects ENTIRE multi-field update when one field fails validation — no RPC fires', async () => {
+    const { svc, rpcCalls } = makeSvc();
 
     await expect(
       svc.update(
@@ -431,23 +598,17 @@ describe('WorkOrderService.update (orchestrator)', () => {
           title: '   ', // whitespace-only — fails preflight
         },
         SYSTEM_ACTOR, // SYSTEM_ACTOR bypasses permission/visibility but
-                      // NOT the format/validation checks
+        // NOT the format/validation checks
+        CRI,
       ),
     ).rejects.toThrow(/title must not be empty/);
 
-    // Critical assertion: NONE of the per-field methods were dispatched.
-    // Pre-fix, priority + assignment would have committed before the
-    // title rejection.
-    expect(spies.updateSla).not.toHaveBeenCalled();
-    expect(spies.setPlan).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
-    expect(spies.updateMetadata).not.toHaveBeenCalled();
+    // Critical assertion: no combined RPC fired — preflight short-circuited.
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('preflight rejects on malformed assignee uuid before any write — no per-field method runs', async () => {
-    const { svc, spies } = makeSvc();
+  it('preflight rejects on malformed assignee uuid before any RPC fires', async () => {
+    const { svc, rpcCalls } = makeSvc();
 
     await expect(
       svc.update(
@@ -457,91 +618,35 @@ describe('WorkOrderService.update (orchestrator)', () => {
           assigned_team_id: 'not-a-uuid',
         },
         SYSTEM_ACTOR,
+        CRI,
       ),
     ).rejects.toThrow(/assigned_team_id is not a valid uuid/);
 
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('preflight rejects with 403 when caller lacks tickets.assign — no per-field method runs', async () => {
-    // Full-review #5 — every existing partial-commit-prevention test
-    // uses has_write_all=true, which short-circuits the permission RPC
-    // path entirely. This test covers the gap: real auth uid + write_all
-    // disabled + the RPC mock returning falsy. Asserts the 403 propagates
-    // and NO per-field method ran.
-    const refetchedRow = makeRow();
-    const refetchCalls: RefetchCall[] = [];
-    const supabase = {
-      admin: {
-        from: jest.fn((table: string) => ({
-          select: () => ({
-            eq: (_c1: string, v1: string) => ({
-              eq: (_c2: string, v2: string) => ({
-                maybeSingle: async () => {
-                  refetchCalls.push({ table, id: v1, tenant: v2 });
-                  return { data: { ...refetchedRow }, error: null };
-                },
-              }),
-            }),
-          }),
-        })),
-        // Permission RPC always returns falsy → preflight 403.
-        rpc: jest.fn(async () => ({ data: false, error: null })),
-      },
-    };
-    const slaService = {
-      restartTimers: jest.fn(),
-      pauseTimers: jest.fn(),
-      resumeTimers: jest.fn(),
-      completeTimers: jest.fn(),
-      startTimers: jest.fn(),
-      applyWaitingStateTransition: jest.fn(),
-    };
-    const visibility = {
-      loadContext: jest.fn().mockResolvedValue({
-        user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
-        team_ids: [], role_assignments: [], vendor_id: null,
-        has_read_all: false, has_write_all: false, // critical: no override
-      }),
-      assertCanPlan: jest.fn().mockResolvedValue(undefined),
-    };
-    const svc = new WorkOrderService(
-      supabase as never,
-      slaService as never,
-      visibility as never,
-    );
-    const spies = {
-      updateSla: jest.spyOn(svc, 'updateSla').mockResolvedValue(makeRow()),
-      setPlan: jest.spyOn(svc, 'setPlan').mockResolvedValue(makeRow()),
-      updateStatus: jest.spyOn(svc, 'updateStatus').mockResolvedValue(makeRow()),
-      updatePriority: jest.spyOn(svc, 'updatePriority').mockResolvedValue(makeRow()),
-      updateAssignment: jest.spyOn(svc, 'updateAssignment').mockResolvedValue(makeRow()),
-      updateMetadata: jest.spyOn(svc, 'updateMetadata').mockResolvedValue(makeRow()),
-    };
+  it('preflight rejects with 403 when caller lacks tickets.assign — no RPC fires', async () => {
+    // Real auth uid + write_all disabled + permission RPC false → preflight
+    // 403. NO combined RPC issued.
+    const { svc, rpcCalls } = makeSvc({
+      hasPermission: false,
+      has_write_all: false,
+    });
 
     await expect(
       svc.update(
         'wo1',
         { assigned_team_id: '99999999-9999-9999-9999-999999999999' },
         'auth-uid-no-perm',
+        CRI,
       ),
     ).rejects.toThrow(/tickets\.assign/);
 
-    // Critical assertion: NO per-field method ran. Pre-fix this would
-    // have committed assignment because the per-field method's own
-    // permission gate fires AFTER its own visibility check — the
-    // orchestrator's preflight is the structural gate.
-    expect(spies.updateSla).not.toHaveBeenCalled();
-    expect(spies.setPlan).not.toHaveBeenCalled();
-    expect(spies.updateStatus).not.toHaveBeenCalled();
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateAssignment).not.toHaveBeenCalled();
-    expect(spies.updateMetadata).not.toHaveBeenCalled();
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('preflight rejects on invalid priority before any write — no per-field method runs', async () => {
-    const { svc, spies } = makeSvc();
+  it('preflight rejects on invalid priority before any RPC fires', async () => {
+    const { svc, rpcCalls } = makeSvc();
 
     await expect(
       svc.update(
@@ -551,32 +656,46 @@ describe('WorkOrderService.update (orchestrator)', () => {
           title: 'new title',
         },
         SYSTEM_ACTOR,
+        CRI,
       ),
     ).rejects.toThrow(/priority must be one of/);
 
-    expect(spies.updatePriority).not.toHaveBeenCalled();
-    expect(spies.updateMetadata).not.toHaveBeenCalled();
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 
-  it('propagates a Forbidden from the assignment branch (tickets.assign denied)', async () => {
-    // Forbidden propagation from a per-field method. SYSTEM_ACTOR is used
-    // here so the orchestrator's preflight bypasses (no permission check
-    // upfront) and the dispatched mock spy runs and throws — exercising
-    // the propagation path that the test name describes. Without this
-    // bypass the preflight would 403 first, never reaching the spy.
-    const { svc, spies } = makeSvc();
-    spies.updateAssignment.mockReset().mockRejectedValue(
-      new (require('@nestjs/common').ForbiddenException)(
-        "missing 'tickets.assign' permission",
-      ),
-    );
+  it('propagates AppError from a mapped RPC error (tickets.assign denied)', async () => {
+    // Real auth uid + write_all disabled + permission RPC false →
+    // preflight rejects with 403 before the orchestrator RPC fires.
+    const { svc, rpcCalls } = makeSvc({
+      hasPermission: false,
+      has_write_all: false,
+    });
 
     await expect(
       svc.update(
         'wo1',
         { assigned_user_id: '99999999-9999-9999-9999-999999999999' },
-        SYSTEM_ACTOR,
+        'auth-uid-no-assign',
+        CRI,
       ),
     ).rejects.toThrow(/tickets\.assign/);
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
+  });
+
+  // ── clientRequestId defense-in-depth (F-CRIT-1) ─────────────────────
+
+  it('rejects when clientRequestId is missing on a writable DTO', async () => {
+    // Internal callers that bypass the controller (RequireClientRequestIdGuard)
+    // would otherwise mint a fresh randomUUID per call — idempotency footgun.
+    // F-CRIT-1 (plan-review 2026-05-11): explicit defense-in-depth in
+    // WorkOrderService.update.
+    const { svc, rpcCalls } = makeSvc();
+    await expect(
+      svc.update('wo1', { priority: 'high' }, SYSTEM_ACTOR /* no cri */),
+    ).rejects.toMatchObject({
+      code: 'command_operations.client_request_id_required',
+      status: 400,
+    });
+    expect(combinedCalls(rpcCalls)).toHaveLength(0);
   });
 });

@@ -38,6 +38,7 @@ function makeDeps(
   let row: WorkOrderRow = { ...initial };
   const updates: Array<Record<string, unknown>> = [];
   const activities: Array<Record<string, unknown>> = [];
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
   const supabase = {
     admin: {
@@ -91,6 +92,27 @@ function makeDeps(
             },
           } as unknown;
         }
+        if (
+          table === 'sla_policies' ||
+          table === 'teams' ||
+          table === 'vendors'
+        ) {
+          // Preflight tier-1 SLA policy probe + assignee tenant validation
+          // — return found-shape so the orchestrator passes the gate when
+          // exercised by the orchestrator test below.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: { id: 'mocked' },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          } as unknown;
+        }
         if (table === 'persons') {
           // Resilient chain mock: every filter (.eq, .is) returns the
           // chain; only .in resolves. Mirrors validateWatcherIdsInTenant's
@@ -117,8 +139,26 @@ function makeDeps(
         }
         throw new Error(`unexpected table in mock: ${table}`);
       }),
-      rpc: jest.fn(async () => {
-        throw new Error('updateMetadata should not call any rpc — visibility floor only');
+      // Capture every rpc call so the orchestrator test can assert the
+      // §3.0 `update_entity_combined` call shape. Non-orchestrator tests
+      // exercise `updateMetadata` directly which doesn't issue any RPC —
+      // the assertion `rpcCalls` length should be 0 in those tests.
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'update_entity_combined') {
+          // Simulate the orchestrator applying the metadata patch onto the
+          // tracked `row` so the post-RPC refetch reflects the write.
+          const patches = (args as { p_patches?: Record<string, unknown> })
+            .p_patches;
+          if (patches?.metadata && typeof patches.metadata === 'object') {
+            row = {
+              ...row,
+              ...(patches.metadata as Partial<WorkOrderRow>),
+            };
+          }
+          return { data: null, error: null };
+        }
+        return { data: null, error: null };
       }),
     },
   };
@@ -145,7 +185,7 @@ function makeDeps(
     assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
-  return { row: () => row, updates, activities, supabase, slaService, visibility };
+  return { row: () => row, updates, activities, rpcCalls, supabase, slaService, visibility };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>) {
@@ -721,10 +761,15 @@ describe('WorkOrderService.updateMetadata', () => {
     expect(deps.activities).toHaveLength(0);
   });
 
-  // ── orchestrator integration: WorkOrderService.update routes
-  // metadata fields to updateMetadata ────────────────────────────────
+  // ── orchestrator integration: WorkOrderService.update emits the §3.0
+  // `update_entity_combined` RPC with metadata grouped under p_patches.metadata
+  // ────────────────────────────────────────────────────────────────────
 
-  it('orchestrator dispatches metadata-only DTOs via updateMetadata', async () => {
+  it('orchestrator emits update_entity_combined with metadata-only DTOs grouped under p_patches.metadata', async () => {
+    // Post-§3.0 cutover (Commit B): WorkOrderService.update no longer
+    // dispatches to updateMetadata — it composes ONE RPC call carrying
+    // all branches. Verifies the orchestrator path emits the expected
+    // call shape (00333:187, 505-732) and threads the idempotency key.
     const deps = makeDeps({
       id: 'wo1',
       tenant_id: TENANT,
@@ -736,9 +781,22 @@ describe('WorkOrderService.updateMetadata', () => {
     });
     const svc = makeSvc(deps);
 
-    await svc.update('wo1', { title: 'new' }, SYSTEM_ACTOR);
+    await svc.update('wo1', { title: 'new' }, SYSTEM_ACTOR, 'cri-meta-1');
 
-    expect(deps.updates).toHaveLength(1);
-    expect(deps.updates[0]).toMatchObject({ title: 'new' });
+    const combined = deps.rpcCalls.filter(
+      (c) => c.fn === 'update_entity_combined',
+    );
+    expect(combined).toHaveLength(1);
+    expect(combined[0].args).toMatchObject({
+      p_entity_kind: 'work_order',
+      p_entity_id: 'wo1',
+      p_tenant_id: TENANT,
+      p_actor_user_id: null,
+      p_idempotency_key: 'patch:work_order:wo1:cri-meta-1',
+      p_patches: { metadata: { title: 'new' } },
+    });
+    // The direct UPDATE path (deps.updates) is NOT exercised on the
+    // orchestrator path — the orchestrator commits via the RPC.
+    expect(deps.updates).toHaveLength(0);
   });
 });

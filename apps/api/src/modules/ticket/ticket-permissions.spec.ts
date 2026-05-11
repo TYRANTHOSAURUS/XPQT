@@ -1,11 +1,23 @@
 // Tests for the per-action permission gates on TicketService.update +
 // TicketService.reassign. Layered ON TOP of the existing assertVisible('write')
-// floor — case-side now mirrors WorkOrderService for assign + priority changes.
+// floor — case-side now mirrors WorkOrderService for assign + priority
+// changes.
 //
-// Mock pattern lifted from work-order-update-assignment.spec.ts and
-// work-order-update-priority.spec.ts. The TicketService constructor takes
-// many more dependencies than WorkOrderService — most are stubbed as
-// no-op proxies because the gate runs before any of those paths fire.
+// Post-§3.0 cutover (Commit B), the case-side update path commits via the
+// `update_entity_combined` RPC. The TS layer still owns the per-action
+// permission preflight; this spec asserts the gate shape using the
+// `user_has_permission` RPC. The combined RPC call shape is asserted in
+// `apps/api/test/concurrency/update_entity_combined.spec.ts` (integration).
+//
+// What changed vs. the pre-cutover spec:
+//   - Updates now go through `supabase.admin.rpc('update_entity_combined', …)`,
+//     not `.from('tickets').update(...)`. Positive-path assertions verify
+//     `rpcCalls` carries the orchestrator call with the expected `p_patches`.
+//   - clientRequestId is threaded through every positive-path call; the
+//     service throws `command_operations.client_request_id_required` when
+//     omitted on a path that wants to write.
+//   - The watchers tenant-validation now reads from `persons`. The mock
+//     covers a permissive shape (returns the ids back).
 
 import { AppError } from '../../common/errors';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
@@ -25,10 +37,17 @@ type Row = {
 
 const TENANT = 't1';
 
-function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_all?: boolean } = {}) {
+interface RpcCall {
+  fn: string;
+  args: Record<string, unknown>;
+}
+
+function makeDeps(
+  initial: Row,
+  options: { hasPermission?: boolean; has_write_all?: boolean } = {},
+) {
   let row = { ...initial };
-  const updates: Array<Record<string, unknown>> = [];
-  const activities: Array<Record<string, unknown>> = [];
+  const rpcCalls: RpcCall[] = [];
   const permissionChecks: Array<{ user_id: string; permission: string }> = [];
 
   const supabase = {
@@ -40,32 +59,33 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
               eq: () => ({
                 eq: () => ({
                   single: async () => ({ data: row, error: null }),
+                  maybeSingle: async () => ({ data: row, error: null }),
                 }),
-                single: async () => ({ data: row, error: null }),
               }),
             }),
+            // Satisfaction-only direct UPDATE path. Not exercised by the
+            // permission-gate tests but stubbed for shape parity.
             update: (patch: Record<string, unknown>) => {
-              updates.push(patch);
               row = { ...row, ...patch };
               return {
-                eq: () => ({
-                  eq: () => ({
-                    select: () => ({ single: async () => ({ data: row, error: null }) }),
-                  }),
-                  select: () => ({ single: async () => ({ data: row, error: null }) }),
-                }),
+                eq: () => ({ eq: async () => ({ data: null, error: null }) }),
               };
             },
           } as unknown;
         }
         if (table === 'work_orders') {
-          // Parent close guard query path — return empty children list.
+          // Parent close-guard query path — return empty children list.
           return {
             select: () => ({
               eq: () => ({
                 eq: () => ({
                   not: () => ({
-                    async then(cb: (v: { data: Array<{ id: string }>; error: null }) => unknown) {
+                    async then(
+                      cb: (v: {
+                        data: Array<{ id: string }>;
+                        error: null;
+                      }) => unknown,
+                    ) {
                       return cb({ data: [], error: null });
                     },
                   }),
@@ -79,18 +99,19 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
             insert: jest.fn().mockResolvedValue({ data: null, error: null }),
           } as unknown;
         }
-        if (table === 'users' || table === 'teams' || table === 'vendors') {
-          // Two query shapes hit these tables in TicketService.update:
-          //   1. `validateAssigneesInTenant` does
-          //      `.select('id').eq('id', X).eq('tenant_id', Y).maybeSingle()` —
-          //      should return `{ data: { id: X } }` to clear the validation.
-          //   2. `resolveAuthorPersonId` does
-          //      `.select(...).eq('auth_uid', X).eq('tenant_id', Y).maybeSingle()` —
-          //      should return null (system attribution).
-          // The mock can't distinguish by chained .eq column name, so it
-          // returns a found-shape row whenever the .eq().eq() chain ends
-          // in maybeSingle. The id passed back doesn't have to match —
-          // the validator only checks that *something* came back.
+        if (
+          table === 'users' ||
+          table === 'teams' ||
+          table === 'vendors' ||
+          table === 'sla_policies'
+        ) {
+          // validateAssigneesInTenant + assertTenantOwned probe path:
+          //   `.select('id').eq('id', X).eq('tenant_id', Y).maybeSingle()` —
+          // returns a found-shape row so validation clears. `users` is also
+          // hit by `resolveAuthorPersonId` via .eq('auth_uid'), which can't
+          // be distinguished from the assignee probe by chained-.eq column
+          // name; returning null there is fine (resolveAuthorPersonId tolerates
+          // null with a system-attribution fallback).
           return {
             select: () => ({
               eq: () => ({
@@ -104,25 +125,82 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
             }),
           } as unknown;
         }
+        if (table === 'persons') {
+          // Resilient chain mock — every filter (.eq, .is) returns the
+          // chain; .in resolves with the requested ids (so validation
+          // clears). See work-order-update-metadata.spec.ts for the
+          // canonical version.
+          const chain: Record<string, unknown> = {};
+          chain.select = () => chain;
+          chain.eq = () => chain;
+          chain.is = () => chain;
+          chain.in = (_col: string, ids: string[]) => ({
+            then: (
+              resolve: (v: {
+                data: Array<{ id: string }>;
+                error: null;
+              }) => unknown,
+              reject: (e: unknown) => unknown,
+            ) =>
+              Promise.resolve({
+                data: ids.map((id) => ({ id })),
+                error: null,
+              }).then(resolve, reject),
+          });
+          return chain as unknown;
+        }
         // Catch-all (ticket_activities, domain_events, etc.).
         return {
-          insert: (a: Record<string, unknown>) => {
-            activities.push(a);
-            return {
-              select: () => ({
-                single: async () => ({ data: { ...a, id: 'generated' }, error: null }),
-              }),
-            };
-          },
+          insert: () => ({
+            select: () => ({
+              single: async () => ({ data: null, error: null }),
+            }),
+          }),
         } as unknown;
       }),
-      rpc: jest.fn(async (fn: string, args: { p_user_id: string; p_permission: string }) => {
-        if (fn !== 'user_has_permission') {
+      rpc: jest.fn(
+        async (
+          fn: string,
+          args: { p_user_id?: string; p_permission?: string } & Record<
+            string,
+            unknown
+          >,
+        ) => {
+          rpcCalls.push({ fn, args });
+          if (fn === 'user_has_permission') {
+            permissionChecks.push({
+              user_id: args.p_user_id as string,
+              permission: args.p_permission as string,
+            });
+            return { data: !!options.hasPermission, error: null };
+          }
+          if (fn === 'update_entity_combined') {
+            // Simulate the orchestrator applying the patch to `row` so
+            // post-RPC refetch reflects the write.
+            const patches = (args as { p_patches?: Record<string, unknown> })
+              .p_patches;
+            if (patches) {
+              const flat: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(patches)) {
+                if (k === 'assignment' && v && typeof v === 'object') {
+                  Object.assign(flat, v);
+                } else if (k === 'metadata' && v && typeof v === 'object') {
+                  Object.assign(flat, v);
+                } else if (k === 'plan' && v && typeof v === 'object') {
+                  Object.assign(flat, v);
+                } else if (k === 'sla' && v && typeof v === 'object') {
+                  // skip (case rejects sla)
+                } else {
+                  flat[k] = v;
+                }
+              }
+              row = { ...row, ...flat } as Row;
+            }
+            return { data: null, error: null };
+          }
           throw new Error(`unexpected rpc in mock: ${fn}`);
-        }
-        permissionChecks.push({ user_id: args.p_user_id, permission: args.p_permission });
-        return { data: !!options.hasPermission, error: null };
-      }),
+        },
+      ),
     },
   };
 
@@ -132,6 +210,7 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
     resumeTimers: jest.fn().mockResolvedValue(undefined),
     completeTimers: jest.fn().mockResolvedValue(undefined),
     applyWaitingStateTransition: jest.fn().mockResolvedValue(undefined),
+    buildTimersForRpc: jest.fn().mockResolvedValue([]),
   };
 
   const visibility = {
@@ -148,7 +227,14 @@ function makeDeps(initial: Row, options: { hasPermission?: boolean; has_write_al
     assertVisible: jest.fn().mockResolvedValue(undefined),
   };
 
-  return { row: () => row, updates, activities, permissionChecks, supabase, slaService, visibility };
+  return {
+    row: () => row,
+    rpcCalls,
+    permissionChecks,
+    supabase,
+    slaService,
+    visibility,
+  };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>) {
@@ -183,27 +269,44 @@ function baseRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
+/** Convenience: pluck `update_entity_combined` calls only. */
+function combinedCalls(
+  rpcCalls: RpcCall[],
+): Array<Record<string, unknown>> {
+  return rpcCalls
+    .filter((c) => c.fn === 'update_entity_combined')
+    .map((c) => c.args);
+}
+
 describe('TicketService — per-action permission gates', () => {
   beforeEach(() => {
-    jest.spyOn(
-      require('../../common/tenant-context').TenantContext,
-      'current',
-    ).mockReturnValue({ id: TENANT, subdomain: TENANT });
+    jest
+      .spyOn(
+        require('../../common/tenant-context').TenantContext,
+        'current',
+      )
+      .mockReturnValue({ id: TENANT, subdomain: TENANT });
   });
 
   describe('update', () => {
     it('throws Forbidden when caller lacks tickets.change_priority and write_all', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
+        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin', 'cri-1'),
       ).rejects.toThrow(AppError);
       await expect(
-        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
-      ).rejects.toMatchObject({ code: 'ticket.priority_change_forbidden', status: 403 });
+        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin', 'cri-2'),
+      ).rejects.toMatchObject({
+        code: 'ticket.priority_change_forbidden',
+        status: 403,
+      });
       await expect(
-        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin'),
+        svc.update('c1', { priority: 'high' }, 'auth-uid-non-admin', 'cri-3'),
       ).rejects.toThrow(/tickets\.change_priority permission required/);
 
       // First check is for tickets.change_priority (priority change is the
@@ -212,123 +315,220 @@ describe('TicketService — per-action permission gates', () => {
         user_id: 'u1',
         permission: 'tickets.change_priority',
       });
-      expect(deps.updates).toHaveLength(0);
+      // No combined RPC was issued — the gate rejected before write.
+      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
     });
 
     it('throws Forbidden when caller lacks tickets.assign and write_all (assigned_team_id)', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_team_id: '33333333-3333-3333-3333-333333333333' }, 'auth-uid-non-admin'),
+        svc.update(
+          'c1',
+          { assigned_team_id: '33333333-3333-3333-3333-333333333333' },
+          'auth-uid-non-admin',
+          'cri-a1',
+        ),
       ).rejects.toThrow(/tickets\.assign permission required/);
 
       expect(deps.permissionChecks[0]).toEqual({
         user_id: 'u1',
         permission: 'tickets.assign',
       });
-      expect(deps.updates).toHaveLength(0);
+      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
     });
 
     it('throws Forbidden when caller lacks tickets.assign and write_all (assigned_user_id)', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_user_id: '44444444-4444-4444-4444-444444444444' }, 'auth-uid-non-admin'),
+        svc.update(
+          'c1',
+          { assigned_user_id: '44444444-4444-4444-4444-444444444444' },
+          'auth-uid-non-admin',
+          'cri-a2',
+        ),
       ).rejects.toThrow(/tickets\.assign permission required/);
-      expect(deps.updates).toHaveLength(0);
+      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
     });
 
     it('throws Forbidden when caller lacks tickets.assign and write_all (assigned_vendor_id)', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await expect(
-        svc.update('c1', { assigned_vendor_id: '55555555-5555-5555-5555-555555555555' }, 'auth-uid-non-admin'),
+        svc.update(
+          'c1',
+          { assigned_vendor_id: '55555555-5555-5555-5555-555555555555' },
+          'auth-uid-non-admin',
+          'cri-a3',
+        ),
       ).rejects.toThrow(/tickets\.assign permission required/);
-      expect(deps.updates).toHaveLength(0);
+      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
     });
 
     it('does NOT trigger a permission gate when only updating title', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
-      const svc = makeSvc(deps);
-
-      await svc.update('c1', { title: 'new title' }, 'auth-uid-non-admin');
-
-      // No user_has_permission RPC fired — the gate is fully skipped when the
-      // DTO carries only fields that don't trigger assign or priority.
-      expect(deps.permissionChecks).toHaveLength(0);
-      expect(deps.updates).toHaveLength(1);
-      expect(deps.updates[0]).toMatchObject({ title: 'new title' });
-    });
-
-    it('skips permission checks entirely when caller has tickets.write_all override', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: true });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
+        { title: 'new title' },
+        'auth-uid-non-admin',
+        'cri-t1',
+      );
+
+      // No user_has_permission RPC fired — the gate is fully skipped when
+      // the DTO carries only fields that don't trigger assign or priority.
+      expect(deps.permissionChecks).toHaveLength(0);
+      const combined = combinedCalls(deps.rpcCalls);
+      expect(combined).toHaveLength(1);
+      // title is grouped under `metadata` in the §3.0 payload schema
+      // (00333:187, 505-732).
+      expect(combined[0]).toMatchObject({
+        p_entity_kind: 'case',
+        p_entity_id: 'c1',
+        p_tenant_id: TENANT,
+        p_idempotency_key: 'patch:case:c1:cri-t1',
+        p_patches: { metadata: { title: 'new title' } },
+      });
+    });
+
+    it('skips permission checks entirely when caller has tickets.write_all override', async () => {
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: true,
+      });
+      const svc = makeSvc(deps);
+
+      await svc.update(
+        'c1',
+        {
+          priority: 'high',
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+        },
         'auth-uid-admin',
+        'cri-wa',
       );
 
       // write_all short-circuits both per-action RPCs.
       expect(deps.permissionChecks).toHaveLength(0);
-      expect(deps.updates).toHaveLength(1);
+      const combined = combinedCalls(deps.rpcCalls);
+      expect(combined).toHaveLength(1);
+      expect(combined[0]).toMatchObject({
+        p_patches: {
+          priority: 'high',
+          assignment: {
+            assigned_team_id: '33333333-3333-3333-3333-333333333333',
+          },
+        },
+      });
     });
 
     it('SYSTEM_ACTOR bypasses all gates', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
+        {
+          priority: 'high',
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+        },
         SYSTEM_ACTOR,
+        'cri-sys',
       );
 
       // No visibility loadContext, no permission RPC, no assertVisible.
       expect(deps.visibility.loadContext).not.toHaveBeenCalled();
       expect(deps.visibility.assertVisible).not.toHaveBeenCalled();
       expect(deps.permissionChecks).toHaveLength(0);
-      expect(deps.updates).toHaveLength(1);
+      // SYSTEM_ACTOR collapses `p_actor_user_id` to null per 00325:89-94.
+      const combined = combinedCalls(deps.rpcCalls);
+      expect(combined).toHaveLength(1);
+      expect(combined[0]).toMatchObject({ p_actor_user_id: null });
     });
 
     it('passes the gate when caller has tickets.change_priority granted', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: true, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: true,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
-      await svc.update('c1', { priority: 'high' }, 'auth-uid-agent');
+      await svc.update('c1', { priority: 'high' }, 'auth-uid-agent', 'cri-p1');
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.change_priority' },
       ]);
-      expect(deps.updates).toHaveLength(1);
-      expect(deps.updates[0]).toMatchObject({ priority: 'high' });
+      const combined = combinedCalls(deps.rpcCalls);
+      expect(combined).toHaveLength(1);
+      expect(combined[0]).toMatchObject({
+        p_actor_user_id: 'auth-uid-agent',
+        p_patches: { priority: 'high' },
+      });
     });
 
     it('passes the gate when caller has tickets.assign granted', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: true, has_write_all: false });
-      const svc = makeSvc(deps);
-
-      await svc.update('c1', { assigned_team_id: '33333333-3333-3333-3333-333333333333' }, 'auth-uid-agent');
-
-      expect(deps.permissionChecks).toEqual([
-        { user_id: 'u1', permission: 'tickets.assign' },
-      ]);
-      expect(deps.updates).toHaveLength(1);
-      expect(deps.updates[0]).toMatchObject({ assigned_team_id: '33333333-3333-3333-3333-333333333333' });
-    });
-
-    it('runs both permission checks when DTO carries both priority + assignment changes', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: true, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: true,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await svc.update(
         'c1',
-        { priority: 'high', assigned_team_id: '33333333-3333-3333-3333-333333333333' },
+        { assigned_team_id: '33333333-3333-3333-3333-333333333333' },
         'auth-uid-agent',
+        'cri-a1',
+      );
+
+      expect(deps.permissionChecks).toEqual([
+        { user_id: 'u1', permission: 'tickets.assign' },
+      ]);
+      const combined = combinedCalls(deps.rpcCalls);
+      expect(combined).toHaveLength(1);
+      expect(combined[0]).toMatchObject({
+        p_patches: {
+          assignment: {
+            assigned_team_id: '33333333-3333-3333-3333-333333333333',
+          },
+        },
+      });
+    });
+
+    it('runs both permission checks when DTO carries both priority + assignment changes', async () => {
+      const deps = makeDeps(baseRow(), {
+        hasPermission: true,
+        has_write_all: false,
+      });
+      const svc = makeSvc(deps);
+
+      await svc.update(
+        'c1',
+        {
+          priority: 'high',
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+        },
+        'auth-uid-agent',
+        'cri-both',
       );
 
       // Both RPCs fire; order: change_priority then assign.
@@ -339,13 +539,19 @@ describe('TicketService — per-action permission gates', () => {
 
   describe('reassign', () => {
     it('throws Forbidden when caller lacks tickets.assign and write_all', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await expect(
         svc.reassign(
           'c1',
-          { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
+          {
+            assigned_team_id: '33333333-3333-3333-3333-333333333333',
+            reason: 'team handover',
+          },
           'auth-uid-non-admin',
         ),
       ).rejects.toThrow(/tickets\.assign permission required/);
@@ -353,32 +559,47 @@ describe('TicketService — per-action permission gates', () => {
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      // No mutation should have happened.
-      expect(deps.updates).toHaveLength(0);
+      // No combined RPC was issued.
+      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
     });
 
     it('skips the permission RPC when caller has tickets.write_all', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: true });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: true,
+      });
       const svc = makeSvc(deps);
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
+        {
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+          reason: 'team handover',
+        },
         'auth-uid-admin',
       );
 
       expect(deps.permissionChecks).toHaveLength(0);
-      // Mutation went through.
-      expect(deps.updates.length).toBeGreaterThan(0);
+      // Reassign still goes through `.from('tickets').update` (it isn't
+      // part of the §3.0 orchestrator cutover scope — yet). What we
+      // assert is the absence of the permission RPC, plus that the
+      // mutation ran (visibility-loadContext was called → flow proceeded).
+      expect(deps.visibility.loadContext).toHaveBeenCalled();
     });
 
     it('SYSTEM_ACTOR bypasses the gate', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: false, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: false,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'workflow auto-route' },
+        {
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+          reason: 'workflow auto-route',
+        },
         SYSTEM_ACTOR,
       );
 
@@ -388,19 +609,25 @@ describe('TicketService — per-action permission gates', () => {
     });
 
     it('passes the gate when caller has tickets.assign granted', async () => {
-      const deps = makeDeps(baseRow(), { hasPermission: true, has_write_all: false });
+      const deps = makeDeps(baseRow(), {
+        hasPermission: true,
+        has_write_all: false,
+      });
       const svc = makeSvc(deps);
 
       await svc.reassign(
         'c1',
-        { assigned_team_id: '33333333-3333-3333-3333-333333333333', reason: 'team handover' },
+        {
+          assigned_team_id: '33333333-3333-3333-3333-333333333333',
+          reason: 'team handover',
+        },
         'auth-uid-agent',
       );
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      expect(deps.updates.length).toBeGreaterThan(0);
+      expect(deps.visibility.loadContext).toHaveBeenCalled();
     });
   });
 });

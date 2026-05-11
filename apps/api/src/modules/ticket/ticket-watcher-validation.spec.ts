@@ -2,6 +2,13 @@
 // TicketService.update. Mirror of the WO-side test in
 // work-order-update-metadata.spec.ts. Defends against within-tenant
 // unauthorized share + ghost uuids in `tickets.watchers`.
+//
+// Post-§3.0 cutover (Commit B): the multi-table write moved into the
+// `update_entity_combined` RPC (00333). TS still owns the preflight
+// `validateWatcherIdsInTenant` call (ticket.service.ts:1005-1009) —
+// that's what this spec covers. Positive-path tests assert the RPC was
+// called with watchers under `p_patches.metadata`; rejection-path tests
+// assert the RPC was NOT issued.
 
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 
@@ -17,15 +24,22 @@ type Row = {
 const TENANT = 't1';
 const TICKET_ID = 'tk1';
 
+interface RpcCall {
+  fn: string;
+  args: Record<string, unknown>;
+}
+
 function makeDeps(
   initial: Row,
   options: { persons_in_tenant?: string[] } = {},
 ) {
   // Default: every uuid the tests use exists in the tenant. Tests
   // exercising rejection override.
-  const personsInTenant = new Set(options.persons_in_tenant ?? ['p1', 'p2', 'p3']);
+  const personsInTenant = new Set(
+    options.persons_in_tenant ?? ['p1', 'p2', 'p3'],
+  );
   let row = { ...initial };
-  const updates: Array<Record<string, unknown>> = [];
+  const rpcCalls: RpcCall[] = [];
 
   const supabase = {
     admin: {
@@ -42,14 +56,10 @@ function makeDeps(
               }),
             }),
             update: (patch: Record<string, unknown>) => {
-              updates.push(patch);
+              // Satisfaction-only fast path; not exercised here but stubbed.
               row = { ...row, ...patch };
               return {
-                eq: () => ({
-                  eq: () => ({
-                    select: () => ({ single: async () => ({ data: row, error: null }) }),
-                  }),
-                }),
+                eq: () => ({ eq: async () => ({ data: null, error: null }) }),
               };
             },
           } as unknown;
@@ -61,7 +71,12 @@ function makeDeps(
               eq: () => ({
                 eq: () => ({
                   not: () => ({
-                    async then(cb: (v: { data: Array<{ id: string }>; error: null }) => unknown) {
+                    async then(
+                      cb: (v: {
+                        data: Array<{ id: string }>;
+                        error: null;
+                      }) => unknown,
+                    ) {
                       return cb({ data: [], error: null });
                     },
                   }),
@@ -71,17 +86,18 @@ function makeDeps(
           } as unknown;
         }
         if (table === 'persons') {
-          // Resilient chain mock: every filter (.eq, .is) returns the
-          // chain; only .in resolves. See work-order-update-metadata.spec
-          // for the rationale (mock tolerates future filter additions
-          // like persons.active / anonymized_at / left_at without churn).
+          // Resilient chain mock — every filter (.eq, .is) returns the
+          // chain; .in resolves with only the ids that exist in the tenant.
           const chain: Record<string, unknown> = {};
           chain.select = () => chain;
           chain.eq = () => chain;
           chain.is = () => chain;
           chain.in = (_col: string, ids: string[]) => ({
             then: (
-              resolve: (v: { data: Array<{ id: string }>; error: null }) => unknown,
+              resolve: (v: {
+                data: Array<{ id: string }>;
+                error: null;
+              }) => unknown,
               reject: (e: unknown) => unknown,
             ) =>
               Promise.resolve({
@@ -106,7 +122,7 @@ function makeDeps(
         }
         // Catch-all (ticket_activities, domain_events, etc.).
         return {
-          insert: (_a: Record<string, unknown>) => ({
+          insert: () => ({
             select: () => ({
               single: async () => ({ data: null, error: null }),
             }),
@@ -115,7 +131,21 @@ function makeDeps(
           }),
         } as unknown;
       }),
-      rpc: jest.fn(async () => ({ data: null, error: null })),
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'update_entity_combined') {
+          const patches = (args as { p_patches?: Record<string, unknown> })
+            .p_patches;
+          if (patches?.metadata && typeof patches.metadata === 'object') {
+            row = {
+              ...row,
+              ...(patches.metadata as Record<string, unknown>),
+            } as Row;
+          }
+          return { data: null, error: null };
+        }
+        return { data: null, error: null };
+      }),
     },
   };
 
@@ -124,19 +154,25 @@ function makeDeps(
     applyResolvedTransition: jest.fn(),
     applyClosedTransition: jest.fn(),
     applyReopenTransition: jest.fn(),
+    buildTimersForRpc: jest.fn().mockResolvedValue([]),
   };
 
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({
-      user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
-      team_ids: [], role_assignments: [], vendor_id: null,
-      has_read_all: false, has_write_all: true,
+      user_id: 'u1',
+      person_id: 'p1',
+      tenant_id: TENANT,
+      team_ids: [],
+      role_assignments: [],
+      vendor_id: null,
+      has_read_all: false,
+      has_write_all: true,
     }),
     assertVisible: jest.fn().mockResolvedValue(undefined),
     assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
-  return { row: () => row, updates, supabase, slaService, visibility };
+  return { row: () => row, rpcCalls, supabase, slaService, visibility };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>) {
@@ -144,14 +180,23 @@ function makeSvc(deps: ReturnType<typeof makeDeps>) {
   // only exercise supabase + visibility + slaService, so the rest are
   // no-op stubs. Constructor order must match — see ticket.service.ts.
   return new TicketService(
-    deps.supabase as never,         // 1. supabase
-    {} as never,                     // 2. routingService
-    deps.slaService as never,        // 3. slaService
-    {} as never,                     // 4. workflowEngine
-    {} as never,                     // 5. approvalService
-    deps.visibility as never,        // 6. visibility
-    {} as never,                     // 7. scopeOverrides
+    deps.supabase as never, // 1. supabase
+    {} as never, // 2. routingService
+    deps.slaService as never, // 3. slaService
+    {} as never, // 4. workflowEngine
+    {} as never, // 5. approvalService
+    deps.visibility as never, // 6. visibility
+    {} as never, // 7. scopeOverrides
   );
+}
+
+/** Convenience: pluck `update_entity_combined` calls only. */
+function combinedCalls(
+  rpcCalls: RpcCall[],
+): Array<Record<string, unknown>> {
+  return rpcCalls
+    .filter((c) => c.fn === 'update_entity_combined')
+    .map((c) => c.args);
 }
 
 // Real auth uid — validation runs (SYSTEM_ACTOR bypasses by design).
@@ -171,43 +216,63 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
   it('rejects watchers that include a ghost uuid (well-formed but unknown)', async () => {
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: null,
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: null,
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
     await expect(
-      svc.update(TICKET_ID, { watchers: [REAL_PERSON, GHOST_UUID] }, 'real-uid'),
+      svc.update(
+        TICKET_ID,
+        { watchers: [REAL_PERSON, GHOST_UUID] },
+        'real-uid',
+        'cri-w1',
+      ),
     ).rejects.toThrow(/person id\(s\) that are unknown/);
-    expect(deps.updates).toHaveLength(0);
+    // No combined RPC issued — preflight rejected.
+    expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
   });
 
   it('rejects watchers with malformed uuid (clean 400 with offending value)', async () => {
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: null,
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: null,
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
     await expect(
-      svc.update(TICKET_ID, { watchers: [REAL_PERSON, 'not-a-uuid'] }, 'real-uid'),
+      svc.update(
+        TICKET_ID,
+        { watchers: [REAL_PERSON, 'not-a-uuid'] },
+        'real-uid',
+        'cri-w2',
+      ),
     ).rejects.toThrow(/malformed uuid/);
-    expect(deps.updates).toHaveLength(0);
+    expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
   });
 
   it('accepts watchers that all reference real persons in the tenant', async () => {
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: null,
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: null,
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [REAL_PERSON, OTHER_REAL_PERSON] },
     );
@@ -217,65 +282,92 @@ describe('TicketService.update — watcher uuid tenant validation', () => {
       TICKET_ID,
       { watchers: [REAL_PERSON, OTHER_REAL_PERSON] },
       'real-uid',
+      'cri-w3',
     );
 
-    expect(deps.updates.find((u) => Array.isArray(u.watchers))).toBeDefined();
+    // RPC was issued with watchers in metadata branch (00333:187, 505-732).
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]).toMatchObject({
+      p_patches: { metadata: { watchers: [REAL_PERSON, OTHER_REAL_PERSON] } },
+    });
   });
 
   it('skips validation when watchers is unchanged (not in DTO)', async () => {
     // No watchers in DTO at all — validator must not even SELECT persons.
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: [REAL_PERSON],
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: [REAL_PERSON],
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.update(TICKET_ID, { title: 'updated' }, 'real-uid');
+    await svc.update(TICKET_ID, { title: 'updated' }, 'real-uid', 'cri-w4');
 
-    // No throw. Title write present.
-    expect(deps.updates.find((u) => u.title === 'updated')).toBeDefined();
+    // No throw. Title write present in metadata branch.
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]).toMatchObject({
+      p_patches: { metadata: { title: 'updated' } },
+    });
   });
 
   it('skips validation when watchers is set to empty array', async () => {
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: [REAL_PERSON],
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: [REAL_PERSON],
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [REAL_PERSON] },
     );
     const svc = makeSvc(deps);
 
-    await svc.update(TICKET_ID, { watchers: [] }, 'real-uid');
+    await svc.update(TICKET_ID, { watchers: [] }, 'real-uid', 'cri-w5');
 
-    expect(
-      deps.updates.find(
-        (u) => Array.isArray(u.watchers) && (u.watchers as unknown[]).length === 0,
-      ),
-    ).toBeDefined();
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]).toMatchObject({
+      p_patches: { metadata: { watchers: [] } },
+    });
   });
 
   it('SYSTEM_ACTOR bypasses watcher validation (gate convention)', async () => {
     const deps = makeDeps(
       {
-        id: TICKET_ID, tenant_id: TENANT,
-        status_category: 'new', watchers: null,
-        title: 't', description: null,
+        id: TICKET_ID,
+        tenant_id: TENANT,
+        status_category: 'new',
+        watchers: null,
+        title: 't',
+        description: null,
       },
       { persons_in_tenant: [] }, // intentionally empty.
     );
     const svc = makeSvc(deps);
 
     // GHOST_UUID would reject for real-uid; SYSTEM_ACTOR bypasses entirely.
-    await svc.update(TICKET_ID, { watchers: [GHOST_UUID] }, SYSTEM_ACTOR);
+    await svc.update(
+      TICKET_ID,
+      { watchers: [GHOST_UUID] },
+      SYSTEM_ACTOR,
+      'cri-w6',
+    );
 
-    expect(
-      deps.updates.find((u) => Array.isArray(u.watchers)),
-    ).toBeDefined();
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]).toMatchObject({
+      p_actor_user_id: null,
+      p_patches: { metadata: { watchers: [GHOST_UUID] } },
+    });
   });
 });

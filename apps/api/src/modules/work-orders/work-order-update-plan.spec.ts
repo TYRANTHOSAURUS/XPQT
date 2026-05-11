@@ -1,26 +1,25 @@
-// Tests for WorkOrderService.update — the plan branch's merge logic against
-// the current row.
+// Tests for WorkOrderService.update — the plan branch's merge against the
+// current row.
 //
-// Bug being locked in: when the dto only contains `planned_duration_minutes`,
-// the orchestrator was passing `last?.planned_start_at ?? null` to setPlan,
-// which silently cleared the existing start (and, by setPlan's "duration
-// without a start makes no sense" invariant, the duration too). The fix is
-// to read the current row at the head of the plan branch when `last` is
-// null, then merge per `presentInDto ? dto.value : current.value`.
+// Post-§3.0 cutover (Commit B): plan-branch merge lives in TS BEFORE the
+// orchestrator RPC call (work-order.service.ts:265-319). The merge:
+//   • Reads the current row when only one of the two plan keys is in the
+//     dto (to preserve the absent one across the patch).
+//   • Honours the "clear plan" gesture: explicit `start=null` with no
+//     duration in the dto → `dtoNormalized.planned_duration_minutes = null`
+//     so the §3.0 RPC commits the explicit clear (F-IMP-3 / 2026-05-11).
+//   • Rejects with `work_order.plan_invalid` when the eventual row would be
+//     duration-without-start (the §3.0 RPC's plan branch is partial-update
+//     friendly and does NOT enforce this — TS is the gate).
 //
-// Mock pattern mirrors `work-order-set-plan.spec.ts` for the supabase chain
-// shape, but the plan branch is exercised through `update()` and we mock
-// `setPlan` itself so the assertion is on what the merge logic decided.
-//
-// Contract (one `it` per row):
-//   { dur: 90 }                 | start='X', dur=30  → setPlan('X', 90)
-//   { start: 'Y' }              | start='X', dur=30  → setPlan('Y', 30)
-//   { start: null }             | start='X', dur=30  → setPlan(null, null)
-//                                                        (existing setPlan
-//                                                        invariant: clearing
-//                                                        start clears dur)
-//   { dur: 90 }                 | start=null, dur=null → 400 plan_invalid
-//   { start: null, dur: 90 }    | any                  → 400 plan_invalid
+// Contract (one `it` per row) — assert the `p_patches.plan` shape on the
+// `update_entity_combined` call:
+//   { dur: 90 }                 | start='X', dur=30  → plan={ planned_duration_minutes: 90 }
+//   { start: 'Y' }              | start='X', dur=30  → plan={ planned_start_at: 'Y' }
+//   { start: null }             | start='X', dur=30  → plan={ planned_start_at: null,
+//                                                              planned_duration_minutes: null }
+//   { dur: 90 }                 | start=null, dur=null → 400 plan_invalid (no RPC)
+//   { start: null, dur: 90 }    | any                  → 400 plan_invalid (no RPC)
 
 import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
@@ -33,9 +32,16 @@ type WorkOrderRow = {
 };
 
 const TENANT = 't1';
+const CRI = 'cri-plan-test';
+
+interface RpcCall {
+  fn: string;
+  args: Record<string, unknown>;
+}
 
 function makeDeps(initial: WorkOrderRow) {
   const row: WorkOrderRow = { ...initial };
+  const rpcCalls: RpcCall[] = [];
 
   const supabase = {
     admin: {
@@ -67,7 +73,11 @@ function makeDeps(initial: WorkOrderRow) {
         }
         throw new Error(`unexpected table in mock: ${table}`);
       }),
-      rpc: jest.fn(async (fn: string) => {
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'update_entity_combined') {
+          return { data: null, error: null };
+        }
         throw new Error(`unexpected rpc in update plan-branch mock: ${fn}`);
       }),
     },
@@ -79,19 +89,26 @@ function makeDeps(initial: WorkOrderRow) {
     resumeTimers: jest.fn().mockResolvedValue(undefined),
     completeTimers: jest.fn().mockResolvedValue(undefined),
     startTimers: jest.fn().mockResolvedValue(undefined),
+    buildTimersForRpc: jest.fn().mockResolvedValue([]),
   };
 
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({
-      user_id: 'u1', person_id: 'p1', tenant_id: TENANT,
-      team_ids: [], role_assignments: [], vendor_id: null,
-      has_read_all: false, has_write_all: true,
+      user_id: 'u1',
+      person_id: 'p1',
+      tenant_id: TENANT,
+      team_ids: [],
+      role_assignments: [],
+      vendor_id: null,
+      has_read_all: false,
+      has_write_all: true,
     }),
     assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
   return {
     row: () => row,
+    rpcCalls,
     supabase,
     slaService,
     visibility,
@@ -106,15 +123,26 @@ function makeSvc(deps: ReturnType<typeof makeDeps>) {
   );
 }
 
+/** Convenience: pluck `update_entity_combined` calls only. */
+function combinedCalls(
+  rpcCalls: RpcCall[],
+): Array<Record<string, unknown>> {
+  return rpcCalls
+    .filter((c) => c.fn === 'update_entity_combined')
+    .map((c) => c.args);
+}
+
 describe('WorkOrderService.update — plan-branch merge against current row', () => {
   beforeEach(() => {
-    jest.spyOn(
-      require('../../common/tenant-context').TenantContext,
-      'current',
-    ).mockReturnValue({ id: TENANT, slug: TENANT });
+    jest
+      .spyOn(
+        require('../../common/tenant-context').TenantContext,
+        'current',
+      )
+      .mockReturnValue({ id: TENANT, slug: TENANT });
   });
 
-  it('duration-only patch preserves existing start', async () => {
+  it('duration-only patch preserves existing start (plan branch carries only the duration key)', async () => {
     const startsAt = '2026-05-02T09:00:00.000Z';
     const deps = makeDeps({
       id: 'wo1',
@@ -124,31 +152,30 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
     });
     const svc = makeSvc(deps);
 
-    // Mock setPlan so we assert on the merge logic's decision, not its side
-    // effects. Returning the resulting row as if setPlan had committed.
-    const setPlanSpy = jest
-      .spyOn(svc, 'setPlan')
-      .mockImplementation(async (_id, start, dur) => ({
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: null,
-        planned_start_at: start,
-        planned_duration_minutes: dur,
-      }));
-
-    const result = await svc.update(
+    await svc.update(
       'wo1',
       { planned_duration_minutes: 90 },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(setPlanSpy).toHaveBeenCalledTimes(1);
-    expect(setPlanSpy).toHaveBeenCalledWith('wo1', startsAt, 90, SYSTEM_ACTOR);
-    expect(result.planned_start_at).toBe(startsAt);
-    expect(result.planned_duration_minutes).toBe(90);
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    // Only the duration key was in the dto — the RPC's plan branch
+    // (00333:397-503) is partial-update friendly, so only that key is
+    // sent. The existing start is preserved by absence (NOT by being
+    // re-sent as start='X'). This is the F-IMP-3 contract: don't echo
+    // values the caller didn't touch.
+    expect(combined[0].p_patches).toMatchObject({
+      plan: { planned_duration_minutes: 90 },
+    });
+    expect(
+      (combined[0].p_patches as { plan: Record<string, unknown> }).plan
+        .planned_start_at,
+    ).toBeUndefined();
   });
 
-  it('start-only patch preserves existing duration', async () => {
+  it('start-only patch preserves existing duration (plan branch carries only the start key)', async () => {
     const startsAt = '2026-05-02T09:00:00.000Z';
     const deps = makeDeps({
       id: 'wo1',
@@ -158,30 +185,26 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
     });
     const svc = makeSvc(deps);
 
-    const setPlanSpy = jest
-      .spyOn(svc, 'setPlan')
-      .mockImplementation(async (_id, start, dur) => ({
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: null,
-        planned_start_at: start,
-        planned_duration_minutes: dur,
-      }));
-
     const newStart = '2026-05-03T10:00:00.000Z';
-    const result = await svc.update(
+    await svc.update(
       'wo1',
       { planned_start_at: newStart },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(setPlanSpy).toHaveBeenCalledTimes(1);
-    expect(setPlanSpy).toHaveBeenCalledWith('wo1', newStart, 30, SYSTEM_ACTOR);
-    expect(result.planned_start_at).toBe(newStart);
-    expect(result.planned_duration_minutes).toBe(30);
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      plan: { planned_start_at: newStart },
+    });
+    expect(
+      (combined[0].p_patches as { plan: Record<string, unknown> }).plan
+        .planned_duration_minutes,
+    ).toBeUndefined();
   });
 
-  it('explicit start=null patch clears both fields (setPlan invariant)', async () => {
+  it('explicit start=null patch clears both fields (clear-plan gesture / F-IMP-3)', async () => {
     const deps = makeDeps({
       id: 'wo1',
       tenant_id: TENANT,
@@ -190,35 +213,28 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
     });
     const svc = makeSvc(deps);
 
-    const setPlanSpy = jest
-      .spyOn(svc, 'setPlan')
-      .mockImplementation(async () => ({
-        id: 'wo1',
-        tenant_id: TENANT,
-        sla_id: null,
-        planned_start_at: null,
-        planned_duration_minutes: null,
-      }));
-
-    // Caller sends only `planned_start_at: null`. The "clear start" gesture
-    // is the established "clear plan" gesture — setPlan's invariant would
-    // collapse duration to null anyway, but the orchestrator merge has to
-    // honour it explicitly because the validation below otherwise 400s
-    // when finalDuration carries the old non-null value forward. Net: the
-    // merge passes (null, null) to setPlan, and the row clears.
-    const result = await svc.update(
+    // Caller sends only `planned_start_at: null`. The orchestrator merge
+    // (work-order.service.ts:295-309) writes the explicit-null clear onto
+    // the dtoNormalized clone for duration too, so the RPC commits both
+    // columns to null.
+    await svc.update(
       'wo1',
       { planned_start_at: null },
       SYSTEM_ACTOR,
+      CRI,
     );
 
-    expect(setPlanSpy).toHaveBeenCalledTimes(1);
-    expect(setPlanSpy).toHaveBeenCalledWith('wo1', null, null, SYSTEM_ACTOR);
-    expect(result.planned_start_at).toBeNull();
-    expect(result.planned_duration_minutes).toBeNull();
+    const combined = combinedCalls(deps.rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_patches).toMatchObject({
+      plan: {
+        planned_start_at: null,
+        planned_duration_minutes: null,
+      },
+    });
   });
 
-  it('rejects duration-only patch when existing start is null (400 work_order.plan_invalid)', async () => {
+  it('rejects duration-only patch when existing start is null (400 work_order.plan_invalid, no RPC)', async () => {
     const deps = makeDeps({
       id: 'wo1',
       tenant_id: TENANT,
@@ -226,7 +242,6 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
       planned_duration_minutes: null,
     });
     const svc = makeSvc(deps);
-    const setPlanSpy = jest.spyOn(svc, 'setPlan');
 
     let caught: unknown = null;
     try {
@@ -234,6 +249,7 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
         'wo1',
         { planned_duration_minutes: 90 },
         SYSTEM_ACTOR,
+        CRI,
       );
     } catch (err) {
       caught = err;
@@ -242,10 +258,10 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('work_order.plan_invalid');
     expect((caught as AppError).status).toBe(400);
-    expect(setPlanSpy).not.toHaveBeenCalled();
+    expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
   });
 
-  it('rejects { start: null, duration: N } in one patch (400 work_order.plan_invalid)', async () => {
+  it('rejects { start: null, duration: N } in one patch (400 work_order.plan_invalid, no RPC)', async () => {
     const deps = makeDeps({
       id: 'wo1',
       tenant_id: TENANT,
@@ -253,7 +269,6 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
       planned_duration_minutes: 30,
     });
     const svc = makeSvc(deps);
-    const setPlanSpy = jest.spyOn(svc, 'setPlan');
 
     let caught: unknown = null;
     try {
@@ -261,6 +276,7 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
         'wo1',
         { planned_start_at: null, planned_duration_minutes: 90 },
         SYSTEM_ACTOR,
+        CRI,
       );
     } catch (err) {
       caught = err;
@@ -269,6 +285,6 @@ describe('WorkOrderService.update — plan-branch merge against current row', ()
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('work_order.plan_invalid');
     expect((caught as AppError).status).toBe(400);
-    expect(setPlanSpy).not.toHaveBeenCalled();
+    expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
   });
 });
