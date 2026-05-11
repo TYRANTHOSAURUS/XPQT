@@ -397,6 +397,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'booking.completed_cannot_edit': {
     title: 'Kon niet wijzigen — reservering is afgerond',
   },
+  'booking.cancelled_cannot_edit': {
+    title: 'Kon niet wijzigen — reservering is geannuleerd',
+    detail: 'Deze boeking is geannuleerd en kan niet meer worden bewerkt.',
+  },
   'booking.not_editable': {
     title: 'Je kunt deze reservering niet wijzigen',
   },
@@ -799,6 +803,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'automation_plan.routing_input_mismatch': {
     title: 'Ticket niet aangemaakt — routing-context gewijzigd',
     detail: 'De routing-context is veranderd terwijl het formulier open was. Vernieuw en dien opnieuw in.',
+  },
+  'automation_plan.stale_resolution': {
+    title: 'Kon de reservering niet opslaan — regels gewijzigd',
+    detail: 'De boekingsregels zijn gewijzigd terwijl je aan het bewerken was. Vernieuw en probeer opnieuw.',
   },
 
   // ─── reclassify_ticket RPC (B.2.A.Step11 §3.10) ──────────────────────────

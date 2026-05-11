@@ -397,6 +397,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'booking.completed_cannot_edit': {
     title: "Couldn't edit — booking is completed",
   },
+  'booking.cancelled_cannot_edit': {
+    title: "Couldn't edit — booking is cancelled",
+    detail: 'This booking is cancelled and can no longer be edited.',
+  },
   'booking.not_editable': {
     title: "You can't edit this booking",
   },
@@ -799,6 +803,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'automation_plan.routing_input_mismatch': {
     title: "Couldn't create the ticket — routing input mismatch",
     detail: 'The routing context drifted while the form was open. Refresh and resubmit.',
+  },
+  'automation_plan.stale_resolution': {
+    title: "Couldn't save the booking — rules changed",
+    detail: 'The booking rule set changed while you were editing. Refresh and try again.',
   },
 
   // ─── reclassify_ticket RPC (B.2.A.Step11 §3.10) ──────────────────────────

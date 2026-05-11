@@ -139,6 +139,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // lock code, not a normal user race. Surface as 409 + log so ops can
   // triage. Symmetric with approval.cas_lost from grant_booking_approval.
   'grant_ticket_approval.cas_lost': 409,
+  // B.4 §3.4 step 5 — semantic re-derivation gate raises this when
+  // booking_rules.updated_at advanced past the TS-side plan's
+  // _resolution_at timestamp. The rule set shifted while the operator
+  // was editing; caller must refetch the plan. 409 mirrors the
+  // payload_mismatch shape: the resource is in a state that conflicts
+  // with the request — not a payload bug, a between-read-and-write race.
+  'automation_plan.stale_resolution': 409,
 
   // ── 422 unprocessable entity ─────────────────────────────────────
   // Tenant-FK validation helper (00317) raises 42501 on first
@@ -170,6 +177,11 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // RPC-side raise of the same code (none today; the workflow engine
   // is the sole producer).
   'workflow.update_ticket_field_not_allowed': 422,
+  // B.4 §3.6.5 — edit attempted on a cancelled (terminal_rejected) booking.
+  // Sibling to booking.completed_cannot_edit / booking.not_editable; 422
+  // because the request payload is valid but the booking state blocks the
+  // action (same shape as reclassify_ticket.terminal_ticket).
+  'booking.cancelled_cannot_edit': 422,
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always

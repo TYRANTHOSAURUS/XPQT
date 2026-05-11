@@ -360,6 +360,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't create ticket — routing inputs changed",
     detail: 'Refresh and try again — the page is showing stale data.',
   },
+  'automation_plan.stale_resolution': {
+    title: "Couldn't save booking — rules changed",
+    detail: 'The booking rule set changed while you were editing. Refresh and try again.',
+  },
 
   // ─── reclassify_ticket (§3.10) ───────────────────────────────────────────
   'reclassify_ticket.ticket_not_found': {
@@ -419,6 +423,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'booking.not_editable': { title: "This booking can't be edited" },
   'booking.completed_cannot_edit': {
     title: "Couldn't edit — booking already completed",
+  },
+  'booking.cancelled_cannot_edit': {
+    title: "Couldn't edit — booking cancelled",
+    detail: 'This booking is cancelled and can no longer be edited.',
   },
   'booking.cancellation_grace_expired': {
     title: "Couldn't cancel — too late to cancel",

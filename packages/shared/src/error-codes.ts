@@ -149,6 +149,7 @@ export type KnownErrorCode =
   | 'automation_plan.semantic_mismatch'
   | 'automation_plan.scope_override_mismatch'
   | 'automation_plan.routing_input_mismatch'
+  | 'automation_plan.stale_resolution'
 
   // ─── reclassify_ticket RPC codes (B.2.A.Step11 §3.10) ────────────────────
   | 'reclassify_ticket.ticket_not_found'
@@ -219,6 +220,7 @@ export type KnownErrorCode =
   | 'booking.unexpected_error'
   | 'booking.idempotency_key_required'
   | 'booking.completed_cannot_edit'
+  | 'booking.cancelled_cannot_edit'
   | 'booking.not_editable'
   | 'booking.not_cancelled'
   | 'booking.cancellation_grace_expired'
@@ -817,6 +819,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'automation_plan.semantic_mismatch',
   'automation_plan.scope_override_mismatch',
   'automation_plan.routing_input_mismatch',
+  'automation_plan.stale_resolution',
   'reclassify_ticket.ticket_not_found',
   'reclassify_ticket.reclassify_during_approval',
   'reclassify_ticket.new_request_type_invalid',
@@ -872,6 +875,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'booking.unexpected_error',
   'booking.idempotency_key_required',
   'booking.completed_cannot_edit',
+  'booking.cancelled_cannot_edit',
   'booking.not_editable',
   'booking.not_cancelled',
   'booking.cancellation_grace_expired',

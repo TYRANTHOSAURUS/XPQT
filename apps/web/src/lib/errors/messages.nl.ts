@@ -339,6 +339,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon ticket niet aanmaken — routeringgegevens zijn gewijzigd',
     detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
   },
+  'automation_plan.stale_resolution': {
+    title: 'Kon de boeking niet opslaan — regels gewijzigd',
+    detail: 'De boekingsregels zijn gewijzigd terwijl je aan het bewerken was. Vernieuw en probeer opnieuw.',
+  },
 
   // ─── reclassify_ticket (§3.10) ───────────────────────────────────────────
   'reclassify_ticket.ticket_not_found': {
@@ -398,6 +402,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'booking.not_editable': { title: 'Deze reservering kan niet worden gewijzigd' },
   'booking.completed_cannot_edit': {
     title: 'Kon niet wijzigen — reservering is al afgerond',
+  },
+  'booking.cancelled_cannot_edit': {
+    title: 'Kon niet wijzigen — boeking geannuleerd',
+    detail: 'Deze boeking is geannuleerd en kan niet meer worden bewerkt.',
   },
   'booking.cancellation_grace_expired': {
     title: 'Kon niet annuleren — te laat om te annuleren',
